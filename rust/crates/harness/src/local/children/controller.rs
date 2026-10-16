@@ -300,7 +300,7 @@ impl LocalHarness {
         let sender = request
             .requester
             .ok_or_else(|| Error::Unauthorized("child request has no sender".into()))?;
-        let publisher = self.input_publisher(self.limits.file_bytes)?;
+        let publisher = self.input_publisher_with_limit(self.limits.file_bytes)?;
         let prompt = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?.prompt;
         for file in std::iter::once(request).chain(values.values().filter(|file| matches!(&file.key,
             FileKey::Child { reference: candidate, file: ChildFile::Inbox(_) } if candidate == reference))) {

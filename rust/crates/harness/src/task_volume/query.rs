@@ -7,6 +7,25 @@ use std::sync::Arc;
 /// Folder selectors have bounded matching cost and allocate no per-chunk paths.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Query {
+    /// Active command inbox plus a bounded recent outcome window. Historical
+    /// request/claim/result files remain addressable by exact file queries.
+    CommandSession {
+        /// UI session whose settings, inbox and outcomes are selected.
+        session: Component,
+        /// Maximum number of completed outcomes retained in the active view.
+        recent: u32,
+    },
+    /// One ordinary UI/config directory.
+    UiDirectory(Component),
+    /// One UI session's requests and immutable execution records.
+    Session(Component),
+    /// One request/execution folder in a UI session.
+    SessionFiles {
+        /// UI session identity.
+        session: Component,
+        /// Select execution files; otherwise select inbox request files.
+        executions: bool,
+    },
     /// Entire private task volume.
     Root,
     /// Command definitions and workspace files used by the input UI.
@@ -19,8 +38,25 @@ pub enum Query {
     Tasks,
     /// One task subtree.
     Task(Component),
+    /// Recent display files, excluding request and dispatch-claim archives.
+    TaskView {
+        /// Selected task.
+        task: Component,
+        /// Recent files retained from each visible content class.
+        recent: u32,
+        /// Include provider reasoning.
+        reasoning: bool,
+        /// Include tool details.
+        details: bool,
+        /// Include terminal output.
+        terminal: bool,
+    },
+    /// Task lifecycle records, excluding task archives.
+    TaskOverviews,
     /// Immutable task requests.
     Requests(Component),
+    /// Immutable dispatch claims and outcomes for submitted requests.
+    Executions(Component),
     /// All model turns and their tool subtrees.
     Turns(Component),
     /// One model turn, including its tools.
@@ -68,7 +104,7 @@ pub enum Query {
 }
 
 impl Query {
-    pub(super) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
+    pub(crate) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let range = |task: &Component, first: TaskFile, last: TaskFile| {
             let bound = |file| {
@@ -107,6 +143,49 @@ impl Query {
             )
         };
         vec![match self {
+            Self::UiDirectory(directory) => (
+                Included(FileKey::Ui {
+                    directory: directory.clone(),
+                    name: minimum,
+                }),
+                Included(FileKey::Ui {
+                    directory: directory.clone(),
+                    name: maximum,
+                }),
+            ),
+            Self::SessionFiles {
+                session,
+                executions,
+            } => {
+                let (first, last) = if *executions {
+                    (
+                        TaskFile::ExecutionClaim(minimum),
+                        TaskFile::ExecutionResult(maximum),
+                    )
+                } else {
+                    (TaskFile::Request(minimum), TaskFile::Request(maximum))
+                };
+                (
+                    Included(FileKey::Session {
+                        session: session.clone(),
+                        file: first,
+                    }),
+                    Included(FileKey::Session {
+                        session: session.clone(),
+                        file: last,
+                    }),
+                )
+            }
+            Self::Session(session) => (
+                Included(FileKey::Session {
+                    session: session.clone(),
+                    file: TaskFile::Request(minimum),
+                }),
+                Included(FileKey::Session {
+                    session: session.clone(),
+                    file: TaskFile::ExecutionResult(maximum),
+                }),
+            ),
             Self::Config => (
                 Included(FileKey::Input(InputPath("config/".into()))),
                 Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
@@ -169,6 +248,11 @@ impl Query {
             Self::Requests(task) => {
                 range(task, TaskFile::Request(minimum), TaskFile::Request(maximum))
             }
+            Self::Executions(task) => range(
+                task,
+                TaskFile::ExecutionClaim(minimum),
+                TaskFile::ExecutionResult(maximum),
+            ),
             Self::Turns(task) => range(
                 task,
                 TaskFile::TurnRequest(0),
@@ -191,7 +275,9 @@ impl Query {
                 TaskFile::Notification(minimum),
                 TaskFile::Notification(maximum),
             ),
-            Self::Task(task) => range(task, TaskFile::Request(minimum), TaskFile::Context(maximum)),
+            Self::Task(task) | Self::TaskView { task, .. } => {
+                range(task, TaskFile::Request(minimum), TaskFile::Context(maximum))
+            }
             Self::File(key) => (Included(key.clone()), Included(key.clone())),
             _ => (Unbounded, Unbounded),
         }]
@@ -200,6 +286,28 @@ impl Query {
     /// Matches typed keys without rendering paths or decoding payload bytes.
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
+            (Self::UiDirectory(selected), FileKey::Ui { directory, .. }) => selected == directory,
+            (Self::CommandSession { session, .. }, key) => {
+                super::super::command_query::matches(session, key)
+            }
+            (
+                Self::SessionFiles {
+                    session: selected,
+                    executions,
+                },
+                FileKey::Session { session, file },
+            ) => {
+                selected == session
+                    && if *executions {
+                        matches!(
+                            file,
+                            TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_)
+                        )
+                    } else {
+                        matches!(file, TaskFile::Request(_))
+                    }
+            }
+            (Self::Session(selected), FileKey::Session { session, .. }) => selected == session,
             (Self::Root, _)
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
@@ -253,7 +361,40 @@ impl Query {
                         },
                 },
             ) => t == task && turn == n && call == c,
+            (
+                Self::TaskOverviews,
+                FileKey::Task {
+                    file: TaskFile::Status,
+                    ..
+                },
+            ) => true,
+            (
+                Self::TaskView {
+                    task: selected,
+                    reasoning,
+                    details,
+                    terminal,
+                    ..
+                },
+                FileKey::Task { task, .. },
+            ) => {
+                selected == task
+                    && super::super::recent::kind(key).is_some_and(|kind| match kind {
+                        3 => *reasoning,
+                        4 => *details,
+                        5 => *terminal,
+                        6 => *details || *terminal,
+                        _ => true,
+                    })
+            }
             (Self::Task(t), FileKey::Task { task, .. })
+            | (
+                Self::Executions(t),
+                FileKey::Task {
+                    task,
+                    file: TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_),
+                },
+            )
             | (
                 Self::Requests(t),
                 FileKey::Task {
@@ -280,9 +421,12 @@ impl Query {
         }
     }
 
-    pub(super) fn matches_file(&self, file: &super::FileValue) -> bool {
+    pub(crate) fn matches_file(&self, file: &super::super::FileValue) -> bool {
         self.matches(&file.key)
             && match self {
+                Self::TaskView { reasoning, .. } => {
+                    *reasoning || file.channel != Some(super::Channel::Reasoning)
+                }
                 Self::File(FileKey::Task {
                     file: TaskFile::TextHead { channel, .. },
                     ..
@@ -306,15 +450,24 @@ impl Query {
             Ok(n)
         };
         Ok(match parts.as_slice() {
-            [""] => Self::Root,
-            ["plans"] => Self::Plans,
             ["agents"] => Self::Children,
             ["agents", reference] => Self::Child(component(reference)?),
+            [".ui", directory] => Self::UiDirectory(component(directory)?),
+            [""] => Self::Root,
+            ["plans"] => Self::Plans,
             ["config"] => Self::Config,
+            [".sessions", session] => Self::Session(component(session)?),
+            [".sessions", session, folder] if matches!(*folder, "requests" | "executions") => {
+                Self::SessionFiles {
+                    session: component(session)?,
+                    executions: *folder == "executions",
+                }
+            }
             [".volumes", "agents"] => Self::Agents,
             [".tasks"] => Self::Tasks,
             [".tasks", t] => Self::Task(component(t)?),
             [".tasks", t, "requests"] => Self::Requests(component(t)?),
+            [".tasks", t, "executions"] => Self::Executions(component(t)?),
             [".tasks", t, "turns"] => Self::Turns(component(t)?),
             [".tasks", t, "approvals"] => Self::Approvals(component(t)?),
             [".tasks", t, "notifications"] => Self::Notifications(component(t)?),

@@ -60,6 +60,21 @@ pub enum AgentCommand {
     List,
 }
 
+pub(super) fn input_schema() -> Value {
+    json!({
+        "type":"object", "required":["command"],
+        "properties":{
+            "command":{"type":"string","enum":["spawn","send","wait","status","control","list"]},
+            "reference":{"type":"string","minLength":1},
+            "prompt":{"type":"string","minLength":1},
+            "message":{"type":"string","minLength":1},
+            "model":{"type":"string","minLength":1},
+            "tools":{"type":"array","items":{"type":"string","minLength":1}},
+            "action":{"type":"string","enum":["pause","resume","interrupt","cancel","archive"]}
+        }, "additionalProperties":false
+    })
+}
+
 pub(super) fn tool() -> Tool {
     let output = json!({"type":"object"});
     Tool {
@@ -68,18 +83,7 @@ pub(super) fn tool() -> Tool {
             name: "agent".into(),
             revision: "1".into(),
             description: "Spawn, message, wait for, inspect and control child agents through agents/<reference>/ files".into(),
-            input_schema: json!({
-                "type":"object", "required":["command"],
-                "properties":{
-                    "command":{"type":"string","enum":["spawn","send","wait","status","control","list"]},
-                    "reference":{"type":"string","minLength":1},
-                    "prompt":{"type":"string","minLength":1},
-                    "message":{"type":"string","minLength":1},
-                    "model":{"type":"string","minLength":1},
-                    "tools":{"type":"array","items":{"type":"string","minLength":1}},
-                    "action":{"type":"string","enum":["pause","resume","interrupt","cancel","archive"]}
-                }, "additionalProperties":false
-            }),
+            input_schema: input_schema(),
             output_schema: output.clone(),
             projection_schema: crate::tool::json_projection_schema(output),
         },
@@ -88,7 +92,7 @@ pub(super) fn tool() -> Tool {
     }
 }
 
-struct AgentExecutor;
+pub(super) struct AgentExecutor;
 
 impl ToolExecutor for AgentExecutor {
     fn authorize(

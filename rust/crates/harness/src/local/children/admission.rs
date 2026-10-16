@@ -162,7 +162,7 @@ impl LocalHarness {
             None,
             None,
         )?);
-        let publisher = self.input_publisher(narrowed.limits().file_bytes)?;
+        let publisher = self.input_publisher_with_limit(narrowed.limits().file_bytes)?;
         let source_workspace = io.sdk(
             workspace
                 .filesystem
@@ -277,7 +277,7 @@ impl LocalHarness {
                     },
                 ],
             };
-            let (receive, model) = self
+            let (receive, model, manifest) = self
                 .stage_turn_with_output(
                     operation,
                     "Follow the received child request.",
@@ -285,11 +285,7 @@ impl LocalHarness {
                     Some(&project),
                 )
                 .await?;
-            let inputs = vec![
-                receive.payload.clone(),
-                model.payload.clone(),
-                self.context_manifest.clone(),
-            ];
+            let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];
             let definition = self
                 .runtime
                 .harness()

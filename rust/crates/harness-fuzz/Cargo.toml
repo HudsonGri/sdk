@@ -131,6 +131,7 @@ required-features = ["notifications"]
 test = false
 doc = false
 bench = false
+
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
@@ -176,6 +177,10 @@ name = "child_control"
 path = "fuzz_targets/child_control.rs"
 required-features = ["runtime"]
 
+[[bin]]
+name = "client_commands"
+path = "fuzz_targets/client_commands.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -226,6 +231,13 @@ proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[[bin]]
+name = "swarm_case"
+path = "fuzz_targets/swarm_case.rs"
+test = false
+doc = false
+bench = false
+
 [[bench]]
 name = "memory_directory_page"
 path = "benches/memory_directory_page.rs"
@@ -255,6 +267,13 @@ bench = false
 [[bin]]
 name = "journal_decode"
 path = "fuzz_targets/journal_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provider_scenario"
+path = "fuzz_targets/provider_scenario.rs"
 test = false
 doc = false
 bench = false

@@ -1,49 +1,12 @@
 use super::{ChildFile, Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// Task namespace and packed-segment format revision.
 pub const SCHEMA: u32 = 4;
 
-/// A portable, canonical namespace component.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Component(pub(super) Arc<str>);
-
-impl Component {
-    /// Validates a task, request, tool, principal or mount identity.
-    pub fn new(value: impl AsRef<str>) -> Result<Self> {
-        let value = value.as_ref();
-        if value.is_empty()
-            || value.len() > 255
-            || value == "."
-            || value == ".."
-            || !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-        {
-            return Err(Error::InvalidPath);
-        }
-        Ok(Self(Arc::from(value)))
-    }
-
-    /// Canonical component text.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for Component {
-    type Error = Error;
-    fn try_from(value: String) -> Result<Self> {
-        Self::new(value)
-    }
-}
-impl From<Component> for String {
-    fn from(value: Component) -> Self {
-        value.0.to_string()
-    }
-}
+#[path = "component.rs"]
+mod component;
+pub use component::Component;
 
 /// Authorization subject; the host applies its volume policy before publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +49,10 @@ pub enum TaskFile {
     RequestResult(Component),
     /// Current task status.
     Status,
+    /// Immutable dispatch marker for one submitted command request.
+    ExecutionClaim(Component),
+    /// Immutable outcome of that dispatch (absence after a claim is uncertain).
+    ExecutionResult(Component),
     /// Immutable model turn input; turn numbers include retries/attempts.
     TurnRequest(u64),
     /// One immutable stream chunk.
@@ -146,6 +113,8 @@ impl TaskFile {
             Self::RequestReady(id) => format!("requests/{}/ready.json", id.as_str()),
             Self::RequestResult(id) => format!("requests/{}/result.json", id.as_str()),
             Self::Status => "status.json".into(),
+            Self::ExecutionClaim(id) => format!("executions/{}/claim.json", id.as_str()),
+            Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
             Self::TextHead { turn, channel } => format!(
@@ -178,39 +147,27 @@ impl TaskFile {
     }
 }
 
-/// Canonical logical input source path, fenced to commands/ or workspace/.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct InputPath(pub(super) String);
-
-impl TryFrom<String> for InputPath {
-    type Error = Error;
-    fn try_from(path: String) -> Result<Self> {
-        let mut parts = path.split('/');
-        if path.len() > 4096
-            || !matches!(parts.next(), Some("commands" | "workspace" | "config"))
-            || !path.contains('/')
-            || parts.any(|p| {
-                p.is_empty()
-                    || p == "."
-                    || p == ".."
-                    || p.chars().any(|c| c.is_control() || matches!(c, '\\' | ':'))
-            })
-        {
-            return Err(Error::InvalidPath);
-        }
-        Ok(Self(path))
-    }
-}
-impl From<InputPath> for String {
-    fn from(path: InputPath) -> Self {
-        path.0
-    }
-}
+#[path = "input_path.rs"]
+mod input_path;
+pub use input_path::InputPath;
 
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
+    /// UI-session requests and their immutable execution files.
+    Session {
+        /// Client-selected session identity, distinct from a task identity.
+        session: Component,
+        /// Request, claim or result file in this session.
+        file: TaskFile,
+    },
+    /// Ordinary user/config/session files, authorized by their containing volume.
+    Ui {
+        /// Caller-bound config, session or task settings directory.
+        directory: Component,
+        /// Bounded canonical file name, such as commands.json or layout.json.
+        name: Component,
+    },
     /// Existing host request head, selected from its authorized journal volume.
     RequestHead,
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
@@ -309,7 +266,16 @@ impl FileKey {
         };
         match parts.as_slice() {
             ["inputs", "current.json"] => return Ok(Self::RequestHead),
-            ["commands" | "workspace" | "config", ..] => {
+            [".ui", directory, name] => {
+                return Ok(Self::Ui {
+                    directory: id(directory)?,
+                    name: id(name)?,
+                });
+            }
+            [
+                "commands" | "workspace" | "config" | ".claude" | ".codex" | "skills",
+                ..,
+            ] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
@@ -327,8 +293,10 @@ impl FileKey {
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
         }
-        let [".tasks", task, rest @ ..] = parts.as_slice() else {
-            return Err(Error::InvalidPath);
+        let (session, task, rest) = match parts.as_slice() {
+            [".tasks", task, rest @ ..] => (false, task, rest),
+            [".sessions", session, rest @ ..] => (true, session, rest),
+            _ => return Err(Error::InvalidPath),
         };
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
@@ -336,6 +304,8 @@ impl FileKey {
             ["requests", request, "ready.json"] => TaskFile::RequestReady(id(request)?),
             ["requests", request, "result.json"] => TaskFile::RequestResult(id(request)?),
             ["status.json"] => TaskFile::Status,
+            ["executions", request, "claim.json"] => TaskFile::ExecutionClaim(id(request)?),
+            ["executions", request, "result.json"] => TaskFile::ExecutionResult(id(request)?),
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
@@ -374,6 +344,18 @@ impl FileKey {
             ["context", revision, "manifest.json"] => TaskFile::Context(id(revision)?),
             _ => return Err(Error::InvalidPath),
         };
+        if session {
+            if !matches!(
+                file,
+                TaskFile::Request(_) | TaskFile::ExecutionClaim(_) | TaskFile::ExecutionResult(_)
+            ) {
+                return Err(Error::InvalidPath);
+            }
+            return Ok(Self::Session {
+                session: id(task)?,
+                file,
+            });
+        }
         Ok(Self::Task {
             task: id(task)?,
             file,
@@ -383,6 +365,10 @@ impl FileKey {
     /// Materializes a path only at a filesystem or wire boundary.
     pub fn path(&self) -> String {
         match self {
+            Self::Session { session, file } => {
+                format!(".sessions/{}/{}", session.as_str(), file.path())
+            }
+            Self::Ui { directory, name } => format!(".ui/{}/{}", directory.as_str(), name.as_str()),
             Self::RequestHead => "inputs/current.json".into(),
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
@@ -399,6 +385,11 @@ impl FileKey {
     pub fn owner(&self) -> Owner {
         match self {
             Self::Input(path) if path.0.starts_with("config/") => Owner::Caller,
+            Self::Ui { .. } => Owner::Caller,
+            Self::Session {
+                file: TaskFile::Request(_),
+                ..
+            } => Owner::Caller,
             Self::Child {
                 file: ChildFile::Status,
                 ..
@@ -419,7 +410,8 @@ impl FileKey {
     pub(crate) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::RequestHead
+            Self::Ui { .. }
+                | Self::RequestHead
                 | Self::Goal
                 | Self::Child {
                     file: ChildFile::Control,
@@ -438,6 +430,10 @@ impl FileKey {
         )
     }
 }
+
+#[path = "query.rs"]
+mod query;
+pub use query::Query;
 
 /// Assistant channel; tools derive their channel from their logical key.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]

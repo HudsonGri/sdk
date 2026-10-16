@@ -206,12 +206,16 @@ fn competing_appends(
     broken: bool,
 ) -> (bool, bool) {
     let (left_request, left_file, left_next) = loom::future::block_on(Box::pin(
-        first.inner.prepare_append(cut, left, Vec::new(), None),
+        first
+            .inner
+            .prepare_append(cut, left, Vec::new(), false, None),
     ))
     .unwrap()
     .unwrap();
     let (mut right_request, right_file, right_next) = loom::future::block_on(Box::pin(
-        second.inner.prepare_append(cut, right, Vec::new(), None),
+        second
+            .inner
+            .prepare_append(cut, right, Vec::new(), false, None),
     ))
     .unwrap()
     .unwrap();

@@ -36,6 +36,7 @@ pub(super) async fn open(
     let child_definition = child.definition()?;
     let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
     let mut grants = vec![
+        "task:spawn:acyclic.direct_tool@1".to_owned(),
         "model:generate".to_owned(),
         "operation:declare".to_owned(),
         "conversation:bind".to_owned(),
@@ -124,6 +125,7 @@ pub(super) async fn open(
     tasks.register(child_definition)?;
     tasks.register(fork)?;
     let mut machines = MachineRegistry::default();
+    LocalHarness::register_commands(&mut tasks, &mut machines)?;
     machines.register(stock, &mut None)?;
     machines.register(child, &mut None)?;
     machines.register(preparation, &mut None)?;
@@ -153,7 +155,13 @@ pub(super) async fn open(
     let runtime = match config.workspace {
         Some(workspace) => {
             let tools = Arc::new(
-                checkout_tools::CheckoutTools::new(workspace, config.project, config.clock).await?,
+                checkout_tools::CheckoutTools::new(
+                    workspace,
+                    config.project,
+                    config.clock,
+                    Arc::clone(&task_files),
+                )
+                .await?,
             );
             let publisher = checkout_tools::publisher::CheckoutPublisher::new(
                 tools.clone(),

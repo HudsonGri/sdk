@@ -106,7 +106,7 @@ impl CheckoutTools {
             crate::tools::git::Workspace {
                 filesystem: &self.workspace.filesystem,
                 store: &self.workspace.store,
-                view: &view,
+                view: crate::tools::git::View::Checkout(&view),
                 root: &self.workspace.path,
                 repository: project.id(),
                 lease: None,
