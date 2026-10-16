@@ -49,7 +49,7 @@ fn compiler_admits_storage_before_allocation_and_honors_work()
     let mut result = None;
     let mut remaining = 100_000;
     let mut calls = 0;
-    let allocation = allocation_counter::measure(|| {
+    let allocation = acyclic_test_support::measure(|| {
         result = Some(PathTrie::compile_with_work(
             &policy,
             &caller,
@@ -111,7 +111,7 @@ proptest! {
         let mut reserved = 0;
         let mut stages = 0;
         let mut compiled = None;
-        let measured = allocation_counter::measure(|| {
+        let measured = acyclic_test_support::measure(|| {
             compiled = Some(PathTrie::compile_with_work(&policy, &caller, resource, context, &capability,
                 &mut remaining, |bytes| {
                     stages += 1;
@@ -129,7 +129,7 @@ proptest! {
                 prop_assert_eq!(trie.decide(Action::Read, path, 10),
                     decide(&policy, &caller, Action::Read, Resource { path, ..resource }, context, &capability));
             }
-            let hot = allocation_counter::measure(|| {
+            let hot = acyclic_test_support::measure(|| {
                 for _ in 0..32 { std::hint::black_box(trie.decide(Action::Read, "secrets/key", 10)); }
             });
             prop_assert_eq!(hot.count_total, 0);
