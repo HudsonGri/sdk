@@ -18,12 +18,9 @@ use acyclic_harness::{
     scheduler::{ResourceRequest, SessionLimits},
     store::{HistoryIo, HistoryWork},
     tool::ToolRegistry,
-    workflow::{
-        MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
-        WorkflowCommand,
-    },
+    workflow::{MachineIdentity, MachineRegistry, WorkflowCommand},
 };
-use acyclic_stream::{MemoryStream, UnixMillisClock};
+use acyclic_stream::MemoryStream;
 
 #[derive(serde::Deserialize)]
 struct ImageCase {

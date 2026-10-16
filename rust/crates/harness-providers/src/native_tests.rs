@@ -27,6 +27,34 @@ impl Fixture {
             prefix: None,
         }
     }
+    fn assert_images(&self, body: &[u8]) {
+        {
+            let expected = self
+                .expected_images
+                .lock()
+                .expect("fixture image expectations");
+            let mut previous = None;
+            for (bytes, count) in expected.iter() {
+                assert_eq!(
+                    body.windows(bytes.len())
+                        .filter(|part| *part == bytes.as_slice())
+                        .count(),
+                    *count
+                );
+                if *count == 1 {
+                    let position = body
+                        .windows(bytes.len())
+                        .position(|part| part == bytes.as_slice())
+                        .expect("expected image part");
+                    assert!(
+                        previous.is_none_or(|previous| previous < position),
+                        "image parts changed source order"
+                    );
+                    previous = Some(position);
+                }
+            }
+        }
+    }
 }
 
 impl HttpTransport for Fixture {
@@ -43,6 +71,7 @@ impl HttpTransport for Fixture {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
+            self.assert_images(&request.body);
             if let Some(response) = fixture_count(&request) {
                 return HttpResponse::with_native_body(response.status, response.body, work);
             }
@@ -52,35 +81,6 @@ impl HttpTransport for Fixture {
                     || request.headers.contains_key("x-api-key")
                     || request.headers.contains_key("x-goog-api-key")
             );
-            {
-                let expected = self
-                    .expected_images
-                    .lock()
-                    .expect("fixture image expectations");
-                let mut previous = None;
-                for (bytes, count) in expected.iter() {
-                    assert_eq!(
-                        request
-                            .body
-                            .windows(bytes.len())
-                            .filter(|part| *part == bytes.as_slice())
-                            .count(),
-                        *count
-                    );
-                    if *count == 1 {
-                        let position = request
-                            .body
-                            .windows(bytes.len())
-                            .position(|part| part == bytes.as_slice())
-                            .expect("expected image part");
-                        assert!(
-                            previous.is_none_or(|previous| previous < position),
-                            "image parts changed source order"
-                        );
-                        previous = Some(position);
-                    }
-                }
-            }
             drop(request);
             if let Some(cancel) = &self.cancel {
                 if self.pending_body {
@@ -286,6 +286,7 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
     provider.transport = Arc::new(Fixture {
         response: Bytes::new(),
         sent: AtomicUsize::new(0),
+        expected_images: Mutex::new(Vec::new()),
         cancel: Some(cancel),
         pending_body: true,
         prefix: None,

@@ -16,6 +16,9 @@ use acyclic_harness::{
 use base64::Engine as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "image_catalog_tests.rs"]
+mod catalog;
+
 const PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4/x8AAwAB//wl3FEAAAAASUVORK5CYII=";
 
@@ -194,6 +197,15 @@ fn text(value: &str) -> ModelContentPart {
     ModelContentPart::Text { text: value.into() }
 }
 
+fn checked_body(adapter: Adapter, bytes: &[u8]) -> Result<serde_json::Value> {
+    let body = json(bytes)?;
+    assert!(
+        crate::validate_input(adapter, &body).is_empty(),
+        "{adapter:?} {body}"
+    );
+    Ok(body)
+}
+
 fn expected_image(adapter: Adapter) -> serde_json::Value {
     let fixtures = json(include_bytes!("fixtures/image-parts.json")).expect("image wire fixtures");
     let name = serde_json::to_value(adapter).expect("adapter");
@@ -210,62 +222,6 @@ fn message_parts<'a>(
         Adapter::Responses => &body["input"][index]["content"],
         Adapter::Gemini => &body["contents"][index]["parts"],
     }
-}
-
-#[test]
-fn image_catalog_bounds_are_declarative_and_reject_invalid_models() -> Result<()> {
-    let (_, transport) = provider(Adapter::Chat, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
-    let valid = json!({
-        "adapter":"chat", "authentication":"optional", "base_url":"http://localhost:1234/v1",
-        "models":{"vision":{"context_tokens":8192,"output_tokens":1024}},
-        "images":{"vision":{"maximum_bytes":4096,"maximum_total_bytes":8192,"maximum_images":4,"maximum_dimension":1024,"maximum_tokens":1024}},
-        "max_event_bytes":4096,
-    });
-    let spec: ProviderSpec = serde_json::from_value(valid.clone()).expect("catalog");
-    registry.register("vision".into(), spec)?;
-    assert!(
-        registry
-            .resolve("vision/vision")?
-            .config
-            .images
-            .contains_key("vision")
-    );
-    for (field, value) in [
-        ("maximum_bytes", 0),
-        ("maximum_bytes", 9007199254740992u64),
-        ("maximum_total_bytes", 4095),
-        ("maximum_total_bytes", 9007199254740992u64),
-        ("maximum_images", 0),
-        ("maximum_images", u32::MAX as u64),
-        ("maximum_dimension", 0),
-        ("maximum_tokens", 0),
-        ("maximum_tokens", 8193),
-    ] {
-        let mut bad = valid.clone();
-        bad["images"]["vision"][field] = json!(value);
-        assert!(
-            registry
-                .register(
-                    "bad".into(),
-                    serde_json::from_value(bad).expect("catalog shape")
-                )
-                .is_err(),
-            "{field}={value}"
-        );
-        assert!(!registry.catalog().contains_key("bad"));
-    }
-    let mut unknown = valid;
-    unknown["models"] = json!({});
-    assert!(
-        registry
-            .register(
-                "bad".into(),
-                serde_json::from_value(unknown).expect("catalog shape")
-            )
-            .is_err()
-    );
-    Ok(())
 }
 
 #[tokio::test]
@@ -317,7 +273,7 @@ async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> 
         assert_eq!(reads.calls.load(Ordering::SeqCst), 9);
         let sent = script.sent.lock().expect("capture");
         assert_eq!(sent.len(), 1);
-        let body = json(&sent[0].body)?;
+        let body = checked_body(adapter, &sent[0].body)?;
         let parts = message_parts(adapter, &body, 0).as_array().expect("parts");
         assert_eq!(parts.len(), 5, "{adapter:?}");
         for (index, value) in [(0, "before"), (2, "between"), (4, "after")] {
@@ -341,6 +297,7 @@ async fn image_tool_results_keep_each_provider_wire_shape() -> Result<()> {
         enable(&mut provider);
         let provider = provider.with_content_reader(reads);
         let messages = vec![
+            user(vec![text("take a screenshot")]),
             ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Parts(vec![ModelContentPart::ToolCall(
@@ -376,27 +333,27 @@ async fn image_tool_results_keep_each_provider_wire_shape() -> Result<()> {
             .try_collect::<Vec<_>>()
             .await?;
         let sent = script.sent.lock().expect("capture");
-        let body = json(&sent[0].body)?;
+        let body = checked_body(adapter, &sent[0].body)?;
         match adapter {
             Adapter::Chat => {
-                assert_eq!(body["messages"][1]["role"], "tool");
-                assert_eq!(body["messages"][1]["content"], "caption");
-                assert_eq!(body["messages"][2]["role"], "user");
-                assert_eq!(body["messages"][2]["content"][1], expected_image(adapter));
+                assert_eq!(body["messages"][2]["role"], "tool");
+                assert_eq!(body["messages"][2]["content"], "caption");
+                assert_eq!(body["messages"][3]["role"], "user");
+                assert_eq!(body["messages"][3]["content"][1], expected_image(adapter));
             }
             Adapter::Responses => {
-                assert_eq!(body["input"][1]["output"][1], expected_image(adapter))
+                assert_eq!(body["input"][2]["output"][1], expected_image(adapter))
             }
             Adapter::Anthropic => assert_eq!(
-                body["messages"][1]["content"][0]["content"][1],
+                body["messages"][2]["content"][0]["content"][1],
                 expected_image(adapter)
             ),
             Adapter::Gemini => {
                 assert_eq!(
-                    body["contents"][1]["parts"][0]["functionResponse"]["response"]["output"],
+                    body["contents"][2]["parts"][0]["functionResponse"]["response"]["output"],
                     "caption"
                 );
-                assert_eq!(body["contents"][1]["parts"][2], expected_image(adapter));
+                assert_eq!(body["contents"][2]["parts"][2], expected_image(adapter));
             }
         }
     }
@@ -440,7 +397,7 @@ async fn image_fallbacks_never_read_files() -> Result<()> {
                 .await?;
             assert_eq!(reads.calls.load(Ordering::SeqCst), 0, "{adapter:?} {case}");
             let sent = script.sent.lock().expect("capture");
-            let body = json(&sent[0].body)?;
+            let body = checked_body(adapter, &sent[0].body)?;
             assert!(body.to_string().contains("omitted"));
             assert!(!body.to_string().contains(PNG));
         }
@@ -481,7 +438,7 @@ async fn image_prompt_files_resolve_utf8_on_the_same_authorized_path() -> Result
                 }
                 Ok(text) => {
                     result?;
-                    let body = json(&sent[0].body)?;
+                    let body = checked_body(adapter, &sent[0].body)?;
                     let actual = match adapter {
                         Adapter::Chat => &body["messages"][0]["content"],
                         Adapter::Responses => &body["input"][0]["content"][0]["text"],
@@ -750,7 +707,7 @@ async fn image_attach_and_paste_survive_manifest_reopen_and_model_projection() -
             .try_collect::<Vec<_>>()
             .await?;
         let sent = script.sent.lock().expect("capture");
-        let body = json(&sent[0].body)?;
+        let body = checked_body(adapter, &sent[0].body)?;
         let parts = message_parts(adapter, &body, 0).as_array().expect("parts");
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0]["text"], "describe both images");
