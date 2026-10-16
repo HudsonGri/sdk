@@ -21,6 +21,7 @@ impl ContentResidencyVerifier for TaskContext {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
@@ -31,7 +32,14 @@ impl ContentResidencyVerifier for TaskContext {
                     "content exceeds the callback byte bound",
                 ));
             }
-            self.read_file(reference, io).await
+            self.read_bound_file(
+                self.content_binding(Some(reference.volume())),
+                reference,
+                &self.scope,
+                ceiling,
+                io,
+            )
+            .await
         })
     }
 }
