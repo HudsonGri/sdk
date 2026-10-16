@@ -84,6 +84,13 @@ pub(super) async fn run(value: Value) -> TestResult {
     if case.models.keys().ne(case.expect.requests.keys()) {
         return Err("every scripted model needs an exact request count".into());
     }
+    for (name, turns) in &case.models {
+        if turns.len() != case.expect.requests[name] {
+            return Err(
+                format!("model {name}: script must contain exactly the expected work").into(),
+            );
+        }
+    }
     let provider = Arc::new(Models(
         case.models
             .into_iter()
