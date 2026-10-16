@@ -12,6 +12,8 @@ mod glob;
 mod mount;
 mod names;
 mod view;
+#[cfg(test)]
+pub(crate) mod fixtures;
 pub use view::AccessView;
 mod trie;
 
@@ -27,6 +29,9 @@ pub use trie::{PathTrie, PinnedPath, PreparedPath};
 
 /// Current policy encoding, stored in volume metadata rather than user files.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;
+
+/// Explicit creation policy; never substituted for a missing stored record.
+pub const INITIAL_POLICY: &[u8] = include_bytes!("initial.json");
 
 /// Versioned policy record in the root directory's authenticated metadata.
 pub const POLICY_METADATA_KEY: &[u8] = b"security.acyclic.access.v1";

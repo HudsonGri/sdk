@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 
 /// Explicit initial policy: signed capabilities supply the authority ceiling.
 /// Reads never synthesize this record when it is missing from an existing volume.
-pub const INITIAL_POLICY: &[u8] = include_bytes!("access/initial.json");
+pub use acyclic_fs::access::INITIAL_POLICY;
 const LEGACY_READ: &[u8] = include_bytes!("access/legacy-read.json");
 const LEGACY_WRITE: &[u8] = include_bytes!("access/legacy-write.json");
 

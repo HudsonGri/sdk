@@ -30,6 +30,9 @@ const WORKSPACE_ID_DOMAIN: &[u8] = b"acyclic-fs-workspace-id-v1\0";
 const MAXIMUM_WORKSPACE_NAME_BYTES: usize = 255;
 
 mod checkout;
+mod access;
+#[cfg(all(test, feature = "memory"))]
+mod access_tests;
 mod commit;
 mod content;
 mod diff;

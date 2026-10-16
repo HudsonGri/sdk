@@ -104,6 +104,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 },
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
+                access: None,
             };
             self.initial_generation(
                 workspace,
@@ -188,6 +189,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 },
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
+                access: None,
             };
             self.initial_generation(
                 workspace,
@@ -236,6 +238,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 volume,
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
+                access: None,
             })
         }
         .await;
@@ -270,6 +273,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 volume,
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
+                access: None,
             })
         })
         .await;

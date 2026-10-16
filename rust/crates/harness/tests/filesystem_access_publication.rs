@@ -9,7 +9,7 @@ proptest! {
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
             let fixture = Fixture::new().await?;
-            let mut policy: Policy = serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+            let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
             policy.version = 2;
             if denied {
                 let mut deny = policy.layers[0][0].clone();
@@ -131,7 +131,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
     let baseline = work.live_allocation_bytes();
     for denied in [false, true] {
         let mut policy: Policy =
-            serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+            serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
         policy.version = if denied { 3 } else { 2 };
         if denied {
             let mut deny = policy.layers[0][0].clone();

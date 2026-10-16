@@ -181,7 +181,7 @@ impl Fixture {
 
     async fn policy(&self, deny: bool, version: u64) -> Result<(), Box<dyn Error>> {
         let mut policy: Policy =
-            serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+            serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
         policy.version = version;
         if deny {
             let mut rule = policy.layers[0][0].clone();
@@ -395,7 +395,7 @@ async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<()
     for explicit_deny in [false, true] {
         let scope = if explicit_deny {
             let mut policy: Policy =
-                serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+                serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
             policy.version = 2;
             let mut deny = policy.layers[0][0].clone();
             deny.id = "no-reference-disclosure".into();
@@ -644,7 +644,7 @@ proptest! {
             acyclic_harness::filesystem::check_access_record(legacy)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
-        let mut policy: Policy = serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+        let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
         policy.layers[0][0].resource.path = path;
         policy.layers[0][0].conditions.expires_at = expiry;
         acyclic_harness::filesystem::check_access_record(&serde_json::to_vec(&policy)?)
@@ -693,7 +693,7 @@ async fn unsupported_authenticated_facts_never_remove_a_principal_dependent_deny
         context::content_context(reader, None, fixture.scope.capabilities().clone()).await?;
     for selector in 0..6 {
         let mut policy: Policy =
-            serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+            serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
         policy.version = 2 + selector;
         let mut deny = policy.layers[0][0].clone();
         deny.id = "principal-dependent-deny".into();

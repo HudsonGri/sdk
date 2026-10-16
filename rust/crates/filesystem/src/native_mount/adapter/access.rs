@@ -204,9 +204,14 @@ where
                 .access_view
                 .as_ref()
                 .ok_or(MountSourceError::AccessDenied)?;
-            let view = published
-                .current()
-                .map_err(|_| MountSourceError::AccessDenied)?;
+            // An authenticated refresh owner must observe policy publication
+            // even when the previous revision denied the request. Bindings
+            // without an owner can only change through explicit publication.
+            let view = if self.access_refresh.is_some() {
+                self.access_snapshot(work).await?
+            } else {
+                published.current().map_err(|_| MountSourceError::AccessDenied)?
+            };
             let now = access_time()?;
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
@@ -218,9 +223,13 @@ where
                     .map_err(|_| MountSourceError::AccessDenied)?;
                 require(&permissions, *action, now)?;
             }
-            // Published denials need no backend or host probe. Potentially
-            // allowing requests must still fence against persisted revocation.
-            let current = self.access_snapshot(work).await?;
+            // Explicitly published denials need no host probe. Potentially
+            // allowing requests still fence against persisted revocation.
+            let current = if self.access_refresh.is_some() {
+                Arc::clone(&view)
+            } else {
+                self.access_snapshot(work).await?
+            };
             if !Arc::ptr_eq(&current, &view) {
                 let now = access_time()?;
                 for (action, path) in requests {

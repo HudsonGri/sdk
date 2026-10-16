@@ -26,7 +26,7 @@ fn resource() -> Resource<'static> {
 
 fn input(pattern: &str) -> Result<(Policy, Capability), serde_json::Error> {
     let mut policy: Policy =
-        serde_json::from_slice(include_bytes!("../src/filesystem/access/initial.json"))?;
+        serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
     let mut deny = policy.layers[0][0].clone();
     deny.id = "deny".into();
     deny.effect = Effect::Deny;

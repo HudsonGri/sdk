@@ -292,7 +292,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 "workspace name and identity disagree",
             ));
         }
-        Ok(workspace)
+        workspace.bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
+            .await.map_err(|error| status(&error))
     }
 
     async fn source_scope(
@@ -508,16 +509,17 @@ where
         config.profile = profile;
         let workspace = self
             .filesystem
-            .create_workspace_with_config_operation(
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
                 request.name,
-                config,
-                Some(operation_id),
+                crate::VolumeInitialization { config, access_policy: Some(crate::access::INITIAL_POLICY) },
+                operation_id,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
+                None,
             )
             .await
             .map_err(|failure| status(&failure.error))?
-            .value;
+            .value.workspace();
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -538,7 +540,8 @@ where
                     .open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                     .map_err(|failure| status(&failure.error))?
-                    .value
+                    .value.bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
+                    .await.map_err(|error| status(&error))?
             }
         };
         Ok(Response::new(wire::WorkspaceResponse {
@@ -2714,6 +2717,7 @@ fn required<T>(value: Option<T>, name: &'static str) -> Result<T, Status> {
 
 fn status(error: &WorkspaceError) -> Status {
     match error {
+        WorkspaceError::AccessDenied => Status::permission_denied(error.to_string()),
         WorkspaceError::NotFound => Status::not_found(error.to_string()),
         WorkspaceError::Name(_)
         | WorkspaceError::Path(_)
@@ -2753,6 +2757,8 @@ fn status(error: &WorkspaceError) -> Status {
 mod tests {
     use super::*;
     use crate::wire::filesystem::v2::filesystem_service_server::FilesystemService as _;
+
+    include!("wire_service/access_tests.rs");
 
     struct TestIssuer;
 

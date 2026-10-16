@@ -23,6 +23,9 @@ pub enum WorkspaceNameError {
 /// Customer workspace operation failure.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum WorkspaceError {
+    /// Policy is absent, restrictive, stale, or requires unavailable claims.
+    #[error("filesystem policy denies this adapter")]
+    AccessDenied,
     /// Friendly name was invalid.
     #[error(transparent)]
     Name(#[from] WorkspaceNameError),
