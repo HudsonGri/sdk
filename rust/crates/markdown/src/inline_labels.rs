@@ -197,7 +197,6 @@ impl Cache {
         let mut token_index = tokens.after(begin)?;
         let mut position = begin;
         let mut atom_index = 0;
-        let mut depth = 1usize;
         let mut state = State::default();
         let end = loop {
             #[cfg(test)]
@@ -242,11 +241,8 @@ impl Cache {
                 atom_index += 1;
                 continue;
             }
-            match token.kind {
-                Kind::Close if depth == 1 => break start,
-                Kind::Close => depth -= 1,
-                Kind::Open { .. } => depth += 1,
-                _ => {}
+            if token.kind == Kind::Close && state.outside_brackets() {
+                break start;
             }
             match token.kind {
                 Kind::Escape('\n') if !breaks.contains(&token.range.end) => {

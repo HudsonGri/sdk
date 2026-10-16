@@ -78,7 +78,7 @@ impl Projections {
             let physical = token.range.start + usize::from(escaped)..token.range.end;
             #[cfg(test)]
             crate::work::scan(1);
-            if let Some(code) = state.codes.get(physical.len()) {
+            if let Some(code) = state.preview_code(token) {
                 let (root, opening) = (code.before.forest, code.opening.clone());
                 state.invalid |= !state.forest.restore(root);
                 state.forest.code(opening, physical);

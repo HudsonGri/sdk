@@ -9,9 +9,9 @@ impl State {
         }
         self.forest.atom(scope.range.clone(), output);
         self.labels = if scope.label && self.bracket == 0 {
-            [Some(scope.range.clone()), None]
+            [self.remember_closed(scope.range.clone(), false, 0), 0]
         } else {
-            [None, None]
+            [0, 0]
         };
         if scope.open_code {
             self.opaque = Some(frontier);
