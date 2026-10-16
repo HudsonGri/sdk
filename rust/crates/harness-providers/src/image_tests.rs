@@ -225,6 +225,39 @@ fn message_parts<'a>(
 }
 
 #[tokio::test]
+async fn image_planning_excludes_file_identity_metadata() -> Result<()> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .expect("PNG");
+    let (file, reads, _) = file(&bytes, "image/png", false, None).await?;
+    let mut renamed = serde_json::to_value(&file).expect("file");
+    renamed["display_name"] = json!("a much longer display name for the same image.png");
+    let renamed: FileRef = serde_json::from_value(renamed).expect("renamed image");
+    for (adapter, _) in fixtures() {
+        let (mut provider, _) = provider(adapter, 200);
+        enable(&mut provider);
+        let (first, _) = prepare(&provider, vec![user(vec![image(&file)])])?;
+        let (second, _) = prepare(&provider, vec![user(vec![image(&renamed)])])?;
+        assert_ne!(first.request_digest(), second.request_digest());
+        assert_ne!(
+            first.bytes().len(),
+            second.bytes().len(),
+            "canonical-byte negative control"
+        );
+        let first = crate::projection::plan(&provider, &first, 1234)?;
+        let second = crate::projection::plan(&provider, &second, 1234)?;
+        assert_eq!(first.message_tokens, second.message_tokens);
+        assert_eq!(first.fixed_tokens, second.fixed_tokens);
+        assert_eq!(
+            first.input_tokens, 1234,
+            "verified admission count stays authoritative"
+        );
+    }
+    assert_eq!(reads.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> Result<()> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(PNG)

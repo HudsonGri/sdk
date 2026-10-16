@@ -136,6 +136,17 @@ pub(crate) fn tokens(provider: &ResolvedModel, message: &ModelMessage) -> Result
     })
 }
 
+pub(crate) fn reference_bytes(provider: &ResolvedModel, message: &ModelMessage) -> Result<usize> {
+    files(message).try_fold(0usize, |total, (file, policy)| {
+        if support(provider, file, policy)?.is_none() {
+            return Ok(total);
+        }
+        total
+            .checked_add(crate::projection::encoded_len(file)?)
+            .ok_or_else(|| invalid("image reference size overflows"))
+    })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn admit(
     provider: &ResolvedModel,
