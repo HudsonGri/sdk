@@ -1,6 +1,13 @@
 #![no_main]
 use acyclic_harness::task_volume::{ChildRequest, ChildStatus, Control, FileKey, FileValue, Query};
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    if let Ok(event) = serde_json::from_slice::<acyclic_harness::executor::ExecutionEvent>(bytes) {
+        let encoded = serde_json::to_vec(&event).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::executor::ExecutionEvent>(&encoded).unwrap(),
+            event
+        );
+    }
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
         use acyclic_harness::workflow::{MachineStatus, ResumableMachine};
         let machine = acyclic_harness::filesystem::ChildAgentMachine::new();

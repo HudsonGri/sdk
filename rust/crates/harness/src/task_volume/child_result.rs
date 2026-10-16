@@ -46,6 +46,42 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
         #[test]
+        fn terminal_intent_allows_draining_results_until_the_settled_acknowledgement(
+            task in any::<[u8;16]>(), archive in any::<bool>(),
+        ) {
+            use crate::task_volume::{ChildFile, ChildState, ChildStatus, Component, Control, FileKey, FileValue};
+            use super::super::{Index, apply, validate_file};
+            let mut index = Index::default();
+            let reference = Component::new("worker").unwrap();
+            let key = |file| FileKey::Child { reference: reference.clone(), file };
+            let status = ChildStatus { task: TaskId::from_bytes(task), state: ChildState::Running, settled: false, inputs: 2 };
+            let started = FileValue::new(key(ChildFile::Status), serde_json::to_vec(&status).unwrap());
+            apply(&mut index, started, 1);
+            let control = if archive { Control::Archive } else { Control::Cancel };
+            let intent = FileValue::new(key(ChildFile::Control), control.bytes().to_vec());
+            prop_assert!(validate_file(&index, &intent).is_ok());
+            apply(&mut index, intent.clone(), 2);
+            prop_assert!(validate_file(&index, &intent).is_ok());
+            let result = ChildTurnResult { task: status.task, turn: 1, outcome: Outcome::Cancelled };
+            let drained = FileValue::new(key(ChildFile::Result(1)), serde_json::to_vec(&result).unwrap());
+            prop_assert!(validate_file(&index, &drained).is_ok());
+            apply(&mut index, drained, 3);
+            let inbox = FileValue::new(key(ChildFile::Inbox(Component::new("late").unwrap())), b"late".to_vec());
+            prop_assert!(validate_file(&index, &inbox).is_err());
+            let resume = FileValue::new(key(ChildFile::Control), Control::Resume.bytes().to_vec());
+            prop_assert!(validate_file(&index, &resume).is_err());
+            let settled = FileValue::new(key(ChildFile::Status), serde_json::to_vec(&ChildStatus {
+                state: ChildState::Running.apply(control), settled: true, ..status
+            }).unwrap());
+            prop_assert!(validate_file(&index, &settled).is_ok());
+            apply(&mut index, settled.clone(), 4);
+            prop_assert!(validate_file(&index, &settled).is_ok());
+            let late = ChildTurnResult { turn: 2, ..result };
+            let late = FileValue::new(key(ChildFile::Result(2)), serde_json::to_vec(&late).unwrap());
+            prop_assert!(validate_file(&index, &late).is_err());
+        }
+
+        #[test]
         fn publication_is_gapless_immutable_and_bound_to_the_admitted_task(
             task in any::<[u8;16]>(), text in ".{0,128}", turns in 1u64..9,
         ) {

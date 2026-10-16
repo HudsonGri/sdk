@@ -4,6 +4,8 @@ use crate::{executor::TurnOutput, runtime::TaskSpawner, scheduler::LeaseFence};
 #[cfg(feature = "native-execution")]
 mod admission;
 #[cfg(feature = "native-execution")]
+mod commands;
+#[cfg(feature = "native-execution")]
 mod controller;
 #[cfg(feature = "native-execution")]
 mod lazy;

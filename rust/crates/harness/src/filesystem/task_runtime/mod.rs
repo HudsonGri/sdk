@@ -42,6 +42,11 @@ mod tests;
 
 /// Trusted command adapter.
 pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
+    /// Cancellation of this invocation, independent of its retained task lease.
+    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        None
+    }
+
     /// Executes or reconciles a retained command under the exact task lease.
     fn execute<'a>(
         &'a self,
@@ -324,6 +329,10 @@ impl TaskContext {
 }
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
+    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.owner.invocation_cancellation()
+    }
+
     fn task_id(&self) -> TaskId {
         self.owner.task_id()
     }
@@ -530,11 +539,24 @@ where
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
+        self.task_context_with_cancellation(task, fence, None).await
+    }
+
+    pub(crate) async fn task_context_with_cancellation(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        cancellation: Option<&acyclic_fs::CancellationToken>,
+    ) -> Result<TaskContext> {
         let (owner, scope) = self
             .host
             .ordinary_journal_owner_with_scope(task, &fence)
             .await?;
         let scope = scope.with_replayed_extensions(owner.admission().extensions.clone())?;
+        let owner = match cancellation {
+            Some(cancellation) => owner.with_invocation_cancellation(cancellation),
+            None => owner,
+        };
         let owner = Arc::new(owner);
         let context = self
             .harness

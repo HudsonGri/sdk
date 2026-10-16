@@ -237,7 +237,9 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         match result {
-            Ok(()) | Err(Error::Indeterminate(_)) => {}
+            Ok(())
+            | Err(Error::Indeterminate(_))
+            | Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {}
             Err(error) => return Err(error),
         }
         if journal.is_quiescent(io).await? {

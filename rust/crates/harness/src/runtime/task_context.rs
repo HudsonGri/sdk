@@ -4,6 +4,11 @@ use super::*;
 /// One admitted task's mailbox borrowed from its current owner token.
 pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     fn task_id(&self) -> TaskId;
+    #[cfg(feature = "filesystem")]
+    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        None
+    }
+
     fn validate_scope(
         &self,
         scope: &RuntimeScope,
@@ -67,6 +72,12 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.owned_mailbox
+            .as_ref()
+            .and_then(|owner| owner.invocation_cancellation())
+    }
     #[cfg(feature = "filesystem")]
     pub(crate) fn bind_ordinary_created_owner<P: acyclic_stream::StreamProvider + 'static>(
         &mut self,

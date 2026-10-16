@@ -585,7 +585,21 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
                 }
             }
         } else if terminal && control != Some(file) {
-            return Err(Error::ImmutableConflict(control_key));
+            let draining_result = matches!(child_file, ChildFile::Result(_))
+                && index
+                    .files
+                    .get(&FileKey::Child {
+                        reference: reference.clone(),
+                        file: ChildFile::Status,
+                    })
+                    .is_some_and(|stored| {
+                        ChildStatus::parse(&stored.file.bytes).is_ok_and(|status| {
+                            !matches!(status.state, ChildState::Cancelled | ChildState::Archived)
+                        })
+                    });
+            if !draining_result {
+                return Err(Error::ImmutableConflict(control_key));
+            }
         }
         if matches!(child_file, ChildFile::Control) {
             Control::parse(&file.bytes)?;

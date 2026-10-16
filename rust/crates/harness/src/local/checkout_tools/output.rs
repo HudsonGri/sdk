@@ -50,6 +50,7 @@ impl Output {
     }
 
     async fn publish(&mut self, file: ToolFile, bytes: OwnedBytes) -> Result<()> {
+        let settlement = matches!(file, ToolFile::Result);
         let write = Write::new(
             FileKey::Task {
                 task: self.task.clone(),
@@ -68,9 +69,23 @@ impl Output {
             &write,
             || async move {
                 let condition = owner
-                    .condition(crate::distributed::JournalWrite::Fresh, &mut None)
+                    .condition(
+                        if settlement {
+                            crate::distributed::JournalWrite::Settlement
+                        } else {
+                            crate::distributed::JournalWrite::Fresh
+                        },
+                        &mut None,
+                    )
                     .await?;
-                Ok::<_, crate::Error>((vec![condition], owner.deadline_epoch_ms()))
+                Ok::<_, crate::Error>((
+                    vec![condition],
+                    if settlement {
+                        None
+                    } else {
+                        owner.deadline_epoch_ms()
+                    },
+                ))
             },
         )
         .await?;

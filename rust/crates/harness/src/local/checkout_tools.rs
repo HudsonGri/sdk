@@ -265,7 +265,10 @@ impl ToolExecutor for CheckoutTools {
                         invocation.operation_id,
                         0,
                         PublicationPermit::Unrestricted,
-                        Some(Arc::clone(owner)),
+                        Some((
+                            context.task().ordinary_journal_owner::<LocalStream>()?,
+                            false,
+                        )),
                     )
                     .await?;
                     let input =
@@ -275,6 +278,16 @@ impl ToolExecutor for CheckoutTools {
                             .await?;
                     let (result, mut state, mut files) =
                         self.bash(input, maximum, state, files).await?;
+                    if !result.as_ref().is_ok_and(|result| {
+                        result
+                            .value
+                            .get("stop")
+                            .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
+                    }) {
+                        return Err(Error::Indeterminate(invocation.operation_id));
+                    }
+                    let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
+                    publication.verify(true, &mut None).await?;
                     workspace::volumes::sync(&state.mounts).await?;
                     let State {
                         active, watcher, ..
@@ -286,10 +299,10 @@ impl ToolExecutor for CheckoutTools {
                         invocation.operation_id,
                         1,
                         PublicationPermit::Unrestricted,
-                        Some(Arc::clone(owner)),
+                        Some((Arc::clone(&publication), true)),
                     )
                     .await?;
-                    owner.verify_owner(None)?.await?;
+                    publication.verify(true, &mut None).await?;
                     if let Ok(result) = &result {
                         files.finish(result).await?;
                     }

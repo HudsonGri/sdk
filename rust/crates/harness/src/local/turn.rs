@@ -303,6 +303,20 @@ impl LocalHarness {
         task: TaskId,
         commands: &dyn crate::filesystem::TaskCommandHost,
     ) -> Result<()> {
+        self.advance_while(task, commands, || async { Ok(true) })
+            .await
+    }
+
+    pub(super) async fn advance_while<F, Fut>(
+        &self,
+        task: TaskId,
+        commands: &dyn crate::filesystem::TaskCommandHost,
+        continue_work: F,
+    ) -> Result<()>
+    where
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<bool>> + Send,
+    {
         let worker = crate::distributed::Worker {
             id: format!("local-{}", uuid::Uuid::new_v4()),
             available: Default::default(),
@@ -344,6 +358,9 @@ impl LocalHarness {
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
+                    if !continue_work().await? {
+                        break;
+                    }
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
                     attempt = self
@@ -397,7 +414,7 @@ impl LocalHarness {
         if !terminal {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
-            self.advance_with_children(task, &commands, self.task_files.clone())
+            self.advance_with_children(task, &commands, self.task_files.clone(), None)
                 .await?;
             #[cfg(not(feature = "native-execution"))]
             Box::pin(self.advance(task, &commands)).await?;
@@ -406,6 +423,9 @@ impl LocalHarness {
                 return Err(Error::Indeterminate(admission.operation_id));
             }
         } else {
+            #[cfg(feature = "native-execution")]
+            self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
+                .await?;
             // Advance already refreshes projections; terminal recovery must repair them.
             self.refresh_command_task(task).await?;
         }
