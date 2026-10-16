@@ -154,11 +154,7 @@ pub(super) fn exactify_batch_key(
 }
 
 impl From<crate::WorkError> for LazyWorkspaceError {
-    #[track_caller]
     fn from(error: crate::WorkError) -> Self {
-        if matches!(error, crate::WorkError::Overflow) {
-            eprintln!("lazy work overflow at {}", std::panic::Location::caller());
-        }
         Self::Demand(DemandError::Work(error))
     }
 }
