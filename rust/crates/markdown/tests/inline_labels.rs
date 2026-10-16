@@ -37,9 +37,10 @@ proptest! {
                 "[x](v)", "![x](v)", "![a *b* ![c](v)](v)", "<https://x>", "<b>", "<!--x-->",
             ]).prop_map(str::to_owned),
         ], 0..32),
+        destination in prop::sample::select(vec!["u", "<u>", "u\\)v", "a(b)c", "u \"title\"", "<u>\n'title'", "u&amp;v"]),
         splits in prop::collection::vec(any::<usize>(), 0..32),
     ) {
-        let source = format!("x *{}[{}](u)* z", if image { "!" } else { "" }, parts.concat());
+        let source = format!("x *{}[{}]({destination})* z", if image { "!" } else { "" }, parts.concat());
         let mut cuts: Vec<_> = splits.into_iter().map(|cut| cut % (source.len()+1)).collect();
         cuts.sort_unstable();
         replay(&source, &cuts);

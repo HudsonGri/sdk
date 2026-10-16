@@ -1,3 +1,5 @@
+#[path = "inline_destinations.rs"]
+mod destinations;
 use super::projection::Projection;
 use super::{Cache, Event, Range, References, Style, Tag};
 use crate::inline_scan::{
@@ -125,9 +127,19 @@ impl Cache {
     ) -> Option<usize> {
         let scope = scopes.get(index)?;
         let first = &events.get(scope.events.start)?.0;
-        let (dest_url, id, image) = match first {
-            Event::Start(Tag::Link { dest_url, id, .. }) => (dest_url, id, false),
-            Event::Start(Tag::Image { dest_url, id, .. }) => (dest_url, id, true),
+        let (dest_url, id, image, link_type) = match first {
+            Event::Start(Tag::Link {
+                dest_url,
+                id,
+                link_type,
+                ..
+            }) => (dest_url, id, false, link_type),
+            Event::Start(Tag::Image {
+                dest_url,
+                id,
+                link_type,
+                ..
+            }) => (dest_url, id, true, link_type),
             _ => return None,
         };
         let mut atoms = Vec::new();
@@ -261,12 +273,32 @@ impl Cache {
                 },
             )?
             .full;
-        let target = self.target(
-            &(scope.range.start..scope.range.end),
-            dest_url,
-            id,
-            references,
-        );
+        let target = if *link_type == pulldown_cmark::LinkType::Inline {
+            if let Some(target) = self.targets.get(&(scope.range.start, scope.range.end)) {
+                target.clone()
+            } else {
+                let raw = source.original.get(end + 1..scope.range.end)?;
+                let mut suffix = destinations::Suffix::default();
+                if suffix.push(raw)? != raw.len() {
+                    return None;
+                }
+                let target = suffix.target(raw)?;
+                #[cfg(test)]
+                crate::work::copy(
+                    std::mem::size_of::<((usize, usize), std::sync::Arc<str>)>()
+                        * (1 + if self.targets.len() == self.targets.capacity() {
+                            self.targets.len()
+                        } else {
+                            0
+                        }),
+                );
+                self.targets
+                    .insert((scope.range.start, scope.range.end), target.clone());
+                target
+            }
+        } else {
+            self.target(&scope.range, dest_url, id, references)
+        };
         Some(self.mask(
             output,
             Style {
