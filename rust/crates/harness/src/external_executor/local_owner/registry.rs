@@ -54,19 +54,24 @@ async fn close_after_workers<T, R>(
     };
     #[cfg(acyclic_harness_loom)]
     if model::early_close() {
-        for value in opened.entries.into_values() {
-            close(value).await?;
-        }
-        return Ok(());
+        let closed = finish_all(opened.entries.into_values(), close).await;
+        // Retain the deliberate ordering error, but join simulated workers
+        // before exposing it so their captures drop inside the Loom execution.
+        let drained = finish_all(opened.resources, join).await;
+        return closed.and(drained);
     }
+    let drained = finish_all(opened.resources, join).await;
+    let closed = finish_all(opened.entries.into_values(), close).await;
+    drained.and(closed)
+}
+
+async fn finish_all<T>(
+    items: impl IntoIterator<Item = T>,
+    finish: impl AsyncFn(T) -> Result<()>,
+) -> Result<()> {
     let mut failed = None;
-    for worker in opened.resources {
-        if let Err(error) = join(worker).await {
-            failed.get_or_insert(error);
-        }
-    }
-    for value in opened.entries.into_values() {
-        if let Err(error) = close(value).await {
+    for item in items {
+        if let Err(error) = finish(item).await {
             failed.get_or_insert(error);
         }
     }
