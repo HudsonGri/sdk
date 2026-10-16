@@ -169,15 +169,24 @@ async fn native_subagent_stop_completes_the_child_before_parent_continuation() -
             hook(cwd, host.name(), event, input).await?,
             json!({"Succeeded":null})
         );
-        hook(
+        let continued = hook(
             cwd,
             host.name(),
             if pi { "tool_call" } else { "PreToolUse" },
-            json!({"sessionId":session,"toolCallId":"continued",
-                "toolName":if pi {"write"} else {"mcp__acyclic__write"},
-                "input":{"path":format!("{}.txt",host.name()),"content":"parent continued"}}),
+            json!({"session_id":session,"tool_use_id":"continued",
+                "tool_name":if pi {"write"} else {"mcp__acyclic__write"},
+                "tool_input":{"path":format!("{}.txt",host.name()),"text":"parent continued",
+                    "media_type":"text/plain","display_name":"continued.txt"}}),
         )
         .await?;
+        if pi {
+            assert_eq!(continued["isError"], false, "{continued}");
+        } else {
+            assert_eq!(
+                continued["hookSpecificOutput"]["permissionDecision"], "allow",
+                "{continued}"
+            );
+        }
         assert_eq!(
             std::fs::read_to_string(cwd.join(format!("{}.txt", host.name())))?,
             "parent continued"
