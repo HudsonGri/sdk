@@ -8,6 +8,7 @@ mod limits_tests;
 mod local_admission;
 mod local_case;
 mod local_execution;
+mod local_streams;
 mod local_tests;
 mod local_workspace;
 mod matchers;

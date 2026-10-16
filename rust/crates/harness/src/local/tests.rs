@@ -22,7 +22,6 @@ mod context;
 mod goals;
 #[cfg(feature = "hooks")]
 mod hook_configuration;
-mod model_chunks;
 use std::{
     path::Path,
     sync::{Arc, Mutex},

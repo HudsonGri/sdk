@@ -1,0 +1,164 @@
+use super::TestResult;
+use acyclic_harness::{
+    LocalHarness,
+    task_volume::{Cursor, FileKey, FileValue, Observation, Query, TaskFile},
+};
+use futures::StreamExt as _;
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+pub(super) async fn check(
+    harness: &LocalHarness,
+    query: Query,
+    mut observation: Observation,
+    expected: &[Value],
+) -> TestResult<Cursor> {
+    let initial = observation
+        .snapshot
+        .take()
+        .ok_or("missing stream snapshot")?;
+    let mut position = initial.cursor.position;
+    let mut cursor = initial.cursor;
+    let cut = harness
+        .task_files()
+        .observe(query.clone(), None, 128)
+        .await?
+        .snapshot
+        .ok_or("missing settled stream snapshot")?
+        .cursor
+        .position;
+    let mut turns = BTreeMap::new();
+    let mut calls = BTreeMap::new();
+    let mut actual = Vec::new();
+    for file in initial.files {
+        if normalize(file, &mut turns, &mut calls)?.is_some() {
+            return Err("streaming started before the admission snapshot".into());
+        }
+    }
+    while position < cut {
+        let change = observation
+            .changes
+            .next()
+            .await
+            .ok_or("task file follow ended")??;
+        if change.cursor.position <= position || change.cursor.position > cut {
+            return Err("task file cursor reordered a publication".into());
+        }
+        position = change.cursor.position;
+        cursor = change.cursor.clone();
+        if let Some(file) = change.file
+            && let Some(file) = normalize(file, &mut turns, &mut calls)?
+        {
+            actual.push(file);
+        }
+        // Every delivery crosses a real disconnect/reconnect boundary. Resuming
+        // uses the consumed cursor, never a newly sampled publication head.
+        drop(observation);
+        observation = harness
+            .task_files()
+            .observe(query.clone(), Some(change.cursor), 128)
+            .await?;
+        if observation.reset || observation.snapshot.is_some() {
+            return Err("task stream cursor could not resume".into());
+        }
+    }
+    if actual != expected {
+        return Err(format!("task files differ: expected {expected:?}, got {actual:?}").into());
+    }
+    Ok(cursor)
+}
+
+pub(super) async fn no_replay(harness: &LocalHarness, query: Query, cursor: Cursor) -> TestResult {
+    let cut = harness
+        .task_files()
+        .observe(query.clone(), None, 128)
+        .await?
+        .snapshot
+        .ok_or("missing recovered stream snapshot")?
+        .cursor
+        .position;
+    let mut position = cursor.position;
+    let mut observation = harness
+        .task_files()
+        .observe(query, Some(cursor), 128)
+        .await?;
+    if observation.reset || observation.snapshot.is_some() {
+        return Err("cold reopen reset a valid stream cursor".into());
+    }
+    while position < cut {
+        let change = observation
+            .changes
+            .next()
+            .await
+            .ok_or("recovered task follow ended")??;
+        position = change.cursor.position;
+        if change.file.is_some_and(|file| {
+            matches!(
+                file.key,
+                FileKey::Task {
+                    file: TaskFile::TurnRequest(_)
+                        | TaskFile::Chunk { .. }
+                        | TaskFile::Tool { .. }
+                        | TaskFile::Completion(_),
+                    ..
+                }
+            )
+        }) {
+            return Err("completed task replayed a stream file".into());
+        }
+    }
+    Ok(())
+}
+
+fn normalize(
+    file: FileValue,
+    turns: &mut BTreeMap<u64, usize>,
+    calls: &mut BTreeMap<String, usize>,
+) -> TestResult<Option<Value>> {
+    let FileKey::Task { file: kind, .. } = &file.key else {
+        return Ok(None);
+    };
+    let turn = match kind {
+        TaskFile::TurnRequest(turn) => {
+            let next = turns.len();
+            let turn = *turns.entry(*turn).or_insert(next);
+            let header: Value = serde_json::from_slice(&file.bytes)?;
+            if !header["request"].is_object() {
+                return Err("model request lost its prepared file reference".into());
+            }
+            return Ok(Some(
+                json!({"path":format!("turns/{turn}/request.json"),"model":header["model"]}),
+            ));
+        }
+        TaskFile::Chunk { turn, .. } | TaskFile::Completion(turn) | TaskFile::Tool { turn, .. } => {
+            *turn
+        }
+        _ => return Ok(None),
+    };
+    let turn = turns
+        .get(&turn)
+        .ok_or("stream file preceded its model request")?;
+    let path = match kind {
+        TaskFile::Chunk { sequence, .. } => format!("turns/{turn}/chunks/{sequence}"),
+        TaskFile::Completion(_) => format!("turns/{turn}/completion.json"),
+        TaskFile::Tool { call, .. } => {
+            let next = calls.len();
+            let call = calls.entry(call.as_str().to_owned()).or_insert(next);
+            let suffix = file
+                .key
+                .path()
+                .split("/tools/")
+                .nth(1)
+                .ok_or("tool path")?
+                .split_once('/')
+                .ok_or("tool file path")?
+                .1
+                .to_owned();
+            format!("turns/{turn}/tools/{call}/{suffix}")
+        }
+        _ => unreachable!(),
+    };
+    Ok(Some(
+        json!({"path":path,"channel":file.channel,"text":std::str::from_utf8(&file.bytes)?}),
+    ))
+}

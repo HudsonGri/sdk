@@ -1,0 +1,64 @@
+{
+  "expect": {
+    "task_files": [
+      {
+        "path": "turns/0/request.json",
+        "model": {
+          "revision": "1",
+          "provider": "scripted",
+          "name": "local"
+        }
+      },
+      {
+        "path": "turns/0/chunks/0",
+        "text": "",
+        "channel": "Text"
+      },
+      {
+        "path": "turns/0/chunks/1",
+        "text": "λ",
+        "channel": "Text"
+      },
+      {
+        "path": "turns/0/chunks/2",
+        "text": "雪",
+        "channel": "Reasoning"
+      },
+      {
+        "path": "turns/0/chunks/3",
+        "text": "\n",
+        "channel": "Text"
+      }
+    ],
+    "text": "λ\n"
+  },
+  "turns": [
+    [
+      {
+        "type": "event",
+        "kind": "content",
+        "delta": ""
+      },
+      {
+        "type": "event",
+        "kind": "content",
+        "delta": "λ"
+      },
+      {
+        "type": "event",
+        "kind": "reasoning",
+        "delta": "雪"
+      },
+      {
+        "type": "event",
+        "kind": "content",
+        "delta": "\n"
+      },
+      {
+        "type": "event",
+        "kind": "completed",
+        "metadata": null
+      }
+    ]
+  ]
+}

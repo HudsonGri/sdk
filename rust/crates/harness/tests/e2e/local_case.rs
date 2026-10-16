@@ -23,6 +23,7 @@ pub(super) struct Expectations {
     pub files: BTreeMap<String, Option<String>>,
     pub diffs: Option<BTreeMap<String, Value>>,
     pub results: Option<BTreeMap<String, Value>>,
+    pub task_files: Option<Vec<Value>>,
 }
 
 impl LocalCase {

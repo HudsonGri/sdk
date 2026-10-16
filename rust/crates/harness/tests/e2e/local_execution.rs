@@ -79,10 +79,32 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let stream = local_task_stream(&harness);
     let (operation, task_id, status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
+    let task_query = Query::Task(acyclic_harness::task_volume::Component::new(
+        task_id.to_string(),
+    )?);
+    let task_files = if case.expect.task_files.is_some() {
+        Some(
+            harness
+                .task_files()
+                .observe(task_query.clone(), None, 128)
+                .await?,
+        )
+    } else {
+        None
+    };
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
     let output = harness.resume(task_id).await?;
+    let task_cursor =
+        if let (Some(expected), Some(observation)) = (&case.expect.task_files, task_files) {
+            Some(
+                super::local_streams::check(&harness, task_query.clone(), observation, expected)
+                    .await?,
+            )
+        } else {
+            None
+        };
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     if output.text != case.expect.text || provider.remaining() != 0 {
         return Err("local turn output or model script differs".into());
@@ -274,6 +296,28 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                 return Err(format!("persisted file differs: {path}: {actual:?}").into());
             }
         }
+    }
+    drop(cold);
+    if let Some(cursor) = task_cursor {
+        let recovered_provider = Arc::new(ScriptedModelProvider::new([]));
+        let recovered = LocalHarness::open(
+            local_harness_config(
+                &directory,
+                (
+                    Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?,
+                    recovered_provider.clone(),
+                ),
+            )?
+            .state_directory(&state)
+            .volume(volume.clone())
+            .compaction(CompactionPolicy::Disabled)
+            .goal_continuations(None),
+        )
+        .await?;
+        if recovered.resume(task_id).await? != output || !recovered_provider.requests().is_empty() {
+            return Err("completed task changed or dispatched a model after cold reopen".into());
+        }
+        super::local_streams::no_replay(&recovered, task_query, cursor).await?;
     }
     if ["bash", "fs", "read", "write", "edit"]
         .iter()
