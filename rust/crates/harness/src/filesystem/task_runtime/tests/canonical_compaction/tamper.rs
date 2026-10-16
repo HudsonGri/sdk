@@ -97,6 +97,7 @@ impl ContentResidencyVerifier for DescriptorFault {
         &'a self,
         file: &'a FileRef,
         maximum: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         self.inner.verify(file, maximum, io)
@@ -120,6 +121,6 @@ impl ContentResidencyVerifier for DescriptorFault {
         } else {
             corrupted
         };
-        self.inner.read(checked, maximum, io)
+        self.inner.read(checked, maximum, ceiling, io)
     }
 }
