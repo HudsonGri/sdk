@@ -149,9 +149,9 @@ fn cached_denial_observes_owner_policy_publication_before_host_probes()
         None,
     )?;
     let source = Arc::new_cyclic(|weak| {
-        source.with_access_refresh(Arc::new(Reload {
+        source.with_access_refresh(Some(Arc::new(Reload {
             source: weak.clone(),
-        }))
+        })))
     });
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let path = native_test_path("file");
