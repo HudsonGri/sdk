@@ -53,9 +53,6 @@ where
         request: &ExternalRequest,
     ) -> Result<ExternalRequest> {
         let completion = request.child_completion()?;
-        if !request.valid() {
-            return Err(Error::Unauthorized("invalid native child stop".into()));
-        }
         let parent = runtime.task_host().observe_admission(parent_task).await?;
         Self::authenticate(runtime, parent_task, &parent, request).await?;
         let child = runtime

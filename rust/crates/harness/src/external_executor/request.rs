@@ -27,7 +27,7 @@ pub(super) fn valid_text(text: &str) -> bool {
 
 impl ExternalRequest {
     pub(super) fn child_completion(&self) -> crate::Result<Self> {
-        if !matches!(self.action, ExternalAction::Join { .. }) {
+        if !self.valid() || !matches!(self.action, ExternalAction::Join { .. }) {
             return Err(crate::Error::Invalid(
                 "request is not a native child stop".into(),
             ));
