@@ -58,6 +58,22 @@ fn request_attribution_corpus_rejects_non_request_claims() {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn goal_file_publication_survives_segment_and_query_json(
+        publication in prop::option::of(any::<[u8; 16]>()), bytes in prop::collection::vec(any::<u8>(), 0..256),
+    ) {
+        let mut file = FileValue::new(FileKey::Goal, bytes);
+        file.publication = publication.map(crate::OperationId::from_bytes);
+        let (encoded, accepted) = encode(&file, None).unwrap();
+        prop_assert_eq!(&accepted, &file);
+        prop_assert_eq!(decode(&encoded).unwrap(), file.clone());
+        let json = serde_json::to_vec(&file).unwrap();
+        prop_assert_eq!(serde_json::from_slice::<FileValue>(&json).unwrap(), file);
+    }
+}
+
 #[tokio::test]
 async fn native_publication_funds_packing_and_retains_original_custody()
 -> std::result::Result<(), Box<dyn std::error::Error>> {

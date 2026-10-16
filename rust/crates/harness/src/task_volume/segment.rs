@@ -15,6 +15,8 @@ struct Entry {
     channel: Option<Channel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requester: Option<crate::TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication: Option<crate::OperationId>,
 }
 
 pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, FileValue)> {
@@ -22,6 +24,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
         key: write.key.clone(),
         channel: write.channel,
         requester: write.requester,
+        publication: write.publication,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let io = work
@@ -92,6 +95,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
         key: entry.key,
         channel: entry.channel,
         requester: entry.requester,
+        publication: entry.publication,
         bytes: bytes.slice(PREFIX + metadata.len()..),
     };
     Ok((bytes, file))
@@ -113,6 +117,7 @@ pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
         key: entry.key,
         channel: entry.channel,
         requester: entry.requester,
+        publication: entry.publication,
         bytes: bytes.slice(offset..),
     };
     file.validate()?;

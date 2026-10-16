@@ -112,10 +112,13 @@ impl From<StreamError> for Error {
 
 /// Exact publication fence. A scheduler must retain its own execution lease too.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Generation {
     /// Volume identity, including its provider path.
     pub volume: [u8; 32],
     /// Durable history incarnation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub epoch: Uuid,
     /// Next append-only segment position.
     pub position: u64,
@@ -132,6 +135,9 @@ pub struct FileValue {
     pub channel: Option<Channel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) requester: Option<crate::TaskId>,
+    /// Original filesystem write operation, when supplied by a file query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<crate::OperationId>,
     /// Zero-copy segment view, retaining original allocation custody.
     pub bytes: OwnedBytes,
 }
@@ -166,6 +172,7 @@ impl FileValue {
             key,
             channel: None,
             requester: None,
+            publication: None,
             bytes: bytes.into(),
         }
     }
