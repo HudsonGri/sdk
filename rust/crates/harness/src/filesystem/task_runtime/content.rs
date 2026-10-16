@@ -6,6 +6,39 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(crate) fn with_task_files(
+        mut self,
+        files: Arc<crate::task_volume::TaskFiles<P>>,
+    ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self._native_configuration_custody.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "task-file binding requires ordinary runtime construction",
+            });
+        }
+        if !files.inner.shares_provider(&self.stream) {
+            return Err(Error::Invalid(
+                "task files belong to another stream provider".into(),
+            ));
+        }
+        for operation in [
+            crate::conversation::VolumeOperation::Read,
+            crate::conversation::VolumeOperation::Write,
+        ] {
+            crate::conversation::ContentGrant::authorize_volume(
+                &self.verifier,
+                &self.signed,
+                files.volume(),
+                operation,
+                self.maximum_payload_bytes,
+                &mut None,
+            )?;
+        }
+        self.task_files = Some(files);
+        Ok(self)
+    }
+
     /// Binds root private files independently of the project's default output.
     pub fn with_private_volume(
         mut self,

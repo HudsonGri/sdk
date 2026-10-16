@@ -42,7 +42,7 @@ impl Output {
             task,
             call,
             sequence: (0, 0),
-            step: u64::from(context.model_step),
+            step: context.model_turn,
             runtime: tokio::runtime::Handle::current(),
         };
         output.publish(ToolFile::Request, request.into()).await?;
@@ -72,6 +72,7 @@ impl Output {
                     .await?;
                 Ok::<_, crate::Error>((vec![condition], owner.deadline_epoch_ms()))
             },
+            None,
         )
         .await?;
         Ok(())

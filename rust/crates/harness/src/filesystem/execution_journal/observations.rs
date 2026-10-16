@@ -368,6 +368,16 @@ where
                 return Ok(false);
             }
             summary.validate_next(event, model.as_ref(), limits, io)?;
+            if let ExecutionEvent::ModelStarted {
+                step,
+                purpose: crate::executor::ModelPurpose::Response,
+                request,
+                ..
+            } = event
+            {
+                self.publish_model_request(operation_id, *step, request, io)
+                    .await?;
+            }
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner

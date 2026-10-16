@@ -77,7 +77,8 @@ pub enum TaskFile {
         /// Assistant channel represented by this head.
         channel: Channel,
     },
-    /// Terminal turn outcome.
+    /// Terminal turn outcome. Seals the turn against new chunks and tool files;
+    /// identical retries of already published files remain idempotent.
     Completion(u64),
     /// Tool lifecycle file.
     Tool {

@@ -6,6 +6,7 @@ pub(crate) async fn publish<P, F, Fut, E>(
     mut generation: Generation,
     write: &Write,
     mut authorize: F,
+    work: NativeWork<'_>,
 ) -> std::result::Result<Generation, E>
 where
     P: StreamProvider + ?Sized,
@@ -16,7 +17,7 @@ where
     loop {
         let (conditions, deadline) = authorize().await?;
         match volume
-            .append_if(generation, write, conditions, deadline, None)
+            .append_if(generation, write, conditions, deadline, work)
             .await
         {
             Err(Error::Conflict(current)) => {
@@ -40,3 +41,11 @@ mod models;
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
+
+#[cfg(all(
+    test,
+    feature = "filesystem",
+    not(target_arch = "wasm32"),
+    not(acyclic_harness_loom)
+))]
+mod native_tests;

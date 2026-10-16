@@ -20,6 +20,31 @@ pub(super) fn validate_journal(
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Stages one model event in this journal's authoritative file namespace.
+    fn stage_model_event<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        turn: (u32, ModelPurpose, usize),
+        event: &'a ModelEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        let _ = turn;
+        crate::conversation::BoundedContentFuture::new(io, || {
+            super::model_files::stage_event_json(self, operation, key, event, io)
+        })
+    }
+
+    /// Resolves the admitted model turn's file namespace before running its tools.
+    fn model_file_turn<'a>(
+        &'a self,
+        _operation: OperationId,
+        step: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, u64>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move { Ok(u64::from(step)) })
+    }
+
     /// Authenticated canonical aggregate whose selections this journal publishes.
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
         None

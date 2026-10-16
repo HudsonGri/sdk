@@ -40,7 +40,9 @@ impl StockExecution<'_> {
         let mut context;
         (context, _capability) = self.authorize_tool_invocation(tool, &invocation)?;
         if let Some(context) = &mut context {
-            context.model_step = step;
+            context.model_turn = journal
+                .model_file_turn(operation_id, step, self.io)?
+                .await?;
         }
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)

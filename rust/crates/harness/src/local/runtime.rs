@@ -140,7 +140,8 @@ pub(super) async fn open(
     )
     .await?
     .with_output_volume(config.project, None)?
-    .with_private_volume(config.scratch, None)?;
+    .with_private_volume(config.scratch, None)?
+    .with_task_files(Arc::clone(&task_files))?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
         Some(workspace) => {

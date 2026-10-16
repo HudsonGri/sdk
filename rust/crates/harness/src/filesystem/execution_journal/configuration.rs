@@ -74,11 +74,7 @@ where
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
-    pub(crate) fn with_turn(
-        mut self,
-        operation: OperationId,
-        turn: OperationId,
-    ) -> Self {
+    pub(crate) fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
         self.execution = Some((operation, turn));
         self
     }
@@ -87,6 +83,11 @@ where
         self.execution
             .as_ref()
             .map_or(operation, |identity| identity.1)
+    }
+
+    pub(crate) fn with_task_files(mut self, files: Arc<crate::task_volume::TaskFiles<P>>) -> Self {
+        self.task_files = Some(files);
+        self
     }
 
     /// Admits the SDK Arc attempt while keeping metadata custody intrinsic.
@@ -238,6 +239,7 @@ where
             interactions,
             owner: None,
             execution: None,
+            task_files: None,
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,

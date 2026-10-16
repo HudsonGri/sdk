@@ -45,8 +45,12 @@ mod compaction;
 mod composition;
 mod content;
 mod dispatch;
+mod model_files;
 mod prefix;
 mod records;
+pub(crate) use model_files::{
+    REASONING_DELTA, TEXT_DELTA, decode_model_event, load_model_event, stage_event_json,
+};
 mod request;
 mod response;
 mod summary;
@@ -65,7 +69,7 @@ pub use checkpoint_selection::{canonical_checkpoint_for_operation, load_canonica
 mod checkpoint_projection;
 pub use checkpoint_projection::{load_canonical_checkpoint, load_canonical_checkpoint_through};
 mod payload;
-#[cfg(any(test, feature = "filesystem", feature = "wasm"))]
+#[cfg(any(test, feature = "wasm"))]
 pub(crate) use payload::decode_json;
 pub(crate) use payload::{load_json, load_model_request, preparation_digest, retain_preparation};
 mod admission;

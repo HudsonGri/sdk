@@ -63,6 +63,7 @@ impl LocalHarness {
             )
             .await?,
         );
+        let runtime = runtime.with_task_files(Arc::clone(&task_files))?;
         #[cfg(feature = "native-execution")]
         let workspace = if let Some(checkout) = checkout {
             let directory = owner::directory(&owner::state_directory(&config.project)?)?;

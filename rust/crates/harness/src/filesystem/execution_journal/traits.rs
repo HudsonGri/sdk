@@ -22,6 +22,64 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn stage_model_event<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        turn: (u32, crate::executor::ModelPurpose, usize),
+        event: &'a ModelEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.require_operation(operation, io)?;
+            if self.task_files.is_some()
+                && turn.1 == crate::executor::ModelPurpose::Response
+                && matches!(
+                    event,
+                    ModelEvent::Content { .. } | ModelEvent::Reasoning { .. }
+                )
+            {
+                self.stage_model_delta(operation, turn.0, turn.2, event, io)
+                    .await
+            } else {
+                crate::executor::stage_event_json(self, operation, key, event, io).await
+            }
+        })
+    }
+
+    fn model_file_turn<'a>(
+        &'a self,
+        operation: OperationId,
+        step: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, u64>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let Some(files) = &self.task_files else {
+                return Ok(u64::from(step));
+            };
+            self.require_operation(operation, io)?;
+            let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "model turn has no task owner",
+                )
+            })?;
+            let task = crate::task_volume::Component::new(owner.task_id().to_string())?;
+            files
+                .inner
+                .published_turn(&task, Self::model_publication(operation, step, io)?)
+                .await?
+                .ok_or_else(|| {
+                    canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Conflict,
+                        "model turn has no request file",
+                    )
+                })
+        })
+    }
+
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
         Some(self.verifier.audience())
     }

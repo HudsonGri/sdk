@@ -56,6 +56,10 @@ where
                 io: Some(&io),
             },
         )?;
+        let journal = match &self.task_files {
+            Some(files) => journal.with_task_files(Arc::clone(files)),
+            None => journal,
+        };
         let journal = match context {
             Some(context) => {
                 if !context.original_task_binding_matches(task, fence)
@@ -116,6 +120,10 @@ where
                 io: Some(&io),
             },
         )?;
+        let journal = match &self.task_files {
+            Some(files) => journal.with_task_files(Arc::clone(files)),
+            None => journal,
+        };
         Ok((journal.into_native_shared(work)?, operation))
     }
 
@@ -139,6 +147,10 @@ where
                 io: None,
             },
         )?;
+        let journal = match &self.task_files {
+            Some(files) => journal.with_task_files(Arc::clone(files)),
+            None => journal,
+        };
         if admission
             .grants
             .contains(crate::contract::capability::INTERACTION_ROUTE)

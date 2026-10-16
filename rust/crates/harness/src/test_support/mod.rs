@@ -8,6 +8,15 @@ pub use search::{ScriptedSearch, ScriptedSearchProvider};
 
 pub use scripted::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn};
 pub use task_volume_work::measure as measure_task_volume_work;
+
+/// Exercises the production model-file codec with verified immutable bytes.
+pub fn decode_model_event_file(
+    reference: &crate::conversation::FileRef,
+    bytes: &[u8],
+) -> crate::Result<crate::model::ModelEvent> {
+    reference.descriptor().verify(bytes, &mut None)?;
+    crate::executor::decode_model_event(reference, bytes, None).map(|value| value.0)
+}
 pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,
 };

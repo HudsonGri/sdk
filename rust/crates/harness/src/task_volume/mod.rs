@@ -14,6 +14,8 @@ mod recent;
 pub(crate) use publication::publish;
 mod refresh;
 mod schema;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod sealing_tests;
 mod segment;
 mod source;
 mod watermarks;
@@ -214,6 +216,7 @@ struct Index {
     view_order: BTreeMap<(Component, u8, u64), FileKey>,
     view_revisions: BTreeMap<FileKey, (u8, u64)>,
     overviews: BTreeMap<Component, FileKey>,
+    turn_publications: BTreeMap<(Component, crate::OperationId), u64>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -231,9 +234,23 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self.path
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
+    }
+
+    pub(crate) async fn published_turn(
+        &self,
+        task: &Component,
+        publication: crate::OperationId,
+    ) -> Result<Option<u64>> {
+        self.refresh().await?;
+        Ok(self
+            .index
+            .lock()
+            .await
+            .turn_publications
+            .get(&(task.clone(), publication))
+            .copied())
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -486,16 +503,44 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     file.validate()?;
-    if !file.key.mutable()
+    if let (
+        FileKey::Task {
+            task,
+            file: TaskFile::TurnRequest(turn),
+        },
+        Some(publication),
+    ) = (&file.key, file.publication)
         && index
-            .files
-            .get(&file.key)
-            .is_some_and(|old| &old.file != file)
+            .turn_publications
+            .get(&(task.clone(), publication))
+            .is_some_and(|previous| previous != turn)
     {
         return Err(Error::ImmutableConflict(file.key.clone()));
     }
-    if !index.files.contains_key(&file.key)
-        && let Some((first, last, sequence)) = file.key.sequence_range()
+    if let Some(old) = index.files.get(&file.key) {
+        return if !file.key.mutable() && &old.file != file {
+            Err(Error::ImmutableConflict(file.key.clone()))
+        } else {
+            Ok(())
+        };
+    }
+    if let FileKey::Task {
+        task,
+        file: location,
+    } = &file.key
+        && let TaskFile::TurnRequest(turn)
+        | TaskFile::Chunk { turn, .. }
+        | TaskFile::Tool { turn, .. } = location
+    {
+        let completion = FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::Completion(*turn),
+        };
+        if index.files.contains_key(&completion) {
+            return Err(Error::ImmutableConflict(completion));
+        }
+    }
+    if let Some((first, last, sequence)) = file.key.sequence_range()
         && index
             .files
             .range(first..=last)
@@ -509,6 +554,18 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {
+    if let (
+        FileKey::Task {
+            task,
+            file: TaskFile::TurnRequest(turn),
+        },
+        Some(publication),
+    ) = (&file.key, file.publication)
+    {
+        index
+            .turn_publications
+            .insert((task.clone(), publication), *turn);
+    }
     recent::record(index, &file, position);
     let owner = command_query::owner(&file.key);
     if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {

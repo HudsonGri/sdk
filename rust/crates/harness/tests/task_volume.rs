@@ -18,6 +18,9 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + 
 
 #[path = "task_volume/acceptance.rs"]
 mod acceptance;
+#[cfg(feature = "filesystem")]
+#[path = "task_volume/delta_work.rs"]
+mod delta_work;
 #[path = "task_volume/heads.rs"]
 mod heads;
 #[path = "task_volume/history_loss.rs"]
@@ -28,6 +31,8 @@ mod plan_name;
 mod properties;
 #[path = "task_volume/recovery.rs"]
 mod recovery;
+#[path = "task_volume/sealed.rs"]
+mod sealed;
 #[path = "task_volume/session.rs"]
 mod session;
 #[path = "task_volume/source.rs"]

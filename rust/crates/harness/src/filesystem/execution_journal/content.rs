@@ -158,6 +158,9 @@ where
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        if let Some(bytes) = self.load_task_delta(reference, io).await? {
+            return Ok(bytes);
+        }
         if reference.volume() != &self.volume {
             return Err(canonical_boundary(
                 io,
@@ -261,35 +264,9 @@ where
                     }
                 }
                 if matches!(event, ExecutionEvent::Model { .. }) {
-                    if reference.descriptor().media_type() != "application/json" {
-                        return Err(canonical_boundary(
-                            io,
-                            crate::wire::ErrorCode::Storage,
-                            "model observation is not JSON",
-                        ));
-                    }
-                    model = Some(match io {
-                        Some(io) => {
-                            let parsed = io.decode(
-                                std::marker::PhantomData::<ModelEvent>,
-                                bytes,
-                                crate::wire::ErrorCode::Storage,
-                            )?;
-                            let _canonical_hold;
-                            let canonical =
-                                io.encode(&parsed.0, self.maximum_payload_bytes, true)?;
-                            _canonical_hold = io.guard_bytes(&canonical)?;
-                            if canonical.as_ref() != bytes {
-                                return Err(canonical_boundary(
-                                    Some(io),
-                                    crate::wire::ErrorCode::Storage,
-                                    "execution journal JSON is not canonical",
-                                ));
-                            }
-                            crate::filesystem::retain_decoded(parsed)?
-                        }
-                        None => decode_json::<ModelEvent>(bytes, None)?.0,
-                    });
+                    model = Some(crate::executor::retain_preparation(
+                        crate::executor::decode_model_event(reference, bytes, io)?,
+                    )?);
                 }
             }
             Ok(model)

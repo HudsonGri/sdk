@@ -319,7 +319,9 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
-                let reference = stage_json(journal, operation_id, &key, event, io).await?;
+                let reference = journal
+                    .stage_model_event(operation_id, &key, (step, purpose, index), event, io)?
+                    .await?;
                 journal
                     .append(
                         operation_id,

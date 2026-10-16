@@ -43,9 +43,13 @@ fn scenario(broken: bool) {
     if broken {
         model_checking::set_fault(model_checking::Fault::StopAfterGenerationConflict);
     }
-    let result = loom::future::block_on(Box::pin(publish(&volume, generation, &output, || {
-        std::future::ready(Ok::<_, Error>((Vec::new(), None)))
-    })));
+    let result = loom::future::block_on(Box::pin(publish(
+        &volume,
+        generation,
+        &output,
+        || std::future::ready(Ok::<_, Error>((Vec::new(), None))),
+        None,
+    )));
     assert!(
         result.is_ok(),
         "output stopped on unrelated generation conflict"
@@ -110,6 +114,7 @@ fn a_retry_revalidates_the_owner_before_publishing() {
                     std::future::ready(Err(crate::Error::Unauthorized("owner lost".into())))
                 }
             },
+            None,
         )));
         assert_eq!(calls, 2, "retry did not revalidate owner");
         assert!(matches!(result, Err(crate::Error::Unauthorized(_))));
