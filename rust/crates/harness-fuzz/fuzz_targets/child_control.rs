@@ -70,6 +70,15 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             command
         );
     }
+    if let Ok(result) = acyclic_harness::task_volume::ChildTurnResult::parse(bytes) {
+        assert_eq!(
+            acyclic_harness::task_volume::ChildTurnResult::parse(
+                &serde_json::to_vec(&result).unwrap()
+            )
+            .unwrap(),
+            result
+        );
+    }
     if let Ok(status) = ChildStatus::parse(bytes) {
         assert_eq!(
             ChildStatus::parse(&serde_json::to_vec(&status).unwrap()).unwrap(),

@@ -4,8 +4,8 @@ use crate::{
     conversation::Limits,
     runtime::{RuntimeScope, ToolContext},
     task_volume::{
-        ChildFile, ChildRequest, ChildState, ChildStatus, Component, Control, FileKey,
-        FileQuerySource, FileValue, Query, TaskFiles,
+        ChildFile, ChildRequest, ChildState, Component, Control, FileKey, FileQuerySource,
+        FileValue, Query, TaskFiles,
     },
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-mod binding;
+use super::agent_files::{files as bound_files, status};
 
 /// File operations accepted by the default agent tool.
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -132,7 +132,7 @@ impl ToolExecutor for AgentExecutor {
             if let AgentCommand::Spawn { tools, .. } = &command {
                 crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
             }
-            let files = binding::files(&context).await?;
+            let files = bound_files(&context).await?;
             let spawn = match &command {
                 AgentCommand::Spawn { reference, .. } => Some(reference.clone()),
                 _ => None,
@@ -180,7 +180,7 @@ impl ToolExecutor for AgentExecutor {
             if let AgentCommand::Spawn { tools, .. } = &command {
                 crate::task_volume::child_scope(context.effective_scope(), tools.as_deref())?;
             }
-            let files = binding::files(&context).await?;
+            let files = bound_files(&context).await?;
             let spawn = match &command {
                 AgentCommand::Spawn { reference, .. } => Some(reference.clone()),
                 _ => None,
@@ -237,7 +237,7 @@ async fn access<P: StreamProvider + ?Sized>(
             let archived = json!(ChildState::Archived);
             let cancelled = json!(ChildState::Cancelled);
             for (reference, files) in children {
-                let status = status(&reference, &files)?;
+                let status = status(&reference, &files, maximum_bytes)?;
                 let terminal = status.get("state") == Some(&archived)
                     || status.get("state") == Some(&cancelled);
                 if !terminal || status.get("settled") != Some(&Value::Bool(true)) {
@@ -360,7 +360,7 @@ async fn access<P: StreamProvider + ?Sized>(
         values.push(file);
     }
     loop {
-        let result = status(&reference, &values)?;
+        let result = status(&reference, &values, maximum_bytes)?;
         if !wait || result.get("settled") == Some(&Value::Bool(true)) {
             return Ok(Some(result));
         }
@@ -370,7 +370,8 @@ async fn access<P: StreamProvider + ?Sized>(
             .await
             .ok_or_else(|| Error::Conflict("child follow ended".into()))?
             .map_err(storage)?;
-        if let Some(file) = change.file {
+        values.retain(|file| !change.removed.contains(&file.key));
+        for file in change.file.into_iter().chain(change.files) {
             values.retain(|previous| previous.key != file.key);
             values.push(file);
         }
@@ -400,7 +401,7 @@ async fn admission_status<P: StreamProvider + ?Sized>(
     loop {
         if values.iter().any(|file| matches!(&file.key,
             FileKey::Child { reference: candidate, file: ChildFile::Status } if candidate == reference)) {
-            return status(reference, &values).map(Some);
+            return status(reference, &values, usize::try_from(limits.render_bytes).map_err(invalid)?).map(Some);
         }
         if !wait {
             return Ok(None);
@@ -417,51 +418,6 @@ async fn admission_status<P: StreamProvider + ?Sized>(
             values.push(file);
         }
     }
-}
-
-fn status(reference: &Component, files: &[FileValue]) -> Result<Value> {
-    let mut state = ChildState::Running;
-    let mut execution = None;
-    // Requests and inbox files are immutable and cannot be deleted. Their
-    // cardinality therefore detects every input accepted since a settled turn.
-    let inputs = files
-        .iter()
-        .filter(|file| {
-            matches!(
-                &file.key,
-                FileKey::Child {
-                    file: ChildFile::Request | ChildFile::Inbox(_),
-                    ..
-                }
-            )
-        })
-        .count() as u64;
-    for file in files {
-        match &file.key {
-            FileKey::Child {
-                file: ChildFile::Control,
-                ..
-            } => {
-                state = state.apply(Control::parse(&file.bytes).map_err(storage)?);
-            }
-            FileKey::Child {
-                file: ChildFile::Status,
-                ..
-            } => {
-                execution = Some(ChildStatus::parse(&file.bytes).map_err(storage)?);
-            }
-            _ => {}
-        }
-    }
-    let settled = execution.is_some_and(|execution| {
-        execution.settled
-            && execution.state == state
-            && (matches!(
-                state,
-                ChildState::Cancelled | ChildState::Archived | ChildState::Interrupted
-            ) || execution.inputs == inputs)
-    });
-    Ok(json!({"reference":reference,"state":state,"settled":settled,"execution":execution}))
 }
 
 fn invalid(error: impl std::fmt::Display) -> Error {

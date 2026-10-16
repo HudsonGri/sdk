@@ -176,7 +176,11 @@ impl LocalHarness {
                     .filter(|slot| slot.waiting_command.is_some() && slot.input.is_none())
                     .map(|slot| slot.revision);
                 if state != ChildState::Running
-                    || settled_turn(previous, child, inputs, idle_revision)
+                    || (settled_turn(previous, child, inputs, idle_revision)
+                        && values.contains_key(&FileKey::Child {
+                            reference: reference.clone(),
+                            file: ChildFile::Result(inputs),
+                        }))
                 {
                     if state != ChildState::Running {
                         if !matches!(
@@ -276,7 +280,35 @@ impl LocalHarness {
                         result = &mut advance => { result?; break; }
                     }
                 }
-                let processed = self.child_processed(child, journal.as_ref()).await?;
+                let (processed, results) = self
+                    .child_processed(child, journal.as_ref(), &reference, &values)
+                    .await?;
+                for file in results {
+                    loop {
+                        if values.get(&file.key) == Some(&file) {
+                            break;
+                        }
+                        match files.inner.append(generation, &file).await {
+                            Ok(next) => {
+                                generation = next;
+                                values.insert(file.key.clone(), file.clone());
+                                break;
+                            }
+                            Err(crate::task_volume::Error::Conflict(_)) => {
+                                let change = observation
+                                    .changes
+                                    .next()
+                                    .await
+                                    .ok_or_else(|| {
+                                        Error::Conflict("child result follow ended".into())
+                                    })?
+                                    .map_err(storage)?;
+                                advance_fold(&mut values, &mut generation, change);
+                            }
+                            Err(error) => return Err(storage(error)),
+                        }
+                    }
+                }
                 if processed < input_count(&reference, &values) {
                     continue;
                 }
@@ -378,7 +410,9 @@ impl LocalHarness {
         &self,
         child: TaskId,
         journal: &FilesystemWorkflowJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
-    ) -> Result<u64> {
+        reference: &Component,
+        values: &BTreeMap<FileKey, FileValue>,
+    ) -> Result<(u64, Vec<FileValue>)> {
         if self.runtime.task_host().outcome(child).await?.is_some() {
             return Err(Error::Indeterminate(OperationId::from_bytes(
                 child.into_bytes(),
@@ -401,10 +435,63 @@ impl LocalHarness {
                 child.into_bytes(),
             )));
         }
-        record.transition.state["mail"]["sequence"]
+        let processed = record.transition.state["mail"]["sequence"]
             .as_u64()
             .filter(|sequence| *sequence > 0)
-            .ok_or_else(|| Error::Conflict("child has no settled receive cursor".into()))
+            .ok_or_else(|| Error::Conflict("child has no settled receive cursor".into()))?;
+        let published = values
+            .keys()
+            .filter_map(|key| match key {
+                FileKey::Child {
+                    reference: candidate,
+                    file: ChildFile::Result(turn),
+                } if candidate == reference => Some(*turn),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        if published > processed {
+            return Err(Error::Conflict(
+                "child result cursor exceeds its checkpoint".into(),
+            ));
+        }
+        let mut results = Vec::new();
+        if published == processed {
+            return Ok((processed, results));
+        }
+        for turn in (published + 1)..=processed {
+            let earlier;
+            let committed = if turn == processed {
+                &record
+            } else {
+                let revision = turn
+                    .checked_mul(2)
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| Error::Invalid("child result revision overflow".into()))?;
+                earlier = journal.observe_transition(revision, Some(&io)).await?;
+                &earlier
+            };
+            let result = crate::filesystem::child_agent::completed_turn(child, committed)?;
+            if result.turn != turn {
+                return Err(Error::Conflict(
+                    "child result turn differs from its checkpoint".into(),
+                ));
+            }
+            let bytes = serde_json::to_vec(&result).map_err(storage)?;
+            if bytes.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid(
+                    "child result exceeds the original file bound".into(),
+                ));
+            }
+            results.push(FileValue::new(
+                FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Result(turn),
+                },
+                bytes,
+            ));
+        }
+        Ok((processed, results))
     }
 }
 
@@ -500,7 +587,12 @@ fn needs_work(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> R
     Ok(execution(reference, values)?.is_none_or(|status| {
         !status.settled
             || status.state != state
-            || state == ChildState::Running && status.inputs != input_count(reference, values)
+            || state == ChildState::Running
+                && (status.inputs != input_count(reference, values)
+                    || !values.contains_key(&FileKey::Child {
+                        reference: reference.clone(),
+                        file: ChildFile::Result(status.inputs),
+                    }))
     }))
 }
 

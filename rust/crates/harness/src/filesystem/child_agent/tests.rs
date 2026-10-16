@@ -112,8 +112,26 @@ proptest! {
                 1 => json!({"Failed":{"message":"rejected"}}),
                 _ => json!("Cancelled"),
             };
-            let completed = result(&model, output);
+            let completed = result(&model, output.clone());
             let next = machine.transition(&active.state, &completed).unwrap();
+            let record = crate::workflow::WorkflowRecord {
+                operation_id: model.operation_id,
+                idempotency_key: crate::IdempotencyKey::new(format!("turn-{sequence}")).unwrap(),
+                prior: crate::workflow::MachineCheckpoint {
+                    machine: machine.identity().clone(), revision: sequence * 2,
+                    state: active.state.clone(),
+                },
+                input: completed.clone(), transition: next.clone(),
+            };
+            let projected = completed_turn(TaskId::from_bytes(task), &record).unwrap();
+            prop_assert_eq!(projected.turn, sequence);
+            prop_assert_eq!(serde_json::to_value(&projected.outcome).unwrap(), output);
+            let mut other = task; other[0] ^= 1;
+            prop_assert!(completed_turn(TaskId::from_bytes(other), &record).is_err());
+            let mut wrong_command = record.clone();
+            wrong_command.input["commands"][0]["operation_id"] = json!(foreign.operation_id);
+            prop_assert!(completed_turn(TaskId::from_bytes(task), &wrong_command).is_err());
+
             prop_assert_eq!(machine.transition(&active.state, &completed).unwrap(), next.clone());
             prop_assert_eq!(&next.status, &MachineStatus::Suspended);
             prop_assert_eq!(mail_cursor(&next, &next.commands[0]).unwrap(), sequence);

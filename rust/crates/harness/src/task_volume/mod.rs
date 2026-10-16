@@ -1,8 +1,10 @@
 //! Logical task files over single-event appends and immutable segment views.
 
 mod child;
+mod child_result;
 pub(crate) use child::child_scope;
 pub use child::{ChildFile, ChildRequest, ChildState, ChildStatus, Control};
+pub use child_result::ChildTurnResult;
 pub(crate) mod command_query;
 mod durability;
 mod files;
@@ -178,6 +180,15 @@ impl FileValue {
     }
 
     fn validate(&self) -> Result<()> {
+        if matches!(
+            self.key,
+            FileKey::Child {
+                file: ChildFile::Result(0),
+                ..
+            }
+        ) {
+            return Err(Error::InvalidSegment);
+        }
         if self.requester.is_some()
             && !matches!(
                 self.key,
@@ -578,6 +589,27 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
         }
         if matches!(child_file, ChildFile::Control) {
             Control::parse(&file.bytes)?;
+        }
+        if let ChildFile::Result(turn) = child_file {
+            let result = ChildTurnResult::parse(&file.bytes)?;
+            let status_key = FileKey::Child {
+                reference: reference.clone(),
+                file: ChildFile::Status,
+            };
+            let status = index.files.get(&status_key).ok_or(Error::InvalidSegment)?;
+            let status = ChildStatus::parse(&status.file.bytes)?;
+            if result.turn != *turn || status.task != result.task || *turn > status.inputs {
+                return Err(Error::InvalidSegment);
+            }
+            if !index.files.contains_key(&file.key)
+                && *turn > 1
+                && !index.files.contains_key(&FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Result(turn - 1),
+                })
+            {
+                return Err(Error::InvalidSegment);
+            }
         }
     }
     if !file.key.mutable()

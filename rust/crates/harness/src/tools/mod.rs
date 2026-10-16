@@ -1,5 +1,6 @@
 //! Standard coding tools and shared host executors.
 pub mod agent;
+mod agent_files;
 mod bash;
 pub use bash::BashInput;
 mod defaults;

@@ -131,9 +131,18 @@ async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> 
         .map_err(super::super::storage)?
         .snapshot
         .unwrap();
-    assert_eq!(snapshot.files.len(), 2);
+    assert_eq!(snapshot.files.len(), 3);
     assert_eq!(snapshot.files[0].key.path(), "agents/worker/request.md");
     assert_eq!(snapshot.files[0].requester(), Some(task_id));
+    let result = snapshot
+        .files
+        .iter()
+        .find(|file| file.key.path() == "agents/worker/results/1.json")
+        .unwrap();
+    let result =
+        crate::task_volume::ChildTurnResult::parse(&result.bytes).map_err(super::super::storage)?;
+    assert_eq!(result.turn, 1);
+    assert!(matches!(result.outcome, crate::Outcome::Succeeded(_)));
     assert!(
         std::str::from_utf8(&snapshot.files[0].bytes)
             .unwrap()

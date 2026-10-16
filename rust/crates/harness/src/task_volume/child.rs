@@ -159,6 +159,8 @@ pub enum ChildFile {
     Control,
     /// Harness-owned execution status, followed by the parent and UI.
     Status,
+    /// Immutable outcome of one completed mailbox input.
+    Result(u64),
 }
 
 impl ChildFile {
@@ -170,6 +172,14 @@ impl ChildFile {
             )?)),
             ["control"] => Ok(Self::Control),
             ["status.json"] => Ok(Self::Status),
+            ["results", name] => {
+                let number = name.strip_suffix(".json").ok_or(Error::InvalidPath)?;
+                let turn: u64 = number.parse().map_err(|_| Error::InvalidPath)?;
+                if turn == 0 || turn.to_string() != number {
+                    return Err(Error::InvalidPath);
+                }
+                Ok(Self::Result(turn))
+            }
             _ => Err(Error::InvalidPath),
         }
     }
@@ -180,6 +190,7 @@ impl ChildFile {
             Self::Inbox(id) => format!("inbox/{}.md", id.as_str()),
             Self::Control => "control".into(),
             Self::Status => "status.json".into(),
+            Self::Result(turn) => format!("results/{turn}.json"),
         }
     }
 }

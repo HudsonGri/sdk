@@ -207,7 +207,7 @@ impl Query {
                 }),
                 Included(FileKey::Child {
                     reference: maximum,
-                    file: ChildFile::Status,
+                    file: ChildFile::Result(u64::MAX),
                 }),
             ),
             Self::Child(reference) => (
@@ -217,7 +217,7 @@ impl Query {
                 }),
                 Included(FileKey::Child {
                     reference: reference.clone(),
-                    file: ChildFile::Status,
+                    file: ChildFile::Result(u64::MAX),
                 }),
             ),
             Self::Agents => (

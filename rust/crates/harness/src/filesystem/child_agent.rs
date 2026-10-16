@@ -40,6 +40,50 @@ pub(crate) fn mail_cursor(
     }
 }
 
+/// Projects the exact committed model outcome without losing it at receive.
+pub(crate) fn completed_turn(
+    child: crate::TaskId,
+    record: &crate::workflow::WorkflowRecord,
+) -> Result<crate::task_volume::ChildTurnResult> {
+    if record.prior.state["stage"].as_str() != Some("model")
+        || record.transition.state["stage"].as_str() != Some("receive")
+        || record.prior.state["mail"] != record.transition.state["mail"]
+    {
+        return Err(Error::Conflict(
+            "child result is outside its completed model turn".into(),
+        ));
+    }
+    let mail: InboxItem = serde_json::from_value(record.prior.state["mail"].clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    if mail.task_id != child || mail.sequence == 0 {
+        return Err(Error::Unauthorized(
+            "child result has a foreign mailbox owner".into(),
+        ));
+    }
+    let command: WorkflowCommand = serde_json::from_value(record.prior.state["model"].clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    if command.kind != super::MODEL_TASK_COMMAND_KIND
+        || record.transition.status != MachineStatus::Suspended
+        || record.transition.commands.len() != 1
+        || mail_cursor(&record.transition, &record.transition.commands[0]) != Ok(mail.sequence)
+    {
+        return Err(Error::Conflict(
+            "child result has no next receive outbox".into(),
+        ));
+    }
+    let outcome = super::mailbox_machine::command_result(&record.input, &command)?;
+    let result = crate::task_volume::ChildTurnResult {
+        task: child,
+        turn: mail.sequence,
+        outcome: serde_json::from_value(outcome)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+    };
+    result
+        .validate()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(result)
+}
+
 /// A child retains its created volumes and admission while waiting for messages.
 pub struct ChildAgentMachine {
     identity: MachineIdentity,

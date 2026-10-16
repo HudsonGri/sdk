@@ -396,7 +396,7 @@ impl FileKey {
                 ..
             } => Owner::Caller,
             Self::Child {
-                file: ChildFile::Status,
+                file: ChildFile::Status | ChildFile::Result(_),
                 ..
             } => Owner::Harness,
             Self::Goal | Self::Plan(_) | Self::Input(_) | Self::Child { .. } => Owner::Agent,

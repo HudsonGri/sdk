@@ -1,4 +1,5 @@
 use super::*;
+use crate::task_volume::ChildStatus;
 use crate::{
     AgentId, Capabilities, OperationId, TaskId,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
@@ -100,17 +101,44 @@ async fn acknowledge(files: &TaskFiles<MemoryStream>, state: ChildState) {
         settled: true,
         inputs,
     };
+    let reference = Component::new("worker").unwrap();
+    let status_key = FileKey::Child {
+        reference: reference.clone(),
+        file: ChildFile::Status,
+    };
+    let mut generation = snapshot.generation;
+    if state == ChildState::Running {
+        let pending = ChildStatus {
+            settled: false,
+            ..status
+        };
+        generation = files
+            .inner
+            .append(
+                generation,
+                &FileValue::new(status_key.clone(), serde_json::to_vec(&pending).unwrap()),
+            )
+            .await
+            .unwrap();
+        for turn in 1..=inputs {
+            let key = FileKey::Child {
+                reference: reference.clone(),
+                file: ChildFile::Result(turn),
+            };
+            if snapshot.files.iter().any(|file| file.key == key) {
+                continue;
+            }
+            generation = files.inner.append(generation, &FileValue::new(key,
+                serde_json::to_vec(&json!({"task":status.task,"turn":turn,
+                    "outcome":{"Succeeded":{"text":"child answer","metadata":null,"steps":1,"attachments":[]}}})).unwrap(),
+            )).await.unwrap();
+        }
+    }
     files
         .inner
         .append(
-            snapshot.generation,
-            &FileValue::new(
-                FileKey::Child {
-                    reference: Component::new("worker").unwrap(),
-                    file: ChildFile::Status,
-                },
-                serde_json::to_vec(&status).unwrap(),
-            ),
+            generation,
+            &FileValue::new(status_key, serde_json::to_vec(&status).unwrap()),
         )
         .await
         .unwrap();
