@@ -13,8 +13,98 @@ fn file(reference: &Component, kind: ChildFile, body: Vec<u8>) -> FileValue {
     )
 }
 
+fn stop_handoffs(task: TaskId, ignore_stop_at_release: bool, assert_property: bool) {
+    let reference = Component::new("worker").unwrap();
+    // Completion callback, accepted completion follow, and ancestor stop are
+    // independent. Exhaust all six orders through the production predicates.
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let status = ChildStatus {
+            task,
+            state: ChildState::Running,
+            settled: false,
+            inputs: 1,
+        };
+        let mut values = BTreeMap::new();
+        for value in [
+            file(&reference, ChildFile::Request, b"work".to_vec()),
+            file(
+                &reference,
+                ChildFile::Status,
+                serde_json::to_vec(&status).unwrap(),
+            ),
+            file(
+                &reference,
+                ChildFile::Result(1),
+                serde_json::to_vec(&crate::task_volume::ChildTurnResult {
+                    task,
+                    turn: 1,
+                    outcome: crate::Outcome::Cancelled,
+                })
+                .unwrap(),
+            ),
+        ] {
+            values.insert(value.key.clone(), value);
+        }
+        let mut active = BTreeSet::from([reference.clone()]);
+        let mut completions = BTreeMap::new();
+        let (mut position, mut stopping, mut scheduled) = (9, false, 0);
+        for event in order {
+            match event {
+                0 => {
+                    completions.insert(reference.clone(), 10);
+                }
+                1 => {
+                    position = 10;
+                    let done = file(
+                        &reference,
+                        ChildFile::Status,
+                        serde_json::to_vec(&ChildStatus {
+                            settled: true,
+                            ..status
+                        })
+                        .unwrap(),
+                    );
+                    values.insert(done.key.clone(), done);
+                }
+                _ => stopping = true,
+            }
+            let ready = release_completed(position, &mut active, &mut completions);
+            if !active.contains(&reference)
+                && (event == 2 || ready.contains(&reference))
+                && needs_work(
+                    &reference,
+                    &values,
+                    stopping && !(ignore_stop_at_release && event != 2),
+                )
+                .unwrap()
+            {
+                active.insert(reference.clone());
+                scheduled += 1;
+            }
+        }
+        if assert_property {
+            assert_eq!(
+                scheduled, 1,
+                "ancestor stop lost at completion handoff: {order:?}"
+            );
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn ancestor_stop_survives_every_completion_handoff(task in any::<[u8;16]>()) {
+        stop_handoffs(TaskId::from_bytes(task), false, true);
+    }
+
     #[test]
     fn resume_acknowledges_only_real_completed_receive_checkpoints(turns in 1u64..9) {
         use crate::workflow::{MachineCheckpoint, MachineRegistry, ResumableMachine};
@@ -82,6 +172,10 @@ proptest! {
             let status = ChildStatus { task, state: ChildState::Running, settled: false, inputs: prefix };
             let started = file(&reference, ChildFile::Status, serde_json::to_vec(&status).unwrap());
             values.insert(started.key.clone(), started);
+            let result = file(&reference, ChildFile::Result(prefix), serde_json::to_vec(&crate::task_volume::ChildTurnResult {
+                task, turn: prefix, outcome: crate::Outcome::Cancelled,
+            }).unwrap());
+            values.insert(result.key.clone(), result);
             let mut active = BTreeSet::from([reference.clone()]);
             let mut completions = BTreeMap::new();
             let mut position = 9;
@@ -108,7 +202,7 @@ proptest! {
                 };
                 let ready = release_completed(position, &mut active, &mut completions);
                 if (input_changed || ready.contains(&reference))
-                    && !active.contains(&reference) && needs_work(&reference, &values).unwrap() {
+                    && !active.contains(&reference) && needs_work(&reference, &values, false).unwrap() {
                     scheduled += 1;
                     active.insert(reference.clone());
                 }
@@ -118,4 +212,13 @@ proptest! {
             prop_assert_eq!(input_count(&reference, &values), prefix + suffix);
         }
     }
+}
+
+#[test]
+fn ancestor_stop_handoff_negative_control_requires_its_property_assertion() {
+    let task = TaskId::from_bytes([8; 16]);
+    std::panic::catch_unwind(|| stop_handoffs(task, true, true))
+        .expect_err("dropping ancestor stop at worker release was not detected");
+    // The negative control must cease failing if its property is deleted.
+    stop_handoffs(task, true, false);
 }

@@ -60,7 +60,7 @@ impl LocalHarness {
                 let FileKey::Child { reference, .. } = &request.key else {
                     unreachable!()
                 };
-                if needs_work(reference, &values)? {
+                if needs_work(reference, &values, false)? {
                     active.insert(reference.clone());
                     jobs.push(self.service_child(
                         files.clone(),
@@ -139,7 +139,7 @@ impl LocalHarness {
                         advance_fold(&mut values, &mut generation, change);
                         changed.extend(release_completed(generation.position, &mut active, &mut completions));
                         for reference in changed {
-                            if active.contains(&reference) || !needs_work(&reference, &values)? { continue; }
+                            if active.contains(&reference) || !needs_work(&reference, &values, inherited_stopped)? { continue; }
                             let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
                             let request = values.get(&key).ok_or_else(|| Error::Conflict("child input has no request".into()))?.clone();
                             active.insert(reference.clone());
@@ -150,7 +150,7 @@ impl LocalHarness {
                         let (reference, position) = result.ok_or_else(|| Error::Conflict("child worker disappeared".into()))??;
                         completions.insert(reference, position);
                         for reference in release_completed(generation.position, &mut active, &mut completions) {
-                        if needs_work(&reference, &values)? {
+                        if needs_work(&reference, &values, inherited_stopped)? {
                             let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
                             let request = values.get(&key).ok_or_else(|| Error::Conflict("child has no request".into()))?.clone();
                             active.insert(reference.clone());
@@ -205,7 +205,7 @@ impl LocalHarness {
                 )
                 .await?;
             }
-            if !needs_work(&reference, &values)? {
+            if !needs_work(&reference, &values, inherited_stopped)? {
                 return Ok((reference, generation.position));
             }
             let (child, _view) = self.admit_child_request(files.as_ref(), &request).await?;
@@ -699,8 +699,15 @@ fn settled_turn(
     })
 }
 
-fn needs_work(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> Result<bool> {
+fn needs_work(
+    reference: &Component,
+    values: &BTreeMap<FileKey, FileValue>,
+    stopping: bool,
+) -> Result<bool> {
     let state = desired(reference, values)?;
+    if stopping && !matches!(state, ChildState::Cancelled | ChildState::Archived) {
+        return Ok(true);
+    }
     Ok(execution(reference, values)?.is_none_or(|status| {
         !status.settled
             || status.state != state
