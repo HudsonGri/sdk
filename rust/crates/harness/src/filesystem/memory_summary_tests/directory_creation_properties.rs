@@ -14,7 +14,9 @@ fn path(depth: u8) -> String {
     }
 }
 
-async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(transaction: &mut Transaction<A, O>) {
+async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    transaction: &mut Transaction<A, O>,
+) -> bool {
     let result = transaction
         .commit::<WorkspaceError, _, _>(
             None,
@@ -28,10 +30,19 @@ async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(transaction: &mut T
                 }))
             },
         )
-        .await
-        .unwrap()
-        .value;
+        .await;
+    let result = match result {
+        Ok(receipt) => receipt.value,
+        Err(failure) => {
+            assert!(matches!(
+                failure.error,
+                WorkspaceError::Filesystem(acyclic_fs::FsError::NoPendingMutations)
+            ));
+            return false;
+        }
+    };
     assert!(matches!(result, TransactionCommit::Committed(_)));
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -83,7 +94,7 @@ async fn check(depth: u8, present: u8, obstacle: u8, fault: Fault) -> TestCaseRe
             .await
             .unwrap();
     }
-    commit(&mut fixture).await;
+    assert_eq!(commit(&mut fixture).await, present > 0 || obstacle != 0);
     let existing = present + u8::from(obstacle != 0);
     let mut identities = Vec::new();
     for prefix in 1..=existing {
@@ -108,7 +119,7 @@ async fn check(depth: u8, present: u8, obstacle: u8, fault: Fault) -> TestCaseRe
     let mut accepted = result.is_ok();
     let correct_error = result.is_ok()
         || matches!(&result, Err(error) if matches!(&error.error, WorkspaceError::NotDirectory));
-    commit(&mut transaction).await;
+    let changed = commit(&mut transaction).await;
     let mut kinds = Vec::new();
     let mut preserved = true;
     for prefix in 1..=existing.max(depth) {
@@ -147,8 +158,14 @@ async fn check(depth: u8, present: u8, obstacle: u8, fault: Fault) -> TestCaseRe
         })
         .collect::<Vec<_>>();
     prop_assert_eq!(
-        (accepted, correct_error, kinds, preserved),
-        (expected_ok, true, expected, true),
+        (accepted, correct_error, kinds, preserved, changed),
+        (
+            expected_ok,
+            true,
+            expected,
+            true,
+            expected_ok && depth > present
+        ),
         "recursive directory creation differs from input tree"
     );
     Ok(())
@@ -212,7 +229,7 @@ async fn check_replacement(depth: u8, replaced: u8, observe: bool) -> TestCaseRe
             .await
             .unwrap();
     }
-    commit(&mut fixture).await;
+    assert!(commit(&mut fixture).await);
     let mut transaction = workspace
         .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation)
         .await
@@ -249,7 +266,7 @@ async fn check_replacement(depth: u8, replaced: u8, observe: bool) -> TestCaseRe
             .await
             .unwrap();
     }
-    commit(&mut peer).await;
+    assert!(commit(&mut peer).await);
     let result = transaction
         .rebase(16, WorkBudget::UNBOUNDED, &cancellation)
         .await
