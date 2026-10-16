@@ -41,7 +41,7 @@ mod tests {
                     let handle = complete(open_once(&state, "same-workspace".into(), async || {
                         thread::yield_now();
                         opened.fetch_add(1, Ordering::SeqCst);
-                        Ok((Arc::new(7), ()))
+                        Ok((StateArc::new(7), ()))
                     }))
                     .unwrap();
                     assert_eq!(*handle, 7);
@@ -79,11 +79,13 @@ mod tests {
         let closed = StateArc::new(AtomicUsize::new(0));
         {
             let mut opened = complete(lock_owned(StateArc::clone(&state)));
-            opened.entries.insert("workspace".into(), Arc::new(()));
+            opened.entries.insert("workspace".into(), StateArc::new(()));
             for _ in 0..2 {
                 let completed = StateArc::clone(&completed);
+                let provider = StateArc::clone(opened.entries.get("workspace").unwrap());
                 opened.resources.push(thread::spawn(move || {
                     completed.fetch_add(1, Ordering::SeqCst);
+                    drop(provider);
                 }));
             }
         }
@@ -94,7 +96,8 @@ mod tests {
                 worker.join().unwrap();
                 Ok(())
             },
-            async |_| {
+            async |value| {
+                take_owner(value)?;
                 // Reentering the real registry lock detects retirement under
                 // that lock; close must also follow every worker completion.
                 let opened = lock_owned(StateArc::clone(&state)).await;
@@ -122,6 +125,10 @@ mod tests {
             .map(String::as_str)
             .or_else(|| failure.downcast_ref::<&str>().copied())
             .unwrap_or("");
-        assert!(message.contains("close preceded worker drain"), "{message}");
+        assert!(
+            message.contains("close preceded worker drain")
+                || message.contains("workspace still has an execution owner"),
+            "{message}"
+        );
     }
 }

@@ -4,7 +4,7 @@ use crate::sync::owned::{Arc as StateArc, Mutex, lock_owned};
 use std::collections::BTreeMap;
 
 pub(super) struct Opened<T, R> {
-    entries: BTreeMap<String, Arc<T>>,
+    entries: BTreeMap<String, StateArc<T>>,
     resources: Vec<R>,
 }
 
@@ -20,23 +20,23 @@ impl<T, R> Default for Opened<T, R> {
 async fn open_once<T, R>(
     gate: &StateArc<Mutex<Opened<T, R>>>,
     key: String,
-    open: impl AsyncFnOnce() -> Result<(Arc<T>, R)>,
-) -> Result<Arc<T>> {
+    open: impl AsyncFnOnce() -> Result<(StateArc<T>, R)>,
+) -> Result<StateArc<T>> {
     let mut state = lock_owned(StateArc::clone(gate)).await;
     if let Some(value) = state.entries.get(&key) {
-        return Ok(Arc::clone(value));
+        return Ok(StateArc::clone(value));
     }
     #[cfg(acyclic_harness_loom)]
     if model::unlocked() {
         drop(state);
         let (value, resource) = open().await?;
         let mut state = lock_owned(StateArc::clone(gate)).await;
-        state.entries.insert(key, Arc::clone(&value));
+        state.entries.insert(key, StateArc::clone(&value));
         state.resources.push(resource);
         return Ok(value);
     }
     let (value, resource) = open().await?;
-    state.entries.insert(key, Arc::clone(&value));
+    state.entries.insert(key, StateArc::clone(&value));
     state.resources.push(resource);
     Ok(value)
 }
@@ -44,7 +44,7 @@ async fn open_once<T, R>(
 async fn close_after_workers<T, R>(
     opened: Opened<T, R>,
     join: impl AsyncFn(R) -> Result<()>,
-    close: impl AsyncFn(Arc<T>) -> Result<()>,
+    close: impl AsyncFn(StateArc<T>) -> Result<()>,
 ) -> Result<()> {
     #[cfg(acyclic_harness_loom)]
     if model::early_close() {
@@ -65,6 +65,11 @@ async fn close_after_workers<T, R>(
         }
     }
     failed.map_or(Ok(()), Err)
+}
+
+fn take_owner<T>(value: StateArc<T>) -> Result<T> {
+    StateArc::try_unwrap(value)
+        .map_err(|_| Error::Conflict("workspace still has an execution owner".into()))
 }
 
 pub(super) struct Registry {
@@ -88,7 +93,7 @@ impl Registry {
         }
     }
 
-    pub(super) async fn get(&self, workspace: &str) -> Result<Arc<LocalHarness>> {
+    pub(super) async fn get(&self, workspace: &str) -> Result<StateArc<LocalHarness>> {
         open_once(&self.state, workspace.into(), async || {
             let path: PathBuf = super::super::volume::decode(&read(
                 &self
@@ -101,8 +106,9 @@ impl Registry {
             if key != workspace {
                 return Err(Error::Unauthorized("workspace binding was replaced".into()));
             }
-            let harness = Arc::new(LocalHarness::open(LocalHarnessConfig::external(path)).await?);
-            let driver = Arc::clone(&harness);
+            let harness =
+                StateArc::new(LocalHarness::open(LocalHarnessConfig::external(path)).await?);
+            let driver = StateArc::clone(&harness);
             let stop = Arc::clone(&self.stop);
             let instance = self.instance;
             let worker = tokio::spawn(async move { server::drive(driver, stop, instance).await });
@@ -122,9 +128,7 @@ impl Registry {
             opened,
             async |worker| worker.await.map_err(storage)?,
             async |harness| {
-                let harness = Arc::try_unwrap(harness).map_err(|_| {
-                    Error::Conflict("workspace still has an execution owner".into())
-                })?;
+                let harness = take_owner(harness)?;
                 Box::pin(harness.close()).await
             },
         )

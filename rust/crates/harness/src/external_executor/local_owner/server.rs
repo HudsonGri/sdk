@@ -1,5 +1,6 @@
 //! The surviving local owner serves the SDK Streams API, never harness RPCs.
 use super::*;
+use crate::sync::owned::Arc as StateArc;
 use crate::task_volume::{Component, FileKey, FileValue, TaskFile, TaskVolume};
 use acyclic_stream::StreamProvider as _;
 use acyclic_stream::grpc::Service as StreamService;
@@ -234,7 +235,7 @@ pub async fn stop_local_owner() -> Result<()> {
 }
 
 pub(super) async fn drive(
-    harness: Arc<LocalHarness>,
+    harness: StateArc<LocalHarness>,
     stop: Arc<TaskVolume<LocalStream>>,
     instance: uuid::Uuid,
 ) -> Result<()> {
@@ -263,7 +264,7 @@ pub(super) async fn drive(
                     None => break Err(Error::Storage("local task discovery ended".into())),
                 };
                 match super::super::local_paths::task(super::super::local_paths::REQUESTS,&path) {
-                    Ok(task) => tasks.push(Box::pin(drive_task(Arc::clone(&harness),task,
+                    Ok(task) => tasks.push(Box::pin(drive_task(StateArc::clone(&harness),task,
                         Arc::clone(&stop),instance))),
                     Err(error) => break Err(error),
                 }
@@ -290,7 +291,7 @@ pub(super) async fn drive(
 }
 
 async fn drive_task(
-    harness: Arc<LocalHarness>,
+    harness: StateArc<LocalHarness>,
     task: crate::TaskId,
     stop: Arc<TaskVolume<LocalStream>>,
     instance: uuid::Uuid,
