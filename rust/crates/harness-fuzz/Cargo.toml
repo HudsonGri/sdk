@@ -173,6 +173,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_commands"
+path = "fuzz_targets/client_commands.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "e2e_expectations"
 path = "fuzz_targets/e2e_expectations.rs"
 required-features = ["runtime"]
