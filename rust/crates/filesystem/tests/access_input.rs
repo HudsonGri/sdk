@@ -17,6 +17,15 @@ pub struct Input {
 }
 
 pub fn check(bytes: &[u8]) {
+    check_decisions::<false>(bytes);
+}
+
+#[cfg(test)]
+pub fn check_with_corrupted_decision(bytes: &[u8]) {
+    check_decisions::<true>(bytes);
+}
+
+fn check_decisions<const CORRUPT_DECISION: bool>(bytes: &[u8]) {
     // Scope labels are also accepted directly, including malformed JSON chains.
     if let Ok(label) = std::str::from_utf8(bytes)
         && let Ok(Some(capability)) = Capability::from_scope_label(label)
@@ -83,6 +92,15 @@ pub fn check(bytes: &[u8]) {
             context,
             &input.capability,
         );
+        #[cfg(test)]
+        let expected = if CORRUPT_DECISION {
+            Decision {
+                allowed: !expected.allowed,
+                ..expected
+            }
+        } else {
+            expected
+        };
         assert_eq!(trie.decide(action, &input.path, input.now), expected);
         if let Ok(path) = prepared {
             assert_eq!(path.decide(action, input.now), expected);

@@ -9,8 +9,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let mut carrier = NativeDemandCarrier::Native(work);
         carrier.check(cancellation, Some(&self.cancellation))?;
         let (path, _path_allocation) = self.namespace_path(path, &mut carrier)?;
-        self.require_access(&path, crate::access::Action::Create, work)
-            .await?;
+        self.require_access(
+            &path,
+            super::super::actions::Mutation::Create.actions().1,
+            work,
+        )
+        .await?;
         let mut candidate = self
             .checkout
             .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))

@@ -313,8 +313,7 @@ pub(super) unsafe fn notification(
                 defer_host_capture(operation_failures.as_ref(), path.clone());
                 return Ok(());
             };
-            let host =
-                probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
+            let host = probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
             if baseline.identity != host.identity
                 || baseline.links != host.links
                 || baseline.size != host.size
@@ -327,8 +326,7 @@ pub(super) unsafe fn notification(
             if metadata_changed {
                 *retry_path.borrow_mut() = Some(path.clone());
             }
-            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &path)
-            {
+            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &path) {
                 match crate::native_mount::cached_binding::cached_binding_matches(
                     projection,
                     |bindings| {
@@ -343,11 +341,9 @@ pub(super) unsafe fn notification(
                             && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
                     },
                     |binding| {
-                        binding.basis.still_describes(
-                            source.as_ref(),
-                            &path,
-                            Some(binding.file_id),
-                        )
+                        binding
+                            .basis
+                            .still_describes(source.as_ref(), &path, Some(binding.file_id))
                     },
                 ) {
                     Ok(true) => return Ok(()),
@@ -631,24 +627,21 @@ pub(super) fn authorize_pre_operation(
     notification: PRJ_NOTIFICATION,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), MountSourceError> {
-    use crate::access::Action;
-    match (notification, path, destination) {
-        (PRJ_NOTIFICATION_PRE_DELETE, Some(path), _) => {
-            source.authorize_with_meter(&[(Action::Delete, path)], work)
+    use super::super::actions::Mutation;
+    let mutation = match (notification, path, destination) {
+        (PRJ_NOTIFICATION_PRE_DELETE, Some(_), _) => Mutation::Delete,
+        (PRJ_NOTIFICATION_PRE_RENAME, None, Some(_)) => Mutation::Create,
+        (PRJ_NOTIFICATION_PRE_RENAME, Some(_), _) => Mutation::Rename,
+        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Some(_), Some(_)) => Mutation::HardLink,
+        _ => return Err(MountSourceError::AccessDenied),
+    };
+    let actions = mutation.actions();
+    match (path, destination) {
+        (Some(path), Some(destination)) => {
+            source.authorize_with_meter(&[(actions.0, path), (actions.1, destination)], work)
         }
-        (PRJ_NOTIFICATION_PRE_RENAME, Some(path), Some(destination)) => source
-            .authorize_with_meter(
-                &[(Action::Rename, path), (Action::Rename, destination)],
-                work,
-            ),
-        (PRJ_NOTIFICATION_PRE_RENAME, Some(path), None) => {
-            source.authorize_with_meter(&[(Action::Rename, path)], work)
-        }
-        (PRJ_NOTIFICATION_PRE_RENAME, None, Some(destination)) => {
-            source.authorize_with_meter(&[(Action::Create, destination)], work)
-        }
-        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Some(path), Some(destination)) => source
-            .authorize_with_meter(&[(Action::Read, path), (Action::Create, destination)], work),
+        (Some(path), None) => source.authorize_with_meter(&[(actions.0, path)], work),
+        (None, Some(destination)) => source.authorize_with_meter(&[(actions.1, destination)], work),
         _ => Err(MountSourceError::AccessDenied),
     }
 }

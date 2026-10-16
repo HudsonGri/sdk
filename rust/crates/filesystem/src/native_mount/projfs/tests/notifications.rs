@@ -188,8 +188,8 @@ async fn native_access_projfs_preoperations_use_the_shared_decision()
         (PRJ_NOTIFICATION_PRE_DELETE, Action::Delete, "from"),
         (PRJ_NOTIFICATION_PRE_RENAME, Action::Rename, "from"),
         (PRJ_NOTIFICATION_PRE_RENAME, Action::Rename, "to"),
-        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Action::Read, "from"),
-        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Action::Create, "to"),
+        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Action::Admin, "from"),
+        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Action::Admin, "to"),
     ] {
         publish_test_access(&source, vec![])?;
         authorize_pre_operation(source.as_ref(), Some(&from), Some(&to), notification, &work)?;
@@ -221,7 +221,7 @@ async fn native_access_projfs_vetoes_host_rename_delete_and_hardlink()
         vec![
             deny("protected", &[Action::Rename, Action::Delete], "protected"),
             deny("destination", &[Action::Rename], "blocked"),
-            deny("link-destination", &[Action::Create], "blocked-link"),
+            deny("link-destination", &[Action::Admin], "blocked-link"),
         ],
     )?;
     let script = r#"

@@ -13,8 +13,12 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::Delete, work)
-                .await?;
+            self.require_access(
+                &path,
+                super::super::actions::Mutation::Delete.actions().0,
+                work,
+            )
+            .await?;
             let candidate = self
                 .checkout
                 .candidate(
@@ -63,18 +67,19 @@ where
             let destination = self.namespace_inputs(destination, &mut inputs)?;
             let view = self.access_snapshot(work).await?;
             let now = access::access_time()?;
+            let actions = super::super::actions::Mutation::Rename.actions();
             access::require(
                 &view
                     .pin(&source)
                     .map_err(|_| MountSourceError::AccessDenied)?,
-                crate::access::Action::Rename,
+                actions.0,
                 now,
             )?;
             access::require(
                 &view
                     .pin(&destination)
                     .map_err(|_| MountSourceError::AccessDenied)?,
-                crate::access::Action::Rename,
+                actions.1,
                 now,
             )?;
             let candidate = self
@@ -134,10 +139,9 @@ where
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let source = self.namespace_inputs(source, &mut inputs)?;
             let destination = self.namespace_inputs(destination, &mut inputs)?;
-            self.require_access(&source, crate::access::Action::Admin, work)
-                .await?;
-            self.require_access(&destination, crate::access::Action::Admin, work)
-                .await?;
+            let actions = super::super::actions::Mutation::HardLink.actions();
+            self.require_access(&source, actions.0, work).await?;
+            self.require_access(&destination, actions.1, work).await?;
             let candidate = self
                 .checkout
                 .candidate(

@@ -29,6 +29,7 @@ macro_rules! callback_span {
 }
 
 mod adapter;
+mod actions;
 #[cfg(windows)]
 mod cached_binding;
 pub use adapter::{

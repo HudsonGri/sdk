@@ -14,6 +14,25 @@ fn pattern(path: &str) -> ResourcePattern {
     }
 }
 
+#[test]
+fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::actions::require_projfs_mode;
+    let source = source(FilesystemProfile::Portable)?;
+    let now = crate::native_mount::adapter::access::access_time()?;
+    require_projfs_mode(&compiled(&source, 1, vec![], None)?, true, now)?;
+    for action in Action::ALL {
+        let view = compiled(
+            &source,
+            2,
+            vec![deny("restricted", &[action], "protected/**")],
+            None,
+        )?;
+        assert!(require_projfs_mode(&view, true, now).is_err());
+        require_projfs_mode(&view, false, now)?;
+    }
+    Ok(())
+}
+
 pub(in crate::native_mount) fn deny(id: &str, actions: &[Action], path: &str) -> Rule {
     Rule {
         id: id.into(),
