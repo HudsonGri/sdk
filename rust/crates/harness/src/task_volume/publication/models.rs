@@ -46,14 +46,12 @@ fn scenario(broken: bool) {
     let result = loom::future::block_on(Box::pin(publish(&volume, generation, &output, || {
         std::future::ready(Ok::<_, Error>((Vec::new(), None)))
     })));
-    assert!(
-        result.is_ok(),
-        "output stopped on unrelated generation conflict"
-    );
     peer.join().unwrap();
     let snapshot = loom::future::block_on(Box::pin(volume.snapshot(&Query::Root, 8))).unwrap();
-    assert!(snapshot.files.contains(&goal));
-    assert!(snapshot.files.contains(&output));
+    assert!(
+        result.is_ok() && snapshot.files.contains(&goal) && snapshot.files.contains(&output),
+        "output stopped on unrelated generation conflict"
+    );
 }
 
 #[test]
@@ -111,10 +109,13 @@ fn a_retry_revalidates_the_owner_before_publishing() {
                 }
             },
         )));
-        assert_eq!(calls, 2, "retry did not revalidate owner");
-        assert!(matches!(result, Err(crate::Error::Unauthorized(_))));
         let snapshot = loom::future::block_on(Box::pin(volume.snapshot(&Query::Root, 8))).unwrap();
-        assert_eq!(snapshot.files, [goal]);
+        assert!(
+            calls == 2
+                && matches!(result, Err(crate::Error::Unauthorized(_)))
+                && snapshot.files == [goal],
+            "retry did not revalidate owner"
+        );
     }
     loom::model(|| scenario(false));
     let error = std::panic::catch_unwind(|| loom::model(|| scenario(true)))

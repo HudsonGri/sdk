@@ -208,7 +208,7 @@ async fn indeterminate_enqueue_preserves_capacity(
     mode: u8,
     byte_quota: bool,
     omit_reconciliation: bool,
-) -> bool {
+) -> proptest::test_runner::TestCaseResult {
     let local = Arc::new(Provider::default());
     let outbox = volume(local.clone(), "client/files").await;
     let target = volume(Arc::new(Provider::default()), "agent/files").await;
@@ -267,16 +267,20 @@ async fn indeterminate_enqueue_preserves_capacity(
         client.enqueue(request(later)).await
     };
     let files = outbox.snapshot(&Query::Tasks, 2).await.unwrap().files;
-    if files.len() != 1 || files[0].bytes.as_ref() != &[id] || client.pending() != 1 {
-        return false;
-    }
-    let Err(error) = result else { return false };
-    if mode == 2 {
-        assert!(matches!(error, FileClientError::Harness(_)));
-    } else if byte_quota {
-        assert!(matches!(error, FileClientError::ByteQuota { limit: 1 }));
-    } else {
-        assert!(matches!(error, FileClientError::CommandQuota { limit: 1 }));
+    let refused = match &result {
+        Err(FileClientError::Harness(_)) if mode == 2 => true,
+        Err(FileClientError::ByteQuota { limit: 1 }) if byte_quota => true,
+        Err(FileClientError::CommandQuota { limit: 1 }) if !byte_quota => true,
+        _ => false,
+    };
+    proptest::prop_assert!(
+        files.len() == 1 && files[0].bytes.as_ref() == &[id] && client.pending() == 1 && refused,
+        "reconciled outbox admission exceeded its quota or lost intent"
+    );
+    if omit_reconciliation {
+        // The control ends at its admission observation. Independent retry and
+        // reopen checks below must not mask deletion of that observation.
+        return Ok(());
     }
     drop(client);
     let mut client = FileClient::open(outbox.clone(), target.clone(), limits)
@@ -332,14 +336,16 @@ async fn indeterminate_enqueue_preserves_capacity(
     client.enqueue(request(id)).await.unwrap();
     assert_eq!(client.pending(), 0);
     assert_eq!(client.flush().await.unwrap(), 0);
-    true
+    Ok(())
 }
 
 #[tokio::test]
 async fn lost_ack_recovery_and_acknowledged_retries_respect_each_quota() {
     for mode in 0..3 {
         for byte_quota in [false, true] {
-            assert!(indeterminate_enqueue_preserves_capacity(7, mode, byte_quota, false).await);
+            indeterminate_enqueue_preserves_capacity(7, mode, byte_quota, false)
+                .await
+                .unwrap();
         }
     }
 }
@@ -348,7 +354,15 @@ async fn lost_ack_recovery_and_acknowledged_retries_respect_each_quota() {
 async fn negative_control_omitting_reconciliation_and_fencing_is_detected() {
     for mode in 0..3 {
         for byte_quota in [false, true] {
-            assert!(!indeterminate_enqueue_preserves_capacity(7, mode, byte_quota, true).await);
+            let error = indeterminate_enqueue_preserves_capacity(7, mode, byte_quota, true)
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("reconciled outbox admission exceeded its quota or lost intent"),
+                "{error}"
+            );
         }
     }
 }
@@ -754,8 +768,9 @@ proptest::proptest! {
     fn indeterminate_publication_never_bypasses_reconciled_quotas(
         id in proptest::num::u8::ANY, mode in 0u8..3, byte_quota in proptest::bool::ANY,
     ) {
-        assert!(futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode, byte_quota, false)));
-        assert!(!futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode, byte_quota, true)));
+        futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode, byte_quota, false))?;
+        let error = futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode, byte_quota, true)).unwrap_err();
+        proptest::prop_assert!(error.to_string().contains("reconciled outbox admission exceeded its quota or lost intent"), "{error}");
     }
     #[test]
     fn restoration_requires_its_own_checkpoint_durability(id in proptest::num::u8::ANY) {

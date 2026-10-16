@@ -94,6 +94,14 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         target: Arc<TaskVolume<T>>,
         limits: FileClientLimits,
     ) -> Result<Self> {
+        Self::open_checked::<true>(outbox, target, limits).await
+    }
+
+    async fn open_checked<const CHECKPOINT: bool>(
+        outbox: Arc<TaskVolume<P>>,
+        target: Arc<TaskVolume<T>>,
+        limits: FileClientLimits,
+    ) -> Result<Self> {
         if limits.commands == 0 || limits.bytes == 0 {
             return Err(Error::Invalid("invalid file client bounds".into()).into());
         }
@@ -110,7 +118,8 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             return Err(Error::Invalid("outbox and target are the same volume".into()).into());
         }
         let cursor = if let Some(file) = state.files.first() {
-            if limits.durability == FileClientDurability::Durable
+            if CHECKPOINT
+                && limits.durability == FileClientDurability::Durable
                 && !outbox
                     .file_is_durable(file)
                     .await
@@ -321,6 +330,17 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
     /// flush continues with the following request; uncertain failures retain it.
     pub async fn flush(&mut self) -> Result<usize> {
         self.catch_up().await?;
+        self.flush_pending::<true, true, true, true>().await
+    }
+
+    async fn flush_pending<
+        const INTENT: bool,
+        const TARGET: bool,
+        const CHECKPOINT: bool,
+        const CURSOR: bool,
+    >(
+        &mut self,
+    ) -> Result<usize> {
         let mut submitted = 0;
         while let Some(pending) = self.pending.front() {
             let checkpoint = self
@@ -339,14 +359,15 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             if current.target != self.target_id
                 || current.target_epoch != self.target_epoch
                 || current.durability != self.limits.durability
-                || (current.cursor != self.cursor && current.cursor != pending.cursor)
+                || (CURSOR && current.cursor != self.cursor && current.cursor != pending.cursor)
             {
                 return Err(Error::Conflict(
                     "outbox checkpoint changed; reopen before publication".into(),
                 )
                 .into());
             }
-            if self.limits.durability == FileClientDurability::Durable
+            if INTENT
+                && self.limits.durability == FileClientDurability::Durable
                 && !self
                     .outbox
                     .file_is_durable(&pending.write)
@@ -374,6 +395,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     Err(error) => return Err(FileClientError::publication(error)),
                 };
             if rejected.is_none()
+                && TARGET
                 && self.limits.durability == FileClientDurability::Durable
                 && !self
                     .target
@@ -395,7 +417,8 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 .append(checkpoint.generation, &checkpoint_write)
                 .await
                 .map_err(FileClientError::publication)?;
-            if self.limits.durability == FileClientDurability::Durable
+            if CHECKPOINT
+                && self.limits.durability == FileClientDurability::Durable
                 && !self
                     .outbox
                     .file_is_durable(&checkpoint_write)
@@ -422,6 +445,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         Ok(submitted)
     }
 }
+
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "file_submit_model/provider.rs"]
+mod model_provider;
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "file_submit_model.rs"]
+mod models;
 
 fn terminal_rejection(error: &crate::task_volume::Error) -> bool {
     use crate::task_volume::Error as E;
