@@ -174,9 +174,8 @@ impl ToolExecutor for CheckoutTools {
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             if let Some(project) = self.child_project(original)? {
                 if invocation.name != "fs" {
-                    return Err(Error::Unsupported(
-                        "child bash requires an isolated native checkout".into(),
-                    ));
+                    let selected = self.child_checkout(original, project).await?;
+                    return selected.execute(invocation, context).await;
                 }
                 let command = invocation
                     .arguments

@@ -135,12 +135,11 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             .as_ref(),
         b"child only"
     );
-    // Property: child fs authority is exactly its sealed project binding plus
+    // Property: child checkout authority is exactly its sealed project binding plus
     // the tool grant and original call identity, even after scope attenuation.
     {
         use proptest::prelude::*;
         let child_context = Arc::new(child_context);
-        let tool = harness.tools().get("fs", None, None)?.unwrap();
         let read = project.capability(VolumeOperation::Read, &mut None)?;
         let write = project.capability(VolumeOperation::Write, &mut None)?;
         proptest::test_runner::TestRunner::new(ProptestConfig {
@@ -148,45 +147,49 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             ..ProptestConfig::with_cases(32)
         })
         .run(&(any::<[u8; 16]>(), "[a-z]{1,16}"), |(bytes, call)| {
-            for mask in 0u8..32 {
-                let grants = [read.as_str(), write.as_str(), "tool:call:fs"]
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(index, _)| mask & (1 << index) != 0)
-                    .map(|(_, grant)| grant.to_owned());
-                let narrowed = child_context
-                    .scoped(
-                        crate::Capabilities::new(grants),
-                        child_context.scope().limits(),
+            for name in ["fs", "bash"] {
+                let tool = harness.tools().get(name, None, None).unwrap().unwrap();
+                let tool_grant = format!("tool:call:{name}");
+                for mask in 0u8..32 {
+                    let grants = [read.as_str(), write.as_str(), tool_grant.as_str()]
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(index, _)| mask & (1 << index) != 0)
+                        .map(|(_, grant)| grant.to_owned());
+                    let narrowed = child_context
+                        .scoped(
+                            crate::Capabilities::new(grants),
+                            child_context.scope().limits(),
+                        )
+                        .unwrap();
+                    let context = ToolContext::new(
+                        Arc::new(narrowed),
+                        OperationId::from_bytes(bytes),
+                        &call,
+                        None,
                     )
                     .unwrap();
-                let context = ToolContext::new(
-                    Arc::new(narrowed),
-                    OperationId::from_bytes(bytes),
-                    &call,
-                    None,
-                )
-                .unwrap();
-                let mut actual = bytes;
-                if mask & 8 == 0 {
-                    actual[0] ^= 1;
+                    let mut actual = bytes;
+                    if mask & 8 == 0 {
+                        actual[0] ^= 1;
+                    }
+                    let invocation = ToolInvocation {
+                        operation_id: OperationId::from_bytes(actual),
+                        call_id: if mask & 16 != 0 {
+                            call.clone()
+                        } else {
+                            format!("{call}-other")
+                        },
+                        name: name.into(),
+                        arguments: json!({"command":"status"}),
+                    };
+                    prop_assert_eq!(
+                        tool.executor
+                            .authorize(None, Some(&context), &invocation, None)
+                            .is_ok(),
+                        mask == 31
+                    );
                 }
-                let invocation = ToolInvocation {
-                    operation_id: OperationId::from_bytes(actual),
-                    call_id: if mask & 16 != 0 {
-                        call.clone()
-                    } else {
-                        format!("{call}-other")
-                    },
-                    name: "fs".into(),
-                    arguments: json!({"command":"status"}),
-                };
-                prop_assert_eq!(
-                    tool.executor
-                        .authorize(None, Some(&context), &invocation, None)
-                        .is_ok(),
-                    mask == 31
-                );
             }
             Ok(())
         })
