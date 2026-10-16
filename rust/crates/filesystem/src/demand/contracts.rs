@@ -45,7 +45,7 @@ pub enum DemandError {
     OriginalWorkPoisoned,
     /// Explicit native preparation allowance was exhausted.
     #[error(transparent)]
-    Work(#[from] crate::WorkError),
+    Work(crate::WorkError),
     /// A real owned-buffer reservation failed without discarding its cause.
     #[error("source buffer allocation failed: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
@@ -71,6 +71,16 @@ pub enum DemandError {
     ))]
     #[error(transparent)]
     NativeMetadata(#[from] crate::native_host::NativeMetadataError),
+}
+
+impl From<crate::WorkError> for DemandError {
+    #[track_caller]
+    fn from(error: crate::WorkError) -> Self {
+        if matches!(error, crate::WorkError::Overflow) {
+            eprintln!("demand work overflow at {}", std::panic::Location::caller());
+        }
+        Self::Work(error)
+    }
 }
 
 impl From<std::io::Error> for DemandError {
