@@ -41,6 +41,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let (file, bytes, _) = self
+            .read_private_path_indexed(
+                volume,
+                grant,
+                path,
+                expected_generation,
+                maximum_bytes,
+                ceiling,
+                io,
+            )
+            .await?;
+        Ok((file, bytes))
+    }
+
+    pub(crate) async fn read_private_path_indexed(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
+        ceiling: Option<&crate::Capabilities>,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        FileRef,
+        acyclic_stream::OwnedBytes,
+        Option<crate::OperationId>,
+    )> {
         self.require_private_directory(volume, grant, path, io)?;
         super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
         let name = path.rsplit('/').next().unwrap_or(path);
@@ -119,6 +147,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
+        let publication = staged
+            .as_ref()
+            .map(|file| file_publication(&file.0, Some(io)))
+            .transpose()?;
         let reference = if let Some(mut staged) = staged {
             if staged.0.volume() != volume || staged.0.path() != path {
                 return Err(stock_boundary(
@@ -159,7 +191,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(hold) = bytes.1 {
             hold.into_retained()?;
         }
-        Ok((reference.0, bytes.0))
+        Ok((reference.0, bytes.0, publication))
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.
@@ -324,3 +356,18 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
 }
 
 use crate::executor::stock_boundary;
+
+pub(crate) fn file_publication(
+    reference: &FileRef,
+    io: Option<&PreparationIo>,
+) -> Result<crate::OperationId> {
+    if let Some(io) = io {
+        io.charge(WorkCounters {
+            items_examined: reference.version().len() as u64,
+            ..Default::default()
+        })?;
+    }
+    uuid::Uuid::parse_str(reference.version())
+        .map(|id| crate::OperationId::from_bytes(*id.as_bytes()))
+        .map_err(|_| Error::Storage("file metadata has no publication operation".into()))
+}

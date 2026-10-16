@@ -49,7 +49,8 @@ where
                 work,
             )
         })?;
-        self.host
+        let (file, bytes) = self
+            .host
             .content_for_operation_record_io(
                 super::super::PublicationLookup {
                     volume: &self.volume,
@@ -57,6 +58,7 @@ where
                     expected_path: Some(&path),
                     maximum_bytes: self.maximum_payload_bytes,
                     internal_class: Some(InternalContentClass::Execution),
+                    read_content: true,
                     scope: &self.scope,
                     ceiling: None,
                 },
@@ -69,7 +71,13 @@ where
                     crate::wire::ErrorCode::NotFound,
                     "original staged payload was not published",
                 )
-            })
+            })?;
+        if let Some(bytes) = bytes {
+            let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            drop(bytes);
+            drop(hold);
+        }
+        Ok(file)
     }
 
     pub(super) fn stage_identity_with_io(
@@ -406,11 +414,12 @@ where
         Ok(())
     }
 
-    pub(super) async fn verify_model_content_with_io(
+    pub(super) async fn verify_model_content_with_io<const RELEASE: bool>(
         &self,
         content: &ModelContent,
         io: Option<&PreparationIo>,
         context: Option<&crate::runtime::TaskContext>,
+        summary_files: &[&FileRef],
     ) -> Result<()> {
         let mut count = 0_usize;
         for _ in content.file_refs() {
@@ -448,7 +457,13 @@ where
         let mut references = Vec::with_capacity(count);
         for (file, binding) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
-                owner.validate_input_file(file, io)?;
+                if binding.is_none() && summary_files.contains(&file) {
+                    crate::executor::with_history_io(io, |work| {
+                        owner.input_limits().validate_file(file, work)
+                    })?;
+                } else {
+                    owner.validate_input_file(file, io)?;
+                }
             }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(stock_boundary(
@@ -506,7 +521,19 @@ where
                 }
             }
             if !configuration {
-                self.verify_input_file_with_io(file, io).await?;
+                if summary_files.contains(file) {
+                    let _bytes_hold;
+                    let bytes = self.load_content(file, io).await?;
+                    // Only the accounting test instantiates the omitted-release control.
+                    _bytes_hold = if RELEASE {
+                        io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten()
+                    } else {
+                        None
+                    };
+                    drop(bytes);
+                } else {
+                    self.verify_input_file_with_io(file, io).await?;
+                }
             }
         }
         drop(references);

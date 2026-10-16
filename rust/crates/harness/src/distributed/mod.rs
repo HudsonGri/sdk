@@ -32,6 +32,8 @@ mod coordinator;
 mod intent_cache;
 mod journal;
 mod observe;
+mod origins;
+mod origin_locator;
 mod proof;
 mod results;
 mod scheduling;

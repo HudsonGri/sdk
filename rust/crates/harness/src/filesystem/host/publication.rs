@@ -7,6 +7,7 @@ pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub expected_path: Option<&'a str>,
     pub maximum_bytes: u64,
     pub internal_class: Option<InternalContentClass>,
+    pub read_content: bool,
     pub scope: &'a Scope,
     pub ceiling: Option<&'a crate::Capabilities>,
 }
@@ -16,7 +17,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         request: PublicationLookup<'_>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<FileRef>> {
+    ) -> Result<Option<(FileRef, Option<acyclic_stream::OwnedBytes>)>> {
         let owned;
         let io = if let Some(io) = io {
             io
@@ -30,6 +31,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             expected_path,
             maximum_bytes,
             internal_class,
+            read_content,
             scope,
             ceiling,
         } = request;
@@ -133,6 +135,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             recorded.0.0.path(),
             io,
         )?;
+        if read_content {
+            super::super::access::require(
+                &view.0,
+                acyclic_fs::access::Action::Read,
+                recorded.0.0.path(),
+                io,
+            )?;
+        }
         drop(view);
         let canonical = io.encode(&(&recorded.0.0, &recorded.0.1), RECORD_BYTES, true)?;
         let hold = io.guard_bytes(&canonical)?;
@@ -186,6 +196,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(recorded.0.1.take());
         recorded.1.substitute(recorded.0.0.logical_owned_bytes()?)?;
         recorded.1.into_retained()?;
-        Ok(Some(recorded.0.0))
+        let payload = if read_content {
+            if let Some(hold) = bytes.1 {
+                hold.into_retained()?;
+            }
+            Some(bytes.0)
+        } else {
+            None
+        };
+        Ok(Some((recorded.0.0, payload)))
     }
 }

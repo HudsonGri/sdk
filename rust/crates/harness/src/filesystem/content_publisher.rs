@@ -324,6 +324,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     expected_path: None,
                     maximum_bytes: maximum.min(self.maximum_bytes),
                     internal_class: None,
+                    read_content: false,
                     scope: self.grant.policy_scope(),
                     ceiling,
                 },
@@ -332,7 +333,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .await?;
         drop(retry);
         drop(hold);
-        Ok(file)
+        Ok(file.map(|(file, _)| file))
     }
 
     pub(super) async fn publish(

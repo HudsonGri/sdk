@@ -21,6 +21,8 @@ mod goal_sources;
 mod goals;
 #[path = "file_query/objects.rs"]
 mod objects;
+#[path = "file_query/replacements.rs"]
+mod replacements;
 use objects::CountingObjects;
 #[path = "file_query/access.rs"]
 mod access;

@@ -53,19 +53,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
         grant.require(volume, VolumeOperation::Write, io)?;
-        self.content_for_operation_record_io(
-            PublicationLookup {
-                volume,
-                key,
-                expected_path: Some(path),
-                maximum_bytes,
-                internal_class: None,
-                scope: grant.policy_scope(),
-                ceiling,
-            },
-            io,
-        )
-        .await
+        let observed = self
+            .content_for_operation_record_io(
+                PublicationLookup {
+                    volume,
+                    key,
+                    expected_path: Some(path),
+                    maximum_bytes,
+                    internal_class: None,
+                    read_content: false,
+                    scope: grant.policy_scope(),
+                    ceiling,
+                },
+                io,
+            )
+            .await?;
+        Ok(observed.map(|(file, _)| file))
     }
 
     /// Stages journal payloads under the assigned internal subtree.
