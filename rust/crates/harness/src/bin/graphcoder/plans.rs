@@ -35,7 +35,9 @@ impl Plans {
             terminal::MAX_FRAME_BYTES as u64,
             None,
         )?;
-        let source = reader.file_query(&config.private_volume, config.tools.content_budget)?;
+        let source = reader
+            .file_query(&config.private_volume, config.tools.content_budget)
+            .await?;
         let CommandResolution::Select { query } = CommandCatalog::builtins()?
             .resolve("/plan", reader.as_ref(), terminal::MAX_FRAME_BYTES as u64)
             .await?

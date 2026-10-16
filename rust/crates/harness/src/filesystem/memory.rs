@@ -310,11 +310,11 @@ impl MemoryHarnessStorage {
     }
 
     /// Queries the same private files written by the ordinary tools.
-    pub fn file_query(
+    pub async fn file_query(
         &self,
         budget: acyclic_fs::WorkBudget,
     ) -> Result<super::FilesystemFileQuery<MemoryStream, MemoryObjectBackend>> {
-        self.content_verifier.file_query(&self.volume, budget)
+        self.content_verifier.file_query(&self.volume, budget).await
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.

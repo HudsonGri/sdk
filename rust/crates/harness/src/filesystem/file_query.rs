@@ -10,6 +10,7 @@ use acyclic_stream::{BoxProviderFuture, ReadRequest, Record, StreamPath, StreamP
 use futures::StreamExt as _;
 use std::sync::Arc;
 
+mod policy;
 mod projection;
 use projection::{Selection, generation};
 
@@ -18,6 +19,7 @@ pub struct FilesystemFileQuery<P, O> {
     reader: Arc<FilesystemContentVerifier<StreamAuthorityStore<P>, O>>,
     volume: VolumeRef,
     budget: WorkBudget,
+    policy: Arc<acyclic_fs::access::AccessView>,
 }
 
 impl<P, O> Clone for FilesystemFileQuery<P, O> {
@@ -26,13 +28,16 @@ impl<P, O> Clone for FilesystemFileQuery<P, O> {
             reader: self.reader.clone(),
             volume: self.volume.clone(),
             budget: self.budget,
+            policy: Arc::clone(&self.policy),
         }
     }
 }
 
-impl<P, O> FilesystemContentVerifier<StreamAuthorityStore<P>, O> {
+impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>
+    FilesystemContentVerifier<StreamAuthorityStore<P>, O>
+{
     /// Binds the existing file reader and a finite per-revision query allowance.
-    pub fn file_query(
+    pub async fn file_query(
         self: &Arc<Self>,
         volume: &VolumeRef,
         budget: WorkBudget,
@@ -48,10 +53,20 @@ impl<P, O> FilesystemContentVerifier<StreamAuthorityStore<P>, O> {
                 "file query requires an agent or project volume and finite work".into(),
             ));
         }
+        let io = PreparationIo::from_budget(budget, &acyclic_fs::CancellationToken::new())?;
+        let reference =
+            workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
+        let workspace = self.host.open(&reference, Some(&io)).await?;
+        let view = policy::compile(self, &workspace, &io).await?;
+        let bytes = (std::mem::size_of::<acyclic_fs::access::AccessView>()
+            + 2 * std::mem::size_of::<usize>()) as u64;
+        io.retain_owned(bytes)?;
+        io.allocation_attempt(bytes)?;
         Ok(FilesystemFileQuery {
             reader: self.clone(),
             volume: volume.clone(),
             budget,
+            policy: Arc::new(acyclic_fs::access::AccessView::new(view)),
         })
     }
 }
@@ -298,31 +313,5 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             &mut Some(&mut io.history_io()),
         )?;
         Ok(())
-    }
-
-    async fn authorize_policy(
-        &self,
-        workspace: &acyclic_fs::Workspace<StreamAuthorityStore<P>, O>,
-        io: &PreparationIo,
-    ) -> crate::Result<()> {
-        use super::access;
-        use acyclic_fs::access::Action;
-        let label = crate::core::filesystem_scope_label(
-            self.reader.scope.capabilities(),
-            &mut Some(&mut io.history_io()),
-        )?;
-        let view = access::access_view(
-            workspace,
-            &self.reader.scope,
-            None,
-            access::capability_payload(label, crate::conversation::VolumeOperation::Read, io)?,
-            None,
-            io,
-        )
-        .await?;
-        if view.0.generation_sensitive() {
-            return Err(crate::Error::FilesystemAccessConfiguration("file query"));
-        }
-        access::require_unrestricted(&view.0, &[Action::Read, Action::List], "file query")
     }
 }
