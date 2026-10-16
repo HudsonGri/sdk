@@ -83,6 +83,30 @@ impl TaskContext {
         }
         owner.require_task_context_binding(self, None)?;
         if let Some(access) = self.scope.created_access.as_mut() {
+            if Arc::get_mut(access).is_none() {
+                *access = Arc::new(crate::resource_preparation::CreatedResourceAccess {
+                    operation: access.operation,
+                    admission_digest: access.admission_digest,
+                    grants: access.grants.clone(),
+                    content: access
+                        .content
+                        .iter()
+                        .map(
+                            |binding| crate::resource_preparation::CreatedContentBinding {
+                                volume: binding.volume.clone(),
+                                authority: binding.authority.clone(),
+                                binding: binding.binding.clone(),
+                                default_writer: binding.default_writer,
+                                artifact_writer: binding.artifact_writer,
+                                scratch_creation: binding.scratch_creation.clone(),
+                            },
+                        )
+                        .collect(),
+                    references: access.references.clone(),
+                    proofs: access.proofs.clone(),
+                    publication_lease: access.publication_lease.clone(),
+                });
+            }
             let access = Arc::get_mut(access).ok_or_else(|| {
                 Error::Conflict("created task scope is not uniquely owned".into())
             })?;

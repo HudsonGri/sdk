@@ -15,6 +15,28 @@ async fn child_task_files_use_created_private_authority_and_the_original_owner()
         .runtime
         .task_context(task, (&reservation).into())
         .await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let owner = context.ordinary_journal_owner::<MemoryStream>()?;
+        let authenticated = owner.created.as_ref().unwrap();
+        let issued = context.scope().created_access.as_ref().unwrap();
+        assert_eq!(issued.content.len(), authenticated.content.len());
+        assert!(!issued.content.is_empty());
+        for (issued, authenticated) in issued.content.iter().zip(&authenticated.content) {
+            assert_eq!(issued.volume, authenticated.volume);
+            assert!(Arc::ptr_eq(
+                &issued.binding.reader,
+                &authenticated.binding.reader
+            ));
+            match (&issued.binding.writer, &authenticated.binding.writer) {
+                (Some(issued), Some(authenticated)) => assert!(Arc::ptr_eq(issued, authenticated)),
+                (None, None) => {}
+                _ => panic!("issued content changed its authenticated writer"),
+            }
+        }
+        assert!(issued.publication_lease.is_some());
+        assert!(authenticated.publication_lease.is_none());
+    }
     let agent = crate::AgentId::from_bytes([80; 16]);
     let root = VolumeRef::new(
         fixture.filesystem_provider.clone(),
