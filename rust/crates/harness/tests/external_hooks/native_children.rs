@@ -140,8 +140,15 @@ async fn native_child_hooks_admit_attach_complete_and_join_for_every_host() -> R
             ));
             // SubagentStop supplies the terminal child request; the native
             // executor does not need to emit an additional SessionEnd.
-            let stop = RequestConsumer::child_completion(&fixture.runtime, parent.task_id(), &join)
-                .await?;
+            let completing =
+                RequestConsumer::child_completion(&fixture.runtime, parent.task_id(), &join);
+            let size = std::mem::size_of_val(&completing);
+            eprintln!("native child completion future: {size} bytes");
+            assert!(
+                size < 16 * 1024,
+                "native child completion future grew to {size} bytes"
+            );
+            let stop = completing.await?;
             let file = publish(&fixture, &child_folder, &stop).await?;
             consumer.accept(&child_folder, &file).await?;
             let commands = RequestCommands::new(
