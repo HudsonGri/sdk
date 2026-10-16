@@ -1,4 +1,6 @@
 //! Real hook-process fixture shared by focused integration suites.
+#[path = "sdk_client.rs"]
+mod sdk_client;
 use serde_json::Value;
 use std::{path::Path, process::Stdio};
 use tokio::{
@@ -119,27 +121,5 @@ pub async fn files(
 
 pub async fn client(directory: &Path) -> Result<acyclic_stream::grpc::Client> {
     let root = directory.parent().unwrap().join("owner");
-    let address: Value = serde_json::from_slice(&std::fs::read(root.join("address.json"))?)?;
-    let secret: [u8; 32] = std::fs::read(root.join("credential"))?
-        .try_into()
-        .map_err(|_| "invalid owner key")?;
-    let canonical = std::fs::canonicalize(directory)?;
-    let scope = blake3::hash(canonical.as_os_str().as_encoded_bytes())
-        .to_hex()
-        .to_string();
-    let token = format!(
-        "{scope}.{}",
-        blake3::keyed_hash(&secret, scope.as_bytes()).to_hex()
-    );
-    Ok(
-        acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
-            address["endpoint"].as_str().ok_or("missing endpoint")?,
-            &token,
-            address["certificate"]
-                .as_str()
-                .ok_or("missing certificate")?
-                .as_bytes(),
-        )
-        .await?,
-    )
+    sdk_client::workspace(&root, directory).await
 }

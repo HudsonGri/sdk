@@ -24,6 +24,44 @@ use support::{
 const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
 
 #[test]
+fn owner_fixture_queries_task_files_and_drains_after_success_or_unwind() {
+    for unwind in [false, true] {
+        let temporary = test_tempdir("provider-owner-");
+        let workspace = temporary.path().join("workspace");
+        fs::create_dir(&workspace).expect("fixture workspace");
+        let outcome = std::panic::catch_unwind(|| {
+            let mut owner = ServiceGuard::new(temporary.path());
+            owner.assert_hook_service_live();
+            let mut attach = command(support::ACYCLIC);
+            attach
+                .args(["__hook", "pi", "session_start"])
+                .current_dir(&workspace);
+            isolated_state(&mut attach, temporary.path());
+            let input = serde_json::to_vec(&serde_json::json!({
+                "sessionId":"qualification-owner", "cwd":workspace,
+            }))
+            .expect("fixture attachment");
+            let attached =
+                support::output_with_stdin_timeout(&mut attach, &input, Duration::from_secs(3));
+            assert!(!attached.expired);
+            assert!(
+                attached.output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&attached.output.stderr)
+            );
+            owner.attach_process_tree(attached.process_tree);
+            owner.assert_requests_settled(&workspace);
+            if unwind {
+                panic!("injected qualification unwind");
+            }
+            owner.drain();
+        });
+        assert_eq!(outcome.is_err(), unwind);
+        support::assert_service_absent(temporary.path()).expect("owner lock released after drain");
+    }
+}
+
+#[test]
 #[ignore = "requires the exact Codex binary selected by the qualification workflow"]
 fn actual_codex_binary_executes_the_scripted_scenario() {
     let Some(codex) = installed_host_binary("codex", "ACYCLIC_E2E_CODEX") else {
@@ -66,17 +104,7 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let child_ran = assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
     assert_overlay_workflow_stayed_in_child(&workspace, "codex-child-isolation.txt");
-    let mut doctor = package.command(&["doctor"]);
-    doctor.current_dir(&workspace);
-    isolated_state(&mut doctor, temporary.path());
-    let doctor = output_with_timeout(&mut doctor, Duration::from_secs(20));
-    assert!(!doctor.expired, "doctor exceeded its deadline");
-    let doctor_output = String::from_utf8_lossy(&doctor.output.stdout);
-    assert!(
-        doctor_output.contains("pass persistent-state"),
-        "spawn completion left durable recovery work behind:\n{doctor_output}\n{}",
-        String::from_utf8_lossy(&doctor.output.stderr)
-    );
+    service.assert_requests_settled(&workspace);
 
     service.drain();
     assert_codex_timeout_cleanup(&codex, temporary.path(), &workspace);
