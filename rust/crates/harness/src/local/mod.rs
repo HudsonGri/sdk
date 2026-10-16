@@ -34,6 +34,7 @@ mod compaction;
 mod config;
 mod context;
 pub(crate) mod external;
+mod inheritance;
 mod owner;
 #[cfg(feature = "native-execution")]
 pub(crate) use owner::directory as private_directory;

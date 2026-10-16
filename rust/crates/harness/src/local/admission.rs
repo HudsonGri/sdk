@@ -115,6 +115,8 @@ impl LocalHarness {
         &self,
         turn: &Turn,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        self.prepare_inheritance(crate::runtime::task_id_for_admission(turn.operation), None)
+            .await?;
         let definition = self
             .runtime
             .harness()
