@@ -5,9 +5,14 @@ use std::sync::Arc;
 
 loom::thread_local! {
     static OMIT_RESERVATION: Cell<bool> = Cell::new(false);
+    static OMIT_REFUND: Cell<bool> = Cell::new(false);
 }
 pub(super) fn broken_reservation() -> bool {
     OMIT_RESERVATION.with(Cell::get)
+}
+
+pub(super) fn broken_refund() -> bool {
+    OMIT_REFUND.with(Cell::get)
 }
 
 fn copy_once<const BROKEN: bool>(
@@ -138,5 +143,159 @@ fn missing_reservation_and_deleting_the_limit_assertion_are_detected() {
     assert!(
         assertion_deleted.is_ok(),
         "without the limit assertion the same broken model must pass"
+    );
+}
+
+fn observer<'a, 'operation>(
+    accounting: &'a mut KernelAccounting<'operation>,
+    allocation: crate::NativeAllocation,
+) -> OriginalReadAccounting<'a, 'operation> {
+    OriginalReadAccounting {
+        accounting,
+        allocation: KernelOwnedAllocation::NativeOriginal(allocation),
+        owned_bytes: 0,
+        pending: WorkCounters::UNCHARGED,
+    }
+}
+
+// Read the real root's withheld credit, independently of observer.pending.
+// Root reservations subtract from budget; completed work is in the receipt.
+fn assert_credit(
+    work: &crate::NativeMaterializationWork,
+    reserved: u64,
+    charged: u64,
+    refunded: u64,
+    outstanding: u64,
+) {
+    work.state(|state| {
+        let pending = state.original_budget().bytes_copied - state.budget.bytes_copied;
+        assert_eq!(
+            pending + state.work.bytes_copied + refunded,
+            reserved,
+            "outstanding + charged + refunded must equal reserved"
+        );
+        assert_eq!(pending, outstanding, "no abandoned reservation may survive");
+        assert_eq!(state.work.bytes_copied, charged);
+        assert_eq!(
+            state.remaining().unwrap().bytes_copied,
+            8 - charged - outstanding
+        );
+    });
+}
+
+// action: abandon, cancel before the effect, panic during the callback, or
+// partially complete. A child refunds while a sibling attempts admission;
+// their ancestor and root allowance must both conserve the original credit.
+fn refund_model<const OMIT: bool>(action: u8) {
+    loom::model(move || {
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            bytes_copied: 8,
+            ..WorkBudget::UNBOUNDED
+        };
+        let root = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let parent = root.native_volume_work(budget).unwrap();
+        let child = parent.native_volume_work(budget).unwrap();
+        let outer_allocation = parent.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+        let inner_allocation = child.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+        let worker_allocation = parent.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+        let mut outer_accounting = KernelAccounting::native(&parent, &cancellation);
+        let mut outer = observer(&mut outer_accounting, outer_allocation);
+        outer
+            .admit(WorkCounters {
+                bytes_copied: 4,
+                ..WorkCounters::UNCHARGED
+            })
+            .unwrap();
+        let mut inner_accounting = KernelAccounting::native(&child, &cancellation);
+        let mut inner = observer(&mut inner_accounting, inner_allocation);
+        inner
+            .admit(WorkCounters {
+                bytes_copied: 4,
+                ..WorkCounters::UNCHARGED
+            })
+            .unwrap();
+        assert_credit(&parent, 8, 0, 0, 8);
+        let worker_work = parent.clone();
+        let worker_cancel = cancellation.clone();
+        let worker = loom::thread::spawn(move || {
+            let mut accounting = KernelAccounting::native(&worker_work, &worker_cancel);
+            let mut observed = observer(&mut accounting, worker_allocation);
+            if observed
+                .admit(WorkCounters {
+                    bytes_copied: 4,
+                    ..WorkCounters::UNCHARGED
+                })
+                .is_err()
+            {
+                return 0;
+            }
+            let mut output = [0; 4];
+            output.copy_from_slice(std::hint::black_box(b"copy"));
+            assert_eq!(&std::hint::black_box(output), b"copy");
+            // Completion remains charged even when cancellation races the effect.
+            let _ = observed.record_completed(WorkCounters {
+                bytes_copied: 4,
+                ..WorkCounters::UNCHARGED
+            });
+            4
+        });
+        let completed = if action == 3 {
+            let mut output = [0; 2];
+            output.copy_from_slice(std::hint::black_box(b"co"));
+            assert_eq!(&std::hint::black_box(output), b"co");
+            let _ = inner.record_completed(WorkCounters {
+                bytes_copied: 2,
+                ..WorkCounters::UNCHARGED
+            });
+            2
+        } else {
+            0
+        };
+        if action == 1 {
+            cancellation.cancel();
+        }
+        OMIT_REFUND.with(|flag| flag.set(OMIT));
+        if action == 2 {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _until_unwind = inner;
+                panic!("callback panic after reservation");
+            }));
+            assert!(result.is_err());
+        } else {
+            drop(inner);
+        }
+        OMIT_REFUND.with(|flag| flag.set(false));
+        let worker_completed = worker.join().unwrap();
+        let reserved = 8 + worker_completed;
+        let charged = completed + worker_completed;
+        let refunded = 4 - completed;
+        assert_credit(&parent, reserved, charged, refunded, 4);
+        // Parent credit is independently returned after the child's unwind.
+        drop(outer);
+        assert_credit(&parent, reserved, charged, refunded + 4, 0);
+        assert_credit(&child, reserved, charged, refunded + 4, 0);
+    });
+}
+
+#[test]
+fn abandoned_cancelled_panicking_and_child_effects_refund_credit() {
+    for action in 0..4 {
+        refund_model::<false>(action);
+    }
+}
+
+#[test]
+fn a_missing_refund_is_detected_by_reservation_conservation() {
+    let rejected = std::panic::catch_unwind(|| refund_model::<true>(0));
+    let panic = rejected.expect_err("omitting a refund must fail conservation");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("outstanding + charged + refunded must equal reserved"),
+        "{message}"
     );
 }

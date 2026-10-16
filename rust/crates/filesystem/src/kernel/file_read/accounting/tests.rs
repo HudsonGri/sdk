@@ -42,12 +42,83 @@ proptest! {
         prop_assert_eq!(original.receipt().bytes_copied, completed);
         // Read remaining through the original work to include outstanding
         // root and resource reservations without creating another owner.
+        let remaining = work.state(|state| state.remaining()).unwrap().bytes_copied;
+        prop_assert_eq!(remaining, reserved - completed);
         if !cancel {
-            let remaining = work.remaining().unwrap().bytes_copied;
-            prop_assert_eq!(remaining, reserved - completed);
             work.charge(WorkCounters { bytes_copied: remaining, ..WorkCounters::UNCHARGED }).unwrap();
             prop_assert_eq!(original.receipt().bytes_copied, reserved);
         }
+    }
+
+    // Cloning admits the exact name once, before allocation; a denied clone
+    // leaves both copy work and allocation operations unchanged.
+    #[test]
+    fn name_clone_uses_exactly_one_copy_allowance(
+        length in 1_usize..65,
+        mode in 0_u8..4,
+        short in any::<bool>(),
+    ) {
+        for length in [8, length] {
+            let cancellation = CancellationToken::new();
+            let maximum = length as u64 - u64::from(short);
+            let budget = WorkBudget { bytes_copied: maximum, ..WorkBudget::UNBOUNDED };
+            let name = super::super::super::LogicalName::new(
+                super::super::super::NameEncoding::Utf8, vec![b'x'; length], 64,
+            ).unwrap();
+            let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+            let child = original.native_volume_work(budget).unwrap();
+            let recheck = child.recheck_admitted();
+            let mut accounting = match mode {
+                0 => KernelAccounting::standalone(budget, &cancellation),
+                1 => KernelAccounting::native(&original, &cancellation),
+                2 => KernelAccounting::native(&child, &cancellation),
+                _ => KernelAccounting::native(&recheck, &cancellation),
+            };
+            let before = accounting.spent();
+            let result = name.clone_with_accounting(&mut accounting, &cancellation);
+            prop_assert_eq!(result.is_err(), short);
+            let receipt = accounting.spent();
+            prop_assert_eq!(receipt.bytes_copied - before.bytes_copied, if short { 0 } else { length as u64 });
+            if short {
+                prop_assert_eq!(receipt.allocation_operations, before.allocation_operations);
+            } else {
+                let (cloned, allocation) = result.unwrap();
+                prop_assert_eq!(cloned, name);
+                drop(allocation);
+            }
+            prop_assert_eq!(accounting.remaining().unwrap().bytes_copied, if short { maximum } else { 0 });
+        }
+    }
+
+    // The consolidated reservation preserves the old error priority: existing
+    // original/resource failures, then caller cancellation, then new work.
+    #[test]
+    fn reservation_keeps_preflight_failure_priority(
+        caller_cancelled in any::<bool>(),
+        original_cancelled in any::<bool>(),
+        poisoned in any::<bool>(),
+        overrun in any::<bool>(),
+        resource in any::<bool>(),
+        amount in 0_u64..17,
+    ) {
+        let cancellation = CancellationToken::new();
+        let caller = CancellationToken::new();
+        let budget = WorkBudget { bytes_copied: 8, ..WorkBudget::UNBOUNDED };
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let child = original.native_volume_work(budget).unwrap();
+        let work = if resource { &child } else { &original };
+        let mut accounting = KernelAccounting::native(work, &caller);
+        let mut observed = OriginalReadAccounting::new(&mut accounting).unwrap();
+        if overrun { let _ = work.record_admitted(WorkCounters { bytes_copied: 9, ..WorkCounters::UNCHARGED }); }
+        if poisoned { work.state(|state| state.poison_native_original_work()); }
+        if original_cancelled { cancellation.cancel(); }
+        if caller_cancelled { caller.cancel(); }
+        let delta = WorkCounters { bytes_copied: amount, ..WorkCounters::UNCHARGED };
+        let expected = work.admit(WorkCounters::UNCHARGED).map_err(FsError::from)
+            .and_then(|()| caller.check().map_err(FsError::from))
+            .and_then(|()| work.admit(delta).map_err(FsError::from));
+        let actual = observed.admit(delta);
+        prop_assert_eq!(actual.map_err(|error| format!("{error:?}")), expected.map_err(|error| format!("{error:?}")));
     }
 
     // The aggregate parent check is a preflight, followed by individually
