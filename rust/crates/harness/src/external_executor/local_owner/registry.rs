@@ -42,10 +42,16 @@ async fn open_once<T, R>(
 }
 
 async fn close_after_workers<T, R>(
-    opened: Opened<T, R>,
+    state: &StateArc<Mutex<Opened<T, R>>>,
     join: impl AsyncFn(R) -> Result<()>,
     close: impl AsyncFn(StateArc<T>) -> Result<()>,
 ) -> Result<()> {
+    // The caller has stopped admission. Release the registry lock before
+    // joining effects or entering provider shutdown, including on failure.
+    let opened = {
+        let mut state = lock_owned(StateArc::clone(state)).await;
+        std::mem::take(&mut *state)
+    };
     #[cfg(acyclic_harness_loom)]
     if model::early_close() {
         for value in opened.entries.into_values() {
@@ -118,14 +124,8 @@ impl Registry {
     }
 
     pub(super) async fn drain(&self) -> Result<()> {
-        // The server has stopped admitting calls. Move ownership out of the
-        // registry lock before joining effects or entering provider shutdown.
-        let opened = {
-            let mut state = lock_owned(StateArc::clone(&self.state)).await;
-            std::mem::take(&mut *state)
-        };
         close_after_workers(
-            opened,
+            &self.state,
             async |worker| worker.await.map_err(storage)?,
             async |harness| {
                 let harness = take_owner(harness)?;

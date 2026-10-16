@@ -89,9 +89,8 @@ mod tests {
                 }));
             }
         }
-        let opened = std::mem::take(&mut *complete(lock_owned(StateArc::clone(&state))));
         complete(close_after_workers(
-            opened,
+            &state,
             async |worker| {
                 worker.join().unwrap();
                 Ok(())
