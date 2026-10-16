@@ -47,7 +47,7 @@ pub(in crate::local) async fn close(root: Arc<LocalWorkspace>) -> Result<()> {
     let mut failed = None;
     for workspace in workspaces.iter().rev() {
         if let Some(native) = &workspace.mounted {
-            if let Err(error) = Box::pin(native.unmount()).await {
+            if let Err(error) = native.unmount().await {
                 failed.get_or_insert_with(|| storage(error));
             }
         }
@@ -64,7 +64,7 @@ pub(in crate::local) async fn close(root: Arc<LocalWorkspace>) -> Result<()> {
                 .and_then(|source| source.native.as_ref())
             {
                 if retired.insert(native.path().to_owned()) {
-                    if let Err(error) = Box::pin(native.unmount()).await {
+                    if let Err(error) = native.unmount().await {
                         failed.get_or_insert_with(|| storage(error));
                     }
                 }

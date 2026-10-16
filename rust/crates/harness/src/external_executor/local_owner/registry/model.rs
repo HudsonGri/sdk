@@ -76,6 +76,7 @@ mod tests {
             Opened::<(), loom::thread::JoinHandle<()>>::default(),
         ));
         let completed = StateArc::new(AtomicUsize::new(0));
+        let closed = StateArc::new(AtomicUsize::new(0));
         {
             let mut opened = complete(lock_owned(StateArc::clone(&state)));
             opened.entries.insert("workspace".into(), Arc::new(()));
@@ -103,10 +104,12 @@ mod tests {
                     2,
                     "close preceded worker drain"
                 );
+                closed.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
         ))
         .unwrap();
+        assert_eq!(closed.load(Ordering::SeqCst), 1, "provider was not closed");
     }
 
     #[test]

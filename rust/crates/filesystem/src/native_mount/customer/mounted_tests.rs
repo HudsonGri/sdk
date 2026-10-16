@@ -80,6 +80,19 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             options.native_context(&mount_work, None, None),
         )
         .await?;
+    let syncing = mount.sync();
+    let unmounting = mount.unmount();
+    for (name, size) in [
+        ("sync", std::mem::size_of_val(&syncing)),
+        ("unmount", std::mem::size_of_val(&unmounting)),
+    ] {
+        eprintln!("native lazy mount {name} future: {size} bytes");
+        assert!(
+            size < 16 * 1024,
+            "native {name} future grew to {size} bytes"
+        );
+    }
+    drop((syncing, unmounting));
     let query = new_work(WorkBudget::UNBOUNDED)?;
     let before = mount.snapshot(&query, &cancellation).await?;
     assert_eq!(before.authored_generation, generation);
