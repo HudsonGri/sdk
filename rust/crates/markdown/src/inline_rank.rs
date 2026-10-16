@@ -1,6 +1,5 @@
 use super::super::PAGE;
 
-#[derive(Clone, Copy, Default)]
 struct Word {
     bits: u64,
     prefix: usize,
@@ -9,7 +8,8 @@ struct Word {
 
 #[derive(Default)]
 pub(super) struct Rank {
-    pages: Vec<Box<[Word; PAGE]>>,
+    pages: Vec<Box<[Word]>>,
+    tail: Vec<Word>,
     length: usize,
     ones: usize,
 }
@@ -19,7 +19,10 @@ impl Rank {
         if index >= self.length.div_ceil(64) {
             return None;
         }
-        self.pages.get(index / PAGE)?.get(index % PAGE)
+        self.pages
+            .get(index / PAGE)
+            .map_or(self.tail.as_slice(), AsRef::as_ref)
+            .get(index % PAGE)
     }
 
     pub(super) fn push(&mut self, value: bool) {
@@ -28,18 +31,6 @@ impl Rank {
         #[cfg(test)]
         crate::work::scan(1);
         if bit == 0 {
-            if index.is_multiple_of(PAGE) {
-                #[cfg(test)]
-                {
-                    if self.pages.len() == self.pages.capacity() {
-                        crate::work::copy(
-                            self.pages.len() * std::mem::size_of::<Box<[Word; PAGE]>>(),
-                        );
-                    }
-                    crate::work::copy(std::mem::size_of::<[Word; PAGE]>());
-                }
-                self.pages.push(Box::new([Word::default(); PAGE]));
-            }
             let previous = index.checked_sub(1).and_then(|before| {
                 let word = self.word(before).expect("previous rank word");
                 if word.bits != 0 {
@@ -49,15 +40,32 @@ impl Rank {
                 }
             });
             #[cfg(test)]
-            crate::work::copy(std::mem::size_of::<Word>());
-            self.pages[index / PAGE][index % PAGE] = Word {
+            {
+                crate::work::copy(std::mem::size_of::<Word>());
+            }
+            if self.tail.len() == PAGE {
+                #[cfg(test)]
+                if self.pages.len() == self.pages.capacity() {
+                    crate::work::copy(self.pages.len() * std::mem::size_of::<Box<[Word]>>());
+                }
+                self.pages
+                    .push(std::mem::take(&mut self.tail).into_boxed_slice());
+            }
+            if self.tail.capacity() == 0 {
+                self.tail = Vec::with_capacity(PAGE);
+            }
+            self.tail.push(Word {
                 bits: 0,
                 prefix: self.ones,
                 previous,
-            };
+            });
         }
         if value {
-            self.pages[index / PAGE][index % PAGE].bits |= 1u64 << bit;
+            let page = self
+                .pages
+                .get_mut(index / PAGE)
+                .map_or(self.tail.as_mut_slice(), AsMut::as_mut);
+            page[index % PAGE].bits |= 1u64 << bit;
             self.ones += 1;
         }
         self.length += 1;
@@ -100,8 +108,8 @@ impl Rank {
 
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.pages.capacity() * std::mem::size_of::<Box<[Word; PAGE]>>()
-            + self.pages.len() * std::mem::size_of::<[Word; PAGE]>()
+        self.pages.capacity() * std::mem::size_of::<Box<[Word]>>()
+            + (self.pages.len() * PAGE + self.tail.capacity()) * std::mem::size_of::<Word>()
     }
 }
 

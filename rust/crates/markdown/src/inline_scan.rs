@@ -552,20 +552,21 @@ impl Scanner {
         }
         // An unresolved construct can reopen older ancestors. Advance only
         // through a boundary actually observed with neutral scanner state.
-        let candidate = self.frontier.max(base);
+        let candidate = self.pending_break.map_or(self.frontier.max(base), |start| {
+            self.frontier.max(base).min(start)
+        });
         self.projected = self.state.projection(self.tokens.preview().as_ref());
-        let scopes = self.state.forest.scopes_since(self.projected, base);
-        self.forbid_splits(&syntax.outer, scopes);
+        if candidate > base {
+            let scopes = self.state.forest.scopes_since(self.projected, base);
+            self.forbid_splits(&syntax.outer, scopes, candidate);
+        } else {
+            self.atomic.clear();
+        }
         self.syntax = syntax;
-        self.checkpoint(
-            self.pending_break
-                .map_or(candidate, |start| candidate.min(start)),
-        )
-        .saturating_sub(base)
-            + sentinel
+        self.checkpoint(candidate).saturating_sub(base) + sentinel
     }
 
-    fn forbid_splits(&mut self, ranges: &[Scope], scopes: Vec<Range<usize>>) {
+    fn forbid_splits(&mut self, ranges: &[Scope], scopes: Vec<Range<usize>>, limit: usize) {
         self.atomic.clear();
         let mut syntax = ranges.iter().map(|scope| scope.range.clone()).peekable();
         let mut scopes = scopes.into_iter().peekable();
@@ -585,7 +586,7 @@ impl Scanner {
                 .chain(tokens.peek())
                 .map(|range| range.start)
                 .min();
-            let Some(first) = first else {
+            let Some(first) = first.filter(|start| *start < limit) else {
                 break;
             };
             let next = if syntax.peek().is_some_and(|range| range.start == first) {

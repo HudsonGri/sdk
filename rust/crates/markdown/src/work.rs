@@ -20,12 +20,18 @@ pub(crate) fn visibility(count: usize) {
 pub(crate) fn visibility_current() -> usize {
     VISIBILITY.get()
 }
+pub(crate) fn parts() -> [usize; 5] {
+    [
+        SCAN.get(),
+        COPY.get(),
+        VISIBILITY.get(),
+        RENDER_FEED.get(),
+        crate::references::PARSED_BYTES.get(),
+    ]
+}
+
 pub(crate) fn current() -> usize {
-    SCAN.get()
-        + COPY.get()
-        + VISIBILITY.get()
-        + RENDER_FEED.get()
-        + crate::references::PARSED_BYTES.get()
+    parts().into_iter().sum()
 }
 
 pub(crate) fn render_feed(bytes: usize) {

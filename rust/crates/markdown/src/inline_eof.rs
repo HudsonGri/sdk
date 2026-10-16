@@ -61,18 +61,19 @@ impl Projections {
         };
         #[cfg(test)]
         crate::work::scan(1);
-        let original = Heads::read(state);
         let (byte, before, escaped) = match token.kind {
             Kind::Run { byte, before, .. } => (byte, before, false),
             Kind::Escape(character) if matches!(character, '*' | '_' | '~' | '`') => {
                 (character as u8, character, true)
             }
             _ => {
+                let previous = state.forest.snapshot();
                 let root = state.forest.text(token.range.clone());
-                original.restore(state);
+                state.invalid |= !state.forest.restore(previous);
                 return root;
             }
         };
+        let original = Heads::read(state);
         if byte == b'`' {
             let physical = token.range.start + usize::from(escaped)..token.range.end;
             #[cfg(test)]

@@ -22,8 +22,9 @@ fn replay(source: &str, cuts: &[usize]) {
     }
 }
 
-fn units(chunks: &[String], count: usize) -> (usize, usize) {
+fn units(chunks: &[String], count: usize) -> (usize, usize, [usize; 5]) {
     let before = work::current();
+    let parts_before = work::parts();
     let mut markdown = Markdown::default();
     for chunk in chunks.iter().cycle().take(count) {
         markdown.push(chunk);
@@ -33,7 +34,12 @@ fn units(chunks: &[String], count: usize) -> (usize, usize) {
         + markdown.reference_cache_visits
         + markdown.reference_moved_lines
         + markdown.boundary_work;
-    (used, markdown.source.len())
+    let parts_after = work::parts();
+    (
+        used,
+        markdown.source.len(),
+        std::array::from_fn(|i| parts_after[i] - parts_before[i]),
+    )
 }
 
 proptest! {
@@ -73,9 +79,9 @@ proptest! {
         ]).prop_map(str::to_owned), 1..5),
     ) {
         for count in [64, 128, 256, 1024] {
-            let (work, bytes) = units(&chunks, count);
+            let (work, bytes, parts) = units(&chunks, count);
             prop_assert!(work <= 128 * bytes + 4096,
-                "{chunks:?}: {count} chunks, {work} work for {bytes} bytes");
+                "{chunks:?}: {count} chunks, {work} work for {bytes} bytes; scan/copy/visibility/feed/parser {parts:?}");
         }
     }
 }
