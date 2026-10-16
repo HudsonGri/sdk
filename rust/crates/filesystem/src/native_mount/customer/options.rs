@@ -74,13 +74,16 @@ impl MountOptions {
                 "native mounts require an authenticated policy and capability view",
             ))?;
         #[cfg(windows)]
-        super::super::actions::require_projfs_mode(
-            &view
+        {
+            let current = view
                 .current()
-                .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?,
-            self.writable,
-            super::super::adapter::access::access_time()?,
-        )?;
+                .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+            crate::native_mount::actions::require_projfs_mode(
+                current.as_ref(),
+                self.writable,
+                super::super::adapter::access::access_time()?,
+            )?;
+        }
         Ok(view)
     }
 

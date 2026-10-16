@@ -627,7 +627,7 @@ pub(super) fn authorize_pre_operation(
     notification: PRJ_NOTIFICATION,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), MountSourceError> {
-    use super::super::actions::Mutation;
+    use crate::native_mount::actions::Mutation;
     let mutation = match (notification, path, destination) {
         (PRJ_NOTIFICATION_PRE_DELETE, Some(_), _) => Mutation::Delete,
         (PRJ_NOTIFICATION_PRE_RENAME, None, Some(_)) => Mutation::Create,

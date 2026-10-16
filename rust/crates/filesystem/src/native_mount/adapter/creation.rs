@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let (path, _path_allocation) = self.namespace_path(path, &mut carrier)?;
         self.require_access(
             &path,
-            super::super::actions::Mutation::Create.actions().1,
+            crate::native_mount::actions::Mutation::Create.actions().1,
             work,
         )
         .await?;
