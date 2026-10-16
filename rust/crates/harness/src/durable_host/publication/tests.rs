@@ -1,8 +1,8 @@
 //! The production retry loop against the atomic Streams transaction boundary.
 use super::*;
 use acyclic_stream::{
-    AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    MemoryStream, ReadRequest, StreamProvider,
+    AppendRequest, CommitCondition, CommitOutcome, IdempotencyKey, MemoryStream, ReadRequest,
+    StreamProvider,
 };
 use futures::StreamExt as _;
 use proptest::prelude::*;
@@ -30,23 +30,23 @@ proptest! {
 
 #[test]
 fn unrelated_coordinator_progress_rechecks_the_original_fence() {
-    scenario::<true>(false, false);
-    scenario::<true>(true, false);
+    scenario::<true, true>(false);
+    scenario::<true, true>(true);
 }
 
 #[test]
 #[should_panic(expected = "unrelated progress rejected the journal")]
 fn negative_control_detects_missing_coordinator_retry() {
-    scenario::<false>(false, false);
+    scenario::<false, true>(false);
 }
 
 #[test]
 #[should_panic(expected = "stale owner published a journal")]
 fn negative_control_detects_dropping_the_fence() {
-    scenario::<true>(true, true);
+    scenario::<true, false>(true);
 }
 
-fn scenario<const RETRY: bool>(lose_owner: bool, omit_fence: bool) {
+fn scenario<const RETRY: bool, const FENCE: bool>(lose_owner: bool) {
     shuttle::check_dfs(
         move || {
             shuttle::future::block_on(async move {
@@ -98,29 +98,25 @@ fn scenario<const RETRY: bool>(lose_owner: bool, omit_fence: bool) {
                         return Err(crate::Error::Unauthorized("owner lost".into()));
                     }
                     shuttle::future::yield_now().await;
-                    let mut conditions = vec![CommitCondition::Absent {
-                        path: journal.clone(),
-                    }];
-                    if !omit_fence {
-                        conditions.push(CommitCondition::Tail {
+                    let mut work = None;
+                    let request = crate::distributed::journal_request::<FENCE>(
+                        IdempotencyKey::new(tail.to_le_bytes().to_vec()).unwrap(),
+                        0,
+                        CommitCondition::Tail {
                             path: owner.clone(),
                             expected: tail,
-                        });
-                    }
+                        },
+                        CommitCondition::Absent {
+                            path: journal.clone(),
+                        },
+                        journal.clone(),
+                        b"result".to_vec().into(),
+                        &mut work,
+                    )
+                    .unwrap();
                     // No yield inside the provider's atomic transaction boundary.
                     let current = stream.tail(owner.clone()).await.unwrap();
-                    let outcome = stream
-                        .commit(CommitRequest {
-                            conditions,
-                            mutations: vec![CommitMutation::Append {
-                                path: journal.clone(),
-                                records: vec![b"result".to_vec().into()],
-                            }],
-                            idempotency_key: IdempotencyKey::new(tail.to_le_bytes().to_vec())
-                                .unwrap(),
-                        })
-                        .await
-                        .unwrap();
+                    let outcome = stream.commit(request.0).await.unwrap();
                     assert!(
                         !(lose_owner
                             && current > tail

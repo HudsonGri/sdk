@@ -52,6 +52,31 @@ fn client_commit_authority_never_widens_to_owner_paths() {
         .run(&strategy, |name| {
             let path = StreamPath::new(&name).unwrap();
             prop_assert_eq!(
+                client.children_readable(Some(&path)).is_ok(),
+                name == "external/requests" || name == "external/results"
+            );
+            prop_assert!(client.children_readable(None).is_err());
+            let children = runtime.block_on(client.children_page(ChildrenPageRequest {
+                parent: Some(path.clone()),
+                after: None,
+                hierarchy_version: None,
+                limit: 1,
+            }));
+            if name == "external/requests" || name == "external/results" {
+                prop_assert_eq!(children?.children.len(), 1);
+                prop_assert_eq!(
+                    runtime.block_on(client.children_page(ChildrenPageRequest {
+                        parent: Some(path.clone()),
+                        after: Some(StreamPath::new("scheduler/private").unwrap()),
+                        hierarchy_version: None,
+                        limit: 1,
+                    })),
+                    Err(StreamError::AccessDenied)
+                );
+            } else {
+                prop_assert_eq!(children, Err(StreamError::AccessDenied));
+            }
+            prop_assert_eq!(
                 runtime.block_on(
                     client.inspect_idempotency(
                         IdempotencyKey::new(name.as_bytes().to_vec()).unwrap()

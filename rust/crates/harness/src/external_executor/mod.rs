@@ -15,6 +15,8 @@ mod failure;
 mod handoff;
 #[cfg(feature = "filesystem")]
 mod intake;
+#[cfg(feature = "filesystem")]
+pub(crate) use intake::LIFECYCLE;
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",

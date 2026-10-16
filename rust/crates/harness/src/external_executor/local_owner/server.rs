@@ -295,6 +295,12 @@ async fn drive_task(
     stop: Arc<TaskVolume<LocalStream>>,
     instance: uuid::Uuid,
 ) -> Result<()> {
+    if harness
+        .registered_until(task, stopped(&stop, instance))
+        .await?
+    {
+        return Ok(());
+    }
     let volumes = harness.external_volumes(task).await?;
     let mut files = request_feed::follow(
         harness.task_stream().as_ref(),
@@ -315,13 +321,13 @@ async fn drive_task(
                 "request belongs to another task stream".into(),
             ));
         }
-        if harness
+        let result = harness
             .external_request_until(&request, stopped(&stop, instance))
-            .await?
-            .is_none()
-        {
+            .await?;
+        let Some(result) = result else {
             return Ok(());
-        }
+        };
+        harness.external_child(&request, &result).await?;
     }
 }
 

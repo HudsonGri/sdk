@@ -35,6 +35,7 @@ mod deadline;
 mod inspection;
 mod reconciliation;
 pub use inspection::TaskSourceInspection;
+mod admission_input;
 mod command_input;
 pub(super) mod observed;
 #[cfg(all(test, not(target_arch = "wasm32")))]

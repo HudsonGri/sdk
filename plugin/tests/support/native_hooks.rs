@@ -41,7 +41,9 @@ impl Fixture {
         let stopped = self.close().await;
         let output = owner.wait_with_output().await?;
         if !output.status.success() {
-            return Err(format!("owner failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+            return Err(
+                format!("owner failed: {}", String::from_utf8_lossy(&output.stderr)).into(),
+            );
         }
         stopped
     }
@@ -108,6 +110,14 @@ pub async fn files(
     directory: &Path,
     path: &str,
 ) -> Result<acyclic_harness::task_volume::TaskVolume<acyclic_stream::grpc::Client>> {
+    Ok(acyclic_harness::task_volume::TaskVolume::open_existing(
+        std::sync::Arc::new(client(directory).await?),
+        acyclic_stream::StreamPath::new(path)?,
+    )
+    .await?)
+}
+
+pub async fn client(directory: &Path) -> Result<acyclic_stream::grpc::Client> {
     let root = directory.parent().unwrap().join("owner");
     let address: Value = serde_json::from_slice(&std::fs::read(root.join("address.json"))?)?;
     let secret: [u8; 32] = std::fs::read(root.join("credential"))?
@@ -121,18 +131,15 @@ pub async fn files(
         "{scope}.{}",
         blake3::keyed_hash(&secret, scope.as_bytes()).to_hex()
     );
-    let client = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
-        address["endpoint"].as_str().ok_or("missing endpoint")?,
-        &token,
-        address["certificate"]
-            .as_str()
-            .ok_or("missing certificate")?
-            .as_bytes(),
+    Ok(
+        acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
+            address["endpoint"].as_str().ok_or("missing endpoint")?,
+            &token,
+            address["certificate"]
+                .as_str()
+                .ok_or("missing certificate")?
+                .as_bytes(),
+        )
+        .await?,
     )
-    .await?;
-    Ok(acyclic_harness::task_volume::TaskVolume::open_existing(
-        std::sync::Arc::new(client),
-        acyclic_stream::StreamPath::new(path)?,
-    )
-    .await?)
 }

@@ -10,7 +10,7 @@ use crate::{
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::StreamProvider;
 
-pub(super) const LIFECYCLE: &str = "acyclic.external.lifecycle.v1";
+pub(crate) const LIFECYCLE: &str = "acyclic.external.lifecycle.v1";
 
 /// One request-file delivery into the existing session workflow. This consumer
 /// retains no queue or task map; admission and the workflow slot own retries.

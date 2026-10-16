@@ -234,12 +234,22 @@ where
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
         if command.kind == TASK_ADMIT_COMMAND_KIND {
-            let input: TaskAdmitCommand = mail::decode_command(payload, io)?;
+            let mut input: TaskAdmitCommand = mail::decode_command(payload, io)?;
             let operation = super::super::recursive::derive_operation(
                 b"harness/v2/task-child\0",
                 &[task.into_bytes(), command.operation_id.into_bytes()],
                 io,
             )?;
+            if let Err(error) = self
+                .runtime
+                .stage_initial_command(context, operation, &mut input, io)
+                .await
+            {
+                if let Error::Invalid(message) = error {
+                    return ready(Outcome::<Value>::Failed { message }, io);
+                }
+                return query::failure(error, io);
+            }
             let admission = 'admission: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {

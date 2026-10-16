@@ -60,6 +60,14 @@ fn canonical<T: DeserializeOwned + Serialize>(value: &Value) -> Result<Value> {
 #[cfg(feature = "test-support")]
 pub(crate) fn fuzz_command(request: &ExternalRequest) {
     if let Ok(Some((kind, payload))) = request.task_command() {
+        if kind == TASK_ADMIT_COMMAND_KIND {
+            if let Ok(input) = <TaskAdmitCommand as serde::Deserialize>::deserialize(&payload) {
+                if let Ok(Some(command)) = input.initial_command(None) {
+                    let encoded = serde_json::to_value(&command).unwrap();
+                    assert_eq!(input.input["command"], encoded);
+                }
+            }
+        }
         let mut replay = request.clone();
         if let ExternalAction::RunTool { arguments, .. } = &mut replay.action {
             *arguments = payload.clone();

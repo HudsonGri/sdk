@@ -8,6 +8,7 @@ use crate::{
 use serde_json::Value;
 
 mod recovery;
+mod registered;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
