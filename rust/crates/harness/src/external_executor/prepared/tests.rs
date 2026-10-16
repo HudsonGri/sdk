@@ -78,6 +78,10 @@ proptest! {
                 json!({"sessionId":session,"agentId":child,"cwd":"/project","turnId":turn}))?;
             prop_assert_eq!(start.child_attachment("/project")?, attached.clone());
             prop_assert_eq!(stop.child_attachment("/project")?, attached.clone());
+            let completed = request(host, if host == ExternalHost::Pi {"session_shutdown"} else {"SessionEnd"},
+                json!({"sessionId":session,"agentId":child}))?;
+            prop_assert_eq!(stop.child_completion()?, completed);
+            prop_assert!(start.child_completion().is_err());
             let expected = serde_json::to_value(TaskJoinCommand {child:attached.task_id()}).unwrap();
             prop_assert_eq!(stop.task_command()?, Some((TASK_JOIN_COMMAND_KIND, expected)));
             prop_assert!(super::super::commands::validate_command(&stop, super::super::intake::LIFECYCLE,

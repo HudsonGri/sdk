@@ -134,8 +134,9 @@ async fn shutdown_releases_a_passive_wait_and_replay_finishes_after_child_comple
     )?;
     harness.external_request(&child).await?;
     let join = event(
-        "subagent_stop",
-        serde_json::json!({"sessionId":"wait","agentId":"child"}),
+        "tool_call",
+        serde_json::json!({"sessionId":"wait","toolCallId":"join",
+        "toolName":"acyclic_wait","input":{"child":child.task_id()}}),
     )?;
     assert_eq!(harness.external_step(&join).await?, None);
     let waiting = harness.external_request_until(&join, async { Ok(()) });

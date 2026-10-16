@@ -120,7 +120,7 @@ async fn exposed_wait_uses_the_returned_child_handle_for_every_host() -> Result 
 }
 
 #[tokio::test]
-async fn pending_native_parent_joins_do_not_block_child_hooks_for_any_host() -> Result {
+async fn native_subagent_stop_completes_the_child_before_parent_continuation() -> Result {
     let fixture = Fixture::new()?;
     let cwd = fixture.path();
     for host in [
@@ -159,34 +159,41 @@ async fn pending_native_parent_joins_do_not_block_child_hooks_for_any_host() -> 
         let event = if pi { "subagent_stop" } else { "SubagentStop" };
         let input = json!({"sessionId":session,"agentId":"child"});
         let join = request(host, event, input.clone())?;
+        // The native host sends no child SessionEnd before continuing its
+        // parent. Stop itself must settle the child, and retries must agree.
+        assert_eq!(
+            hook(cwd, host.name(), event, input.clone()).await?,
+            json!({"Succeeded":null})
+        );
+        assert_eq!(
+            hook(cwd, host.name(), event, input).await?,
+            json!({"Succeeded":null})
+        );
+        hook(
+            cwd,
+            host.name(),
+            if pi { "tool_call" } else { "PreToolUse" },
+            json!({"sessionId":session,"toolCallId":"continued",
+                "toolName":if pi {"write"} else {"mcp__acyclic__write"},
+                "input":{"path":format!("{}.txt",host.name()),"content":"parent continued"}}),
+        )
+        .await?;
+        assert_eq!(
+            std::fs::read_to_string(cwd.join(format!("{}.txt", host.name())))?,
+            "parent continued"
+        );
         let results = files(cwd, &format!("external/results/{}", join.task_id())).await?;
-        let mut waiting = Box::pin(hook(cwd, host.name(), event, input));
-        tokio::select! {
-            result = &mut waiting => panic!("join completed before child: {result:?}"),
-            result = started(&results,&join) => result?,
-        }
-        assert!(
+        assert_eq!(
             results
                 .snapshot(
                     &Query::File(join.result_key(Component::new(join.task_id().to_string())?)?),
-                    1
+                    1,
                 )
                 .await?
                 .files
-                .is_empty()
+                .len(),
+            1
         );
-        // Both subprocesses must progress through the same surviving owner.
-        let (joined, ended) = tokio::join!(
-            waiting,
-            hook(
-                cwd,
-                host.name(),
-                if pi { "session_shutdown" } else { "SessionEnd" },
-                json!({"sessionId":session,"agentId":"child"})
-            )
-        );
-        assert_eq!(joined?, json!({"Succeeded":null}));
-        ended?;
     }
     fixture.close().await
 }

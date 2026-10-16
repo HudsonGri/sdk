@@ -105,6 +105,31 @@ impl LocalHarness {
         stopped: impl Future<Output = Result<()>> + Send + 'a,
     ) -> impl Future<Output = Result<Option<Value>>> + 'a {
         Box::pin(async move {
+            tokio::pin!(stopped);
+            if matches!(request.action, ExternalAction::Join { .. }) {
+                let completion =
+                    RequestConsumer::child_completion(&self.runtime, request.task_id(), request)
+                        .await?;
+                // No parent task guard is held while its child settles. This
+                // is the same Detach request as a later native SessionEnd.
+                if self
+                    .external_follow(&completion, stopped.as_mut())
+                    .await?
+                    .is_none()
+                {
+                    return Ok(None);
+                }
+            }
+            self.external_follow(request, stopped).await
+        })
+    }
+
+    fn external_follow<'a>(
+        &'a self,
+        request: &'a ExternalRequest,
+        stopped: impl Future<Output = Result<()>> + Send + 'a,
+    ) -> impl Future<Output = Result<Option<Value>>> + 'a {
+        Box::pin(async move {
             use futures::StreamExt as _;
             crate::external_executor::progress::follow(
                 || self.external_step(request),

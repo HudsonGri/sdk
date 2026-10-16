@@ -90,37 +90,24 @@ async fn task_stream_drivers_keep_a_parent_wait_and_child_completion_independent
                 if pi { "subagent_stop" } else { "SubagentStop" },
                 json!({"sessionId":host.name(),"agentId":"child"}),
             )?;
-            let ended = async {
-                let key = FileKey::Task {
-                    task: folder.clone(),
-                    file: TaskFile::RequestStarted(
-                        Component::new(join.operation_id.to_string()).map_err(storage)?,
-                    ),
-                };
-                super::super::super::client::follow_file(&parent_files.results, key)
-                    .await
-                    .map_err(storage)?
-                    .await
-                    .map_err(storage)?;
-                let end = request(
-                    host,
-                    if pi { "session_shutdown" } else { "SessionEnd" },
-                    json!({"sessionId":host.name(),"agentId":"child"}),
-                )?;
-                end.send(&child_files.requests, &child_files.results, child_folder)
-                    .await
-                    .map_err(storage)
-            };
-            let (joined, ended) = tokio::join!(
-                join.send(
+            let joined = join
+                .send(
                     &parent_files.requests,
                     &parent_files.results,
-                    folder.clone()
-                ),
-                ended
-            );
-            assert_eq!(joined.map_err(storage)?, json!({"Succeeded":null}));
-            ended?;
+                    folder.clone(),
+                )
+                .await
+                .map_err(storage)?;
+            assert_eq!(joined, json!({"Succeeded":null}));
+            // A delayed SessionEnd is the exact same terminal request.
+            let end = request(
+                host,
+                if pi { "session_shutdown" } else { "SessionEnd" },
+                json!({"sessionId":host.name(),"agentId":"child"}),
+            )?;
+            end.send(&child_files.requests, &child_files.results, child_folder)
+                .await
+                .map_err(storage)?;
         }
         let file = FileValue::new(stop_key(instance)?, b"{}".as_slice());
         super::super::super::publish_request(&stop, &file, None, None)

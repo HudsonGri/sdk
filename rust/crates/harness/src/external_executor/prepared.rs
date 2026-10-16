@@ -59,6 +59,19 @@ fn canonical<T: DeserializeOwned + Serialize>(value: &Value) -> Result<Value> {
 
 #[cfg(feature = "test-support")]
 pub(crate) fn fuzz_command(request: &ExternalRequest) {
+    if let Ok(completion) = request.child_completion() {
+        assert!(matches!(request.action, ExternalAction::Join { .. }));
+        assert_eq!(
+            completion.task_id(),
+            request.child_attachment("").unwrap().task_id()
+        );
+        let task = crate::task_volume::Component::new(completion.task_id().to_string()).unwrap();
+        let file = completion.to_file(task.clone()).unwrap();
+        assert_eq!(
+            ExternalRequest::from_file(&task, &file).unwrap(),
+            completion
+        );
+    }
     if let Ok(Some((kind, payload))) = request.task_command() {
         if kind == TASK_ADMIT_COMMAND_KIND {
             if let Ok(input) = <TaskAdmitCommand as serde::Deserialize>::deserialize(&payload) {

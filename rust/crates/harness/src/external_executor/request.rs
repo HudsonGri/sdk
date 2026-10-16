@@ -26,6 +26,23 @@ pub(super) fn valid_text(text: &str) -> bool {
 }
 
 impl ExternalRequest {
+    pub(super) fn child_completion(&self) -> crate::Result<Self> {
+        if !matches!(self.action, ExternalAction::Join { .. }) {
+            return Err(crate::Error::Invalid(
+                "request is not a native child stop".into(),
+            ));
+        }
+        let mut child = self.child_attachment("")?;
+        child.action = ExternalAction::Detach;
+        child.operation_id = super::normalize::operation(
+            child.host,
+            &child.session_id,
+            &child.caller,
+            &child.action,
+        );
+        Ok(child)
+    }
+
     pub(super) fn child_attachment(&self, workspace: &str) -> crate::Result<Self> {
         let (ExternalAction::Fork { child_id, .. } | ExternalAction::Join { child_id }) =
             &self.action

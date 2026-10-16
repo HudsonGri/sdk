@@ -117,11 +117,31 @@ async fn native_child_hooks_admit_attach_complete_and_join_for_every_host() -> R
                 "join cannot complete while the child is running"
             );
 
-            let stop = request(
+            let other = request(
                 host,
-                if pi { "session_shutdown" } else { "SessionEnd" },
-                json!({"sessionId":"session","agentId":"child"}),
+                if pi { "session_start" } else { "SessionStart" },
+                json!({"sessionId":"session","agentId":"other","cwd":"/project"}),
             )?;
+            deliver(
+                &fixture,
+                &Component::new(other.task_id().to_string()).map_err(storage)?,
+                &other,
+            )
+            .await?;
+            let wrong_parent = request(
+                host,
+                if pi { "subagent_stop" } else { "SubagentStop" },
+                json!({"sessionId":"session","agentId":"child","parentAgentId":"other"}),
+            )?;
+            assert!(matches!(
+                RequestConsumer::child_completion(&fixture.runtime, other.task_id(), &wrong_parent)
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+            // SubagentStop supplies the terminal child request; the native
+            // executor does not need to emit an additional SessionEnd.
+            let stop = RequestConsumer::child_completion(&fixture.runtime, parent.task_id(), &join)
+                .await?;
             let file = publish(&fixture, &child_folder, &stop).await?;
             consumer.accept(&child_folder, &file).await?;
             let commands = RequestCommands::new(

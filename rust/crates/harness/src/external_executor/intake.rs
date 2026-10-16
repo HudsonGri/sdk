@@ -45,6 +45,68 @@ where
         }
     }
 
+    /// Authenticates a native stop against both immutable attachments before
+    /// delivering the child's terminal request and then the parent's join.
+    pub async fn child_completion(
+        runtime: &FilesystemTaskRuntime<P, A, O>,
+        parent_task: TaskId,
+        request: &ExternalRequest,
+    ) -> Result<ExternalRequest> {
+        let completion = request.child_completion()?;
+        if !request.valid() {
+            return Err(Error::Unauthorized("invalid native child stop".into()));
+        }
+        let parent = runtime.task_host().observe_admission(parent_task).await?;
+        Self::authenticate(runtime, parent_task, &parent, request).await?;
+        let child = runtime
+            .task_host()
+            .observe_admission(completion.task_id())
+            .await?;
+        if child.parent != Some(parent_task) {
+            return Err(Error::Unauthorized(
+                "native stop does not own this child".into(),
+            ));
+        }
+        Self::authenticate(runtime, completion.task_id(), &child, &completion).await?;
+        Ok(completion)
+    }
+
+    async fn authenticate(
+        runtime: &FilesystemTaskRuntime<P, A, O>,
+        task: TaskId,
+        admission: &crate::runtime::TaskAdmissionRecord,
+        request: &ExternalRequest,
+    ) -> Result<()> {
+        let initial: WorkflowCommand = serde_json::from_value(
+            admission
+                .input
+                .get("command")
+                .cloned()
+                .ok_or_else(|| Error::Conflict("task is not an external session".into()))?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        if initial.kind != LIFECYCLE {
+            return Err(Error::Conflict(
+                "task is not an attached external session".into(),
+            ));
+        }
+        let context = runtime
+            .harness()
+            .durable_context(task, admission.operation_id, None)
+            .await?;
+        let original: ExternalRequest =
+            volume::decode(&context.read_file(&initial.payload, None).await?).map_err(storage)?;
+        if !matches!(original.action, ExternalAction::Attach { .. })
+            || (original.host, &original.session_id, &original.caller)
+                != (request.host, &request.session_id, &request.caller)
+        {
+            return Err(Error::Unauthorized(
+                "request differs from the attached native session".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Admits Attach or fills the current suspended session slot exactly once.
     /// The actor schedules its existing worker after this delivery is accepted.
     pub fn accept<'b>(
@@ -142,35 +204,7 @@ where
                 };
             }
             let admission = self.runtime.task_host().observe_admission(task_id).await?;
-            let initial: WorkflowCommand = serde_json::from_value(
-                admission
-                    .input
-                    .get("command")
-                    .cloned()
-                    .ok_or_else(|| Error::Conflict("task is not an external session".into()))?,
-            )
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-            if initial.kind != LIFECYCLE {
-                return Err(Error::Conflict(
-                    "task is not an attached external session".into(),
-                ));
-            }
-            let context = self
-                .runtime
-                .harness()
-                .durable_context(task_id, admission.operation_id, None)
-                .await?;
-            let original: ExternalRequest =
-                volume::decode(&context.read_file(&initial.payload, None).await?)
-                    .map_err(storage)?;
-            if !matches!(original.action, ExternalAction::Attach { .. })
-                || (original.host, &original.session_id, &original.caller)
-                    != (request.host, &request.session_id, &request.caller)
-            {
-                return Err(Error::Unauthorized(
-                    "request differs from the attached native session".into(),
-                ));
-            }
+            Self::authenticate(self.runtime, task_id, &admission, &request).await?;
             if !result.files.is_empty() {
                 return Ok(());
             }
