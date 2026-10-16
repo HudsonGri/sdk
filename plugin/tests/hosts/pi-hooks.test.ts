@@ -18,29 +18,33 @@ type Handler = (event: Record<string, unknown>, context: ExtensionContext) => Pr
 const definitions = ["bash", "fs", "read", "write", "edit"].map(name => ({
   name, description: `Harness ${name}`, input_schema: { type: "object", properties: {} },
 }));
-function setup(send: Invoke) {
+function setup(send: Invoke, initial: string[] = ["foreign-mcp"]) {
   const handlers = new Map<string, Handler>();
   const tools = new Map<string, ToolDefinition>();
+  let active = [...initial];
   const api = {
     on(event: string, handler: Handler) { assert.ok(!handlers.has(event)); handlers.set(event, handler); },
     registerTool(tool: ToolDefinition) { tools.set(tool.name, tool); },
+    getActiveTools() { return [...active]; },
+    setActiveTools(names: string[]) { active = [...names]; },
   } as unknown as ExtensionAPI;
   extension(api, send);
   const context = {
     cwd: "/selected-project", sessionManager: { getSessionId: () => "native-session" },
   } as unknown as ExtensionContext;
-  return { handlers, tools, context };
+  return { handlers, tools, context, active: () => active };
 }
 
 test("Pi executes every registered tool exactly once through the harness", async () => {
   const calls: { event: string; input: Record<string, unknown> }[] = [];
   const result = { content: [{type: "text", text: "harness result"}], details: {published:true}, isError:false };
-  const {handlers,tools,context} = setup(async (event,input) => {
+  const {handlers,tools,context,active} = setup(async (event,input) => {
     calls.push({event,input});
     return event === "catalog" ? {tools:definitions} : event === "tool_call" ? input.hostExecuted ? {block:false} : result : {};
   });
   await handlers.get("session_start")!({},context);
   assert.deepEqual([...tools.keys()],definitions.map(tool=>tool.name));
+  assert.deepEqual(active(),["foreign-mcp",...definitions.map(tool=>tool.name)]);
   for (const [name,tool] of tools) {
     assert.deepEqual(tool.parameters,definitions.find(definition=>definition.name===name)!.input_schema);
     assert.equal(typeof tool.renderCall,"function");
@@ -61,6 +65,17 @@ test("Pi executes every registered tool exactly once through the harness", async
   assert.deepEqual(calls.at(-1),{event:"tool_result",input:{...completion,sessionId:"native-session",cwd:"/selected-project"}});
   await handlers.get("session_shutdown")!({},context);
   assert.equal(calls.at(-1)!.event,"session_shutdown");
+});
+
+test("session activation preserves every additive tool and enables every harness tool",async () => {
+  await fc.assert(fc.asyncProperty(fc.array(fc.string({maxLength:16}),{maxLength:16}),async initial => {
+    const fixture=setup(async event=>event === "catalog" ? {tools:definitions} : {},initial);
+    await fixture.handlers.get("session_start")!({},fixture.context);
+    const active=fixture.active();
+    for (const name of [...initial,...definitions.map(tool=>tool.name)]) assert.ok(active.includes(name));
+    assert.equal(new Set(active).size,active.length);
+    for (const name of active) assert.ok(initial.includes(name) || definitions.some(tool=>tool.name === name));
+  }),{numRuns:128});
 });
 
 test("Pi cannot fall back to a built-in after a missing or failed harness result", async () => {

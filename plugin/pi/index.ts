@@ -89,6 +89,7 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
       });
       registered.add(tool.name);
     }
+    pi.setActiveTools([...new Set([...pi.getActiveTools(), ...registered])]);
   });
   pi.on("tool_call", async (event, ctx) => {
     if (!registered.has(event.toolName)) {

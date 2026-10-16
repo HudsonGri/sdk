@@ -30,6 +30,8 @@ test("Pi abort waits for native process cleanup, records cancellation, and leave
   extension({
     on(event:string,handler:(event:unknown,ctx:ExtensionContext)=>Promise<unknown>) {handlers.set(event,handler);},
     registerTool(tool:ToolDefinition) {tools.set(tool.name,tool);},
+    getActiveTools() {return [];},
+    setActiveTools() {},
   } as unknown as ExtensionAPI);
   const context = {cwd:project,sessionManager:{getSessionId:()=>"abort-session"}} as unknown as ExtensionContext;
   const connections: Socket[] = [];
