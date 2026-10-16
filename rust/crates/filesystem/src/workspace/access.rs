@@ -134,7 +134,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         }
         let mut frame = None;
         let (mut future, bytes) = crate::heap_future::in_heap_admitted(
-            (accounting, &mut frame),
+            (&mut *accounting, &mut frame),
             |(accounting, frame), bytes| {
                 **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
                 Ok::<_, WorkspaceError>(())
