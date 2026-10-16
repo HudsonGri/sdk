@@ -6,15 +6,16 @@ thread_local! {
     static VISIBILITY: Cell<usize> = const { Cell::new(0) };
     static RENDER_FEED: Cell<usize> = const { Cell::new(0) };
     static RENDER_WORK: Cell<usize> = const { Cell::new(0) };
+    static RENDER_PARTS: Cell<[usize; 4]> = const { Cell::new([0; 4]) };
     static RENDERING: Cell<bool> = const { Cell::new(false) };
 }
 pub(crate) fn copy(bytes: usize) {
     COPY.set(COPY.get() + bytes);
-    render_work(bytes);
+    render_work(0, bytes);
 }
 pub(crate) fn visibility(count: usize) {
     VISIBILITY.set(VISIBILITY.get() + count);
-    render_work(count);
+    render_work(1, count);
 }
 pub(crate) fn visibility_current() -> usize {
     VISIBILITY.get()
@@ -29,21 +30,28 @@ pub(crate) fn current() -> usize {
 
 pub(crate) fn render_feed(bytes: usize) {
     RENDER_FEED.set(RENDER_FEED.get() + bytes);
-    render_work(bytes);
+    render_work(2, bytes);
 }
 
 pub(crate) fn rendered_bytes() -> usize {
     RENDER_FEED.get()
 }
 
-fn render_work(work: usize) {
+fn render_work(part: usize, work: usize) {
     if RENDERING.get() {
         RENDER_WORK.set(RENDER_WORK.get() + work);
+        let mut parts = RENDER_PARTS.get();
+        parts[part] += work;
+        RENDER_PARTS.set(parts);
     }
 }
 
 pub(crate) fn rendering(active: bool) -> bool {
     RENDERING.replace(active)
+}
+
+pub(crate) fn rendering_parts() -> [usize; 4] {
+    RENDER_PARTS.get()
 }
 
 pub(crate) fn rendering_work() -> usize {
@@ -89,5 +97,5 @@ pub(crate) fn grow_source(bytes: usize) {
 
 pub(crate) fn scan(bytes: usize) {
     SCAN.set(SCAN.get() + bytes);
-    render_work(bytes);
+    render_work(3, bytes);
 }

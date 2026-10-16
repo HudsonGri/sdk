@@ -2,11 +2,17 @@ use super::REPLAY;
 use crate::{Markdown, work};
 use proptest::prelude::*;
 
-fn measure(parts: &[&str], separator: &str, count: usize, replay: bool) -> (usize, usize) {
+fn measure(
+    parts: &[&str],
+    separator: &str,
+    count: usize,
+    replay: bool,
+) -> (usize, usize, [usize; 4]) {
     let mut markdown = Markdown::default();
     markdown.push("x ");
     REPLAY.set(replay);
     let before = work::rendering_work();
+    let parts_before = work::rendering_parts();
     let mut bytes = 0;
     for part in parts.iter().cycle().take(count) {
         markdown.push(part);
@@ -15,7 +21,12 @@ fn measure(parts: &[&str], separator: &str, count: usize, replay: bool) -> (usiz
     }
     let used = work::rendering_work() - before;
     REPLAY.set(false);
-    (used, bytes)
+    let parts_after = work::rendering_parts();
+    (
+        used,
+        bytes,
+        std::array::from_fn(|i| parts_after[i] - parts_before[i]),
+    )
 }
 
 proptest! {
@@ -34,11 +45,11 @@ proptest! {
     ) {
         for count in [64, 128, 256, 1024] {
             let small = measure(&parts, separator, count, false);
-            let (used, bytes) = measure(&parts, separator, count * 2, false);
+            let (used, bytes, breakdown) = measure(&parts, separator, count * 2, false);
             prop_assert!(used <= 128 * bytes + 4096,
                 "{parts:?} separated by {separator:?}: {} chunks, {used} render units for {bytes} bytes", count * 2);
             prop_assert!(used <= 2 * small.0 + 4096,
-                "{parts:?} separated by {separator:?}: {count} -> {} chunks use {} -> {used} render units", count * 2, small.0);
+                "{parts:?} separated by {separator:?}: {count} -> {} chunks use {} -> {used} render units; copy/visibility/feed/scan {:?} -> {breakdown:?}", count * 2, small.0, small.2);
         }
     }
 }

@@ -28,7 +28,7 @@ enum Key {
 pub(in crate::inline_scan) struct Cache {
     input: Input,
     keys: HashMap<Key, usize>,
-    nodes: Vec<Vec<Output>>,
+    nodes: Vec<Box<[Output; super::super::PAGE]>>,
     length: usize,
     targets: HashMap<(usize, usize), Arc<str>>,
     atoms: HashMap<(usize, usize), (usize, usize)>,
@@ -89,11 +89,16 @@ impl Cache {
         if id.is_multiple_of(super::super::PAGE) {
             #[cfg(test)]
             if self.nodes.len() == self.nodes.capacity() {
-                crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Output>>());
+                crate::work::copy(
+                    self.nodes.len() * std::mem::size_of::<Box<[Output; super::super::PAGE]>>(),
+                );
             }
-            self.nodes.push(Vec::with_capacity(super::super::PAGE));
+            #[cfg(test)]
+            crate::work::scan(super::super::PAGE);
+            self.nodes
+                .push(Box::new(std::array::from_fn(|_| Output::default())));
         }
-        self.nodes.last_mut().expect("render page").push(output);
+        self.nodes[id / super::super::PAGE][id % super::super::PAGE] = output;
         self.length += 1;
         id
     }
@@ -447,12 +452,9 @@ impl Cache {
         links: &mut HashSet<*const u8>,
     ) -> (usize, usize) {
         let (mut payload, mut metadata) = self.input.retained(texts);
-        metadata += self.nodes.capacity() * std::mem::size_of::<Vec<Output>>()
-            + self
-                .nodes
-                .iter()
-                .map(|page| page.capacity() * std::mem::size_of::<Output>())
-                .sum::<usize>()
+        metadata += self.nodes.capacity()
+            * std::mem::size_of::<Box<[Output; super::super::PAGE]>>()
+            + self.nodes.len() * std::mem::size_of::<[Output; super::super::PAGE]>()
             + self.keys.capacity() * std::mem::size_of::<(Key, usize)>()
             + self.targets.capacity() * std::mem::size_of::<((usize, usize), Arc<str>)>()
             + self.atoms.capacity() * std::mem::size_of::<((usize, usize), (usize, usize))>();
@@ -461,7 +463,7 @@ impl Cache {
                 payload += target.len();
             }
         }
-        for output in self.nodes.iter().flatten() {
+        for output in self.nodes.iter().flat_map(|page| page.iter()) {
             for spans in std::iter::once(&output.head).chain(&output.tail) {
                 let (bytes, size) = spans.retained(nodes, texts, links);
                 payload += bytes;
