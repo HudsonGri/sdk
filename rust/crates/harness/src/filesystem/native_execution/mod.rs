@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
 };
 mod access;
+#[cfg(feature = "filesystem-local")]
 mod local_owner;
 #[cfg(feature = "filesystem-local")]
 pub use local_owner::{local_owner_mount_options, local_owner_workspace};

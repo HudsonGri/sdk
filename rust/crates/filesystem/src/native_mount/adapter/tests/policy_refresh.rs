@@ -12,8 +12,8 @@ impl crate::native_mount::NativeMountCallbackGuard for Reload {
         crate::native_mount::NativeMountCallbackFuture::new(work, || async move {
             let source = self.source.upgrade().ok_or(MountSourceError::Stale)?;
             let mut checkout = source.checkout.volume.checkout(GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(), work, work.cancellation()).await?;
-            let (bytes, revision) = checkout.read_access_policy(work, work.cancellation()).await?;
+                CheckoutMode::read_only_pinned(), work, work.cancellation()).await.map_err(MountSourceError::from)?;
+            let (bytes, revision) = checkout.read_access_policy(work, work.cancellation()).await.map_err(MountSourceError::from)?;
             let policy: Policy = serde_json::from_slice(&bytes.ok_or(MountSourceError::AccessDenied)?.bytes)
                 .map_err(|_| MountSourceError::AccessDenied)?;
             let volume = uuid::Uuid::from_bytes(source.volume_id()?.into_bytes()).to_string();

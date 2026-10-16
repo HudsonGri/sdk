@@ -1,7 +1,6 @@
 use super::*;
 
 /// Create or recover an embedded native workspace with explicit initial policy.
-#[cfg(feature = "filesystem-local")]
 pub async fn local_owner_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     filesystem: &acyclic_fs::Fs<A, O>, name: &str,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
@@ -19,7 +18,6 @@ pub async fn local_owner_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 /// Bind an embedded host-owned workspace through the same signed authority
 /// compiler as task mounts. The returned options retain their refresh owner.
-#[cfg(feature = "filesystem-local")]
 pub async fn local_owner_mount_options<A, O>(
     workspace: &acyclic_fs::Workspace<A, O>,
     writable: bool,

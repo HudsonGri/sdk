@@ -1,4 +1,5 @@
 use super::*;
+use crate::Fs;
 use crate::access::{Action, INITIAL_POLICY, fixtures};
 use proptest::prelude::*;
 
