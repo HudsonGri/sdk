@@ -410,6 +410,16 @@ impl StockExecution<'_> {
             }
         }
         let _ = io;
+        #[cfg(feature = "filesystem")]
+        if self
+            .original_context()
+            .and_then(crate::runtime::TaskContext::invocation_cancellation)
+            .is_some_and(acyclic_fs::CancellationToken::is_cancelled)
+        {
+            return Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ));
+        }
         self.verify_execution_owner().await
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

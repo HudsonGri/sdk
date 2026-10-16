@@ -317,7 +317,12 @@ async fn exercise(control: Control) -> Result<()> {
     }];
     let result = crate::task_volume::ChildTurnResult::parse(&result.bytes).map_err(storage)?;
     assert!(matches!(result.outcome, crate::Outcome::Cancelled));
-    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(
+        provider.requests().len(),
+        3,
+        "unexpected model dispatches: {:?}",
+        provider.dispatches()
+    );
     if control == Control::Interrupt {
         let generation = files.inner.head().await.map_err(storage)?;
         let generation = files

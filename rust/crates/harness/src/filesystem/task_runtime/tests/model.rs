@@ -579,7 +579,8 @@ proptest::proptest! {
             let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
             runtime.task_host().start_task(&lease, &mut None).await?;
             let fence = LeaseFence::from(&lease.reservation);
-            let context = Arc::new(runtime.task_context(task, fence.clone()).await?);
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let context = Arc::new(runtime.task_context_with_cancellation(task, fence.clone(), Some(&cancellation)).await?);
             let owner = Arc::clone(context.owned_mailbox.as_ref().unwrap());
             let provider = Arc::new(PendingModel {
                 clock: fixture.clock.clone(),
@@ -632,6 +633,13 @@ proptest::proptest! {
             // Ownership identity, rather than elapsed time, proves composition
             // retained the issued owner instead of reopening its proof chain.
             assert_eq!(Arc::strong_count(&owner), retained);
+            assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
+            cancellation.cancel();
+            let input = TurnInput { operation_id: execution.operation_id(),
+                input: crate::model::ModelContent::Text("stopped invocation".into()),
+                selected_context: None, max_steps: 1 };
+            assert!(matches!(execution.execute(input).await,
+                Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled))));
             assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
             drop(execution);
             assert_eq!(Arc::strong_count(&owner), retained - 1);
