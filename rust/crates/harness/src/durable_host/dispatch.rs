@@ -44,6 +44,65 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         self.validate_parent_scope(admission.parent, &scope, quota.work())
             .await?;
+        self.claim_model_in_scope(
+            operation_id,
+            attempt,
+            step,
+            request_digest,
+            fence,
+            &scope,
+            &mut quota,
+        )
+        .await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn claim_model_from_context(
+        &self,
+        context: &crate::runtime::TaskContext,
+        dispatch: crate::model::ModelDispatch,
+        fence: &crate::scheduler::LeaseFence,
+    ) -> Result<()> {
+        let owner = context.ordinary_journal_owner::<P>()?;
+        if !owner.original_host_binding_matches(self)
+            || !context.original_task_binding_matches(owner.task_id(), fence)
+        {
+            return Err(Error::Unauthorized(
+                "model claim differs from its original owner".into(),
+            ));
+        }
+        let scope = context.scope();
+        if !scope.grants().contains("model:generate") {
+            return Err(Error::Unauthorized(
+                "task scope lacks model:generate".into(),
+            ));
+        }
+        let mut work = None;
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        self.validate_parent_scope(owner.admission().parent, scope, quota.work())
+            .await?;
+        self.claim_model_in_scope(
+            OperationId::from_bytes(owner.task_id().into_bytes()),
+            dispatch.operation_id,
+            dispatch.step,
+            dispatch.request_digest,
+            fence,
+            scope,
+            &mut quota,
+        )
+        .await
+    }
+
+    async fn claim_model_in_scope(
+        &self,
+        operation_id: OperationId,
+        attempt: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+        fence: &crate::scheduler::LeaseFence,
+        scope: &RuntimeScope,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<()> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(quota.work()).await?;
         let operation = coordinator.observe_operation(

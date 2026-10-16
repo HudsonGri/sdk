@@ -7,6 +7,7 @@ use crate::{
 };
 use acyclic_stream::MemoryStream;
 use proptest::prelude::*;
+use std::sync::Arc;
 
 async fn files() -> TaskFiles<MemoryStream> {
     let agent = AgentId::from_bytes([1; 16]);

@@ -7,13 +7,13 @@ use crate::{
         ChildFile, ChildRequest, ChildState, ChildStatus, Component, Control, FileKey,
         FileQuerySource, FileValue, Query, TaskFiles,
     },
-    tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
+    tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 mod binding;
 
@@ -73,23 +73,6 @@ pub(super) fn input_schema() -> Value {
             "action":{"type":"string","enum":["pause","resume","interrupt","cancel","archive"]}
         }, "additionalProperties":false
     })
-}
-
-pub(super) fn tool() -> Tool {
-    let output = json!({"type":"object"});
-    Tool {
-        hook_names: &[],
-        definition: ToolDefinition {
-            name: "agent".into(),
-            revision: "1".into(),
-            description: "Spawn, message, wait for, inspect and control child agents through agents/<reference>/ files".into(),
-            input_schema: input_schema(),
-            output_schema: output.clone(),
-            projection_schema: crate::tool::json_projection_schema(output),
-        },
-        executor: Arc::new(AgentExecutor),
-        projection: Arc::new(JsonToolProjection),
-    }
 }
 
 pub(super) struct AgentExecutor;

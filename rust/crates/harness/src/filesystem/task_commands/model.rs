@@ -42,16 +42,9 @@ where
         })?;
         let steering = if stock || command.mailbox_operation.is_some() {
             BoundedContentFuture::new(io, || async {
-                let journal = 'journal: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                        break 'journal self
-                            .runtime
-                            .workflow_journal_with_native_work(task, fence, work)
-                            .await?;
-                    }
-                    self.runtime.workflow_journal(task, fence.clone()).await?
-                };
+                let journal = self
+                    .command_workflow_journal(&context, task, fence, io)
+                    .await?;
                 let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
                     boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
                 })?;

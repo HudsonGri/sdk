@@ -60,6 +60,7 @@ where
     pub(super) async fn mail_command(
         &self,
         CommandInvocation {
+            context,
             admission,
             fence,
             command,
@@ -93,7 +94,8 @@ where
         }
         let input: MailReceiveTaskCommand = decode_command(payload, io)?;
         let after = if super::super::child_agent::is_child(admission) {
-            self.child_mail_after(task, fence, command, io).await?
+            self.child_mail_after(context, task, fence, command, io)
+                .await?
         } else {
             input.after
         };

@@ -142,10 +142,10 @@ where
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {
-                let journal = self.workflow_journal(task, fence.clone()).await?;
                 let WorkerContext::Ordinary(context) = &context else {
                     unreachable!()
                 };
+                let journal = self.workflow_journal_with_context(context)?;
                 self.harness
                     .open_registered_task(task, fence, journal, Some(Arc::clone(context)))
                     .await?

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 pub(super) async fn files(context: &ToolContext) -> Result<Arc<TaskFiles<dyn StreamProvider>>> {
     let root = context

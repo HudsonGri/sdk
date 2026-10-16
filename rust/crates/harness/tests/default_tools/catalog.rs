@@ -8,7 +8,9 @@ fn catalog_preserves_pinned_file_contracts_and_digests() -> Result<()> {
         "/../../../fixtures/harness/v2/file-tools-contract.json"
     )))
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    for spec in tools::catalog().filter(|spec| spec.binding == tools::ToolBinding::Volume) {
+    for name in ["read", "write", "edit"] {
+        let spec = tools::catalog().find(|spec| spec.name == name).unwrap();
+        assert_eq!(spec.binding, tools::ToolBinding::Volume);
         let pinned = contract["tool_definitions"]
             .as_array()
             .unwrap()

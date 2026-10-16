@@ -267,6 +267,19 @@ impl StockExecution<'_> {
                     work,
                 )?
                 .await?;
+            } else if let Some(context) = self.original_context()
+                && let Some(owner) = &context.owned_mailbox
+            {
+                if !context.original_task_binding_matches(*task, fence)
+                    || !context
+                        .harness
+                        .original_host_binding_matches(host.as_ref(), self.stock.policy.as_deref())
+                {
+                    return Err(Error::Unauthorized(
+                        "model claim owner differs from its executor".into(),
+                    ));
+                }
+                owner.claim_model_dispatch(context, dispatch, fence).await?;
             } else {
                 host.claim_model_dispatch(
                     *task,

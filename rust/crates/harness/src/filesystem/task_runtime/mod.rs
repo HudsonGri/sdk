@@ -353,6 +353,15 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn admission(&self) -> (&TaskAdmissionRecord, &crate::workflow::WorkflowAdmission) {
         (self.owner.admission(), self.owner.workflow_admission())
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn claim_model_dispatch<'a>(
+        &'a self,
+        context: &'a TaskContext,
+        dispatch: crate::model::ModelDispatch,
+        fence: &'a LeaseFence,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        Box::pin(self.host.claim_model_from_context(context, dispatch, fence))
+    }
     fn verify_owner<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,

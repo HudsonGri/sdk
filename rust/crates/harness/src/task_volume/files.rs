@@ -157,24 +157,6 @@ fn storage(error: impl std::fmt::Display) -> crate::Error {
     crate::Error::Storage(error.to_string())
 }
 
-impl<P: StreamProvider + ?Sized> super::FileQuerySource for TaskFiles<P> {
-    fn observe_files(
-        &self,
-        query: Query,
-        cursor: Option<Cursor>,
-        maximum_files: usize,
-        maximum_bytes: usize,
-    ) -> acyclic_stream::BoxProviderFuture<'_, super::Result<Observation>> {
-        super::FileQuerySource::observe_files(
-            &self.inner,
-            query,
-            cursor,
-            maximum_files,
-            maximum_bytes,
-        )
-    }
-}
-
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 

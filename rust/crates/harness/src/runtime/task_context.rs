@@ -13,6 +13,13 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn admission(&self) -> (&TaskAdmissionRecord, &WorkflowAdmission);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn claim_model_dispatch<'a>(
+        &'a self,
+        context: &'a TaskContext,
+        dispatch: crate::model::ModelDispatch,
+        fence: &'a crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>>;
     fn verify_owner<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,

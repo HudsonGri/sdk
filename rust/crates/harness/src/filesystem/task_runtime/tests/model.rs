@@ -595,7 +595,14 @@ proptest::proptest! {
             ).await, Err(Error::Unauthorized(_))));
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let journal = runtime.workflow_journal(task, fence.clone()).await?;
+                let original = context.ordinary_journal_owner::<acyclic_stream::MemoryStream>()?;
+                let journal = runtime.workflow_journal_with_context(&context)?;
+                assert!(Arc::ptr_eq(&original, journal.owner.as_ref().unwrap()));
+                let commands = runtime.commands();
+                let command_journal = commands.command_workflow_journal(&context, task, &fence, None).await?;
+                assert!(Arc::ptr_eq(&original, command_journal.owner.as_ref().unwrap()));
+                assert!(matches!(commands.command_workflow_journal(&context, task, &changed, None).await, Err(Error::Unauthorized(_))));
+                assert!(matches!(commands.command_workflow_journal(&context, TaskId::new(), &fence, None).await, Err(Error::Unauthorized(_))));
                 assert!(matches!(runtime.harness().open_registered_task(
                     task, &changed, journal.clone(), Some(Arc::clone(&context)),
                 ).await, Err(Error::Unauthorized(_))));
@@ -606,6 +613,16 @@ proptest::proptest! {
                 assert_eq!(Arc::strong_count(&owner), retained + 1);
                 drop(session);
                 assert_eq!(Arc::strong_count(&owner), retained);
+                let dispatch = crate::model::ModelDispatch { operation_id: OperationId::new(), step: 0, request_digest: [3;32] };
+                assert!(matches!(owner.claim_model_dispatch(&context, dispatch.clone(), &changed).await, Err(Error::Unauthorized(_))));
+                let narrowed = context.scoped(crate::Capabilities::default(), context.scope().limits())?;
+                assert!(matches!(owner.claim_model_dispatch(&narrowed, dispatch.clone(), &fence).await, Err(Error::Unauthorized(_))));
+                let other = fixture.runtime(None).await?;
+                assert!(matches!(other.task_host().claim_model_from_context(&context, dispatch.clone(), &fence).await, Err(Error::Unauthorized(_))));
+                for _ in 0..2 { owner.claim_model_dispatch(&context, dispatch.clone(), &fence).await?; }
+                let mut changed_request = dispatch;
+                changed_request.request_digest[0] ^= 1;
+                assert!(owner.claim_model_dispatch(&context, changed_request, &fence).await.is_err());
             }
             let retained = Arc::strong_count(&owner);
             let execution = runtime.stock_execution_with_context(

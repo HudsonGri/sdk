@@ -130,7 +130,11 @@ impl LocalHarness {
                 ));
             }
         };
-        let signed = self.issuer.issue(
+        let issuer = self
+            .issuer
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("child source has no issuing authority".into()))?;
+        let signed = issuer.issue(
             "child-source",
             narrowed.grants(),
             Some(source_agent),

@@ -213,6 +213,7 @@ impl Fixture {
             .await?
             .0;
         Ok(LocalHarness {
+            issuer: Some(self.issuer.clone()),
             task_files,
             files: files.clone(),
             runtime,

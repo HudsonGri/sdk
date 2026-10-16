@@ -236,8 +236,9 @@ impl LocalHarness {
                     advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
-                let (child_files, fence) = self.child_files(child, files.as_ref()).await?;
-                let journal = self.runtime.workflow_journal(child, fence).await?;
+                let (child_files, context) = self.child_files(child, files.as_ref()).await?;
+                let journal = self.runtime.workflow_journal_with_context(&context)?;
+                drop(context);
                 let advance = self.advance_with_children(child, &commands, child_files);
                 futures::pin_mut!(advance);
                 loop {
@@ -313,7 +314,11 @@ impl LocalHarness {
         Ok(())
     }
 
-    async fn child_files(&self, child: TaskId, parent: &Files) -> Result<(Arc<Files>, LeaseFence)> {
+    async fn child_files(
+        &self,
+        child: TaskId,
+        parent: &Files,
+    ) -> Result<(Arc<Files>, crate::runtime::TaskContext)> {
         use crate::distributed::{WorkPull, Worker};
         let host = self.runtime.task_host();
         let lease = match host.recover_work(child, &mut None).await? {
@@ -348,7 +353,7 @@ impl LocalHarness {
             .for_created_task(&context, context.scope())
             .await?
             .ok_or_else(|| Error::Unauthorized("child has no created private files".into()))?;
-        Ok((Arc::new(files), fence))
+        Ok((Arc::new(files), context))
     }
 
     async fn child_processed(

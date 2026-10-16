@@ -24,7 +24,9 @@ pub use files::TaskFiles;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
-pub use schema::{Channel, Component, FileKey, InputPath, Owner, SCHEMA, TaskFile, ToolFile};
+pub use schema::{
+    Channel, Component, FileKey, InputPath, Owner, Query, SCHEMA, TaskFile, ToolFile,
+};
 pub use source::FileQuerySource;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -629,5 +631,12 @@ impl<P: StreamProvider + 'static> TaskVolume<P> {
     pub(crate) async fn reopen_erased(&self) -> Result<TaskVolume<dyn StreamProvider>> {
         let provider: Arc<dyn StreamProvider> = self.provider.clone();
         TaskVolume::open(provider, self.path.clone()).await
+    }
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl TaskVolume<dyn StreamProvider> {
+    pub(crate) async fn reopen_erased(&self) -> Result<Self> {
+        Self::open(Arc::clone(&self.provider), self.path.clone()).await
     }
 }
