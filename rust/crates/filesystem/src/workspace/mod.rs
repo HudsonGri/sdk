@@ -134,4 +134,6 @@ pub(crate) use reverse_traversal::{
 };
 
 #[cfg(all(test, acyclic_fs_loom))]
+mod access_read_model;
+#[cfg(all(test, acyclic_fs_loom))]
 mod access_write_model;

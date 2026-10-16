@@ -10,9 +10,9 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-const AUTHORITY: AuthorityId = AuthorityId::from_bytes([1; 16]);
+pub(super) const AUTHORITY: AuthorityId = AuthorityId::from_bytes([1; 16]);
 
-fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
+pub(super) fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
     match crate::heap_future::in_heap(create)
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
@@ -22,13 +22,13 @@ fn ready<F: Future>(create: impl FnOnce() -> F) -> F::Output {
     }
 }
 
-fn head(store: &MemoryAuthorityStore) -> Head {
+pub(super) fn head(store: &MemoryAuthorityStore) -> Head {
     let cancel = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
     ready(|| store.head(AUTHORITY, &mut work)).unwrap()
 }
 
-fn publish(store: &MemoryAuthorityStore, expected: Head, operation: u8) -> bool {
+pub(super) fn publish(store: &MemoryAuthorityStore, expected: Head, operation: u8) -> bool {
     let cancel = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
     matches!(
