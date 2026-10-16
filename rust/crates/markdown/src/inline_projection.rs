@@ -2,18 +2,9 @@ use super::{Cache, Key, Output, text_output};
 use crate::inline_scan::forest::{Forest, Kind, PAGE, Rendered};
 use crate::{Line, Range, Style};
 
-pub(in crate::inline_scan) struct Atoms<'a, 'b> {
-    pub(in crate::inline_scan) source: &'b crate::inline_scan::Slice<'a>,
-    pub(in crate::inline_scan) events: &'b [(crate::Event<'a>, Range<usize>)],
-    pub(in crate::inline_scan) references: &'b crate::References,
-    pub(in crate::inline_scan) scopes: &'b [crate::inline_scan::Scope],
-    pub(in crate::inline_scan) indices: &'b std::collections::HashMap<usize, usize>,
-}
-
 pub(in crate::inline_scan) struct Projection<'a, 'b> {
     pub(in crate::inline_scan) source: &'a str,
     pub(in crate::inline_scan) visible: Range<usize>,
-    pub(in crate::inline_scan) atoms: Option<Atoms<'a, 'b>>,
     pub(in crate::inline_scan) hard_breaks: &'b std::collections::HashSet<usize>,
 }
 
@@ -117,7 +108,6 @@ impl Cache {
             Projection {
                 source,
                 visible,
-                atoms: None,
                 hard_breaks: &hard_breaks,
             },
             lines,
@@ -136,13 +126,12 @@ impl Cache {
         let Projection {
             source,
             visible,
-            atoms,
             hard_breaks,
         } = projection;
         #[cfg(test)]
         if super::REPLAY.get() {
             let epoch = self.epoch.checked_add(1).expect("render epoch");
-            *self = Self::default();
+            self.input = super::Input::default();
             self.epoch = epoch;
         }
         self.input.feed(source, visible.start);
@@ -246,53 +235,7 @@ impl Cache {
                         self.insert(key, output)
                     }
                 }
-                Kind::Atom(Some(id)) => id,
-                Kind::Atom(None) => {
-                    let atoms = atoms.as_ref()?;
-                    let index = *atoms.indices.get(&range.start)?;
-                    let scope = atoms
-                        .scopes
-                        .get(index)
-                        .filter(|scope| scope.range == range)?;
-                    let isolated = crate::inline_scan::Slice {
-                        original: atoms.source.original,
-                        parsed: atoms.source.parsed,
-                        start: atoms.source.start,
-                        base: atoms.source.base,
-                        sentinel: atoms.source.sentinel,
-                        // No prefix checkpoint belongs inside a completed scope.
-                        boundary: atoms.source.sentinel,
-                    };
-                    let body = self
-                        .reduce(
-                            &isolated,
-                            atoms.events.get(scope.events.clone())?,
-                            atoms.references,
-                            0,
-                        )?
-                        .0;
-                    #[cfg(test)]
-                    {
-                        let entry = std::mem::size_of::<((usize, usize), (usize, usize))>();
-                        crate::work::copy(
-                            entry
-                                * (1 + if self.atoms.len() == self.atoms.capacity() {
-                                    self.atoms.len()
-                                } else {
-                                    0
-                                }),
-                        );
-                    }
-                    let reported = &atoms.events.get(scope.events.start)?.1;
-                    self.atoms.insert(
-                        (
-                            isolated.base + reported.start.saturating_sub(isolated.sentinel),
-                            isolated.base + reported.end.saturating_sub(isolated.sentinel),
-                        ),
-                        (body, scope.events.len()),
-                    );
-                    body
-                }
+                Kind::Atom(id) => id,
                 Kind::Entity => self.entity(source, range)?,
                 Kind::Break(escaped) => {
                     let body = self.break_value(source, range.clone(), escaped);
@@ -365,6 +308,7 @@ impl Cache {
         let changed = output.update(self.output(self.last)?, lines, first);
         let visible = output.visible();
         self.last = current;
+        self.rendered = true;
         Some((changed, visible))
     }
 }

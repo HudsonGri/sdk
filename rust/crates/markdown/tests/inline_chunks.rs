@@ -117,6 +117,7 @@ fn checked_in_chunk_corpus_matches_full_render() {
         include_bytes!("../fuzz/corpus/chunk_splits/code-steals-link").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/definition-paragraph-start").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/scope-ancestor-frontier").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/table-checkpoint-context").as_slice(),
     ] {
         let encoded = data
             .get(..8)
@@ -126,6 +127,15 @@ fn checked_in_chunk_corpus_matches_full_render() {
         let flags = usize::try_from(u64::from_le_bytes(encoded)).expect("corpus length");
         let source =
             std::str::from_utf8(data.get(8 + flags..).expect("corpus body")).expect("UTF-8 corpus");
+        let cuts: Vec<_> = source
+            .char_indices()
+            .skip(1)
+            .enumerate()
+            .filter_map(|(index, (offset, _))| {
+                (index < flags && data[8 + index] & 1 != 0).then_some(offset)
+            })
+            .collect();
+        replay(source, &cuts);
         replay(source, &(1..source.len()).collect::<Vec<_>>());
     }
 }

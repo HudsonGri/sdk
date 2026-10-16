@@ -9,7 +9,7 @@ enum Kind {
     Text,
     Escape,
     Code,
-    Atom(Option<usize>),
+    Atom(usize),
     Break(bool),
     Entity,
     Emphasis,
@@ -125,13 +125,8 @@ impl Forest {
         self.append(range, 0, 0, Kind::Escape)
     }
 
-    #[cfg(test)]
     pub(super) fn atom(&mut self, range: Range<usize>, output: usize) -> usize {
-        self.append(range, 0, 0, Kind::Atom(Some(output)))
-    }
-
-    pub(super) fn opaque(&mut self, range: Range<usize>) {
-        self.append(range, 0, 0, Kind::Atom(None));
+        self.append(range, 0, 0, Kind::Atom(output))
     }
 
     pub(super) fn leaf(&mut self, range: Range<usize>, token: super::tokens::Kind) -> usize {

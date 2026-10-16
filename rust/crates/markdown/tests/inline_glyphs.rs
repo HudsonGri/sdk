@@ -7,24 +7,22 @@ fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
     let events: Vec<_> = pulldown_cmark::Parser::new_ext(source, crate::options())
         .into_offset_iter()
         .collect();
-    scanner.frontier(source, 0, &events, 0);
+    scanner.frontier(
+        crate::inline_scan::Slice {
+            original: source,
+            parsed: source,
+            start: 0,
+            base: 0,
+            sentinel: 0,
+            boundary: 0,
+        },
+        &events,
+        &References::default(),
+    );
     let parsed_nodes = scanner.state.forest.length;
     let mut lines = Vec::new();
     scanner
-        .render_events(
-            crate::inline_scan::Slice {
-                original: source,
-                parsed: source,
-                start: 0,
-                base: 0,
-                sentinel: 0,
-                boundary: 0,
-            },
-            &events,
-            &References::default(),
-            &mut lines,
-            0,
-        )
+        .render_tree(source, 0, &mut lines, 0)
         .expect("retained inline events");
     assert_eq!(
         scanner.state.forest.length, parsed_nodes,

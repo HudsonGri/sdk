@@ -10,6 +10,7 @@ mod tokens;
 use state::State;
 use tokens::{Kind, Tokens};
 
+#[derive(Clone, Copy)]
 pub(super) struct Slice<'a> {
     pub(super) original: &'a str,
     pub(super) parsed: &'a str,
@@ -58,7 +59,6 @@ struct ScopeFrame {
 #[derive(Default)]
 struct Syntax {
     outer: Vec<Scope>,
-    indices: HashMap<usize, usize>,
     hard_breaks: HashSet<usize>,
     opaque: Vec<Range<usize>>,
     links: Vec<Range<usize>>,
@@ -231,23 +231,6 @@ impl Syntax {
                 base + position.saturating_sub(sentinel)
             })
             .collect();
-        for (index, scope) in self.outer.iter().enumerate() {
-            #[cfg(test)]
-            {
-                let bytes = std::mem::size_of::<(usize, usize)>();
-                work::copy(
-                    bytes
-                        * (1 + if self.indices.len() == self.indices.capacity() {
-                            self.indices.len()
-                        } else {
-                            0
-                        }),
-                );
-            }
-            self.indices
-                .entry(base + scope.range.start.saturating_sub(sentinel))
-                .or_insert(index);
-        }
         for range in self
             .outer
             .iter_mut()
@@ -340,7 +323,6 @@ impl Scanner {
             + self.atomic.capacity() * std::mem::size_of::<Range<usize>>()
             + self.state.retained()
             + self.syntax.outer.capacity() * std::mem::size_of::<Scope>()
-            + self.syntax.indices.capacity() * std::mem::size_of::<(usize, usize)>()
             + self.syntax.hard_breaks.capacity() * std::mem::size_of::<usize>()
             + (self.syntax.opaque.capacity() + self.syntax.links.capacity())
                 * std::mem::size_of::<Range<usize>>()
@@ -359,11 +341,10 @@ impl Scanner {
         self.atomic.clear();
     }
 
-    pub(super) fn render_events(
+    pub(super) fn render_tree(
         &mut self,
-        source: Slice<'_>,
-        events: &[(Event<'_>, Range<usize>)],
-        references: &References,
+        source: &str,
+        start: usize,
         lines: &mut Vec<Line>,
         first: usize,
     ) -> Option<(usize, usize)> {
@@ -376,16 +357,9 @@ impl Scanner {
             &mut self.state.forest,
             self.projected,
             forest::glyphs::events::projection::Projection {
-                source: source.original,
-                visible: source.start..source.original.len(),
+                source,
+                visible: start..source.len(),
                 hard_breaks: &self.syntax.hard_breaks,
-                atoms: Some(forest::glyphs::events::projection::Atoms {
-                    source: &source,
-                    events,
-                    references,
-                    scopes: &self.syntax.outer,
-                    indices: &self.syntax.indices,
-                }),
             },
             lines,
             first,
@@ -432,11 +406,13 @@ impl Scanner {
 
     pub(super) fn frontier(
         &mut self,
-        original: &str,
-        base: usize,
+        source: Slice<'_>,
         events: &[(Event<'_>, Range<usize>)],
-        sentinel: usize,
+        references: &References,
     ) -> usize {
+        let original = source.original;
+        let base = source.base;
+        let sentinel = source.sentinel;
         self.tokens.push(original);
         let mut syntax = Syntax::new(events, &self.tokens, base, sentinel, self.discarded);
         syntax.absolute(base, sentinel);
@@ -464,7 +440,11 @@ impl Scanner {
                 self.frontier = self.frontier.min(position);
             } else {
                 self.state.reset();
-                if self.render.origin().is_some_and(|origin| base > origin) {
+                if self
+                    .render
+                    .rendered_origin()
+                    .is_some_and(|origin| base > origin)
+                {
                     self.state.invalid = true;
                     return sentinel;
                 }
@@ -508,7 +488,14 @@ impl Scanner {
                 .get(scope)
                 .filter(|scope| scope.range.start == start)
             {
-                state.scope(scope);
+                let Some(output) = events
+                    .get(scope.events.clone())
+                    .and_then(|events| self.render.compile(&source, events, references))
+                else {
+                    state.invalid = true;
+                    return sentinel;
+                };
+                state.scope(scope, output);
                 end = scope.range.end;
                 if let Some(&after) = self.tokens.ends.get(&end) {
                     token_index = token_index.max(after.saturating_sub(self.discarded));

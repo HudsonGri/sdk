@@ -17,7 +17,18 @@ fn advance(scanner: &mut Scanner, original: &str, base: usize) -> usize {
     let events: Vec<_> = pulldown_cmark::Parser::new_ext(&source, options())
         .into_offset_iter()
         .collect();
-    scanner.frontier(original, base, &events, context.len())
+    scanner.frontier(
+        Slice {
+            original,
+            parsed: &source,
+            start: 0,
+            base,
+            sentinel: context.len(),
+            boundary: context.len(),
+        },
+        &events,
+        &References::default(),
+    )
 }
 
 proptest! {
@@ -117,7 +128,18 @@ fn fed_bytes(count: usize, replay: bool) -> (usize, usize) {
     {
         source.push_str(part);
         // No link/HTML syntax can override the lexical classifications here.
-        scanner.frontier(&source, 0, &[], 0);
+        scanner.frontier(
+            Slice {
+                original: &source,
+                parsed: &source,
+                start: 0,
+                base: 0,
+                sentinel: 0,
+                boundary: 0,
+            },
+            &[],
+            &References::default(),
+        );
     }
     (scanner.fed_bytes, source.len())
 }

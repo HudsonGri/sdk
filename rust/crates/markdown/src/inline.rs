@@ -52,12 +52,14 @@ impl Markdown {
         };
         let mut prefix = context;
         if inline.scanner.expanded_before(base) {
-            // Keep the row's column shape and final flanking class intact.
-            if let Some(at) = prefix.find('x') {
-                prefix.insert_str(at, "`x`");
-            } else {
-                prefix.insert_str(0, "`x`\n");
-            }
+            // Insert inside an existing cell without introducing a new row.
+            let at = prefix
+                .char_indices()
+                .find(|(_, c)| *c != '|' && !c.is_whitespace())
+                .map(|(at, _)| at)
+                .or_else(|| prefix.find('|').map(|at| at + 1))
+                .unwrap_or(0);
+            prefix.insert_str(at, "`x`");
         }
         let sentinel = prefix.len();
         let source = if prefix.is_empty() {
@@ -88,9 +90,18 @@ impl Markdown {
         {
             return None;
         }
-        let frontier = inline
-            .scanner
-            .frontier(&self.source, base, &events, sentinel);
+        let frontier = inline.scanner.frontier(
+            inline_scan::Slice {
+                original: &self.source,
+                parsed: &source,
+                start: inline.start,
+                base,
+                sentinel,
+                boundary: sentinel,
+            },
+            &events,
+            &self.references,
+        );
         let boundary = boundary(&source, &events, sentinel, frontier);
         let boundary = inline
             .scanner
@@ -102,17 +113,9 @@ impl Markdown {
             &checkpoint.valid,
             calls.iter().filter(|(end, _)| *end <= boundary),
         );
-        let (changed, visible) = inline.scanner.render_events(
-            inline_scan::Slice {
-                original: &self.source,
-                parsed: &source,
-                start: inline.start,
-                base,
-                sentinel,
-                boundary,
-            },
-            &events,
-            &self.references,
+        let (changed, visible) = inline.scanner.render_tree(
+            &self.source,
+            inline.start,
             &mut self.lines,
             self.stable_lines,
         )?;
