@@ -81,7 +81,7 @@
           "call_id": "child-shell",
           "name": "bash",
           "arguments": {
-            "command": "test \"$(cat .volumes/scratch/parent-secret)\" = parent-private && printf child-private > .volumes/scratch/parent-secret && printf shell-result > child.txt && printf child-shell-ok"
+            "command": "test ! -e .volumes/scratch/parent-secret && printf child-private > .volumes/scratch/parent-secret && printf shell-result > child.txt && printf child-shell-ok"
           }
         },
         {
@@ -113,20 +113,18 @@
           "messages": [
             {
               "role": "tool",
-              "content": [
-                {
-                  "kind": "tool_result",
-                  "call_id": "child-shell",
-                  "name": "bash",
-                  "content": {
-                    "kind": "json",
-                    "value": {
-                      "success": true,
-                      "stdout": "child-shell-ok"
-                    }
+              "content": {
+                "kind": "tool_result",
+                "call_id": "child-shell",
+                "name": "bash",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "success": true,
+                    "stdout": "child-shell-ok"
                   }
                 }
-              ]
+              }
             }
           ]
         }
