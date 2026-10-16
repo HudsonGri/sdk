@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { test } from "bun:test";
+import fc from "fast-check";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Invoke } from "../../pi/index.ts";
 
@@ -36,7 +37,7 @@ test("Pi executes every registered tool exactly once through the harness", async
   const result = { content: [{type: "text", text: "harness result"}], details: {published:true}, isError:false };
   const {handlers,tools,context} = setup(async (event,input) => {
     calls.push({event,input});
-    return event === "catalog" ? {tools:definitions} : event === "tool_call" ? result : {};
+    return event === "catalog" ? {tools:definitions} : event === "tool_call" ? input.hostExecuted ? {block:false} : result : {};
   });
   await handlers.get("session_start")!({},context);
   assert.deepEqual([...tools.keys()],definitions.map(tool=>tool.name));
@@ -68,4 +69,33 @@ test("Pi cannot fall back to a built-in after a missing or failed harness result
     await handlers.get("session_start")!({},context);
     await assert.rejects(()=>tools.get("bash")!.execute("call",{},undefined,undefined,context));
   }
+});
+
+test("Pi preserves foreign-tool refusals and rejects malformed decisions", async () => {
+  const foreign = {toolName:"foreign-mcp",toolCallId:"host-call",input:{}};
+  const denied = setup(async () => ({block:true,reason:"call was not recorded"}));
+  assert.deepEqual(await denied.handlers.get("tool_call")!(foreign,denied.context),
+    {block:true,reason:"call was not recorded"});
+  for (const answer of [null,[],{},false,{block:"false"},{block:false,reason:1},{isError:true}]) {
+    const fixture = setup(async () => answer as never);
+    await assert.rejects(() => fixture.handlers.get("tool_call")!(foreign,fixture.context),
+      /Invalid harness native-tool decision/);
+  }
+});
+
+test("only an explicit permission can release a foreign tool after a JSON round trip", async () => {
+  await fc.assert(fc.asyncProperty(fc.jsonValue(),async value => {
+    const answer = JSON.parse(JSON.stringify(value));
+    const fixture = setup(async () => answer);
+    let result: unknown;
+    try { result = await fixture.handlers.get("tool_call")!({toolName:"foreign-mcp"},fixture.context); }
+    catch { return; }
+    if (result === undefined) assert.equal(answer.block,false);
+    else assert.equal((result as {block:unknown}).block,true);
+  }),{numRuns:256});
+  await fc.assert(fc.asyncProperty(fc.boolean(),fc.string(),async (block,reason) => {
+    const fixture = setup(async () => JSON.parse(JSON.stringify({block,reason})));
+    assert.deepEqual(await fixture.handlers.get("tool_call")!({toolName:"foreign-mcp"},fixture.context),
+      block ? {block:true,reason} : undefined);
+  }),{numRuns:256});
 });

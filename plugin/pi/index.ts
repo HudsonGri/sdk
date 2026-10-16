@@ -92,7 +92,13 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
   });
   pi.on("tool_call", async (event, ctx) => {
     if (!registered.has(event.toolName)) {
-      await send("tool_call", { ...event, ...identity(ctx), hostExecuted: true });
+      const answer = await send("tool_call", { ...event, ...identity(ctx), hostExecuted: true });
+      if (!answer || typeof answer !== "object" || Array.isArray(answer) ||
+          typeof answer.block !== "boolean" ||
+          (answer.reason !== undefined && typeof answer.reason !== "string")) {
+        throw new Error("Invalid harness native-tool decision");
+      }
+      if (answer.block) return { block: true, reason: answer.reason as string | undefined };
     }
     return undefined;
   });
