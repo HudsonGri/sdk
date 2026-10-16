@@ -13,6 +13,55 @@ fn file(reference: &Component, kind: ChildFile, body: Vec<u8>) -> FileValue {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn resume_acknowledges_only_real_completed_receive_checkpoints(turns in 1u64..9) {
+        use crate::workflow::{MachineCheckpoint, MachineRegistry, ResumableMachine};
+        use std::borrow::Cow;
+        let seed: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../harness-fuzz/corpus/child_control/child-agent-turn"))).unwrap();
+        let machine = Arc::new(crate::filesystem::ChildAgentMachine::new());
+        let mut registry = MachineRegistry::default();
+        registry.register(machine.clone(), &mut None).unwrap();
+        let initial = MachineCheckpoint { machine: machine.identity().clone(), revision: 0, state: machine.initialize(&seed["initial"]).unwrap() };
+        let mut checkpoint = registry.step(&initial, Cow::Owned(serde_json::Value::Null), None).unwrap().0;
+        let task: TaskId = serde_json::from_value(seed["input"]["commands"][0]["value"]["Succeeded"]["task_id"].clone()).unwrap();
+        for inputs in 1..=turns {
+            let status = Some(ChildStatus { task, state: ChildState::Paused, settled: true, inputs });
+            prop_assert!(!settled_turn(status, task, inputs, Some(checkpoint.revision)));
+            let mut incoming = seed["input"].clone();
+            incoming["commands"][0]["operation_id"] = checkpoint.state["receive"]["operation_id"].clone();
+            incoming["commands"][0]["value"]["Succeeded"]["sequence"] = serde_json::json!(inputs);
+            checkpoint = registry.step(&checkpoint, Cow::Owned(incoming), None).unwrap().0;
+            prop_assert!(!settled_turn(status, task, inputs, Some(checkpoint.revision)));
+            let mut completed = seed["model_result"].clone();
+            completed["commands"][0]["operation_id"] = checkpoint.state["model"]["operation_id"].clone();
+            checkpoint = registry.step(&checkpoint, Cow::Owned(completed), None).unwrap().0;
+            prop_assert!(settled_turn(status, task, inputs, Some(checkpoint.revision)));
+            prop_assert_eq!(checkpoint.state["stage"].as_str(), Some("receive"));
+        }
+    }
+
+    #[test]
+    fn lifecycle_only_resume_never_replays_a_settled_turn(
+        task in any::<[u8;16]>(), inputs in 1u64..u64::MAX / 2,
+    ) {
+        let task = TaskId::from_bytes(task);
+        let revision = Some(inputs * 2 + 1);
+        prop_assert!(!settled_turn(None, task, inputs, revision));
+        for state in [ChildState::Running, ChildState::Paused, ChildState::Interrupted, ChildState::Cancelled, ChildState::Archived] {
+            let status = ChildStatus { task, state, settled: true, inputs };
+            prop_assert_eq!(settled_turn(Some(status), task, inputs, revision), matches!(state, ChildState::Running | ChildState::Paused | ChildState::Interrupted));
+            for invalid in [None, Some(1), Some(inputs * 2)] {
+                prop_assert!(!settled_turn(Some(status), task, inputs, invalid));
+            }
+            prop_assert!(!settled_turn(Some(status), task, inputs + 1, revision));
+            prop_assert!(!settled_turn(Some(status), task, u64::MAX, revision));
+            let unfinished = ChildStatus { settled: false, ..status };
+            prop_assert!(!settled_turn(Some(unfinished), task, inputs, revision));
+            let mut other = task.into_bytes(); other[0] ^= 1;
+            prop_assert!(!settled_turn(Some(status), TaskId::from_bytes(other), inputs, revision));
+        }
+    }
+
     // Exhaust the callback before, between, and after the two ordered follow
     // records. Only the follow may update cached files; completion releases its
     // worker only after the accepted status cursor has been observed.

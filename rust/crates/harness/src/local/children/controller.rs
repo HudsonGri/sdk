@@ -161,27 +161,45 @@ impl LocalHarness {
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
                 let inputs = input_count(&reference, &values);
-                if state != ChildState::Running {
-                    if !matches!(
-                        self.runtime
-                            .task_host()
-                            .recover_work(child, &mut None)
-                            .await?,
-                        crate::distributed::WorkPull::Idle
-                    ) {
-                        return Err(Error::Unsupported(
-                            "child control requires active-effect reconciliation".into(),
-                        ));
-                    }
-                    if matches!(state, ChildState::Cancelled | ChildState::Archived) {
-                        self.runtime.task_host().cancel(child).await?;
+                let suspension = if state == ChildState::Running
+                    && previous.is_some_and(|status| {
+                        status.settled && status.inputs == inputs && status.task == child
+                    }) {
+                    self.runtime
+                        .task_host()
+                        .workflow_suspension(child, &mut None)
+                        .await?
+                } else {
+                    None
+                };
+                let idle_revision = suspension
+                    .filter(|slot| slot.waiting_command.is_some() && slot.input.is_none())
+                    .map(|slot| slot.revision);
+                if state != ChildState::Running
+                    || settled_turn(previous, child, inputs, idle_revision)
+                {
+                    if state != ChildState::Running {
                         if !matches!(
-                            self.runtime.task_host().outcome(child).await?,
-                            Some(crate::Outcome::Cancelled)
+                            self.runtime
+                                .task_host()
+                                .recover_work(child, &mut None)
+                                .await?,
+                            crate::distributed::WorkPull::Idle
                         ) {
-                            return Err(Error::Indeterminate(OperationId::from_bytes(
-                                child.into_bytes(),
-                            )));
+                            return Err(Error::Unsupported(
+                                "child control requires active-effect reconciliation".into(),
+                            ));
+                        }
+                        if matches!(state, ChildState::Cancelled | ChildState::Archived) {
+                            self.runtime.task_host().cancel(child).await?;
+                            if !matches!(
+                                self.runtime.task_host().outcome(child).await?,
+                                Some(crate::Outcome::Cancelled)
+                            ) {
+                                return Err(Error::Indeterminate(OperationId::from_bytes(
+                                    child.into_bytes(),
+                                )));
+                            }
                         }
                     }
                     let status = ChildStatus {
@@ -452,6 +470,29 @@ fn input_count(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> 
         file: ChildFile::Request | ChildFile::Inbox(_) } if candidate == reference)
         })
         .count() as u64
+}
+
+fn settled_turn(
+    previous: Option<ChildStatus>,
+    child: TaskId,
+    inputs: u64,
+    idle_revision: Option<u64>,
+) -> bool {
+    // Initial receive is revision one. Each completed receive/model pair adds
+    // two revisions; a pause before the first message has no completed pair.
+    let expected = inputs.checked_mul(2).and_then(|value| value.checked_add(1));
+    if expected.is_none() || idle_revision != expected {
+        return false;
+    }
+    previous.is_some_and(|status| {
+        status.task == child
+            && status.settled
+            && status.inputs == inputs
+            && matches!(
+                status.state,
+                ChildState::Running | ChildState::Paused | ChildState::Interrupted
+            )
+    })
 }
 
 fn needs_work(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> Result<bool> {
