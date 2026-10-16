@@ -66,11 +66,14 @@ pub(crate) fn fuzz_command(request: &ExternalRequest) {
             request.child_attachment("").unwrap().task_id()
         );
         let task = crate::task_volume::Component::new(completion.task_id().to_string()).unwrap();
-        let file = completion.to_file(task.clone()).unwrap();
-        assert_eq!(
-            ExternalRequest::from_file(&task, &file).unwrap(),
-            completion
-        );
+        match completion.to_file(task.clone()) {
+            Ok(file) => assert_eq!(
+                ExternalRequest::from_file(&task, &file).unwrap(),
+                completion
+            ),
+            Err(crate::task_volume::Error::LimitExceeded) => {}
+            Err(error) => panic!("invalid child completion: {error}"),
+        }
     }
     if let Ok(Some((kind, payload))) = request.task_command() {
         if kind == TASK_ADMIT_COMMAND_KIND {

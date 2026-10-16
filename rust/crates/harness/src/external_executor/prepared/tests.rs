@@ -83,7 +83,9 @@ proptest! {
             prop_assert_eq!(stop.child_completion()?, completed);
             prop_assert!(start.child_completion().is_err());
             let mut changed = stop.clone();
-            changed.operation_id = crate::OperationId::new();
+            let mut identity = stop.operation_id.into_bytes();
+            identity[0] ^= 1;
+            changed.operation_id = crate::OperationId::from_bytes(identity);
             prop_assert!(changed.child_completion().is_err());
             let expected = serde_json::to_value(TaskJoinCommand {child:attached.task_id()}).unwrap();
             prop_assert_eq!(stop.task_command()?, Some((TASK_JOIN_COMMAND_KIND, expected)));
