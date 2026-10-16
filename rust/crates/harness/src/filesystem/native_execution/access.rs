@@ -181,7 +181,9 @@ where
         work,
     )
     .await
-    .map(|options| options.native_context(work, None, Some(work)))
+    // This host owns the callback ledger; it has no borrowed native execution
+    // whose physical input capture must be billed through an external lease.
+    .map(|options| options.native_context(work, None, None))
 }
 
 /// Compile persisted policy and retain the same authenticated refresh owner.
