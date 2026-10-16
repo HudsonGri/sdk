@@ -4,7 +4,7 @@
     "supports_images": true,
     "replace_after_yield": false,
     "expected_copies": 1,
-    "expected_image_reads": 4,
+    "expected_image_reads": 2,
     "expected_fallbacks": 0
   },
   {
@@ -12,7 +12,7 @@
     "supports_images": true,
     "replace_after_yield": true,
     "expected_copies": 1,
-    "expected_image_reads": 4,
+    "expected_image_reads": 2,
     "expected_fallbacks": 0
   },
   {

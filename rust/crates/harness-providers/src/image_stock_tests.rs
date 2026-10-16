@@ -512,6 +512,11 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
             "{adapter:?}"
         );
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
+        assert_eq!(
+            transport.counted.load(Ordering::SeqCst),
+            0,
+            "disabled compaction does not issue a count request"
+        );
         if let (Some(case), Some((reads, _, _, _))) = (image_case, images) {
             assert_eq!(
                 reads.calls.load(Ordering::SeqCst),

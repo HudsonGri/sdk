@@ -522,6 +522,15 @@ fn project_message<'a>(
             Ok(output)
         }
         Adapter::Responses => {
+            if message.role != ModelRole::User
+                || !message
+                    .content
+                    .parts()
+                    .iter()
+                    .any(|part| matches!(part, ModelContentPart::File { .. }))
+            {
+                return Ok(ordered.into_iter().map(Message::Item).collect());
+            }
             let mut output: Vec<Message<'a>> = Vec::new();
             for item in ordered {
                 match (output.last_mut(), item) {
