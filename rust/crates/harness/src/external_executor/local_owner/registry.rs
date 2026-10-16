@@ -122,10 +122,10 @@ impl Registry {
             opened,
             async |worker| worker.await.map_err(storage)?,
             async |harness| {
-                Arc::try_unwrap(harness)
-                    .map_err(|_| Error::Conflict("workspace still has an execution owner".into()))?
-                    .close()
-                    .await
+                let harness = Arc::try_unwrap(harness).map_err(|_| {
+                    Error::Conflict("workspace still has an execution owner".into())
+                })?;
+                Box::pin(harness.close()).await
             },
         )
         .await

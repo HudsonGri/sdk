@@ -19,6 +19,12 @@ async fn task_stream_drivers_keep_a_parent_wait_and_child_completion_independent
         .map_err(storage)?,
     );
     let instance = uuid::Uuid::new_v4();
+    let registry = registry::Registry::new(root.path().to_path_buf(), Arc::clone(&stop), instance);
+    let draining = registry.drain();
+    let size = std::mem::size_of_val(&draining);
+    eprintln!("local owner drain future: {size} bytes");
+    assert!(size < 16 * 1024, "owner drain future grew to {size} bytes");
+    drop(draining);
     let handler = drive_task(
         Arc::clone(&harness),
         crate::TaskId::from_bytes([7; 16]),
