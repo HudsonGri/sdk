@@ -27,7 +27,7 @@ impl State {
         }
         #[cfg(test)]
         crate::work::copy(std::mem::size_of::<Anchor>());
-        if !self.has_code_prefix(anchor.before.code) {
+        if !self.codes.valid(anchor.before.code) {
             return None;
         }
         self.restore(anchor.before);
@@ -35,16 +35,6 @@ impl State {
             eof.invalidate();
         }
         (!self.invalid).then_some(anchor.ordinal)
-    }
-
-    pub(super) fn has_code_prefix(&self, code: (usize, Option<usize>)) -> bool {
-        let (depth, top) = code;
-        self.codes.len() >= depth
-            && depth
-                .checked_sub(1)
-                .and_then(|index| self.codes.get(index))
-                .map(|code| code.opening.start)
-                == top
     }
 }
 

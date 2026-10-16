@@ -6,6 +6,8 @@ use super::{
 use std::{collections::HashMap, ops::Range};
 #[path = "inline_anchors.rs"]
 mod anchors;
+#[path = "inline_codes.rs"]
+mod codes;
 #[path = "inline_eof.rs"]
 mod eof;
 #[path = "inline_scope.rs"]
@@ -21,8 +23,7 @@ pub(super) struct State {
     link_floor: usize,
     labels: [Option<Range<usize>>; 2],
     opaque: Option<usize>,
-    codes: Vec<Code>,
-    code_lengths: HashMap<usize, usize>,
+    codes: codes::Codes,
     eof: Option<Box<eof::Projections>>,
     anchors: HashMap<usize, anchors::Anchor>,
     #[cfg(test)]
@@ -48,13 +49,8 @@ struct Snapshot {
     labels: [Option<Range<usize>>; 2],
     opaque: Option<usize>,
     frontier: usize,
-    code: (usize, Option<usize>),
+    code: usize,
     links: usize,
-}
-
-struct Code {
-    opening: Range<usize>,
-    before: Snapshot,
 }
 
 impl State {
@@ -70,16 +66,7 @@ impl State {
         self.link_floor = 0;
         self.labels = [None, None];
         self.opaque = None;
-        for code in &self.codes {
-            #[cfg(test)]
-            crate::work::scan(1);
-            self.code_lengths.remove(&code.opening.len());
-        }
-        self.codes.clear();
-        debug_assert!(
-            self.code_lengths.is_empty(),
-            "every code opener has one index entry"
-        );
+        self.codes.reset();
         if let Some(eof) = &mut self.eof {
             eof.invalidate();
         }
@@ -95,24 +82,15 @@ impl State {
             labels: self.labels.clone(),
             opaque: self.opaque,
             frontier: self.earliest(usize::MAX),
-            code: (
-                self.codes.len(),
-                self.codes.last().map(|code| code.opening.start),
-            ),
+            code: self.codes.head(),
             links: self.link_floor,
         }
     }
 
     fn restore(&mut self, before: Snapshot) {
-        if !self.has_code_prefix(before.code) {
+        if !self.codes.restore(before.code) {
             self.invalid = true;
             return;
-        }
-        while self.codes.len() > before.code.0 {
-            let code = self.codes.pop().expect("later code opener");
-            #[cfg(test)]
-            crate::work::scan(1);
-            self.code_lengths.remove(&code.opening.len());
         }
         self.delimiter.restore(before.delimiter);
         self.invalid |= !self.forest.restore(before.forest);
@@ -127,7 +105,7 @@ impl State {
             && self.bracket == 0
             && self.labels.iter().all(Option::is_none)
             && self.opaque.is_none()
-            && self.codes.is_empty()
+            && self.codes.head() == 0
     }
 
     fn bracket(&self) -> Option<&Bracket> {
@@ -142,9 +120,7 @@ impl State {
             self.bracket().map(|bracket| bracket.frontier),
             self.labels.iter().flatten().next().map(|label| label.start),
             self.opaque,
-            self.codes
-                .first()
-                .map(|code| code.opening.start.min(code.before.frontier)),
+            self.codes.earliest(),
         ]
         .into_iter()
         .flatten()
@@ -272,28 +248,21 @@ impl State {
         let physical = range.start + usize::from(escaped)..range.end;
         #[cfg(test)]
         crate::work::scan(1);
-        if let Some(index) = self.code_lengths.get(&physical.len()).copied() {
-            // Every removed opener was inserted once. A late match restores
-            // its prefix directly, discarding tentative inner interpretations.
-            let mut opening = None;
-            while self.codes.len() > index {
-                let Some(code) = self.codes.pop() else { break };
-                #[cfg(test)]
-                crate::work::scan(1);
-                self.code_lengths.remove(&code.opening.len());
-                opening = Some(code);
+        if let Some(code) = self.codes.get(physical.len()) {
+            #[cfg(test)]
+            crate::work::copy(std::mem::size_of::<Snapshot>());
+            let (opening, before) = (code.opening.clone(), code.before.clone());
+            #[cfg(test)]
+            let restore = !self.stale;
+            #[cfg(not(test))]
+            let restore = true;
+            if restore {
+                self.restore(before);
+            } else {
+                self.codes.restore(before.code);
             }
-            if let Some(code) = opening {
-                #[cfg(test)]
-                let restore = !self.stale;
-                #[cfg(not(test))]
-                let restore = true;
-                if restore {
-                    self.restore(code.before);
-                }
-                self.forest.code(code.opening, physical);
-                self.labels = [None, None];
-            }
+            self.forest.code(opening, physical);
+            self.labels = [None, None];
             return;
         }
         if escaped {
@@ -304,7 +273,7 @@ impl State {
             self.labels = [None, None];
             return;
         }
-        if self.code_lengths.contains_key(&opening.len()) {
+        if self.codes.get(opening.len()).is_some() {
             // An escaped first tick can make a later opener the same length
             // as an earlier one. The earlier opener wins every future match.
             self.forest.text(opening);
@@ -312,20 +281,7 @@ impl State {
             return;
         }
         let before = self.snapshot();
-        #[cfg(test)]
-        {
-            if self.codes.len() == self.codes.capacity() {
-                crate::work::copy(self.codes.len() * std::mem::size_of::<Code>());
-            }
-            if self.code_lengths.len() == self.code_lengths.capacity() {
-                crate::work::copy(self.code_lengths.len() * std::mem::size_of::<(usize, usize)>());
-            }
-        }
-        self.code_lengths.insert(opening.len(), self.codes.len());
-        self.codes.push(Code {
-            opening: opening.clone(),
-            before,
-        });
+        self.codes.push(opening.clone(), before);
         self.forest.text(opening);
         self.labels = [None, None];
     }
@@ -336,8 +292,7 @@ impl State {
             + self.anchors.capacity() * std::mem::size_of::<(usize, anchors::Anchor)>()
             + self.forest.retained()
             + self.brackets.capacity() * std::mem::size_of::<Bracket>()
-            + self.codes.capacity() * std::mem::size_of::<Code>()
-            + self.code_lengths.capacity() * std::mem::size_of::<(usize, usize)>()
+            + self.codes.retained()
             + self
                 .eof
                 .as_ref()

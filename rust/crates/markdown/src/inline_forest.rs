@@ -36,7 +36,7 @@ struct Node {
     output: Option<Rendered>,
 }
 
-const PAGE: usize = 8;
+pub(super) const PAGE: usize = 8;
 
 #[derive(Default)]
 pub(super) struct Forest {

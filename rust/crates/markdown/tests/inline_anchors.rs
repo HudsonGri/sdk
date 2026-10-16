@@ -46,13 +46,21 @@ proptest! {
 }
 
 #[test]
-fn removed_code_prefix_cannot_reuse_an_opener_snapshot() {
+fn removed_code_context_restores_the_original_prefix() {
     let prefix = "x `a x";
     let mut state = State::default();
     feed(&mut state, prefix, 0);
     state.remember(prefix.len(), 42);
     feed(&mut state, &format!("{prefix}` x ``b x"), prefix.len());
-    assert_eq!(state.restore_at(prefix.len()), None);
+    assert_eq!(state.restore_at(prefix.len()), Some(42));
+    let source = format!("{prefix}new` x");
+    feed(&mut state, &source, prefix.len());
+    let mut replay = State::default();
+    feed(&mut replay, &source, 0);
+    assert_eq!(
+        state.forest.rendered(&source),
+        replay.forest.rendered(&source)
+    );
 }
 
 #[test]
