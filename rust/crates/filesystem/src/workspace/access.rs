@@ -132,14 +132,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let Some((view, actions)) = &self.access else {
             return Ok(());
         };
-        if checkout.mode.access != crate::model::AccessMode::ReadOnly
+        if checkout.mode().access != crate::model::AccessMode::ReadOnly
             && *actions & (1 << Action::Write as u16) == 0
         {
             return Err(WorkspaceError::AccessDenied);
         }
         let now = access_time()?;
         let metadata = checkout
-            .read_metadata_with_accounting(checkout.root.root_file_id, accounting, cancellation)
+            .read_metadata_with_accounting(checkout.root().root_file_id, accounting, cancellation)
             .await?;
         if !view.matches_policy_revision(checkout.generation_id(), metadata.named_attributes)
             || !Action::ALL

@@ -1,3 +1,4 @@
+use super::access::deny;
 use super::*;
 use crate::access::{
     Action, Capability, Context, Generations, Grant, PathTrie, Policy, Principal, PrincipalKind,
@@ -67,7 +68,7 @@ impl crate::native_mount::NativeMountCallbackGuard for Reload {
                     path: "",
                 },
                 Context {
-                    now: access::access_time()?,
+                    now: crate::native_mount::adapter::access::access_time()?,
                     approvals: 0,
                 },
                 &capability,
@@ -169,7 +170,11 @@ fn cached_denial_observes_owner_policy_publication_before_host_probes()
             .as_ref()
             .unwrap()
             .current()?
-            .decide(Action::Read, "file", access::access_time()?)
+            .decide(
+                Action::Read,
+                "file",
+                crate::native_mount::adapter::access::access_time()?
+            )
             .allowed
     );
     Ok(())
