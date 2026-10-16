@@ -5,7 +5,6 @@ mod native_actions;
 mod native_hooks;
 use acyclic_harness::{
     OperationId, TaskId,
-    external_executor::ExternalHost,
     filesystem::{MAIL_SEND_TASK_COMMAND_KIND, TASK_ADMIT_COMMAND_KIND},
 };
 use native_actions::Tools;
@@ -17,18 +16,10 @@ async fn registered_children_execute_and_reply_through_every_native_hook() -> Re
     let fixture = Fixture::new()?;
     let owner = fixture.start_owner().await?;
     let result = async {
-        let (codex, claude, pi) = tokio::try_join!(
-            Tools::open(fixture.path(), ExternalHost::Codex),
-            Tools::open(fixture.path(), ExternalHost::ClaudeCode),
-            Tools::open(fixture.path(), ExternalHost::Pi),
-        )?;
-        let (codex, claude, pi) = tokio::try_join!(
-            child(ExternalHost::Codex, codex),
-            child(ExternalHost::ClaudeCode, claude),
-            child(ExternalHost::Pi, pi),
-        )?;
+        let [codex, claude, pi] = Tools::hosts(fixture.path()).await?;
+        let (codex, claude, pi) = tokio::try_join!(child(codex), child(claude), child(pi),)?;
         let cases = [codex, claude, pi];
-        let inspections = discover_children(&fixture, &cases).await?;
+        let inspections = discover_children(&cases).await?;
         futures::future::try_join_all(
             cases
                 .into_iter()
@@ -43,10 +34,8 @@ async fn registered_children_execute_and_reply_through_every_native_hook() -> Re
     Ok(())
 }
 
-async fn child<'a>(
-    host: ExternalHost,
-    parent: Tools<'a>,
-) -> Result<(Tools<'a>, TaskId, serde_json::Value)> {
+async fn child(parent: Tools<'_>) -> Result<(Tools<'_>, TaskId, serde_json::Value)> {
+    let host = parent.host;
     parent
         .reject(
             "malformed-spawn",
@@ -175,12 +164,12 @@ async fn finish_child(
 }
 
 async fn discover_children(
-    fixture: &Fixture,
     cases: &[(Tools<'_>, TaskId, serde_json::Value)],
 ) -> Result<Vec<serde_json::Value>> {
     use acyclic_stream::StreamProvider as _;
-    let page = native_hooks::client(fixture.path())
-        .await?
+    let page = cases[0]
+        .0
+        .provider
         .children_page(acyclic_stream::ChildrenPageRequest {
             parent: Some(acyclic_stream::StreamPath::new("external/requests")?),
             after: None,

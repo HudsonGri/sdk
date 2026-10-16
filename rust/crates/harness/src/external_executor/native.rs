@@ -1,5 +1,5 @@
 //! Native process entry point; task state stays in provider-backed files.
-use super::{ExternalHost, request, volume};
+use super::{ExternalHost, volume};
 use crate::{
     Error, Result,
     task_volume::{Component, TaskVolume},
@@ -8,6 +8,14 @@ use acyclic_stream::{StreamPath, http::HttpStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{io::Read as _, path::PathBuf, sync::Arc};
+
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+mod task_volumes;
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+pub use task_volumes::local_hook_volumes;
+
+mod handler;
+pub use handler::handle_hook;
 
 /// Platform bindings read from the user's configuration volume.
 /// The token may append only to `requests`, and may only read `results`.
@@ -63,38 +71,18 @@ impl HookBinding {
 /// Reads one native event and uses only the platform Streams provider.
 pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
     let host: ExternalHost = serde_json::from_value(Value::String(host.into())).map_err(storage)?;
-    let mut input: Value = volume::decode(&read_bounded(
+    let input: Value = volume::decode(&read_bounded(
         std::io::stdin().lock(),
         acyclic_stream::MAX_RECORD_BYTES,
     )?)
     .map_err(storage)?;
-    let cwd = input
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_dir().map_err(storage)?);
-    let mcp = super::handoff::normalize_tool(host, event, &mut input)?;
-    if host != ExternalHost::Pi && event == "PreToolUse" {
-        input
-            .as_object_mut()
-            .ok_or_else(|| Error::Invalid("native hook input is not an object".into()))?
-            .insert("hostExecuted".into(), Value::Bool(!mcp));
-    }
-    let request = request(host, event, input)?;
+    let cwd = match input.get("cwd").and_then(Value::as_str) {
+        Some(path) => PathBuf::from(path),
+        None => std::env::current_dir().map_err(storage)?,
+    };
+    let (request, mcp) = handler::prepare(host, event, input)?;
     let (answer, task) = run_request(&request, &cwd).await?;
-    if matches!(request.action, super::ExternalAction::HostTool { .. }) {
-        super::answer::host_tool(host, event, &request, answer)
-    } else if mcp {
-        // The ordinary MCP call returns this already-published result. Its
-        // rewritten arguments identify the exact original immutable request.
-        super::handoff::answer(request, task, &answer)
-    } else if host == ExternalHost::Pi
-        && matches!(request.action, super::ExternalAction::RunTool { .. })
-    {
-        super::tool_result(answer)
-    } else {
-        super::answer::validate(host, event, answer)
-    }
+    handler::answer(host, event, request, answer, task, mcp)
 }
 
 pub(super) fn run_request<'a>(
@@ -203,44 +191,7 @@ async fn local_volumes(
     TaskVolume<acyclic_stream::grpc::Client>,
 )> {
     let (client, _) = super::local_owner::binding(cwd).await?;
-    let provider = Arc::new(client);
-    let requests = TaskVolume::open(
-        provider.clone(),
-        super::local_paths::path(super::local_paths::REQUESTS, task),
-    )
-    .await
-    .map_err(storage)?;
-    let result_path = super::local_paths::path(super::local_paths::RESULTS, task);
-    match TaskVolume::open_existing(provider.clone(), result_path.clone()).await {
-        Ok(results) => return Ok((requests, results)),
-        Err(crate::task_volume::Error::ResetRequired) => {}
-        Err(error) => return Err(storage(error)),
-    }
-    // Only the owner creates result volumes. Discovery is a live replay plus
-    // follow, so cold task binding has no sleep or check/subscription gap.
-    use acyclic_stream::StreamProvider as _;
-    use futures::StreamExt as _;
-    let mut children = provider
-        .children(acyclic_stream::ChildrenRequest {
-            parent: Some(StreamPath::new(super::local_paths::RESULTS).map_err(storage)?),
-            limit: 64,
-        })
-        .await
-        .map_err(storage)?;
-    loop {
-        let child = children
-            .next()
-            .await
-            .ok_or_else(|| Error::Storage("result discovery ended".into()))?
-            .map_err(storage)?;
-        if child.path == result_path {
-            break;
-        }
-    }
-    let results = TaskVolume::open_existing(provider, result_path)
-        .await
-        .map_err(storage)?;
-    Ok((requests, results))
+    local_hook_volumes(Arc::new(client), task).await
 }
 
 pub(super) fn read_bounded(reader: impl std::io::Read, maximum: usize) -> Result<Vec<u8>> {
@@ -265,7 +216,7 @@ mod tests {
 
     #[test]
     fn native_hook_and_request_futures_stay_below_sixteen_kib() -> Result<()> {
-        let request = request(
+        let request = super::super::request(
             ExternalHost::Pi,
             "session_start",
             serde_json::json!({"sessionId":"size","cwd":"project"}),

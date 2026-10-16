@@ -1,9 +1,8 @@
-//! Subtree cancellation is a stock command delivered by a native hook process.
+//! Subtree cancellation through the shared hook handler and task files.
 #[path = "support/native_actions.rs"]
 mod native_actions;
 #[path = "support/native_hooks.rs"]
 mod native_hooks;
-use acyclic_harness::external_executor::ExternalHost;
 use native_actions::Tools;
 use native_hooks::{Fixture, Result};
 use serde_json::json;
@@ -12,18 +11,17 @@ use serde_json::json;
 async fn hooks_cancel_only_the_selected_child_subtree() -> Result {
     let fixture = Fixture::new()?;
     let owner = fixture.start_owner().await?;
-    let result = tokio::try_join!(
-        subtree(&fixture, ExternalHost::Codex),
-        subtree(&fixture, ExternalHost::ClaudeCode),
-        subtree(&fixture, ExternalHost::Pi),
-    );
+    let result = async {
+        let [codex, claude, pi] = Tools::hosts(fixture.path()).await?;
+        tokio::try_join!(subtree(codex), subtree(claude), subtree(pi))
+    }
+    .await;
     fixture.close_owner(owner).await?;
     result?;
     Ok(())
 }
 
-async fn subtree(fixture: &Fixture, host: ExternalHost) -> Result {
-    let parent = Tools::open(fixture.path(), host).await?;
+async fn subtree(parent: Tools<'_>) -> Result {
     let child = parent.child("branch").await?;
     let leaf = child.child("leaf").await?;
     let sibling = parent.child("sibling").await?;

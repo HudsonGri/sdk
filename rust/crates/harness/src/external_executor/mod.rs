@@ -85,8 +85,15 @@ pub use local_owner::{run_local_owner, stop_local_owner};
 pub use manifest::{claude_hooks, claude_manifest};
 #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
 pub use mcp::{native_tool_catalog, serve_native_tools};
+#[cfg(all(
+    feature = "hooks",
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use native::local_hook_volumes;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-pub use native::{HookBinding, run_hook};
+pub use native::{HookBinding, handle_hook, run_hook};
 pub use normalize::request;
 pub use request::{ExternalAction, ExternalRequest};
 pub use result::tool_result;

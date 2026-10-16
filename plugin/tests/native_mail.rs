@@ -1,9 +1,9 @@
-//! Stock mail and read-only inspection run through every installed hook client.
+//! Stock mail and inspection through every host's shared hook handler.
 #[path = "support/native_actions.rs"]
 mod native_actions;
 #[path = "support/native_hooks.rs"]
 mod native_hooks;
-use acyclic_harness::{TaskId, external_executor::ExternalHost};
+use acyclic_harness::TaskId;
 use native_actions::Tools;
 use native_hooks::{Fixture, Result};
 use serde_json::json;
@@ -12,18 +12,22 @@ use serde_json::json;
 async fn mailbox_and_inspection_commands_use_authenticated_task_files_for_every_host() -> Result {
     let fixture = Fixture::new()?;
     let owner = fixture.start_owner().await?;
-    let result = tokio::try_join!(
-        mailbox(&fixture, ExternalHost::Codex),
-        mailbox(&fixture, ExternalHost::ClaudeCode),
-        mailbox(&fixture, ExternalHost::Pi),
-    );
+    let result = async {
+        let [codex, claude, pi] = Tools::hosts(fixture.path()).await?;
+        tokio::try_join!(
+            mailbox(&fixture, codex),
+            mailbox(&fixture, claude),
+            mailbox(&fixture, pi)
+        )
+    }
+    .await;
     fixture.close_owner(owner).await?;
     result?;
     Ok(())
 }
 
-async fn mailbox(fixture: &Fixture, host: ExternalHost) -> Result {
-    let tools = Tools::open(fixture.path(), host).await?;
+async fn mailbox(fixture: &Fixture, tools: Tools<'_>) -> Result {
+    let host = tools.host;
     let child = tools.child("mail-child").await?;
     let filename = format!("{}-message.txt", host.name());
     let written = tools

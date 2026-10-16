@@ -1,25 +1,44 @@
-//! Native processes execute commands; assertions read their published SDK files.
+//! Real hook attachment, then the same hook handler on one retained connection.
 use super::native_hooks::{self, Result};
 use acyclic_harness::{
     TaskId,
-    external_executor::{ExternalHost, request},
+    external_executor::{ExternalHost, handle_hook, local_hook_volumes, request},
     task_volume::{Component, Query, TaskVolume},
 };
 use acyclic_stream::grpc::Client;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 pub struct Tools<'a> {
     cwd: &'a Path,
-    host: ExternalHost,
+    pub host: ExternalHost,
     session: String,
     caller: Option<String>,
     pub task: TaskId,
+    pub provider: Arc<Client>,
+    requests: TaskVolume<Client>,
     results: TaskVolume<Client>,
 }
 
 impl<'a> Tools<'a> {
-    pub async fn open(cwd: &'a Path, host: ExternalHost) -> Result<Self> {
+    pub async fn hosts(cwd: &'a Path) -> Result<[Self; 3]> {
+        let codex = Self::open(cwd, ExternalHost::Codex, None).await?;
+        let (claude, pi) = tokio::try_join!(
+            Self::open(
+                cwd,
+                ExternalHost::ClaudeCode,
+                Some(Arc::clone(&codex.provider))
+            ),
+            Self::open(cwd, ExternalHost::Pi, Some(Arc::clone(&codex.provider))),
+        )?;
+        Ok([codex, claude, pi])
+    }
+
+    async fn open(
+        cwd: &'a Path,
+        host: ExternalHost,
+        provider: Option<Arc<Client>>,
+    ) -> Result<Self> {
         let session = uuid::Uuid::new_v4().to_string();
         let event = if host == ExternalHost::Pi {
             "session_start"
@@ -29,15 +48,19 @@ impl<'a> Tools<'a> {
         let input = json!({"session_id":session,"cwd":cwd});
         let task = request(host, event, input.clone())?.task_id();
         native_hooks::hook(cwd, host.name(), event, input).await?;
-        let results = native_hooks::files(cwd, &format!("external/results/{task}"))
-            .await
-            .map_err(|error| format!("{} attach results: {error}", host.name()))?;
+        let provider = match provider {
+            Some(provider) => provider,
+            None => Arc::new(native_hooks::client(cwd).await?),
+        };
+        let (requests, results) = local_hook_volumes(Arc::clone(&provider), task).await?;
         Ok(Self {
             cwd,
             host,
             session,
             caller: None,
             task,
+            provider,
+            requests,
             results,
         })
     }
@@ -50,7 +73,15 @@ impl<'a> Tools<'a> {
         };
         let input = json!({"session_id":self.session,"agent_id":caller,
             "parent_agent_id":self.caller,"cwd":self.cwd});
-        native_hooks::hook(self.cwd, self.host.name(), event, input).await?;
+        handle_hook(
+            self.host,
+            event,
+            input,
+            &self.requests,
+            &self.results,
+            Component::new(self.task.to_string())?,
+        )
+        .await?;
         let event = if self.host == ExternalHost::Pi {
             "session_start"
         } else {
@@ -58,16 +89,25 @@ impl<'a> Tools<'a> {
         };
         let input = json!({"session_id":self.session,"agent_id":caller,"cwd":self.cwd});
         let task = request(self.host, event, input.clone())?.task_id();
-        native_hooks::hook(self.cwd, self.host.name(), event, input).await?;
+        let (requests, results) = local_hook_volumes(Arc::clone(&self.provider), task).await?;
+        handle_hook(
+            self.host,
+            event,
+            input,
+            &requests,
+            &results,
+            Component::new(task.to_string())?,
+        )
+        .await?;
         Ok(Self {
             cwd: self.cwd,
             host: self.host,
             session: self.session.clone(),
             caller: Some(caller.to_owned()),
             task,
-            results: native_hooks::files(self.cwd, &format!("external/results/{task}"))
-                .await
-                .map_err(|error| format!("{} child {caller} results: {error}", self.host.name()))?,
+            provider: Arc::clone(&self.provider),
+            requests,
+            results,
         })
     }
 
@@ -83,8 +123,15 @@ impl<'a> Tools<'a> {
         if self.host != ExternalHost::Pi {
             input["tool_name"] = json!(format!("mcp__acyclic__{name}"));
         }
-        let child = native_hooks::start_hook(self.cwd, self.host.name(), event, input).await?;
-        let output = child.wait_with_output().await?;
+        let output = handle_hook(
+            self.host,
+            event,
+            input,
+            &self.requests,
+            &self.results,
+            Component::new(self.task.to_string())?,
+        )
+        .await;
         let key = call.result_key(Component::new(self.task.to_string())?)?;
         let snapshot = self
             .results
@@ -94,13 +141,12 @@ impl<'a> Tools<'a> {
         assert_eq!(
             snapshot.files.len(),
             1,
-            "{} {name}: {}",
+            "{} {name}: {output:?}",
             self.host.name(),
-            String::from_utf8_lossy(&output.stderr)
         );
         Ok((
             serde_json::from_slice(&snapshot.files[0].bytes)?,
-            output.status.success(),
+            output.is_ok(),
         ))
     }
 
