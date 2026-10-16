@@ -24,7 +24,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .await?;
     let read = async |path: &str, expected: &[u8]| {
         assert_eq!(
-            lazy.read_range(path, 0, 32, &mut accounting())
+            lazy.read(path, 32, &mut accounting())
                 .await?
                 .bytes
                 .as_ref(),
