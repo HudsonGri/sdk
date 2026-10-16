@@ -97,7 +97,6 @@ impl ContentResidencyVerifier for DescriptorFault {
         &'a self,
         file: &'a FileRef,
         maximum: u64,
-        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         self.inner.verify(file, maximum, io)
@@ -107,6 +106,7 @@ impl ContentResidencyVerifier for DescriptorFault {
         &'a self,
         file: &'a FileRef,
         maximum: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         let corrupted = if file == &self.original {
