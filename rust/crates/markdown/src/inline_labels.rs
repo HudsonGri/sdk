@@ -1,5 +1,5 @@
 #[path = "inline_destinations.rs"]
-mod destinations;
+pub(super) mod destinations;
 use super::projection::Projection;
 use super::{Cache, Event, Range, References, Style, Tag};
 use crate::inline_scan::{
@@ -277,12 +277,10 @@ impl Cache {
             if let Some(target) = self.targets.get(&(scope.range.start, scope.range.end)) {
                 target.clone()
             } else {
-                let raw = source.original.get(end + 1..scope.range.end)?;
-                let mut suffix = destinations::Suffix::default();
-                if suffix.push(raw)? != raw.len() {
+                let (target_end, target) = self.destinations.target(source.original, end + 1)?;
+                if target_end != scope.range.end {
                     return None;
                 }
-                let target = suffix.target(raw)?;
                 #[cfg(test)]
                 crate::work::copy(
                     std::mem::size_of::<((usize, usize), std::sync::Arc<str>)>()

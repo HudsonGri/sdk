@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
+#[path = "inline_bare.rs"]
+mod bare;
 
 #[derive(Clone, Copy, Debug, Default)]
 enum Phase {
@@ -161,27 +163,190 @@ impl Suffix {
         }
     }
 
-    pub(super) fn target(&self, source: &str) -> Option<Arc<str>> {
+    #[cfg(test)]
+    fn target(&self, source: &str) -> Option<Arc<str>> {
         let Phase::Complete(end) = self.phase else {
             return None;
         };
-        let source = source.get(..end)?;
+        resolve(source, end)
+    }
+}
+
+fn resolve(source: &str, end: usize) -> Option<Arc<str>> {
+    let source = source.get(..end)?;
+    #[cfg(test)]
+    crate::work::copy(3 + source.len());
+    let probe = format!("[x]{source}");
+    let (events, _) =
+        crate::events::scoped(&probe, &crate::References::default(), crate::options(), 0);
+    events.into_iter().find_map(|(event, range)| {
+        if range == (0..probe.len())
+            && let crate::Event::Start(crate::Tag::Link { dest_url, .. }) = event
+        {
+            #[cfg(test)]
+            crate::work::copy(dest_url.len());
+            Some(Arc::from(dest_url.as_ref()))
+        } else {
+            None
+        }
+    })
+}
+
+#[derive(Default)]
+pub(in crate::inline_scan) struct Index {
+    offset: Option<usize>,
+    closing: bool,
+    pending: Vec<(usize, Suffix)>,
+    bare: bare::Bare,
+    completed: HashMap<usize, (usize, Option<Option<Arc<str>>>)>,
+    #[cfg(test)]
+    replay: bool,
+    #[cfg(test)]
+    forget_escape: bool,
+}
+
+impl Index {
+    pub(in crate::inline_scan) fn push(&mut self, source: &str, origin: usize) {
         #[cfg(test)]
-        crate::work::copy(3 + source.len());
-        let probe = format!("[x]{source}");
-        let (events, _) =
-            crate::events::scoped(&probe, &crate::References::default(), crate::options(), 0);
-        events.into_iter().find_map(|(event, range)| {
-            if range == (0..probe.len())
-                && let crate::Event::Start(crate::Tag::Link { dest_url, .. }) = event
-            {
+        if self.replay {
+            self.offset = None;
+            self.closing = false;
+            self.pending.clear();
+            self.bare = bare::Bare::default();
+            self.completed.clear();
+        }
+        #[cfg(test)]
+        {
+            self.bare.forget_escape = self.forget_escape;
+        }
+        let offset = *self.offset.get_or_insert(origin);
+        for (relative, character) in source
+            .get(offset..)
+            .expect("append-only destination input")
+            .char_indices()
+        {
+            #[cfg(test)]
+            crate::work::scan(character.len_utf8());
+            let end = offset + relative + character.len_utf8();
+            if self.closing && character == '(' {
                 #[cfg(test)]
-                crate::work::copy(dest_url.len());
-                Some(Arc::from(dest_url.as_ref()))
-            } else {
-                None
+                crate::work::copy(
+                    std::mem::size_of::<(usize, Suffix)>()
+                        * (1 + if self.pending.len() == self.pending.capacity() {
+                            self.pending.len()
+                        } else {
+                            0
+                        }),
+                );
+                let suffix = Suffix::default();
+                #[cfg(test)]
+                let suffix = Suffix {
+                    forget_escape: self.forget_escape,
+                    ..suffix
+                };
+                self.pending.push((end - 1, suffix));
             }
-        })
+            self.closing = character == ']';
+            self.advance(source, end, character);
+        }
+        self.offset = Some(source.len());
+    }
+
+    fn complete(&mut self, start: usize, end: usize) {
+        #[cfg(test)]
+        crate::work::copy(
+            std::mem::size_of::<(usize, (usize, Option<Option<Arc<str>>>))>()
+                * (1 + if self.completed.len() == self.completed.capacity() {
+                    self.completed.len()
+                } else {
+                    0
+                }),
+        );
+        self.completed.insert(start, (end, None));
+    }
+
+    fn advance(&mut self, source: &str, end: usize, character: char) {
+        let (finished, control) = self.bare.advance(character);
+        for start in finished {
+            #[cfg(test)]
+            crate::work::scan(1);
+            if control {
+                #[cfg(test)]
+                crate::work::copy(
+                    std::mem::size_of::<(usize, Suffix)>()
+                        * (1 + if self.pending.len() == self.pending.capacity() {
+                            self.pending.len()
+                        } else {
+                            0
+                        }),
+                );
+                self.pending.push((
+                    start,
+                    Suffix {
+                        phase: Phase::Bare(0),
+                        offset: end - character.len_utf8() - start,
+                        ..Suffix::default()
+                    },
+                ));
+            } else {
+                self.complete(start, end);
+            }
+        }
+        let mut next = 0;
+        while next < self.pending.len() {
+            #[cfg(test)]
+            crate::work::scan(1);
+            let (start, suffix) = &mut self.pending[next];
+            suffix.push(source.get(*start..end).expect("destination suffix"));
+            match suffix.phase {
+                Phase::Complete(length) => {
+                    let (start, end) = (*start, *start + length);
+                    self.complete(start, end);
+                }
+                Phase::Bare(depth) => {
+                    self.bare.insert(*start, depth, suffix.escaped);
+                }
+                Phase::Invalid => {}
+                _ => {
+                    next += 1;
+                    continue;
+                }
+            }
+            #[cfg(test)]
+            crate::work::copy(std::mem::size_of::<(usize, Suffix)>());
+            self.pending.swap_remove(next);
+        }
+    }
+
+    pub(in crate::inline_scan) fn target(
+        &mut self,
+        source: &str,
+        start: usize,
+    ) -> Option<(usize, Arc<str>)> {
+        let (end, target) = self.completed.get_mut(&start)?;
+        let target = target.get_or_insert_with(|| resolve(source.get(start..*end)?, *end - start));
+        Some((*end, target.as_ref()?.clone()))
+    }
+
+    #[cfg(test)]
+    pub(in crate::inline_scan) fn retained(
+        &self,
+        links: &mut std::collections::HashSet<*const u8>,
+    ) -> (usize, usize) {
+        let payload = self
+            .completed
+            .values()
+            .filter_map(|(_, target)| target.as_ref()?.as_ref())
+            .filter(|target| links.insert(Arc::as_ptr(target).cast::<u8>()))
+            .map(|target| target.len())
+            .sum();
+        (
+            payload,
+            self.bare.retained()
+                + self.pending.capacity() * std::mem::size_of::<(usize, Suffix)>()
+                + self.completed.capacity()
+                    * std::mem::size_of::<(usize, (usize, Option<Option<Arc<str>>>))>(),
+        )
     }
 }
 

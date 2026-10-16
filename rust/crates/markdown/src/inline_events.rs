@@ -29,6 +29,7 @@ enum Key {
 #[derive(Default)]
 pub(in crate::inline_scan) struct Cache {
     input: Input,
+    destinations: labels::destinations::Index,
     keys: HashMap<Key, usize>,
     nodes: Vec<Box<[Output; super::super::PAGE]>>,
     length: usize,
@@ -147,6 +148,10 @@ impl Cache {
             .clone()
             .masked(style, link);
         self.insert(key, output)
+    }
+
+    pub(in crate::inline_scan) fn track_destinations(&mut self, source: &str, origin: usize) {
+        self.destinations.push(source, origin);
     }
 
     fn target(
@@ -476,6 +481,7 @@ impl Cache {
             payload += bytes;
             metadata += size;
         }
-        (payload, metadata)
+        let (bytes, size) = self.destinations.retained(links);
+        (payload + bytes, metadata + size)
     }
 }

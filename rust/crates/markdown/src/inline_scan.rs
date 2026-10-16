@@ -418,6 +418,7 @@ impl Scanner {
         let base = source.base;
         let sentinel = source.sentinel;
         self.tokens.push(original);
+        self.render.track_destinations(original, source.start);
         let mut syntax = Syntax::new(events, &self.tokens, base, sentinel, self.discarded);
         syntax.absolute(base, sentinel);
         let pending = self.tokens.preview().map(|token| token.range.start);

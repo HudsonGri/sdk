@@ -93,3 +93,95 @@ fn destination_properties_detect_replay_and_lost_escape_state() {
     let end = suffix.push(source);
     assert_ne!(end, oracle(source).map(|(end, _)| end));
 }
+
+fn compare_index(source: &str, cuts: &[usize]) {
+    let mut index = Index::default();
+    for end in cuts.iter().copied().chain([source.len()]) {
+        let prefix = &source[..end];
+        index.push(prefix, 0);
+        for (at, _) in prefix.match_indices("](") {
+            let start = at + 1;
+            let expected = oracle(&prefix[start..]).map(|(end, url)| (start + end, url));
+            let actual = index
+                .target(prefix, start)
+                .map(|(end, url)| (end, url.to_string()));
+            assert_eq!(actual, expected, "prefix {prefix:?}, candidate {start}");
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn retained_destination_index_matches_independent_suffix_parses(
+        parts in prop::collection::vec(prop_oneof![
+            any::<char>().prop_map(String::from),
+            prop::sample::select(vec!["](", "](<", "](<u> '", "](<u> \"", "]((", "](<u> (", "u)", "\\)", "\\\\", "[", "]", ")", "\n", "\r\n", "'", "\"", "<", ">", " ", "a(b)c", "![x](u)", "[x](u)"]).prop_map(str::to_owned),
+        ], 0..48),
+        cuts in prop::collection::vec(any::<usize>(), 0..48),
+    ) {
+        let source = parts.concat();
+        let mut cuts: Vec<_> = cuts.into_iter().map(|at| at % (source.len()+1)).filter(|at| source.is_char_boundary(*at)).collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        compare_index(&source, &cuts);
+        compare_index(&source, &source.char_indices().map(|(at,_)| at).collect::<Vec<_>>());
+    }
+}
+
+fn indexed_work(fragments: &[&str], count: usize, replay: bool) -> (usize, usize, usize) {
+    let mut index = Index {
+        replay,
+        ..Index::default()
+    };
+    let mut source = String::new();
+    let before = crate::work::current();
+    for fragment in fragments.iter().cycle().take(count) {
+        source.push_str(fragment);
+        index.push(&source, 0);
+    }
+    let work = crate::work::current() - before;
+    let (bytes, metadata) = index.retained(&mut Default::default());
+    (work, bytes + metadata, source.len())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn retained_candidate_feed_and_storage_are_linear(
+        fragments in prop::collection::vec(prop::sample::select(vec![
+            "](", "](<", "](<u> '", "](<u> \"", "]((", "](<u> (",
+            "]((x)", "]()", "x", " ", "\\", "\\)", ")", "]", "(", "'", "\"", ">", "\n", "\u{1f980}",
+        ]), 1..5),
+    ) {
+        for count in [64,128,256,1024] {
+            let small = indexed_work(&fragments, count, false);
+            let large = indexed_work(&fragments, count * 2, false);
+            prop_assert!(large.0 <= 128 * large.2 + 4096, "{:?}: {:?} -> {:?}", fragments, small, large);
+            prop_assert!(large.1 <= 128 * large.2 + 4096, "{:?}: {:?} -> {:?}", fragments, small, large);
+            prop_assert!(large.0 <= 2 * small.0 + 4096, "{:?}: {:?} -> {:?}", fragments, small, large);
+            prop_assert!(large.1 <= 2 * small.1 + 4096, "{:?}: {:?} -> {:?}", fragments, small, large);
+        }
+    }
+}
+
+#[test]
+fn index_properties_detect_replay_and_lost_escape_state() {
+    let small = indexed_work(&["](<", "x"], 64, true);
+    let large = indexed_work(&["](<", "x"], 128, true);
+    assert!(large.0 > 2 * small.0 + 4096);
+    let source = r"](u\)v)";
+    let mut index = Index {
+        forget_escape: true,
+        ..Index::default()
+    };
+    for end in 1..=source.len() {
+        index.push(&source[..end], 0);
+    }
+    assert_ne!(
+        index
+            .target(source, 1)
+            .map(|(end, url)| (end, url.to_string())),
+        oracle(&source[1..]).map(|(end, url)| (1 + end, url))
+    );
+}
