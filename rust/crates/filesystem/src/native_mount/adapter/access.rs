@@ -210,7 +210,9 @@ where
             let view = if self.access_refresh.is_some() {
                 self.access_snapshot(work).await?
             } else {
-                published.current().map_err(|_| MountSourceError::AccessDenied)?
+                published
+                    .current()
+                    .map_err(|_| MountSourceError::AccessDenied)?
             };
             let now = access_time()?;
             let mut carrier = NativeDemandCarrier::Native(work);

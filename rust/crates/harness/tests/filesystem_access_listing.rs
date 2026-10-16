@@ -11,8 +11,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
         4096,
         &mut None,
     )?;
-    let mut policy: Policy =
-        serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+    let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
     policy.version = 2;
     let mut grants = Vec::new();
     let mut expected = Vec::new();

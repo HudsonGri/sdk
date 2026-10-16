@@ -10,21 +10,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<Self, WorkspaceError> {
         let principal = Principal {
-            kind: crate::access::PrincipalKind::Anonymous, id: String::new(),
-            lineage: Vec::new(), groups: BTreeSet::new(), roles: BTreeSet::new(),
-            tags: BTreeSet::new(), attributes: BTreeMap::new(),
+            kind: crate::access::PrincipalKind::Anonymous,
+            id: String::new(),
+            lineage: Vec::new(),
+            groups: BTreeSet::new(),
+            roles: BTreeSet::new(),
+            tags: BTreeSet::new(),
+            attributes: BTreeMap::new(),
         };
         let capability = Capability {
             layers: vec![vec![crate::access::Grant {
                 actions: actions.iter().copied().collect(),
                 resource: crate::access::ResourcePattern {
-                    lineage_root: None, volume: Some(uuid::Uuid::from_bytes(
-                        self.id.volume_id().into_bytes()).to_string()),
-                    generations: crate::access::Generations::All, path: "**".into(),
+                    lineage_root: None,
+                    volume: Some(
+                        uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string(),
+                    ),
+                    generations: crate::access::Generations::All,
+                    path: "**".into(),
                 },
-            }]], expires_at: None,
+            }]],
+            expires_at: None,
         };
-        self.unrestricted_access(&principal, &capability, actions, cancellation).await
+        self.unrestricted_access(&principal, &capability, actions, cancellation)
+            .await
     }
 
     /// Compile persisted policy for a host-authenticated caller. Missing policy
@@ -35,15 +44,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         capability: &Capability,
         cancellation: &CancellationToken,
     ) -> Result<PathTrie, WorkspaceError> {
-        let mut checkout = self.volume.checkout(
-            GenerationSelector::Head, CheckoutMode::read_only_pinned(),
-            WorkBudget::UNBOUNDED, cancellation,
-        ).await.map_err(|failure| WorkspaceError::from(failure.error))?.value;
-        let (bytes, revision) = checkout.read_access_policy(WorkBudget::UNBOUNDED, cancellation)
-            .await.map_err(|failure| WorkspaceError::from(failure.error))?.value;
+        let mut checkout = self
+            .volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?
+            .value;
+        let (bytes, revision) = checkout
+            .read_access_policy(WorkBudget::UNBOUNDED, cancellation)
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?
+            .value;
         let bytes = bytes.ok_or(WorkspaceError::AccessDenied)?;
-        let policy: Policy = serde_json::from_slice(&bytes.bytes)
-            .map_err(|_| WorkspaceError::AccessDenied)?;
+        let policy: Policy =
+            serde_json::from_slice(&bytes.bytes).map_err(|_| WorkspaceError::AccessDenied)?;
         // These coarse adapters have no ordinal or authenticated task ancestry.
         // Never filter a conditional deny using invented facts.
         if policy.layers.iter().flatten().any(|rule| {
@@ -59,12 +78,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Err(WorkspaceError::AccessDenied);
         }
         let volume = uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string();
-        PathTrie::compile(&policy, principal, Resource {
-            config: self.volume.config, lineage: &[], volume: &volume,
-            generation: 0, head: 0, path: "",
-        }, Context { now: access_time()?, approvals: 0 }, capability)
-            .map(|view| view.with_policy_revision(checkout.generation_id(), revision))
-            .map_err(|_| WorkspaceError::AccessDenied)
+        PathTrie::compile(
+            &policy,
+            principal,
+            Resource {
+                config: self.volume.config,
+                lineage: &[],
+                volume: &volume,
+                generation: 0,
+                head: 0,
+                path: "",
+            },
+            Context {
+                now: access_time()?,
+                approvals: 0,
+            },
+            capability,
+        )
+        .map(|view| view.with_policy_revision(checkout.generation_id(), revision))
+        .map_err(|_| WorkspaceError::AccessDenied)
     }
 
     /// Bind a coarse adapter only when its entire exposed operation set is
@@ -76,11 +108,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         actions: &[Action],
         cancellation: &CancellationToken,
     ) -> Result<Self, WorkspaceError> {
-        let view = self.compile_access(principal, capability, cancellation).await?;
+        let view = self
+            .compile_access(principal, capability, cancellation)
+            .await?;
         if !view.allows_every_path(actions, access_time()?) {
             return Err(WorkspaceError::AccessDenied);
         }
-        self.access = Some((Arc::new(view), actions.iter().fold(0, |mask, action| mask | 1 << *action as u16)));
+        self.access = Some((
+            Arc::new(view),
+            actions
+                .iter()
+                .fold(0, |mask, action| mask | 1 << *action as u16),
+        ));
         Ok(self)
     }
 
@@ -90,18 +129,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        let Some((view, actions)) = &self.access else { return Ok(()); };
+        let Some((view, actions)) = &self.access else {
+            return Ok(());
+        };
         if checkout.mode.access != crate::model::AccessMode::ReadOnly
             && *actions & (1 << Action::Write as u16) == 0
         {
             return Err(WorkspaceError::AccessDenied);
         }
         let now = access_time()?;
-        let metadata = checkout.read_metadata_with_accounting(
-            checkout.root.root_file_id, accounting, cancellation,
-        ).await?;
+        let metadata = checkout
+            .read_metadata_with_accounting(checkout.root.root_file_id, accounting, cancellation)
+            .await?;
         if !view.matches_policy_revision(checkout.generation_id(), metadata.named_attributes)
-            || !Action::ALL.into_iter().filter(|action| *actions & (1 << *action as u16) != 0)
+            || !Action::ALL
+                .into_iter()
+                .filter(|action| *actions & (1 << *action as u16) != 0)
                 .all(|action| view.allows_every_path(&[action], now))
         {
             return Err(WorkspaceError::AccessDenied);
@@ -111,6 +154,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
 }
 
 pub(super) fn access_time() -> Result<u64, WorkspaceError> {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map(|now| now.as_secs()).map_err(|_| WorkspaceError::AccessDenied)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|now| now.as_secs())
+        .map_err(|_| WorkspaceError::AccessDenied)
 }

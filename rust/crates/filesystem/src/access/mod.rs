@@ -8,12 +8,12 @@
 mod capability;
 mod compilation;
 mod decision;
+#[cfg(test)]
+pub(crate) mod fixtures;
 mod glob;
 mod mount;
 mod names;
 mod view;
-#[cfg(test)]
-pub(crate) mod fixtures;
 pub use view::AccessView;
 mod trie;
 

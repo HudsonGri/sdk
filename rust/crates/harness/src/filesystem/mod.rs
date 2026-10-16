@@ -125,7 +125,11 @@ pub use native_execution::{
     BorrowedNativeVolumeBinding, NativeAccessAuthority, NativeMountedVolume, NativePreparationRoot,
     NativeViewPublicationError, NativeVolumeView, authenticated_mount_options, owner_mount_options,
 };
-#[cfg(all(feature = "native-execution", feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native-execution",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
 pub use native_execution::{local_owner_mount_options, local_owner_workspace};
 pub use recursive::{
     ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,

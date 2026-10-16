@@ -126,15 +126,20 @@ async fn adapter_with_limits(
     let filesystem = Fs::memory();
     let workspace = filesystem
         .create_workspace_with_operation::<_, (), crate::WorkspaceError>(
-            "s3-http", crate::VolumeInitialization {
+            "s3-http",
+            crate::VolumeInitialization {
                 config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
                 access_policy: Some(crate::access::INITIAL_POLICY),
-            }, crate::OperationId::new(), WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), None,
+            },
+            crate::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            None,
         )
         .await
         .map_err(|_| s3s::s3_error!(InternalError))?
-        .value.workspace();
+        .value
+        .workspace();
     FilesystemS3Adapter::new(
         Arc::new(Resolver {
             principal: FilesystemS3Principal {

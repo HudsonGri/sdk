@@ -141,9 +141,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let mut checkout = self.volume.checkout(selector, mode, original, cancellation)
-                .await.map_err(WorkspaceError::from)?;
-            self.check_access(&mut checkout, accounting, cancellation).await?;
+            let mut checkout = self
+                .volume
+                .checkout(selector, mode, original, cancellation)
+                .await
+                .map_err(WorkspaceError::from)?;
+            self.check_access(&mut checkout, accounting, cancellation)
+                .await?;
             return Ok(checkout);
         }
         let opened = self
@@ -155,7 +159,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .ok_or(crate::WorkError::Overflow)?;
         let mut checkout = merge_workspace_backend(opened, work, allocations.live_bytes())?.value;
         work.verify(budget)?;
-        self.check_access(&mut checkout, accounting, cancellation).await?;
+        self.check_access(&mut checkout, accounting, cancellation)
+            .await?;
         Ok(checkout)
     }
 

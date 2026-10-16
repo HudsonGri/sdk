@@ -29,7 +29,10 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
         )?;
         assert_eq!(
             require_projfs_mode(&view, true, now).is_err(),
-            matches!(action, Action::Create | Action::Write | Action::Append | Action::ReadHistory),
+            matches!(
+                action,
+                Action::Create | Action::Write | Action::Append | Action::ReadHistory
+            ),
             "unsupported writable mode for {action:?}",
         );
         require_projfs_mode(&view, false, now)?;

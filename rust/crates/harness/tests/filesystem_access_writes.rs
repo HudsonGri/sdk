@@ -173,8 +173,7 @@ async fn revocation_blocks_legacy_writes_and_cached_operation_replies() -> Resul
     let fixture = Fixture::new().await?;
     let grant = writer(&fixture, &fixture.scope)?;
     let _ = put(&fixture, &grant, "secrets/new", "original", None).await?;
-    let mut policy: Policy =
-        serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+    let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
     policy.version = 2;
     let mut deny = policy.layers[0][0].clone();
     deny.id = "revoked".into();

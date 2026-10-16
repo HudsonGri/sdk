@@ -292,8 +292,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 "workspace name and identity disagree",
             ));
         }
-        workspace.bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
-            .await.map_err(|error| status(&error))
+        workspace
+            .bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
+            .await
+            .map_err(|error| status(&error))
     }
 
     async fn source_scope(
@@ -511,7 +513,10 @@ where
             .filesystem
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 request.name,
-                crate::VolumeInitialization { config, access_policy: Some(crate::access::INITIAL_POLICY) },
+                crate::VolumeInitialization {
+                    config,
+                    access_policy: Some(crate::access::INITIAL_POLICY),
+                },
                 operation_id,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
@@ -519,7 +524,8 @@ where
             )
             .await
             .map_err(|failure| status(&failure.error))?
-            .value.workspace();
+            .value
+            .workspace();
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
             status: wire::MutationStatus::Committed as i32,
@@ -535,14 +541,15 @@ where
             wire::open_workspace_request::Selector::Workspace(reference) => {
                 self.workspace(Some(reference)).await?
             }
-            wire::open_workspace_request::Selector::Name(name) => {
-                self.filesystem
-                    .open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map_err(|failure| status(&failure.error))?
-                    .value.bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
-                    .await.map_err(|error| status(&error))?
-            }
+            wire::open_workspace_request::Selector::Name(name) => self
+                .filesystem
+                .open_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value
+                .bind_coarse_access(&crate::access::Action::ALL, &CancellationToken::new())
+                .await
+                .map_err(|error| status(&error))?,
         };
         Ok(Response::new(wire::WorkspaceResponse {
             workspace: Some(workspace_message(&workspace).await?),
