@@ -167,20 +167,23 @@ fn assert_credit(
     refunded: u64,
     outstanding: u64,
 ) {
-    work.state(|state| {
-        let pending = state.original_budget().bytes_copied - state.budget.bytes_copied;
-        assert_eq!(
-            pending + state.work.bytes_copied + refunded,
-            reserved,
-            "outstanding + charged + refunded must equal reserved"
-        );
-        assert_eq!(pending, outstanding, "no abandoned reservation may survive");
-        assert_eq!(state.work.bytes_copied, charged);
-        assert_eq!(
-            state.remaining().unwrap().bytes_copied,
-            8 - charged - outstanding
-        );
+    let (pending, completed, remaining) = work.state(|state| {
+        (
+            state.original_budget().bytes_copied - state.budget.bytes_copied,
+            state.work.bytes_copied,
+            state.remaining().map(|remaining| remaining.bytes_copied),
+        )
     });
+    // Assert outside the leaf so the deliberate failure can unwind without
+    // poisoning a ledger that observer/owner destructors must still enter.
+    assert_eq!(
+        pending + completed + refunded,
+        reserved,
+        "outstanding + charged + refunded must equal reserved"
+    );
+    assert_eq!(pending, outstanding, "no abandoned reservation may survive");
+    assert_eq!(completed, charged);
+    assert_eq!(remaining.unwrap(), 8 - charged - outstanding);
 }
 
 // action: abandon, cancel before the effect, panic during the callback, or
