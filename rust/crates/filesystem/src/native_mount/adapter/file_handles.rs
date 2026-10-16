@@ -47,7 +47,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::Read, work)
+            let permissions = self
+                .require_access(&path, crate::access::Action::Read, work)
                 .await?;
             let observation = self
                 .checkout
@@ -62,6 +63,8 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
+            self.require_snapshot(&permissions, &mut checkout, work)
+                .await?;
             let file_id = checkout
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -113,6 +116,8 @@ where
                 &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
+            self.require_snapshot(&permissions, &mut observer, work)
+                .await?;
             let lookup = self
                 .read_lookup(&mut observer, &namespace, &mut inputs, work.cancellation())
                 .await?
@@ -188,6 +193,8 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
+            self.require_snapshot(&permissions, &mut checkout, work)
+                .await?;
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, work, work.cancellation())
                 .await?

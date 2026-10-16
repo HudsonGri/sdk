@@ -150,7 +150,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                 &self.volume.storage_name(&mut None)?,
             )?;
             let workspace = self.reader.host.open(&reference, Some(&io)).await?;
-            self.authorize_policy(&workspace, &io).await?;
+            let permissions = self.authorize_policy(&workspace, &io).await?;
             let (provider, path) = self
                 .reader
                 .host
@@ -193,6 +193,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
             let (cursor, anchor, valid_resume) =
                 cut(provider.as_ref(), &path, cursor, head).await?;
             let current = generation(&workspace, &anchor, &io).await?;
+            self.require_snapshot(&permissions, &current, &io).await?;
             let selection = Selection::read(
                 &current,
                 &self.volume,
@@ -264,8 +265,9 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                         &acyclic_fs::CancellationToken::new(),
                     )?;
                     source.authorize(&query, &io).await?;
-                    source.authorize_policy(&current.workspace(), &io).await?;
+                    let permissions = source.authorize_policy(&current.workspace(), &io).await?;
                     let next = generation(&current.workspace(), &record, &io).await?;
+                    source.require_snapshot(&permissions, &next, &io).await?;
                     let maximum = u32::try_from(source.budget.items_returned)
                         .map_err(|_| task_volume::Error::LimitExceeded)?;
                     let (diff, _allocation) = io.sdk(

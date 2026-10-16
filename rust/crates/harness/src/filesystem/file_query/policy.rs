@@ -61,7 +61,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
         &self,
         workspace: &Workspace<StreamAuthorityStore<P>, O>,
         io: &PreparationIo,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<std::sync::Arc<PathTrie>> {
         let failure = |_| crate::Error::FilesystemAccessConfiguration("file query");
         let mut view = self.policy.current().map_err(failure)?;
         let mut current = revision(workspace, io).await?;
@@ -79,6 +79,31 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
         if !view.matches_policy_revision(current.0, current.1) || view.generation_sensitive() {
             return Err(crate::Error::FilesystemAccessConfiguration("file query"));
         }
-        access::require_unrestricted(&view, &[Action::Read, Action::List], "file query")
+        access::require_unrestricted(&view, &[Action::Read, Action::List], "file query")?;
+        Ok(view)
+    }
+
+    pub(super) async fn require_snapshot(
+        &self,
+        view: &PathTrie,
+        generation: &acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
+        io: &PreparationIo,
+    ) -> crate::Result<()> {
+        let mut snapshot = io.sdk(
+            generation
+                .workspace()
+                .checkout(
+                    GenerationSelector::Exact(generation.id()),
+                    CheckoutMode::read_only_pinned(),
+                    io,
+                    io.cancellation(),
+                )
+                .await,
+        )?;
+        let revision = io.sdk(snapshot.access_policy_revision(io, io.cancellation()).await)?;
+        if !view.matches_policy_revision(generation.id(), revision) {
+            return Err(crate::Error::FilesystemAccessConfiguration("file query"));
+        }
+        Ok(())
     }
 }

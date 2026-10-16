@@ -83,6 +83,22 @@ impl<A, O> CheckoutMountSource<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
+    pub(super) async fn require_snapshot(
+        &self,
+        permissions: &PinnedPath,
+        checkout: &mut crate::Checkout<A, O>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        let generation = checkout.generation_id();
+        let revision = checkout
+            .access_policy_revision(work, work.cancellation())
+            .await?;
+        if !permissions.matches_policy_revision(generation, revision) {
+            return Err(MountSourceError::AccessDenied);
+        }
+        Ok(())
+    }
+
     pub(in crate::native_mount) async fn access_snapshot(
         &self,
         work: &crate::NativeMaterializationWork,
