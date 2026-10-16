@@ -40,12 +40,12 @@ fn prefix(
     (None, (copied, hashed, items))
 }
 
-fn replay<const LEGACY: bool, const OMIT_COMPLETION: bool>(
+fn replay<const OMIT_COMPLETION: bool, const PREFIX_MUTANT: u8, const CHECK_PREFIX: bool>(
     steps: &[(u8, u8, bool)],
     budget: WorkBudget,
     cancel_at: usize,
     mode: u8,
-) -> Result<(Option<(usize, bool, String)>, WorkCounters), TestCaseError> {
+) -> Result<(), TestCaseError> {
     let cancellation = CancellationToken::new();
     #[cfg(not(target_arch = "wasm32"))]
     let original = (mode != 0).then(|| {
@@ -98,11 +98,7 @@ fn replay<const LEGACY: bool, const OMIT_COMPLETION: bool>(
                 ..WorkCounters::UNCHARGED
             },
         };
-        // Reinsert exactly the five removed wrapper checks around real methods.
         let before = (|| {
-            if LEGACY {
-                observed.accounting.check()?;
-            }
             if direct {
                 observed.admit(delta)
             } else {
@@ -132,9 +128,6 @@ fn replay<const LEGACY: bool, const OMIT_COMPLETION: bool>(
                     1 => ReadAllocationStep::Hashed(u64::from(bytes)),
                     _ => ReadAllocationStep::Item,
                 })?;
-                if LEGACY && kind == 1 {
-                    observed.accounting.check()?;
-                }
             }
             Ok::<_, FsError>(())
         })();
@@ -152,15 +145,27 @@ fn replay<const LEGACY: bool, const OMIT_COMPLETION: bool>(
     expected.bytes_hashed += hashed;
     expected.items_examined += items;
     prop_assert_eq!(actual, expected, "exact independent completed-work receipt");
-    prop_assert_eq!(
-        failure.as_ref().map(|(i, after, _)| (*i, *after)),
-        stop.map(|(i, after, _)| (i, after)),
-        "exact independent failure prefix"
-    );
+    // These controls change only error location, leaving real execution and
+    // its exact receipt untouched. Only the prefix assertion can detect them.
+    if let Some((index, after, _)) = &mut failure {
+        if PREFIX_MUTANT == 1 {
+            *index += 1;
+        }
+        if PREFIX_MUTANT == 2 {
+            *after = !*after;
+        }
+    }
+    if CHECK_PREFIX {
+        prop_assert_eq!(
+            failure.as_ref().map(|(i, after, _)| (*i, *after)),
+            stop.map(|(i, after, _)| (i, after)),
+            "exact independent failure prefix"
+        );
+    }
     if let (Some((_, _, error)), Some((_, _, counter))) = (&failure, stop) {
         prop_assert!(error.contains(counter), "{error}: expected {counter}");
     }
-    Ok((failure, actual))
+    Ok(())
 }
 
 proptest! {
@@ -179,9 +184,7 @@ proptest! {
             #[cfg(not(target_arch = "wasm32"))] 3,
             #[cfg(not(target_arch = "wasm32"))] 4,
         ] {
-            let old = replay::<true, false>(&steps, budget, cancel_at, mode)?;
-            let new = replay::<false, false>(&steps, budget, cancel_at, mode)?;
-            prop_assert_eq!(new, old);
+            replay::<false, 0, true>(&steps, budget, cancel_at, mode)?;
         }
     }
 }
@@ -189,6 +192,54 @@ proptest! {
 #[test]
 fn prefix_oracle_rejects_missing_completed_charges() {
     let steps = [(0, 8, false), (1, 7, true), (2, 0, false)];
-    replay::<false, false>(&steps, WorkBudget::UNBOUNDED, usize::MAX, 0).unwrap();
-    assert!(replay::<false, true>(&steps, WorkBudget::UNBOUNDED, usize::MAX, 0).is_err());
+    replay::<false, 0, true>(&steps, WorkBudget::UNBOUNDED, usize::MAX, 0).unwrap();
+    assert!(replay::<true, 0, true>(&steps, WorkBudget::UNBOUNDED, usize::MAX, 0).is_err());
+}
+
+fn check_prefix_control<const MUTANT: u8>() {
+    let steps = [(0, 8, false), (1, 7, true), (2, 0, false)];
+    for mode in [
+        0,
+        #[cfg(not(target_arch = "wasm32"))]
+        1,
+        #[cfg(not(target_arch = "wasm32"))]
+        2,
+        #[cfg(not(target_arch = "wasm32"))]
+        3,
+        #[cfg(not(target_arch = "wasm32"))]
+        4,
+    ] {
+        for (budget, cancel) in [
+            (
+                WorkBudget {
+                    bytes_copied: 7,
+                    ..WorkBudget::UNBOUNDED
+                },
+                usize::MAX,
+            ),
+            (WorkBudget::UNBOUNDED, 1),
+        ] {
+            replay::<false, 0, true>(&steps, budget, cancel, mode).unwrap();
+            let failure = replay::<false, MUTANT, true>(&steps, budget, cancel, mode).unwrap_err();
+            assert!(
+                failure
+                    .to_string()
+                    .contains("exact independent failure prefix"),
+                "{failure}"
+            );
+            // Deleting that assertion makes the identical mutant pass; neither
+            // the receipt assertion nor the error-counter check detects it.
+            replay::<false, MUTANT, false>(&steps, budget, cancel, mode).unwrap();
+        }
+    }
+}
+
+#[test]
+fn wrong_failure_index_requires_the_prefix_assertion() {
+    check_prefix_control::<1>();
+}
+
+#[test]
+fn wrong_failure_phase_requires_the_prefix_assertion() {
+    check_prefix_control::<2>();
 }

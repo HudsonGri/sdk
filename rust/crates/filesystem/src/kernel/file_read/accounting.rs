@@ -54,7 +54,6 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                 reconciled?;
             }
             ReadAllocationStep::CheckCopy(bytes) => {
-                self.accounting.check()?;
                 self.accounting.admit(WorkCounters {
                     bytes_copied: bytes,
                     ..WorkCounters::UNCHARGED
@@ -83,7 +82,6 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                     bytes_hashed: bytes,
                     ..WorkCounters::UNCHARGED
                 })?;
-                self.accounting.check()?;
             }
             ReadAllocationStep::BeforeItem => {
                 self.admit(WorkCounters {
@@ -112,8 +110,8 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         )
     }
 
+    #[inline]
     pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), FsError> {
-        self.accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.accounting.native_work() {
             self.accounting.check()?;

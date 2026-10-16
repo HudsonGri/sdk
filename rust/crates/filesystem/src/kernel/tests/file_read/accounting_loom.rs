@@ -15,6 +15,7 @@ fn copy_once<const BYPASS_ADMISSION: bool>(
         accounting: &mut accounting,
         allocation,
         owned_bytes: 0,
+        pending: WorkCounters::UNCHARGED,
     };
     if BYPASS_ADMISSION || observed.observe(ReadAllocationStep::BeforeCopy(8)).is_ok() {
         let mut output = [0; 8];
@@ -82,6 +83,7 @@ fn copy_model<const BYPASS_ADMISSION: bool>(maximum: u64, cancel: bool) {
 
 #[test]
 fn shared_decoder_admissions_and_completion_keep_every_effect_charged() {
+    copy_model::<false>(8, false);
     copy_model::<false>(16, false);
     copy_model::<false>(0, false);
     copy_model::<false>(8, true);
