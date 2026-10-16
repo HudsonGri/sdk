@@ -118,6 +118,7 @@ fn checked_in_chunk_corpus_matches_full_render() {
         include_bytes!("../fuzz/corpus/chunk_splits/definition-paragraph-start").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/scope-ancestor-frontier").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/table-checkpoint-context").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/native-label-compilation").as_slice(),
     ] {
         let encoded = data
             .get(..8)

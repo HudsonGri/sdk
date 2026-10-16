@@ -8,6 +8,8 @@ use crate::{Event, Range, References, Span, Spans, Style, Tag, TagEnd};
 use std::collections::HashSet;
 use std::{collections::HashMap, sync::Arc};
 
+#[path = "inline_labels.rs"]
+mod labels;
 #[path = "inline_rows.rs"]
 mod rows;
 use rows::Output;
@@ -262,51 +264,6 @@ impl Cache {
         self.last = current;
         self.committed = next_committed;
         Some((changed, visible))
-    }
-
-    pub(in crate::inline_scan) fn compile(
-        &mut self,
-        source: &crate::inline_scan::Slice<'_>,
-        events: &[(Event<'_>, Range<usize>)],
-        references: &References,
-    ) -> Option<usize> {
-        #[cfg(test)]
-        let rendering = crate::work::rendering(true);
-        let result = (|| {
-            #[cfg(test)]
-            crate::work::scan(1);
-            let reported = &events.first()?.1;
-            let key = (
-                source.base + reported.start.saturating_sub(source.sentinel),
-                source.base + reported.end.saturating_sub(source.sentinel),
-            );
-            if let Some(&(body, _)) = self.atoms.get(&key) {
-                return Some(body);
-            }
-            self.input.feed(source.original, source.start);
-            if self.nodes.is_empty() {
-                self.store(Output::default());
-            }
-            let isolated = crate::inline_scan::Slice {
-                boundary: source.sentinel,
-                ..*source
-            };
-            let body = self.reduce(&isolated, events, references, 0)?.0;
-            #[cfg(test)]
-            crate::work::copy(
-                std::mem::size_of::<((usize, usize), (usize, usize))>()
-                    * (1 + if self.atoms.len() == self.atoms.capacity() {
-                        self.atoms.len()
-                    } else {
-                        0
-                    }),
-            );
-            self.atoms.insert(key, (body, events.len()));
-            Some(body)
-        })();
-        #[cfg(test)]
-        crate::work::rendering(rendering);
-        result
     }
 
     fn reduce(

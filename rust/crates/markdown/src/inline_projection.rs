@@ -123,11 +123,32 @@ impl Cache {
         lines: &mut Vec<Line>,
         first: usize,
     ) -> Option<(usize, usize)> {
-        let Projection {
-            source,
-            visible,
-            hard_breaks,
-        } = projection;
+        let Rendered {
+            trimmed: mut current,
+            escape,
+            ..
+        } = self.resolve(forest, root, &projection)?;
+        if let Some((literal, start)) = escape
+            && !projection.hard_breaks.contains(&start)
+        {
+            current = literal;
+        }
+        let output = self.output(current)?;
+        let changed = output.update(self.output(self.last)?, lines, first);
+        let visible = output.visible();
+        self.last = current;
+        self.rendered = true;
+        Some((changed, visible))
+    }
+
+    pub(super) fn resolve(
+        &mut self,
+        forest: &mut Forest,
+        root: usize,
+        projection: &Projection<'_, '_>,
+    ) -> Option<Rendered> {
+        let source = projection.source;
+        let visible = &projection.visible;
         #[cfg(test)]
         if super::REPLAY.get() {
             let epoch = self.epoch.checked_add(1).expect("render epoch");
@@ -294,22 +315,7 @@ impl Cache {
                 escape,
             });
         }
-        let Rendered {
-            trimmed: mut current,
-            escape,
-            ..
-        } = self.projected(forest, root)?;
-        if let Some((literal, start)) = escape
-            && !hard_breaks.contains(&start)
-        {
-            current = literal;
-        }
-        let output = self.output(current)?;
-        let changed = output.update(self.output(self.last)?, lines, first);
-        let visible = output.visible();
-        self.last = current;
-        self.rendered = true;
-        Some((changed, visible))
+        self.projected(forest, root)
     }
 }
 

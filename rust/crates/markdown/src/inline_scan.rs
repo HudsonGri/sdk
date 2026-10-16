@@ -41,6 +41,7 @@ pub(super) struct Scanner {
 }
 
 struct Scope {
+    next: usize,
     events: Range<usize>,
     range: Range<usize>,
     label: bool,
@@ -143,6 +144,7 @@ impl Syntax {
                     );
                     let index = syntax.outer.len();
                     syntax.scope(Scope {
+                        next: index + 1,
                         events: event_index..event_index + 1,
                         range: consumed.clone(),
                         label: matches!(
@@ -175,6 +177,7 @@ impl Syntax {
                 Event::End(TagEnd::Link | TagEnd::Image) => {
                     if let Some(frame) = links.pop() {
                         syntax.outer[frame.scope].events.end = event_index + 1;
+                        syntax.outer[frame.scope].next = syntax.outer.len();
                         syntax.outer[frame.scope].disables_links =
                             last_link.is_some_and(|start| frame.range.contains(&start));
                         syntax.outer[frame.scope].open_code = codes > frame.codes;
@@ -195,6 +198,7 @@ impl Syntax {
             if matches!(event, Event::InlineHtml(_)) {
                 push_range(&mut syntax.opaque, range.clone());
                 syntax.scope(Scope {
+                    next: syntax.outer.len() + 1,
                     events: event_index..event_index + 1,
                     range: range.clone(),
                     label: false,
@@ -483,20 +487,24 @@ impl Scanner {
             {
                 scope += 1;
             }
-            if let Some(scope) = syntax
+            if let Some(known) = syntax
                 .outer
                 .get(scope)
                 .filter(|scope| scope.range.start == start)
             {
-                let Some(output) = events
-                    .get(scope.events.clone())
-                    .and_then(|events| self.render.compile(&source, events, references))
-                else {
+                let Some(output) = self.render.compile(
+                    &source,
+                    scope,
+                    &syntax.outer,
+                    events,
+                    &self.tokens,
+                    references,
+                ) else {
                     state.invalid = true;
                     return sentinel;
                 };
-                state.scope(scope, output);
-                end = scope.range.end;
+                state.scope(known, output);
+                end = known.range.end;
                 if let Some(&after) = self.tokens.ends.get(&end) {
                     token_index = token_index.max(after.saturating_sub(self.discarded));
                 }

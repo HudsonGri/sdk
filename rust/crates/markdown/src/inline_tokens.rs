@@ -154,6 +154,12 @@ impl Tokens {
         })
     }
 
+    pub(super) fn after(&self, end: usize) -> Option<usize> {
+        self.ends
+            .get(&end)?
+            .checked_sub(self.emitted - self.ready.len())
+    }
+
     pub(super) fn collapsed_end(&self, end: usize, discarded: usize) -> Option<usize> {
         #[cfg(test)]
         crate::work::scan(2);
@@ -330,7 +336,10 @@ impl Tokens {
                 }),
         );
         self.emitted += 1;
-        if matches!(kind, Kind::Close | Kind::AngleClose | Kind::ParenClose) {
+        if matches!(
+            kind,
+            Kind::Open { .. } | Kind::Close | Kind::AngleClose | Kind::ParenClose
+        ) {
             self.record_end(range.end, self.emitted);
         }
         self.ready.push_back(Token { range, kind });
