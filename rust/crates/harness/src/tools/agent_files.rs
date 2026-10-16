@@ -138,58 +138,45 @@ pub(super) fn status(
             _ => {}
         }
     }
-    let mut results = std::collections::BTreeMap::new();
-    for file in files {
-        if let FileKey::Child {
-            reference: candidate,
-            file: ChildFile::Result(turn),
-        } = &file.key
-        {
-            if candidate != reference {
-                continue;
-            }
+    let latest = files
+        .iter()
+        .filter_map(|file| match &file.key {
+            FileKey::Child {
+                reference: candidate,
+                file: ChildFile::Result(turn),
+            } if candidate == reference => Some((*turn, file)),
+            _ => None,
+        })
+        .max_by_key(|(turn, _)| *turn)
+        .map(|(turn, file)| {
             let result =
                 crate::task_volume::ChildTurnResult::parse(&file.bytes).map_err(storage)?;
-            if result.turn != *turn || execution.is_none_or(|status| status.task != result.task) {
+            if result.turn != turn || execution.is_none_or(|status| status.task != result.task) {
                 return Err(Error::Conflict(
                     "child result differs from its admitted status".into(),
                 ));
             }
-            let descriptor = crate::conversation::FileDescriptor::from_bytes(
-                &file.bytes,
-                "application/json",
-                &mut None,
-            )?;
-            results.insert(
-                *turn,
-                (
-                    json!({
-                        "path":format!(".volumes/{}", file.key.path()), "descriptor":descriptor,
-                    }),
-                    result.outcome,
-                ),
-            );
-        }
-    }
+            Ok((
+                turn,
+                json!({"turn":turn,"file":{"path":format!(".volumes/{}", file.key.path())},
+            "outcome":result.outcome}),
+            ))
+        })
+        .transpose()?;
     let settled = execution.is_some_and(|execution| {
         execution.settled
             && execution.state == state
-            && (state != ChildState::Running || results.contains_key(&execution.inputs))
+            && (state != ChildState::Running
+                || latest
+                    .as_ref()
+                    .is_some_and(|(turn, _)| *turn == execution.inputs))
             && (matches!(
                 state,
                 ChildState::Cancelled | ChildState::Archived | ChildState::Interrupted
             ) || execution.inputs == inputs)
     });
-    let references: Vec<_> = results
-        .last_key_value()
-        .into_iter()
-        .map(|(_, (reference, _))| reference.clone())
-        .collect();
-    let latest = results.last_key_value().map(
-        |(turn, (reference, outcome))| json!({"turn":turn,"file":reference,"outcome":outcome}),
-    );
     let mut value = json!({"reference":reference,"state":state,"settled":settled,
-        "execution":execution,"results":references,"result":latest});
+        "execution":execution,"result":latest.map(|(_, result)| result)});
     if serde_json::to_vec(&value).map_err(storage)?.len() > maximum_bytes {
         if let Some(result) = value.get_mut("result").and_then(Value::as_object_mut) {
             result.remove("outcome");
@@ -233,8 +220,8 @@ mod tests {
             let value = status(&reference, &files, 2048).unwrap();
             prop_assert_eq!(value["settled"].as_bool(), Some(true));
             prop_assert!(serde_json::to_vec(&value).unwrap().len() <= 2048);
-            prop_assert_eq!(value["results"].as_array().unwrap().len(), 1);
-            prop_assert_eq!(&value["result"]["file"], &value["results"][0]);
+            prop_assert_eq!(value["result"]["file"].as_object().unwrap().len(), 1);
+            prop_assert!(value.get("results").is_none());
             prop_assert_eq!(value["result"]["turn"].as_u64(), Some(turns));
             let path = format!(".volumes/agents/worker/results/{turns}.json");
             prop_assert_eq!(value["result"]["file"]["path"].as_str(), Some(path.as_str()));

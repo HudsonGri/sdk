@@ -219,6 +219,10 @@ async fn access<P: StreamProvider + ?Sized>(
     owner: Option<&dyn crate::runtime::OwnedTaskMailbox>,
 ) -> Result<Option<Value>> {
     let maximum_bytes = usize::try_from(limits.render_bytes).map_err(invalid)?;
+    let include_result = matches!(
+        &command,
+        AgentCommand::Wait { .. } | AgentCommand::Status { .. }
+    );
     let (reference, write, wait) = match command {
         AgentCommand::List => {
             let snapshot = files
@@ -237,7 +241,8 @@ async fn access<P: StreamProvider + ?Sized>(
             let archived = json!(ChildState::Archived);
             let cancelled = json!(ChildState::Cancelled);
             for (reference, files) in children {
-                let status = status(&reference, &files, maximum_bytes)?;
+                let mut status = status(&reference, &files, maximum_bytes)?;
+                status.as_object_mut().unwrap().remove("result");
                 let terminal = status.get("state") == Some(&archived)
                     || status.get("state") == Some(&cancelled);
                 if !terminal || status.get("settled") != Some(&Value::Bool(true)) {
@@ -360,7 +365,10 @@ async fn access<P: StreamProvider + ?Sized>(
         values.push(file);
     }
     loop {
-        let result = status(&reference, &values, maximum_bytes)?;
+        let mut result = status(&reference, &values, maximum_bytes)?;
+        if !include_result {
+            result.as_object_mut().unwrap().remove("result");
+        }
         if !wait || result.get("settled") == Some(&Value::Bool(true)) {
             return Ok(Some(result));
         }
@@ -401,7 +409,9 @@ async fn admission_status<P: StreamProvider + ?Sized>(
     loop {
         if values.iter().any(|file| matches!(&file.key,
             FileKey::Child { reference: candidate, file: ChildFile::Status } if candidate == reference)) {
-            return status(reference, &values, usize::try_from(limits.render_bytes).map_err(invalid)?).map(Some);
+            let mut result = status(reference, &values, usize::try_from(limits.render_bytes).map_err(invalid)?)?;
+            result.as_object_mut().unwrap().remove("result");
+            return Ok(Some(result));
         }
         if !wait {
             return Ok(None);

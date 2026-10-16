@@ -68,9 +68,13 @@ impl ModelProvider for Models {
         match self.get(&request.request().model.name) {
             Ok(provider) => {
                 eprintln!(
-                    "agent scenario: model {} request {}",
+                    "agent scenario: model {} request {} ({} bytes, summary={})",
                     request.request().model.name,
-                    provider.requests().len() + 1
+                    provider.requests().len() + 1,
+                    request.bytes().len(),
+                    request.request().messages.iter().any(|message| matches!(&message.content,
+                        acyclic_harness::model::ModelContent::Text(text)
+                            if text.starts_with("Summarize the preceding context for continued work."))),
                 );
                 provider.generate(request, dispatch)
             }
