@@ -129,6 +129,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
+        if self.access.is_none() {
+            return Ok(());
+        }
+        let mut frame = None;
+        let (mut future, bytes) = crate::heap_future::in_heap_admitted(
+            (accounting, &mut frame),
+            |(accounting, frame), bytes| {
+                **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
+                Ok::<_, WorkspaceError>(())
+            },
+            |(accounting, _)| self.check_access_revision(checkout, accounting, cancellation),
+        )?;
+        let result = future.as_mut().await;
+        drop(future);
+        if let Some(mut frame) = frame {
+            accounting.release_owned(&mut frame, bytes)?;
+        }
+        result
+    }
+
+    async fn check_access_revision(
+        &self,
+        checkout: &mut Checkout<A, O>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
         let Some((view, actions)) = &self.access else {
             return Ok(());
         };
