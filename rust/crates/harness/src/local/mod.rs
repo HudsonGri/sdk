@@ -94,12 +94,14 @@ pub struct LocalHarness {
 impl LocalHarness {
     /// Publishes pending mount writes and awaits physical mount retirement.
     /// Reopening after this completes can immediately acquire the destination.
-    pub async fn close(self) -> Result<()> {
-        #[cfg(feature = "native-execution")]
-        if let Some(workspace) = &self.workspace {
-            workspace::lifecycle::close(Arc::clone(workspace)).await?;
-        }
-        Ok(())
+    pub fn close(self) -> impl Future<Output = Result<()>> {
+        Box::pin(async move {
+            #[cfg(feature = "native-execution")]
+            if let Some(workspace) = &self.workspace {
+                workspace::lifecycle::close(Arc::clone(workspace)).await?;
+            }
+            Ok(())
+        })
     }
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()

@@ -129,7 +129,7 @@ impl Registry {
             async |worker| worker.await.map_err(storage)?,
             async |harness| {
                 let harness = take_owner(harness)?;
-                Box::pin(harness.close()).await
+                harness.close().await
             },
         )
         .await
