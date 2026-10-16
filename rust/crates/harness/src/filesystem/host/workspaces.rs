@@ -174,17 +174,117 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
-        let generation = self
-            .apply_generation(
+        let generation = crate::conversation::BoundedContentFuture::new(None, || {
+            self.apply_generation_unmeasured(
                 workspace,
                 expected_generation,
                 mutations,
-                idempotency_key.clone(),
-                None,
-                None,
-            )?
-            .await?;
+                idempotency_key,
+                true,
+            )
+        })?
+        .await?;
         self.generation_ref_id(generation.id(), None)
+    }
+
+    async fn apply_generation_unmeasured(
+        &self,
+        workspace: &WorkspaceRef,
+        expected_generation: Option<&GenerationRef>,
+        mutations: &[WorkspaceMutation],
+        idempotency_key: &IdempotencyKey,
+        invalidate_metadata: bool,
+    ) -> Result<Generation<A, O>> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        let workspace = self.open(workspace, None).await?;
+        let key = filesystem_key(idempotency_key);
+        let mut transaction = match expected_generation {
+            Some(reference) => {
+                let generation = self.generation(&workspace, reference, None).await?;
+                workspace
+                    .begin_transaction_at(&generation, key, budget, &cancellation)
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(map_error)?
+            }
+            None => workspace
+                .begin_transaction(key, budget, &cancellation)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(map_error)?,
+        };
+        for mutation in mutations {
+            match mutation {
+                WorkspaceMutation::CreateDirectory { path } => {
+                    transaction
+                        .create_dir_all(path, budget, &cancellation)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?;
+                }
+                WorkspaceMutation::PutFile { path, bytes } => {
+                    transaction
+                        .write(path, bytes.clone(), budget, &cancellation)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?;
+                }
+                WorkspaceMutation::Remove { path } => {
+                    transaction
+                        .remove(path, budget, &cancellation)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?;
+                }
+            }
+            // Raw mutations do not carry a descriptor or write publication.
+            // Invalidate the old index atomically, including same-byte writes.
+            // The content writer supplies its own metadata in this transaction.
+            if invalidate_metadata
+                && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
+                    mutation
+            {
+                let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                match transaction.remove(&metadata, budget, &cancellation).await {
+                    Ok(_) => {}
+                    Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                    Err(failure) => return Err(map_error(failure.error)),
+                }
+            }
+        }
+        let committed = transaction
+            .commit(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                budget,
+                &cancellation,
+                |_| async {
+                    Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::default(),
+                    })
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
+        match committed {
+            TransactionCommit::Committed(generation)
+            | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+            TransactionCommit::Conflict { .. } => {
+                Err(Error::Conflict("workspace generation changed".into()))
+            }
+            TransactionCommit::Fenced => Err(Error::Conflict("workspace writer was fenced".into())),
+            TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
+                "filesystem idempotency key belongs to another mutation".into(),
+            )),
+        }
     }
 
     /// Resolves the current immutable head under the caller's work context.
