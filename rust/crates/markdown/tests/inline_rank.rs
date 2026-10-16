@@ -7,15 +7,19 @@ proptest! {
     fn bit_prefixes_match_counting(bits in prop::collection::vec(any::<bool>(), 0..512)) {
         let mut rank = Rank::default();
         let mut model = vec![0];
+        let mut last = vec![None];
         for bit in bits {
             rank.push(bit);
+            last.push(if bit { Some(last.len() - 1) } else { last.last().copied().flatten() });
             model.push(model.last().copied().expect("initial count") + usize::from(bit));
             prop_assert_eq!(rank.before(model.len() - 1), model.last().copied());
         }
         for (position, expected) in model.iter().enumerate() {
             prop_assert_eq!(rank.before(position), Some(*expected));
+            prop_assert_eq!(rank.last_before(position), last[position]);
         }
         prop_assert_eq!(rank.before(model.len()), None);
+        prop_assert_eq!(rank.last_before(model.len()), None);
     }
 
     #[test]

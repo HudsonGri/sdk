@@ -5,3 +5,6 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc aba50a3f5609b93ac8623ce68d78c5def308fca73893268a51946638385649f9 # shrinks to parts = ["*", "<https://x>"], separator = ""
+cc a9c3129d7f711ed11ad12a646bec14e28230d8167953fe0b6eb8c2f4d7228ac0 # shrinks to parts = ["<https://x>"], separator = ""
+cc 333a2cd3d8a57736260378787a7ff9eb17690f549d13059c19a756dcf9fb02c3 # shrinks to parts = ["`", "`code`"], separator = " "
+cc 061aa696cdb00ed2252ca4bb43a37f0c93ac990e8a9a7b71b3c43d4d41407ce7 # mixed autolink, escape and image: counted output copies exceed doubling bound

@@ -1,7 +1,7 @@
 use super::delimiters::Matched;
 use std::ops::Range;
 #[path = "inline_glyphs.rs"]
-mod glyphs;
+pub(in crate::inline_scan) mod glyphs;
 pub(super) use glyphs::Cache;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9,7 +9,7 @@ enum Kind {
     Text,
     Escape,
     Code,
-    Atom(usize),
+    Atom(Option<usize>),
     Break(bool),
     Entity,
     Emphasis,
@@ -18,13 +18,22 @@ enum Kind {
     Strike,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(in crate::inline_scan) struct Rendered {
+    pub(in crate::inline_scan) epoch: usize,
+    pub(in crate::inline_scan) full: usize,
+    pub(in crate::inline_scan) trimmed: usize,
+    pub(in crate::inline_scan) whitespace: usize,
+    pub(in crate::inline_scan) escape: Option<(usize, usize)>,
+}
+
 struct Node {
     previous: usize,
     range: Range<usize>,
     children: usize,
     stop: usize,
     kind: Kind,
-    output: Option<(usize, usize, usize)>,
+    output: Option<Rendered>,
 }
 
 const PAGE: usize = 8;
@@ -116,8 +125,13 @@ impl Forest {
         self.append(range, 0, 0, Kind::Escape)
     }
 
+    #[cfg(test)]
     pub(super) fn atom(&mut self, range: Range<usize>, output: usize) -> usize {
-        self.append(range, 0, 0, Kind::Atom(output))
+        self.append(range, 0, 0, Kind::Atom(Some(output)))
+    }
+
+    pub(super) fn opaque(&mut self, range: Range<usize>) {
+        self.append(range, 0, 0, Kind::Atom(None));
     }
 
     pub(super) fn leaf(&mut self, range: Range<usize>, token: super::tokens::Kind) -> usize {

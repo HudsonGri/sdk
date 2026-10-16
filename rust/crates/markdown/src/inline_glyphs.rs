@@ -10,6 +10,7 @@ pub(super) struct Input {
     raw: Text,
     code: Text,
     nonspace: rank::Rank,
+    nonhorizontal: rank::Rank,
     breaks: Vec<usize>,
     break_counts: rank::Rank,
     indent: rank::Rank,
@@ -50,6 +51,8 @@ impl Input {
             normalized.push(value);
             for byte in 0..character.len_utf8() {
                 self.nonspace.push(value != ' ');
+                self.nonhorizontal
+                    .push(!matches!(character, ' ' | '\t' | '\x0b' | '\x0c'));
                 self.break_counts
                     .push(byte == 0 && matches!(character, '\r' | '\n'));
                 self.indent.push(indent);
@@ -84,6 +87,17 @@ impl Input {
         }
         let skipped = self.indent.before(right)? - self.indent.before(left)?;
         Some(range.start + skipped..range.end)
+    }
+
+    fn trim_end(&self, range: Range<usize>) -> Option<usize> {
+        let origin = self.origin?;
+        let end = range.end.checked_sub(origin)?;
+        Some(
+            self.nonhorizontal
+                .last_before(end)
+                .map_or(origin, |last| origin + last + 1)
+                .max(range.start),
+        )
     }
 
     fn code(&self, range: Range<usize>, source: &str) -> Option<Text> {
@@ -127,6 +141,7 @@ impl Input {
             raw_meta
                 + code_meta
                 + self.nonspace.retained()
+                + self.nonhorizontal.retained()
                 + self.break_counts.retained()
                 + self.indent.retained()
                 + self.breaks.capacity() * std::mem::size_of::<usize>(),
@@ -135,7 +150,7 @@ impl Input {
 }
 
 #[path = "inline_events.rs"]
-mod events;
+pub(in crate::inline_scan) mod events;
 pub(in crate::inline_scan) use events::Cache;
 
 #[cfg(test)]

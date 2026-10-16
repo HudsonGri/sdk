@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, ops::Range};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -14,6 +17,29 @@ pub(super) enum Kind {
     ParenClose,
     Quote(char),
     Break,
+}
+
+impl Kind {
+    // Preserve the parser's first-pass expansion state across source checkpoints.
+    // A preceding expansion also processes a terminal escaped hard break.
+    pub(super) fn expands(self, range: Range<usize>) -> bool {
+        match self {
+            Self::Open { .. }
+            | Self::Close
+            | Self::AngleOpen
+            | Self::Escape('`')
+            | Self::Run { byte: b'`', .. } => true,
+            Self::Run {
+                byte,
+                before,
+                after,
+            } => {
+                let run = super::delimiters::Run::new(range, byte, before, after);
+                (byte != b'~' || run.range.len() <= 2) && (run.open || run.close)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +66,9 @@ enum Pending {
 #[derive(Default)]
 pub(super) struct Tokens {
     pub(super) ready: VecDeque<Token>,
+    pub(super) ends: HashMap<usize, usize>,
+    emitted: usize,
+    pub(super) code_ends: VecDeque<usize>,
     offset: usize,
     previous: Option<char>,
     pending: Pending,
@@ -62,6 +91,9 @@ impl Tokens {
         {
             self.ready.pop_front();
         }
+        while self.code_ends.front().is_some_and(|end| *end <= offset) {
+            self.code_ends.pop_front();
+        }
         if let Some(token) = self.ready.front_mut() {
             token.range.start = token.range.start.max(offset);
         }
@@ -70,6 +102,8 @@ impl Tokens {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
         self.ready.capacity() * std::mem::size_of::<Token>()
+            + self.ends.capacity() * std::mem::size_of::<(usize, usize)>()
+            + self.code_ends.capacity() * std::mem::size_of::<usize>()
     }
 
     pub(super) fn push(&mut self, source: &str) {
@@ -118,6 +152,22 @@ impl Tokens {
             range: start..self.offset,
             kind,
         })
+    }
+
+    pub(super) fn collapsed_end(&self, end: usize, discarded: usize) -> Option<usize> {
+        #[cfg(test)]
+        crate::work::scan(2);
+        let after = self.ends.get(&end)?.checked_sub(discarded)?;
+        let opening = self.ready.get(after)?;
+        let closing = self.ready.get(after + 1)?;
+        (opening.range.start == end
+            && matches!(
+                opening.kind,
+                Kind::Open { image: false } | Kind::Escape('[')
+            )
+            && closing.kind == Kind::Close
+            && opening.range.end == closing.range.start)
+            .then_some(closing.range.end)
     }
 
     pub(super) fn neutral(&self) -> bool {
@@ -241,7 +291,27 @@ impl Tokens {
         self.emit(position..position + character.len_utf8(), kind);
     }
 
+    fn record_end(&mut self, end: usize, ordinal: usize) {
+        #[cfg(test)]
+        work_end(self.ends.len(), self.ends.capacity());
+        self.ends.insert(end, ordinal);
+    }
+
     fn emit(&mut self, range: Range<usize>, kind: Kind) {
+        if matches!(kind, Kind::Run { byte: b'`', .. })
+            || kind == Kind::Escape('`') && range.len() > 2
+        {
+            #[cfg(test)]
+            crate::work::copy(
+                std::mem::size_of::<usize>()
+                    * (1 + if self.code_ends.len() == self.code_ends.capacity() {
+                        self.code_ends.len()
+                    } else {
+                        0
+                    }),
+            );
+            self.code_ends.push_back(range.end);
+        }
         if kind == Kind::Text
             && let Some(last) = self.ready.back_mut()
             && last.kind == Kind::Text
@@ -259,8 +329,19 @@ impl Tokens {
                     0
                 }),
         );
+        self.emitted += 1;
+        if matches!(kind, Kind::Close | Kind::AngleClose | Kind::ParenClose) {
+            self.record_end(range.end, self.emitted);
+        }
         self.ready.push_back(Token { range, kind });
     }
+}
+
+#[cfg(test)]
+fn work_end(length: usize, capacity: usize) {
+    crate::work::copy(
+        std::mem::size_of::<(usize, usize)>() * (1 + if length == capacity { length } else { 0 }),
+    );
 }
 
 #[cfg(test)]

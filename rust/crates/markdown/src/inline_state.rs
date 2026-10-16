@@ -8,6 +8,8 @@ use std::{collections::HashMap, ops::Range};
 mod anchors;
 #[path = "inline_eof.rs"]
 mod eof;
+#[path = "inline_scope.rs"]
+mod scope;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -16,6 +18,7 @@ pub(super) struct State {
     pub(super) invalid: bool,
     brackets: Vec<Bracket>,
     bracket: usize,
+    link_floor: usize,
     labels: [Option<Range<usize>>; 2],
     opaque: Option<usize>,
     codes: Vec<Code>,
@@ -34,6 +37,7 @@ struct Bracket {
     previous: usize,
     start: usize,
     frontier: usize,
+    image: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -45,6 +49,7 @@ struct Snapshot {
     opaque: Option<usize>,
     frontier: usize,
     code: (usize, Option<usize>),
+    links: usize,
 }
 
 struct Code {
@@ -62,6 +67,7 @@ impl State {
         self.invalid = false;
         self.brackets.clear();
         self.bracket = 0;
+        self.link_floor = 0;
         self.labels = [None, None];
         self.opaque = None;
         for code in &self.codes {
@@ -93,6 +99,7 @@ impl State {
                 self.codes.len(),
                 self.codes.last().map(|code| code.opening.start),
             ),
+            links: self.link_floor,
         }
     }
 
@@ -112,6 +119,7 @@ impl State {
         self.bracket = before.bracket;
         self.labels = before.labels;
         self.opaque = before.opaque;
+        self.link_floor = before.links;
     }
 
     pub(super) fn neutral(&self) -> bool {
@@ -170,28 +178,43 @@ impl State {
             Kind::Escape(_) => self.forest.escape(range.clone()),
             _ => self.forest.text(range.clone()),
         };
-        if !matches!(kind, Kind::Open { .. } | Kind::Close | Kind::ParenOpen) {
+        // Reference lookahead starts at the next first-pass text node. An
+        // escaped opening bracket therefore still begins a reference suffix.
+        let opening = match kind {
+            Kind::Open { image } => Some((image, range.start)),
+            Kind::Escape('[') if self.labels.iter().any(Option::is_some) => {
+                Some((false, range.start + 1))
+            }
+            _ => None,
+        };
+        if opening.is_none() && !matches!(kind, Kind::Close | Kind::ParenOpen) {
             self.labels = [None, None];
         }
-        match kind {
-            Kind::Open { .. } if !linked => {
-                let frontier = self.earliest(range.start);
-                #[cfg(test)]
-                if self.brackets.len() == self.brackets.capacity() {
-                    crate::work::copy(self.brackets.len() * std::mem::size_of::<Bracket>());
-                }
-                self.brackets.push(Bracket {
-                    previous: self.bracket,
-                    start: range.start,
-                    frontier,
-                });
-                self.bracket = self.brackets.len();
+        if let Some((image, start)) = opening.filter(|_| !linked) {
+            let frontier = self.earliest(range.start);
+            #[cfg(test)]
+            if self.brackets.len() == self.brackets.capacity() {
+                crate::work::copy(self.brackets.len() * std::mem::size_of::<Bracket>());
             }
+            self.brackets.push(Bracket {
+                previous: self.bracket,
+                start,
+                frontier,
+                image,
+            });
+            self.bracket = self.brackets.len();
+            return;
+        }
+        match kind {
             Kind::Close if !linked => {
                 if let Some(bracket) = self.bracket() {
-                    let (previous, start) = (bracket.previous, bracket.start);
+                    let (previous, start, active) = (
+                        bracket.previous,
+                        bracket.start,
+                        bracket.image || bracket.start >= self.link_floor,
+                    );
                     self.bracket = previous;
-                    if previous == 0 {
+                    if previous == 0 && active {
                         #[cfg(test)]
                         crate::work::copy(2 * std::mem::size_of::<Option<Range<usize>>>());
                         self.labels = if self.labels.iter().all(Option::is_none) {

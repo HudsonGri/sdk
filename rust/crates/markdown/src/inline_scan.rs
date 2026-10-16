@@ -27,45 +27,103 @@ pub(super) struct Scanner {
     render: forest::Cache,
     syntax: Syntax,
     processed: usize,
+    projected: usize,
     fed: usize,
     discarded: usize,
     frontier: usize,
+    pending_break: Option<usize>,
+    first_expansion: Option<usize>,
     #[cfg(test)]
     replay: bool,
     #[cfg(test)]
     fed_bytes: usize,
 }
 
+struct Scope {
+    events: Range<usize>,
+    range: Range<usize>,
+    label: bool,
+    disables_links: bool,
+    open_code: bool,
+}
+
+struct ScopeFrame {
+    range: Range<usize>,
+    end: usize,
+    scope: usize,
+    codes: usize,
+    scan_codes: bool,
+}
+
 #[derive(Default)]
 struct Syntax {
-    outer: Vec<Range<usize>>,
+    outer: Vec<Scope>,
+    indices: HashMap<usize, usize>,
+    hard_breaks: HashSet<usize>,
     opaque: Vec<Range<usize>>,
     links: Vec<Range<usize>>,
 }
 
 impl Syntax {
-    fn new(source: &str, events: &[(Event<'_>, Range<usize>)]) -> Self {
+    fn new(
+        events: &[(Event<'_>, Range<usize>)],
+        tokens: &Tokens,
+        base: usize,
+        sentinel: usize,
+        discarded: usize,
+    ) -> Self {
         let mut syntax = Self::default();
-        let mut links = Vec::<(Range<usize>, usize)>::new();
-        for (event, range) in events {
+        let mut links = Vec::<ScopeFrame>::new();
+        let mut last_link = None;
+        let mut codes = 0;
+        let mut code_ends = tokens.code_ends.iter().peekable();
+        for (event_index, (event, range)) in events.iter().enumerate() {
             #[cfg(test)]
             work::scan(1);
+            if matches!(event, Event::HardBreak) {
+                #[cfg(test)]
+                work::copy(
+                    std::mem::size_of::<usize>()
+                        * (1 + if syntax.hard_breaks.len() == syntax.hard_breaks.capacity() {
+                            syntax.hard_breaks.len()
+                        } else {
+                            0
+                        }),
+                );
+                syntax.hard_breaks.insert(range.start);
+            }
+            if matches!(event, Event::Text(_)) && links.last().is_some_and(|frame| frame.scan_codes)
+            {
+                let begin = base + range.start.saturating_sub(sentinel);
+                let end = base + range.end.saturating_sub(sentinel);
+                while code_ends.peek().is_some_and(|position| **position <= begin) {
+                    #[cfg(test)]
+                    work::scan(1);
+                    code_ends.next();
+                }
+                while code_ends.peek().is_some_and(|position| **position <= end) {
+                    #[cfg(test)]
+                    work::scan(1);
+                    codes += 1;
+                    code_ends.next();
+                }
+            }
             let mut consumed = range.clone();
             match event {
                 Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. }) => {
-                    // The parser's collapsed-link range excludes its final [].
+                    // The reported range excludes the collapsed suffix. Use the
+                    // lexer's source coverage, including first-pass escapes.
                     if matches!(
                         link_type,
                         pulldown_cmark::LinkType::Collapsed
                             | pulldown_cmark::LinkType::CollapsedUnknown
-                    ) && source
-                        .get(range.end..)
-                        .is_some_and(|tail| tail.starts_with("[]"))
+                    ) && let Some(end) =
+                        tokens.collapsed_end(base + range.end.saturating_sub(sentinel), discarded)
                     {
-                        consumed.end += 2;
+                        consumed.end = sentinel + end.saturating_sub(base);
                     }
-                    if let Some((_, end)) = links.last_mut() {
-                        *end = (*end).max(consumed.end);
+                    if let Some(frame) = links.last_mut() {
+                        frame.end = frame.end.max(consumed.end);
                     }
                     if syntax
                         .links
@@ -76,44 +134,124 @@ impl Syntax {
                     }
                     #[cfg(test)]
                     work::copy(
-                        std::mem::size_of::<(Range<usize>, usize)>()
+                        std::mem::size_of::<ScopeFrame>()
                             * (1 + if links.len() == links.capacity() {
                                 links.len()
                             } else {
                                 0
                             }),
                     );
-                    links.push((consumed.clone(), range.start));
+                    let index = syntax.outer.len();
+                    syntax.scope(Scope {
+                        events: event_index..event_index + 1,
+                        range: consumed.clone(),
+                        label: matches!(
+                            link_type,
+                            pulldown_cmark::LinkType::Shortcut
+                                | pulldown_cmark::LinkType::ShortcutUnknown
+                        ),
+                        disables_links: false,
+                        open_code: false,
+                    });
+                    if matches!(event, Event::Start(Tag::Link { .. }))
+                        && !matches!(
+                            link_type,
+                            pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email
+                        )
+                    {
+                        last_link = Some(range.start);
+                    }
+                    links.push(ScopeFrame {
+                        range: consumed.clone(),
+                        end: range.start,
+                        scope: index,
+                        codes,
+                        scan_codes: !matches!(
+                            link_type,
+                            pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email
+                        ),
+                    });
                 }
                 Event::End(TagEnd::Link | TagEnd::Image) => {
-                    if let Some((link, content_end)) = links.pop() {
-                        push_range(&mut syntax.opaque, content_end..link.end);
+                    if let Some(frame) = links.pop() {
+                        syntax.outer[frame.scope].events.end = event_index + 1;
+                        syntax.outer[frame.scope].disables_links =
+                            last_link.is_some_and(|start| frame.range.contains(&start));
+                        syntax.outer[frame.scope].open_code = codes > frame.codes;
+                        let opaque = if frame.scan_codes {
+                            frame.end..frame.range.end
+                        } else {
+                            frame.range
+                        };
+                        push_range(&mut syntax.opaque, opaque);
                     }
                 }
                 _ => {
-                    if let Some((_, end)) = links.last_mut() {
-                        *end = (*end).max(range.end);
+                    if let Some(frame) = links.last_mut() {
+                        frame.end = frame.end.max(range.end);
                     }
                 }
             }
-            match event {
-                Event::Start(Tag::Link { .. } | Tag::Image { .. }) => {
-                    push_range(&mut syntax.outer, consumed);
-                }
-                Event::InlineHtml(_) => {
-                    push_range(&mut syntax.opaque, range.clone());
-                    push_range(&mut syntax.outer, range.clone());
-                }
-                _ => {}
+            if matches!(event, Event::InlineHtml(_)) {
+                push_range(&mut syntax.opaque, range.clone());
+                syntax.scope(Scope {
+                    events: event_index..event_index + 1,
+                    range: range.clone(),
+                    label: false,
+                    disables_links: false,
+                    open_code: false,
+                });
             }
         }
         syntax
     }
 
+    fn scope(&mut self, scope: Scope) {
+        #[cfg(test)]
+        work::copy(
+            std::mem::size_of::<Scope>()
+                * (1 + if self.outer.len() == self.outer.capacity() {
+                    self.outer.len()
+                } else {
+                    0
+                }),
+        );
+        self.outer.push(scope);
+    }
+
     fn absolute(&mut self, base: usize, sentinel: usize) {
+        #[cfg(test)]
+        work::copy(self.hard_breaks.len() * std::mem::size_of::<usize>());
+        self.hard_breaks = self
+            .hard_breaks
+            .drain()
+            .map(|position| {
+                #[cfg(test)]
+                work::scan(1);
+                base + position.saturating_sub(sentinel)
+            })
+            .collect();
+        for (index, scope) in self.outer.iter().enumerate() {
+            #[cfg(test)]
+            {
+                let bytes = std::mem::size_of::<(usize, usize)>();
+                work::copy(
+                    bytes
+                        * (1 + if self.indices.len() == self.indices.capacity() {
+                            self.indices.len()
+                        } else {
+                            0
+                        }),
+                );
+            }
+            self.indices
+                .entry(base + scope.range.start.saturating_sub(sentinel))
+                .or_insert(index);
+        }
         for range in self
             .outer
             .iter_mut()
+            .map(|scope| &mut scope.range)
             .chain(&mut self.opaque)
             .chain(&mut self.links)
         {
@@ -134,8 +272,8 @@ impl Syntax {
             let clipped = |range: &Range<usize>| {
                 #[cfg(test)]
                 work::scan(1);
-                let range = range.start.max(base)..range.end.min(end);
-                (!range.is_empty()).then_some(range)
+                let range = range.start.max(base)..range.end;
+                (range.start < end && !range.is_empty()).then_some(range)
             };
             let mut left = left.iter().filter_map(clipped);
             let mut right = right.iter().filter_map(clipped);
@@ -201,10 +339,15 @@ impl Scanner {
         self.tokens.retained()
             + self.atomic.capacity() * std::mem::size_of::<Range<usize>>()
             + self.state.retained()
-            + (self.syntax.outer.capacity()
-                + self.syntax.opaque.capacity()
-                + self.syntax.links.capacity())
+            + self.syntax.outer.capacity() * std::mem::size_of::<Scope>()
+            + self.syntax.indices.capacity() * std::mem::size_of::<(usize, usize)>()
+            + self.syntax.hard_breaks.capacity() * std::mem::size_of::<usize>()
+            + (self.syntax.opaque.capacity() + self.syntax.links.capacity())
                 * std::mem::size_of::<Range<usize>>()
+    }
+
+    pub(super) fn expanded_before(&self, position: usize) -> bool {
+        self.first_expansion.is_some_and(|first| first < position)
     }
 
     pub(super) fn discard_before(&mut self, position: usize) {
@@ -224,9 +367,29 @@ impl Scanner {
         lines: &mut Vec<Line>,
         first: usize,
     ) -> Option<(usize, usize)> {
+        if self.state.invalid {
+            return None;
+        }
         #[cfg(test)]
         let rendering = work::rendering(true);
-        let result = self.render.render(source, events, references, lines, first);
+        let result = self.render.project(
+            &mut self.state.forest,
+            self.projected,
+            forest::glyphs::events::projection::Projection {
+                source: source.original,
+                visible: source.start..source.original.len(),
+                hard_breaks: &self.syntax.hard_breaks,
+                atoms: Some(forest::glyphs::events::projection::Atoms {
+                    source: &source,
+                    events,
+                    references,
+                    scopes: &self.syntax.outer,
+                    indices: &self.syntax.indices,
+                }),
+            },
+            lines,
+            first,
+        );
         #[cfg(test)]
         work::rendering(rendering);
         result
@@ -271,12 +434,11 @@ impl Scanner {
         &mut self,
         original: &str,
         base: usize,
-        source: &str,
         events: &[(Event<'_>, Range<usize>)],
         sentinel: usize,
     ) -> usize {
         self.tokens.push(original);
-        let mut syntax = Syntax::new(source, events);
+        let mut syntax = Syntax::new(events, &self.tokens, base, sentinel, self.discarded);
         syntax.absolute(base, sentinel);
         let pending = self.tokens.preview().map(|token| token.range.start);
         let changed = syntax.changed_before(&self.syntax, base, self.processed);
@@ -285,6 +447,7 @@ impl Scanner {
         #[cfg(not(test))]
         let replay = false;
         if replay || changed.is_some() {
+            self.pending_break = None;
             let restored = if replay {
                 None
             } else {
@@ -301,35 +464,76 @@ impl Scanner {
                 self.frontier = self.frontier.min(position);
             } else {
                 self.state.reset();
+                if self.render.origin().is_some_and(|origin| base > origin) {
+                    self.state.invalid = true;
+                    return sentinel;
+                }
                 self.processed = base;
                 self.fed = 0;
                 self.frontier = base;
             }
         }
-        let (mut opaque, mut link) = (0, 0);
+        let (mut opaque, mut link, mut scope) = (0, 0, 0);
         let state = &mut self.state;
-        for (offset, token) in self.tokens.ready.range(self.fed..).enumerate() {
+        let mut token_index = self.fed;
+        while let Some(token) = self.tokens.ready.get(token_index) {
+            let ordinal = self.discarded + token_index;
+            token_index += 1;
+            #[cfg(test)]
+            work::scan(1);
             if token.range.end <= self.processed {
                 continue;
             }
-            #[cfg(test)]
-            work::scan(1);
             let start = token.range.start.max(base).max(self.processed);
-            let end = token.range.end;
+            let mut end = token.range.end;
+            if self.first_expansion.is_none() && token.kind.expands(token.range.clone()) {
+                self.first_expansion = Some(start);
+            }
             if matches!(token.kind, Kind::Open { .. } | Kind::AngleOpen) {
-                state.remember(start, self.discarded + self.fed + offset);
+                state.remember(start, ordinal);
             }
             #[cfg(test)]
             {
                 self.fed_bytes += end - start;
             }
-            if inside(&syntax.opaque, &mut opaque, start) {
+            while syntax
+                .outer
+                .get(scope)
+                .is_some_and(|scope| scope.range.end <= start)
+            {
+                scope += 1;
+            }
+            if let Some(scope) = syntax
+                .outer
+                .get(scope)
+                .filter(|scope| scope.range.start == start)
+            {
+                state.scope(scope);
+                end = scope.range.end;
+                if let Some(&after) = self.tokens.ends.get(&end) {
+                    token_index = token_index.max(after.saturating_sub(self.discarded));
+                }
+            } else if inside(&syntax.opaque, &mut opaque, start) {
                 state.opaque_text(start..end);
             } else {
                 let linked = inside(&syntax.links, &mut link, start);
                 state.feed(start..end, token.kind, linked);
             }
+            if token.kind == Kind::Escape('\n') {
+                self.pending_break = Some(start);
+            } else if self.pending_break.is_some()
+                && original.get(start..end).is_some_and(|raw| {
+                    raw.bytes().any(|byte| {
+                        #[cfg(test)]
+                        work::scan(1);
+                        !matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c)
+                    })
+                })
+            {
+                self.pending_break = None;
+            }
             if state.neutral()
+                && self.pending_break.is_none()
                 && (self.tokens.neutral() || pending.is_some_and(|start| start >= end))
             {
                 self.frontier = end;
@@ -346,24 +550,24 @@ impl Scanner {
         if state.invalid {
             return sentinel;
         }
-        let candidate = self
-            .frontier
-            .max(base)
-            .max(state.earliest(pending.unwrap_or(original.len())));
-        let scopes = if let Some(pending) = self.tokens.preview() {
-            let root = state.projection(Some(&pending));
-            state.forest.scopes_since(root, base)
-        } else {
-            state.forest.scopes_since(state.forest.snapshot(), base)
-        };
+        // An unresolved construct can reopen older ancestors. Advance only
+        // through a boundary actually observed with neutral scanner state.
+        let candidate = self.frontier.max(base);
+        self.projected = self.state.projection(self.tokens.preview().as_ref());
+        let scopes = self.state.forest.scopes_since(self.projected, base);
         self.forbid_splits(&syntax.outer, scopes);
         self.syntax = syntax;
-        self.checkpoint(candidate).saturating_sub(base) + sentinel
+        self.checkpoint(
+            self.pending_break
+                .map_or(candidate, |start| candidate.min(start)),
+        )
+        .saturating_sub(base)
+            + sentinel
     }
 
-    fn forbid_splits(&mut self, ranges: &[Range<usize>], scopes: Vec<Range<usize>>) {
+    fn forbid_splits(&mut self, ranges: &[Scope], scopes: Vec<Range<usize>>) {
         self.atomic.clear();
-        let mut syntax = ranges.iter().cloned().peekable();
+        let mut syntax = ranges.iter().map(|scope| scope.range.clone()).peekable();
         let mut scopes = scopes.into_iter().peekable();
         let mut tokens = self
             .tokens

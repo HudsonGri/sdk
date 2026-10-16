@@ -50,7 +50,15 @@ impl Markdown {
         } else {
             left_context(self.source.get(..base).unwrap_or_default())
         };
-        let prefix = context;
+        let mut prefix = context;
+        if inline.scanner.expanded_before(base) {
+            // Keep the row's column shape and final flanking class intact.
+            if let Some(at) = prefix.find('x') {
+                prefix.insert_str(at, "`x`");
+            } else {
+                prefix.insert_str(0, "`x`\n");
+            }
+        }
         let sentinel = prefix.len();
         let source = if prefix.is_empty() {
             std::borrow::Cow::Borrowed(tail)
@@ -82,7 +90,7 @@ impl Markdown {
         }
         let frontier = inline
             .scanner
-            .frontier(&self.source, base, &source, &events, sentinel);
+            .frontier(&self.source, base, &events, sentinel);
         let boundary = boundary(&source, &events, sentinel, frontier);
         let boundary = inline
             .scanner
@@ -129,7 +137,9 @@ impl Markdown {
         events: &[(Event<'_>, Range<usize>)],
         base: usize,
     ) {
-        let content = source.trim_start_matches([' ', '\t']);
+        let paragraph_start = events.first().map_or(0, |(_, range)| range.start);
+        let body = source.get(paragraph_start..).unwrap_or_default();
+        let content = body.trim_start_matches([' ', '\t']);
         if possible_definition(content)
             || !self.context.is_empty()
             || self.offset != base
@@ -137,17 +147,15 @@ impl Markdown {
         {
             return;
         }
+        let start = base + paragraph_start + body.len() - content.len();
         self.inline = Some(Inline {
             checkpoint: Checkpoint {
-                offset: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
+                offset: start,
                 cost: 0,
                 valid: 0..usize::MAX,
             },
-            start: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
-            scanner: inline_scan::Scanner::new(
-                &self.source,
-                base + source.len() - source.trim_start_matches([' ', '\t']).len(),
-            ),
+            start,
+            scanner: inline_scan::Scanner::new(&self.source, start),
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
@@ -238,10 +246,27 @@ fn paragraph(source: &str, events: &[(Event<'_>, Range<usize>)]) -> bool {
 }
 
 fn possible_definition(source: &str) -> bool {
-    source.starts_with('[')
-        && source
-            .split_once(']')
-            .is_none_or(|(_, rest)| rest.starts_with(':') || rest.chars().all(char::is_whitespace))
+    let Some(label) = source.strip_prefix('[') else {
+        return false;
+    };
+    let mut escaped = false;
+    for (at, character) in label.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '[' => return false,
+            ']' => {
+                return label
+                    .get(at + 1..)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(':'));
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 fn boundary(

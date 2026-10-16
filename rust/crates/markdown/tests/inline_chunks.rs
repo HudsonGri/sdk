@@ -47,7 +47,11 @@ proptest! {
     fn arbitrary_chunk_splits_equal_full_render(
         input in prop::collection::vec(prop_oneof![
             any::<char>().prop_map(|character| character.to_string()),
-            prop::sample::select(vec!["\\", "*", "!", "[", "]", "&", ";", "\n", "`", "_", "~"])
+            prop::sample::select(vec!["\\", "*", "!", "[", "]", "&", ";", "\n", "`", "_", "~",
+                "[r]: /r\n[s]: /s\n\nprefix ", "[r]", "[s]", "(u)", "[]",
+                "**a**", "`a`", "~~a~~", "[a](u)", "[`x](u)", "![`x](u)", "<https://x>", "\\\n", "\x0b\n",
+                "| `a` | b |\n| - | - |\n| x | y |\n",
+            ])
                 .prop_map(str::to_owned),
         ], 0..64),
         splits in prop::collection::vec(any::<u8>(), 0..64),
@@ -96,6 +100,17 @@ fn checked_in_chunk_corpus_matches_full_render() {
         include_bytes!("../fuzz/corpus/chunk_splits/mixed").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/list-indent").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/deferred-row-indent").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/shortcut-inline-continuation").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/reference-inline-suffix").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/collapsed-inline-suffix").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/escaped-break-whitespace").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/inline-pass-checkpoint").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/inline-pass-table-shape").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/paragraph-source-start").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/escaped-reference-suffix").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/code-steals-link").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/definition-paragraph-start").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/scope-ancestor-frontier").as_slice(),
     ] {
         let encoded = data
             .get(..8)
@@ -118,6 +133,17 @@ fn every_punctuation_escape_preserves_terminal_source_coverage() {
         for ending in ["", "\n", "\r\n", "\nnext"] {
             let source = format!("x \\{}{ending}", char::from(byte));
             replay(&source, &(1..source.len()).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[test]
+fn shortcut_scope_extension_replaces_the_entire_previous_scope() {
+    let source = "[r]: /r\n[s]: /s\n\nprefix [r][s]";
+    let start = source.find("prefix").expect("paragraph");
+    for first in start..=source.len() {
+        for second in first..=source.len() {
+            replay(source, &[first, second]);
         }
     }
 }

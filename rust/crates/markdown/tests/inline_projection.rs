@@ -33,7 +33,7 @@ proptest! {
             "\\*", "\\`", "\\\\", "\\", "!", "x", " ", "\t", "\x0b", "\x0c", "¡", "‐", "🦀",
             "`code`", "**bold**", "***both***", "~~strike~~",
             "[", "]", "&amp;", "&lt;", "&#10;", "&#13;", "&#0;", "\0",
-            "\nword", "\n    word", "\n\\\nword", "hard  \nword",
+            "\nword", "\n\x0b", "\n\x0c", "\n    word", "\n\\\nword", "hard  \nword",
         ]), 0..64),
     ) {
         let mut state = State::default();

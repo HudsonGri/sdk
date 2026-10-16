@@ -1,7 +1,9 @@
 use super::Input;
 #[cfg(test)]
 use super::REPLAY;
-use crate::{Event, Line, Range, References, Span, Spans, Style, Tag, TagEnd};
+#[cfg(test)]
+use crate::Line;
+use crate::{Event, Range, References, Span, Spans, Style, Tag, TagEnd};
 #[cfg(test)]
 use std::collections::HashSet;
 use std::{collections::HashMap, sync::Arc};
@@ -10,7 +12,7 @@ use std::{collections::HashMap, sync::Arc};
 mod rows;
 use rows::Output;
 #[path = "inline_projection.rs"]
-mod projection;
+pub(in crate::inline_scan) mod projection;
 #[cfg(test)]
 pub(super) use rows::RESCAN_VISIBLE;
 
@@ -26,9 +28,12 @@ enum Key {
 pub(in crate::inline_scan) struct Cache {
     input: Input,
     keys: HashMap<Key, usize>,
-    nodes: Vec<Box<Output>>,
+    nodes: Vec<Vec<Output>>,
+    length: usize,
     targets: HashMap<(usize, usize), Arc<str>>,
+    atoms: HashMap<(usize, usize), (usize, usize)>,
     last: usize,
+    #[cfg(test)]
     committed: usize,
     epoch: usize,
 }
@@ -67,16 +72,34 @@ fn text_output(text: crate::Text, style: Style) -> Output {
 }
 
 impl Cache {
-    fn insert(&mut self, key: Key, output: Output) -> usize {
+    pub(in crate::inline_scan) fn origin(&self) -> Option<usize> {
+        self.input.origin
+    }
+
+    fn output(&self, id: usize) -> Option<&Output> {
+        self.nodes
+            .get(id / super::super::PAGE)?
+            .get(id % super::super::PAGE)
+    }
+
+    fn store(&mut self, output: Output) -> usize {
         #[cfg(test)]
-        {
-            crate::work::scan(1);
+        crate::work::scan(1);
+        let id = self.length;
+        if id.is_multiple_of(super::super::PAGE) {
+            #[cfg(test)]
             if self.nodes.len() == self.nodes.capacity() {
-                crate::work::copy(self.nodes.len() * std::mem::size_of::<Box<Output>>());
+                crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Output>>());
             }
+            self.nodes.push(Vec::with_capacity(super::super::PAGE));
         }
-        let id = self.nodes.len();
-        self.nodes.push(Box::new(output));
+        self.nodes.last_mut().expect("render page").push(output);
+        self.length += 1;
+        id
+    }
+
+    fn insert(&mut self, key: Key, output: Output) -> usize {
+        let id = self.store(output);
         self.keys.insert(key, id);
         id
     }
@@ -92,19 +115,8 @@ impl Cache {
         if let Some(&id) = self.keys.get(&key) {
             return id;
         }
-        let mut output = self
-            .nodes
-            .get(left)
-            .expect("prefix output")
-            .as_ref()
-            .clone();
-        output.append(
-            self.nodes
-                .get(right)
-                .expect("child output")
-                .as_ref()
-                .clone(),
-        );
+        let mut output = self.output(left).expect("prefix output").clone();
+        output.append(self.output(right).expect("child output").clone());
         self.insert(key, output)
     }
 
@@ -122,10 +134,8 @@ impl Cache {
             return id;
         }
         let output = self
-            .nodes
-            .get(body)
+            .output(body)
             .expect("scope body")
-            .as_ref()
             .clone()
             .masked(style, link);
         self.insert(key, output)
@@ -219,6 +229,7 @@ impl Cache {
         Some(self.insert(key, output))
     }
 
+    #[cfg(test)]
     pub(in crate::inline_scan) fn render(
         &mut self,
         source: crate::inline_scan::Slice<'_>,
@@ -235,15 +246,33 @@ impl Cache {
         }
         self.input.feed(source.original, source.start);
         if self.nodes.is_empty() {
-            self.nodes.push(Box::default());
+            self.store(Output::default());
         }
+        let (current, next_committed) = self.reduce(&source, events, references, self.committed)?;
+        let changed = self
+            .output(current)?
+            .update(self.output(self.last)?, lines, first);
+        let visible = self.output(current)?.visible();
+        self.last = current;
+        self.committed = next_committed;
+        Some((changed, visible))
+    }
+
+    fn reduce(
+        &mut self,
+        source: &crate::inline_scan::Slice<'_>,
+        events: &[(Event<'_>, Range<usize>)],
+        references: &References,
+        initial: usize,
+    ) -> Option<(usize, usize)> {
         let mut frames = vec![Frame {
-            body: self.committed,
+            body: initial,
             style: Style::default(),
             link: None,
         }];
         let mut committed = None;
-        for (event, relative) in events {
+        let mut remaining = events.iter();
+        while let Some((event, relative)) = remaining.next() {
             #[cfg(test)]
             crate::work::scan(1);
             if matches!(
@@ -258,125 +287,139 @@ impl Cache {
             }
             let range = source.base + relative.start.saturating_sub(source.sentinel)
                 ..source.base + relative.end.saturating_sub(source.sentinel);
-            let leaf = match event {
-                Event::Start(tag) => {
-                    let (style, link) = match tag {
-                        Tag::Paragraph => (Style::default(), None),
-                        Tag::Emphasis => (
-                            Style {
-                                italic: true,
-                                ..Style::default()
-                            },
-                            None,
-                        ),
-                        Tag::Strong => (
-                            Style {
-                                bold: true,
-                                ..Style::default()
-                            },
-                            None,
-                        ),
-                        Tag::Strikethrough => (
-                            Style {
-                                dim: true,
-                                strikethrough: true,
-                                ..Style::default()
-                            },
-                            None,
-                        ),
-                        Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => (
-                            Style {
-                                foreground: Some(crate::style::BLUE),
-                                underline: true,
-                                ..Style::default()
-                            },
-                            Some(self.target(&range, dest_url, id, references)),
-                        ),
-                        _ => return None,
-                    };
-                    frames.push(Frame {
-                        body: 0,
-                        style,
-                        link,
-                    });
-                    continue;
+            let leaf = if let Some(&(output, count)) =
+                self.atoms.get(&(range.start, range.end)).filter(|_| {
+                    matches!(
+                        event,
+                        Event::Start(Tag::Link { .. } | Tag::Image { .. }) | Event::InlineHtml(_)
+                    )
+                }) {
+                // Slice iteration skips a compiled subtree without visiting its events.
+                if count > 1 {
+                    remaining.nth(count - 2)?;
                 }
-                Event::End(
-                    TagEnd::Paragraph
-                    | TagEnd::Emphasis
-                    | TagEnd::Strong
-                    | TagEnd::Strikethrough
-                    | TagEnd::Link
-                    | TagEnd::Image,
-                ) => {
-                    if frames.len() <= 1 {
-                        return None;
+                output
+            } else {
+                match event {
+                    Event::Start(tag) => {
+                        let (style, link) = match tag {
+                            Tag::Paragraph => (Style::default(), None),
+                            Tag::Emphasis => (
+                                Style {
+                                    italic: true,
+                                    ..Style::default()
+                                },
+                                None,
+                            ),
+                            Tag::Strong => (
+                                Style {
+                                    bold: true,
+                                    ..Style::default()
+                                },
+                                None,
+                            ),
+                            Tag::Strikethrough => (
+                                Style {
+                                    dim: true,
+                                    strikethrough: true,
+                                    ..Style::default()
+                                },
+                                None,
+                            ),
+                            Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => (
+                                Style {
+                                    foreground: Some(crate::style::BLUE),
+                                    underline: true,
+                                    ..Style::default()
+                                },
+                                Some(self.target(&range, dest_url, id, references)),
+                            ),
+                            _ => return None,
+                        };
+                        frames.push(Frame {
+                            body: 0,
+                            style,
+                            link,
+                        });
+                        continue;
                     }
-                    let frame = frames.pop()?;
-                    self.mask(frame.body, frame.style, frame.link)
-                }
-                Event::Text(text) => {
-                    let trim = source.sentinel.saturating_sub(relative.start);
-                    let text = text.get(trim..)?;
-                    let begin = relative.start.max(source.sentinel);
-                    let cut = source.boundary.saturating_sub(begin);
-                    if frames.len() == 1
-                        && cut > 0
-                        && cut < text.len()
-                        && source.parsed.get(begin..relative.end).is_some_and(|raw| {
-                            raw.as_ptr() == text.as_ptr() && raw.len() == text.len()
-                        })
-                    {
-                        let left = self.value(
-                            0,
-                            range.start..range.start + cut,
-                            text.get(..cut)?,
-                            &source,
-                            Style::default(),
-                        )?;
-                        let frame = frames.last_mut()?;
-                        frame.body = self.join(frame.body, left);
-                        committed = Some(frame.body);
-                        self.value(
-                            0,
-                            range.start + cut..range.end,
-                            text.get(cut..)?,
-                            &source,
-                            Style::default(),
-                        )?
-                    } else {
-                        self.value(0, range, text, &source, Style::default())?
+                    Event::End(
+                        TagEnd::Paragraph
+                        | TagEnd::Emphasis
+                        | TagEnd::Strong
+                        | TagEnd::Strikethrough
+                        | TagEnd::Link
+                        | TagEnd::Image,
+                    ) => {
+                        if frames.len() <= 1 {
+                            return None;
+                        }
+                        let frame = frames.pop()?;
+                        self.mask(frame.body, frame.style, frame.link)
                     }
-                }
-                Event::Code(text) => self.value(
-                    1,
-                    range,
-                    text,
-                    &source,
-                    Style {
-                        foreground: Some(crate::style::YELLOW),
-                        ..Style::default()
-                    },
-                )?,
-                Event::InlineHtml(text)
-                | Event::Html(text)
-                | Event::InlineMath(text)
-                | Event::DisplayMath(text) => {
-                    self.value(2, range, text, &source, Style::default())?
-                }
-                Event::SoftBreak => self.value(3, range, " ", &source, Style::default())?,
-                Event::HardBreak => {
-                    let key = Key::Leaf(4, range.start, range.end);
-                    if let Some(&id) = self.keys.get(&key) {
-                        id
-                    } else {
-                        self.insert(key, Output::newline(false))
+                    Event::Text(text) => {
+                        let trim = source.sentinel.saturating_sub(relative.start);
+                        let text = text.get(trim..)?;
+                        let begin = relative.start.max(source.sentinel);
+                        let cut = source.boundary.saturating_sub(begin);
+                        if frames.len() == 1
+                            && cut > 0
+                            && cut < text.len()
+                            && source.parsed.get(begin..relative.end).is_some_and(|raw| {
+                                raw.as_ptr() == text.as_ptr() && raw.len() == text.len()
+                            })
+                        {
+                            let left = self.value(
+                                0,
+                                range.start..range.start + cut,
+                                text.get(..cut)?,
+                                source,
+                                Style::default(),
+                            )?;
+                            let frame = frames.last_mut()?;
+                            frame.body = self.join(frame.body, left);
+                            committed = Some(frame.body);
+                            self.value(
+                                0,
+                                range.start + cut..range.end,
+                                text.get(cut..)?,
+                                source,
+                                Style::default(),
+                            )?
+                        } else {
+                            self.value(0, range, text, source, Style::default())?
+                        }
                     }
+                    Event::Code(text) => self.value(
+                        1,
+                        range,
+                        text,
+                        source,
+                        Style {
+                            foreground: Some(crate::style::YELLOW),
+                            ..Style::default()
+                        },
+                    )?,
+                    Event::InlineHtml(text)
+                    | Event::Html(text)
+                    | Event::InlineMath(text)
+                    | Event::DisplayMath(text) => {
+                        self.value(2, range, text, source, Style::default())?
+                    }
+                    Event::SoftBreak => self.value(3, range, " ", source, Style::default())?,
+                    Event::HardBreak => {
+                        let key = Key::Leaf(4, range.start, range.end);
+                        if let Some(&id) = self.keys.get(&key) {
+                            id
+                        } else {
+                            self.insert(key, Output::newline(false))
+                        }
+                    }
+                    Event::FootnoteReference(text) => {
+                        self.value(5, range, &format!("[{text}]"), source, Style::default())?
+                    }
+                    _ => return None,
                 }
-                Event::FootnoteReference(text) => {
-                    self.value(5, range, &format!("[{text}]"), &source, Style::default())?
-                }
-                _ => return None,
             };
             let current = frames.last_mut()?;
             current.body = self.join(current.body, leaf);
@@ -391,16 +434,9 @@ impl Cache {
         let next_committed = if source.boundary > source.sentinel {
             committed?
         } else {
-            self.committed
+            initial
         };
-        let changed = self
-            .nodes
-            .get(current)?
-            .update(self.nodes.get(self.last)?, lines, first);
-        let visible = self.nodes.get(current)?.visible();
-        self.last = current;
-        self.committed = next_committed;
-        Some((changed, visible))
+        Some((current, next_committed))
     }
 
     #[cfg(test)]
@@ -411,16 +447,21 @@ impl Cache {
         links: &mut HashSet<*const u8>,
     ) -> (usize, usize) {
         let (mut payload, mut metadata) = self.input.retained(texts);
-        metadata += self.nodes.capacity() * std::mem::size_of::<Box<Output>>()
-            + self.nodes.len() * std::mem::size_of::<Output>()
+        metadata += self.nodes.capacity() * std::mem::size_of::<Vec<Output>>()
+            + self
+                .nodes
+                .iter()
+                .map(|page| page.capacity() * std::mem::size_of::<Output>())
+                .sum::<usize>()
             + self.keys.capacity() * std::mem::size_of::<(Key, usize)>()
-            + self.targets.capacity() * std::mem::size_of::<((usize, usize), Arc<str>)>();
+            + self.targets.capacity() * std::mem::size_of::<((usize, usize), Arc<str>)>()
+            + self.atoms.capacity() * std::mem::size_of::<((usize, usize), (usize, usize))>();
         for target in self.targets.values() {
             if links.insert(Arc::as_ptr(target).cast::<u8>()) {
                 payload += target.len();
             }
         }
-        for output in &self.nodes {
+        for output in self.nodes.iter().flatten() {
             for spans in std::iter::once(&output.head).chain(&output.tail) {
                 let (bytes, size) = spans.retained(nodes, texts, links);
                 payload += bytes;

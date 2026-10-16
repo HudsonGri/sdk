@@ -7,7 +7,8 @@ fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
     let events: Vec<_> = pulldown_cmark::Parser::new_ext(source, crate::options())
         .into_offset_iter()
         .collect();
-    scanner.frontier(source, 0, source, &events, 0);
+    scanner.frontier(source, 0, &events, 0);
+    let parsed_nodes = scanner.state.forest.length;
     let mut lines = Vec::new();
     scanner
         .render_events(
@@ -25,6 +26,10 @@ fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
             0,
         )
         .expect("retained inline events");
+    assert_eq!(
+        scanner.state.forest.length, parsed_nodes,
+        "rendering changed the parse tree"
+    );
     while lines.last().is_some_and(|line| line.spans.is_empty()) {
         lines.pop();
     }
