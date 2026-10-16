@@ -122,9 +122,9 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
 
     pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), FsError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.accounting.native_work() {
-            self.complete_pending(work, delta)?;
-            return self.accounting.check();
+        if let KernelAccounting::NativeOriginal { work, cancellation } = &*self.accounting {
+            let (work, cancellation) = (*work, *cancellation);
+            return self.complete_pending(work, cancellation, delta);
         }
         self.accounting.record_completed(delta)
     }
@@ -172,6 +172,7 @@ impl OriginalReadAccounting<'_, '_> {
     fn complete_pending(
         &mut self,
         work: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
         actual: WorkCounters,
     ) -> Result<(), FsError> {
         work.state(|state| {
@@ -182,8 +183,13 @@ impl OriginalReadAccounting<'_, '_> {
                 .map_err(crate::NativeTreeMaterializationError::from)?;
             state
                 .complete(credited, actual)
-                .map_err(crate::materializer::native_materialization_work_error)
-                .map_err(Into::into)
+                .map_err(crate::materializer::native_materialization_work_error)?;
+            // Keep the original post-effect admission and caller check, after
+            // charging actual work, without releasing and reacquiring the leaf.
+            state
+                .admit(WorkCounters::UNCHARGED)
+                .map_err(crate::materializer::native_materialization_work_error)?;
+            cancellation.check().map_err(Into::into)
         })
     }
 }
