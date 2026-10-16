@@ -18,6 +18,7 @@ proptest! {
             });
             let scope = issuer.issue("write", &crate::Capabilities::new([
                 volume.capability(VolumeOperation::Write, &mut None)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
             ]), None, None, &mut None)?;
             let grant = ContentGrant::verify(&issuer.verifier(&mut None)?, &scope, &volume,
                 VolumeOperation::Write, 4096, &mut None)?;
@@ -26,6 +27,12 @@ proptest! {
                 "text/plain", "main.rs", 4096, &key, None, None);
             let file = publish(&bytes).await?;
             assert_eq!(publish(&bytes).await?, file);
+            let read = ContentGrant::verify(&issuer.verifier(&mut None)?, &scope, &volume,
+                VolumeOperation::Read, 4096, &mut None)?;
+            let (_, indexed, publication) = host.read_private_path_indexed(
+                &volume, &read, "src/main.rs", None, 4096, None).await?;
+            assert_eq!(indexed.as_ref(), bytes.as_slice());
+            assert_eq!(publication, Some(crate::OperationId::from_bytes(filesystem_key(&key).into_bytes())));
             let workspace = workspace_ref(volume.provider().clone(), &volume.storage_name(&mut None)?)?;
             let head = host.resolve(&workspace, None).await?;
             let mut conflicting = bytes.clone();

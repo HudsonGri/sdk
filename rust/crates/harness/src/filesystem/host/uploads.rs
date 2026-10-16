@@ -42,11 +42,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let descriptor = crate::executor::with_history_io(io, |work| {
                 FileDescriptor::from_bytes(bytes, media_type, work)
             })?;
+            let operation = fork_preparer_io::operation_key(idempotency_key, io)?;
             let provisional = crate::executor::with_history_io(io, |work| {
                 FileRef::new(
                     volume.copy(work)?,
                     stock_string_copy(path, io)?,
-                    stock_string_copy("pending", io)?,
+                    fork_preparer_io::hex_key(&operation.into_bytes(), io)?,
                     FileDescriptor::new(
                         *descriptor.sha256(),
                         descriptor.byte_length(),
