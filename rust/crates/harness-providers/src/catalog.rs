@@ -1,4 +1,7 @@
-use crate::{Adapter, Authentication, ImageInput, ProviderSpec};
+use crate::{
+    Adapter, Authentication, ImageInput, ModelFeatures, ProviderSpec, TokenCountField,
+    TokenCounterSpec,
+};
 use acyclic_harness::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
@@ -12,7 +15,7 @@ const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     (
         "openai",
         Adapter::Responses,
-        Authentication::ApiKey,
+        Authentication::ApiKeyOrCodexLogin,
         "https://api.openai.com/v1",
     ),
     (
@@ -47,31 +50,96 @@ const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     ),
 ];
 
-const MODELS: &[(&str, &str, u32, u32)] = &[
-    ("anthropic", "claude-sonnet-4-5", 200_000, 64_000),
-    ("anthropic", "claude-sonnet-4-5-20250929", 200_000, 64_000),
-    ("gemini", "gemini-2.5-pro", 1_048_576, 65_536),
-    ("gemini", "gemini-2.5-flash", 1_048_576, 65_536),
-    ("openai", "gpt-4.1", 1_047_576, 32_768),
-    ("openai", "gpt-4.1-2025-04-14", 1_047_576, 32_768),
-    ("openai", "gpt-5", 400_000, 128_000),
-    ("openai", "gpt-5-2025-08-07", 400_000, 128_000),
+const COUNTERS: &[(&str, &str, Adapter, TokenCountField)] = &[
+    (
+        "openai",
+        "responses/input_tokens",
+        Adapter::Responses,
+        TokenCountField::InputTokens,
+    ),
+    (
+        "anthropic",
+        "messages/count_tokens",
+        Adapter::Anthropic,
+        TokenCountField::InputTokens,
+    ),
+    (
+        "gemini",
+        "models/{model}:countTokens",
+        Adapter::Gemini,
+        TokenCountField::TotalTokens,
+    ),
 ];
 
-/// Standard endpoint policies and exact model capacities as ordinary data.
+const TOOLS_AND_IMAGES: ModelFeatures = ModelFeatures {
+    tools: true,
+    images: true,
+};
+
+const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
+    (
+        "anthropic",
+        "claude-sonnet-4-5",
+        200_000,
+        64_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-5-20250929",
+        200_000,
+        64_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-2.5-pro",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-2.5-flash",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    ("openai", "gpt-4.1", 1_047_576, 32_768, TOOLS_AND_IMAGES),
+    (
+        "openai",
+        "gpt-4.1-2025-04-14",
+        1_047_576,
+        32_768,
+        TOOLS_AND_IMAGES,
+    ),
+    ("openai", "gpt-5", 400_000, 128_000, TOOLS_AND_IMAGES),
+    (
+        "openai",
+        "gpt-5-2025-08-07",
+        400_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
+];
+
+/// Standard endpoint policies, model capacities and capabilities as ordinary data.
 pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
     ENDPOINTS
         .iter()
         .map(|&(id, adapter, authentication, base_url)| {
-            let models: BTreeMap<String, ModelContextCapacity> = MODELS
+            let models: BTreeMap<String, crate::ModelSpec> = MODELS
                 .iter()
                 .filter(|(provider, ..)| *provider == id)
-                .map(|&(_, name, context_tokens, output_tokens)| {
+                .map(|&(_, name, context_tokens, output_tokens, features)| {
                     (
                         name.into(),
-                        ModelContextCapacity {
-                            context_tokens,
-                            output_tokens,
+                        crate::ModelSpec {
+                            capacity: ModelContextCapacity {
+                                context_tokens,
+                                output_tokens,
+                            },
+                            features,
                         },
                     )
                 })
@@ -83,8 +151,9 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     authentication,
                     base_url: base_url.into(),
                     images: models
-                        .keys()
-                        .map(|name| {
+                        .iter()
+                        .filter(|(_, model)| model.features.images)
+                        .map(|(name, _)| {
                             (
                                 name.clone(),
                                 ImageInput {
@@ -98,6 +167,14 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                         })
                         .collect(),
                     models,
+                    token_counter: COUNTERS.iter().find(|(provider, ..)| *provider == id).map(
+                        |&(_, path, adapter, response_field)| TokenCounterSpec {
+                            path: path.into(),
+                            adapter,
+                            response_field,
+                            framing_tokens: 0,
+                        },
+                    ),
                     max_event_bytes: 1024 * 1024,
                 },
             )

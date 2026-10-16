@@ -18,7 +18,6 @@ mod portable_file_replay;
 mod portable_text_tools;
 mod portable_text_variants;
 mod project_workspaces;
-mod recorded_invocation;
 mod recursive_fork;
 mod retained_content;
 mod saved_tool_metadata;

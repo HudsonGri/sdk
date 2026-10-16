@@ -127,6 +127,34 @@ pub(crate) fn encoded_bytes(provider: &ResolvedModel, request: &ModelRequest) ->
         .ok_or_else(|| invalid("encoded image size overflows"))
 }
 
+pub(crate) fn tokens(provider: &ResolvedModel, message: &ModelMessage) -> Result<u32> {
+    files(message).try_fold(0u32, |total, (file, policy)| {
+        let amount = support(provider, file, policy)?.map_or(0, |limits| limits.maximum_tokens);
+        total
+            .checked_add(amount)
+            .ok_or_else(|| invalid("image token count overflows"))
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn admit(
+    provider: &ResolvedModel,
+    request: &ModelRequest,
+    work: &acyclic_fs::NativeMaterializationWork,
+    allocation: &mut acyclic_fs::NativeAllocation,
+) -> Result<()> {
+    let encoded = crate::native::diagnostic(encoded_bytes(provider, request), allocation)?;
+    if encoded != 0 {
+        let mut hold = crate::native::reserve(work, encoded, 0, 0)?;
+        allocation.absorb(&mut hold)?;
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined: encoded,
+            ..acyclic_fs::WorkCounters::UNCHARGED
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn load<'a>(
     provider: &'a ResolvedModel,
     request: &'a ModelRequest,

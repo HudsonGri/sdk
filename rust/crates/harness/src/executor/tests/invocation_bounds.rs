@@ -89,7 +89,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
         }];
         let journal = Journal::default();
         let result = StockExecution::ordinary(&executor)
-            .settle_tool_call(&journal, operation, 0, invocation, &mut prior)
+            .settle_tool_call(&journal, operation, 0, invocation, 0, &mut prior)
             .await;
         assert!(matches!(result, Err(Error::Invalid(_))));
         assert_eq!(journal.3.load(Ordering::SeqCst), 0, "no replay I/O");

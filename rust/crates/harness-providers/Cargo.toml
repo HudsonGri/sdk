@@ -20,8 +20,9 @@ acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = 
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"
 bytes.workspace = true
-base64 = "0.22.1"
+base64 = "=0.22.1"
 imagesize = "0.15.0"
+blake3.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,8 +31,12 @@ url = "2.5.7"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["filesystem"] }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
+blake3.workspace = true
 reqwest.workspace = true
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+tempfile = "3.27.0"
+time = { workspace = true, features = ["formatting", "parsing"] }
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
@@ -41,6 +46,7 @@ web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Hea
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["tui"] }
+acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
 tokio.workspace = true
 tempfile = "3.27.0"
 loom = "0.7.2"

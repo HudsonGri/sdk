@@ -3,7 +3,8 @@ import type { ModelContentPart } from "./model.js";
 import type { FileRef } from "./conversation.js";
 import { projectModelFile } from "./projection.js";
 import { NativeContracts } from "./native-contracts.js";
-import type { HttpFetcher } from "./wire-transport.js";
+/** Host-provided HTTP I/O for model requests. */
+export type HttpFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 type OpenAiProjectedPart = Readonly<{ type: "text"; text: string }>;
 
@@ -66,7 +67,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     return this.#contextCapacity(model);
   }
 
-  countTokens(request: Parameters<ModelProvider["countTokens"]>[0]): ReturnType<ModelProvider["countTokens"]> {
+  async countTokens(request: Parameters<ModelProvider["countTokens"]>[0]): ReturnType<ModelProvider["countTokens"]> {
     if (this.#countTokens === undefined) {
       throw new TypeError("OpenAI-compatible provider requires explicit token accounting");
     }

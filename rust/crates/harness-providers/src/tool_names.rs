@@ -25,13 +25,7 @@ fn names(request: &ModelRequest) -> impl Iterator<Item = &str> {
 }
 
 fn unchanged(name: &str) -> bool {
-    !name.starts_with(PREFIX)
-        && !name.is_empty()
-        && name.len() <= 64
-        && (name.as_bytes()[0].is_ascii_alphabetic() || name.starts_with('_'))
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    !name.starts_with(PREFIX) && crate::protocol::name::TOOL.accepts(name)
 }
 
 impl<'a> Names<'a> {
@@ -129,7 +123,14 @@ impl<'a> Names<'a> {
     }
 
     pub(crate) fn new(request: &'a ModelRequest) -> Self {
-        let mut values = Vec::with_capacity(names(request).count());
+        Self::with_capacity(request, names(request).count())
+    }
+
+    fn with_capacity(request: &'a ModelRequest, count: usize) -> Self {
+        if count == 0 {
+            return Self(Vec::new());
+        }
+        let mut values = Vec::with_capacity(count);
         values.extend(names(request));
         values.sort_unstable();
         values.dedup();
@@ -197,6 +198,6 @@ impl<'a> Names<'a> {
                 ..acyclic_fs::WorkCounters::UNCHARGED
             },
         )?;
-        Ok((Self::new(request), custody))
+        Ok((Self::with_capacity(request, count as usize), custody))
     }
 }

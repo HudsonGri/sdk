@@ -293,13 +293,13 @@ async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> 
             user(vec![text("again"), image(&file)]),
         ];
         let (request, dispatch) = prepare(&provider, messages)?;
-        let count = provider.count_tokens(&request)?;
+        let count = provider.count_tokens(&request).await?;
         assert!(count.message_tokens[0] >= 2048);
         assert!(count.message_tokens[0] < 2600);
         assert_eq!(
             reads.calls.load(Ordering::SeqCst),
-            0,
-            "counting never reads image bytes"
+            3,
+            "verified counting reads the same image occurrences as inference"
         );
         let digest = request.request_digest();
         assert_eq!(
@@ -311,10 +311,10 @@ async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> 
             4
         );
         assert_eq!(digest, request.request_digest());
-        let recounted = provider.count_tokens(&request)?;
+        let recounted = provider.count_tokens(&request).await?;
         assert_eq!(count.message_tokens, recounted.message_tokens);
         assert_eq!(count.fixed_tokens, recounted.fixed_tokens);
-        assert_eq!(reads.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(reads.calls.load(Ordering::SeqCst), 9);
         let sent = script.sent.lock().expect("capture");
         assert_eq!(sent.len(), 1);
         let body = json(&sent[0].body)?;
@@ -462,9 +462,13 @@ async fn image_prompt_files_resolve_utf8_on_the_same_authorized_path() -> Result
                     policy: FileProjectionPolicy::BoundedFull,
                 }])],
             )?;
-            let counted = provider.count_tokens(&request)?;
-            assert!(counted.message_tokens[0] >= bytes.len() as u32);
-            assert_eq!(reads.calls.load(Ordering::SeqCst), 0);
+            let counted = provider.count_tokens(&request).await;
+            if std::str::from_utf8(bytes).is_ok() {
+                assert!(counted?.message_tokens[0] >= bytes.len() as u32);
+            } else {
+                assert!(counted.is_err());
+            }
+            assert_eq!(reads.calls.load(Ordering::SeqCst), 1);
             let result = provider
                 .generate(request, dispatch)
                 .try_collect::<Vec<_>>()
@@ -480,13 +484,13 @@ async fn image_prompt_files_resolve_utf8_on_the_same_authorized_path() -> Result
                     let body = json(&sent[0].body)?;
                     let actual = match adapter {
                         Adapter::Chat => &body["messages"][0]["content"],
-                        Adapter::Responses => &body["input"][0]["content"],
+                        Adapter::Responses => &body["input"][0]["content"][0]["text"],
                         _ => &message_parts(adapter, &body, 0)[0]["text"],
                     };
                     assert_eq!(actual, text);
                 }
             }
-            assert_eq!(reads.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(reads.calls.load(Ordering::SeqCst), 2);
         }
     }
     Ok(())
@@ -612,7 +616,9 @@ async fn image_native_dispatch_uses_original_work_and_releases_content() -> Resu
         let (request, dispatch) =
             prepare(&provider, vec![user(vec![text("describe"), image(&file)])])?;
         let before = work.live_allocation_bytes();
-        let (count, hold) = provider.count_tokens_with_native_work(&request, &work)?;
+        let (count, hold) = provider
+            .count_tokens_with_native_work(&request, &work)?
+            .await?;
         assert!(count.message_tokens[0] >= 1024);
         assert!(hold.work().shares_allocation_context(&work));
         drop((count, hold));
@@ -628,7 +634,7 @@ async fn image_native_dispatch_uses_original_work_and_releases_content() -> Resu
         }
         drop(stream);
         assert_eq!(events, 4, "{adapter:?}");
-        assert_eq!(reads.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reads.calls.load(Ordering::SeqCst), 2);
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
         assert!(work.receipt().items_examined >= bytes.len() as u64);
         assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
