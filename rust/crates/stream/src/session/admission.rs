@@ -28,7 +28,7 @@ fn update(channel: &Channel, readiness: (bool, bool, bool)) -> Result<(), Stream
         channel.ending.is_none()
             && policy::enabled(
                 channel.latest,
-                channel.pending,
+                channel.pending.len(),
                 readiness,
                 channel.credit.frames > 0 && channel.credit.bytes > 0,
             ),

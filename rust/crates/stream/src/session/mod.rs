@@ -32,6 +32,8 @@ mod interest;
 mod policy;
 #[cfg(not(target_arch = "wasm32"))]
 mod queue;
+#[cfg(acyclic_stream_loom)]
+pub use queue::verify_queued_admission;
 pub mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 mod service;
@@ -88,7 +90,8 @@ struct Channel {
     generation: u64,
     latest: bool,
     children: bool,
-    pending: usize,
+    pending: VecDeque<u64>,
+    slot: Option<usize>,
     enabled: Arc<gate::Gate>,
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
@@ -123,7 +126,9 @@ struct Session<P> {
     incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
     credit: wire::SessionWindow,
     controls: VecDeque<wire::SessionFrame>,
-    pending: VecDeque<Pending>,
+    pending: BTreeMap<u64, Pending>,
+    ready: queue::Heads,
+    next_pending: u64,
     pending_bytes: usize,
     readiness: (bool, bool, bool),
 }
@@ -137,29 +142,7 @@ pub fn serve<P: StreamProvider>(
     limits: Limits,
     incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
 ) -> Result<BoxStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError> {
-    if node.is_empty()
-        || limits.channels == 0
-        || limits.pending_frames == 0
-        || limits.pending_bytes < crate::MAX_RECORD_BYTES + 128
-    {
-        return Err(StreamError::InvalidArgument);
-    }
-    let session = Session {
-        provider,
-        node,
-        limits,
-        hello: false,
-        prefer_control: true,
-        revision: 0,
-        channels: BTreeMap::new(),
-        sources: SelectAll::new(),
-        incoming,
-        credit: wire::SessionWindow::default(),
-        controls: VecDeque::new(),
-        pending: VecDeque::new(),
-        pending_bytes: 0,
-        readiness: (false, false, false),
-    };
+    let session = Session::new(provider, node, limits, incoming)?;
     Ok(stream::try_unfold(session, |mut session| async move {
         loop {
             if let Some(frame) = session.controls.pop_front() {
@@ -219,6 +202,38 @@ fn cursor(next: u64) -> wire::SessionCursor {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<P: StreamProvider> Session<P> {
+    fn new(
+        provider: Arc<P>,
+        node: String,
+        limits: Limits,
+        incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
+    ) -> Result<Self, StreamError> {
+        if node.is_empty()
+            || limits.channels == 0
+            || limits.pending_frames == 0
+            || limits.pending_bytes < crate::MAX_RECORD_BYTES + 128
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Self {
+            provider,
+            node,
+            limits,
+            hello: false,
+            prefer_control: true,
+            revision: 0,
+            channels: BTreeMap::new(),
+            sources: SelectAll::new(),
+            incoming,
+            credit: wire::SessionWindow::default(),
+            controls: VecDeque::new(),
+            pending: BTreeMap::new(),
+            ready: queue::Heads::default(),
+            next_pending: 0,
+            pending_bytes: 0,
+            readiness: (false, false, false),
+        })
+    }
     fn receive(&mut self, input: wire::SessionFrame) -> Result<(), StreamError> {
         if input.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
@@ -277,6 +292,7 @@ impl<P: StreamProvider> Session<P> {
             Body::Window(grant) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
                 wire_codec::session::grant_credit(&mut channel.credit, &grant)?;
+                self.index_channel(input.channel_id)?;
                 self.refresh(Some(input.channel_id))?;
                 Ok(())
             }

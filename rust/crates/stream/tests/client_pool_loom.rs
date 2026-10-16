@@ -150,3 +150,18 @@ fn initial_eof_retry_yields_to_deadline_and_cancellation() {
 fn negative_control_initial_eof_retry_monopolizes_the_executor() {
     acyclic_stream::session::verify_initial_retry_yield(true);
 }
+
+#[test]
+fn queued_heads_handle_credit_cancellation_and_wait_registration() {
+    acyclic_stream::session::verify_queued_admission(0);
+}
+#[test]
+#[should_panic(expected = "credit must publish the independent queued head")]
+fn negative_control_window_forgets_the_queued_head_index() {
+    acyclic_stream::session::verify_queued_admission(1);
+}
+#[test]
+#[should_panic(expected = "cancelled head must release its owned index slot")]
+fn negative_control_cancellation_retains_the_index_owner() {
+    acyclic_stream::session::verify_queued_admission(2);
+}

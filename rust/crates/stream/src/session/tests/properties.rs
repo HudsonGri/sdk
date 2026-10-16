@@ -1,41 +1,8 @@
 use crate::session::*;
-use crate::{CommitId, MemoryStream, OwnedBytes, Record};
+use crate::{CommitId, OwnedBytes, Record};
 use proptest::prelude::*;
 
-fn empty_session(latest: bool) -> Session<MemoryStream> {
-    let (cancel, _) = oneshot::channel();
-    let enabled = Arc::new(gate::Gate::new());
-    Session {
-        provider: Arc::new(MemoryStream::default()),
-        limits: Limits::default(),
-        node: "node".into(),
-        hello: true,
-        prefer_control: true,
-        revision: 1,
-        channels: BTreeMap::from([(
-            1,
-            Channel {
-                children: false,
-                generation: 1,
-                latest,
-                enabled,
-                pending: 0,
-                credit: wire::SessionWindow::default(),
-                sent: cursor(0),
-                applied: cursor(0),
-                ending: None,
-                cancel: Some(cancel),
-            },
-        )]),
-        sources: SelectAll::new(),
-        incoming: stream::empty().boxed(),
-        credit: wire::SessionWindow::default(),
-        controls: VecDeque::new(),
-        pending: VecDeque::new(),
-        pending_bytes: 0,
-        readiness: (false, false, false),
-    }
-}
+use crate::session::queue::fixture::empty_session;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
@@ -83,10 +50,10 @@ proptest! {
         let expected: Vec<_> = history.iter().enumerate().filter(|(index, (key, _, attention))| {
             !latest || *attention || !history[index + 1..].iter().any(|(later_key, _, later_attention)| later_key == key && !later_attention)
         }).map(|(index, _)| index as u64 + 1).collect();
-        let actual: Vec<_> = session.pending.iter().filter_map(|pending| match &pending.frame.body {
+        let actual: Vec<_> = session.pending.values().filter_map(|pending| match &pending.frame.body {
             Some(Body::Data(data)) => data.after.as_ref().map(|after| after.next), _ => None,
         }).collect();
         prop_assert_eq!(actual, expected);
-        prop_assert_eq!(session.pending_bytes, session.pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
+        prop_assert_eq!(session.pending_bytes, session.pending.values().map(|pending| pending.frame.encoded_len()).sum::<usize>());
     }
 }

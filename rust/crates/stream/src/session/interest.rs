@@ -117,7 +117,8 @@ impl<P: StreamProvider> Session<P> {
                 generation: identity.generation,
                 latest,
                 children,
-                pending: 0,
+                pending: VecDeque::new(),
+                slot: None,
                 enabled,
                 credit: wire::SessionWindow::default(),
                 sent: resume.clone(),
@@ -130,14 +131,14 @@ impl<P: StreamProvider> Session<P> {
     }
 
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
-        self.channels.remove(&id);
-        self.pending
-            .retain(|pending| pending.frame.channel_id != id);
-        self.pending_bytes = self
-            .pending
-            .iter()
-            .map(|pending| pending.frame.encoded_len())
-            .sum();
+        if let Some(channel) = self.channels.remove(&id) {
+            if let Some(slot) = channel.slot {
+                self.ready.remove(slot)?;
+            }
+            for token in channel.pending {
+                self.take_pending(token)?;
+            }
+        }
         self.refresh(None)
     }
 }
