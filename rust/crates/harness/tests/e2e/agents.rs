@@ -66,7 +66,14 @@ impl ModelProvider for Models {
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
         match self.get(&request.request().model.name) {
-            Ok(provider) => provider.generate(request, dispatch),
+            Ok(provider) => {
+                eprintln!(
+                    "agent scenario: model {} request {}",
+                    request.request().model.name,
+                    provider.requests().len() + 1
+                );
+                provider.generate(request, dispatch)
+            }
             Err(error) => Box::pin(futures::stream::iter([Err(error)])),
         }
     }

@@ -11,7 +11,15 @@ impl CheckoutTools {
         if scope.grants().contains(&self.read_grant) && scope.grants().contains(&self.write_grant) {
             return Ok(None);
         }
-        context.task().owned_task_binding(None)?;
+        let task = context.task();
+        let owner = task
+            .owned_mailbox
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("child workspace has no original owner".into()))?;
+        let (child, fence) = owner.task_binding();
+        if !task.original_task_binding_matches(child, fence) {
+            return Err(Error::Unauthorized("child workspace owner differs".into()));
+        }
         let access = context
             .task()
             .scope()
@@ -20,6 +28,11 @@ impl CheckoutTools {
             .ok_or_else(|| {
                 Error::Unauthorized("workspace has no authenticated child allocation".into())
             })?;
+        if access.operation.into_bytes() != child.into_bytes() {
+            return Err(Error::Unauthorized(
+                "child workspace seal belongs to another task".into(),
+            ));
+        }
         let mut selected = None;
         for binding in &access.content {
             if binding.volume.class() == VolumeClass::Project

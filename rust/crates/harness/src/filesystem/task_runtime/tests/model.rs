@@ -590,9 +590,23 @@ proptest::proptest! {
             let mut changed = fence.clone();
             changed.reservation_id.push_str(&suffix);
             assert!(matches!(runtime.stock_execution_with_context(
-                Arc::clone(&context), changed, OperationId::new(), model.clone(), provider.clone(),
+                Arc::clone(&context), changed.clone(), OperationId::new(), model.clone(), provider.clone(),
                 ContextPipeline::default(), fixture.tools.clone(), None,
             ).await, Err(Error::Unauthorized(_))));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let journal = runtime.workflow_journal(task, fence.clone()).await?;
+                assert!(matches!(runtime.harness().open_registered_task(
+                    task, &changed, journal.clone(), Some(Arc::clone(&context)),
+                ).await, Err(Error::Unauthorized(_))));
+                let retained = Arc::strong_count(&owner);
+                let session = runtime.harness().open_registered_task(
+                    task, &fence, journal, Some(Arc::clone(&context)),
+                ).await?;
+                assert_eq!(Arc::strong_count(&owner), retained + 1);
+                drop(session);
+                assert_eq!(Arc::strong_count(&owner), retained);
+            }
             let retained = Arc::strong_count(&owner);
             let execution = runtime.stock_execution_with_context(
                 context, fence, OperationId::new(), model, provider.clone(),

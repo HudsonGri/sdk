@@ -142,7 +142,13 @@ where
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {
-                self.open_task(task, fence.clone()).await?
+                let journal = self.workflow_journal(task, fence.clone()).await?;
+                let WorkerContext::Ordinary(context) = &context else {
+                    unreachable!()
+                };
+                self.harness
+                    .open_registered_task(task, fence, journal, Some(Arc::clone(context)))
+                    .await?
             };
             #[cfg(target_arch = "wasm32")]
             let mut session = { self.open_task(task, fence.clone()).await? };

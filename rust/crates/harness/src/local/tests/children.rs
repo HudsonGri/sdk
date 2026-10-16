@@ -147,9 +147,8 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             source_file: Some(file!()),
             ..ProptestConfig::with_cases(32)
         })
-        .run(
-            &(0u8..32, any::<[u8; 16]>(), "[a-z]{1,16}"),
-            |(mask, bytes, call)| {
+        .run(&(any::<[u8; 16]>(), "[a-z]{1,16}"), |(bytes, call)| {
+            for mask in 0u8..32 {
                 let grants = [read.as_str(), write.as_str(), "tool:call:fs"]
                     .into_iter()
                     .enumerate()
@@ -175,7 +174,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
                 let invocation = ToolInvocation {
                     operation_id: OperationId::from_bytes(actual),
                     call_id: if mask & 16 != 0 {
-                        call
+                        call.clone()
                     } else {
                         format!("{call}-other")
                     },
@@ -188,9 +187,9 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
                         .is_ok(),
                     mask == 31
                 );
-                Ok(())
-            },
-        )
+            }
+            Ok(())
+        })
         .map_err(super::super::storage)?;
     }
     let publisher = harness.input_publisher(harness.limits.file_bytes)?;
