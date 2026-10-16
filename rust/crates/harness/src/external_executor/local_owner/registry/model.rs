@@ -4,8 +4,13 @@ use super::*;
 use std::cell::Cell;
 
 loom::thread_local! { static UNLOCKED: Cell<bool> = Cell::new(false); }
+loom::thread_local! { static EARLY_CLOSE: Cell<bool> = Cell::new(false); }
 pub(super) fn unlocked() -> bool {
     UNLOCKED.with(Cell::get)
+}
+
+pub(super) fn early_close() -> bool {
+    EARLY_CLOSE.with(Cell::get)
 }
 
 #[cfg(test)]
@@ -63,5 +68,57 @@ mod tests {
             .or_else(|| failure.downcast_ref::<&str>().copied())
             .unwrap_or("");
         assert!(message.contains("workspace opened twice"), "{message}");
+    }
+
+    fn drain(broken: bool) {
+        EARLY_CLOSE.with(|value| value.set(broken));
+        let state = StateArc::new(Mutex::new(
+            Opened::<(), loom::thread::JoinHandle<()>>::default(),
+        ));
+        let completed = StateArc::new(AtomicUsize::new(0));
+        {
+            let mut opened = complete(lock_owned(StateArc::clone(&state)));
+            opened.entries.insert("workspace".into(), Arc::new(()));
+            for _ in 0..2 {
+                let completed = StateArc::clone(&completed);
+                opened.resources.push(thread::spawn(move || {
+                    completed.fetch_add(1, Ordering::SeqCst);
+                }));
+            }
+        }
+        let opened = std::mem::take(&mut *complete(lock_owned(StateArc::clone(&state))));
+        complete(close_after_workers(
+            opened,
+            async |worker| {
+                worker.join().unwrap();
+                Ok(())
+            },
+            async |_| {
+                // Reentering the real registry lock detects retirement under
+                // that lock; close must also follow every worker completion.
+                let opened = lock_owned(StateArc::clone(&state)).await;
+                assert!(opened.entries.is_empty());
+                assert_eq!(
+                    completed.load(Ordering::SeqCst),
+                    2,
+                    "close preceded worker drain"
+                );
+                Ok(())
+            },
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn shutdown_joins_effects_before_closing_providers_without_the_registry_lock() {
+        loom::model(|| drain(false));
+        let failure = std::panic::catch_unwind(|| loom::model(|| drain(true)))
+            .expect_err("early close negative control was not detected");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(message.contains("close preceded worker drain"), "{message}");
     }
 }

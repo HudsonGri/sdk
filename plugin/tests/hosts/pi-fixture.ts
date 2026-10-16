@@ -16,6 +16,7 @@ export function piEnvironment(directory: string): NodeJS.ProcessEnv {
     HOME: directory, USERPROFILE: directory, PI_CODING_AGENT_DIR: join(directory, "agent"),
     LOCALAPPDATA: join(directory, "local"), APPDATA: join(directory, "config"),
     XDG_STATE_HOME: join(directory, "state"), XDG_CONFIG_HOME: join(directory, "config"),
+    ACYCLIC_LOCAL_OWNER_DIR: join(directory, "owner"),
   };
   for (const name of ["SystemRoot", "TEMP", "TMP"]) {
     if (process.env[name]) environment[name] = process.env[name];

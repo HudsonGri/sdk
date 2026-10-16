@@ -41,6 +41,32 @@ async fn open_once<T, R>(
     Ok(value)
 }
 
+async fn close_after_workers<T, R>(
+    opened: Opened<T, R>,
+    join: impl AsyncFn(R) -> Result<()>,
+    close: impl AsyncFn(Arc<T>) -> Result<()>,
+) -> Result<()> {
+    #[cfg(acyclic_harness_loom)]
+    if model::early_close() {
+        for value in opened.entries.into_values() {
+            close(value).await?;
+        }
+        return Ok(());
+    }
+    let mut failed = None;
+    for worker in opened.resources {
+        if let Err(error) = join(worker).await {
+            failed.get_or_insert(error);
+        }
+    }
+    for value in opened.entries.into_values() {
+        if let Err(error) = close(value).await {
+            failed.get_or_insert(error);
+        }
+    }
+    failed.map_or(Ok(()), Err)
+}
+
 pub(super) struct Registry {
     root: PathBuf,
     stop: Arc<crate::task_volume::TaskVolume<LocalStream>>,
@@ -86,21 +112,23 @@ impl Registry {
     }
 
     pub(super) async fn drain(&self) -> Result<()> {
-        let workers = {
+        // The server has stopped admitting calls. Move ownership out of the
+        // registry lock before joining effects or entering provider shutdown.
+        let opened = {
             let mut state = lock_owned(StateArc::clone(&self.state)).await;
-            std::mem::take(&mut state.resources)
+            std::mem::take(&mut *state)
         };
-        let mut failed = None;
-        for worker in workers {
-            if let Err(error) = worker.await.map_err(storage).and_then(|result| result) {
-                failed.get_or_insert(error);
-            }
-        }
-        lock_owned(StateArc::clone(&self.state))
-            .await
-            .entries
-            .clear();
-        failed.map_or(Ok(()), Err)
+        close_after_workers(
+            opened,
+            async |worker| worker.await.map_err(storage)?,
+            async |harness| {
+                Arc::try_unwrap(harness)
+                    .map_err(|_| Error::Conflict("workspace still has an execution owner".into()))?
+                    .close()
+                    .await
+            },
+        )
+        .await
     }
 }
 

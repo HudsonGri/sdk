@@ -96,16 +96,7 @@ impl LocalHarness {
     pub async fn close(self) -> Result<()> {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
-            for (_, mount) in workspace.mounts.mounts() {
-                if let Some(native) = mount
-                    .view
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.native.as_ref())
-                {
-                    native.unmount().await?;
-                }
-            }
+            workspace::lifecycle::close(Arc::clone(workspace)).await?;
         }
         Ok(())
     }
