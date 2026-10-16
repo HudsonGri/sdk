@@ -7,6 +7,9 @@ use crate::model::{ModelContent, ModelRole};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
+#[path = "directory_creation_properties.rs"]
+mod directories;
+
 struct Input {
     turns: [String; 2],
     responses: [String; 3],

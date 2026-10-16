@@ -95,11 +95,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         if let Some(original) = accounting.native_work() {
             self.checkout.validate_native_work(original)?;
         }
-        if PortablePath::validate(path, self.checkout.volume_config().limits)
-            .map_err(|error| WorkspaceError::from(crate::kernel::NamespacePathError::Path(error)))?
-            == 0
-        {
+        let depth = PortablePath::validate(path, self.checkout.volume_config().limits).map_err(
+            |error| WorkspaceError::from(crate::kernel::NamespacePathError::Path(error)),
+        )?;
+        if depth == 0 {
             return Ok(());
+        }
+        if depth > 1 {
+            let target = self.mutation_path(path, accounting, cancellation)?;
+            let lookup = self
+                .checkout
+                .lookup_no_follow_with_accounting(&target.value, accounting, cancellation, true)
+                .await;
+            target.retire(accounting)?;
+            match lookup {
+                Ok((lookup, _)) => match lookup.record {
+                    Some(record) if record.kind == FileKind::Directory => return Ok(()),
+                    Some(_) => return Err(WorkspaceError::NotDirectory),
+                    None => {}
+                },
+                Err(crate::FsError::Path(crate::kernel::PathLookupError::NotDirectory)) => {
+                    return Err(WorkspaceError::NotDirectory);
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         for end in path
             .match_indices('/')
