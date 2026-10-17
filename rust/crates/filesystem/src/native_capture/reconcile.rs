@@ -431,7 +431,7 @@ impl CaptureBatch<'_> {
                 .receipt
                 .staged_file_bytes
                 .checked_add(verified_bytes)
-                .ok_or(CaptureError::from(WorkError::Overflow))?;
+                .ok_or(WorkError::Overflow)?;
             verified_bytes = 0;
         }
         // Only a verified body may need its path again, to stage changed bytes.
