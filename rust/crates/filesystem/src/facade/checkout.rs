@@ -303,10 +303,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.reset_root(root, &mut accounting, cancellation).await?;
             }
             self.authority_head = Some(head);
-            self.observed_generation = ObservedGeneration::Head {
-                digest: self.generation_id().digest().into_bytes(),
-                position: head.sequence,
-            };
+            self.observed_generation =
+                ObservedGeneration::head(self.generation_id(), head.sequence);
             Ok(self.generation_id())
         }
         .await;
