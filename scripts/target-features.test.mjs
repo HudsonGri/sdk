@@ -161,6 +161,7 @@ test('cfg_attr removes items conditionally and unknown conditions stay quiet', t
 
 test('local modules cannot be mistaken for extern-prelude dependency names', t => {
   assert.deepEqual(check(workspace(t, {targetSource: 'mod core { pub mod remote { pub fn connect() {} } } fn main() { core::remote::connect(); }'})), []);
+  assert.deepEqual(check(workspace(t, {targetSource: 'use crate::local as core; fn main() { core::remote::connect(); }'})), []);
   assert.equal(check(workspace(t, {targetSource: 'fn main() { core::remote::connect(); }'})).length, 1);
 });
 

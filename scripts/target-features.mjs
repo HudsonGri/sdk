@@ -443,7 +443,7 @@ export function resolveFeatures(metadata, root, features, dev = true) {
         if (sub[2] && !live(pkg, sub[1])) { weak.push({pkg, name: sub[1], feature: sub[3]}); continue; }
         if (!sub[2]) optional(pkg, sub[1]);
         for (const d of pkg.dependencies) {
-          if (depName(d) === sub[1] && d.kind !== 'build' && byName.has(d.name)) enable(byName.get(d.name), sub[3]);
+          if (depName(d) === sub[1] && d.kind !== 'build' && onHost(d) && byName.has(d.name)) enable(byName.get(d.name), sub[3]);
         }
       } else if (pkg.features[entry]) enable(pkg, entry);
       else optional(pkg, entry);
@@ -533,6 +533,9 @@ function scanTarget(file, childDir, features, crates, visit, seen, flags) {
   // diagnose those as dependency paths without a Rust name resolver.
   crates = new Map(crates);
   for (const match of text.matchAll(/\b(?:mod|let|struct|enum|type)\s+(?:r#)?(\w+)/g)) crates.delete(match[1]);
+  for (const match of text.matchAll(/\buse\s+([^;]+);/g)) {
+    for (const entry of useTree(match[1])) if (entry.alias) crates.delete(entry.alias);
+  }
   const walk = (from, to, dir, inline) => {
     for (const item of items(text, raw, from, to)) {
       if (item.inner) {
