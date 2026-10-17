@@ -29,14 +29,13 @@ where
         ));
     }
     let task = Component::new(task.to_string())?;
-    let identity = format!("hook-{operation}-{phase}");
     let claim = FileKey::Task {
         task: task.clone(),
-        file: TaskFile::Context(Component::new(format!("{identity}-claim"))?),
+        file: TaskFile::Context(Component::new(format!("hook-{operation}-{phase}-claim"))?),
     };
     let result = FileKey::Task {
         task,
-        file: TaskFile::Context(Component::new(format!("{identity}-outcome"))?),
+        file: TaskFile::Context(Component::new(format!("hook-{operation}-{phase}-outcome"))?),
     };
     let bounds = JsonBounds {
         maximum_bytes,

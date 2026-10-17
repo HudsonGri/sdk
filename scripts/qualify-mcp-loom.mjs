@@ -23,7 +23,7 @@ export function qualifySummaryCheckpointsLoom(features = ["--features", "filesys
   });
 }
 
-export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
+export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
       "hooks::effects::models::competing_dispatches_claim_once_with_negative_control",
