@@ -1,4 +1,4 @@
-use super::{file_bytes::FileBytes, input_files::InputFile};
+use super::input_files::InputFile;
 
 use super::expectations::Expectations;
 use acyclic_harness::test_support::{ScriptedReconciliation, ScriptedTurn};
