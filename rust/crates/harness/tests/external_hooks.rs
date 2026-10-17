@@ -88,14 +88,41 @@ struct Scenario {
 
 #[test]
 fn host_events_create_the_same_task_request_actions() -> Result<()> {
-    let scenarios: Vec<Scenario> = serde_json::from_str(include_str!("external_hooks.json"))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let covered = assert_scenarios(include_str!("external_hooks.json"), "session")?;
+    for host in [
+        ExternalHost::Codex,
+        ExternalHost::ClaudeCode,
+        ExternalHost::Pi,
+    ] {
+        for spec in hooks(host) {
+            assert!(covered.contains(&(host.name(), spec.event.to_owned())));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn declared_child_sessions_preserve_the_parent_hook_identity() -> Result<()> {
+    let covered = assert_scenarios(include_str!("external_child_sessions.json"), "parent")?;
+    assert_eq!(
+        covered,
+        HashSet::from([
+            ("pi", "subagent_start".to_owned()),
+            ("pi", "subagent_stop".to_owned()),
+        ])
+    );
+    Ok(())
+}
+
+fn assert_scenarios(bytes: &str, session: &str) -> Result<HashSet<(&'static str, String)>> {
+    let scenarios: Vec<Scenario> =
+        serde_json::from_str(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     let mut operations = HashSet::new();
     let mut covered = HashSet::new();
     for scenario in scenarios {
         assert!(covered.insert((scenario.host.name(), scenario.event.clone())));
         let actual = request(scenario.host, &scenario.event, scenario.input)?;
-        assert_eq!(actual.session_id, "session");
+        assert_eq!(actual.session_id, session);
         assert_eq!(
             serde_json::to_value(&actual.action).map_err(|error| invalid(&error))?,
             scenario.action
@@ -110,16 +137,7 @@ fn host_events_create_the_same_task_request_actions() -> Result<()> {
             actual
         );
     }
-    for host in [
-        ExternalHost::Codex,
-        ExternalHost::ClaudeCode,
-        ExternalHost::Pi,
-    ] {
-        for spec in hooks(host) {
-            assert!(covered.contains(&(host.name(), spec.event.to_owned())));
-        }
-    }
-    Ok(())
+    Ok(covered)
 }
 
 #[test]
@@ -253,11 +271,22 @@ fn claude_manifest_drives_catalog_hooks_and_the_result_client() -> Result<()> {
         assert_eq!(handler.get("type").and_then(Value::as_str), Some("command"));
         assert_eq!(
             handler.get("command").and_then(Value::as_str),
-            Some(format!("\"${{CLAUDE_PLUGIN_ROOT}}/../bin/acyclic\" __hook claude-code {}",spec.event).as_str())
+            Some(
+                format!(
+                    "\"${{CLAUDE_PLUGIN_ROOT}}/../bin/acyclic\" __hook claude-code {}",
+                    spec.event
+                )
+                .as_str()
+            )
         );
         assert_eq!(
             acyclic_harness::tools::parse_command(handler["command"].as_str().unwrap())?,
-            ["${CLAUDE_PLUGIN_ROOT}/../bin/acyclic", "__hook", "claude-code", spec.event]
+            [
+                "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
+                "__hook",
+                "claude-code",
+                spec.event
+            ]
         );
         assert!(handler.get("args").is_none());
         assert_eq!(
