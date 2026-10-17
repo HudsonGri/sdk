@@ -46,6 +46,7 @@ fn query(task: crate::TaskId, recent: u32) -> Query {
 }
 fn chunk(task: crate::TaskId, sequence: u64, bytes: &[u8]) -> FileValue {
     FileValue {
+        requester: None,
         publication: None,
         key: FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),

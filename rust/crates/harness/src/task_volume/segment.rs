@@ -15,6 +15,8 @@ struct Entry {
     channel: Option<Channel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publication: Option<crate::OperationId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::TaskId>,
 }
 
 /// Exact framed size, for rejecting oversized requests before publication.
@@ -23,6 +25,7 @@ pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
         key: file.key.clone(),
         channel: file.channel,
         publication: file.publication,
+        requester: file.requester,
     })
     .map_err(|_| Error::InvalidSegment)?;
     PREFIX
@@ -40,6 +43,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
                 key: write.key.clone(),
                 channel: write.channel,
                 publication: write.publication,
+                requester: write.requester,
             },
         )
     };
@@ -47,6 +51,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
         key: entry.key,
         channel: entry.channel,
         publication: entry.publication,
+        requester: entry.requester,
         bytes: bytes.slice(offset..),
     };
     Ok((bytes, file))
@@ -58,6 +63,8 @@ struct BorrowedEntry<'a> {
     channel: Option<Channel>,
     #[serde(skip_serializing_if = "Option::is_none")]
     publication: Option<crate::OperationId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::TaskId>,
 }
 
 pub(super) fn encode_record(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, usize)> {
@@ -65,6 +72,7 @@ pub(super) fn encode_record(write: &Write, work: NativeWork<'_>) -> Result<(Owne
         &write.key,
         write.channel,
         write.publication,
+        write.requester,
         &write.bytes,
         work,
     )
@@ -74,6 +82,7 @@ pub(super) fn encode_parts(
     key: &FileKey,
     channel: Option<Channel>,
     publication: Option<crate::OperationId>,
+    requester: Option<crate::TaskId>,
     payload: &[u8],
     work: NativeWork<'_>,
 ) -> Result<(OwnedBytes, usize)> {
@@ -81,6 +90,7 @@ pub(super) fn encode_parts(
         key,
         channel,
         publication,
+        requester,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let io = work
@@ -195,6 +205,7 @@ fn decode_with(
         key: entry.key,
         channel: entry.channel,
         publication: entry.publication,
+        requester: entry.requester,
         bytes: bytes.slice(offset..),
     };
     file.validate()?;

@@ -109,8 +109,9 @@ impl<P: StreamProvider> TaskVolume<P> {
         let original = io.and_then(crate::filesystem::PreparationIo::original_native_work);
         #[cfg(target_arch = "wasm32")]
         let original = None;
-        let (record, offset) = segment::encode_parts(&key, Some(channel), None, payload, original)
-            .map_err(journal_error)?;
+        let (record, offset) =
+            segment::encode_parts(&key, Some(channel), None, None, payload, original)
+                .map_err(journal_error)?;
         let file = FileValue {
             key,
             channel: Some(channel),
