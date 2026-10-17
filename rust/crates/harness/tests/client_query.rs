@@ -43,7 +43,11 @@ fn chunk(turn: u64, sequence: u64, channel: Channel, bytes: &[u8]) -> Write {
     let mut write = Write::new(
         FileKey::Task {
             task: "t".to_owned().try_into().unwrap(),
-            file: TaskFile::Chunk { turn, sequence, .. },
+            file: TaskFile::Chunk {
+                execution: acyclic_harness::OperationId::from_bytes([0; 16]),
+                turn,
+                sequence,
+            },
         },
         bytes.to_vec(),
     );
