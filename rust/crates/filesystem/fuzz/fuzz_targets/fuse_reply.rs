@@ -1,8 +1,11 @@
-//! The production descriptor decoder with the shared socket/custody oracle.
-#![no_main]
-#[path = "../../src/native_mount/fuse/mount/reply.rs"]
-mod reply;
-use reply::receive_device;
-#[path = "../../src/native_mount/fuse/mount/reply/check.rs"]
-mod check;
-libfuzzer_sys::fuzz_target!(|input: &[u8]| check::check(input));
+//! Linux FUSE descriptor protocol; unsupported hosts fail explicitly.
+#![cfg_attr(target_os = "linux", no_main)]
+#[cfg(target_os = "linux")]
+#[path = "fuse_reply/linux.rs"]
+mod linux;
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("fuse_reply requires Linux SCM_RIGHTS and descriptor retirement semantics");
+    std::process::exit(1);
+}

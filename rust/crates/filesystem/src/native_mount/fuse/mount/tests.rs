@@ -6,7 +6,11 @@ use std::{cell::Cell, sync::OnceLock};
 std::thread_local! {
     static FORKS: Cell<usize> = const { Cell::new(0) };
     static FORCE_FORK: Cell<bool> = const { Cell::new(false) };
+    static FORGET_PENDING: Cell<bool> = const { Cell::new(false) };
     static OLD_UNMOUNT: Cell<bool> = const { Cell::new(false) };
+}
+pub(super) fn forget_pending() -> bool {
+    FORGET_PENDING.get()
 }
 pub(super) fn old_unmount() -> bool {
     OLD_UNMOUNT.get()
@@ -157,5 +161,76 @@ fn accepting_the_first_of_two_descriptors_fails_the_same_reply_property() {
             std::panic::catch_unwind(|| assert!(rejected)).is_ok(),
             !broken
         );
+    }
+}
+
+fn retry_history(failures: &[bool], broken: bool) -> io::Result<bool> {
+    let _restore = Restore(&FORGET_PENDING, FORGET_PENDING.replace(broken));
+    let mut mount = Mount {
+        pending: true,
+        ..Mount::default()
+    };
+    let mut attempts = 0;
+    let mut actual = Vec::new();
+    let mut expected = Vec::new();
+    // Always include an exited helper that returned no syscall error but did
+    // not detach. Execute the whole history, even when the control diverges.
+    for (index, fails) in failures.iter().copied().chain([false]).enumerate() {
+        let result = mount.attempt_unmount(
+            |mount| mount.observe_detachment(|| Ok(false)),
+            |_| {
+                attempts += 1;
+                if fails {
+                    Err(io::Error::from_raw_os_error(libc::EIO))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        let error = result
+            .err()
+            .map(|error| (error.kind(), error.raw_os_error(), error.to_string()));
+        let expected_error = fails.then(|| {
+            let error = io::Error::from_raw_os_error(libc::EIO);
+            (error.kind(), error.raw_os_error(), error.to_string())
+        });
+        // The kernel has not signalled device destruction. The same production
+        // transition consumes this external observation; helper exit is not it.
+        let detached = mount.observe_detachment(|| Ok(false))?;
+        actual.push((error, mount.pending(), attempts, detached));
+        expected.push((expected_error, true, index + 1, false));
+    }
+    mount.attempt_unmount(
+        |mount| mount.observe_detachment(|| Ok(true)),
+        |_| panic!("detached device was unmounted again"),
+    )?;
+    assert!(mount.observe_detachment(|| Ok(true))?);
+    assert!(!mount.pending());
+    Ok(actual == expected && attempts == failures.len() + 1)
+}
+
+#[test]
+fn unsuccessful_unmounts_remain_retryable_at_n_and_two_n() -> io::Result<()> {
+    for count in [1, 2] {
+        for broken in [false, true] {
+            let equal = retry_history(&vec![false; count - 1], broken)?;
+            assert_eq!(std::panic::catch_unwind(|| assert!(equal)).is_ok(), !broken);
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Complete failed-helper histories preserve exact errors and retry admission
+    // until an actual device signal retires the mount. Restore the original
+    // premature clear in the production attempt path to reject the same property.
+    #[test]
+    fn helper_failure_histories_keep_retry_and_retire_only_on_device_signal(
+        failures in prop::collection::vec(any::<bool>(), 0..8),
+    ) {
+        for broken in [false, true] {
+            prop_assert_eq!(retry_history(&failures, broken).unwrap(), !broken);
+        }
     }
 }
