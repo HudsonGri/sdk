@@ -104,19 +104,38 @@ const UNROOTED: [&str; 4] = [
 
 /// Every reach for a machine-wide location or an unrooted composition outside its seam, as "path:line: text".
 fn escapes(relative: &str, source: &str) -> Vec<String> {
-    let machine = [concat!("dirs", "::"), concat!("\"CODEX", "_HOME\")")];
     let unrooted = concat!("LocalHarnessConfig", "::new(");
-    source
+    let mut found: Vec<_> = source
         .lines()
         .enumerate()
         .filter(|(_, line)| {
-            let seam = SEAMS.iter().any(|(path, _)| relative == *path);
-            (!seam && machine.iter().any(|token| line.contains(token)))
-                || (!UNROOTED.iter().any(|path| relative.starts_with(path))
-                    && line.contains(unrooted))
+            !UNROOTED.iter().any(|path| relative.starts_with(path)) && line.contains(unrooted)
         })
         .map(|(index, line)| format!("{relative}:{}: {}", index + 1, line.trim()))
-        .collect()
+        .collect();
+    if !SEAMS.iter().any(|(path, _)| relative == *path) {
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.contains(concat!("dirs", "::")) {
+            found.push(format!("{relative}: direct directory discovery"));
+        }
+        for name in [
+            "HO".to_owned() + "ME",
+            "USER".to_owned() + "PROFILE",
+            "LOCAL".to_owned() + "APPDATA",
+            "APP".to_owned() + "DATA",
+            "CODEX".to_owned() + "_HOME",
+        ] {
+            for read in ["var", "var_os", "env!", "option_env!"] {
+                let token = format!("{read}(\"{name}\")");
+                if compact.match_indices(&token).any(|(offset, _)| {
+                    offset == 0 || !matches!(compact.as_bytes()[offset - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+                }) {
+                    found.push(format!("{relative}: direct environment discovery: {token}"));
+                }
+            }
+        }
+    }
+    found
 }
 
 fn rust_sources(directory: &Path, found: &mut Vec<PathBuf>) -> Result<()> {
@@ -210,4 +229,135 @@ fn the_scan_rejects_each_escape_shape() {
     ] {
         assert!(escapes(path, line).is_empty(), "{path}: {line}");
     }
+}
+
+#[test]
+fn the_scan_rejects_direct_environment_discovery() {
+    for name in [
+        "HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "CODEX_HOME",
+    ] {
+        for read in ["var", "var_os", "env!", "option_env!"] {
+            let source = format!("std::env::{read}( \n \"{name}\" \n )");
+            assert_eq!(
+                escapes("src/local/tests/escape.rs", &source).len(),
+                1,
+                "{source}"
+            );
+            assert!(escapes("src/native_settings.rs", &source).is_empty());
+        }
+    }
+    assert!(
+        escapes(
+            "src/local/tests/fixture.rs",
+            "std::env::var_os(\"HARNESS_TEST_CHILD\")"
+        )
+        .is_empty()
+    );
+}
+
+#[cfg(feature = "native-execution")]
+async fn retained_store_lifetime(order: Vec<usize>, retain: bool) -> Result<bool> {
+    let checkout = tempfile::tempdir().map_err(super::super::storage)?;
+    let mut config =
+        crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?
+            .without_default_tools();
+    let root = config.resolved_state_directory()?;
+    let released = config.test_state.as_ref().unwrap().release_barrier();
+    // Negative control reproduces the old harness-only owner on the real stores.
+    let premature = if retain {
+        None
+    } else {
+        config.test_state.take()
+    };
+    let harness = LocalHarness::open(config).await?;
+    let mut stores: Vec<Option<Box<dyn std::any::Any>>> = vec![
+        Some(Box::new(harness.filesystem().clone())),
+        Some(Box::new(harness.task_runtime().clone())),
+        Some(Box::new(harness.task_files().clone())),
+        Some(Box::new(
+            harness
+                .workspace
+                .as_ref()
+                .unwrap()
+                .store
+                .clone()
+                .with_ownership_anchor(None),
+        )),
+    ];
+    harness.close().await?;
+    drop(premature);
+    let mut valid = root.is_dir();
+    for index in order {
+        valid &= root.is_dir();
+        drop(stores[index].take());
+    }
+    // Existing ownership barriers observe completion of provider work without polling.
+    acyclic_native_runtime::run_blocking_io(move || released.wait(), None)
+        .map_err(super::super::storage)?
+        .await
+        .map_err(super::super::storage)?;
+    Ok(valid && !root.exists())
+}
+
+#[cfg(feature = "native-execution")]
+mod state_lifetime_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(12))]
+        #[test]
+        fn every_retained_store_keeps_the_state_root(order in Just(vec![0usize, 1, 2, 3]).prop_shuffle()) {
+            // Property: any drop order keeps the backing root until the final store releases it.
+            prop_assert!(WORKERS.block_on(retained_store_lifetime(order, true)).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn harness_only_owner_fails_the_same_lifetime_oracle() -> Result<()> {
+        assert!(!retained_store_lifetime(vec![0, 1, 2, 3], false).await?);
+        assert!(retained_store_lifetime(vec![0, 1, 2, 3], true).await?);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn binding_supplied_stores_without_a_checkout_never_resolves_user_state() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(super::super::storage)?;
+    let config = crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?
+        .without_default_tools();
+    let root = config.resolved_state_directory()?;
+    let harness = LocalHarness::open(config).await?;
+    let storage = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.join("filesystem")))
+        .await
+        .map_err(super::super::storage)?;
+    let stream = harness.task_stream();
+    let volume = harness.task_files().volume().clone();
+    let verifier = harness.verifier.clone();
+    let signed = harness.signed.clone();
+    let LocalHarness { runtime, files, .. } = harness;
+    let runtime = Arc::try_unwrap(runtime)
+        .map_err(|_| Error::Conflict("fixture runtime is still shared".into()))?;
+    let mut config =
+        crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?
+            .volume(volume)
+            .without_default_tools();
+    config.state_directory = None;
+    config.test_state = None;
+    assert!(config.resolved_state_directory().is_err());
+    let bound = LocalHarness::bind(
+        config,
+        runtime,
+        files,
+        (storage, stream),
+        (&verifier, &signed),
+        None,
+    )
+    .await?;
+    bound.close().await
 }

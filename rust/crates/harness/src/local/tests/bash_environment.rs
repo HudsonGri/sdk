@@ -28,7 +28,7 @@ async fn stock_bash_preserves_host_path_and_home_and_mounts_win() -> Result<()> 
             "--exact",
             "--nocapture",
         ])
-        .env(CHILD, "1")
+        .env(CHILD, HOME)
         .env("PATH", path)
         .env("HOME", HOME)
         .env("ACYCLIC_VOLUME_PROJECT", "stale project")
@@ -48,7 +48,7 @@ async fn stock_bash_preserves_host_path_and_home_and_mounts_win() -> Result<()> 
         return Ok(());
     }
 
-    assert_eq!(std::env::var("HOME").unwrap(), HOME);
+    assert_eq!(std::env::var(CHILD).unwrap(), HOME);
     assert_eq!(std::env::var("ACYCLIC_VOLUME_SCRATCH_MODE").unwrap(), "ro");
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([

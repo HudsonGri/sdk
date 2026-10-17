@@ -18,9 +18,9 @@ pub struct LocalHarnessConfig {
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
-    /// Test-owned state root, moved into the harness so it outlives every store opened in it.
+    /// Test-owned state root, retained by every store opened in it.
     #[cfg(any(test, feature = "test-support"))]
-    pub(super) test_state: Option<tempfile::TempDir>,
+    pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
@@ -98,12 +98,12 @@ impl LocalHarnessConfig {
         }
         self
     }
-    /// Gives the harness a fresh test-owned state directory that lives exactly as long as the harness.
+    /// Gives the composition a fresh test-owned state directory retained by its stores.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn with_test_state(mut self) -> Result<Self> {
         let state = tempfile::tempdir().map_err(storage)?;
         self.state_directory = Some(state.path().to_path_buf());
-        self.test_state = Some(state);
+        self.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
         Ok(self)
     }
     /// The one resolution of this composition's durable state directory: the injected directory, else the

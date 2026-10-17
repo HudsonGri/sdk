@@ -12,6 +12,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn private_request_files_follow_immediately_and_survive_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
     let provider = Arc::new(ScriptedModelProvider::new([]));
     let model = Model::new(
         "scripted".into(),
@@ -19,10 +20,10 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
         "1".into(),
         serde_json::Value::Null,
     )?;
-    let harness = LocalHarness::open(local_harness_config(
-        directory.path(),
-        (model.clone(), provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        local_harness_config(directory.path(), (model.clone(), provider.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     let files = harness.task_files();
     assert_eq!(files.volume().class(), VolumeClass::AgentPrivate);
@@ -75,8 +76,10 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
     drop(initial);
     drop(harness);
 
-    let harness =
-        LocalHarness::open(local_harness_config(directory.path(), (model, provider))?).await?;
+    let harness = LocalHarness::open(
+        local_harness_config(directory.path(), (model, provider))?.state_directory(state.path()),
+    )
+    .await?;
     let reopened = harness
         .task_files()
         .observe(Query::Requests(task.clone()), None, 8)

@@ -271,8 +271,6 @@ impl Fixture {
             workspace: None,
             #[cfg(feature = "native-execution")]
             checkout_context: false,
-            // Every store lives in this replay's own in-memory providers.
-            _test_state: None,
         })
     }
 

@@ -89,9 +89,6 @@ pub struct LocalHarness {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(feature = "native-execution")]
     checkout_context: bool,
-    /// Test-owned state root (`LocalHarnessConfig::with_test_state`), removed only after every store in it closes.
-    #[cfg(any(test, feature = "test-support"))]
-    _test_state: Option<tempfile::TempDir>,
 }
 
 impl LocalHarness {
@@ -169,13 +166,19 @@ impl LocalHarness {
             }
             let directory = owner::directory(&state_directory)?;
             let owner = owner::Owner::open(&directory, &config.project)?;
-            let filesystem =
-                acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
-                    LocalProject::Workspace(_) => directory.join("filesystem"),
-                    LocalProject::Volume { directory, .. } => directory.clone(),
-                }))
-                .await
-                .map_err(storage)?;
+            let options = acyclic_fs::LocalOptions::new(match &config.project {
+                LocalProject::Workspace(_) => directory.join("filesystem"),
+                LocalProject::Volume { directory, .. } => directory.clone(),
+            });
+            #[cfg(any(test, feature = "test-support"))]
+            let state_owner = config.test_state;
+            #[cfg(not(any(test, feature = "test-support")))]
+            let state_owner: Option<acyclic_native_runtime::OwnershipAnchor> = None;
+            let filesystem = match &state_owner {
+                Some(owner) => acyclic_fs::Fs::local_with_ownership_anchor(options, owner.clone()).await,
+                None => acyclic_fs::Fs::local(options).await,
+            }
+            .map_err(storage)?;
             let provider_ref = owner.project.provider();
             let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
             let scratch = VolumeRef::new(
@@ -208,7 +211,8 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             let store =
                 acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
-                    .map_err(storage)?;
+                    .map_err(storage)?
+                    .with_ownership_anchor(state_owner.clone());
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
@@ -260,10 +264,11 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             let workspace = workspace.map(Arc::new);
             let stream = Arc::new(
-                LocalStream::open_with_clock(
+                LocalStream::open_with_clock_and_anchor(
                     directory.join("stream"),
                     Default::default(),
                     config.clock.clone(),
+                    state_owner,
                 )
                 .await
                 .map_err(storage)?,
@@ -326,8 +331,6 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
-                #[cfg(any(test, feature = "test-support"))]
-                _test_state: config.test_state,
             };
             if let Some(provider) = local
                 .provider

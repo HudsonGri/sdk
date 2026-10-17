@@ -19,7 +19,7 @@ fn inline_local_root_does_not_create_a_private_tokio_io_pool()
     let expected = requested.clone();
     let root = runtime.block_on(async {
         let _inline = acyclic_native_runtime::InlineBlocking::enter();
-        canonical_local_root(requested).await
+        canonical_local_root(requested, None).await
     })?;
     assert_eq!(root, std::fs::canonicalize(expected)?);
     let check = || {
