@@ -92,6 +92,9 @@ pub enum Error {
     /// An execution-owner condition failed without publishing any task files.
     #[error("task-volume execution fence conflict")]
     FenceConflict,
+    /// The provider has not yet confirmed this file in its durable prefix.
+    #[error("task file awaits durability")]
+    AwaitingDurability,
     /// Cursor identity or position cannot be resumed in this history/query.
     #[error("task-volume query reset required")]
     ResetRequired,

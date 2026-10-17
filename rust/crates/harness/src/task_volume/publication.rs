@@ -33,10 +33,12 @@ pub(crate) async fn publish_with_work<P: StreamProvider + ?Sized>(
 }
 
 /// Proof that one exact immutable file is in its provider's durable prefix.
-/// Only [`publish_durable`] constructs it.
+/// It is built only from the provider's [`DurableReceipt`]: an acknowledgement,
+/// including one made under `deferring_durability`, never yields it.
 #[derive(Debug)]
 pub(crate) struct DurableFile {
     key: FileKey,
+    _receipt: acyclic_stream::DurableReceipt,
 }
 
 impl DurableFile {
@@ -46,43 +48,43 @@ impl DurableFile {
     }
 }
 
-/// Publishes `write` and returns only once the provider confirms that this
-/// exact file is durable: either its durable watermark covers the indexed copy
-/// on a validated history anchor, or the provider acknowledged this
-/// publisher's own commit of the file. Providers acknowledge a commit only
-/// after it is durable (`LocalDurability`); callers must not run this inside
-/// `deferring_durability`, whose acknowledgements are explicitly unflushed.
-/// An identical accepted copy alone is never proof: its writer may still be
-/// waiting for the durability barrier.
+/// Publishes `write` and returns once the provider's durable receipt covers
+/// this exact file. If the file is absent or only accepted (an identical copy
+/// whose writer may still await its durability barrier, or one written under
+/// `deferring_durability`), this publisher commits its own copy, which on a
+/// flushing provider advances the durable prefix over every earlier record,
+/// and asks for the receipt again. Without one it reports
+/// [`Error::AwaitingDurability`] instead of a proof.
 pub(crate) async fn publish_durable<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
     write: &Write,
     work: NativeWork<'_>,
 ) -> Result<DurableFile> {
-    match volume.file_is_durable(write).await {
-        Ok(true) => {
-            return Ok(DurableFile {
-                key: write.key.clone(),
-            });
+    let receipt = match volume.file_receipt(write).await? {
+        Some(receipt) => receipt,
+        None => {
+            commit_acknowledged(volume, volume.head().await?, write, work).await?;
+            volume
+                .file_receipt(write)
+                .await?
+                .ok_or(Error::AwaitingDurability)?
         }
-        // Absent, not yet durable, or replaced while checking: commit our own copy.
-        Ok(false) | Err(Error::Conflict(_)) => {}
-        Err(error) => return Err(error),
-    }
-    commit_acknowledged(volume, volume.head().await?, write, work).await
+    };
+    Ok(DurableFile {
+        key: write.key.clone(),
+        _receipt: receipt,
+    })
 }
 
-/// Commits this publisher's own copy of `write` and returns the proof only on
-/// the provider's acknowledgement of that commit. `Acknowledged` never returns
+/// Commits this publisher's own copy of `write`. `Acknowledged` never returns
 /// early on an identical accepted copy, whose writer may still be waiting for
-/// the durability barrier. The durability pre-check above is
-/// `TaskVolume::file_is_durable`, modeled in `durability_model`.
+/// the durability barrier.
 async fn commit_acknowledged<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
     generation: Generation,
     write: &Write,
     work: NativeWork<'_>,
-) -> Result<DurableFile> {
+) -> Result<()> {
     #[cfg(acyclic_harness_loom)]
     let mode = if model_checking::enabled(model_checking::Fault::TrustAcceptedCopy) {
         Mode::Append
@@ -95,9 +97,7 @@ async fn commit_acknowledged<P: StreamProvider + ?Sized>(
         std::future::ready(Ok::<_, Error>((Vec::new(), None)))
     })
     .await?;
-    Ok(DurableFile {
-        key: write.key.clone(),
-    })
+    Ok(())
 }
 
 /// The one generation-retry loop. Returns the published generation and whether

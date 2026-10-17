@@ -3,8 +3,11 @@
 //! The interaction owner is the only settlement authority. These files are
 //! verbatim copies of its admitted request and staged decision. Execution
 //! observes a verdict only as a [`PublishedDecision`], which exists only after
-//! the decision's mandatory file validated against its ticket and, for a task
-//! journal, the provider confirmed that exact file durable.
+//! the decision's mandatory file validated against its ticket, the provider
+//! issued a durable receipt for the conversation events that committed it and,
+//! for a task journal, for that exact followed file. An acknowledgement never
+//! stands in for a receipt, so nothing written under deferred durability
+//! reaches execution until the provider's barrier covers it.
 use super::*;
 use crate::{
     executor::with_history_io,
@@ -12,41 +15,43 @@ use crate::{
     task_volume::{Component, DurableFile, FileKey, FileValue, TaskFile},
 };
 
-/// Reads the admitted ticket and resolution, keeping the read's retained
-/// bytes guarded for the rest of the enclosing scope.
-macro_rules! read_admitted {
-    ($host:expr, $id:expr, $io:expr, $guard:ident) => {{
+/// Awaits one host read, keeping its retained bytes guarded for the rest of
+/// the enclosing scope.
+macro_rules! guarded_read {
+    ($read:expr, $io:expr, $guard:ident) => {{
         let before = $io
             .map(PreparationIo::owned_bytes)
             .transpose()?
             .unwrap_or(0);
-        let read = $host.read($id, $io).await?;
+        let read = $read.await?;
         $guard = $io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
-        read.ok_or_else(|| {
-            canonical_boundary(
-                $io,
-                crate::wire::ErrorCode::Storage,
-                "published approval was not admitted",
-            )
-        })?
+        read
     }};
+}
+
+fn admitted<T>(read: Option<T>, io: Option<&PreparationIo>) -> Result<T> {
+    read.ok_or_else(|| {
+        canonical_boundary(
+            io,
+            crate::wire::ErrorCode::Storage,
+            "published approval was not admitted",
+        )
+    })
 }
 
 /// Execution's only view of an approval verdict. Its single constructor is
 /// [`FilesystemExecutionJournal::published_decision`].
 pub(super) struct PublishedDecision {
     approved: bool,
-    _record: DecisionRecord,
-}
-
-enum DecisionRecord {
-    /// The task's followed decision file is durable.
-    TaskFile { _proof: DurableFile },
-    /// A conversation journal is itself the interaction owner; its committed
-    /// resolution is the record and it has no task-file surface.
-    Conversation,
+    /// The conversation events that admitted the request and committed this
+    /// resolution are in the provider's durable prefix.
+    _resolution: acyclic_stream::DurableReceipt,
+    /// For a task journal, its followed decision file is durable too. A
+    /// conversation journal is itself the interaction owner and has no
+    /// task-file surface.
+    _file: Option<DurableFile>,
 }
 
 impl PublishedDecision {
@@ -126,7 +131,7 @@ where
         };
         let host = self.interactions()?;
         let _read;
-        let (ticket, _) = read_admitted!(host, id, io, _read);
+        let (ticket, _) = admitted(guarded_read!(host.read(id, io), io, _read), io)?;
         if ticket.kind != InteractionKind::Approval {
             return Ok(());
         }
@@ -145,9 +150,9 @@ where
         Ok(files.publish_owned(&value, native_work(io)).await?)
     }
 
-    /// Validates the committed decision's mandatory file and, for a task
-    /// journal, proves the request and decision files durable before any
-    /// verdict reaches execution.
+    /// Validates the committed decision's mandatory file and proves its
+    /// resolution and, for a task journal, the request and decision files
+    /// durable before any verdict reaches execution.
     pub(super) async fn published_decision(
         &self,
         id: InteractionId,
@@ -155,7 +160,8 @@ where
     ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
         let _read;
-        let (ticket, resolution) = read_admitted!(host, id, io, _read);
+        let (read, receipt) = guarded_read!(host.read_durable(id, io), io, _read);
+        let (ticket, resolution) = admitted(read, io)?;
         let (Some(resolution), InteractionKind::Approval) = (&resolution, ticket.kind) else {
             return Err(canonical_boundary(
                 io,
@@ -175,18 +181,20 @@ where
         let principal = with_history_io(io, |work| {
             ticket.validate_decision_bytes(resolution, None, detail, &bytes, work)
         })?;
-        let approved = ApprovalDecisionFile::decode(&bytes, self.maximum_payload_bytes)?.approved();
-        if approved != matches!(resolution.outcome, InteractionOutcome::Approved {}) {
-            return Err(canonical_boundary(
+        // The validation above bound the file's verdict to this outcome.
+        let approved = matches!(resolution.outcome, InteractionOutcome::Approved {});
+        let resolution = receipt.ok_or_else(|| {
+            canonical_boundary(
                 io,
-                crate::wire::ErrorCode::Storage,
-                "approval decision file differs from its verdict",
-            ));
-        }
+                crate::wire::ErrorCode::Conflict,
+                "approval decision awaits durability",
+            )
+        })?;
         let Some((owner, _)) = &self.owner else {
             return Ok(PublishedDecision {
                 approved,
-                _record: DecisionRecord::Conversation,
+                _resolution: resolution,
+                _file: None,
             });
         };
         let files = self.approval_files()?;
@@ -235,7 +243,8 @@ where
         }
         Ok(PublishedDecision {
             approved,
-            _record: DecisionRecord::TaskFile { _proof: proof },
+            _resolution: resolution,
+            _file: Some(proof),
         })
     }
 

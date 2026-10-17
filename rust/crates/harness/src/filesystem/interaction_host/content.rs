@@ -82,8 +82,31 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
         let aggregate = self.aggregate(io).await?;
+        Self::admitted(&aggregate.0, id, io)
+    }
+
+    /// Reads the ticket and latest resolution together with the provider's
+    /// receipt that the conversation events they were reduced from are durable.
+    /// `None` for the receipt while any of them is only accepted.
+    pub(crate) async fn read_durable(
+        &self,
+        id: InteractionId,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        Option<(InteractionTicket, Option<InteractionResolution>)>,
+        Option<acyclic_stream::DurableReceipt>,
+    )> {
+        let aggregate = self.aggregate(io).await?;
+        let read = Self::admitted(&aggregate.0, id, io)?;
+        Ok((read, aggregate.0.durable_receipt().await?))
+    }
+
+    fn admitted(
+        aggregate: &crate::store::StreamAggregate<P>,
+        id: InteractionId,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
         let Some((ticket, resolution)) = aggregate
-            .0
             .reducer()
             .interaction(&Uuid::from_bytes(id.into_bytes()))
         else {

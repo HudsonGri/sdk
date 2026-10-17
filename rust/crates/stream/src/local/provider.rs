@@ -39,6 +39,40 @@ impl StreamProvider for LocalStream {
         .await?
     }
 
+    /// The explicit durability barrier: frames written under
+    /// `deferring_durability` are flushed here before any receipt covers them.
+    async fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        let observed = self.watermarks(path.clone()).await?;
+        if let Some(receipt) = crate::DurableReceipt::covering(path.clone(), &observed, through) {
+            return Ok(Some(receipt));
+        }
+        // Every frame behind this path's accepted tail is at or before the
+        // published revision observed under the same publication guard.
+        let (accepted, revision) = self
+            .accepted(async {
+                let accepted = self.inner.provider.tail(path.clone()).await?;
+                Ok::<_, StreamError>((accepted, *self.inner.revision.borrow()))
+            })
+            .await??;
+        self.await_durable(revision).await?;
+        let durable = {
+            let mut tails = self
+                .inner
+                .durable_tails
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            let durable = tails.entry(path.clone()).or_default();
+            *durable = (*durable).max(accepted);
+            *durable
+        };
+        let watermarks = crate::StreamWatermarks { accepted, durable };
+        Ok(crate::DurableReceipt::covering(path, &watermarks, through))
+    }
+
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         #[cfg(feature = "test-support")]
         acyclic_native_runtime::testing::describe(|| {

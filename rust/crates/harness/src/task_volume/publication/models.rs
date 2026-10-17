@@ -127,11 +127,13 @@ fn a_retry_revalidates_the_owner_before_publishing() {
     assert!(text.contains("retry did not revalidate owner"), "{text}");
 }
 
-/// A peer's identical copy is accepted but not yet durable. Whichever order the
-/// peer's pre-encoded append and the real commit-and-retry path take, a proof
-/// is issued only for this publisher's own acknowledged commit of the file.
+/// A peer's identical copy may be accepted but not yet durable, so a publisher
+/// still awaiting a durable receipt commits its own copy: on a flushing provider
+/// that commit is what advances the durable prefix over the file. Whichever
+/// order the peer's pre-encoded append and the real commit-and-retry path take,
+/// the publisher's own copy lands.
 #[test]
-fn an_identical_accepted_copy_is_never_durability_proof() {
+fn an_identical_accepted_copy_never_replaces_the_own_commit() {
     fn scenario(broken: bool) {
         let provider = Arc::new(MemoryStream::default());
         let volume = Arc::new(
@@ -168,31 +170,29 @@ fn an_identical_accepted_copy_is_never_durability_proof() {
         if broken {
             model_checking::set_fault(model_checking::Fault::TrustAcceptedCopy);
         }
-        let proof = loom::future::block_on(Box::pin(commit_acknowledged(
+        loom::future::block_on(Box::pin(commit_acknowledged(
             &volume, generation, &decision, None,
         )))
         .unwrap();
-        assert_eq!(proof.key(), &decision.key);
         peer.join().unwrap();
-        // Without a durable watermark, the only proof is this publisher's own
-        // acknowledged commit, so the stream must hold its copy and the peer's.
+        // The stream must hold this publisher's copy as well as the peer's.
         let records = loom::future::block_on(Box::pin(provider.tail(volume.path.clone()))).unwrap();
         assert_eq!(
             records,
             opened + 2,
-            "durability proof issued without an acknowledged own commit"
+            "own commit skipped for an accepted copy"
         );
     }
     loom::model(|| scenario(false));
     let error = std::panic::catch_unwind(|| loom::model(|| scenario(true)))
-        .expect_err("accepted-copy durability proof was accepted");
+        .expect_err("skipped own commit was accepted");
     let text = error
         .downcast_ref::<String>()
         .map(String::as_str)
         .or_else(|| error.downcast_ref::<&str>().copied())
         .unwrap_or("");
     assert!(
-        text.contains("durability proof issued without an acknowledged own commit"),
+        text.contains("own commit skipped for an accepted copy"),
         "{text}"
     );
 }
