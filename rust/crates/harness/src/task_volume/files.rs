@@ -85,8 +85,10 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         file: &FileValue,
         work: crate::NativeWork<'_>,
     ) -> super::Result<()> {
+        // A lost race returns the generation it lost to, so each retry is one
+        // fenced append at a cut that already includes the competing write.
+        let mut head = self.inner.head().await?;
         loop {
-            let head = self.inner.head().await?;
             match self
                 .inner
                 .append_if(head, file, Vec::new(), None, work)
@@ -101,7 +103,7 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
                 {
                     return Ok(());
                 }
-                Err(Error::Conflict(_)) => {}
+                Err(Error::Conflict(current)) => head = current,
                 Err(error) => return Err(error),
             }
         }

@@ -156,10 +156,12 @@ fn visible(files: &TaskFiles<MemoryStream>, file: &FileValue) -> usize {
         .count()
 }
 
-/// An owner copy races an unrelated writer for the head. The publisher returns
-/// only once its exact file is visible, and a second copy is idempotent.
+/// An owner copy races one unrelated fenced write for the head. Whichever
+/// order the provider admits, the owner returns only once its exact file is
+/// visible, and republishing the same owner bytes is idempotent.
 fn publication(broken: bool) {
     let files = files();
+    let fence = loom::future::block_on(Box::pin(files.inner.head())).unwrap();
     let publisher = files.clone();
     let owner = loom::thread::spawn(move || {
         if broken {
@@ -169,17 +171,24 @@ fn publication(broken: bool) {
         }
         loom::future::block_on(Box::pin(publisher.publish_owned(&decision(), None))).unwrap();
     });
-    loom::future::block_on(Box::pin(files.publish_owned(&request(), None))).unwrap();
+    // The unrelated writer makes a single attempt at the shared starting cut,
+    // so the owner loses at most one race and the model stays exhaustive.
+    let competitor = loom::future::block_on(Box::pin(files.inner.append_if(
+        fence,
+        &request(),
+        Vec::new(),
+        None,
+        None,
+    )));
     owner.join().unwrap();
-    // Nothing publishes after the owner returned, so its file must be visible now.
     assert_eq!(
         visible(&files, &decision()),
         1,
         "published owner file is not visible"
     );
+    assert_eq!(visible(&files, &request()), usize::from(competitor.is_ok()));
     loom::future::block_on(Box::pin(files.publish_owned(&decision(), None))).unwrap();
     assert_eq!(visible(&files, &decision()), 1);
-    assert_eq!(visible(&files, &request()), 1);
 }
 
 fn check(scenario: fn(bool), diagnostic: &str) {
@@ -217,8 +226,12 @@ fn a_request_accepted_after_registration_wakes_and_reaches_its_follower() {
 }
 #[test]
 fn an_owner_publication_that_loses_the_head_race_retries_until_visible() {
-    // The retry loop multiplies schedules per preemption, so this model keeps
-    // every schedule with up to three forced switches: the single head race
-    // needs one, and its retry plus the competing writer's own retry need two.
+    // Each attempt is the full production commit path (refresh, index lock,
+    // provider commit, index apply) on both threads, and the unbounded schedule
+    // space did not finish in 120 s even with the competitor limited to one
+    // attempt. The race needs one preemption (between the owner's head sample
+    // and its append), the competitor's commit inside it, and the retry; three
+    // forced switches cover that with one to spare, and the broken control is
+    // already caught at two.
     check_bounded(Some(3), publication, "published owner file is not visible");
 }
