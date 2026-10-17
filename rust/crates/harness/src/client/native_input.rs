@@ -529,6 +529,20 @@ mod tests {
     }
 
     #[test]
+    fn negative_control_detects_hangup_delayed_by_an_inherited_writer() -> io::Result<()> {
+        let (mut read, mut write) = pipe()?;
+        let (cancelled, cancel) = io::pipe()?;
+        let _inherited = cancel.try_clone()?;
+        drop(cancel); // The former cancellation action does not produce HUP.
+        write.write_all(b"x")?;
+        assert_eq!(
+            super::reader::read_until_cancelled(&mut read, &cancelled, &mut [0; 1])?,
+            Some(1),
+        );
+        Ok(())
+    }
+
+    #[test]
     fn negative_control_detects_a_dropped_reader_left_reading() -> io::Result<()> {
         // The removed reader waited inside read, which the stream's drop
         // could not interrupt: the next byte after the drop was consumed.
