@@ -19,6 +19,14 @@ pub struct DemandWork {
     pub(crate) recheck_items: bool,
     pub(super) roots: Admissions,
 }
+/// One caller's view of a shared leaf: the invocation and resource it
+/// charges, the capture custody it holds, and whether its items recheck.
+pub(crate) struct NativeView {
+    pub(crate) invocation: Option<Weak<crate::materializer::NativeInvocationView>>,
+    pub(crate) resource: Option<Weak<NativeResourceAllowance>>,
+    pub(crate) custody: Option<Weak<CaptureTransientCustody>>,
+    pub(crate) recheck_items: bool,
+}
 impl DemandWork {
     /// Starts one bounded operation.
     pub fn new(budget: WorkBudget, cancellation: &CancellationToken) -> Self {
@@ -57,6 +65,34 @@ impl DemandWork {
             *field(self) = saved;
         }
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+    /// Installs one caller's view of this shared leaf for `operation` and
+    /// restores the previous view on return or unwind.
+    #[inline]
+    pub(crate) fn view_scope<R>(
+        &mut self,
+        view: NativeView,
+        operation: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let saved = self.swap_view(view);
+        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        let restore = !super::scope_tests::omit_restore();
+        #[cfg(not(all(test, not(acyclic_fs_loom))))]
+        let restore = true;
+        if restore {
+            drop(self.swap_view(saved));
+        }
+        answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+    #[inline]
+    fn swap_view(&mut self, view: NativeView) -> NativeView {
+        NativeView {
+            invocation: std::mem::replace(&mut self.native_invocation, view.invocation),
+            resource: std::mem::replace(&mut self.native_resource, view.resource),
+            custody: std::mem::replace(&mut self.capture_custody, view.custody),
+            recheck_items: std::mem::replace(&mut self.recheck_items, view.recheck_items),
+        }
     }
     pub(crate) fn original_budget(&self) -> WorkBudget {
         self.initial_budget
@@ -132,8 +168,12 @@ impl DemandWork {
         self.work
     }
     pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        let delta = self.item_charge(delta);
         self.reconcile_cancellation_registry()?;
+        self.admit_reconciled(delta)
+    }
+    // The caller has reconciled the registry under the same leaf.
+    pub(crate) fn admit_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        let delta = self.item_charge(delta);
         self.check()?;
         if let Some(resource) = self.resource() {
             resource.admit(delta, 0)?;
@@ -178,7 +218,8 @@ impl DemandWork {
         self.reconcile_cancellation_registry()?;
         self.charge_reconciled(delta)
     }
-    pub(super) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+    // The caller has reconciled the registry under the same leaf.
+    pub(crate) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         #[cfg(test)]
         self.probe_write(delta);
         let delta = self.item_charge(delta);
