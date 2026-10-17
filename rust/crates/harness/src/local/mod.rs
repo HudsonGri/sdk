@@ -175,8 +175,10 @@ impl LocalHarness {
             #[cfg(not(any(test, feature = "test-support")))]
             let state_owner: Option<acyclic_native_runtime::OwnershipAnchor> = None;
             let filesystem = match &state_owner {
-                Some(owner) => acyclic_fs::Fs::local_with_ownership_anchor(options, owner.clone()).await,
-                None => acyclic_fs::Fs::local(options).await,
+                Some(owner) if matches!(&config.project, LocalProject::Workspace(_)) => {
+                    acyclic_fs::Fs::local_with_ownership_anchor(options, owner.clone()).await
+                }
+                _ => acyclic_fs::Fs::local(options).await,
             }
             .map_err(storage)?;
             let provider_ref = owner.project.provider();

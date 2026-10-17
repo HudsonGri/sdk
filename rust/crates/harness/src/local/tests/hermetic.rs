@@ -361,3 +361,38 @@ async fn binding_supplied_stores_without_a_checkout_never_resolves_user_state() 
     .await?;
     bound.close().await
 }
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn an_existing_volume_keeps_its_callers_store_ownership() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let volume = super::volume(directory.path()).await?;
+    let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await
+    .map_err(super::super::storage)?;
+    let config = crate::test_support::local_harness_config(
+        directory.path().join("filesystem"),
+        (model()?, text()),
+    )?
+    .volume(volume)
+    .without_default_tools();
+    let state = config.resolved_state_directory()?;
+    let released = config.test_state.as_ref().unwrap().release_barrier();
+    let harness = LocalHarness::open(config).await?;
+    harness.close().await?;
+    acyclic_native_runtime::run_blocking_io(move || released.wait(), None)
+        .map_err(super::super::storage)?
+        .await
+        .map_err(super::super::storage)?;
+    // The temporary companion state closes independently of the caller's live provider.
+    assert!(!state.exists());
+    assert!(
+        !filesystem
+            .local_root_release_barrier()
+            .unwrap()
+            .is_released()
+    );
+    Ok(())
+}
