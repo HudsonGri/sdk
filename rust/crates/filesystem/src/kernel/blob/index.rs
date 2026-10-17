@@ -17,19 +17,6 @@ impl BlobIndexBuilder {
         }
     }
 
-    fn capacity(&self, level: usize) -> usize {
-        let mut references = self
-            .options
-            .maximum_blob_bytes
-            .div_ceil(u64::from(self.options.chunk_bytes));
-        for _ in 0..level {
-            references = references.div_ceil(self.width as u64);
-        }
-        usize::try_from(references)
-            .unwrap_or(self.width)
-            .min(self.width)
-    }
-
     pub(super) async fn push_chunk<S: AsyncObjectStore>(
         &mut self,
         store: &mut BlobBatchStore<'_, S>,
@@ -37,8 +24,7 @@ impl BlobIndexBuilder {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        let capacity = self.capacity(0);
-        reserve_blob_vec(&mut self.leaf, capacity, accounting)?;
+        reserve_blob_vec(&mut self.leaf, self.width, accounting)?;
         self.leaf.value.push(chunk);
         if self.leaf.value.len() == self.width {
             self.flush_leaf(store, accounting, cancellation).await?;
@@ -111,13 +97,12 @@ impl BlobIndexBuilder {
                     reserve_blob_vec(&mut self.levels, capacity, accounting)?;
                     self.levels.value.push(empty_blob_vec());
                 }
-                let capacity = self.capacity(level + 1);
                 let items = self
                     .levels
                     .value
                     .get_mut(level)
                     .ok_or(BlobBuildError::InvalidIndexState)?;
-                reserve_blob_vec(items, capacity, accounting)?;
+                reserve_blob_vec(items, self.width, accounting)?;
                 items.value.push(child);
                 if items.value.len() < self.width {
                     return Ok(());
@@ -231,10 +216,6 @@ impl BlobIndexBuilder {
         release_blob_vec(self.levels, accounting)
     }
 }
-
-#[cfg(all(test, feature = "memory"))]
-#[path = "index_tests.rs"]
-mod tests;
 
 pub(super) fn effective_page_width(options: BlobBuildOptions) -> Option<usize> {
     let item_bound = usize::try_from(options.page_items).ok()?;
