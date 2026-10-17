@@ -46,7 +46,8 @@ async fn retained_bodies_cannot_block_wait_control_or_archive() {
         broken,
         Err(crate::task_volume::Error::LimitExceeded)
     ));
-    std::panic::catch_unwind(|| settlement_property(broken.is_ok(), true))
+    let broken_ready = broken.is_ok();
+    std::panic::catch_unwind(|| settlement_property(broken_ready, true))
         .expect_err("the full-history query was not detected");
     settlement_property(false, false);
     let result = super::super::files::follow(&files, &reference, limits(), false, true)
