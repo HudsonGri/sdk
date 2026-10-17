@@ -196,24 +196,27 @@ async fn root_admission_preserves_list_only_sparse_mounts() -> TestResult {
     Ok(())
 }
 
-async fn tracking_cut(bypass: bool) -> TestResult {
+async fn tracking_cut(bypass: bool, sensitive: bool, advances: u8) -> TestResult {
     crate::initialize_native_mount_services()?;
     let cancel = crate::CancellationToken::new();
     let work = test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
     let workspace = crate::Fs::memory()
         .create_workspace(
-            if bypass {
-                "tracking-root-broken"
-            } else {
-                "tracking-root-fenced"
-            },
+            format!(
+                "tracking-root-{}",
+                uuid::Uuid::from_bytes(crate::OperationId::new().into_bytes())
+            ),
             crate::WorkBudget::UNBOUNDED,
             &cancel,
         )
         .await?
         .value;
     let mut policy: crate::access::Policy = serde_json::from_slice(crate::access::INITIAL_POLICY)?;
-    policy.layers[0][0].resource.generations = crate::access::Generations::Head;
+    policy.layers[0][0].resource.generations = if sensitive {
+        crate::access::Generations::Head
+    } else {
+        crate::access::Generations::All
+    };
     let mut edit =
         super::super::tests::pending_policy(&workspace, &work, &serde_json::to_vec(&policy)?)
             .await?;
@@ -222,7 +225,11 @@ async fn tracking_cut(bypass: bool) -> TestResult {
     let options = fixture_options(&workspace, MountOptions::read_write()).await?;
     // This publication is deliberately permitted by the policy lease: policy
     // itself is unchanged, but a Head-only decision no longer covers selected.
-    workspace.write_text("/new-head", "new data").await?;
+    for index in 0..advances {
+        workspace
+            .write_text("/new-head", &format!("new data {index}"))
+            .await?;
+    }
     let result = if bypass {
         let binding = options
             .access_refresh
@@ -264,25 +271,43 @@ async fn tracking_cut(bypass: bool) -> TestResult {
             .await
             .map(|_| ())
     };
-    assert!(
-        matches!(
-            result,
-            Err(MountLifecycleError::NativePolicy(
-                "selection differs from current persisted policy"
-            ))
-        ),
-        "tracking root authorized a different generation"
-    );
+    if sensitive && advances != 0 {
+        assert!(
+            matches!(
+                result,
+                Err(MountLifecycleError::NativePolicy(
+                    "selection differs from current persisted policy"
+                ))
+            ),
+            "tracking root authorized a different generation"
+        );
+    } else {
+        assert!(
+            result.is_ok(),
+            "generation-insensitive or unchanged cut refused"
+        );
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn tracking_root_cannot_authorize_an_older_checkout() -> TestResult {
-    tracking_cut(false).await
+    tracking_cut(false, true, 1).await
 }
 
 #[tokio::test]
 #[should_panic(expected = "tracking root authorized a different generation")]
 async fn current_head_authorizing_old_root_negative_control() {
-    tracking_cut(true).await.unwrap();
+    tracking_cut(true, true, 1).await.unwrap();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+    // Property: unchanged cuts remain valid; advancing data invalidates a
+    // head-sensitive tracking selection, while all-history grants stay valid.
+    #[test]
+    fn tracking_admission_respects_generation_sensitivity(sensitive in any::<bool>(), advances in 0u8..4) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(tracking_cut(false, sensitive, advances)).unwrap();
+    }
 }
