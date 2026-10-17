@@ -293,6 +293,7 @@ impl<'ast> Finder<'_, 'ast> {
             Expr::Group(inner) => self.assign(&inner.expr, expect),
             Expr::Block(block) => self.tail(&block.block, expect),
             Expr::Unsafe(block) => self.tail(&block.block, expect),
+            Expr::Const(block) => self.tail(&block.block, expect),
             Expr::If(branch) => {
                 self.tail(&branch.then_branch, expect);
                 if let Some((_, otherwise)) = &branch.else_branch {
@@ -390,6 +391,9 @@ impl<'ast> Finder<'_, 'ast> {
         let Some(name) = segments.last().map(|segment| crate::name(&segment.ident)) else {
             return true;
         };
+        if let Some(qself) = &path.qself {
+            return INFERRED.contains(&name.as_str()) && self.is_lock(&qself.ty).is_none();
+        }
         let spelling = segments
             .iter()
             .map(|segment| crate::name(&segment.ident))
@@ -400,9 +404,6 @@ impl<'ast> Finder<'_, 'ast> {
                 && (INFERRED.contains(&name.as_str()) || GENERIC.contains(&name.as_str())))
         {
             return true;
-        }
-        if let Some(qself) = &path.qself {
-            return INFERRED.contains(&name.as_str()) && self.is_lock(&qself.ty).is_none();
         }
         let Some(owner) = segments.len().checked_sub(2).map(|at| &segments[at]) else {
             return false;
@@ -655,7 +656,7 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
             // Macro-generated typed inputs have no source initializer. Their
             // Arbitrary implementation may populate even an empty-by-default
             // container, so Default's empty-container rule cannot judge them.
-            if local.init.is_none() {
+            if local.init.is_none() && self.is_lock(ty) != Some(true) {
                 match ty {
                     Type::Path(path)
                         if path.qself.is_none()
