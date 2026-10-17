@@ -1,24 +1,12 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, getCurrentTools } from "@earendil-works/pi-ai";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { invokePi } from "./pi-fixture.ts";
 import { installedNativeFixture } from "./pi-native-fixture.ts";
-
-const provider = `
-import { fauxProvider, fauxAssistantMessage, getCurrentTools } from "@earendil-works/pi-ai";
-export default function (pi) {
-  const faux = fauxProvider({ provider: "acyclic-qualification", models: [{ id: "probe" }] });
-  faux.setResponses([context => fauxAssistantMessage(JSON.stringify({
-    messages: context.messages,
-    tools: getCurrentTools(context.messages).map(tool => tool.name).sort(),
-  }))]);
-  pi.registerProvider(faux.provider);
-}
-`;
 
 function probeArguments(session: string, extension: string) {
   return [
@@ -125,15 +113,44 @@ export default function (pi) {
     assert.equal(SessionManager.open(child,directory).getSessionId(),native.native_session_id);
     const originalParent = readFileSync(parentFile, "utf8");
     assert.ok(originalParent.startsWith(selectedParent),"selection changed the parent's retained history");
-    const extension = join(directory, "provider.ts");
-    writeFileSync(extension, provider);
-    for (const prompt of ["resume compacted child"]) {
-      const result = await invokePi([...probeArguments(child, extension), prompt], project, directory);
-      phase(prompt);
-      assert.match(result.stdout, /qualified native parent summary/);
-      assert.doesNotMatch(result.stdout, /old parent instruction|spawn-after-compaction/);
+    // Reopen the real child's stored session through the same pinned SDK. The
+    // first native read above and this resumed model turn are independent;
+    // another CLI startup would only repeat the already qualified loader.
+    const modelRuntime=await ModelRuntime.create({
+      authPath:join(directory,"resume-auth.json"),modelsPath:null,
+      modelsStorePath:join(directory,"resume-models.json"),refreshOnCreate:false,allowModelNetwork:false,
+    });
+    const faux=fauxProvider({provider:"acyclic-resume-qualification",models:[{id:"probe"}]});
+    faux.setResponses([context=>fauxAssistantMessage(JSON.stringify({
+      messages:context.messages,tools:getCurrentTools(context.messages).map(tool=>tool.name).sort(),
+    }))]);
+    modelRuntime.registerNativeProvider(faux.provider);
+    const model=modelRuntime.getModel("acyclic-resume-qualification","probe");
+    assert.ok(model);
+    const modelSettings=SettingsManager.inMemory({compaction:{enabled:false}});
+    const agentDir=join(directory,"resume-agent");
+    const loader=new DefaultResourceLoader({
+      cwd:project,agentDir,settingsManager:modelSettings,noExtensions:true,disabledBuiltinExtensions:["mcp"],
+      noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,
+    });
+    await loader.reload();
+    const {session:resumed}=await createAgentSession({
+      cwd:project,agentDir,modelRuntime,model,settingsManager:modelSettings,resourceLoader:loader,
+      noTools:"all",sessionManager:SessionManager.open(child,directory),
+    });
+    try {
+      await resumed.prompt("resume compacted child");
+      phase("resume compacted child");
+      const message=resumed.state.messages.at(-1);
+      assert.equal(message?.role,"assistant");
+      if(message?.role!=="assistant") throw new Error("resumed native model did not answer");
+      const text=message.content.filter(part=>part.type==="text").map(part=>part.text).join("");
+      assert.match(text, /qualified native parent summary/);
+      assert.doesNotMatch(text, /old parent instruction|spawn-after-compaction/);
       assert.equal(SessionManager.open(child, directory).getSessionId(), native.native_session_id);
       assert.equal(readFileSync(parentFile, "utf8"), originalParent);
+    } finally {
+      resumed.dispose();
     }
   } finally {
     await fixture?.close();
