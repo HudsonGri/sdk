@@ -334,7 +334,13 @@ impl StreamProvider for MemoryStream {
                     if window.start == window.end {
                         cursor.pop_front();
                     }
+                    #[cfg(test)]
+                    let read = crate::test_meter::trace::recordings_reordered()
+                        .then(|| bytes.record(length));
                     let examined = meter.record_examination(1, copied);
+                    #[cfg(test)]
+                    let read = read.unwrap_or_else(|| bytes.record(length));
+                    #[cfg(not(test))]
                     let read = bytes.record(length);
                     examined?;
                     read?;
