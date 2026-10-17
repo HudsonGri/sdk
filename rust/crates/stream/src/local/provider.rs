@@ -59,18 +59,7 @@ impl StreamProvider for LocalStream {
             })
             .await??;
         self.await_durable(revision).await?;
-        let durable = {
-            let mut tails = self
-                .inner
-                .durable_tails
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?;
-            let durable = tails.entry(path.clone()).or_default();
-            *durable = (*durable).max(accepted);
-            *durable
-        };
-        let watermarks = crate::StreamWatermarks { accepted, durable };
-        Ok(crate::DurableReceipt::covering(path, &watermarks, through))
+        self.receipt_for_flushed_snapshot(path, accepted, through)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -361,4 +350,38 @@ fn describe_commit(request: &CommitRequest) {
                 .collect::<Vec<_>>()
         )
     });
+}
+
+impl LocalStream {
+    fn receipt_for_flushed_snapshot(
+        &self,
+        path: StreamPath,
+        accepted: u64,
+        through: u64,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        // No other lock is held here. Watermark reads acquire publication first,
+        // then durable_tails; this path never acquires publication afterward.
+        let mut tails = self
+            .inner
+            .durable_tails
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let durable = tails.entry(path.clone()).or_default();
+        *durable = (*durable).max(accepted);
+        // This call flushed this exact snapshot. Later callers may have advanced
+        // durable_tails beyond it; never pair that newer prefix with this cut.
+        let covered = accepted;
+        #[cfg(acyclic_loom)]
+        let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut)
+        {
+            *durable
+        } else {
+            covered
+        };
+        let marks = crate::StreamWatermarks {
+            accepted,
+            durable: covered,
+        };
+        Ok(crate::DurableReceipt::covering(path, &marks, through))
+    }
 }

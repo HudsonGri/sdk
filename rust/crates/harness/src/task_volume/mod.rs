@@ -431,7 +431,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Creates one file only if absent at the exact query generation. Unlike an
     /// idempotent append, an existing identical file is still a failed creation.
     pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.create_if(expected, write, Vec::new(), None, None).await
+        self.create_if(expected, write, Vec::new(), None, None)
+            .await
     }
 
     /// Creates an absent file under the same owner and deadline conditions as append.
@@ -443,8 +444,16 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         deadline_unix_millis: Option<u64>,
         work: NativeWork<'_>,
     ) -> Result<Generation> {
-        self.publish(expected, write, conditions, deadline_unix_millis, Mode::Create, work)
-            .await.map(|(generation, _)| generation)
+        self.publish(
+            expected,
+            write,
+            conditions,
+            deadline_unix_millis,
+            Mode::Create,
+            work,
+        )
+        .await
+        .map(|(generation, _)| generation)
     }
 
     pub(super) async fn publish(
@@ -463,7 +472,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             return Ok((expected, false));
         };
         self.commit_append(expected, request, files, next, deadline_unix_millis)
-            .await.map(|generation| (generation, true))
+            .await
+            .map(|generation| (generation, true))
     }
 
     async fn prepare_append(
@@ -564,11 +574,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     index.commit = envelope.commit_id;
                 }
                 Ok(Generation {
-                        volume: expected.volume,
-                        epoch: expected.epoch,
-                        position: next,
-                        commit: *envelope.commit_id.as_bytes(),
-                    })
+                    volume: expected.volume,
+                    epoch: expected.epoch,
+                    position: next,
+                    commit: *envelope.commit_id.as_bytes(),
+                })
             }
             CommitOutcome::Conflict(_) => {
                 self.refresh().await?;

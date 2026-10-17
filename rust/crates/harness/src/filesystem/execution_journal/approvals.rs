@@ -138,15 +138,13 @@ where
         let files = self.approval_files()?;
         let bytes = host.read_file(&ticket.request, io).await?;
         let _request = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        let value = FileValue {
-            key: FileKey::Task {
+        let value = FileValue::new(
+            FileKey::Task {
                 task: Component::new(owner.task_id().to_string())?,
                 file: TaskFile::ApprovalRequest(Component::new(ticket.id.to_string())?),
             },
-            channel: None,
-            publication: None,
             bytes,
-        };
+        );
         Ok(files.publish_owned(&value, native_work(io)).await?)
     }
 
@@ -208,15 +206,13 @@ where
         let work = native_work(io);
         files
             .publish_durable(
-                &FileValue {
-                    key: FileKey::Task {
+                &FileValue::new(
+                    FileKey::Task {
                         task: task.clone(),
                         file: TaskFile::ApprovalRequest(request.clone()),
                     },
-                    channel: None,
-                    publication: None,
-                    bytes: request_bytes,
-                },
+                    request_bytes,
+                ),
                 work,
             )
             .await?;
@@ -228,15 +224,7 @@ where
             },
         };
         let proof = files
-            .publish_durable(
-                &FileValue {
-                    key: key.clone(),
-                    channel: None,
-                    publication: None,
-                    bytes,
-                },
-                work,
-            )
+            .publish_durable(&FileValue::new(key.clone(), bytes), work)
             .await?;
         if proof.key() != &key {
             return Err(Error::Storage("durable proof names another file".into()));
