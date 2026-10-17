@@ -12,7 +12,7 @@ use serde_json::json;
 async fn mailbox_and_inspection_commands_use_authenticated_task_files_for_every_host() -> Result {
     let fixture = Fixture::new()?;
     let owner = fixture.start_owner().await?;
-    let result = async {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(8), async {
         let [codex, claude, pi] = Tools::hosts(fixture.path()).await?;
         let expected = tokio::try_join!(
             mailbox(&fixture, &codex),
@@ -39,10 +39,10 @@ async fn mailbox_and_inspection_commands_use_authenticated_task_files_for_every_
             assert!(inspected["outcome"].is_null());
         }
         Ok::<_, Box<dyn std::error::Error>>(())
-    }
+    })
     .await;
     fixture.close_owner(owner).await?;
-    result?;
+    result??;
     Ok(())
 }
 
@@ -77,17 +77,56 @@ async fn mailbox(fixture: &Fixture, tools: &Tools<'_>) -> Result<TaskId> {
         assert_eq!(item["sequence"], after + 1);
         assert_eq!(item["payload"], *file);
     }
+    let denied = child
+        .reject(
+            "parent-source-denied",
+            "acyclic_send",
+            json!({"recipient":tools.task,"payload":file}),
+        )
+        .await?;
+    assert_eq!(
+        child
+            .reject(
+                "parent-source-denied",
+                "acyclic_send",
+                json!({"recipient":tools.task,"payload":file})
+            )
+            .await?,
+        denied
+    );
+    let reply_file = child
+        .call(
+            "reply-source",
+            "write",
+            json!({
+                "path":format!("{}-reply.txt",host.name()),"text":"mail payload",
+                "media_type":"text/plain","display_name":filename,
+            }),
+        )
+        .await?;
+    let reply_file = reply_file
+        .get("file")
+        .ok_or("child reply has no pinned file")?;
+    assert_ne!(
+        reply_file, file,
+        "a child reply must retain its isolated content binding"
+    );
+    assert_eq!(reply_file["descriptor"], file["descriptor"]);
     child
         .call(
             "reply",
             "acyclic_send",
-            json!({"recipient":tools.task,"payload":file}),
+            json!({"recipient":tools.task,"payload":reply_file}),
         )
         .await?;
     let reply = tools
         .call("reply", "acyclic_receive", json!({"after":0}))
         .await?;
-    assert_eq!(reply["payload"], *file);
+    assert_eq!(
+        reply["sequence"], 1,
+        "rejected mail must not reach the parent"
+    );
+    assert_eq!(reply["payload"], *reply_file);
     let inspected = tools
         .call("inspect", "acyclic_inspect", json!({"task":tools.task}))
         .await?;
