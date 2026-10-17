@@ -46,6 +46,7 @@ async fn call(cwd: &Path, session: &str, id: &str, name: &str, input: Value) -> 
 async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_without_launching()
 -> Result {
     let fixture = Fixture::new()?;
+    std::fs::write(fixture.path().join("preserved.txt"), "parent contents")?;
     let mut owner = Some(fixture.start_owner().await?);
     let result = std::panic::AssertUnwindSafe(async {
         let cwd = fixture.path();
@@ -83,8 +84,31 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
                 json!({"command":format!("diff agents/{child}")}),
             )
             .await?;
-            assert!(diff.to_string().contains("child.txt"), "{diff}");
-            assert!(diff.to_string().contains("leaf.txt"), "{diff}");
+            assert_eq!(
+                diff["result"]["Filesystem"]["Data"]["kind"], "diff",
+                "{diff}"
+            );
+            assert_eq!(
+                diff["result"]["Filesystem"]["Data"]["value"]["fileChanges"], 2,
+                "{diff}"
+            );
+            call(
+                cwd,
+                session,
+                "selected-import",
+                "fs",
+                json!({"command":format!("restore --source agents/{child} -- child.txt")}),
+            )
+            .await?;
+            assert_eq!(
+                std::fs::read_to_string(cwd.join("child.txt"))?,
+                "isolated native effect"
+            );
+            assert!(!cwd.join("leaf.txt").exists());
+            assert_eq!(
+                std::fs::read_to_string(cwd.join("preserved.txt"))?,
+                "parent contents"
+            );
             fixture.close_owner(owner.take().unwrap()).await?;
             owner = Some(fixture.start_owner().await?);
             let replay = call(cwd, session, "spawn", "acyclic_spawn", args).await?;
