@@ -55,7 +55,6 @@ export const models = {
   "rust/crates/harness/src/client/commands/model.rs": { grade: "runner" },
   "rust/crates/harness/src/client/commands/session_confirmation/tests.rs": { grade: "real" },
   "rust/crates/harness/src/client/commands/session_init_models.rs": { grade: "real" },
-  "rust/crates/harness/src/client/journal_model.rs": { grade: "abstract", scope: "Actual FileClientState journal/checkpoint and library journal_lock shim; file exclusion is a Loom replacement for OS file locking. Temp file operations are not crash modeled." },
   "rust/crates/harness/src/client/mailbox_model.rs": { grade: "real" },
   "rust/crates/harness/src/distributed/tests/model_checking.rs": { grade: "abstract", scope: "Actual distributed publication/coordinator and MemoryStream locks; PublicationCut/provider callbacks bound the external effect cut." },
   "rust/crates/harness/src/distributed/tests/scheduler_model.rs": { grade: "abstract", scope: "Actual distributed coordinator/settlement; modeled provider/content effects and fixed publication cuts. Not host effect recovery." },

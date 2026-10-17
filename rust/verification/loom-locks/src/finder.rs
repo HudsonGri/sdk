@@ -387,16 +387,17 @@ impl<'ast> Finder<'_, 'ast> {
             return true;
         };
         let segments = &resolved.segments;
-        let Some(name) = segments
-            .last()
-            .and_then(|segment| self.names.resolve(&crate::name(&segment.ident)))
-        else {
+        let Some(name) = segments.last().map(|segment| crate::name(&segment.ident)) else {
             return true;
         };
-        if segments.len() == 1
-            && (matches!(name.as_str(), "std::mem::take" | "core::mem::take")
-                || INFERRED.contains(&name.as_str())
-                || GENERIC.contains(&name.as_str()))
+        let spelling = segments
+            .iter()
+            .map(|segment| crate::name(&segment.ident))
+            .collect::<Vec<_>>()
+            .join("::");
+        if matches!(spelling.as_str(), "std::mem::take" | "core::mem::take")
+            || (segments.len() == 1
+                && (INFERRED.contains(&name.as_str()) || GENERIC.contains(&name.as_str())))
         {
             return true;
         }
@@ -406,9 +407,7 @@ impl<'ast> Finder<'_, 'ast> {
         let Some(owner) = segments.len().checked_sub(2).map(|at| &segments[at]) else {
             return false;
         };
-        let Some(owner_name) = self.names.resolve(&crate::name(&owner.ident)) else {
-            return true;
-        };
+        let owner_name = crate::name(&owner.ident);
         (INFERRED.contains(&name.as_str())
             && TRAITS.contains(&owner_name.rsplit("::").next().unwrap_or(&owner_name)))
             || (name == "take" && owner_name == "mem")

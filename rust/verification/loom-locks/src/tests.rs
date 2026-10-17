@@ -97,7 +97,11 @@ fn source_corpus_survives_parse_print_and_keeps_the_expected_verdict() {
     ] {
         let file = syn::parse_file(source).unwrap_or_else(|error| panic!("{source}: {error}"));
         let rendered = quote::quote!(#file).to_string();
-        assert_ne!(scan(source).ok(), Some(false), "{source}");
+        assert!(
+            matches!(scan(source), Ok(true)) || indeterminate(source),
+            "{source}: {:?}",
+            verdict(source)
+        );
         assert_eq!(scan(source).ok(), scan(&rendered).ok());
     }
     for source in [

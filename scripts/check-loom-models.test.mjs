@@ -9,7 +9,7 @@ const path = 'rust/crates/example/src/model.rs';
 // the crate shim is the loom lock, which is not a model-owned lock.
 const healthy = [
   'const _: fn(crate::sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;',
-  'fn check() { loom::model(|| production::Component::new().race()); }',
+  'fn production_component() {} fn check() { loom::model(production_component); }',
 ].join('\n');
 const bounded = 'fn bounded() {\nlet mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(2);\n}\n';
 const constant = 'const CAP: usize = 2;\nfn bounded() {\nlet mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(CAP);\n}\n';
