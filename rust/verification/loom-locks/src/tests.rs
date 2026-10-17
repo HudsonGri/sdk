@@ -155,6 +155,7 @@ fn generated_code_is_rejected() {
     assert!(definition.is_err_and(|error| error.contains("a macro_rules! definition")));
     for source in [
         "use serde_json::json;\nfn m() { json!({\"a\": 1}); }",
+        "fn p() { matches!(value, Some(_) | None); }",
         "use std::vec;\n#[derive(Clone, Debug, Default)]\nstruct S;\n#[test]\nfn m() { vec![1]; }",
     ] {
         assert_eq!(verdict(source), Ok(false), "{source}");

@@ -255,7 +255,7 @@ fn parse(grammar: Grammar, tokens: TokenStream) -> syn::Result<Vec<Stmt>> {
             let scrutinee: Expr = input.parse()?;
             input.parse::<Token![,]>()?;
             let pattern = Pat::parse_multi_with_leading_vert(input)?;
-            let mut stmts = vec![syn::parse_quote!(let #pattern = #scrutinee;)];
+            let mut stmts = vec![syn::parse2(quote::quote!(let (#pattern) = #scrutinee;))?];
             if input.parse::<Option<Token![if]>>()?.is_some() {
                 stmts.push(expr(input.parse()?));
             }
@@ -336,7 +336,7 @@ fn proptest(input: ParseStream<'_>) -> syn::Result<Vec<Stmt>> {
             } else {
                 arguments.parse::<Token![:]>()?;
                 let ty: Type = arguments.parse()?;
-                stmts.push(syn::parse_quote!(let #pattern: #ty;));
+                stmts.push(syn::parse2(quote::quote!(let #pattern: #ty;))?);
             }
             if arguments.parse::<Option<Token![,]>>()?.is_none() {
                 break;
