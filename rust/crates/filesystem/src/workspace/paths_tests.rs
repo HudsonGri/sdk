@@ -423,28 +423,30 @@ fn paired_copy_timing_report() {
     let cancellation = CancellationToken::new();
     for (mode, recheck) in [(1_u8, false), (2, false), (3, true), (4, false)] {
         for restore in [false, true] {
-            let roots = [0, 1].map(|_| 
+            let roots = [0, 1].map(|_| {
                 crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-                    .unwrap());
+                    .unwrap()
+            });
             let work = roots.each_ref().map(|root| {
-            let mut work = root.clone();
-            for _ in 0..mode.saturating_sub(1).min(2) {
-                work = work
-                    .native_volume_work(crate::WorkBudget::UNBOUNDED)
-                    .unwrap();
-            }
-            if mode == 4 {
-                work = work.invocation_view().unwrap().0;
-            }
-            if recheck {
-                work = work.recheck_admitted();
-            }
-            work
+                let mut work = root.clone();
+                for _ in 0..mode.saturating_sub(1).min(2) {
+                    work = work
+                        .native_volume_work(crate::WorkBudget::UNBOUNDED)
+                        .unwrap();
+                }
+                if mode == 4 {
+                    work = work.invocation_view().unwrap().0;
+                }
+                if recheck {
+                    work = work.recheck_admitted();
+                }
+                work
             });
             let label = (!restore).then(|| name("workspace-name").unwrap());
             let text = "workspace-name";
             let run = |old_path: bool| {
-                let mut accounting = KernelAccounting::native(&work[usize::from(!old_path)], &cancellation);
+                let mut accounting =
+                    KernelAccounting::native(&work[usize::from(!old_path)], &cancellation);
                 let start = std::time::Instant::now();
                 for _ in 0..COPIES {
                     let owned = match (old_path, restore) {
