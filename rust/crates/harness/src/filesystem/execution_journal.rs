@@ -33,6 +33,8 @@ mod conversation;
 
 mod cache;
 use cache::VerifiedSummary;
+#[cfg(all(feature="model-checking",acyclic_harness_loom,acyclic_loom))]
+pub use cache::verify_cached_summary_publication;
 mod cancellation;
 mod canonical;
 #[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]

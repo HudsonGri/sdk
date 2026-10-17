@@ -146,7 +146,8 @@ where
                         "execution journal lost its retained cursor",
                     )
                 })?;
-                if anchor.sequence.checked_add(1) != Some(after) || anchor.commit_id != expected {
+                if !super::cache::matches_anchor(after, expected, anchor.sequence, anchor.commit_id)
+                {
                     return Err(canonical_boundary(
                         io,
                         crate::wire::ErrorCode::Storage,

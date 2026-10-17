@@ -270,22 +270,32 @@ async fn deltas(
         .store(io.is_some() && !accounted::chunk_scan_enabled(), SeqCst);
     for index in 101..101 + count {
         let key = format!("event:{index}");
-        journal.append(OP, &key, &event, io)?.await?;
-        journal.append(OP, &key, &event, io)?.await?; // Exact retries do no projection work.
+        accounted::observe_append(async { journal.append(OP, &key, &event, io)?.await }, io)
+            .await?;
+        accounted::observe_append(async { journal.append(OP, &key, &event, io)?.await }, io)
+            .await?; // Exact retries do no projection work.
         assert!(
-            !journal
-                .append_if_tail(OP, 0, "rejected:999", &event, io)?
-                .await?
+            !accounted::observe_append(
+                async {
+                    journal
+                        .append_if_tail(OP, 0, "rejected:999", &event, io)?
+                        .await
+                },
+                io
+            )
+            .await?
         );
     }
     let mut invalid = event.clone();
     if let ExecutionEvent::Model { step, .. } = &mut invalid {
         *step = 1;
     }
-    let error = journal
-        .append(OP, "invalid:999", &invalid, io)?
-        .await
-        .unwrap_err();
+    let error = accounted::observe_append(
+        async { journal.append(OP, "invalid:999", &invalid, io)?.await },
+        io,
+    )
+    .await
+    .unwrap_err();
     f.stream.native_only.store(false, SeqCst);
     let writes = f.stream.io_snapshot();
     assert_eq!(writes.writes, count as u64);
@@ -521,4 +531,71 @@ fn chunk_projection_preserves_the_bound_on_its_authorized_task_files() {
             }
         }
     }
+}
+
+#[test]
+fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let names = [
+        "append.calls",
+        "append.items",
+        "append.allocations",
+        "append.allocated-bytes",
+        "append.native-allocations",
+        "append.native-copy",
+        "append.native-encoding",
+        "append.native-hash",
+        "append.native-items",
+    ];
+    let mut all_modes = Vec::new();
+    for native in [false, true] {
+        let mut measured = Vec::new();
+        for count in [8, 16] {
+            let [baseline, candidate] = differential::pair(
+                || runtime.block_on(warm()).unwrap(),
+                |state, old| {
+                    accounted::with_append_scan(old, || {
+                        if native {
+                            accounted::accounted(true, 1 << 28, false, |io| {
+                                runtime.block_on(deltas(state, count, Some(io))).unwrap()
+                            })
+                            .unwrap()
+                            .0
+                        } else {
+                            runtime.block_on(deltas(state, count, None)).unwrap()
+                        }
+                    })
+                },
+            );
+            assert_eq!(
+                baseline.0, candidate.0,
+                "full bytes, task files and exact errors changed"
+            );
+            let sum = |trace: &Vec<(&'static str, u64)>| {
+                names.map(|name| {
+                    trace
+                        .iter()
+                        .filter(|(key, _)| *key == name)
+                        .map(|(_, n)| *n)
+                        .sum::<u64>()
+                })
+            };
+            let actual = sum(&candidate.1);
+            let broken = sum(&baseline.1);
+            eprintln!("append native={native} N={count} actual={actual:?} negative={broken:?}");
+            assert_eq!(actual[0], 3 * count as u64 + 1);
+            assert_ne!(
+                actual, broken,
+                "full prefix replay passed whole-append work detector"
+            );
+            measured.push(actual);
+        }
+        // Development pins: replace with the measured production-path constants
+        // before push; never convert these exact comparisons into tolerances.
+        all_modes.push(measured);
+    }
+    assert_eq!(all_modes, vec![vec![[0; 9], [0; 9]], vec![[0; 9], [0; 9]]]);
 }

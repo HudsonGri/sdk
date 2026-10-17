@@ -85,10 +85,7 @@ where
             if page.is_empty() {
                 return Ok(());
             }
-            for (record, model) in page {
-                summary.accept(&record, model.as_ref(), limits, io)?;
-            }
-            summary.fence = fence;
+            summary.accept_page(page, fence, limits, io)?;
             drop(page_hold);
         }
     }
@@ -354,6 +351,8 @@ where
         let cacheable = io.is_none() || io.and_then(PreparationIo::original_native_work).is_some();
         #[cfg(target_arch = "wasm32")]
         let cacheable = io.is_none();
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let cacheable = cacheable && !crate::test_support::accounted::append_scan_enabled();
         let mut shared = if cacheable {
             Some(self.verified.lock().await)
         } else {

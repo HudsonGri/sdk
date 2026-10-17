@@ -160,3 +160,50 @@ fn separate_execution_cursors_do_not_drop_restarted_ordinals() {
         "first\n\nsecond"
     );
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+    #[test]
+    fn chronological_task_chunks_reopen_identically_across_executions(
+        pieces in prop::collection::vec("[a-zé猫]{1,8}",1..5), crossed_turns in any::<bool>(),
+    ) {
+        let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            use crate::task_volume::{Component, Query, TaskVolume};
+            use acyclic_stream::{CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProvider};
+            let provider=std::sync::Arc::new(MemoryStream::default());
+            let volume=TaskVolume::open(provider.clone(),StreamPath::new("chronological").unwrap()).await.unwrap();
+            let task=Component::new("active").unwrap();
+            let mut live=TaskFileViews::default();
+            let mut published=Vec::new();
+            for (ordinal,execution) in [crate::OperationId::from_bytes([255;16]),crate::OperationId::from_bytes([1;16])].into_iter().enumerate() {
+                let turn=if crossed_turns && ordinal==0 {5} else {0};
+                for (part,text) in pieces.iter().enumerate() {
+                    let text=format!("{ordinal}:{text}");
+                    let prepared=volume.prepare_next_chunk(task.clone(),execution,turn,Channel::Text,text.as_bytes(),None).await.unwrap().unwrap();
+                    let request=CommitRequest { conditions:vec![prepared.condition],mutations:vec![CommitMutation::Append {path:prepared.path,records:vec![prepared.record]}],idempotency_key:IdempotencyKey::new(format!("{ordinal}:{part}").into_bytes()).unwrap() };
+                    assert!(matches!(provider.commit(request).await.unwrap(),CommitOutcome::Committed(_)));
+                    let files=volume.snapshot(&Query::Root,32).await.unwrap().files;
+                    let current=files.last().unwrap().clone();
+                    let FileKey::Task {file:TaskFile::Chunk {sequence,..},..}=&current.key else {unreachable!()};
+                    assert_eq!(*sequence,published.len() as u64);
+                    append(&mut live,&current); published.push(current);
+                }
+            }
+            let reopened_volume=volume.reopen().await.unwrap();
+            let cut=reopened_volume.snapshot(&Query::Root,32).await.unwrap();
+            let query=TaskFileQueryView::from_snapshot(Query::Root,cut,32,65536).unwrap();
+            let mut reopened=TaskFileViews::default();
+            snapshot(&mut reopened,&query);
+            assert_eq!(live.transcripts,reopened.transcripts);
+            let heads=reopened_volume.heads(&Query::Root,None,32).await.unwrap();
+            let headed=heads.files.iter().map(|head| head.segments.iter().flat_map(|bytes|bytes.iter().copied()).collect::<Vec<_>>()).map(|bytes|String::from_utf8(bytes).unwrap()).collect::<Vec<_>>().join("\n\n");
+            assert_eq!(headed,live.transcripts["AGGREGATE_KIND_TASK:active"].streaming_text);
+            // Restore the old turn/UUID ordering against the same production fold.
+            published.sort_by_key(|file| match file.key {FileKey::Task {file:TaskFile::Chunk {turn,execution,sequence},..}=>(turn,execution,sequence),_=>unreachable!()});
+            let mut broken=TaskFileViews::default();
+            for file in published {append(&mut broken,&file);}
+            assert_ne!(live.transcripts,broken.transcripts,"UUID ordering negative control must reverse the executions");
+        });
+    }
+}

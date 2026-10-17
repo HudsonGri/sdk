@@ -68,17 +68,23 @@ impl FileValue {
 impl Snapshot {
     /// Converts a selected snapshot into zero-copy materialized head files.
     pub fn into_heads(self) -> Result<HeadSnapshot> {
-        let mut heads = BTreeMap::<FileKey, HeadFile>::new();
+        let mut positions = BTreeMap::<FileKey, usize>::new();
+        let mut heads: Vec<HeadFile> = Vec::new();
         for file in self.files {
             let (key, sequence) = file.head_key()?;
-            let head = heads.entry(key.clone()).or_insert_with(|| HeadFile {
-                key,
-                publication: file.publication,
-                channel: file.channel,
-                segments: Vec::new(),
-                length: 0,
-                through_sequence: None,
+            let position = *positions.entry(key.clone()).or_insert_with(|| {
+                let position = heads.len();
+                heads.push(HeadFile {
+                    key,
+                    publication: file.publication,
+                    channel: file.channel,
+                    segments: Vec::new(),
+                    length: 0,
+                    through_sequence: None,
+                });
+                position
             });
+            let head = &mut heads[position];
             head.length = head
                 .length
                 .checked_add(file.bytes.len() as u64)
@@ -87,7 +93,7 @@ impl Snapshot {
             head.segments.push(file.bytes);
         }
         Ok(HeadSnapshot {
-            files: heads.into_values().collect(),
+            files: heads,
             cursor: self.cursor,
             generation: self.generation,
         })
