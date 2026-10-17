@@ -303,6 +303,13 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         .await
     };
     if ceiling != ReadCeiling::All {
+        if ceiling == ReadCeiling::Path {
+            assert_eq!(
+                lazy.workspace().head(&work, &cancellation).await?.id(),
+                original,
+                "refused preparation imported an unresolved tree"
+            );
+        }
         assert!(
             matches!(
                 prepared,
@@ -313,13 +320,6 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
             "exactification widened a pinned capability or failed outside authorization"
         );
         assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
-        if ceiling == ReadCeiling::Path {
-            assert_eq!(
-                lazy.workspace().head(&work, &cancellation).await?.id(),
-                original,
-                "refused preparation imported an unresolved tree"
-            );
-        }
         return Ok(());
     }
     let prepared = prepared.expect("read-only exactification must retain authorization");
