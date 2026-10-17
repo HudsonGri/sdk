@@ -83,9 +83,9 @@ test("native launch identity and seed survive exact retries without a memory cac
       manager.appendMessage(fauxAssistantMessage(fauxToolCall("acyclic_spawn",{id:"label",prompt:"literal $(prompt)"},{id:callId}),
         {stopReason:"toolUse",timestamp:1}));
       // Native entry timestamps are retained in the source session file.
-      const owner=manager.getEntries()[0]!;
-      owner.timestamp="2026-10-17T00:00:00Z";
-      const context={...fixture.context,sessionManager:manager,model:{id:"probe",provider:"test"}} as unknown as ExtensionContext;
+      const entries=manager.getEntries().map(entry=>({...entry,timestamp:"2026-10-17T00:00:00Z"}));
+      const restored=SessionManager.inMemory("/selected-project",{id:parent},JSON.parse(JSON.stringify(entries)));
+      const context={...fixture.context,sessionManager:restored,model:{id:"probe",provider:"test"}} as unknown as ExtensionContext;
       await fixture.handlers.get("session_start")!({},context);
       await fixture.tools.get("acyclic_spawn")!.execute(callId,{id:"label",prompt:"literal $(prompt)"},undefined,undefined,context);
     };
