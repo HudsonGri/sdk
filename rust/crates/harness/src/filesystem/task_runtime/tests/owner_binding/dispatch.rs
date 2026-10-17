@@ -49,6 +49,17 @@ impl ToolExecutor for SelectedTool {
             })
         })
     }
+
+    fn reconcile<'a>(
+        &'a self,
+        invocation: ToolInvocation,
+        context: Option<ToolContext>,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            self.authorize(None, context.as_ref(), &invocation, None)?;
+            Ok(None)
+        })
+    }
 }
 
 proptest! {
