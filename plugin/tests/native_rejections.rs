@@ -19,7 +19,7 @@ async fn rejected_stop(cwd: &Path, input: &Value) -> Result<Value> {
     let answer: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(
         answer["systemMessage"],
-        "native child has not been admitted"
+        acyclic_harness::Error::Invalid("native child has not been admitted".into()).to_string()
     );
     Ok(answer)
 }
