@@ -1,21 +1,14 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { test } from "bun:test";
 import fc from "fast-check";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Invoke } from "../../pi/index.ts";
+import { loadPiExtension } from "./pi-fixture.ts";
 
-// Pi supplies these modules to installed extensions through its loader. Resolve
-// the real pinned TUI here as well; the source shim lives outside this fixture.
-const require = createRequire(import.meta.url);
-const { createJiti } = require("jiti");
-const extension: typeof import("../../pi/index.ts").default = await createJiti(import.meta.url, {
-  tryNative: false,
-  alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui"),
-    "@earendil-works/pi-coding-agent": require.resolve("@earendil-works/pi-coding-agent") },
-}).import("../../pi/index.ts", { default: true });
+const { default: extension } = await loadPiExtension(fileURLToPath(new URL("../../pi/index.ts", import.meta.url)));
 
 type Handler = (event: Record<string, unknown>, context: ExtensionContext) => Promise<unknown>;
 const definitions = ["bash", "fs", "read", "write", "edit"].map(name => ({

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { createServer, type Socket } from "node:net";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,11 +6,10 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { loadPiExtension } from "./pi-fixture.ts";
 
 const executable = process.env.ACYCLIC_TEST_EXECUTABLE;
 if (!executable) throw new Error("ACYCLIC_TEST_EXECUTABLE must name the built native hook executable");
-const require = createRequire(import.meta.url);
-const { createJiti } = require("jiti");
 
 test("Pi abort waits for native process cleanup, records cancellation, and leaves the session usable", async () => {
   const root = mkdtempSync(join(tmpdir(),"acyclic-pi-abort-"));
@@ -22,10 +20,7 @@ test("Pi abort waits for native process cleanup, records cancellation, and leave
   const source = readFileSync(new URL("../../pi/index.ts",import.meta.url),"utf8");
   const module = join(root,"shim.ts");
   writeFileSync(module,source.replace(JSON.stringify("__ACYCLIC_EXECUTABLE__"),JSON.stringify(executable)));
-  const extension = await createJiti(import.meta.url, {
-    tryNative:false, alias:{"@earendil-works/pi-tui":require.resolve("@earendil-works/pi-tui"),
-      "@earendil-works/pi-coding-agent":require.resolve("@earendil-works/pi-coding-agent")},
-  }).import(module,{default:true}) as typeof import("../../pi/index.ts").default;
+  const { default: extension } = await loadPiExtension(module);
   const handlers = new Map<string,(event:unknown,ctx:ExtensionContext)=>Promise<unknown>>();
   const tools = new Map<string,ToolDefinition>();
   extension({
