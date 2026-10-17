@@ -127,7 +127,6 @@ impl CheckoutTools {
                 )
                 .await?;
             }
-            workspace::volumes::project(&state.mounts).await?;
             // Each blocking worker retains this guard through cancellation and
             // child-tree reaping; dropping the caller cannot switch its view.
             let check_workspace = Arc::clone(&workspace);
@@ -152,18 +151,24 @@ impl CheckoutTools {
                     .map_err(std::io::Error::other)
                 })
             };
-            let (result, mut state) = with_workers::<_, _, _, _, true>(state, check, |check| {
-                hooks.run_checked(
-                    event,
-                    (&workspace.path, &workspace.path),
-                    input,
-                    registry,
-                    context.effective_scope().limits().file_bytes,
-                    check,
-                )
+            // Hooks share bash's native execution scope: bound volumes are
+            // projected for the run and retired, with their writes published,
+            // before the checkout is captured.
+            let mounts = Arc::clone(&state.mounts);
+            let (result, mut state) = workspace::volumes::native_scope(&mounts, async || {
+                with_workers::<_, _, _, _, true>(state, check, |check| {
+                    hooks.run_checked(
+                        event,
+                        (&workspace.path, &workspace.path),
+                        input,
+                        registry,
+                        context.effective_scope().limits().file_bytes,
+                        check,
+                    )
+                })
+                .await
             })
             .await?;
-            workspace::volumes::sync(&state.mounts).await?;
             let State {
                 active, watcher, ..
             } = &mut *state;

@@ -19,6 +19,8 @@ pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
+    /// Native execution scopes currently using `native`.
+    pub(super) users: crate::sync::SyncMutex<usize>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 

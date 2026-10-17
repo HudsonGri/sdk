@@ -258,3 +258,47 @@ fn checkout_then_projection_order_cannot_deadlock() {
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostic.contains("deadlock; threads ="), "{diagnostic}");
 }
+
+fn scoped_retirement(broken: bool) {
+    let slot = StateArc::new(AsyncMutex::new(None));
+    let users = StateArc::new(SyncMutex::new(0));
+    let workers: Vec<_> = (0..2)
+        .map(|_| {
+            let (slot, users) = (slot.clone(), users.clone());
+            thread::spawn(move || {
+                let entered = complete(enter(&slot, &users, async || Ok(7))).unwrap();
+                thread::yield_now();
+                assert!(
+                    complete(lock_owned(slot.clone())).is_some(),
+                    "projection retired under a running command"
+                );
+                if broken {
+                    // The faulty exit retires without consulting other scopes.
+                    drop(entered);
+                    *complete(lock_owned(slot)) = None;
+                } else {
+                    complete(leave(&slot, &users, entered, async |slot| {
+                        *slot = None;
+                        Ok(())
+                    }))
+                    .unwrap();
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        joined(worker);
+    }
+    assert!(
+        complete(lock_owned(slot)).is_none(),
+        "projection outlived its last scope"
+    );
+}
+
+#[test]
+fn the_last_execution_scope_alone_retires_the_projection() {
+    checked(
+        scoped_retirement,
+        "projection retired under a running command",
+    );
+}
