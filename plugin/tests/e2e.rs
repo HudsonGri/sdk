@@ -126,6 +126,11 @@ fn invalid_platform_binding_fails_closed_without_starting_a_plugin_host() -> Res
 
 #[test]
 fn host_manifests_route_every_event_to_the_common_client() -> Result {
+    let manifest: Value = serde_json::from_str(include_str!("../plugin.json"))?;
+    assert_eq!(
+        manifest["$schema"],
+        "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+    );
     let codex: Value = serde_json::from_str(include_str!("../hooks/hooks.json"))?;
     let pi: Value = serde_json::from_str(include_str!("../pi/package.json"))?;
     let claude: Value = serde_json::from_str(include_str!("../claude/.claude-plugin/plugin.json"))?;

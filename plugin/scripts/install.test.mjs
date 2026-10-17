@@ -374,6 +374,8 @@ test("the published package contains only native hook shims", () => {
     assert.deepEqual(servers.acyclic.args,["__tools"]);
   }
   const mcp = JSON.parse(readFileSync(join(plugin, "mcp.json"), "utf8"));
+  assert.equal(JSON.parse(readFileSync(join(plugin, "plugin.json"), "utf8")).$schema,
+    "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json");
   assert.equal(mcp.$schema, "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json");
   assert.equal(mcp.mcpServers.acyclic.type, "stdio");
   assert.equal(mcp.mcpServers.acyclic.command, "./bin/acyclic");

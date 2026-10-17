@@ -82,7 +82,8 @@ for (const [manifest, client] of [[hostManifests[1], "./mcp.json"], [hostManifes
   if (assets[manifest].mcpServers !== client) fail(`missing result client: ${manifest}`);
 }
 const codexMcp = assets[join(plugin, "mcp.json")];
-if (codexMcp.$schema !== "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+if (assets[hostManifests[0]].$schema !== "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+  || codexMcp.$schema !== "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
   || codexMcp.mcpServers?.acyclic?.type !== "stdio"
   || codexMcp.mcpServers?.acyclic?.command !== "./bin/acyclic") {
   fail("Codex must discover the contained standard plugin MCP client");
