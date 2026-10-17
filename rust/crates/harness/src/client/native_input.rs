@@ -124,7 +124,10 @@ mod stdin {
 
 /// A dedicated reader for input the reactor cannot wait on. One persistent
 /// thread fills recycled batches and feeds a bounded channel, so a slow or
-/// stalled read never blocks the runtime.
+/// stalled read never blocks the runtime. The thread waits in poll on the
+/// input and on a cancel pipe whose only writer the stream holds: dropping
+/// the stream hangs that pipe up, so the thread ends without reading again
+/// and releases its input.
 #[cfg(unix)]
 mod reader {
     use std::fs::File;
@@ -136,29 +139,37 @@ mod reader {
 
     const BATCH: usize = 64 * 1024;
 
-    /// Read, waiting as a blocking read would. An inherited description may
-    /// be nonblocking (a socket, say): WouldBlock then waits in poll for
-    /// input instead of ending it, without changing the shared flags.
-    pub(super) fn read_blocking(file: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
+    /// Read once the input is ready, or `None` once `cancel` is hung up or
+    /// written. The wait is in poll, so a read starts only with input
+    /// present and a cancel seen in the same wake wins. An inherited
+    /// description may be nonblocking (a socket, say): WouldBlock waits
+    /// again instead of ending input, without changing the shared flags.
+    pub(super) fn read_until_cancelled(
+        file: &mut File,
+        cancel: &io::PipeReader,
+        bytes: &mut [u8],
+    ) -> io::Result<Option<usize>> {
         use rustix::event::{PollFd, PollFlags, poll};
         loop {
+            let mut fds = [
+                PollFd::new(&*file, PollFlags::IN),
+                PollFd::new(cancel, PollFlags::IN),
+            ];
+            match poll(&mut fds, None) {
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
+                Ok(_) => {}
+            }
+            if !fds[1].revents().is_empty() {
+                return Ok(None);
+            }
+            // A device poll cannot watch (macOS reports some as invalid)
+            // answers reads at once; waiting on it again would spin.
+            let unwatchable = fds[0].revents().contains(PollFlags::NVAL);
             match file.read(bytes) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    let mut fds = [PollFd::new(&*file, PollFlags::IN)];
-                    match poll(&mut fds, None) {
-                        Err(error) if error != rustix::io::Errno::INTR => {
-                            return Err(error.into());
-                        }
-                        // A device poll cannot watch (macOS reports some
-                        // as invalid) would turn the retry into a spin.
-                        Ok(_) if fds[0].revents().contains(PollFlags::NVAL) => {
-                            return Err(error);
-                        }
-                        _ => {}
-                    }
-                }
-                read => return read,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock && !unwatchable => {}
+                read => return read.map(Some),
             }
         }
     }
@@ -168,22 +179,30 @@ mod reader {
         spare: mpsc::Sender<Vec<u8>>,
         current: Vec<u8>,
         offset: usize,
+        /// The cancel pipe's only writer; dropping it ends the thread's wait.
+        _cancel: io::PipeWriter,
     }
 
     impl Reader {
         pub(super) fn spawn(mut file: File) -> io::Result<Self> {
             let (send, batches) = tokio::sync::mpsc::channel(2);
             let (spare, recycled) = mpsc::channel::<Vec<u8>>();
-            // Detached: a dropped stream fails the next send, so the thread
-            // ends after its current read completes (at the next input or end
-            // of input for a pipe or terminal).
+            let (cancelled, cancel) = io::pipe()?;
+            // Detached, never joined: dropping the stream hangs up the cancel
+            // pipe (ending a wait) and closes the channel (ending a send), so
+            // the thread ends and closes its input without another read.
             std::thread::Builder::new()
                 .name("harness-stdin".into())
                 .spawn(move || {
                     loop {
                         let mut batch = recycled.try_recv().unwrap_or_default();
                         batch.resize(BATCH, 0);
-                        let result = read_blocking(&mut file, &mut batch).map(|count| {
+                        let result = match read_until_cancelled(&mut file, &cancelled, &mut batch) {
+                            Ok(None) => return,
+                            Ok(Some(count)) => Ok(count),
+                            Err(error) => Err(error),
+                        };
+                        let result = result.map(|count| {
                             batch.truncate(count);
                             batch
                         });
@@ -198,6 +217,7 @@ mod reader {
                 spare,
                 current: Vec::new(),
                 offset: 0,
+                _cancel: cancel,
             })
         }
 
@@ -470,6 +490,49 @@ mod tests {
         assert!(!blocked.is_finished());
         write.write_all(b"x")?;
         assert_eq!(blocked.join().map_err(|_| io::ErrorKind::Other)??, 1);
+        Ok(())
+    }
+
+    /// Writes one byte after `drop_reader` and reports whether it is still
+    /// unread once the reader has had time to take it.
+    fn byte_after_drop_unread(
+        spawn: impl FnOnce(File) -> io::Result<Box<dyn FnOnce()>>,
+    ) -> io::Result<bool> {
+        let (read, mut write) = pipe()?;
+        let probe = read.try_clone()?;
+        let drop_reader = spawn(read)?;
+        // Let the reader reach its wait before the stream goes away.
+        std::thread::sleep(Duration::from_millis(5));
+        drop_reader();
+        write.write_all(b"x")?;
+        std::thread::sleep(Duration::from_millis(20));
+        let mut fds = [rustix::event::PollFd::new(
+            &probe,
+            rustix::event::PollFlags::IN,
+        )];
+        Ok(rustix::event::poll(&mut fds, Some(&rustix::event::Timespec::default()))? == 1)
+    }
+
+    #[test]
+    fn a_dropped_reader_reads_nothing_written_after_it() -> io::Result<()> {
+        let unread = byte_after_drop_unread(|read| {
+            let runtime = runtime()?;
+            let reader = runtime.block_on(async { super::reader::Reader::spawn(read) })?;
+            Ok(Box::new(move || drop((reader, runtime))))
+        })?;
+        assert!(unread);
+        Ok(())
+    }
+
+    #[test]
+    fn negative_control_detects_a_dropped_reader_left_reading() -> io::Result<()> {
+        // The removed reader waited inside read, which the stream's drop
+        // could not interrupt: the next byte after the drop was consumed.
+        let unread = byte_after_drop_unread(|mut read| {
+            std::thread::spawn(move || io::Read::read(&mut read, &mut [0; 8]));
+            Ok(Box::new(|| {}))
+        })?;
+        assert!(!unread);
         Ok(())
     }
 
