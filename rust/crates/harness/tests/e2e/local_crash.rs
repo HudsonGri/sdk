@@ -4,7 +4,7 @@ use acyclic_harness::{
     LocalHarness, TaskId,
     context::CompactionPolicy,
     conversation::VolumeRef,
-    model::{Model, ModelRequest},
+    model::{Model, ModelDispatch, ModelRequest},
     task_volume::{Change, Cursor, FileKey, Query, TaskFile},
     test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
 };
@@ -34,6 +34,7 @@ pub(super) struct Input {
 pub(super) struct Checkpoint {
     pub changes: Vec<Change>,
     pub requests: Vec<ModelRequest>,
+    pub dispatches: Vec<ModelDispatch>,
 }
 
 pub(super) async fn interrupt(path: PathBuf, input: Input) -> TestResult<Checkpoint> {

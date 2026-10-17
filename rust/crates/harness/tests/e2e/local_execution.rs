@@ -1,4 +1,8 @@
-use super::{TestResult, local_case::LocalCase, local_workspace, matchers};
+use super::{
+    TestResult,
+    local_case::{ExpectedOutcome, LocalCase},
+    local_workspace, matchers,
+};
 use acyclic_fs::performance::BOUNDARY_BUDGET;
 use acyclic_harness::{
     LocalHarness, OperationId,
@@ -67,6 +71,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     let turns = super::local_case::bind_seed_files(case.turns, &references)?;
+    let scripted_calls = super::local_tool_files::calls(&turns);
     let interrupted_count = if case.kill_after.is_some() {
         turns
             .iter()
@@ -111,6 +116,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     };
     let mut prefix = Vec::new();
     let mut requests = Vec::new();
+    let mut dispatches = Vec::new();
     if let Some(after) = case.kill_after {
         let mut task_initial = task_files
             .as_mut()
@@ -165,6 +171,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             .clone();
         prefix = checkpoint.changes;
         requests = checkpoint.requests;
+        dispatches = checkpoint.dispatches;
         (host, reader) = local_workspace::reopen(&directory, &volume).await?;
         source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
         observation = source
@@ -201,6 +208,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         resumed.snapshot = Some(task_initial);
         task_files = Some(resumed);
     }
+    let tool_files = super::local_tool_files::observe(&harness, task_id, &scripted_calls).await?;
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
@@ -214,12 +222,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     let output = harness.resume(task_id).await;
-    match (&output, &case.expect.error) {
-        (Ok(output), None) if output.text == case.expect.text => {}
-        (Err(acyclic_harness::Error::TaskFailed { message, .. }), Some(expected))
-            if message == expected && case.expect.text.is_empty() => {}
-        (Err(error), None) => return Err(error.to_string().into()),
-        _ => return Err(format!("local turn outcome differs: {output:?}").into()),
+    match (case.expect.outcome, &output) {
+        (ExpectedOutcome::Succeeded, Ok(output))
+            if Some(&output.text) == case.expect.text.as_ref() => {}
+        (ExpectedOutcome::Indeterminate, Err(acyclic_harness::Error::Indeterminate(id)))
+            if *id == operation => {}
+        (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
     }
     let task_cursor =
         if let (Some(expected), Some(observation)) = (&case.expect.task_files, task_files) {
@@ -246,6 +254,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         return Err("local turn did not consume exactly its scripted recoveries".into());
     }
     requests.extend(provider.requests());
+    dispatches.extend(provider.dispatches());
     if requests.len() != steps {
         return Err("local scenario did not consume exactly its scripted model turns".into());
     }
@@ -268,6 +277,31 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             }
         }
     }
+    if let Some(observation) = tool_files {
+        let execution = dispatches
+            .first()
+            .ok_or("missing model dispatch")?
+            .operation_id;
+        if dispatches.len() != steps
+            || dispatches.iter().enumerate().any(|(step, dispatch)| {
+                dispatch.operation_id != execution || dispatch.step as usize != step
+            })
+        {
+            return Err("local model execution or step binding differs".into());
+        }
+        super::local_tool_files::verify(
+            &harness,
+            task_id,
+            execution,
+            observation,
+            &scripted_calls,
+            case.expect
+                .results
+                .as_ref()
+                .ok_or("bash results are required")?,
+        )
+        .await?;
+    }
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let cut = stream.tail(path).await?;
     let mut wire_frames = Vec::new();
@@ -286,7 +320,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         &case.expect.frames,
         &wire_frames,
         operation,
-        case.expect.error.is_none(),
+        case.expect.outcome,
         &interruptions,
     )?;
     let root = serde_json::to_value(operation)?;
@@ -299,7 +333,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         &case.expect.frames,
         &wire_frames,
         operation,
-        case.expect.error.is_none(),
+        case.expect.outcome,
         &interruptions,
     )
     .is_ok()
@@ -522,17 +556,19 @@ pub(super) fn check_frames(
     expected: &[Value],
     frames: &[Value],
     operation: OperationId,
+    outcome: ExpectedOutcome,
 ) -> TestResult {
-    check_terminal_frames(expected, frames, operation, true, &[])
+    check_terminal_frames(expected, frames, operation, outcome, &[])
 }
 
 pub(super) fn check_terminal_frames(
     expected: &[Value],
     frames: &[Value],
     operation: OperationId,
-    success: bool,
+    outcome: ExpectedOutcome,
     interruptions: &[OperationId],
 ) -> TestResult {
+    let identity = operation;
     let operation = serde_json::to_value(operation)?;
     let terminals: Vec<_> = frames
         .iter()
@@ -556,21 +592,22 @@ pub(super) fn check_terminal_frames(
         .last()
         .ok_or("local task has no root terminal frame")?;
     let event = acyclic_harness::scheduler::SchedulerEvent::deserialize(terminal)?;
-    let valid = match event {
-        acyclic_harness::scheduler::SchedulerEvent::Completed { outcome, .. } => matches!(
-            (success, outcome),
-            (true, acyclic_harness::Outcome::Succeeded(_))
-                | (false, acyclic_harness::Outcome::Failed { .. })
-        ),
-        _ => false,
-    };
-    if !valid {
-        return Err(if success {
-            "local task wire did not succeed"
-        } else {
-            "local task wire did not fail"
-        }
-        .into());
+    match (outcome, event) {
+        (
+            ExpectedOutcome::Succeeded,
+            acyclic_harness::scheduler::SchedulerEvent::Completed {
+                outcome: acyclic_harness::Outcome::Succeeded(_),
+                ..
+            },
+        ) => {}
+        (
+            ExpectedOutcome::Indeterminate,
+            acyclic_harness::scheduler::SchedulerEvent::Completed {
+                outcome: acyclic_harness::Outcome::Indeterminate { operation_id },
+                ..
+            },
+        ) if operation_id == identity => {}
+        _ => return Err("local task wire outcome differs".into()),
     }
     matchers::ordered(expected, frames, "scheduler wire frames")?;
     Ok(())
