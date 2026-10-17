@@ -1,5 +1,6 @@
 //! The child process inspects live allocator storage before glibc releases it.
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
+mod common;
 #[path = "common/signed.rs"]
 mod signed;
 use acyclic_auth::{contract::*, verify::verify};
@@ -77,7 +78,7 @@ fn scrub_child() {
         }
         "bad-key" => {
             let end = bytes.len() - 3;
-            bytes[end] = 5;
+            *bytes.get_mut(end).unwrap() = 5;
         }
         _ => {}
     }
