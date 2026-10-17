@@ -1,6 +1,6 @@
 use super::{TestResult, matchers};
 use acyclic_harness::{
-    Error, LocalHarness, LocalHarnessConfig, Result,
+    Error, LocalHarness, Result,
     context::{ModelContextCapacity, ModelTokenCount},
     model::{
         Model, ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelProvider, ModelRole,
@@ -9,7 +9,7 @@ use acyclic_harness::{
     task_volume::{
         ChildFile, ChildState, ChildStatus, Component, Control, FileKey, FileValue, Query,
     },
-    test_support::{ScriptedModelProvider, ScriptedTurn},
+    test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -252,17 +252,19 @@ pub(super) async fn run(value: Value) -> TestResult {
     if provider.actions.len() != expected_actions {
         return Err("scenario actions must use distinct model request events".into());
     }
-    let directory = tempfile::tempdir()?;
+    let temporary = super::local_workspace::temporary()?;
+    let directory = temporary.path().join("workspace");
+    std::fs::create_dir(&directory)?;
     for (path, text) in case.seed {
-        let path = file_path(directory.path(), &path)?;
+        let path = file_path(&directory, &path)?;
         std::fs::create_dir_all(path.parent().ok_or("missing seed parent")?)?;
         std::fs::write(path, text)?;
     }
     let model = Model::new("scripted".into(), "parent".into(), "1".into(), Value::Null)?;
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
-        directory.path(),
-        (model, provider.clone()),
-    ))
+    let harness = LocalHarness::open(
+        local_harness_config(&directory, (model, provider.clone()))?
+            .state_directory(temporary.path().join("state")),
+    )
     .await?;
     let mut applied = 0;
     let outcome = tokio::select! {
@@ -374,7 +376,7 @@ pub(super) async fn run(value: Value) -> TestResult {
         matchers::ordered(&expected, &actual, &name)?;
     }
     for (path, expected) in case.expect.files {
-        let actual = match std::fs::read_to_string(file_path(directory.path(), &path)?) {
+        let actual = match std::fs::read_to_string(file_path(&directory, &path)?) {
             Ok(text) => Some(text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
