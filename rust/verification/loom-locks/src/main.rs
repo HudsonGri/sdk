@@ -1,20 +1,23 @@
 //! Reports which Rust sources construct or import a lock, for
 //! `scripts/check-loom-models.mjs`. Sources are parsed, not pattern matched,
 //! so comments, const-generic blocks, shifts inside array lengths, qualified
-//! paths and nested generics cannot hide or fake a constructor.
+//! paths and nested generics cannot hide or fake a constructor. Macro bodies
+//! are expanded into parsed statements first (see [`macros`]), and a
+//! `macro_rules!` transcriber that constructs through a metavariable type, or
+//! does not parse, makes the scan indeterminate (an error) rather than lock free.
 //!
 //! stdin: records `path\0source\0`. stdout: one `path\t1`, `path\t0` or
 //! `path\t!error` line per record.
-use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
+mod macros;
+
+use macros::{Fragment, METAVARIABLE};
 use std::{
     collections::BTreeSet,
     io::{Read, Write},
     process::ExitCode,
 };
 use syn::{
-    Block, Expr, ExprPath, Local, Macro, Pat, Path, Token, Type, UseTree,
-    parse::{ParseStream, Parser},
-    punctuated::Punctuated,
+    Expr, ExprPath, Local, Pat, Path, Type, UseTree,
     visit::{self, Visit},
 };
 
@@ -45,14 +48,47 @@ fn main() -> ExitCode {
 /// Whether `source` constructs a lock or imports a Loom lock.
 pub fn scan(source: &str) -> syn::Result<bool> {
     let file = syn::parse_file(source)?;
+    let fragments = macros::fragments(&file)?;
     let mut names = Names::default();
     names.visit_file(&file);
+    for fragment in &fragments {
+        fragment
+            .stmts
+            .iter()
+            .for_each(|stmt| names.visit_stmt(stmt));
+    }
     let mut finder = Finder {
-        locks: names.resolve(),
+        locks: names.resolve(&[]),
         found: names.loom_import,
     };
     finder.visit_file(&file);
-    Ok(finder.found)
+    for fragment in &fragments {
+        fragment
+            .stmts
+            .iter()
+            .for_each(|stmt| finder.visit_stmt(stmt));
+    }
+    if finder.found {
+        return Ok(true);
+    }
+    // A transcriber constructing a metavariable type constructs whatever the
+    // caller passes in: that is unknown here, not lock free.
+    let mut templated = Finder {
+        locks: names.resolve(&[METAVARIABLE]),
+        found: false,
+    };
+    for Fragment { stmts, template } in &fragments {
+        if *template {
+            stmts.iter().for_each(|stmt| templated.visit_stmt(stmt));
+        }
+    }
+    if templated.found {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "indeterminate: a macro_rules! transcriber constructs a metavariable type",
+        ));
+    }
+    Ok(false)
 }
 
 /// Lock names, renames and type aliases visible anywhere in the file.
@@ -63,8 +99,9 @@ struct Names {
 }
 
 impl Names {
-    fn resolve(&self) -> BTreeSet<String> {
-        let mut locks: BTreeSet<String> = LOCKS.iter().map(ToString::to_string).collect();
+    fn resolve(&self, extra: &[&str]) -> BTreeSet<String> {
+        let mut locks: BTreeSet<String> =
+            LOCKS.iter().chain(extra).map(ToString::to_string).collect();
         while let Some(alias) = self
             .aliases
             .iter()
@@ -159,86 +196,6 @@ impl Finder {
                 .locks
                 .contains(&segments[segments.len() - 2].ident.to_string())
     }
-
-    // Macro bodies are tokens to syn: parse them as expressions or
-    // statements, and scan the raw tokens when neither form fits.
-    fn visit_tokens(&mut self, tokens: &TokenStream) {
-        let exprs = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(tokens.clone());
-        if let Ok(exprs) = exprs {
-            exprs.iter().for_each(|expr| self.visit_expr(expr));
-            return;
-        }
-        let stmts = (|input: ParseStream<'_>| Block::parse_within(input)).parse2(tokens.clone());
-        if let Ok(stmts) = stmts {
-            stmts.iter().for_each(|stmt| self.visit_stmt(stmt));
-            return;
-        }
-        self.found |= self.token_constructor(tokens);
-    }
-
-    // Token fallback: a lock identifier, an optional `::<..>` list balanced
-    // at this token-tree level, then `::new(` or `::default(`. Parenthesised,
-    // bracketed and braced groups are single trees, so shifts, array lengths
-    // and const blocks inside them never count as generic delimiters.
-    fn token_constructor(&self, tokens: &TokenStream) -> bool {
-        let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
-        for (index, tree) in trees.iter().enumerate() {
-            if let TokenTree::Group(group) = tree
-                && self.token_constructor(&group.stream())
-            {
-                return true;
-            }
-            let TokenTree::Ident(ident) = tree else {
-                continue;
-            };
-            if !self.locks.contains(&ident.to_string()) {
-                continue;
-            }
-            let mut at = index + 1;
-            if path_sep(&trees, at) && punct(&trees, at + 2, '<') {
-                let mut depth = 0_usize;
-                at += 2;
-                loop {
-                    match trees.get(at) {
-                        Some(TokenTree::Punct(p)) if p.as_char() == '<' => depth += 1,
-                        Some(TokenTree::Punct(p)) if p.as_char() == '>' && !arrow(&trees, at) => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        None => break,
-                        _ => {}
-                    }
-                    at += 1;
-                }
-                at += 1;
-            }
-            let named = matches!(trees.get(at + 2), Some(TokenTree::Ident(name))
-                if CONSTRUCTORS.contains(&name.to_string().as_str()));
-            let called = matches!(trees.get(at + 3), Some(TokenTree::Group(group))
-                if group.delimiter() == Delimiter::Parenthesis);
-            if path_sep(&trees, at) && named && called {
-                return true;
-            }
-        }
-        false
-    }
-}
-
-fn punct(trees: &[TokenTree], at: usize, char: char) -> bool {
-    matches!(trees.get(at), Some(TokenTree::Punct(p)) if p.as_char() == char)
-}
-
-fn path_sep(trees: &[TokenTree], at: usize) -> bool {
-    matches!(trees.get(at), Some(TokenTree::Punct(p)) if p.as_char() == ':' && p.spacing() == Spacing::Joint)
-        && punct(trees, at + 1, ':')
-}
-
-// The `>` of `->`.
-fn arrow(trees: &[TokenTree], at: usize) -> bool {
-    at > 0
-        && matches!(&trees[at - 1], TokenTree::Punct(p) if p.as_char() == '-' && p.spacing() == Spacing::Joint)
 }
 
 impl Visit<'_> for Finder {
@@ -259,11 +216,6 @@ impl Visit<'_> for Finder {
             self.found = true;
         }
         visit::visit_local(self, local);
-    }
-
-    fn visit_macro(&mut self, mac: &Macro) {
-        self.visit_tokens(&mac.tokens);
-        visit::visit_macro(self, mac);
     }
 }
 
