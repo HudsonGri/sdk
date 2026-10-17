@@ -23,6 +23,7 @@ mod provider_tests;
 mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
+mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
@@ -239,9 +240,19 @@ fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
         return Err("scenario services must start before the async runtime".into());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
-    Ok(tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?)
+    Ok(scenario_builder().build()?)
+}
+
+const BLOCKING_WORKERS: usize = 16;
+const MAX_ASYNC_WORKERS: usize = 32;
+fn scenario_builder() -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    builder
+        .worker_threads(available.clamp(2, MAX_ASYNC_WORKERS))
+        .max_blocking_threads(BLOCKING_WORKERS)
+        .enable_all();
+    builder
 }
 
 #[tokio::test]
