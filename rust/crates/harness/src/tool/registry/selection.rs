@@ -261,6 +261,9 @@ impl ToolRegistry {
                 grants
                     .iter()
                     .filter_map(|grant| grant.strip_prefix("tool:call:"))
+                    .filter(|name| {
+                        !crate::tools::children::family(name) || grants.contains("tool:call:spawn")
+                    })
             },
             io,
         )
