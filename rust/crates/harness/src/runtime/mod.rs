@@ -88,7 +88,6 @@ pub use content_read::*;
 mod content_write;
 pub(crate) use content_write::PrivateSummaries;
 mod groups;
-mod read_pins;
 mod interactions;
 mod model_context;
 mod tool_dispatch;
