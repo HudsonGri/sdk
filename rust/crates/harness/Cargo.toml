@@ -109,6 +109,10 @@ name = "client_history"
 path = "tests/client_history.rs"
 
 [[test]]
+name = "jsonl-wire"
+path = "tests/jsonl_wire.rs"
+
+[[test]]
 name = "mcp-durable"
 path = "tests/mcp_durable.rs"
 required-features = ["filesystem-local", "mcp-http"]
