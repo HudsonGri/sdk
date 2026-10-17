@@ -7,17 +7,40 @@ use std::task::{Context, Poll, Waker};
 const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
 
 fn schedule<const CLAIM: bool>() {
-    let volume = Arc::new(
-        loom::future::block_on(Box::pin(TaskVolume::open(
-            Arc::new(MemoryStream::default()),
-            StreamPath::new("hook-effects-model").unwrap(),
-        )))
-        .unwrap(),
-    );
-    let executions = Arc::new(AtomicUsize::new(0));
-    let prepared: Vec<_> = (0..2)
+    let path = StreamPath::new("hook-effects-model").unwrap();
+    // Seed a real encoded header, then bound the provider topology to one
+    // journal. The actual task-volume index, codecs, capture and CAS remain.
+    let seed = Arc::new(MemoryStream::default());
+    loom::future::block_on(TaskVolume::open(seed.clone(), path.clone())).unwrap();
+    let records = loom::future::block_on(async {
+        use futures::TryStreamExt;
+        seed.read(acyclic_stream::ReadRequest {
+            path: path.clone(),
+            from: 0,
+            limit: 1,
+        })
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap()
+    });
+    let provider = Arc::new(crate::task_volume::model_checking::Journal::new(
+        path.clone(),
+        records,
+    ));
+    let volumes: Vec<_> = (0..2)
         .map(|_| {
-            let volume = Arc::clone(&volume);
+            Arc::new(
+                loom::future::block_on(TaskVolume::open_existing(provider.clone(), path.clone()))
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let prepared: Vec<_> = volumes
+        .into_iter()
+        .map(|volume| {
             let executions = Arc::clone(&executions);
             let mut future = Box::pin(async move {
                 run_once::<_, _, _, _, _, CLAIM>(
