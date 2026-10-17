@@ -46,7 +46,7 @@ impl Profile {
         if self.kitty {
             bytes.extend_from_slice(b"\x1b[?0u");
         }
-        for mode in [2026, 2027, 1004, 2004, 1049, 1006, 1002] {
+        for mode in [2026, 2027, 1004, 2004, 1049, 1006, 1002, 1000, 1003] {
             let state = if self.modes && (mode != 2027 || self.grapheme) {
                 2
             } else {
@@ -511,7 +511,9 @@ fn restore_is_reusable_and_preserves_permanent_and_unknown_modes() -> io::Result
 fn alternate_screen_reports_sgr_wheel_and_inline_keeps_native_scrolling() -> io::Result<()> {
     let setup = |screen, modes: &[(u16, ModeState)]| -> io::Result<Vec<u8>> {
         let mut caps = Capabilities::default();
-        caps.modes.insert(1049, ModeState::Reset);
+        for mode in [1049, 1000, 1003] {
+            caps.modes.insert(mode, ModeState::Reset);
+        }
         caps.modes.extend(modes.iter().copied());
         let mut bytes = Vec::new();
         RestoreGuard::new(&mut bytes, &caps).setup(screen)?;
@@ -606,10 +608,19 @@ impl Write for FailOnce {
     }
 }
 
+/// Start states: a subset of the independent modes and at most one mouse
+/// protocol, as a terminal can actually be (selecting one replaces another).
+fn start_states() -> impl Iterator<Item = u8> {
+    (0..128u8).filter(|initial| (initial >> 4).count_ones() <= 1)
+}
+
 fn restored_modes(initial: u8, at: usize) -> (TermMode, TermMode) {
     let mut caps = Capabilities::default();
     let mut original = Vec::new();
-    for (index, mode) in [1004, 2004, 1049, 1006, 1002].into_iter().enumerate() {
+    for (index, mode) in [1004, 2004, 1049, 1006, 1002, 1000, 1003]
+        .into_iter()
+        .enumerate()
+    {
         let set = initial & (1 << index) != 0;
         caps.modes.insert(
             mode,
@@ -644,12 +655,52 @@ fn restored_modes(initial: u8, at: usize) -> (TermMode, TermMode) {
 fn every_mode_subset_and_failure_boundary_restores() {
     // Exhaust every initial subset and byte boundary of setup AND teardown,
     // including a transient failure partway through a restoration sequence.
-    for initial in 0..32 {
-        for at in 0..90 {
+    // Start states include an inherited click (1000) or any-event (1003)
+    // protocol that ours displaces and restoration selects again.
+    for initial in start_states() {
+        for at in 0..110 {
             let (before, after) = restored_modes(initial, at);
             assert_eq!(before, after, "initial={initial} failure_at={at}");
         }
     }
+}
+
+#[test]
+fn an_inherited_mouse_protocol_is_selected_again_on_restore() -> io::Result<()> {
+    for (inherited, reselect) in [(1000, b"\x1b[?1000h"), (1003, b"\x1b[?1003h")] {
+        let mut caps = Capabilities::default();
+        for mode in [1049, 1006, 1002, 1000, 1003] {
+            caps.modes.insert(mode, ModeState::Reset);
+        }
+        caps.modes.insert(inherited, ModeState::Set);
+        let mut bytes = Vec::new();
+        RestoreGuard::new(&mut bytes, &caps).setup(ScreenMode::Alternate)?;
+        let expected = [
+            b"\x1b[?1049h\x1b[?1006h\x1b[?1002h\x18".as_slice(),
+            reselect,
+            b"\x18\x1b[?1006l\x18\x1b[?1049l",
+        ]
+        .concat();
+        assert_eq!(bytes, expected);
+    }
+    // Negative control: resetting only ours leaves the inherited click
+    // reporting off, which the oracle detects.
+    let mut term = oracle();
+    let mut parser: Processor = Processor::new();
+    parser.advance(&mut term, b"\x1b[?1000h");
+    let before = *term.mode();
+    parser.advance(&mut term, b"\x1b[?1002h\x1b[?1002l");
+    assert_ne!(*term.mode(), before);
+    // An unknown protocol state could be an active selection: reporting is
+    // not enabled at all.
+    let mut caps = Capabilities::default();
+    for mode in [1049, 1006, 1002, 1003] {
+        caps.modes.insert(mode, ModeState::Reset);
+    }
+    let mut bytes = Vec::new();
+    RestoreGuard::new(&mut bytes, &caps).setup(ScreenMode::Alternate)?;
+    assert_eq!(bytes, b"\x1b[?1049h\x18\x1b[?1049l");
+    Ok(())
 }
 
 proptest! {
@@ -670,7 +721,7 @@ proptest! {
     }
 
     #[test]
-    fn restore_after_arbitrary_failure(initial in 0u8..32, at in 0usize..90) {
+    fn restore_after_arbitrary_failure(initial in prop::sample::select(start_states().collect::<Vec<_>>()), at in 0usize..110) {
         let (before, after) = restored_modes(initial, at);
         prop_assert_eq!(after, before);
     }
