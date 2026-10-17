@@ -2,6 +2,9 @@
 
 use std::ops::Range;
 
+mod presentation;
+pub use presentation::{Excerpt, Resolution, ResolutionError};
+
 /// Citation presentation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
@@ -211,7 +214,13 @@ impl Stream {
                     matched,
                     block,
                 }) => {
-                    if matched == 1 && !block && byte == b':' {
+                    if matched == 1 && block && byte == b':' {
+                        self.pending = Some(Pending::Prefix {
+                            start: position - 1,
+                            matched,
+                            block,
+                        });
+                    } else if matched == 1 && !block && byte == b':' {
                         self.pending = Some(Pending::Prefix {
                             start,
                             matched,

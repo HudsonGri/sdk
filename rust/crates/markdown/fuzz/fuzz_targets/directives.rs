@@ -29,5 +29,10 @@ fuzz_target!(|data: &[u8]| {
             Directive::parse(node.directive.raw(), node.directive.kind()),
             node.directive
         );
+        if let Some(target) = node.directive.target() {
+            if let Ok(excerpt) = target.select(source) {
+                assert!(excerpt.content.len() <= source.len());
+            }
+        }
     }
 });

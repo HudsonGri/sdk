@@ -148,3 +148,88 @@ fn losing_pending_escape_is_detected() {
     assert!(stream.nodes().is_empty());
     assert_ne!(stream.nodes(), broken.nodes());
 }
+
+#[test]
+fn line_and_character_selection_and_render_snapshot() {
+    let directive = Directive::parse("::file[src/example.rs#L2-3]{chars=0:13}", Kind::Block);
+    let excerpt = directive
+        .target()
+        .unwrap()
+        .select("ignored\nlet x = 42;\nnext\n")
+        .unwrap();
+    assert_eq!(excerpt.content, "let x = 42;\nn");
+    let rendered = directive.render(Some(&Resolution::Content(excerpt)));
+    let text: Vec<String> = rendered
+        .iter()
+        .map(|line| line.spans.iter().map(|span| span.text.as_str()).collect())
+        .collect();
+    assert_eq!(
+        text,
+        ["┌─ src/example.rs:2-3", "│ let x = 42;", "│ n", "└─"]
+    );
+    assert!(
+        rendered[1]
+            .spans
+            .iter()
+            .any(|span| span.style.foreground.is_some())
+    );
+    let chip = Directive::parse(":file[src/example.rs#L2]", Kind::Inline).render(None);
+    assert_eq!(chip[0].spans[0].text, "src/example.rs:2-2");
+    assert!(chip[0].spans[0].style.underline);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(96))]
+    #[test]
+    fn selected_unicode_ranges_match_independent_model(
+        source in prop::collection::vec(".{0,12}", 0..8).prop_map(|lines| lines.join("\n")), a in 0usize..12, b in 0usize..12,
+        first in 1usize..8, last in 1usize..8,
+    ) {
+        let (start, end) = (a.min(b), a.max(b));
+        let (first, last) = (first.min(last), first.max(last));
+        let target = Target { path: "x".into(), lines: Some(Lines { start: first, end: last }), chars: Some(start..end), symbol: None };
+        let lines: Vec<_> = source.split('\n').collect();
+        let expected = if last > lines.len() { Err(ResolutionError::LineRange) } else {
+            let selected = lines[first-1..last].join("\n");
+            let chars: Vec<_> = selected.chars().collect();
+            if end > chars.len() { Err(ResolutionError::CharRange) }
+            else { Ok(chars[start..end].iter().collect::<String>()) }
+        };
+        prop_assert_eq!(target.select(&source).map(|excerpt| excerpt.content), expected);
+    }
+}
+
+#[test]
+fn unsupported_symbols_and_resolution_failures_are_typed() {
+    let directive = Directive::parse("::file[p]{symbol=main}", Kind::Block);
+    assert_eq!(
+        directive.target().unwrap().select("fn main() {}"),
+        Err(ResolutionError::UnsupportedSymbol)
+    );
+    for error in [
+        ResolutionError::Denied,
+        ResolutionError::OutsideBoundary,
+        ResolutionError::TooLarge,
+        ResolutionError::TooMany,
+        ResolutionError::Read,
+    ] {
+        let lines = directive.render(Some(&Resolution::Error(error)));
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .any(|span| span.text.contains(&error.to_string()))
+        );
+    }
+    let invalid = Directive::parse("::file[]", Kind::Block);
+    assert_eq!(invalid.render(None)[0].spans[0].text, "::file[]");
+}
+
+#[test]
+fn colon_runs_keep_the_block_prefix() {
+    let stream = parsed("::::file[path]", &[1, 2, 3, 4, 7]);
+    assert_eq!(stream.nodes().len(), 1);
+    assert_eq!(stream.nodes()[0].range, 2..14);
+    assert_eq!(stream.nodes()[0].directive.kind(), Kind::Block);
+}
