@@ -1,6 +1,9 @@
 //! Native children run under the existing owner while their hook slot stays free.
 #[path = "support/native_hooks.rs"]
 mod native_hooks;
+#[path = "support/native_actions.rs"]
+mod native_actions;
+use native_actions::Tools;
 use futures::FutureExt as _;
 use native_hooks::*;
 use serde_json::{Value, json};
@@ -30,18 +33,6 @@ fn tool_value(answer: Value) -> Result<Value> {
     Ok(serde_json::from_str(&text)?)
 }
 
-async fn call(cwd: &Path, session: &str, id: &str, name: &str, input: Value) -> Result<Value> {
-    tool_value(
-        hook(
-            cwd,
-            "pi",
-            "tool_call",
-            json!({"sessionId":session,"toolCallId":id,"toolName":name,"input":input}),
-        )
-        .await?,
-    )
-}
-
 #[tokio::test]
 async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_without_launching()
 -> Result {
@@ -50,35 +41,24 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
     let mut owner = Some(fixture.start_owner().await?);
     let result = std::panic::AssertUnwindSafe(async {
         let cwd = fixture.path();
-        let session = "native-launch-parent";
-        let parent = hook(
-            cwd,
-            "pi",
-            "session_start",
-            json!({"sessionId":session,"cwd":cwd}),
-        )
-        .await?;
+        let mut parent = Tools::open(cwd, acyclic_harness::external_executor::ExternalHost::Pi, None).await?;
         tokio::time::timeout(std::time::Duration::from_secs(8), async {
             let args = native_spawn("child", "native_child_process");
-            let child = call(cwd, session, "spawn", "acyclic_spawn", args.clone()).await?;
+            let child = parent.call("spawn", "acyclic_spawn", args.clone()).await?;
             let child = child.as_str().ok_or("missing child task")?;
             let outcome =
-                call(cwd, session, "wait", "acyclic_wait", json!({"child":child})).await?;
+                parent.call("wait", "acyclic_wait", json!({"child":child})).await?;
             assert_eq!(outcome["success"], true, "{outcome}");
             assert!(!cwd.join("child.txt").exists());
             assert!(!cwd.join("leaf.txt").exists());
-            let inspected = call(
-                cwd,
-                session,
+            let inspected = parent.call(
                 "inspect",
                 "acyclic_inspect",
                 json!({"task":child}),
             )
             .await?;
-            assert_eq!(inspected["admission"]["parent"], parent["task"]);
-            let diff = call(
-                cwd,
-                session,
+            assert_eq!(inspected["admission"]["parent"], json!(parent.task));
+            let diff = parent.call(
                 "diff",
                 "fs",
                 json!({"command":format!("diff agents/{child}")}),
@@ -92,9 +72,7 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
                 diff["result"]["Filesystem"]["Data"]["value"]["fileChanges"], 2,
                 "{diff}"
             );
-            call(
-                cwd,
-                session,
+            parent.call(
                 "selected-import",
                 "fs",
                 json!({"command":format!("restore --source agents/{child} -- child.txt")}),
@@ -111,10 +89,11 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
             );
             fixture.close_owner(owner.take().unwrap()).await?;
             owner = Some(fixture.start_owner().await?);
-            let replay = call(cwd, session, "spawn", "acyclic_spawn", args).await?;
+            parent.reconnect().await?;
+            let replay = parent.call("spawn", "acyclic_spawn", args).await?;
             assert_eq!(replay, child);
             assert_eq!(
-                call(cwd, session, "wait", "acyclic_wait", json!({"child":child})).await?,
+                parent.call("wait", "acyclic_wait", json!({"child":child})).await?,
                 outcome
             );
             Ok::<_, Box<dyn std::error::Error>>(())

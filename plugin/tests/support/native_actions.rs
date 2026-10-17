@@ -123,6 +123,15 @@ impl<'a> Tools<'a> {
         })
     }
 
+    pub async fn reconnect(&mut self) -> Result {
+        let provider = Arc::new(native_hooks::client(self.cwd).await?);
+        let (requests, results) = local_hook_volumes(Arc::clone(&provider), self.task).await?;
+        self.provider = provider;
+        self.requests = requests;
+        self.results = results;
+        Ok(())
+    }
+
     pub async fn discover_tasks(&self, known: &[TaskId]) -> Result<Vec<TaskId>> {
         use acyclic_stream::StreamProvider as _;
         let page = self
