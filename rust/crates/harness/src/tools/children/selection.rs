@@ -75,6 +75,10 @@ pub(super) async fn save<P: StreamProvider + ?Sized>(
     result: Value,
     owner: Option<&dyn OwnedTaskMailbox>,
 ) -> Result<()> {
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    if IGNORE.with(std::cell::Cell::get) {
+        return Ok(());
+    }
     let binding = blake3::hash(&serde_json::to_vec(&binding).map_err(invalid)?);
     let mut result = result;
     let inline = result["agents"][0]["result"]
