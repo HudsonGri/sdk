@@ -4,7 +4,7 @@ use proptest::prelude::*;
 
 // Frozen main restore sequence (cancel check, admit, allocate, copy, record),
 // initialized on a separate ledger. Single-threaded it is the reference for
-// both callers; the old label differed only by a redundant second admit.
+// both callers; the old label includes its redundant second admit.
 fn old(
     prefix: &str,
     text: &str,
@@ -18,6 +18,9 @@ fn old(
     let copied = copy_work(length as u64);
     accounting.admit(copied)?;
     let mut path = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
+    if cancellation.is_none() {
+        accounting.admit(copied)?;
+    }
     path.value.extend_from_slice(prefix.as_bytes());
     path.value.extend_from_slice(text.as_bytes());
     observed_copy(path.value.len() as u64);
