@@ -337,8 +337,8 @@ async fn case(
     seed: Option<&Seed>,
 ) -> Result<Coverage> {
     let profile = read_profile::start();
-    // Each worker reuses its current-thread runtime. Bootstrap/recovery closures
-    // use the shared host queue; the scoped adapter retains the original gates.
+    // Each worker reuses one LocalSet on the shared runtime. Owned completions
+    // stay with their driver; physical I/O retains the original shared queue.
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let owned_seed = if seed.is_none() {
         Some(Seed::new(scenario).await?)
@@ -521,14 +521,31 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let io_threads = Arc::new(AtomicUsize::new(0));
+    let started_io = io_threads.clone();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .on_thread_start(move || {
+            started_io.fetch_add(1, Ordering::Relaxed);
+        })
         .enable_all()
         .build()
         .map_err(storage)?;
+    let setup = tokio::task::LocalSet::new();
     let mut schedules = Vec::new();
     for &scenario in scenarios {
-        let seed = runtime.block_on(Seed::new(scenario))?;
-        let observed = runtime.block_on(Box::pin(case(scenario, None, &[], Some(&seed))))?;
+        let seed = runtime.block_on(setup.run_until(
+            acyclic_native_runtime::testing::with_local_tasks(Seed::new(scenario)),
+        ))?;
+        let observed = runtime.block_on(setup.run_until(
+            acyclic_native_runtime::testing::with_local_tasks(Box::pin(case(
+                scenario,
+                None,
+                &[],
+                Some(&seed),
+            ))),
+        ))?;
         let baseline = observed.points;
         coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
         assert!(!baseline.is_empty());
@@ -565,44 +582,35 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         let workers: Vec<_> = (0..std::thread::available_parallelism()
             .unwrap()
             .get()
-            .min(64)
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
-                    let io_threads = Arc::new(AtomicUsize::new(0));
-                    let started_io = io_threads.clone();
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .max_blocking_threads(1)
-                        .on_thread_start(move || {
-                            started_io.fetch_add(1, Ordering::Relaxed);
-                        })
-                        .enable_all()
-                        .build()
-                        .map_err(storage)?;
+                    let local = tokio::task::LocalSet::new();
                     loop {
                         if failed.load(Ordering::Relaxed) {
                             return Ok(());
                         }
                         let index = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&(scenario, baseline, seed, cut)) = cuts.get(index) else {
-                            assert_eq!(
-                                io_threads.load(Ordering::Relaxed),
-                                0,
-                                "replay opened a private Tokio I/O pool"
-                            );
                             return Ok(());
                         };
-                        let coverage = runtime
-                            .block_on(Box::pin(case(scenario, Some(cut), baseline, Some(&seed))))
-                            .map_err(|error| {
-                                let error = Error::Storage(format!(
-                                    "{scenario:?} cut {cut}/{}: {error:?}",
-                                    baseline.len()
-                                ));
-                                eprintln!("{error:?}");
-                                failed.store(true, Ordering::Relaxed);
-                                error
-                            })?;
+                        let coverage =
+                            runtime
+                                .handle()
+                                .block_on(local.run_until(
+                                    acyclic_native_runtime::testing::with_local_tasks(Box::pin(
+                                        case(scenario, Some(cut), baseline, Some(&seed)),
+                                    )),
+                                ))
+                                .map_err(|error| {
+                                    let error = Error::Storage(format!(
+                                        "{scenario:?} cut {cut}/{}: {error:?}",
+                                        baseline.len()
+                                    ));
+                                    eprintln!("{error:?}");
+                                    failed.store(true, Ordering::Relaxed);
+                                    error
+                                })?;
                         unadmitted.fetch_add(usize::from(coverage.unadmitted), Ordering::Relaxed);
                         completed.fetch_add(1, Ordering::Relaxed);
                     }
@@ -614,6 +622,11 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         }
         Ok::<_, Error>(())
     })?;
+    assert_eq!(
+        io_threads.load(Ordering::Relaxed),
+        2,
+        "replay opened a private Tokio I/O pool"
+    );
     assert_eq!(
         completed.load(Ordering::Relaxed),
         cuts.len(),

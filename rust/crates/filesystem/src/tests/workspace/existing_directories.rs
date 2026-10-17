@@ -49,10 +49,20 @@ async fn measured(
     Ok(work)
 }
 
-fn linear_reads(work: WorkCounters, depth: usize) -> bool {
-    work.page_reads <= 8 * depth as u64 + 16
-        && work.backend_write_operations == 0
-        && work.authority_records_appended == 0
+fn check_linear_reads(work: WorkCounters, depth: usize) {
+    assert!(
+        work.page_reads <= 8 * depth as u64 + 16
+            && work.backend_write_operations == 0
+            && work.authority_records_appended == 0,
+        "directory check exceeded linear read-only work: depth {depth}: {work:?}"
+    );
+}
+
+fn check_shared_writes(candidate: WorkCounters, separate: WorkCounters) {
+    assert!(
+        candidate.page_writes < separate.page_writes,
+        "shared generation was rewritten per prefix: {candidate:?}; {separate:?}"
+    );
 }
 
 async fn missing(
@@ -101,7 +111,7 @@ proptest::proptest! {
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             let (workspace, path) = prepared(depth).await?;
             let work = measured(&workspace, &path, false).await?;
-            assert!(linear_reads(work, depth), "depth {depth}: {work:?}");
+            check_linear_reads(work, depth);
             Ok(())
         });
         proptest::prop_assert!(result.is_ok(), "{result:?}");
@@ -112,8 +122,7 @@ proptest::proptest! {
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             let together = missing(depth, false, 2048).await?;
             let separate = missing(depth, true, 2048).await?;
-            assert!(together.page_writes < separate.page_writes,
-                "shared generation was rewritten per prefix: {together:?}; {separate:?}");
+            check_shared_writes(together, separate);
             Ok(())
         });
         proptest::prop_assert!(result.is_ok(), "{result:?}");
@@ -155,15 +164,9 @@ async fn per_prefix_rewrite_control_is_rejected_by_the_same_work_check()
     let together = missing(16, false, 2048).await?;
     let separate = missing(16, true, 2048).await?;
     eprintln!("missing depth 16: shared {together:?}; per-prefix {separate:?}");
-    let check = |candidate: WorkCounters| {
-        assert!(
-            candidate.page_writes < separate.page_writes,
-            "shared generation was rewritten per prefix"
-        )
-    };
-    check(together);
+    check_shared_writes(together, separate);
     assert!(
-        std::panic::catch_unwind(|| check(separate)).is_err(),
+        std::panic::catch_unwind(|| check_shared_writes(separate, separate)).is_err(),
         "per-prefix control escaped the same work assertion"
     );
     Ok(())
@@ -176,10 +179,10 @@ async fn repeated_prefix_control_exceeds_the_same_read_bound() -> Result<(), Box
     let direct = measured(&workspace, &path, false).await?;
     let former = measured(&workspace, &path, true).await?;
     eprintln!("existing directory depth {depth}: direct {direct:?}; repeated prefixes {former:?}");
-    assert!(linear_reads(direct, depth));
+    check_linear_reads(direct, depth);
     assert!(
-        !linear_reads(former, depth),
-        "quadratic control passed the linear bound"
+        std::panic::catch_unwind(|| check_linear_reads(former, depth)).is_err(),
+        "quadratic control passed the same linear read assertion"
     );
     Ok(())
 }

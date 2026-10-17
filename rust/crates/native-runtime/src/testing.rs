@@ -7,6 +7,8 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::sync::Mutex;
+#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+mod local_tasks;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(all(test, not(acyclic_native_runtime_loom)))]
@@ -15,6 +17,25 @@ mod queue;
 mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
+tokio::task_local! { static LOCAL_TASKS: bool; }
+
+/// Keeps owned completions on the caller's LocalSet, including after cancellation.
+/// The caller must drive this scope inside a Tokio LocalSet.
+pub async fn with_local_tasks<F: Future>(future: F) -> F::Output {
+    LOCAL_TASKS.scope(true, future).await
+}
+
+fn spawn_owned<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    if LOCAL_TASKS.try_with(|local| *local).unwrap_or(false) {
+        tokio::task::spawn_local(LOCAL_TASKS.scope(true, future))
+    } else {
+        tokio::spawn(future)
+    }
+}
 
 /// A submitted operation paused before execution or acknowledgement.
 pub struct Boundary {
@@ -203,11 +224,11 @@ where
     F::Output: Send + 'static,
 {
     let Some(context) = Context::current() else {
-        return tokio::spawn(future);
+        return spawn_owned(future);
     };
     let active = context.accept("task");
     let owned = active.0.clone();
-    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
+    spawn_owned(CURRENT.scope(Some(owned.clone()), async move {
         let _active = active;
         owned.pause("task:submitted").await;
         let result = future.await;
@@ -226,7 +247,7 @@ where
         let active = context.accept("blocking");
         let owned = active.0.clone();
         (
-            Some(tokio::spawn(CURRENT.scope(
+            Some(spawn_owned(CURRENT.scope(
                 Some(owned.clone()),
                 async move {
                     let _active = active;
@@ -248,7 +269,7 @@ where
         // reuse the same native service.
         (
             None,
-            Some(tokio::spawn(async move {
+            Some(spawn_owned(async move {
                 let mut completion = crate::run_blocking_io(work, None)?;
                 let job = completion.pending.take().expect("prepared host operation");
                 queued(job, crate::workers(&crate::BLOCKING_WORKERS, false)?).await?;
@@ -280,7 +301,7 @@ pub(crate) fn submit(
         | crate::NativeJob::Task { completion, .. } => completion.clone(),
     };
     let (done, waiting) = oneshot::channel();
-    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
+    spawn_owned(CURRENT.scope(Some(owned.clone()), async move {
         let _active = active;
         owned.pause("native:submitted").await;
         let result = match crate::workers(pool, job.meter().is_some()) {
