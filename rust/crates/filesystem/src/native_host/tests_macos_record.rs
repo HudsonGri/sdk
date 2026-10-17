@@ -14,14 +14,14 @@ fn encode(name: &[u8]) -> Vec<u8> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     #[test]
-    fn names_round_trip(value in "[a-zA-Z0-9_.-]{1,255}", padding in 0_usize..8,
+    fn names_round_trip(value in prop::collection::vec(prop_oneof![1_u8..b'/', (b'/' + 1)..=u8::MAX], 1..256), padding in 0_usize..8,
         facts in prop::collection::vec(any::<u8>(), 112)) {
-        let mut bytes = encode(value.as_bytes());
+        let mut bytes = encode(&value);
         bytes[32..144].copy_from_slice(&facts);
         let mut records = vec![0; padding * 8];
         records.extend_from_slice(&bytes);
         let parsed = record(&records, padding * 8).unwrap();
-        prop_assert_eq!(name(parsed, FIXED).unwrap().to_bytes(), value.as_bytes());
+        prop_assert_eq!(name(parsed, FIXED).unwrap().to_bytes(), value.as_slice());
         prop_assert_eq!(parsed.len(), bytes.len());
         for at in [32, 36, 104, 108, 112, 116, 128, 132] {
             prop_assert_eq!(super::macos_record::u32_at(parsed, at).unwrap().to_ne_bytes(), facts[at - 32..at - 28]);
