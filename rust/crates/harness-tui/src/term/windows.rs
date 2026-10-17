@@ -2,7 +2,6 @@ use super::console_owner::Owner;
 use super::{
     Capabilities, Decoder, Environment, PROBE_TIMEOUT, ProbeIo, RestoreGuard, ScreenMode, detect,
 };
-use crate::key_event::InputEvent;
 use acyclic_native_runtime::terminal as ffi;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -44,12 +43,30 @@ impl Write for ConsoleIo {
     }
 }
 
-static CONSOLE: OnceLock<Arc<Owner<ConsoleIo>>> = OnceLock::new();
+/// The console owner and the wake event its input waiter includes. Every
+/// close goes through `Console::close`, so a closed console never leaves the
+/// waiter blocked on input.
+pub(super) struct Console {
+    owner: Arc<Owner<ConsoleIo>>,
+    pub(super) closed: ffi::ConsoleWake,
+}
+impl Console {
+    pub(super) fn close(&self) -> io::Result<()> {
+        // Release the input waiter first: no key is consumed during restoration.
+        let wake = self.closed.signal();
+        Owner::close(&self.owner, ConsoleIo::restore).and(wake)
+    }
+    pub(super) fn check_open(&self) -> io::Result<()> {
+        self.owner.check_open()
+    }
+}
+
+static CONSOLE: OnceLock<Arc<Console>> = OnceLock::new();
 fn console_control(event: u32) -> bool {
     if matches!(event, 0 | 1 | 2 | 5 | 6)
-        && let Some(owner) = CONSOLE.get()
+        && let Some(console) = CONSOLE.get()
     {
-        let _ = Owner::close(&owner, ConsoleIo::restore);
+        let _ = console.close();
     }
     #[cfg(test)]
     tests::observe_restored_console(event);
@@ -59,31 +76,35 @@ fn console_control(event: u32) -> bool {
 /// Windows console owner. Driver operations run outside the owner lock;
 /// restoration waits for cancellation acknowledgement before undoing modes.
 pub struct Tty {
-    owner: Arc<Owner<ConsoleIo>>,
-    reader: File,
-    decoder: Decoder,
+    pub(super) console: Arc<Console>,
+    pub(super) reader: File,
+    pub(super) decoder: Decoder,
     capabilities: Option<Capabilities>,
 }
 /// Output half using the console owner's existing I/O/restoration boundary.
 pub struct Output {
-    owner: Arc<Owner<ConsoleIo>>,
+    console: Arc<Console>,
 }
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let bytes = bytes[..bytes.len().min(4096)].to_vec();
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.writer().write(&bytes)
-        })
+        Owner::run(
+            &self.console.owner,
+            Instant::now() + PROBE_TIMEOUT,
+            move |guard| guard.writer().write(&bytes),
+        )
     }
     fn flush(&mut self) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-            guard.writer().flush()
-        })
+        Owner::run(
+            &self.console.owner,
+            Instant::now() + PROBE_TIMEOUT,
+            |guard| guard.writer().flush(),
+        )
     }
 }
 impl Drop for Output {
     fn drop(&mut self) {
-        let _ = Owner::close(&self.owner, ConsoleIo::restore);
+        let _ = self.console.close();
     }
 }
 
@@ -92,7 +113,7 @@ impl Tty {
     /// Dropping either half restores the console and cancels its outstanding I/O.
     pub fn split(self) -> (Self, Output) {
         let output = Output {
-            owner: Arc::clone(&self.owner),
+            console: Arc::clone(&self.console),
         };
         (self, output)
     }
@@ -113,19 +134,22 @@ impl Tty {
             },
             &Capabilities::default(),
         );
-        let owner = Owner::new(guard, ffi::cancel_thread);
+        let console = Arc::new(Console {
+            owner: Owner::new(guard, ffi::cancel_thread),
+            closed: ffi::ConsoleWake::new()?,
+        });
         CONSOLE
-            .set(Arc::clone(&owner))
+            .set(Arc::clone(&console))
             .map_err(|_| io::ErrorKind::AlreadyExists)?;
         ffi::console_register(console_control)?;
-        if let Err(error) = Owner::run(&owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+        if let Err(error) = Owner::run(&console.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
             guard.writer().reapply()
         }) {
-            let _ = Owner::close(&owner, ConsoleIo::restore);
+            let _ = console.close();
             return Err(error);
         }
         Ok(Self {
-            owner,
+            console,
             reader,
             decoder: Decoder::default(),
             capabilities: None,
@@ -144,37 +168,27 @@ impl Tty {
     }
     /// Enable known mutable modes, with all I/O waits outside owner state.
     pub fn setup(&mut self, screen: ScreenMode) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.setup(screen)
-        })
+        Owner::run(
+            &self.console.owner,
+            Instant::now() + PROBE_TIMEOUT,
+            move |guard| guard.setup(screen),
+        )
     }
     /// Enable one known mutable mode under the same journal.
     pub fn enable_mode(&mut self, mode: u16) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.enable_mode(mode)
-        })
+        Owner::run(
+            &self.console.owner,
+            Instant::now() + PROBE_TIMEOUT,
+            move |guard| guard.enable_mode(mode),
+        )
     }
     /// Fence the worker, then restore DEC/console modes and code pages.
     pub fn restore(&mut self) -> io::Result<()> {
-        Owner::close(&self.owner, ConsoleIo::restore)
-    }
-    /// Read classified VT input; the decoder coalesces ConPTY CR/LF.
-    pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
-        let events = self.decoder.take_events();
-        if !events.is_empty() {
-            return Ok(events);
-        }
-        let mut bytes = [0; 1024];
-        let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
-        self.decoder.feed(&bytes[..count])?;
-        if count == 0 || Instant::now() >= deadline {
-            self.decoder.finish_input()?;
-        }
-        Ok(self.decoder.take_events())
+        self.console.close()
     }
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
         let bytes = bytes[..bytes.len().min(4096)].to_vec();
-        Owner::run(&self.owner, deadline, move |guard| {
+        Owner::run(&self.console.owner, deadline, move |guard| {
             guard.writer().write(&bytes)
         })
     }
@@ -197,7 +211,7 @@ impl ProbeIo for Tty {
         // Input stays on the caller: a timed-out output worker must never
         // consume bytes whose result could be abandoned at the deadline.
         loop {
-            self.owner.check_open()?;
+            self.console.check_open()?;
             let now = Instant::now();
             if now >= deadline {
                 return Ok(0);
@@ -205,7 +219,8 @@ impl ProbeIo for Tty {
             let input = ffi::console_read(
                 self.reader.as_raw_handle() as usize,
                 bytes.len(),
-                deadline.min(now + std::time::Duration::from_millis(1)),
+                Some(deadline.min(now + std::time::Duration::from_millis(1))),
+                None,
             )?;
             if !input.is_empty() {
                 bytes[..input.len()].copy_from_slice(&input);
@@ -215,9 +230,11 @@ impl ProbeIo for Tty {
     }
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         let caps = caps.clone();
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.detected(&caps)
-        })
+        Owner::run(
+            &self.console.owner,
+            Instant::now() + PROBE_TIMEOUT,
+            move |guard| guard.detected(&caps),
+        )
     }
 }
 impl Write for Tty {
@@ -225,9 +242,11 @@ impl Write for Tty {
         self.write_until(bytes, Instant::now() + PROBE_TIMEOUT)
     }
     fn flush(&mut self) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-            guard.writer().flush()
-        })
+        Owner::run(
+            &self.console.owner,
+            Instant::now() + PROBE_TIMEOUT,
+            |guard| guard.writer().flush(),
+        )
     }
 }
 impl Drop for Tty {
@@ -350,7 +369,7 @@ mod tests {
                 assert!(start.elapsed() < Duration::from_millis(500));
                 std::fs::write(path.with_extension(format!("send{index}")), b"timed out")?;
             }
-            let setting_up = Arc::clone(&tty.owner);
+            let setting_up = Arc::clone(&tty.console.owner);
             let setup = std::thread::spawn(move || {
                 let _ = Owner::run(&setting_up, Instant::now() + PROBE_TIMEOUT, |guard| {
                     guard.enable_mode(1003)
@@ -365,10 +384,8 @@ mod tests {
             assert!(start.elapsed() < Duration::from_millis(50));
             std::fs::write(path.with_extension("short-send"), b"bounded")?;
             setup_wait = Some(setup);
-            let closing = Arc::clone(&tty.owner);
-            close_wait = Some(std::thread::spawn(move || {
-                Owner::close(&closing, ConsoleIo::restore)
-            }));
+            let closing = Arc::clone(&tty.console);
+            close_wait = Some(std::thread::spawn(move || closing.close()));
             let start = Instant::now();
             let result = tty.send(b"\x1b[c", start + Duration::from_millis(2));
             assert!(

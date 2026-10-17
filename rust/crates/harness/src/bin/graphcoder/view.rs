@@ -34,7 +34,7 @@ pub async fn run(
     })?;
     let (tty, output) = tty.split();
     let mut terminal = Terminal::new(CrosstermBackend::new(output))?;
-    let mut events = client::terminal_events(tty);
+    let mut events = client::terminal_events(tty)?;
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();
     prompt_files.refresh(&commands, &mut input)?;

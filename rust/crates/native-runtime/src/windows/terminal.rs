@@ -1,7 +1,7 @@
 //! Checked console operations. The terminal owner controls worker lifetimes.
 use std::io;
 use std::mem::zeroed;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::OnceLock;
 use std::time::Instant;
 use windows_sys::Win32::{
@@ -14,7 +14,7 @@ use windows_sys::Win32::{
             SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
         },
         IO::CancelSynchronousIo,
-        Threading::WaitForSingleObject,
+        Threading::{INFINITE, SetEvent, WaitForMultipleObjects},
     },
 };
 
@@ -112,24 +112,75 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
     }
 }
 
-/// Read VT bytes without consuming beyond the caller's capacity.
-pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Result<Vec<u8>> {
+/// Manual-reset event that every unbounded console input wait includes, so
+/// closing the terminal releases a waiting reader without input arriving.
+pub struct ConsoleWake(OwnedHandle);
+
+impl ConsoleWake {
+    /// Create an unsignaled wake event.
+    pub fn new() -> io::Result<Self> {
+        super::io::create_event()
+            .map(Self)
+            .map_err(io::Error::from_raw_os_error)
+    }
+
+    /// Signal permanently; waits that include this event return `NotConnected`.
+    pub fn signal(&self) -> io::Result<()> {
+        // SAFETY: the owned event handle is live for this call.
+        if unsafe { SetEvent(self.0.as_raw_handle() as HANDLE) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl AsRawHandle for ConsoleWake {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        self.0.as_raw_handle()
+    }
+}
+
+/// Read VT bytes without consuming beyond the caller's capacity. Without a
+/// deadline the wait ends only on input or `wake`; with one, an empty result
+/// reports the deadline.
+pub fn console_read(
+    input: usize,
+    capacity: usize,
+    deadline: Option<Instant>,
+    wake: Option<&ConsoleWake>,
+) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0; capacity.min(1024)];
     if bytes.is_empty() {
         return Ok(bytes);
     }
+    let handles = [
+        input as HANDLE,
+        wake.map_or(std::ptr::null_mut(), |wake| {
+            wake.0.as_raw_handle() as HANDLE
+        }),
+    ];
+    let count = 1 + u32::from(wake.is_some());
     loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(Vec::new());
-        }
-        let timeout = u32::try_from((deadline - now).as_millis()).unwrap_or(u32::MAX - 1);
-        // SAFETY: the OS checks the handle; event and count are writable stack
-        // storage, and ReadFile receives the exact allocated slice capacity.
+        let timeout = match deadline {
+            None => INFINITE,
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(Vec::new());
+                }
+                u32::try_from((deadline - now).as_millis()).unwrap_or(INFINITE - 1)
+            }
+        };
+        // SAFETY: the OS checks the handles; the first `count` entries are live
+        // for this call. Event and count are writable stack storage, and
+        // ReadFile receives the exact allocated slice capacity.
         unsafe {
-            match WaitForSingleObject(input as HANDLE, timeout) {
+            match WaitForMultipleObjects(count, handles.as_ptr(), 0, timeout) {
                 WAIT_TIMEOUT => return Ok(Vec::new()),
                 WAIT_OBJECT_0 => {}
+                result if result == WAIT_OBJECT_0 + 1 => {
+                    return Err(io::ErrorKind::NotConnected.into());
+                }
                 _ => return Err(io::Error::last_os_error()),
             }
             let mut event: INPUT_RECORD = zeroed();
