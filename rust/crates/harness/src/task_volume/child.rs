@@ -422,7 +422,8 @@ mod tests {
                 prop_assert_eq!(child.limits(), parent.limits());
                 prop_assert_eq!(child.run_limits(), parent.run_limits());
             }
-            prop_assert_eq!(child_scope(&parent, None, None).unwrap().grants(), parent.grants());
+            let inherited = child_scope(&parent, None, None).unwrap();
+            prop_assert_eq!(inherited.grants(), parent.grants());
         }
 
         #[test]

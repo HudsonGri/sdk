@@ -316,7 +316,7 @@ impl LocalHarness {
                     &definition.identity().name,
                     &definition.identity().version,
                     serde_json::json!({"receive":receive,"model":model}),
-                    Some((parent, &narrowed)),
+                    Some((parent, context.scope())),
                     None,
                     None,
                 )?
@@ -340,8 +340,8 @@ impl LocalHarness {
                 }
             }
             child.grants = Capabilities::new(
-                child
-                    .grants
+                narrowed
+                    .grants()
                     .iter()
                     .filter(|grant| !excluded.iter().any(|denied| denied == grant))
                     .map(str::to_owned)
