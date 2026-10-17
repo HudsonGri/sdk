@@ -48,7 +48,6 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
     let fixture = Fixture::new()?;
     std::fs::write(fixture.path().join("preserved.txt"), "parent contents")?;
     let mut owner = Some(fixture.start_owner().await?);
-    let mut selected_child = None;
     let result = std::panic::AssertUnwindSafe(async {
         let cwd = fixture.path();
         let session = "native-launch-parent";
@@ -63,7 +62,6 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
             let args = native_spawn("child", "native_child_process");
             let child = call(cwd, session, "spawn", "acyclic_spawn", args.clone()).await?;
             let child = child.as_str().ok_or("missing child task")?;
-            selected_child = Some(child.to_owned());
             let outcome =
                 call(cwd, session, "wait", "acyclic_wait", json!({"child":child})).await?;
             assert_eq!(outcome["success"], true, "{outcome}");
@@ -125,8 +123,7 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
     })
     .catch_unwind()
     .await;
-    let failed = !matches!(&result, Ok(Ok(())));
-    if failed {
+    if matches!(&result, Ok(Err(_))) {
         let _ = retained_diagnostics(fixture.path()).await;
     }
     let stopped = if let Some(owner) = owner {
@@ -134,32 +131,11 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
     } else {
         Ok(())
     };
-    if failed && stopped.is_ok() && let Some(child) = selected_child {
-        let _ = project_diagnostics(fixture.path(), &child).await;
-    }
     match result {
         Ok(result) => result?,
         Err(panic) => std::panic::resume_unwind(panic),
     };
     stopped
-}
-
-// Inspect the retained view only after the owner has drained and released it.
-async fn project_diagnostics(cwd: &Path, child: &str) -> Result {
-    use acyclic_harness::conversation::{VolumeClass, VolumeRef};
-    let harness = acyclic_harness::LocalHarness::open(
-        acyclic_harness::LocalHarnessConfig::external(cwd),
-    ).await?;
-    let project = VolumeRef::new(harness.project().provider().clone(),
-        format!("agent-project-{child}"), VolumeClass::Project,
-        harness.project().owner().clone(), &mut None)?;
-    let reference = acyclic_harness::filesystem::workspace_ref(
-        project.provider().clone(), &project.storage_name(&mut None)?,
-    )?;
-    let files = harness.filesystem().list(&reference, None, "/", 64).await;
-    eprintln!("retained child project: {files:?}");
-    harness.close().await?;
-    Ok(())
 }
 
 // These are the actual native executables launched by the production custody

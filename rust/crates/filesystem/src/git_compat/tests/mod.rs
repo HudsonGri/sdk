@@ -302,6 +302,7 @@ async fn publish_fixture(
 
 mod argv;
 mod capture;
+mod diff;
 mod history;
 mod incremental;
 #[cfg(acyclic_fs_loom)]
