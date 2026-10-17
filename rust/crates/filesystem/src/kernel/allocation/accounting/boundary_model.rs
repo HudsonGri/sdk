@@ -49,13 +49,15 @@ fn model<const BROKEN: bool>(depth: u8, cancel: bool) {
         let worker_work = work.clone();
         let worker_caller = caller.clone();
         let (ready, receiver) = loom::sync::mpsc::channel();
+        let (claimed, claim_result) = loom::sync::mpsc::channel();
         let (release, released) = loom::sync::mpsc::channel();
         let worker = loom::thread::spawn(move || {
             let mut accounting = KernelAccounting::native(&worker_work, &worker_caller);
+            ready.send(()).unwrap();
             DROP_UNDER_LEAF.with(|flag| flag.set(BROKEN));
             let owner = accounting.claim_owned(1, 1);
             DROP_UNDER_LEAF.with(|flag| flag.set(false));
-            ready.send(owner.is_ok()).unwrap();
+            claimed.send(owner.is_ok()).unwrap();
             let _ = accounting.record_completed(WorkCounters {
                 bytes_copied: 1,
                 items_examined: 1,
@@ -65,12 +67,13 @@ fn model<const BROKEN: bool>(depth: u8, cancel: bool) {
             // Guards leave the accounting leaf before owner destruction.
             drop(owner);
         });
-        let worker_claimed = receiver.recv().unwrap();
+        receiver.recv().unwrap();
         if cancel {
             caller.cancel();
         }
         let mut accounting = KernelAccounting::native(&work, &caller);
         let owner = accounting.claim_owned(1, 1);
+        let worker_claimed = claim_result.recv().unwrap();
         assert!(usize::from(worker_claimed) + usize::from(owner.is_ok()) <= 1);
         if let Ok(remaining) = accounting.remaining() {
             assert_eq!(
