@@ -1,9 +1,9 @@
 //! Separate installed hooks share the surviving provider owner.
 use super::*;
 
-#[tokio::test]
-async fn overlapping_hook_processes_publish_two_then_eight_writes() -> Result {
-    let fixture = Fixture::new()?;
+pub(super) async fn overlapping_hook_processes_publish_two_then_eight_writes(
+    fixture: &Fixture,
+) -> Result {
     let cwd = fixture.path();
     let session = uuid::Uuid::new_v4().to_string();
     // Two cold callers auto-start exactly one owner; both hook processes exit
@@ -76,6 +76,7 @@ async fn overlapping_hook_processes_publish_two_then_eight_writes() -> Result {
     .await?;
     let restarted: Value = serde_json::from_slice(&std::fs::read(&address)?)?;
     assert_ne!(restarted["instance"], instance["instance"]);
-    fixture.close().await?;
+    // The shared suite closes this restarted owner after its other independent
+    // checkouts complete; the restart assertion remains in this scenario.
     Ok(())
 }

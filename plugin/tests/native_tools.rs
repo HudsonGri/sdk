@@ -1,4 +1,5 @@
 //! Native hook/MCP processes share LocalHarness request and result files.
+use futures::FutureExt as _;
 use serde_json::{Value, json};
 use std::path::Path;
 use tokio::{
@@ -68,7 +69,11 @@ impl ResultClient {
             }
         }
         let mut child: Child = launch.arg("__tools").spawn()?;
-        eprintln!("{host} MCP {:?} starting (explicit binding: {})", child.id(), binding.is_some());
+        eprintln!(
+            "{host} MCP {:?} starting (explicit binding: {})",
+            child.id(),
+            binding.is_some()
+        );
         let mut input = child.stdin.take().ok_or("MCP stdin missing")?;
         let mut output = BufReader::new(child.stdout.take().ok_or("MCP stdout missing")?).lines();
         let write = |value: Value| format!("{value}\n").into_bytes();
@@ -121,45 +126,79 @@ impl ResultClient {
 
 #[tokio::test]
 async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> Result {
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        let fixture = Fixture::new()?;
-        let owner = fixture.start_owner().await?;
-        let root = fixture.path().parent().unwrap();
-        let address = root.join("owner/address.json");
-        let instance: Value = serde_json::from_slice(&std::fs::read(&address)?)?;
-        let mut projects = Vec::new();
-        for host in ["codex", "claude-code", "pi"] {
-            let project = root.join(host);
-            std::fs::create_dir(&project)?;
-            projects.push((host, project));
-        }
-        let results =
-            futures::future::join_all(projects.iter().map(|(host, project)| async move {
-                let started = std::time::Instant::now();
-                let result = host_result_client(project, host).await;
-                eprintln!("{host} hook/MCP case: {:?}", started.elapsed());
-                result
-            }))
-            .await;
-        let retained: Value = serde_json::from_slice(&std::fs::read(&address)?)?;
-        assert_eq!(retained["instance"], instance["instance"]);
-        let registrations = std::fs::read_dir(root.join("owner/workspaces"))?
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<std::io::Result<Vec<_>>>()?;
-        assert_eq!(registrations.len(), projects.len());
-        for (_, project) in &projects {
-            let canonical = std::fs::canonicalize(project)?;
-            let principal = blake3::hash(canonical.as_os_str().as_encoded_bytes()).to_hex();
-            assert!(registrations.contains(&std::ffi::OsString::from(format!("{principal}.json"))));
-        }
-        let stopped = fixture.close_owner(owner).await;
-        for result in results {
-            result?;
-        }
-        stopped
-    })
-    .await??;
+    let started = std::time::Instant::now();
+    let fixture = Fixture::new()?;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        std::panic::AssertUnwindSafe(native_cases(&fixture)).catch_unwind(),
+    )
+    .await;
+    // Even a failed assertion or deadline must settle this user's providers
+    // before removing any of its checkouts. The wall budget includes cleanup.
+    let stopped = fixture.close().await;
+    if let Err(error) = &stopped {
+        eprintln!("native fixture shutdown: {error}");
+    }
+    match result? {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    stopped?;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(8),
+        "native suite including shutdown took {:?}",
+        started.elapsed()
+    );
     Ok(())
+}
+
+async fn native_cases(fixture: &Fixture) -> Result {
+    let cold = std::time::Instant::now();
+    parallel::overlapping_hook_processes_publish_two_then_eight_writes(fixture).await?;
+    eprintln!(
+        "cold overlap, second checkout and restart: {:?}",
+        cold.elapsed()
+    );
+    let root = fixture.path().parent().unwrap();
+    let address = root.join("owner/address.json");
+    let instance: Value = serde_json::from_slice(&std::fs::read(&address)?)?;
+    let mut projects = Vec::new();
+    for host in ["codex", "claude-code", "pi"] {
+        let project = root.join(host);
+        std::fs::create_dir(&project)?;
+        projects.push((host, project));
+    }
+    let shell = root.join("shell");
+    std::fs::create_dir(&shell)?;
+    let (results, shell_result) = futures::join!(
+        futures::future::join_all(projects.iter().map(|(host, project)| async move {
+            let started = std::time::Instant::now();
+            let result = host_result_client(project, host).await;
+            eprintln!("{host} hook/MCP case: {:?}", started.elapsed());
+            result
+        })),
+        commands::native_shell_and_git_commands_use_the_fenced_owner(&shell)
+    );
+    let retained: Value = serde_json::from_slice(&std::fs::read(&address)?)?;
+    assert_eq!(retained["instance"], instance["instance"]);
+    let registrations = std::fs::read_dir(root.join("owner/workspaces"))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let second = root.join("second");
+    let expected = projects
+        .iter()
+        .map(|(_, project)| project.as_path())
+        .chain([fixture.path(), second.as_path(), shell.as_path()]);
+    assert_eq!(registrations.len(), projects.len() + 3);
+    for project in expected {
+        let canonical = std::fs::canonicalize(project)?;
+        let principal = blake3::hash(canonical.as_os_str().as_encoded_bytes()).to_hex();
+        assert!(registrations.contains(&std::ffi::OsString::from(format!("{principal}.json"))));
+    }
+    for result in results {
+        result?;
+    }
+    shell_result
 }
 
 async fn host_result_client(directory: &Path, host: &str) -> Result {
