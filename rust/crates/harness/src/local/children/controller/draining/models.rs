@@ -35,15 +35,24 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
     let fence = drained.clone();
     let finished = parent_done.clone();
     let parent = async move {
-        let result =
-            crate::tools::cancellable_child_wait(std::future::pending::<Result<()>>(), Some(&stop))
-                .await;
-        let cancelled = matches!(
-            result,
-            Err(Error::InteractionRejected(
-                crate::InteractionRejection::Cancelled
-            ))
-        );
+        // finish cancels this private token before polling the parent. The
+        // passive wait's already-cancelled branch is independent of the effect
+        // signal, and is exercised by the serial multiple-sibling model.
+        let cancelled = if concurrent {
+            stop.is_cancelled()
+        } else {
+            let result = crate::tools::cancellable_child_wait(
+                std::future::pending::<Result<()>>(),
+                Some(&stop),
+            )
+            .await;
+            matches!(
+                result,
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled
+                ))
+            )
+        };
         fence.cancelled().await;
         finished.store(cancelled, Ordering::Release);
         Ok(())
