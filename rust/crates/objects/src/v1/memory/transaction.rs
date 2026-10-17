@@ -89,7 +89,7 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        journal.validate_bodies(next, next.object.as_ref())?;
+                        journal.validate_bodies(before, next, next.object.as_ref())?;
                     } else {
                         journal
                             .commit(
@@ -331,7 +331,7 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        journal.validate_bodies(next, next.object.as_ref())?;
+                        journal.validate_bodies(before, next, next.object.as_ref())?;
                     } else {
                         journal.commit(
                             before,
