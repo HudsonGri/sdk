@@ -144,7 +144,7 @@ where
             CheckoutMode::read_only_pinned()
         };
         let mut checkout = self
-            .checkout(GenerationSelector::Head, mode, &work, cancellation)
+            .checkout(options.data_selector()?, mode, &work, cancellation)
             .await?;
         let config = checkout.volume_config();
         let root = crate::workspace::customer_path_with_accounting(

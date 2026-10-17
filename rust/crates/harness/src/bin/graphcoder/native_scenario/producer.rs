@@ -39,6 +39,7 @@ impl Producer {
                 &IdempotencyKey::new(OperationId::new().to_string())?,
                 None,
                 None,
+                None,
             )
             .await
     }

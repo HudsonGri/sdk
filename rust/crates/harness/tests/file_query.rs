@@ -24,6 +24,10 @@ mod objects;
 #[path = "file_query/replacements.rs"]
 mod replacements;
 use objects::CountingObjects;
+#[path = "file_query/access.rs"]
+mod access;
+#[path = "support/access_policy.rs"]
+mod policy_support;
 
 async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Change {
     tokio::time::timeout(std::time::Duration::from_secs(5), changes.next())
@@ -260,7 +264,7 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
             None,
         )?;
         let workspace = host.create_volume(&volume).await?.workspace;
-        let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
+        let source = reader.file_query(&volume, BOUNDARY_BUDGET).await?;
         Ok(Self {
             host,
             source,
@@ -629,7 +633,7 @@ async fn ordinary_file_queries_keep_authority_work_and_selection_bounds() -> Res
         65_536,
         None,
     )?;
-    let source = reader.file_query(&fixture.volume, BOUNDARY_BUDGET)?;
+    let source = reader.file_query(&fixture.volume, BOUNDARY_BUDGET).await?;
     assert!(matches!(
         source.observe_files(Query::Plans, None, 2, 64).await,
         Err(acyclic_harness::task_volume::Error::FileRead(
@@ -685,8 +689,12 @@ async fn ordinary_file_queries_keep_authority_work_and_selection_bounds() -> Res
         65_536,
         None,
     )?;
-    let tiny = reader.file_query(&fixture.volume, acyclic_fs::performance::work_budget(0, 0))?;
-    assert!(tiny.observe_files(Query::Plans, None, 2, 64).await.is_err());
+    assert!(
+        reader
+            .file_query(&fixture.volume, acyclic_fs::performance::work_budget(0, 0))
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -710,7 +718,7 @@ proptest::proptest! {
             let scope = fixture.issuer.issue("reader", &capabilities, Some(fixture.agent), None, &mut None)?;
             let reader = FilesystemContentVerifier::new(fixture.host.clone(),
                 &fixture.issuer.verifier(&mut None)?, &scope, 65_536, None)?;
-            let result = reader.file_query(&fixture.volume, BOUNDARY_BUDGET)?
+            let result = reader.file_query(&fixture.volume, BOUNDARY_BUDGET).await?
                 .observe_files(Query::Plans, None, 1, 4096).await;
             if authorized {
                 let snapshot = result?.snapshot.unwrap();

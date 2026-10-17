@@ -254,7 +254,7 @@ async fn context_reference(
     )?;
     let operation = OperationId::from_bytes(*b"native-context-1");
     let (retained, _) = publisher
-        .observe_staged_once(operation, config.limits.file_bytes, None)?
+        .observe_staged_once(operation, config.limits.file_bytes, None, None)?
         .await?;
     if let Some(reference) = retained {
         return Ok(reference);
@@ -268,6 +268,7 @@ async fn context_reference(
             &bytes,
             "application/json",
             "context-manifest.json",
+            None,
             None,
         )?
         .await?

@@ -156,7 +156,10 @@ pub(super) fn with_lazy_mount<T>(
                 "mount-bench",
                 Arc::new(demand),
                 state,
-                VolumeConfig::native(Lifecycle::Durable),
+                acyclic_fs::VolumeInitialization {
+                    config: VolumeConfig::native(Lifecycle::Durable),
+                    access_policy: None,
+                },
                 acyclic_fs::OperationId::new(),
                 &mut acyclic_fs::kernel::KernelAccounting::Standalone {
                     allocations: Default::default(),

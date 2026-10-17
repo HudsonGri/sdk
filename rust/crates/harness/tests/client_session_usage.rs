@@ -20,9 +20,10 @@ impl ContentResidencyVerifier for Files {
         &'a self,
         file: &'a FileRef,
         maximum: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
-        self.0.content_reader().read(file, maximum, io)
+        self.0.content_reader().read(file, maximum, ceiling, io)
     }
 }
 

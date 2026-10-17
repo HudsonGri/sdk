@@ -14,6 +14,17 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let config = checkout.volume_config();
+    let access = options.require_access_view()?;
+    if access
+        .current()
+        .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?
+        .data_generation()
+        .is_some_and(|selected| selected != checkout.generation_id())
+    {
+        return Err(MountLifecycleError::NativePolicy(
+            "checkout differs from its authenticated data selection",
+        ));
+    }
     let shared = SharedCheckout::with_publication_meter(checkout, options.publication, work)?;
     let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1 else {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
@@ -25,7 +36,9 @@ where
         custody,
         work,
         options.native_original.as_ref(),
-    )?;
+    )?
+    .with_access_view(Arc::clone(access))?;
+    let source = source.with_access_refresh(options.access_refresh.clone());
     let source = match options.callback_guard.as_ref() {
         Some(guard) => source.with_native_callback_guard(guard.clone()),
         None => source,
@@ -48,6 +61,8 @@ pub enum MountPublication {
 /// Explicit customer mount configuration.
 #[derive(Clone)]
 pub struct MountOptions {
+    pub(crate) access_view: Option<Arc<crate::access::AccessView>>,
+    pub(crate) access_refresh: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(crate) writable: bool,
     pub(crate) subdirectory: std::borrow::Cow<'static, str>,
     pub(crate) publication: MountPublication,
@@ -57,6 +72,35 @@ pub struct MountOptions {
 }
 
 impl MountOptions {
+    pub(super) fn data_selector(
+        &self,
+    ) -> Result<crate::model::GenerationSelector, MountLifecycleError> {
+        let view = self
+            .require_access_view()?
+            .current()
+            .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+        Ok(if self.writable {
+            crate::model::GenerationSelector::Head
+        } else {
+            view.data_generation().map_or(
+                crate::model::GenerationSelector::Head,
+                crate::model::GenerationSelector::Exact,
+            )
+        })
+    }
+
+    /// Bound policy/capability owner for preparation and inspection. Native
+    /// operations additionally fence this view against current persisted policy.
+    pub fn require_access_view(
+        &self,
+    ) -> Result<&Arc<crate::access::AccessView>, MountLifecycleError> {
+        self.access_view
+            .as_ref()
+            .ok_or(MountLifecycleError::NativePolicy(
+                "native mounts require an authenticated policy and capability view",
+            ))
+    }
+
     pub(super) fn work(
         &self,
         budget: crate::WorkBudget,
@@ -88,6 +132,8 @@ impl MountOptions {
     #[must_use]
     pub fn read_write() -> Self {
         Self {
+            access_view: None,
+            access_refresh: None,
             writable: true,
             subdirectory: std::borrow::Cow::Borrowed("/"),
             publication: MountPublication::CloseAndSync,
@@ -95,6 +141,24 @@ impl MountOptions {
             callback_guard: None,
             native_original: None,
         }
+    }
+
+    /// Bind policy intersected with the authenticated caller's capability.
+    /// Mount admission rejects options without this binding.
+    #[must_use]
+    pub fn access_view(mut self, view: Arc<crate::access::AccessView>) -> Self {
+        self.access_view = Some(view);
+        self
+    }
+
+    /// Reload the authenticated view when the persisted policy fence changes.
+    #[must_use]
+    pub fn access_refresh(
+        mut self,
+        refresh: Arc<dyn super::super::NativeMountCallbackGuard>,
+    ) -> Self {
+        self.access_refresh = Some(refresh);
+        self
     }
 
     /// Creates a pinned immutable mount.

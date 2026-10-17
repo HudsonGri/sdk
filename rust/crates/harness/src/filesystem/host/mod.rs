@@ -94,11 +94,15 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 mod content;
+mod publication;
+pub(in crate::filesystem) use publication::PublicationLookup;
+mod directory;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod family;
 mod keys;
 mod ranges;
 mod reads;
+pub(in crate::filesystem) use directory::DirectoryListing;
 mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;

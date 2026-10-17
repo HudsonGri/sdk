@@ -8,6 +8,7 @@ use crate::{
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
+mod access;
 mod bash;
 mod capture;
 mod git;
@@ -22,6 +23,7 @@ mod tests;
 
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
+    signed: Scope,
     read_grant: String,
     write_grant: String,
     capture_options: acyclic_fs::CaptureOptions,
@@ -79,6 +81,7 @@ impl CheckoutTools {
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        signed: &Scope,
         task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     ) -> Result<Self> {
         if workspace
@@ -112,6 +115,7 @@ impl CheckoutTools {
             }
         }
         Ok(Self {
+            signed: signed.clone(),
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
             capture_options,
@@ -167,6 +171,24 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
+            if !self.selected {
+                let context = context
+                    .as_ref()
+                    .ok_or_else(|| Error::Invalid("tool context missing".into()))?;
+                serialized(&self.state, async |state| {
+                    let view = state
+                        .active
+                        .as_ref()
+                        .unwrap_or_else(|| self.workspace.view());
+                    self.require_command_access(
+                        view.workspace(),
+                        context.effective_scope().grants(),
+                        invocation.name == "fs",
+                    )
+                    .await
+                })
+                .await?;
+            }
             if !self.selected
                 && let Some(selected) = self
                     .select(
@@ -227,6 +249,12 @@ impl ToolExecutor for CheckoutTools {
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.workspace.view());
+                self.require_command_access(
+                    view.workspace(),
+                    context.effective_scope().grants(),
+                    invocation.name == "fs",
+                )
+                .await?;
                 if reconciliation::recover(&workspace, view, &|| async {
                     owner.verify_owner(None)?.await
                 })

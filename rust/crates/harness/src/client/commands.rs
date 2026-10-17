@@ -469,6 +469,7 @@ impl CommandCatalog {
                                     &generation,
                                     u64::from(limits.header_bytes),
                                     None,
+                                    None,
                                 )?
                                 .await?;
                             if prefix.len() > limits.header_bytes as usize {

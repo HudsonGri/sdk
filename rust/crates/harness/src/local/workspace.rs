@@ -18,6 +18,7 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
+    pub(super) options: acyclic_fs::MountOptions,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
@@ -47,6 +48,7 @@ pub struct LocalWorkspace {
     >,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
+    pub(super) mount_authority: Option<(Arc<AuthorityIssuer>, AgentId)>,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
     // Lock order: view state -> volume projection -> coordinator -> command-local
     // cache or native completion, then task-file index -> provider visibility -> provider state.
@@ -71,6 +73,22 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) async fn mount_options(
+        &self,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> Result<acyclic_fs::MountOptions> {
+        let (issuer, agent) = self
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        crate::filesystem::owner_mount_options(workspace, issuer, Some(*agent), true, &work)
+            .await
+            .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
+    }
+
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
@@ -91,7 +109,20 @@ impl LocalWorkspace {
         #[cfg(target_os = "linux")]
         volumes::link(path, &mut mounts)?;
         #[cfg(not(target_os = "linux"))]
-        volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
+        {
+            let (issuer, agent) = self
+                .mount_authority
+                .as_ref()
+                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+            volumes::attach(
+                &self.filesystem,
+                &self.store,
+                path,
+                &mut mounts,
+                (issuer, *agent),
+            )
+            .await?;
+        }
         Ok(Arc::new(mounts))
     }
     #[cfg(test)]
@@ -115,11 +146,18 @@ impl LocalWorkspace {
         self: &Arc<Self>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        signed: &Scope,
         task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
-            super::checkout_tools::CheckoutTools::new(Arc::clone(self), project, clock, task_files)
-                .await?,
+            super::checkout_tools::CheckoutTools::new(
+                Arc::clone(self),
+                project,
+                clock,
+                signed,
+                task_files,
+            )
+            .await?,
         ))
     }
     pub(super) async fn checkout_selection(
@@ -194,6 +232,7 @@ pub(super) async fn open(
     existing: bool,
     native_mounts: bool,
     store: LocalCoreStateStore,
+    authority: Option<(&AuthorityIssuer, AgentId)>,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -264,7 +303,10 @@ pub(super) async fn open(
                 &name,
                 source,
                 store.clone(),
-                acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                    access_policy: Some(crate::filesystem::access::INITIAL_POLICY),
+                },
                 operation,
                 &mut accounting,
             )
@@ -284,7 +326,14 @@ pub(super) async fn open(
         native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
     if native_mounts {
-        volumes::attach(filesystem, &store, &path, &mut mounts).await?;
+        volumes::attach(
+            filesystem,
+            &store,
+            &path,
+            &mut mounts,
+            authority.ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
+        )
+        .await?;
     }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
@@ -304,6 +353,7 @@ pub(super) async fn open(
         mounted: None,
         filesystem: filesystem.clone(),
         store,
+        mount_authority: authority.map(|(issuer, agent)| (Arc::new(issuer.clone()), agent)),
         identity: acyclic_fs::NativeRootIdentity::from_bytes(
             identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
         ),
@@ -324,6 +374,7 @@ pub(super) async fn open_volume(
     operation: acyclic_fs::OperationId,
     native_mounts: bool,
     store: LocalCoreStateStore,
+    authority: Option<(&AuthorityIssuer, AgentId)>,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -379,6 +430,7 @@ pub(super) async fn open_volume(
         true,
         native_mounts,
         store,
+        authority,
     )
     .await
 }

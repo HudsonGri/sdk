@@ -50,22 +50,22 @@ pub(super) fn folded_projection(
             &crate::CancellationToken::new(),
         ))?;
     }
-    let source = Arc::new(MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
-    )?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+            )?,
+            vec![],
+            None,
+        )?,
+    );
     let core = projection_core(
         source.clone(),
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
-    Ok((
-        FuseProjection {
-            core,
-            skips_opendir: false,
-        },
-        source,
-    ))
+    Ok((FuseProjection { core }, source))
 }
 
 pub(super) fn lookup(
@@ -87,20 +87,23 @@ fn folded_legacy_collisions_cannot_reuse_a_warm_inode() -> TestResult {
     let (checkout, [first, _]) =
         runtime.block_on(crate::facade::test_fixtures::legacy_folded_checkout())?;
     let config = checkout.volume_config();
-    let source = Arc::new(MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
-    )?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+            )?,
+            vec![],
+            None,
+        )?,
+    );
     let work = fuse_fixture_work();
     let core = projection_core(
         source.clone(),
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
-    let projection = FuseProjection {
-        core,
-        skips_opendir: false,
-    };
+    let projection = FuseProjection { core };
     let stamp = source.view_stamp_with_meter(&work)?;
     // Model an already warm exact binding; no alias may inherit its identity.
     let inode = projection
@@ -255,9 +258,13 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
         (0..1024).map(|index| format!("Entry{index:04}")),
     ))?;
     let config = checkout.volume_config();
-    let source = MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new(
+            Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+            config,
+        )?,
+        vec![],
+        None,
     )?;
     let work = fuse_fixture_work();
     let first = source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
@@ -313,9 +320,13 @@ fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestR
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ))?;
-    let source = MemorySource::new(
-        Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
-        config,
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new(
+            Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+            config,
+        )?,
+        vec![],
+        None,
     )?;
     let work = fuse_fixture_work();
     for _ in 0..2 {

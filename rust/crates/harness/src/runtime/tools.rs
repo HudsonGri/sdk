@@ -413,6 +413,7 @@ impl ToolContext {
         self.task().authorize_file_read(
             file,
             self.effective_scope(),
+            self.effective_scope().grants(),
             Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
         )
     }
@@ -571,6 +572,7 @@ impl ToolContext {
             task.content_binding(Some(file.volume())),
             file,
             self.effective_scope(),
+            None,
             io,
         )
         .await
@@ -583,7 +585,13 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.task()
-            .read_bound_range(file, range, self.effective_scope(), io)
+            .read_bound_range(
+                file,
+                range,
+                self.effective_scope(),
+                self.effective_scope().grants(),
+                io,
+            )
             .await
     }
 }

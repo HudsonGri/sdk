@@ -38,10 +38,6 @@ impl LocalHarness {
                 &mut None,
             )?;
         }
-        #[cfg(feature = "hooks")]
-        let hooks = settings::load(&config.project, config.settings)
-            .await?
-            .hooks;
         let (model, provider) = config.model;
         model.validate()?;
         let compaction = compaction::select(
@@ -52,6 +48,10 @@ impl LocalHarness {
             config.limits,
         )
         .await?;
+        #[cfg(feature = "hooks")]
+        let hooks = settings::load(&config.project, config.settings)
+            .await?
+            .hooks;
         let (filesystem, stream) = storage;
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(
@@ -86,6 +86,7 @@ impl LocalHarness {
                     true,
                     false,
                     acyclic_fs::LocalCoreStateStore::new(directory.join("workspace")),
+                    None,
                 )
                 .await?,
             ))
@@ -108,6 +109,7 @@ impl LocalHarness {
                     Arc::clone(workspace),
                     volume,
                     config.clock,
+                    signed,
                     Arc::clone(&task_files),
                 )
                 .await?,

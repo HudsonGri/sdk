@@ -1,7 +1,7 @@
 //! Both model and direct calls select the admitted task's sparse fork.
 use super::*;
 use acyclic_fs::{
-    CancellationToken, IdempotencyKey, LazyWorkspaceStore as _, MountOptions, WorkBudget,
+    CancellationToken, IdempotencyKey, LazyWorkspaceStore as _, WorkBudget,
     kernel::KernelAccounting,
 };
 
@@ -205,19 +205,13 @@ impl CheckoutTools {
             identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
             filesystem: self.workspace.filesystem.clone(),
             store: self.workspace.store.clone(),
+            mount_authority: self.workspace.mount_authority.clone(),
         };
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());
         let initial_view = selected.workspace().id();
-        let mounted = Arc::new(
-            selected
-                .mount(
-                    &path,
-                    MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-                )
-                .await
-                .map_err(storage)?,
-        );
+        let options = workspace.mount_options(selected.workspace()).await?;
+        let mounted = Arc::new(selected.mount(&path, options).await.map_err(storage)?);
         workspace.path = path;
         workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
         workspace.mounted = Some(mounted);
@@ -242,6 +236,7 @@ impl CheckoutTools {
         let workspace = Arc::new(workspace);
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
+            signed: self.signed.clone(),
             workspace: Arc::clone(&workspace),
             read_grant: self.read_grant.clone(),
             write_grant: self.write_grant.clone(),
@@ -286,14 +281,8 @@ impl CheckoutTools {
             .mount_directory
             .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir(&path).map_err(storage)?;
-        let mounted = Arc::new(
-            view.mount(
-                &path,
-                MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual),
-            )
-            .await
-            .map_err(storage)?,
-        );
+        let options = self.workspace.mount_options(view.workspace()).await?;
+        let mounted = Arc::new(view.mount(&path, options).await.map_err(storage)?);
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -330,6 +319,7 @@ impl CheckoutTools {
             mounted: Some(mounted),
             filesystem: self.workspace.filesystem.clone(),
             store: self.workspace.store.clone(),
+            mount_authority: self.workspace.mount_authority.clone(),
         });
         owner.verify_owner(None)?.await?;
         state.mounts = mounts;

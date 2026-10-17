@@ -62,6 +62,34 @@ pub(super) struct DirectoryStream {
     pub(super) parked: u64,
 }
 
+// Cached rows retain namespace facts, not permission to disclose them. Return
+// the already-funded child used by emission, without copying its path twice.
+pub(super) fn next_visible_child(
+    source: &dyn MountFilesystem,
+    stream: &mut DirectoryStream,
+    work: &crate::NativeMaterializationWork,
+) -> Result<Option<ChildName>, NativeMountError> {
+    loop {
+        let Some(entry) = stream
+            .page
+            .as_ref()
+            .and_then(|page| page.entries().get(stream.entry_position))
+        else {
+            return Ok(None);
+        };
+        work.charge(Items.delta(1))?;
+        let child = ChildName::new(
+            source,
+            fuse_child_path(&stream.path, &entry.name, work)?,
+            work,
+        )?;
+        if crate::native_mount::filesystem::can_disclose(source, &child.spelled, work)? {
+            return Ok(Some(child));
+        }
+        stream.entry_position += 1;
+    }
+}
+
 #[derive(Default)]
 pub(super) struct DirectoryStreams {
     pub(super) waiting: HashMap<(u64, u64), (DirectoryStream, crate::NativeAllocation)>,
@@ -152,17 +180,6 @@ impl DirectoryStreams {
 }
 
 impl ProjectionState {
-    pub(super) fn directory_open_flags(
-        source: &dyn MountFilesystem,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<FopenFlags, NativeMountError> {
-        Ok(if source.view_stamp_with_meter(work)?.is_some() {
-            FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE
-        } else {
-            FopenFlags::empty()
-        })
-    }
-
     pub(super) fn directory_stream(
         &mut self,
         source: &dyn MountFilesystem,
@@ -246,20 +263,15 @@ impl ProjectionState {
             }
             self.admit_listing(source, inode, stream.entries_stamp, work)?;
             loop {
+                let Some(child) = next_visible_child(source, stream, work)? else {
+                    return Ok(());
+                };
                 let next = stream.emitted.saturating_add(1);
-                let Some(entry) = stream
+                let entry = stream
                     .page
                     .as_ref()
                     .and_then(|page| page.entries().get(stream.entry_position))
-                else {
-                    return Ok(());
-                };
-                work.charge(Items.delta(1))?;
-                let child = ChildName::new(
-                    source,
-                    fuse_child_path(&stream.path, &entry.name, work)?,
-                    work,
-                )?;
+                    .ok_or(libc::EIO)?;
                 let current = match stream.entries_stamp {
                     Some(stamp)
                         if source.unchanged_since_with_meter(
@@ -401,6 +413,27 @@ impl DirectoryReply {
 }
 
 impl FuseProjection {
+    pub(super) fn open_directory(
+        &self,
+        inode: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FopenFlags, NativeMountError> {
+        work.charge(Items.delta(1))?;
+        let state = self.core.state()?;
+        let entry = state.by_inode.get(&inode).ok_or(libc::ESTALE)?;
+        if entry.lookup.node.kind != MountNodeKind::Directory {
+            return Err(libc::ENOTDIR.into());
+        }
+        let binding = entry.bindings.first().ok_or(libc::ESTALE)?;
+        self.core.source.authorize_with_meter(
+            &[(crate::access::Action::List, binding.native_path())],
+            work,
+        )?;
+        // Directory pages depend on current policy, so a new open cannot reuse
+        // the kernel's listing from an earlier open. Parked rows are checked.
+        Ok(FopenFlags::empty())
+    }
+
     pub(super) fn list_directory(
         &self,
         inode: u64,
@@ -440,6 +473,7 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let source = self.core.source.as_ref();
+        source.authorize_with_meter(&[(crate::access::Action::List, &stream.path)], work)?;
         stream.emitted = stream.emitted.max(offset.min(2));
         loop {
             work.charge(Items.delta(1))?;
@@ -448,8 +482,10 @@ impl FuseProjection {
                     if stream.emitted >= offset {
                         return Ok(());
                     }
-                    stream.entry_position += 1;
-                    stream.emitted += 1;
+                    if next_visible_child(source, stream, work)?.is_some() {
+                        stream.entry_position += 1;
+                        stream.emitted += 1;
+                    }
                     continue;
                 }
                 if page.next_cursor().is_none() {

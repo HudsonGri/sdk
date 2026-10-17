@@ -23,6 +23,7 @@ impl ContentResidencyVerifier for Files {
         &'a self,
         _: &'a FileRef,
         _: u64,
+        _: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async { Ok(self.0.clone()) })

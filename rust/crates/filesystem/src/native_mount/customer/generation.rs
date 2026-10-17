@@ -38,6 +38,7 @@ where
         cancellation: &crate::CancellationToken,
         expected_root_identity: Option<NativeRootIdentity>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
+        mount.require_access_view()?;
         let original = mount.work(capture_budget, cancellation)?;
         let work = &original;
         if let Some(guard) = mount.callback_guard.as_ref() {

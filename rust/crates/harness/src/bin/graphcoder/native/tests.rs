@@ -150,7 +150,7 @@ async fn queued_manifest_survives_restart_with_a_different_binding() -> Result<(
         )?;
         use acyclic_harness::conversation::ContentResidencyVerifier as _;
         let bytes = reader
-            .read(&command.payload, MAX_FRAME_BYTES as u64, None)?
+            .read(&command.payload, MAX_FRAME_BYTES as u64, None, None)?
             .await?;
         let retained: acyclic_harness::filesystem::ModelTaskCommand =
             serde_json::from_slice(&bytes).map_err(invalid)?;
@@ -297,6 +297,7 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
                 "text/markdown",
                 "plan.md",
                 None,
+                None,
             )?
             .await?;
         let workspace = acyclic_harness::filesystem::workspace_ref(
@@ -351,6 +352,7 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
                         revision.text.as_bytes(),
                         "text/markdown",
                         "plan.md",
+                        None,
                         None,
                     )?
                     .await?;

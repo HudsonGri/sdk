@@ -204,14 +204,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let name = volume.storage_name(&mut None)?;
+        let digest =
+            blake3::derive_key("acyclic harness volume initialization v1", name.as_bytes());
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&digest[..16]);
         self.filesystem
-            .create_workspace(
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
                 &name,
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::portable(
+                        if self.filesystem.capabilities().durable {
+                            acyclic_fs::Lifecycle::Durable
+                        } else {
+                            acyclic_fs::Lifecycle::Ephemeral
+                        },
+                    ),
+                    access_policy: Some(access::INITIAL_POLICY),
+                },
+                acyclic_fs::OperationId::from_bytes(operation),
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
+                None,
             )
             .await
-            .map(|receipt| receipt.value)
             .map_err(|failure| map_error(failure.error))?;
         self.resolve(&workspace_ref(self.provider.clone(), &name)?, None)
             .await

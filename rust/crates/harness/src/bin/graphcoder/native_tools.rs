@@ -287,6 +287,7 @@ impl super::native::NativeSession {
             .read(
                 &configured.plan.request,
                 super::terminal::MAX_FRAME_BYTES as u64,
+                None,
                 Some(&io),
             )?
             .await?;

@@ -12,7 +12,10 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
     let lazy = native_lazy_source(physical.path(), "lifecycle-context", &cancellation).await?;
     let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
     let (source, volume_id, _root) = lazy
-        .prepare_authored_mount_source(&MountOptions::read_write(), &work)
+        .prepare_authored_mount_source(
+            &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
+            &work,
+        )
         .await?;
     let session = Mutex::new(Some(NativeMountSession::new(
         NativeMountRequest {
@@ -63,7 +66,11 @@ async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
         ..crate::WorkBudget::UNBOUNDED
     };
     let work = test_work(budget, &cancellation)?;
-    let options = MountOptions::read_write().publication(MountPublication::Manual);
+    let options = fixture_options(
+        lazy.workspace(),
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
     let (source, volume_id, _) = lazy.prepare_authored_mount_source(&options, &work).await?;
     let original = source
         .native_original_work()?
@@ -142,9 +149,13 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         materializations: 0,
         ..crate::WorkBudget::UNBOUNDED
     };
-    let options = MountOptions::read_write()
-        .subdirectory("/selected")
-        .publication(MountPublication::Manual);
+    let options = fixture_options(
+        lazy.workspace(),
+        MountOptions::read_write()
+            .subdirectory("/selected")
+            .publication(MountPublication::Manual),
+    )
+    .await?;
     let work = test_work(budget, &cancellation)?;
     let (ordinary_source, volume, root) =
         lazy.prepare_authored_mount_source(&options, &work).await?;
@@ -251,7 +262,11 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
         .await?;
     let directory = tempfile::tempdir()?;
     let options = crate::MaterializeOptions::native(directory.path());
-    let mount = MountOptions::read_only().subdirectory("/selected-Ã©");
+    let mount = fixture_options(
+        lazy.workspace(),
+        MountOptions::read_only().subdirectory("/selected-Ã©"),
+    )
+    .await?;
     let original = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
     let prepared = generation
         .prepare_native_working_set(
@@ -331,7 +346,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     let source_root = tempfile::tempdir()?;
     let source = admitted
         .prepare_native_working_set(
-            &MountOptions::read_only(),
+            &fixture_options(&workspace, MountOptions::read_only()).await?,
             &crate::MaterializeOptions::native(source_root.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -363,7 +378,11 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     assert_eq!(head(&workspace, &fixture_work).await?, concurrent);
 
     let destination_root = tempfile::tempdir()?;
-    let write = MountOptions::read_write().publication(MountPublication::Manual);
+    let write = fixture_options(
+        &workspace,
+        MountOptions::read_write().publication(MountPublication::Manual),
+    )
+    .await?;
     let rejected = admitted
         .prepare_native_working_set(
             &write,
@@ -410,6 +429,65 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
 }
 
 #[tokio::test]
+async fn lazy_working_set_requires_authority_before_exactifying()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancel = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
+    let physical = tempfile::tempdir()?;
+    std::fs::create_dir(physical.path().join("hot"))?;
+    std::fs::write(physical.path().join("hot/secret"), b"secret")?;
+    let lazy = native_lazy_source(physical.path(), "unbound-working-set", &cancel).await?;
+    let before = head(lazy.workspace(), &work).await?;
+    let destination = tempfile::tempdir()?;
+    assert!(matches!(
+        lazy.prepare_native_working_set(
+            MountOptions::read_write()
+                .subdirectory("/hot")
+                .publication(MountPublication::Manual),
+            &crate::MaterializeOptions::native(destination.path()),
+            crate::WorkBudget::UNBOUNDED,
+            &cancel,
+            PublicationPermit::Unrestricted,
+        )
+        .await,
+        Err(MountLifecycleError::NativePolicy(
+            "native mounts require an authenticated policy and capability view"
+        ))
+    ));
+    for publication in [
+        MountPublication::CloseAndSync,
+        MountPublication::PerMutation,
+    ] {
+        let mount = fixture_options(
+            lazy.workspace(),
+            MountOptions::read_write()
+                .subdirectory("/hot")
+                .publication(publication),
+        )
+        .await?;
+        assert!(matches!(
+            lazy.prepare_native_working_set(
+                mount,
+                &crate::MaterializeOptions::native(destination.path()),
+                crate::WorkBudget::UNBOUNDED,
+                &cancel,
+                PublicationPermit::Unrestricted,
+            )
+            .await,
+            Err(MountLifecycleError::NativePolicy(
+                "prepared native working sets require manual publication"
+            ))
+        ));
+        assert_eq!(head(lazy.workspace(), &work).await?, before);
+        assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    }
+    assert_eq!(head(lazy.workspace(), &work).await?, before);
+    assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();
@@ -429,7 +507,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let before_invalid = head(lazy.workspace(), &fixture_work).await?;
     assert!(matches!(
         lazy.prepare_native_working_set(
-            "/hot",
+            fixture_options(
+                lazy.workspace(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .subdirectory("/hot")
+            )
+            .await?,
             &crate::MaterializeOptions::native("relative-native-view"),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -443,7 +527,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, before_invalid);
     let working_set = lazy
         .prepare_native_working_set(
-            "/hot",
+            fixture_options(
+                lazy.workspace(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .subdirectory("/hot"),
+            )
+            .await?,
             &crate::MaterializeOptions::native(native_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -669,7 +759,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let latest_view = tempfile::tempdir()?;
     let ready = lazy
         .prepare_native_working_set(
-            "/hot",
+            fixture_options(
+                lazy.workspace(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .subdirectory("/hot"),
+            )
+            .await?,
             &crate::MaterializeOptions::native(latest_view.path()),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -785,7 +881,10 @@ pub(super) async fn native_lazy_source(
         name,
         Arc::new(demand),
         MemoryLazyWorkspaceStore::default(),
-        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        crate::VolumeInitialization {
+            config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+            access_policy: None,
+        },
         crate::OperationId::new(),
         &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation),
     )
@@ -799,3 +898,12 @@ pub(super) fn test_work(
 ) -> Result<NativeMaterializationWork, crate::NativeTreeMaterializationError> {
     NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, _)| cause)
 }
+
+mod fixture_access {
+    use crate as acyclic_fs;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/native_access.rs"
+    ));
+}
+pub(super) use fixture_access::options as fixture_options;

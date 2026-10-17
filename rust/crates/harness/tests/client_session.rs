@@ -196,6 +196,7 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
         .unwrap();
     let source = storage
         .file_query(acyclic_fs::performance::BOUNDARY_BUDGET)
+        .await
         .unwrap();
     let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
         .await

@@ -226,6 +226,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 lookup.record.ok_or(FsError::NotFound)?.file_id
             }
         };
+        if file_id == self.root.root_file_id && self.policy_editor.is_none() {
+            let original = self
+                .read_metadata_with_accounting(file_id, accounting, cancellation)
+                .await?;
+            if original.named_attributes != metadata.named_attributes {
+                self.policy_editor = Some(Arc::new(crate::access::projection::enter(
+                    self.volume.id,
+                    false,
+                )?));
+            }
+        }
         let metadata = self
             .stage_metadata_with_accounting(metadata, accounting, cancellation)
             .await?;

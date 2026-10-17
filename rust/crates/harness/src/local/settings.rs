@@ -41,6 +41,7 @@ pub(super) async fn capture_hooks(
             crate::hooks::Hooks::MEDIA_TYPE,
             "hooks.json",
             None,
+            None,
         )?
         .await?
         .0;

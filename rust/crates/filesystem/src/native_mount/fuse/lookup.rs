@@ -26,7 +26,7 @@ pub(super) fn resolve_node(
         NodeFacts::Current(current) => Ok(current),
         NodeFacts::Handle(open_file) => Ok(Resolved {
             stamp: source.view_stamp_with_meter(work)?,
-            lookup: open_file.file(work)?.lookup_with_meter(work)?,
+            lookup: open_file.file().lookup_with_meter(work)?,
             through: None,
         }),
         NodeFacts::Names { file_id, mut paths } => {
@@ -99,6 +99,7 @@ impl FuseProjection {
         let child = {
             let mut state = self.core.state()?;
             let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
+            source.authorize_with_meter(&[(crate::access::Action::List, &child.spelled)], work)?;
             work.charge(Items.delta(1))?;
             if child.folded.is_none()
                 && let Some(inode) = state.inode_by_path.get(child.key()).copied()
@@ -169,10 +170,22 @@ impl FuseProjection {
     ) -> Result<(FileAttr, Duration), NativeMountError> {
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
-        let facts = {
+        let facts = if let Some(handle) = handle {
+            NodeFacts::Handle(
+                self.core
+                    .state()?
+                    .file_handle(inode, handle)?
+                    .open_file
+                    .clone(),
+            )
+        } else {
             let mut state = self.core.state()?;
-            match state.node_facts(source, inode, handle, work)? {
+            match state.node_facts(source, inode, None, work)? {
                 NodeFacts::Current(current) => {
+                    if let Some(path) = &current.through {
+                        source
+                            .authorize_with_meter(&[(crate::access::Action::List, path)], work)?;
+                    }
                     let attr = state.attr(inode, &current.lookup)?;
                     let ttl = state.admit_attributes(source, inode, current.stamp, work)?;
                     return Ok((attr, ttl));
@@ -271,10 +284,7 @@ impl FuseProjection {
         };
         drop(state);
         let detached = self.core.source.detach_file_with_meter(path, work)?;
-        Ok(Some((
-            inode,
-            FuseOpenFile::Source(fuse_open_file(detached, work)?),
-        )))
+        Ok(Some((inode, FuseOpenFile(fuse_open_file(detached, work)?))))
     }
 
     pub(super) fn remove_name(
@@ -302,7 +312,7 @@ impl FuseProjection {
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached);
+            state.retain_detached_handles(inode, &detached, work)?;
         }
         removed?;
         work.charge(Items.delta(1))?;
@@ -347,7 +357,7 @@ impl FuseProjection {
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached);
+            state.retain_detached_handles(inode, &detached, work)?;
         }
         renamed?;
         if from.key() != to.key() {

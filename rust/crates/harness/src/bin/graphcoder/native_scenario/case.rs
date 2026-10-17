@@ -174,6 +174,7 @@ pub(super) async fn prepare_case(
             &IdempotencyKey::new("planned-manifest")?,
             None,
             None,
+            None,
         )
         .await?;
     let mut planned_commands = BTreeMap::new();
@@ -210,6 +211,7 @@ pub(super) async fn prepare_case(
                 "model-input.json",
                 PAYLOAD_BYTES,
                 &IdempotencyKey::new(format!("planned-input-{label}"))?,
+                None,
                 None,
                 None,
             )

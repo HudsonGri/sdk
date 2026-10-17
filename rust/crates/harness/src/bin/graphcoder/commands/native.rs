@@ -413,7 +413,7 @@ pub(super) async fn execute(
                     &path,
                     generation.as_ref(),
                     terminal::MAX_FRAME_BYTES as u64,
-                    None,
+                    None, None,
                 )
                 .await?;
             json_line("file", &json!({"file": file, "text": utf8(&bytes)?}))

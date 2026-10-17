@@ -150,6 +150,7 @@ where
             _ => observed.diagnostic,
         };
         if let Some(reference) = &reference {
+            let maximum = u64::from(self.request.maximum_result_bytes);
             self.owner.validate_input_file(reference, None)?;
             if reference.volume() != self.authority.results.volume()
                 || reference.descriptor().byte_length()
@@ -166,11 +167,7 @@ where
                 &self
                     .authority
                     .content
-                    .read(
-                        reference,
-                        u64::from(self.request.maximum_result_bytes),
-                        None,
-                    )?
+                    .read(reference, maximum, None, None)?
                     .await?,
                 &mut None,
             )?;
@@ -206,7 +203,7 @@ where
         }
         let bytes = authority
             .content
-            .read(&plan.request, owner.input_limits().file_bytes, None)?
+            .read(&plan.request, owner.input_limits().file_bytes, None, None)?
             .await?;
         plan.request.descriptor().verify(&bytes, &mut None)?;
         let request: NativeProcessRequest = crate::contract::json_from_slice(&bytes)
@@ -232,7 +229,12 @@ where
         }
         let result_schema = authority
             .content
-            .read(&plan.result_schema, owner.input_limits().file_bytes, None)?
+            .read(
+                &plan.result_schema,
+                owner.input_limits().file_bytes,
+                None,
+                None,
+            )?
             .await?;
         crate::effects::validate_schema_bytes(&plan.result_schema, &result_schema, &mut None)?;
         owner.require_volume_grant(
@@ -531,6 +533,7 @@ where
             &bytes,
             "application/json",
             "Native process result",
+            None,
             None,
         )?
         .await?;

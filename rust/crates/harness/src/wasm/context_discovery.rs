@@ -131,8 +131,10 @@ impl ContentResidencyVerifier for BrowserReader {
         generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
         maximum_entries: u32,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             let query = ContextDirectoryQuery {
                 root: ContextRoot {
@@ -178,8 +180,10 @@ impl ContentResidencyVerifier for BrowserReader {
         path: &'a str,
         generation: &'a GenerationRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             let query = ContextReadQuery {
                 source: PinnedContextPath {
@@ -204,6 +208,7 @@ impl ContentResidencyVerifier for BrowserReader {
         path: &'a str,
         generation: Option<&'a GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
     ) -> Result<
         BoundedContentFuture<
@@ -218,6 +223,7 @@ impl ContentResidencyVerifier for BrowserReader {
     where
         'io: 'a,
     {
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
             let generation = generation.ok_or_else(|| {

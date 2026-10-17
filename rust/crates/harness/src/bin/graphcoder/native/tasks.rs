@@ -67,6 +67,7 @@ impl NativeSession {
                 "application/json",
                 "GraphCoder prompt command",
                 None,
+                None,
             )?
             .await?
             .0;
@@ -163,6 +164,7 @@ pub(crate) async fn stock_turn_commands(
             b"{\"after\":0}",
             "application/json",
             "GraphCoder mailbox receive",
+            None,
             None,
         )?
         .await?
