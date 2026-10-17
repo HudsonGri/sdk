@@ -42,9 +42,7 @@ impl ExternalRequest {
             return Err(Error::Invalid("request is not a native tool call".into()));
         };
         let (name, arguments) = match (self.host, name.as_str()) {
-            (ExternalHost::Codex, "exec_command")
-            | (ExternalHost::ClaudeCode, "Bash")
-            | (ExternalHost::Pi, "bash") => {
+            (ExternalHost::Codex, "exec_command") | (ExternalHost::ClaudeCode, "Bash") => {
                 let input: Shell = decode(arguments)?;
                 ("bash", json!({"command":input.command}))
             }
@@ -98,3 +96,6 @@ impl ExternalRequest {
 fn decode<T: serde::de::DeserializeOwned>(input: &Value) -> Result<T> {
     T::deserialize(input).map_err(|error| Error::Invalid(error.to_string()))
 }
+
+#[cfg(test)]
+mod tests;

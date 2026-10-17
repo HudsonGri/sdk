@@ -5,6 +5,7 @@ use super::*;
 async fn native_shell_and_git_commands_use_the_fenced_owner() -> Result {
     let directory = Fixture::new()?;
     std::fs::create_dir(directory.path().join(".git"))?;
+    std::fs::create_dir(directory.path().join("nested"))?;
     let session = uuid::Uuid::new_v4().to_string();
     let cwd = directory.path();
     hook(
@@ -35,6 +36,13 @@ async fn native_shell_and_git_commands_use_the_fenced_owner() -> Result {
         std::fs::read_to_string(cwd.join("shell.txt"))?,
         "fenced-shell"
     );
+    let options = hook(cwd, "pi", "tool_call", json!({
+        "sessionId":session,"cwd":cwd,"toolCallId":"bash-options","toolName":"bash",
+        "input":{"command":"printf selected-cwd > relative.txt","cwd":"nested","timeout":30},
+    })).await?;
+    assert_eq!(options["isError"], false, "{options}");
+    assert_eq!(std::fs::read_to_string(cwd.join("nested/relative.txt"))?, "selected-cwd");
+    assert!(!cwd.join("relative.txt").exists());
     hook(
         cwd,
         "pi",
