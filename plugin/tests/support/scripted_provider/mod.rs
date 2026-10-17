@@ -742,7 +742,12 @@ mod tests {
 
     #[test]
     fn codex_qualification_uses_the_discovered_shell_identity() {
-        for namespace in ["acyclic", "mcp__acyclic", "mcp__plugin_acyclic_acyclic"] {
+        for (namespace, tagged) in [
+            ("acyclic", true),
+            ("mcp__acyclic", true),
+            ("mcp__plugin_acyclic_acyclic", true),
+            ("mcp__acyclic", false),
+        ] {
             let request = json!({"input":[
                 {"role":"user","content":CODEX_CHILD_ROLE_MARKER},
                 {"type":"tool_search_output","tools":[
@@ -750,6 +755,13 @@ mod tests {
                     {"type":"namespace","name":namespace,"tools":[{"name":"bash"}]}
                 ]}
             ]});
+            let mut request = request;
+            if !tagged {
+                request["input"][1]["tools"][1]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("type");
+            }
             let tool = codex_shell(&request).unwrap();
             assert_eq!(tool, ("bash".into(), Some(namespace.into())));
             let events = responses_workflow_tool_events("child.txt", &tool);

@@ -141,7 +141,11 @@ pub(super) fn codex_shell(request: &Value) -> Option<(String, Option<String>)> {
     fn find(tools: &[Value]) -> Option<(String, Option<String>)> {
         tools.iter().find_map(|tool| {
             let name = tool.get("name")?.as_str()?;
-            if tool.get("type")?.as_str()? == "namespace" && name.contains("acyclic") {
+            if matches!(
+                tool.get("type").and_then(Value::as_str),
+                None | Some("namespace")
+            ) && name.contains("acyclic")
+            {
                 tool.get("tools")?.as_array()?.iter().find_map(|nested| {
                     (nested.get("name")?.as_str()? == "bash")
                         .then(|| ("bash".into(), Some(name.into())))
