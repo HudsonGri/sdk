@@ -1,11 +1,11 @@
-use super::super::*;
+use super::*;
 use super::cursor_work::BaselineCursor;
 use crate::test_meter::{Meter, trace as meter_trace};
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Original native read, including its concrete old cursor frame and admission order.
-fn baseline_native_read<'a, const REORDER: bool>(
+fn baseline_native_read<'a>(
     provider: &'a MemoryStream,
     request: ReadRequest,
     meter: Arc<dyn NativeReadMeter>,
@@ -77,14 +77,8 @@ fn baseline_native_read<'a, const REORDER: bool>(
                 let record = cursor
                     .next_record()
                     .ok_or(std::io::ErrorKind::InvalidData)?;
-                let (examined, read) = if REORDER {
-                    // Broken observer ordering with identical totals and output.
-                    let read = bytes.record(length);
-                    (meter.record_examination(1, copied), read)
-                } else {
-                    let examined = meter.record_examination(1, copied);
-                    (examined, bytes.record(length))
-                };
+                let examined = meter.record_examination(1, copied);
+                let read = bytes.record(length);
                 examined?;
                 read?;
                 Ok(Some((
@@ -138,12 +132,9 @@ async fn observe(
     });
     let request = ReadRequest { path, from, limit };
     meter_trace::begin();
+    let _order = reorder.then(meter_trace::reorder_recordings);
     let result = if old {
-        if reorder {
-            baseline_native_read::<true>(provider, request, meter.original()).await
-        } else {
-            baseline_native_read::<false>(provider, request, meter.original()).await
-        }
+        baseline_native_read(provider, request, meter.original()).await
     } else {
         provider.native_read(request, meter.original()).await
     };
@@ -292,16 +283,13 @@ fn reordered_recording_fails_observer_equality_with_unchanged_bytes_and_totals()
     let baseline = futures::executor::block_on(seed(2));
     let broken = futures::executor::block_on(seed(2));
     let before = futures::executor::block_on(observe(&baseline, true, 0, 2, 6, false));
-    let after = futures::executor::block_on(observe(&broken, true, 0, 2, 6, true));
+    let after = futures::executor::block_on(observe(&broken, false, 0, 2, 6, true));
     assert_eq!(before.0, after.0);
     assert_eq!(before.1, after.1);
-    assert_eq!(before.2, after.2);
-    assert_ne!(
-        before.3, after.3,
-        "reordering meter calls escaped the observer contract"
-    );
-    let expected = before
-        .3
+    let expected_events = normalize_baseline_events(before.3, before.2);
+    assert_eq!(expected_events.len(), after.3.len());
+    assert!(std::panic::catch_unwind(|| assert_eq!(expected_events, after.3)).is_err());
+    let expected = expected_events
         .iter()
         .position(|event| event.0 == "record_examination" && event.2 != 0)
         .unwrap();
