@@ -126,7 +126,7 @@ fn release_scratch(
 
 /// Stable counting sort by `(rank, depth)` of strictly path-ordered states:
 /// one keying pass over the states, then one placement per state.
-pub(super) fn bucket_path_ordered_states(
+fn bucket_path_ordered_states(
     states: &mut [CapturePathState],
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
@@ -181,4 +181,12 @@ pub(super) fn bucket_path_ordered_states(
         }
     }
     release_scratch(measured, meter)
+}
+
+#[cfg(test)]
+pub(super) fn unchecked_bucket_path_ordered_states(
+    states: &mut [CapturePathState],
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    bucket_path_ordered_states(states, meter)
 }

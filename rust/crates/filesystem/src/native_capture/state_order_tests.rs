@@ -220,8 +220,11 @@ fn unordered_states_need_the_comparison_sort() {
     let entries = [("/b".to_owned(), 3), ("/a".to_owned(), 3)];
     let (expected, _, old_heap) = charged(&kinds, states(&kinds, &entries), comparison_sort);
     let (checked, _, heap) = charged(&kinds, states(&kinds, &entries), sort_capture_states);
-    let (unchecked, _, unchecked_heap) =
-        charged(&kinds, states(&kinds, &entries), bucket_path_ordered_states);
+    let (unchecked, _, unchecked_heap) = charged(
+        &kinds,
+        states(&kinds, &entries),
+        unchecked_bucket_path_ordered_states,
+    );
     assert_eq!((old_heap, heap, unchecked_heap), (0, 0, 0));
     assert_eq!(checked, expected);
     assert_ne!(unchecked, expected);
@@ -326,7 +329,7 @@ fn rejected_counting_strategies_fail_the_same_budget_boundaries() {
             &rejected,
             crate::materializer::NativeResourceCredit::Items.delta(2 * (count - 1) as u64),
         )
-        .and_then(|()| bucket_path_ordered_states(&mut input, &rejected));
+        .and_then(|()| unchecked_bucket_path_ordered_states(&mut input, &rejected));
         assert!(result.is_err());
         let funded = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
         sort_capture_states(&mut states(&kinds, &entries), &funded).unwrap();
