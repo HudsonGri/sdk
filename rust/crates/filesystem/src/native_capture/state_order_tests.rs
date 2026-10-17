@@ -1,6 +1,26 @@
 use super::*;
 use proptest::prelude::*;
 
+thread_local! {
+    static PREVIOUS_SORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(super) struct PreviousSort(bool);
+
+pub(super) fn previous_sort(enabled: bool) -> PreviousSort {
+    PreviousSort(PREVIOUS_SORT.replace(enabled))
+}
+
+pub(super) fn use_previous_sort() -> bool {
+    PREVIOUS_SORT.get()
+}
+
+impl Drop for PreviousSort {
+    fn drop(&mut self) {
+        PREVIOUS_SORT.set(self.0);
+    }
+}
+
 /// Host observations of a directory and a regular file, to stand for every
 /// observed state of those kinds.
 struct Kinds {
@@ -95,20 +115,52 @@ fn charged(
     kinds: &Kinds,
     mut states: Vec<CapturePathState>,
     sort: fn(&mut [CapturePathState], &NativeMaterializationWork) -> Result<(), CaptureError>,
-) -> (Order, u64) {
+) -> (Order, u64, u64) {
     let before = kinds.meter.receipt().items_examined;
-    sort(&mut states, &kinds.meter).unwrap();
+    let heap = acyclic_test_support::measure(|| sort(&mut states, &kinds.meter).unwrap());
     (
         order(&states),
         kinds.meter.receipt().items_examined - before,
+        heap.count_total,
     )
 }
 
-fn comparison_sort(
+pub(super) fn comparison_sort(
     states: &mut [CapturePathState],
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    capture_sort_by(states, capture_state_order, meter)
+    capture_sort_by(states, previous_state_order, meter)
+}
+
+// Frozen comparator from before the counting pass: neither its ranks nor
+// its depth direction share the candidate's key construction.
+fn previous_state_order(
+    (left, left_path, left_current): &CapturePathState,
+    (right, right_path, right_current): &CapturePathState,
+) -> std::cmp::Ordering {
+    fn rank(observation: &Option<HostStat>, current: &Option<FileRecord>) -> u8 {
+        match observation {
+            None => 0,
+            Some(observation) if observation.is_dir() => 1,
+            Some(_) if current.is_some() => 2,
+            Some(_) => 3,
+        }
+    }
+    let left_rank = rank(left, left_current);
+    let right_rank = rank(right, right_current);
+    left_rank.cmp(&right_rank).then_with(|| {
+        if left_rank == 0 {
+            right_path
+                .depth()
+                .cmp(&left_path.depth())
+                .then_with(|| left_path.cmp(right_path))
+        } else {
+            left_path
+                .depth()
+                .cmp(&right_path.depth())
+                .then_with(|| left_path.cmp(right_path))
+        }
+    })
 }
 
 fn paths() -> impl Strategy<Value = Vec<(String, u8)>> {
@@ -136,9 +188,11 @@ proptest! {
         });
         let input = states(&kinds, &ordered);
         let count = input.len() as u64;
-        let (expected, _) = charged(&kinds, states(&kinds, &ordered), comparison_sort);
-        let (actual, items) = charged(&kinds, input, sort_capture_states);
+        let (expected, _, old_heap) = charged(&kinds, states(&kinds, &ordered), comparison_sort);
+        let (actual, items, heap) = charged(&kinds, input, sort_capture_states);
         prop_assert_eq!(&actual, &expected);
+        prop_assert_eq!(old_heap, 0);
+        prop_assert_eq!(heap, u64::from(count > 128));
         let bucketed = if count < 2 { 0 } else { count };
         prop_assert_eq!(items, 2 * count.saturating_sub(1) + bucketed);
         // Negative control: reversed input fails the path check and takes the
@@ -146,12 +200,13 @@ proptest! {
         if count > 1 {
             let mut reversed = ordered.clone();
             reversed.reverse();
-            let (fallback, fallback_items) =
+            let (fallback, fallback_items, fallback_heap) =
                 charged(&kinds, states(&kinds, &reversed), sort_capture_states);
-            let (_, comparison_items) =
+            let (_, comparison_items, comparison_heap) =
                 charged(&kinds, states(&kinds, &reversed), comparison_sort);
             prop_assert_eq!(&fallback, &expected);
             prop_assert_eq!(fallback_items, 2 + comparison_items);
+            prop_assert_eq!((fallback_heap, comparison_heap), (0, 0));
         }
     }
 }
@@ -162,9 +217,11 @@ proptest! {
 fn unordered_states_need_the_comparison_sort() {
     let kinds = kinds();
     let entries = [("/b".to_owned(), 3), ("/a".to_owned(), 3)];
-    let (expected, _) = charged(&kinds, states(&kinds, &entries), comparison_sort);
-    let (checked, _) = charged(&kinds, states(&kinds, &entries), sort_capture_states);
-    let (unchecked, _) = charged(&kinds, states(&kinds, &entries), bucket_path_ordered_states);
+    let (expected, _, old_heap) = charged(&kinds, states(&kinds, &entries), comparison_sort);
+    let (checked, _, heap) = charged(&kinds, states(&kinds, &entries), sort_capture_states);
+    let (unchecked, _, unchecked_heap) =
+        charged(&kinds, states(&kinds, &entries), bucket_path_ordered_states);
+    assert_eq!((old_heap, heap, unchecked_heap), (0, 0, 0));
     assert_eq!(checked, expected);
     assert_ne!(unchecked, expected);
 }
@@ -188,8 +245,9 @@ fn deep_paths_take_a_measured_class_buffer() {
             .cmp(&states(&kinds, std::slice::from_ref(right))[0].1)
     });
     let live = kinds.meter.receipt().peak_allocation_bytes;
-    let (expected, _) = charged(&kinds, states(&kinds, &entries), comparison_sort);
-    let (actual, items) = charged(&kinds, states(&kinds, &entries), sort_capture_states);
+    let (expected, _, old_heap) = charged(&kinds, states(&kinds, &entries), comparison_sort);
+    let (actual, items, heap) = charged(&kinds, states(&kinds, &entries), sort_capture_states);
+    assert_eq!((old_heap, heap), (0, 1));
     let count = entries.len() as u64;
     assert_eq!(actual, expected);
     assert_eq!(items, 2 * (count - 1) + count);

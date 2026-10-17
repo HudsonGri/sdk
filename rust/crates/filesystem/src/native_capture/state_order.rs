@@ -40,6 +40,10 @@ pub(super) fn sort_capture_states(
     states: &mut [CapturePathState],
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
+    #[cfg(test)]
+    if super::state_order_tests::use_previous_sort() {
+        return super::state_order_tests::comparison_sort(states, meter);
+    }
     let pairs = states.len().saturating_sub(1);
     let ascending = states
         .windows(2)
