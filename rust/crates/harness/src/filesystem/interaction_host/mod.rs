@@ -38,8 +38,10 @@ pub struct FilesystemInteractionHost<P, A, O> {
 }
 
 mod content;
+mod files;
 mod publication;
 mod resolution;
+pub use files::InteractionFiles;
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where

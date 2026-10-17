@@ -15,6 +15,8 @@ mod kind;
 pub use kind::InteractionKind;
 mod approval;
 pub use approval::ApprovalBinding;
+mod decision_file;
+pub use decision_file::ApprovalDecisionFile;
 mod ticket;
 pub use ticket::InteractionTicket;
 mod outcome;

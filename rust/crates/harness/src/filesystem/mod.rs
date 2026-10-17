@@ -57,7 +57,7 @@ use fork_preparer_io::decode_record;
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider};
 mod interaction_host;
-pub use interaction_host::FilesystemInteractionHost;
+pub use interaction_host::{FilesystemInteractionHost, InteractionFiles};
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;
