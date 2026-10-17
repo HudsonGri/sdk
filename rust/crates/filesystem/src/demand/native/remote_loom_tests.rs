@@ -84,3 +84,33 @@ fn reads_beyond_the_limit_are_refused() {
         readers.close();
     });
 }
+
+fn shutdown_model(close: bool) {
+    loom::model(move || {
+        let readers = RemoteReaders::new(1);
+        let (release, gate) = mpsc::channel();
+        let blocked = read(&readers, 1, Some(gate)).expect("reader starts");
+        if close {
+            readers.close();
+        }
+        assert!(release.send(()).is_ok());
+        assert_eq!(blocked.recv().ok(), Some(1));
+        // The answer frees a reader, but a closed pool must refuse new work.
+        let refused = read(&readers, 2, None).is_none();
+        readers.close();
+        readers.wait_closed();
+        assert!(refused, "closed pool accepted another read");
+        assert_eq!(readers.started(), 0);
+    });
+}
+
+#[test]
+fn shutdown_drains_accepted_reads_and_retires_readers() {
+    shutdown_model(true);
+}
+
+#[test]
+#[should_panic(expected = "closed pool accepted another read")]
+fn missing_shutdown_is_detected() {
+    shutdown_model(false);
+}

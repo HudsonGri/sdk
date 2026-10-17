@@ -28,7 +28,7 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 /// A source over a directory holding `contents` as `/file`, and that file held open.
-fn held(
+pub(super) fn held(
     runtime: &tokio::runtime::Runtime,
     contents: &[u8],
     remote: bool,

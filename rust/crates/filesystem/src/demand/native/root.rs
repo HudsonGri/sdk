@@ -31,6 +31,35 @@ struct NativeDemandInner {
 
 struct CancelWorkerOnDrop(CancellationToken);
 
+#[cfg(test)]
+impl Drop for NativeDemandInner {
+    fn drop(&mut self) {
+        if !Arc::ptr_eq(&self.remote, &REMOTE_READERS) {
+            self.remote.close();
+        }
+    }
+}
+
+#[cfg(all(test, not(acyclic_fs_native_loom)))]
+#[test]
+fn dropping_remote_source_retires_its_private_readers() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (_directory, source, file) = super::native_read_tests::held(&runtime, b"data", true)?;
+    let readers = Arc::clone(&source.inner.remote);
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    file.read_range(0, 4, &mut accounting)?;
+    assert_eq!(readers.started(), 1);
+    drop(file);
+    drop(source);
+    readers.wait_closed();
+    assert_eq!(readers.started(), 0);
+    Ok(())
+}
+
 impl Drop for CancelWorkerOnDrop {
     fn drop(&mut self) {
         self.0.cancel();

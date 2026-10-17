@@ -33,6 +33,7 @@ pub(super) trait RemoteDelivery {
 
 pub(super) struct RemoteReaders<J> {
     limit: usize,
+    // This is the only pool lock. Never hold it while reading or delivering.
     state: Mutex<RemoteState<J>>,
     work: Condvar,
     /// The negative control: free the reader only after delivering.
@@ -47,7 +48,7 @@ struct RemoteState<J> {
     idle: usize,
     /// Readers started, busy or free.
     readers: usize,
-    #[cfg(all(test, acyclic_fs_native_loom))]
+    #[cfg(test)]
     closed: bool,
 }
 
@@ -59,7 +60,7 @@ impl<J: RemoteRead> RemoteReaders<J> {
                 queued: std::collections::VecDeque::new(),
                 idle: 0,
                 readers: 0,
-                #[cfg(all(test, acyclic_fs_native_loom))]
+                #[cfg(test)]
                 closed: false,
             }),
             work: Condvar::new(),
@@ -72,6 +73,10 @@ impl<J: RemoteRead> RemoteReaders<J> {
     /// limit exist (then true); returns the job when every permitted reader is busy.
     pub(super) fn submit(self: &Arc<Self>, job: J) -> Result<bool, J> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        #[cfg(test)]
+        if state.closed {
+            return Err(job);
+        }
         if state.idle > 0 {
             state.idle -= 1;
             state.queued.push_back(job);
@@ -111,14 +116,26 @@ impl<J: RemoteRead> RemoteReaders<J> {
             .readers
     }
 
-    /// Stops free readers once nothing is queued, so models can end.
-    #[cfg(all(test, acyclic_fs_native_loom))]
+    /// Drains accepted reads and stops readers after their final delivery.
+    #[cfg(test)]
     pub(super) fn close(&self) {
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .closed = true;
         self.work.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_closed(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(state.closed);
+        while state.readers != 0 {
+            state = self
+                .work
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     #[cfg(all(test, acyclic_fs_native_loom))]
@@ -137,10 +154,11 @@ fn serve<J: RemoteRead>(readers: &RemoteReaders<J>) {
     let mut state = readers.state.lock().unwrap_or_else(PoisonError::into_inner);
     loop {
         let Some(job) = state.queued.pop_front() else {
-            #[cfg(all(test, acyclic_fs_native_loom))]
+            #[cfg(test)]
             if state.closed {
                 state.idle -= 1;
                 state.readers -= 1;
+                readers.work.notify_all();
                 return;
             }
             state = readers
