@@ -361,6 +361,28 @@ fn journal_wrappers_preserve_atomic_unmetered_task_files() {
                 )
                 .await?;
                 let journal = fixture.execution(fixture.running(80).await?, operation)?;
+                // Independent stores need identical initial entropy: the atomic
+                // chunk transaction now authenticates the task-volume header.
+                fixture
+                    .stream
+                    .append(acyclic_stream::AppendRequest {
+                        path: acyclic_stream::StreamPath::new(format!(
+                            "harness/task-volumes/{}",
+                            fixture.storage.storage_name(&mut None)?
+                        ))?,
+                        records: vec![
+                            serde_json::to_vec(&serde_json::json!({
+                                "volume":"06060606-0606-0606-0606-060606060606",
+                                "epoch":"07070707-0707-0707-0707-070707070707",
+                                "schema":crate::task_volume::SCHEMA,
+                            }))
+                            .unwrap()
+                            .into(),
+                        ],
+                        if_tail: Some(0),
+                        idempotency_key: None,
+                    })
+                    .await?;
                 let files = crate::task_volume::TaskFiles::open(
                     fixture.stream.clone(),
                     &fixture.storage,
