@@ -466,67 +466,73 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
         fixture.volume.provider().clone(),
         &fixture.volume.storage_name(&mut None)?,
     )?;
-    let generation = fixture
-        .host
-        .apply(
-            &workspace,
-            None,
-            &[acyclic_harness::filesystem::WorkspaceMutation::PutFile {
-                path: "/raw".into(),
-                bytes: b"raw bytes".to_vec().into(),
-            }],
-            &IdempotencyKey::new("raw")?,
-        )
-        .await?;
-    let grant = ContentGrant::verify_directory_read(
-        &fixture.issuer.verifier(&mut None)?,
-        &fixture.scope,
-        &fixture.volume,
-        "",
-        &mut None,
-    )?;
-    let cancellation = CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        &cancellation,
-    )
-    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
-    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
-    let (reference, bytes) = fixture
-        .host
-        .read_private_path(
+    for (index, (body, media_type)) in [
+        (b"raw bytes".as_slice(), "text/plain"),
+        (b"raw\xffbytes".as_slice(), "application/octet-stream"),
+        (b"raw\0bytes".as_slice(), "application/octet-stream"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let generation = fixture
+            .host
+            .apply(
+                &workspace,
+                None,
+                &[acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                    path: "/raw".into(),
+                    bytes: body.to_vec().into(),
+                }],
+                &IdempotencyKey::new(format!("raw/{index}"))?,
+            )
+            .await?;
+        let grant = ContentGrant::verify_directory_read(
+            &fixture.issuer.verifier(&mut None)?,
+            &fixture.scope,
             &fixture.volume,
-            &grant,
-            "raw",
-            Some(&generation),
-            4096,
-            None,
-            Some(&io),
+            "",
+            &mut None,
+        )?;
+        let cancellation = CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
         )
-        .await?;
-    assert_eq!(bytes.as_ref(), b"raw bytes");
-    assert_eq!(reference.path(), "raw");
-    assert_eq!(
-        reference.descriptor().media_type(),
-        "application/octet-stream"
-    );
-    assert_eq!(reference.descriptor().byte_length(), 9);
-    assert!(
-        fixture
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let (reference, bytes) = fixture
             .host
             .read_private_path(
                 &fixture.volume,
                 &grant,
                 "raw",
                 Some(&generation),
-                3,
+                4096,
                 None,
                 Some(&io),
             )
-            .await
-            .is_err()
-    );
-    assert!(work.receipt().backend_read_operations > 0);
+            .await?;
+        assert_eq!(bytes.as_ref(), body);
+        assert_eq!(reference.path(), "raw");
+        assert_eq!(reference.descriptor().media_type(), media_type);
+        assert_eq!(reference.descriptor().byte_length(), 9);
+        assert!(
+            fixture
+                .host
+                .read_private_path(
+                    &fixture.volume,
+                    &grant,
+                    "raw",
+                    Some(&generation),
+                    3,
+                    None,
+                    Some(&io),
+                )
+                .await
+                .is_err()
+        );
+        assert!(work.receipt().backend_read_operations > 0);
+    }
     Ok(())
 }
 
