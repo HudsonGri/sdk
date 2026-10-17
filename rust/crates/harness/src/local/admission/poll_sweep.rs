@@ -582,6 +582,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         let workers: Vec<_> = (0..std::thread::available_parallelism()
             .unwrap()
             .get()
+            .min(64)
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
