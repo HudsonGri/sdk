@@ -275,9 +275,7 @@ pub(super) async fn drive(
         tokio::select! {
             biased;
             result = &mut stopping => break result,
-            finished = tasks.next(), if !tasks.is_empty() => {
-                if let Some(Err(error)) = finished {break Err(error);}
-            }
+            _ = tasks.next(), if !tasks.is_empty() => {}
             child = children.next() => {
                 let path = match child {
                     Some(Ok(child)) => child.path,
@@ -285,9 +283,18 @@ pub(super) async fn drive(
                     None => break Err(Error::Storage("local task discovery ended".into())),
                 };
                 match super::super::local_paths::task(super::super::local_paths::REQUESTS,&path) {
-                    Ok(task) => tasks.push(Box::pin(drive_task(StateArc::clone(&harness),task,
-                        Arc::clone(&stop),instance))),
-                    Err(error) => break Err(error),
+                    Ok(task) => {
+                        let harness = StateArc::clone(&harness);
+                        let stop = Arc::clone(&stop);
+                        // A task failure cannot select the owner's stop path:
+                        // each isolated attempt completes with (), after its effects settle.
+                        tasks.push(Box::pin(async move {
+                            if let Err(error) = drive_task(harness, task, stop, instance).await {
+                                tracing::warn!(%task, %error, "request task quarantined");
+                            }
+                        }));
+                    }
+                    Err(error) => tracing::warn!(%error, "invalid request namespace quarantined"),
                 }
             }
         }
@@ -300,14 +307,7 @@ pub(super) async fn drive(
             .await
             .map_err(storage)?;
     }
-    let mut result = result;
-    while let Some(finished) = tasks.next().await {
-        if let Err(error) = finished {
-            if result.is_ok() {
-                result = Err(error);
-            }
-        }
-    }
+    while tasks.next().await.is_some() {}
     result
 }
 
@@ -339,9 +339,7 @@ async fn drive_task(
                 .ok_or_else(|| Error::Storage("local request follow ended".into()))??,
         };
         if request.task_id() != task {
-            return Err(Error::Unauthorized(
-                "request belongs to another task stream".into(),
-            ));
+            continue;
         }
         let result = harness
             .external_request_until(&request, stopped(&stop, instance))

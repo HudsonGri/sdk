@@ -80,8 +80,16 @@ proptest! {
             assert_eq!(decode(&record).unwrap(), Some(expected));
             let forged = tool(prefix+suffix);
             let file = forged.to_file(Component::new("another-task").unwrap()).unwrap();
+            let record = Record {sequence:1, value:file.record_value(None).unwrap(),
+                commit_id:Default::default(), committed_at_micros:0};
+            assert!(matches!(decode(&record), Err(Error::Unauthorized(_))));
             files.append(files.head().await.unwrap(), &file).await.unwrap();
-            assert!(matches!(accepted.next().await.unwrap(), Err(Error::Unauthorized(_))));
+            let mut invalid = tool(prefix+suffix).to_file(Component::new(forged.task_id().to_string()).unwrap()).unwrap();
+            invalid.bytes = b"{malformed".as_slice().into();
+            files.append(files.head().await.unwrap(), &invalid).await.unwrap();
+            let sentinel = tool(prefix+suffix+1);
+            publish(&files,&sentinel).await.unwrap();
+            assert_eq!(accepted.next().await.unwrap().unwrap(),sentinel);
         });
     }
 }

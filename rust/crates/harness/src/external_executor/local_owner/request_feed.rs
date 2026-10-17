@@ -77,7 +77,16 @@ pub(super) async fn follow<P: StreamProvider>(
     Ok(Box::pin(
         records
             .map_err(storage)
-            .try_filter_map(|record| future::ready(decode(&record))),
+            .try_filter_map(|record| {
+                let decoded = decode(&record);
+                #[cfg(acyclic_harness_loom)]
+                if model::keep_invalid() {
+                    return future::ready(decoded);
+                }
+                // Rejected immutable files stay in their original task stream;
+                // only provider failures may terminate the execution follow.
+                future::ready(Ok(decoded.unwrap_or(None)))
+            }),
     ))
 }
 
