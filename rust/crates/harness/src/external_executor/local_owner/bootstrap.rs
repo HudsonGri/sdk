@@ -84,6 +84,25 @@ pub(in crate::external_executor) async fn binding(workspace: &Path) -> Result<(C
         &serde_json::to_vec(&path).map_err(storage)?,
         false,
     )?;
+    connect_workspace(root, workspace).await
+}
+
+pub(in crate::external_executor) async fn existing_binding(
+    workspace: &str,
+) -> Result<(Client, String)> {
+    super::super::handoff::workspace_key(workspace)?;
+    let root = directory()?;
+    let path: PathBuf = super::super::volume::decode(&read(
+        &root.join("workspaces").join(format!("{workspace}.json")),
+    )?)
+    .map_err(storage)?;
+    if credential::workspace(&path)?.0 != workspace {
+        return Err(Error::Unauthorized("workspace binding was replaced".into()));
+    }
+    connect_workspace(root, workspace.into()).await
+}
+
+async fn connect_workspace(root: PathBuf, workspace: String) -> Result<(Client, String)> {
     if let Ok(bytes) = read(&root.join("credential"))
         && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
         && let Ok(bytes) = read(&root.join("address.json"))

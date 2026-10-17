@@ -16,7 +16,8 @@ async fn native_child_shell_and_selected_import_preserve_the_parent_checkout() -
         hook(cwd, "pi", "session_start", json!({"sessionId":"import","cwd":cwd})).await?;
         let spawned = hook(cwd, "pi", "subagent_start", json!({"sessionId":"import","agentId":"child"})).await?;
         let child = spawned["Succeeded"].as_str().ok_or("missing child identity")?;
-        hook(cwd, "pi", "session_start", json!({"sessionId":"import","agentId":"child","cwd":cwd})).await?;
+        // Native subagent hooks send SubagentStart followed directly by tools;
+        // they need no additional child SessionStart before their first effect.
         let shell = hook(cwd, "pi", "tool_call", json!({
             "sessionId":"import","agentId":"child","toolCallId":"shell",
             "toolName":"bash","input":{"command":"printf selected > selected.txt; printf unselected > unselected.txt; cat preserved.txt"},

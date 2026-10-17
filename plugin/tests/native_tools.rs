@@ -91,7 +91,11 @@ async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> R
                 assert_eq!(answer["hookSpecificOutput"]["permissionDecision"],"allow");
                 let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
                 assert!(arguments["_acyclic"].is_string());
-                let mut results = ResultClient::open(directory.path()).await?;
+                // Standard plugins start MCP at the package root, independent
+                // of the user's selected checkout. The file names its binding.
+                let mcp = directory.path().parent().unwrap().join("mcp");
+                std::fs::create_dir(&mcp)?;
+                let mut results = ResultClient::open(&mcp).await?;
                 let first = results.result(arguments.clone()).await?;
                 assert!(first["structuredContent"]["file"].is_object(),"{first}");
                 assert_eq!(results.result(arguments.clone()).await?,first);
@@ -99,6 +103,7 @@ async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> R
                 changed["text"] = json!("forged");
                 assert_eq!(results.result(changed).await?["isError"],true);
                 results.close().await?;
+                assert_eq!(std::fs::read_dir(directory.path().parent().unwrap().join("owner/workspaces"))?.count(),1);
             }
             assert_eq!(hook(directory.path(),host,if pi {"tool_call"} else {"PreToolUse"},request).await?,answer);
             assert_eq!(std::fs::metadata(directory.path().join("native.txt"))?.modified()?,published);

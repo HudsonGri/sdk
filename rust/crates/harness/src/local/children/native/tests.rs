@@ -268,6 +268,37 @@ async fn isolated_native_child(host: ExternalHost) -> Result<()> {
         }),
     )?;
     let written = harness.external_request(&write).await?;
+    if host == ExternalHost::Pi {
+        let crate::external_executor::ExternalAction::RunTool { arguments, .. } = &write.action
+        else {
+            unreachable!()
+        };
+        let mut arguments = arguments.clone();
+        let task = Component::new(write.task_id().to_string()).map_err(storage)?;
+        let path = write.request_key(task).map_err(storage)?.path();
+        let mut workspace = blake3::hash(
+            harness
+                .workspace_path()
+                .unwrap()
+                .as_os_str()
+                .as_encoded_bytes(),
+        )
+        .to_hex()
+        .to_string();
+        arguments["_acyclic"] = json!(format!("workspaces/{workspace}/{path}"));
+        assert_eq!(
+            harness
+                .external_tool_result("write", arguments.clone())
+                .await?,
+            written
+        );
+        workspace.replace_range(..1, if workspace.starts_with('a') { "b" } else { "a" });
+        arguments["_acyclic"] = json!(format!("workspaces/{workspace}/{path}"));
+        assert!(matches!(
+            harness.external_tool_result("write", arguments).await,
+            Err(Error::Unauthorized(_))
+        ));
+    }
     let result = tool_result(written.clone())?;
     let file: crate::conversation::FileRef =
         serde_json::from_value(result["details"]["file"].clone()).map_err(storage)?;

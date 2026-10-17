@@ -57,7 +57,7 @@ pub(crate) use commands::ChildAdmission;
 pub use commands::RequestCommands;
 pub use failure::hook_failure;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-pub(crate) use handoff::file_key as native_result_key;
+pub(crate) use handoff::bound_key as native_result_key;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use handoff::native_tool_request;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]

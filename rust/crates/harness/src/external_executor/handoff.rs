@@ -73,31 +73,95 @@ pub(super) fn answer(request: ExternalRequest, task: Component, result: &Value) 
 }
 
 pub(crate) fn file_key(arguments: &Value) -> Result<FileKey> {
-    FileKey::parse(
-        arguments
-            .get(FIELD)
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?,
-    )
-    .map_err(|_| invalid())
+    FileKey::parse(reference(arguments)?.1).map_err(|_| invalid())
+}
+
+pub(super) fn workspace_key(key: &str) -> Result<()> {
+    if key.len() == 64
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(invalid())
+    }
+}
+
+pub(super) fn reference(arguments: &Value) -> Result<(Option<&str>, &str)> {
+    let path = arguments
+        .get(FIELD)
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?;
+    match path.strip_prefix("workspaces/") {
+        Some(path) => {
+            let (workspace, path) = path.split_once('/').ok_or_else(invalid)?;
+            workspace_key(workspace)?;
+            Ok((Some(workspace), path))
+        }
+        None => Ok((None, path)),
+    }
+}
+
+pub(super) fn qualify(answer: &mut Value, workspace: &str) -> Result<()> {
+    workspace_key(workspace)?;
+    let field = answer
+        .pointer_mut("/hookSpecificOutput/updatedInput/_acyclic")
+        .ok_or_else(invalid)?;
+    let path = field.as_str().ok_or_else(invalid)?;
+    *field = Value::String(format!("workspaces/{workspace}/{path}"));
+    Ok(())
+}
+
+#[cfg(feature = "test-support")]
+pub(super) fn fuzz(bytes: &[u8]) {
+    if let Ok(arguments) = serde_json::from_slice::<Value>(bytes) {
+        if let Ok((workspace, path)) = reference(&arguments) {
+            if let Some(workspace) = workspace {
+                workspace_key(workspace).unwrap();
+            }
+            if let Ok(key) = file_key(&arguments) {
+                assert_eq!(key.path(), path);
+            }
+        }
+    }
 }
 
 /// Checks a native handoff against its original immutable request file.
 /// The result client can only follow that request's result, never execute it.
+/// Qualified references must match the authenticated provider's workspace.
 pub fn native_tool_request(
     name: &str,
     arguments: Value,
     file: &FileValue,
+    workspace: Option<&str>,
 ) -> Result<ExternalRequest> {
-    let key = file_key(&arguments)?;
+    let key = bound_key(&arguments, workspace)?;
+    verify_request(name, arguments, file, &key)
+}
+
+pub(crate) fn bound_key(arguments: &Value, workspace: Option<&str>) -> Result<FileKey> {
+    let (scope, path) = reference(arguments)?;
+    if scope.is_some() && scope != workspace {
+        return Err(invalid());
+    }
+    FileKey::parse(path).map_err(|_| invalid())
+}
+
+fn verify_request(
+    name: &str,
+    arguments: Value,
+    file: &FileValue,
+    key: &FileKey,
+) -> Result<ExternalRequest> {
     let FileKey::Task {
         task,
         file: TaskFile::Request(_),
-    } = &key
+    } = key
     else {
         return Err(invalid());
     };
-    if file.key != key {
+    if &file.key != key {
         return Err(invalid());
     }
     let request = ExternalRequest::from_file(task, file).map_err(|_| invalid())?;
@@ -124,14 +188,18 @@ pub(crate) async fn read_result<P: StreamProvider>(
     arguments: Value,
     requests: &TaskVolume<P>,
     results: &TaskVolume<P>,
+    workspace: Option<&str>,
 ) -> Result<Value> {
-    let key = file_key(&arguments)?;
+    let query = Query::File(bound_key(&arguments, workspace)?);
     let source = requests
-        .snapshot(&Query::File(key), 1)
+        .snapshot(&query, 1)
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
     let file = source.files.first().ok_or_else(invalid)?;
-    let request = native_tool_request(name, arguments, file)?;
+    let Query::File(key) = &query else {
+        return Err(invalid());
+    };
+    let request = verify_request(name, arguments, file, key)?;
     let FileKey::Task { task, .. } = &file.key else {
         return Err(invalid());
     };
@@ -174,15 +242,47 @@ mod tests {
         let task = Component::new(request.task_id().to_string())?;
         let file = request.to_file(task.clone())?;
         assert!(file.bytes.len() > acyclic_stream::MAX_RECORD_BYTES - 2048);
-        let answer = answer(request.clone(), task, &json!({"Succeeded":{}}))?;
+        let mut answer = answer(request.clone(), task, &json!({"Succeeded":{}}))?;
+        let workspace = "0".repeat(64);
+        qualify(&mut answer, &workspace)?;
         let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
         assert!(serde_json::to_vec(&arguments[FIELD])?.len() < 256);
-        assert_eq!(native_tool_request("bash", arguments, &file)?, request);
+        assert_eq!(
+            native_tool_request("bash", arguments, &file, Some(&workspace))?,
+            request
+        );
         Ok(())
     }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
+        // A qualified file keeps the exact task key, request and arguments;
+        // routing rejects noncanonical workspace components before any I/O.
+        #[test]
+        fn qualified_native_references_preserve_the_request(workspace in any::<[u8;32]>(), command in ".{0,32}") {
+            let workspace = hex::encode(workspace);
+            let request = super::super::request(ExternalHost::Codex,"PreToolUse",json!({
+                "session_id":"qualified","tool_use_id":"call","tool_name":"bash","tool_input":{"command":command},
+            }))?;
+            let task = Component::new(request.task_id().to_string())?;
+            let file = request.to_file(task.clone())?;
+            let mut answer = answer(request.clone(),task,&json!({"Succeeded":null}))?;
+            qualify(&mut answer,&workspace)?;
+            let arguments = &answer["hookSpecificOutput"]["updatedInput"];
+            let (scope,path) = reference(arguments)?;
+            prop_assert_eq!(scope,Some(workspace.as_str()));
+            prop_assert_eq!(path,file.key.path());
+            prop_assert_eq!(native_tool_request("bash",arguments.clone(),&file,Some(&workspace))?,request);
+            prop_assert!(native_tool_request("bash",arguments.clone(),&file,None).is_err());
+            let mut other = workspace.clone();
+            other.replace_range(..1, if workspace.starts_with('a') { "b" } else { "a" });
+            prop_assert!(native_tool_request("bash",arguments.clone(),&file,Some(&other)).is_err());
+            for invalid in ["..", "a/b", "owner", "X", ""] {
+                let mut arguments = arguments.clone();
+                arguments[FIELD] = json!(format!("workspaces/{invalid}/{path}"));
+                prop_assert!(file_key(&arguments).is_err());
+            }
+        }
         // Native spelling aliases must select the same harness request and
         // immutable result; a foreign namespace must remain host-executed.
         #[test]
@@ -204,7 +304,7 @@ mod tests {
                     let task = Component::new(request.task_id().to_string())?;
                     let file = request.to_file(task.clone())?;
                     let answer = answer(request.clone(),task,&json!({"Succeeded":null}))?;
-                    prop_assert_eq!(native_tool_request("bash",answer["hookSpecificOutput"]["updatedInput"].clone(),&file)?,request);
+                    prop_assert_eq!(native_tool_request("bash",answer["hookSpecificOutput"]["updatedInput"].clone(),&file,None)?,request);
                     input[if camel_name {"toolName"} else {"tool_name"}] = json!("mcp__foreign__bash");
                     let (foreign,mcp) = super::super::native::prepare_hook(host,"PreToolUse",input)?;
                     prop_assert!(!mcp);
@@ -229,14 +329,14 @@ mod tests {
                 let answer = answer(handed_off,task,&json!({"Succeeded":{"stdout":"result"}}))?;
                 prop_assert_eq!(answer["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap().as_ptr(),payload);
                 let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
-                prop_assert_eq!(native_tool_request("bash",arguments.clone(),&file)?,request.clone());
-                prop_assert!(native_tool_request("write",arguments.clone(),&file).is_err());
+                prop_assert_eq!(native_tool_request("bash",arguments.clone(),&file,None)?,request.clone());
+                prop_assert!(native_tool_request("write",arguments.clone(),&file,None).is_err());
                 let mut changed = arguments.clone();
                 changed["command"] = json!({"different":true});
-                prop_assert!(native_tool_request("bash",changed,&file).is_err());
+                prop_assert!(native_tool_request("bash",changed,&file,None).is_err());
                 let mut changed = arguments;
                 changed[FIELD] = json!("tasks/another/requests/another.json");
-                prop_assert!(native_tool_request("bash",changed,&file).is_err());
+                prop_assert!(native_tool_request("bash",changed,&file,None).is_err());
             }
         }
     }

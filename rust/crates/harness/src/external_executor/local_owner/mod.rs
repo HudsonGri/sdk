@@ -14,7 +14,7 @@ mod registry;
 mod request_feed;
 mod server;
 
-pub(super) use bootstrap::binding;
+pub(super) use bootstrap::{binding, existing_binding};
 pub use server::{run_local_owner, stop_local_owner};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -44,6 +44,7 @@ impl Address {
 
 #[cfg(feature = "test-support")]
 pub(crate) fn fuzz_input(bytes: &[u8]) {
+    super::handoff::fuzz(bytes);
     super::local_paths::fuzz(bytes);
     request_feed::fuzz_bytes(bytes);
     let _ = Address::from_bytes(bytes);

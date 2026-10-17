@@ -66,7 +66,14 @@ impl LocalHarness {
         arguments: Value,
     ) -> impl Future<Output = Result<Value>> + 'a {
         Box::pin(async move {
-            let key = crate::external_executor::native_result_key(&arguments)?;
+            #[cfg(feature = "native-execution")]
+            let workspace = self
+                .workspace_path()
+                .map(|path| blake3::hash(path.as_os_str().as_encoded_bytes()).to_hex());
+            #[cfg(not(feature = "native-execution"))]
+            let workspace: Option<String> = None;
+            let workspace = workspace.as_ref().map(|workspace| workspace.as_str());
+            let key = crate::external_executor::native_result_key(&arguments, workspace)?;
             let crate::task_volume::FileKey::Task { task, .. } = key else {
                 return Err(Error::Invalid("native result is not a task file".into()));
             };
@@ -79,6 +86,7 @@ impl LocalHarness {
                 arguments,
                 &volumes.requests,
                 &volumes.results,
+                workspace,
             )
             .await
         })

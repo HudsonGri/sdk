@@ -18,12 +18,7 @@ pub(super) fn verify(secret: &[u8; 32], credential: &str) -> Result<String> {
     let (workspace, digest) = credential
         .split_once('.')
         .ok_or_else(|| Error::Unauthorized("missing local owner scope".into()))?;
-    if workspace != "owner"
-        && (workspace.len() != 64
-            || !workspace
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-    {
+    if workspace != "owner" && super::super::handoff::workspace_key(workspace).is_err() {
         return Err(Error::Unauthorized("invalid local owner scope".into()));
     }
     let actual = blake3::Hash::from_hex(digest).map_err(storage)?;

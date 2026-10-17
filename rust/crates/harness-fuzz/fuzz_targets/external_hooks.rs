@@ -77,7 +77,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     {
         let file = FileValue::new(key, bytes);
         if let Ok(request) =
-            acyclic_harness::external_executor::native_tool_request(&name, arguments, &file)
+            acyclic_harness::external_executor::native_tool_request(&name, arguments, &file, None)
         {
             assert_eq!(
                 request.to_file(match &file.key {
@@ -149,8 +149,33 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                         arguments.insert("_acyclic".into(), serde_json::json!(file.key.path()));
                         let decoded = acyclic_harness::external_executor::native_tool_request(
                             name,
+                            serde_json::Value::Object(arguments.clone()),
+                            &file,
+                            None,
+                        )?;
+                        assert_eq!(decoded, request);
+                        let workspace = "0".repeat(64);
+                        arguments.insert(
+                            "_acyclic".into(),
+                            serde_json::json!(format!(
+                                "workspaces/{workspace}/{}",
+                                file.key.path()
+                            )),
+                        );
+                        assert!(
+                            acyclic_harness::external_executor::native_tool_request(
+                                name,
+                                serde_json::Value::Object(arguments.clone()),
+                                &file,
+                                None,
+                            )
+                            .is_err()
+                        );
+                        let decoded = acyclic_harness::external_executor::native_tool_request(
+                            name,
                             serde_json::Value::Object(arguments),
                             &file,
+                            Some(&workspace),
                         )?;
                         assert_eq!(decoded, request);
                     }

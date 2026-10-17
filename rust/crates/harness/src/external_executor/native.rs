@@ -89,19 +89,23 @@ pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
         None => std::env::current_dir().map_err(storage)?,
     };
     let (request, mcp) = handler::prepare(host, event, input)?;
-    let (answer, task) = run_request(&request, &cwd).await?;
-    handler::answer(host, event, request, answer, task, mcp)
+    let (answer, task, workspace) = run_request(&request, &cwd).await?;
+    let mut answer = handler::answer(host, event, request, answer, task, mcp)?;
+    if mcp && let Some(workspace) = workspace {
+        super::handoff::qualify(&mut answer, &workspace)?;
+    }
+    Ok(answer)
 }
 
 pub(super) fn run_request<'a>(
     request: &'a super::ExternalRequest,
     cwd: &'a std::path::Path,
-) -> impl Future<Output = Result<(Value, Component)>> + 'a {
+) -> impl Future<Output = Result<(Value, Component, Option<String>)>> + 'a {
     Box::pin(async move {
         let Some(path) = std::env::var_os("ACYCLIC_HARNESS_BINDING") else {
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
-                let (requests, results) = local_volumes(cwd, request.task_id()).await?;
+                let (requests, results, workspace) = local_volumes(cwd, request.task_id()).await?;
                 let task = Component::new(request.task_id().to_string()).map_err(storage)?;
                 return Ok((
                     request
@@ -109,6 +113,7 @@ pub(super) fn run_request<'a>(
                         .await
                         .map_err(storage)?,
                     task,
+                    Some(workspace),
                 ));
             }
             #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
@@ -123,6 +128,7 @@ pub(super) fn run_request<'a>(
                 .await
                 .map_err(storage)?,
             task,
+            None,
         ))
     })
 }
@@ -135,21 +141,39 @@ pub(super) fn read_tool_result(
         let Some(path) = std::env::var_os("ACYCLIC_HARNESS_BINDING") else {
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             {
-                let cwd = std::env::current_dir().map_err(storage)?;
                 let key = super::handoff::file_key(&arguments)?;
                 let crate::task_volume::FileKey::Task { task, .. } = key else {
                     return Err(Error::Invalid("native result is not a task file".into()));
                 };
                 let id = uuid::Uuid::parse_str(task.as_str()).map_err(storage)?;
-                let (requests, results) =
-                    local_volumes(&cwd, crate::TaskId::from_bytes(id.into_bytes())).await?;
-                return super::handoff::read_result(name, arguments, &requests, &results).await;
+                let workspace = super::handoff::reference(&arguments)?.0.ok_or_else(|| {
+                    Error::Unauthorized("local MCP result has no workspace binding".into())
+                })?;
+                let (client, workspace) = super::local_owner::existing_binding(workspace).await?;
+                let (requests, results) = local_hook_volumes(
+                    Arc::new(client),
+                    crate::TaskId::from_bytes(id.into_bytes()),
+                )
+                .await?;
+                return super::handoff::read_result(
+                    name,
+                    arguments,
+                    &requests,
+                    &results,
+                    Some(&workspace),
+                )
+                .await;
             }
             #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
             return Err(Error::Unsupported(
                 "local hooks require filesystem-local and native-execution".into(),
             ));
         };
+        if super::handoff::reference(&arguments)?.0.is_some() {
+            return Err(Error::Unauthorized(
+                "local MCP reference is outside the platform binding".into(),
+            ));
+        }
         let (requests, results, task) = platform_volumes(path).await?;
         let key = super::handoff::file_key(&arguments)?;
         if !matches!(&key,crate::task_volume::FileKey::Task {task:bound,..} if bound == &task) {
@@ -157,7 +181,7 @@ pub(super) fn read_tool_result(
                 "native result belongs to another bound task".into(),
             ));
         }
-        super::handoff::read_result(name, arguments, &requests, &results).await
+        super::handoff::read_result(name, arguments, &requests, &results, None).await
     })
 }
 
@@ -197,9 +221,11 @@ async fn local_volumes(
 ) -> Result<(
     TaskVolume<acyclic_stream::grpc::Client>,
     TaskVolume<acyclic_stream::grpc::Client>,
+    String,
 )> {
-    let (client, _) = super::local_owner::binding(cwd).await?;
-    local_hook_volumes(Arc::new(client), task).await
+    let (client, workspace) = super::local_owner::binding(cwd).await?;
+    let (requests, results) = local_hook_volumes(Arc::new(client), task).await?;
+    Ok((requests, results, workspace))
 }
 
 pub(super) fn read_bounded(reader: impl std::io::Read, maximum: usize) -> Result<Vec<u8>> {
