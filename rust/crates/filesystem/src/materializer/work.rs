@@ -283,6 +283,33 @@ impl NativeMaterializationWork {
             bytes,
         })
     }
+    pub(crate) fn claim_with_caller(
+        &self,
+        cancellation: &crate::CancellationToken,
+        bytes: u64,
+        operations: u64,
+    ) -> Result<NativeAllocation, crate::FsError> {
+        self.state(|state| -> Result<(), crate::FsError> {
+            let native = native_materialization_work_error;
+            state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+            cancellation.check()?;
+            state
+                .claim_allocation(bytes, operations, WorkCounters::UNCHARGED)
+                .map_err(native)?;
+            Ok(())
+        })?;
+        // Owner construction, like destruction, stays outside the leaf.
+        let allocation = NativeAllocation {
+            meter: self.allocation_work(),
+            bytes,
+        };
+        #[cfg(all(test, acyclic_fs_loom))]
+        if crate::kernel::allocation::drop_claim_under_leaf() {
+            self.state(|_| drop(allocation));
+            unreachable!("a claimed owner's destructor must re-enter the leaf");
+        }
+        Ok(allocation)
+    }
     pub(crate) fn claim_root_metadata(
         &self,
         bytes: u64,

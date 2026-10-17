@@ -589,3 +589,9 @@ impl AllocationError {
 #[cfg(test)]
 #[path = "tests/allocation.rs"]
 mod tests;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+pub(crate) use accounting::boundary_tests::observed as observe_boundary;
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+pub(crate) use accounting::boundary_model::drop_under_leaf as drop_claim_under_leaf;

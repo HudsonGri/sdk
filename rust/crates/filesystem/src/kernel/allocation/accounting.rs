@@ -95,14 +95,16 @@ impl<'a> KernelAccounting<'a> {
         bytes: u64,
         operations: u64,
     ) -> Result<KernelOwnedAllocation, crate::FsError> {
-        self.check()?;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        boundary_tests::before(self)?;
         match self {
             Self::Standalone {
                 allocations,
                 work,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 allocations
                     .claim_bytes(bytes, operations, work, *budget)
                     .map_err(|error| {
@@ -114,8 +116,9 @@ impl<'a> KernelAccounting<'a> {
                 allocations,
                 work,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 allocations
                     .claim_bytes(bytes, operations, work, *budget)
                     .map_err(|error| {
@@ -124,10 +127,9 @@ impl<'a> KernelAccounting<'a> {
                 Ok(KernelOwnedAllocation::Standalone)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work
-                .claim(bytes, operations, crate::WorkCounters::UNCHARGED)
-                .map(KernelOwnedAllocation::NativeOriginal)
-                .map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => work
+                .claim_with_caller(cancellation, bytes, operations)
+                .map(KernelOwnedAllocation::NativeOriginal),
         }
     }
 
@@ -292,6 +294,8 @@ impl<'a> KernelAccounting<'a> {
     }
 
     pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        boundary_tests::before(self)?;
         match self {
             Self::Standalone {
                 work,
@@ -314,11 +318,12 @@ impl<'a> KernelAccounting<'a> {
                 cancellation.check().map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, cancellation } => {
-                work.record_admitted(delta)?;
-                work.admit(WorkCounters::UNCHARGED)?;
+            Self::NativeOriginal { work, cancellation } => work.state(|state| {
+                let native = crate::materializer::native_materialization_work_error;
+                state.record(delta).map_err(native)?;
+                state.admit(WorkCounters::UNCHARGED).map_err(native)?;
                 cancellation.check().map_err(Into::into)
-            }
+            }),
         }
     }
 
@@ -456,14 +461,16 @@ impl<'a> KernelAccounting<'a> {
 
     /// Returns the remaining bounded allowances.
     pub fn remaining(&self) -> Result<WorkBudget, crate::FsError> {
-        self.check()?;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        boundary_tests::before(self)?;
         match self {
             Self::Standalone {
                 work,
                 allocations,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 let mut remaining = work.remaining(*budget)?;
                 remaining.peak_allocation_bytes = remaining
                     .peak_allocation_bytes
@@ -475,8 +482,9 @@ impl<'a> KernelAccounting<'a> {
                 work,
                 allocations,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 let mut remaining = work.remaining(*budget)?;
                 remaining.peak_allocation_bytes = remaining
                     .peak_allocation_bytes
@@ -485,7 +493,16 @@ impl<'a> KernelAccounting<'a> {
                 Ok(remaining)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.remaining().map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => work.state(|state| {
+                let native = crate::materializer::native_materialization_work_error;
+                state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+                cancellation.check()?;
+                state
+                    .check()
+                    .and_then(|()| state.remaining())
+                    .map_err(native)
+                    .map_err(Into::into)
+            }),
         }
     }
 
@@ -516,3 +533,9 @@ mod charge_tests;
 
 #[cfg(all(test, acyclic_fs_loom))]
 mod charge_model;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+pub(crate) mod boundary_tests;
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+pub(crate) mod boundary_model;

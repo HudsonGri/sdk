@@ -188,6 +188,8 @@ impl DemandWork {
         })
     }
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        crate::kernel::allocation::observe_boundary(1, delta, 0, 0);
         #[cfg(test)]
         self.probe_write(delta);
         let delta = self.item_charge(delta);
@@ -225,6 +227,8 @@ impl DemandWork {
         operations: u64,
         delta: WorkCounters,
     ) -> Result<(), DemandError> {
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        crate::kernel::allocation::observe_boundary(2, delta, bytes, operations);
         let delta = self.item_charge(delta);
         self.reconcile_cancellation_registry()?;
         self.check()?;
@@ -323,6 +327,8 @@ impl DemandWork {
         result
     }
     pub(crate) fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        crate::kernel::allocation::observe_boundary(0, WorkCounters::UNCHARGED, 0, 0);
         self.reconcile_native_controls()?;
         let mut remaining = self.work.remaining(self.budget)?;
         remaining.peak_allocation_bytes = remaining
