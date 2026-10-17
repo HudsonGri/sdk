@@ -1,7 +1,7 @@
 //! Independent pre-optimization held-file implementation.
 use super::*;
 #[derive(Clone)]
-struct BaselineDemandFile {
+pub(super) struct BaselineDemandFile {
     provider: NativeDemandSource,
     source: SourceReference,
     relative: DemandPath,

@@ -188,25 +188,28 @@ proptest! {
 fn held_file_reads_do_exact_uninitialized_work() -> Result<(), Box<dyn Error>> {
     let runtime = runtime();
     let contents: Vec<u8> = (0..100_000_u32).map(|byte| (byte * 13) as u8).collect();
-    let (_directory, _source, file) = held(&runtime, &contents, false)?;
+    let (directory, _source, file) = held(&runtime, &contents, false)?;
     for native in [false, true] {
         for (offset, length, served) in [
             (100_000_u64, 64_u64, 0_u64),
             (10, 4096, 4096),
             (99_000, 4096, 1000),
         ] {
-            let expected = expected_work(native, served, 0);
+            let expected = expected_work(directory.path(), native, served, 0);
             let (bytes, spent, trace) = read_mode(file.as_ref(), offset, length, native);
             let start = offset as usize;
             assert_eq!(bytes, Ok(contents[start..start + served as usize].to_vec()));
-            assert_eq!(spent, expected_work(native, served, wait_count(&trace)));
+            assert_eq!(
+                spent,
+                expected_work(directory.path(), native, served, wait_count(&trace))
+            );
             assert!(trace.contains(&("storage", 0, served)));
             let (_, extra, extra_trace) = demand_read_work::adding_allocation(|| {
                 read_mode(file.as_ref(), offset, length, native)
             });
             assert_ne!(
                 extra,
-                expected_work(native, served, wait_count(&extra_trace)),
+                expected_work(directory.path(), native, served, wait_count(&extra_trace)),
                 "extra allocation escaped"
             );
             assert_eq!(
@@ -234,7 +237,7 @@ fn held_file_reads_do_exact_uninitialized_work() -> Result<(), Box<dyn Error>> {
 fn wait_count(trace: &[Work]) -> u64 {
     trace.iter().filter(|(op, ..)| *op == "wait").count() as u64
 }
-fn expected_work(native: bool, served: u64, waits: u64) -> WorkCounters {
+fn expected_work(root: &std::path::Path, native: bool, served: u64, waits: u64) -> WorkCounters {
     let ledger = if native {
         crate::NativeMaterializationWork::accounting_state_bytes()
     } else {
@@ -252,14 +255,28 @@ fn expected_work(native: bool, served: u64, waits: u64) -> WorkCounters {
         0
     };
     #[cfg(unix)]
-    let (metadata_reads, path_bytes, path_items, path_allocations, path_capacity) = (2, 4, 4, 1, 5);
+    let (metadata_reads, path_bytes, path_items, path_allocations, path_capacity, encoded) = {
+        use std::os::unix::ffi::OsStrExt;
+        let n = root.as_os_str().as_bytes().len() as u64;
+        (3, 4 + n, 4 + n, 2, (n + 1).max(5), 0)
+    };
     #[cfg(windows)]
-    let (metadata_reads, path_bytes, path_items, path_allocations, path_capacity) = (3, 0, 4, 0, 0);
+    let (metadata_reads, path_bytes, path_items, path_allocations, path_capacity, encoded) = {
+        use std::os::windows::ffi::OsStrExt;
+        let units: Vec<_> = root.as_os_str().encode_wide().collect();
+        let n = units.len() as u64;
+        if units.starts_with(&[92, 92, 63, 92]) || units.starts_with(&[92, 63, 63, 92]) {
+            (5, 0, 4 + 2 * n, 1, 2 * (n + 1), 2 * n)
+        } else {
+            (5, 8, 6 + 2 * n, 2, 4 * n + 20, 2 * n)
+        }
+    };
     WorkCounters {
         backend_read_operations: metadata_reads
             + u64::from(served > 0) * if cfg!(windows) { 2 } else { 1 },
         source_bytes_read: served,
         bytes_copied: path_bytes,
+        bytes_encoded: encoded,
         items_examined: path_items + waits,
         output_bytes: served,
         allocation_operations: path_allocations + u64::from(served > 0) + 2 * u64::from(native),
