@@ -1,5 +1,6 @@
 //! Standard coding tools and shared host executors.
-pub mod agent;
+pub(crate) mod children;
+pub use children::{ArchiveInput, SendInput, SpawnInput, WaitInput, WaitMode};
 mod agent_files;
 mod bash;
 pub use bash::BashInput;

@@ -8,12 +8,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "original work",
-            "model": "worker"
+            "task": "original work",
+            "name": "worker"
           }
         },
         {
@@ -27,10 +25,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -44,11 +43,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "control",
-          "name": "agent",
+          "name": "archive",
           "arguments": {
-            "command": "control",
-            "reference": "worker",
-            "action": "archive"
+            "agent": "worker"
           }
         },
         {
@@ -62,10 +59,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -131,5 +129,8 @@
     "files": {
       "child.txt": "worker result"
     }
+  },
+  "routes": {
+    "original work": "worker"
   }
 }

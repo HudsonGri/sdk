@@ -82,7 +82,10 @@ impl ToolSpec {
 
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
-    [&BASH, &FS, &READ, &WRITE, &EDIT, &AGENT].into_iter()
+    [
+        &BASH, &FS, &READ, &WRITE, &EDIT, &SPAWN, &SEND, &WAIT, &ARCHIVE,
+    ]
+    .into_iter()
 }
 
 static BASH: ToolSpec = ToolSpec {
@@ -164,15 +167,54 @@ fn command_projection(_: ProjectionMode) -> Result<Value> {
     Ok(crate::tool::json_projection_schema(object()?))
 }
 
-static AGENT: ToolSpec = ToolSpec {
-    name: "agent",
+static SPAWN: ToolSpec = ToolSpec {
+    name: "spawn",
     revision: "1",
-    description: "Spawn, message, wait for, inspect and control child agents through agents/<reference>/ files",
+    description: "Create a child in a lazy fork and return its reference",
     hook_names: &[],
     binding: ToolBinding::Volume,
-    input: || Ok(super::agent::input_schema()),
+    input: schema::input::<super::SpawnInput>,
     output: object,
     projection_schema: command_projection,
-    executor: |_| Arc::new(super::agent::AgentExecutor),
+    executor: |name| Arc::new(super::children::Executor(name)),
+    projection: |_| Arc::new(JsonToolProjection),
+};
+
+static SEND: ToolSpec = ToolSpec {
+    name: "send",
+    revision: "1",
+    description: "Queue a message to a child",
+    hook_names: &[],
+    binding: ToolBinding::Volume,
+    input: schema::input::<super::SendInput>,
+    output: object,
+    projection_schema: command_projection,
+    executor: |name| Arc::new(super::children::Executor(name)),
+    projection: |_| Arc::new(JsonToolProjection),
+};
+
+static WAIT: ToolSpec = ToolSpec {
+    name: "wait",
+    revision: "1",
+    description: "Wait for child answers or failures and return bounded immutable result references",
+    hook_names: &[],
+    binding: ToolBinding::Volume,
+    input: schema::input::<super::WaitInput>,
+    output: object,
+    projection_schema: command_projection,
+    executor: |name| Arc::new(super::children::Executor(name)),
+    projection: |_| Arc::new(JsonToolProjection),
+};
+
+static ARCHIVE: ToolSpec = ToolSpec {
+    name: "archive",
+    revision: "1",
+    description: "Cancel and drain a child and its descendants, then archive its readable history",
+    hook_names: &[],
+    binding: ToolBinding::Volume,
+    input: schema::input::<super::ArchiveInput>,
+    output: object,
+    projection_schema: command_projection,
+    executor: |name| Arc::new(super::children::Executor(name)),
     projection: |_| Arc::new(JsonToolProjection),
 };

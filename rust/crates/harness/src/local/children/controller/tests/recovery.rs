@@ -9,7 +9,11 @@ use crate::{
 
 #[tokio::test]
 async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease() -> Result<()> {
-    for control in [Control::Cancel, Control::Archive] {
+    for (control, started) in [
+        (Control::Cancel, true),
+        (Control::Archive, true),
+        (Control::Archive, false),
+    ] {
         let directory = tempfile::tempdir().map_err(storage)?;
         let model = Model::new(
             "scripted".into(),
@@ -18,11 +22,13 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             serde_json::Value::Null,
         )?;
         let provider = Arc::new(
-            ScriptedModelProvider::new([ScriptedTurn::Text("retained answer".into())])
-                .with_context_capacity(ModelContextCapacity {
-                    context_tokens: 32_768,
-                    output_tokens: 4096,
-                }),
+            ScriptedModelProvider::new(
+                started.then(|| ScriptedTurn::Text("retained answer".into())),
+            )
+            .with_context_capacity(ModelContextCapacity {
+                context_tokens: 32_768,
+                output_tokens: 4096,
+            }),
         );
         let config = || {
             crate::test_support::local_harness_config(
@@ -68,6 +74,20 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             .await
             .map_err(storage)?;
         request.requester = Some(parent);
+        if !started {
+            let generation = files.inner.head().await.map_err(storage)?;
+            files
+                .write(
+                    generation,
+                    &file(
+                        &reference,
+                        ChildFile::Control,
+                        Control::Cancel.bytes().to_vec(),
+                    ),
+                )
+                .await
+                .map_err(storage)?;
+        }
         harness
             .service_child(files.clone(), reference.clone(), request.clone(), None)
             .await?;
@@ -87,9 +107,17 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             reference: reference.clone(),
             file: ChildFile::Result(1),
         };
-        let retained_result = values[&result_key].clone();
+        let retained_result = values.get(&result_key).cloned();
+        assert_eq!(retained_result.is_some(), started);
         assert!(before.settled);
-        assert_eq!(before.state, ChildState::Running);
+        assert_eq!(
+            before.state,
+            if started {
+                ChildState::Running
+            } else {
+                ChildState::Cancelled
+            }
+        );
         files
             .write(
                 snapshot.generation,
@@ -99,10 +127,11 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             .map_err(storage)?;
         // This is the actual durable crash cut: effects and results have settled,
         // cancellation is accepted, but the terminal status has not been written.
-        assert!(
+        assert_eq!(
             host.workflow_suspension(before.task, &mut None)
                 .await?
-                .is_some()
+                .is_some(),
+            started
         );
         assert!(
             host.cancelled_workflow_suspension(before.task, &mut None)
@@ -122,9 +151,10 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
         let checkpoint = host
             .cancelled_workflow_suspension(before.task, &mut None)
             .await?;
-        assert!(
+        assert_eq!(
             checkpoint.is_some(),
-            "cancellation must retain its receive cut"
+            started,
+            "only a started child has a receive cut"
         );
         drop(context);
         drop(files);
@@ -151,7 +181,7 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
         assert_eq!(after.inputs, before.inputs);
         assert_eq!(after.state, ChildState::Running.apply(control));
         assert!(after.settled);
-        assert_eq!(values[&result_key], retained_result);
+        assert_eq!(values.get(&result_key).cloned(), retained_result);
         assert_eq!(
             reopened
                 .runtime
@@ -160,7 +190,7 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
                 .await?,
             checkpoint
         );
-        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(provider.requests().len(), usize::from(started));
         reopened.close().await?;
     }
     Ok(())

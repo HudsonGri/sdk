@@ -1,1 +1,1 @@
-{"command":"spawn","reference":"worker","prompt":"work"}
+{"task":"inspect files","name":"worker","grants":["model:generate","tool:call:read"]}

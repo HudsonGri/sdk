@@ -2,13 +2,20 @@ use super::{TestResult, matchers};
 use acyclic_harness::{
     Error, LocalHarness, LocalHarnessConfig, Result,
     context::{ModelContextCapacity, ModelTokenCount},
-    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
-    task_volume::{FileKey, Query},
+    model::{
+        Model, ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelProvider, ModelRole,
+        PreparedModelRequest,
+    },
+    task_volume::{
+        ChildFile, ChildState, ChildStatus, Component, Control, FileKey, FileValue, Query,
+    },
     test_support::{ScriptedModelProvider, ScriptedTurn},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+use futures::{StreamExt as _, TryStreamExt as _};
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Deserialize)]
@@ -18,6 +25,10 @@ struct Case {
     #[serde(default)]
     seed: BTreeMap<String, String>,
     models: BTreeMap<String, Vec<ScriptedTurn>>,
+    #[serde(default)]
+    routes: BTreeMap<String, String>,
+    #[serde(default)]
+    actions: Vec<Action>,
     expect: Expected,
 }
 
@@ -31,15 +42,60 @@ struct Expected {
     model_requests: BTreeMap<String, Vec<Value>>,
     #[serde(default)]
     files: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    active: Option<Vec<String>>,
+    #[serde(default)]
+    toolsets: BTreeMap<String, Vec<String>>,
 }
 
-struct Models(BTreeMap<String, Arc<ScriptedModelProvider>>);
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Action {
+    model: String,
+    request: usize,
+    agent: String,
+    control: Control,
+}
+
+struct Models {
+    scripts: BTreeMap<String, Arc<ScriptedModelProvider>>,
+    routes: BTreeMap<[u8; 32], String>,
+    actions: BTreeMap<(String, usize), Action>,
+    events: tokio::sync::mpsc::UnboundedSender<(Action, tokio::sync::oneshot::Sender<()>)>,
+}
 
 impl Models {
     fn get(&self, name: &str) -> Result<&ScriptedModelProvider> {
-        self.0
+        self.scripts
             .get(name)
             .map(Arc::as_ref)
+            .ok_or_else(|| Error::NotFound(format!("scripted model {name}")))
+    }
+    fn route(&self, request: &PreparedModelRequest) -> Result<(&str, &ScriptedModelProvider)> {
+        let text = |text: &str| {
+            let hash: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+            self.routes.get(&hash)
+        };
+        let part = |part: &ModelContentPart| match part {
+            ModelContentPart::File { file, .. } => self.routes.get(file.descriptor().sha256()),
+            ModelContentPart::Text { text: value } => text(value),
+            _ => None,
+        };
+        let name = request
+            .request()
+            .messages
+            .iter()
+            .filter(|message| message.role == ModelRole::User)
+            .find_map(|message| match &message.content {
+                ModelContent::Text(value) => text(value),
+                ModelContent::Part(value) => part(value),
+                ModelContent::Parts(parts) => parts.iter().find_map(|value| part(value)),
+            })
+            .map(String::as_str)
+            .unwrap_or(&request.request().model.name);
+        self.scripts
+            .get_key_value(name)
+            .map(|(name, provider)| (name.as_str(), provider.as_ref()))
             .ok_or_else(|| Error::NotFound(format!("scripted model {name}")))
     }
 }
@@ -48,37 +104,86 @@ impl ModelProvider for Models {
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.get(&model.name)?.context_capacity(model)
     }
-
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
     ) -> BoxProviderFuture<'a, Result<ModelTokenCount>> {
-        Box::pin(async move {
-            self.get(&request.request().model.name)?
-                .count_tokens(request)
-                .await
-        })
+        Box::pin(async move { self.route(request)?.1.count_tokens(request).await })
     }
-
     fn generate<'a>(
         &'a self,
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        match self.get(&request.request().model.name) {
-            Ok(provider) => {
-                eprintln!(
-                    "agent scenario: model {} request {} ({} bytes, summary={})",
-                    request.request().model.name,
-                    provider.requests().len() + 1,
-                    request.bytes().len(),
-                    request.request().messages.iter().any(|message| matches!(&message.content,
-                        acyclic_harness::model::ModelContent::Text(text)
-                            if text.starts_with("Summarize the preceding context for continued work."))),
-                );
-                provider.generate(request, dispatch)
+        let (name, provider) = match self.route(&request) {
+            Ok(value) => value,
+            Err(error) => return Box::pin(futures::stream::iter([Err(error)])),
+        };
+        let turn = provider.requests().len() + 1;
+        let action = self.actions.get(&(name.to_owned(), turn)).cloned();
+        eprintln!(
+            "agent scenario: model {name} request {turn} ({} bytes)",
+            request.bytes().len()
+        );
+        Box::pin(
+            futures::stream::once(async move {
+                if let Some(action) = action {
+                    let (accepted, reply) = tokio::sync::oneshot::channel();
+                    self.events
+                        .send((action, accepted))
+                        .map_err(|_| Error::Conflict("scenario client stopped".into()))?;
+                    reply
+                        .await
+                        .map_err(|_| Error::Conflict("scenario control was not accepted".into()))?;
+                }
+                Ok::<_, Error>(provider.generate(request, dispatch))
+            })
+            .try_flatten(),
+        )
+    }
+}
+
+async fn control(harness: &LocalHarness, action: &Action) -> Result<()> {
+    if action.model != "parent" {
+        return Err(Error::Invalid(
+            "scenario client action must name the root parent".into(),
+        ));
+    }
+    let reference =
+        Component::new(action.agent.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+    let file = FileValue::new(
+        FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::Control,
+        },
+        action.control.bytes().to_vec(),
+    );
+    let mut observation = harness
+        .task_files()
+        .observe(Query::Child(reference), None, 64)
+        .await?;
+    let mut generation = observation
+        .snapshot
+        .take()
+        .ok_or_else(|| Error::Conflict("scenario control snapshot is absent".into()))?
+        .generation;
+    loop {
+        match harness.task_files().write(generation, &file).await {
+            Ok(_) => return Ok(()),
+            Err(acyclic_harness::task_volume::Error::Conflict(_)) => {
+                let change = observation
+                    .changes
+                    .next()
+                    .await
+                    .ok_or_else(|| Error::Conflict("scenario control follow ended".into()))??;
+                generation = acyclic_harness::task_volume::Generation {
+                    volume: change.cursor.volume,
+                    epoch: change.cursor.epoch,
+                    position: change.cursor.position,
+                    commit: change.cursor.commit,
+                };
             }
-            Err(error) => Box::pin(futures::stream::iter([Err(error)])),
+            Err(error) => return Err(error.into()),
         }
     }
 }
@@ -95,8 +200,11 @@ pub(super) async fn run(value: Value) -> TestResult {
             );
         }
     }
-    let provider = Arc::new(Models(
-        case.models
+    let (events, mut actions) = tokio::sync::mpsc::unbounded_channel();
+    let expected_actions = case.actions.len();
+    let provider = Arc::new(Models {
+        scripts: case
+            .models
             .into_iter()
             .map(|(name, turns)| {
                 (
@@ -110,7 +218,24 @@ pub(super) async fn run(value: Value) -> TestResult {
                 )
             })
             .collect(),
-    ));
+        routes: case
+            .routes
+            .into_iter()
+            .map(|(body, name)| {
+                let hash: [u8; 32] = Sha256::digest(body.as_bytes()).into();
+                (hash, name)
+            })
+            .collect(),
+        actions: case
+            .actions
+            .into_iter()
+            .map(|action| ((action.model.clone(), action.request), action))
+            .collect(),
+        events,
+    });
+    if provider.actions.len() != expected_actions {
+        return Err("scenario actions must use distinct model request events".into());
+    }
     let directory = tempfile::tempdir()?;
     for (path, text) in case.seed {
         let path = file_path(directory.path(), &path)?;
@@ -123,11 +248,23 @@ pub(super) async fn run(value: Value) -> TestResult {
         (model, provider.clone()),
     ))
     .await?;
-    let output = match harness.run(&case.prompt).await {
+    let mut applied = 0;
+    let outcome = tokio::select! {
+        result = harness.run(&case.prompt) => result,
+        result = async {
+            while let Some((action, accepted)) = actions.recv().await {
+                control(&harness, &action).await?;
+                applied += 1;
+                let _ = accepted.send(());
+            }
+            Err(Error::Conflict("scenario action stream ended".into()))
+        } => result,
+    };
+    let output = match outcome {
         Ok(output) => output,
         Err(error) => {
             let requests: BTreeMap<_, _> = provider
-                .0
+                .scripts
                 .iter()
                 .map(|(name, model)| (name.as_str(), model.requests().len()))
                 .collect();
@@ -154,6 +291,52 @@ pub(super) async fn run(value: Value) -> TestResult {
             .into());
         }
     };
+    if applied != expected_actions {
+        return Err(
+            format!("expected {expected_actions} accepted client actions, got {applied}").into(),
+        );
+    }
+    for (name, expected) in &case.expect.toolsets {
+        let mut expected = expected.clone();
+        expected.sort();
+        for request in provider.get(name)?.requests() {
+            let mut actual: Vec<_> = request.tools.iter().map(|tool| tool.name.clone()).collect();
+            actual.sort();
+            if actual != expected {
+                return Err(
+                    format!("model {name}: expected tools {expected:?}, got {actual:?}").into(),
+                );
+            }
+        }
+    }
+    if let Some(mut expected) = case.expect.active {
+        let snapshot = harness
+            .task_files()
+            .observe(Query::Children, None, 64)
+            .await?
+            .snapshot
+            .ok_or("missing active child snapshot")?;
+        let mut actual = Vec::new();
+        for file in snapshot.files {
+            if let FileKey::Child {
+                reference,
+                file: ChildFile::Status,
+            } = file.key
+            {
+                let status = ChildStatus::parse(&file.bytes)?;
+                if !status.settled
+                    || !matches!(status.state, ChildState::Cancelled | ChildState::Archived)
+                {
+                    actual.push(reference.as_str().to_owned());
+                }
+            }
+        }
+        actual.sort();
+        expected.sort();
+        if actual != expected {
+            return Err(format!("active children: expected {expected:?}, got {actual:?}").into());
+        }
+    }
     if output.text != case.expect.text {
         return Err(format!("unexpected parent output: {:?}", output.text).into());
     }

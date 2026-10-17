@@ -386,13 +386,15 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
     .map_err(super::super::storage)?
 }
 
+#[cfg(feature = "native-execution")]
 #[tokio::test]
-async fn child_turn_admission_replays_under_the_parent_lease_and_shared_depth_limit() -> Result<()>
+async fn child_file_admission_replays_under_the_parent_lease_and_shared_depth_limit() -> Result<()>
 {
+    use crate::task_volume::{ChildFile, ChildRequest, Component, FileKey, FileValue, Query};
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
-    let project = volume(directory.path()).await?;
     let provider = scripted([]);
-    let mut config = volume_config(directory.path(), project, provider.clone())?;
+    let mut config =
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?;
     config.session_limits.depth = 1;
     let harness = LocalHarness::open(config).await?;
     let operation = OperationId::new();
@@ -400,70 +402,129 @@ async fn child_turn_admission_replays_under_the_parent_lease_and_shared_depth_li
         task_id: parent, ..
     }) = harness.submit(operation, "parent").await?
     else {
-        panic!("parent admission was not accepted");
+        panic!("parent admission");
     };
     let worker = Worker {
-        id: "child-admission-test".into(),
+        id: "child-file-admission-test".into(),
         available: Default::default(),
         labels: Default::default(),
     };
     let host = harness.runtime.task_host();
     let WorkPull::Claimed(lease) = host.pull_work(&worker, Some(operation), &mut None).await?
     else {
-        panic!("parent lease was not claimed");
+        panic!("parent lease");
     };
     host.start_task(&lease, &mut None).await?;
-    let fence = LeaseFence::from(&lease.reservation);
-    let admitted = host.observe_admission(parent).await?;
-    let parent_scope = RuntimeScope::new(admitted.grants, admitted.limits)?
-        .with_run_limits(admitted.run_limits, &mut None)?;
-    let scope = crate::task_volume::child_scope(&parent_scope, Some(&["read".into()]))?;
-    let operation = OperationId::new();
-    let Admission::Accepted(RuntimeTask::Durable { task_id: child, .. }) = harness
-        .submit_child_turn(operation, "reader", (parent, &scope, &fence))
-        .await?
-    else {
-        panic!("child admission was not accepted");
+    let parent_context = harness
+        .runtime
+        .task_context(parent, LeaseFence::from(&lease.reservation))
+        .await?;
+    let request = ChildRequest {
+        prompt: "reader".into(),
+        model: None,
+        tools: Some(vec!["read".into(), "spawn".into()]),
+        grants: None,
     };
-    assert!(matches!(
-        harness.submit_child_turn(operation, "reader", (parent, &scope, &fence)).await?,
-        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) if task_id == child
-    ));
-    let mut stale = fence.clone();
-    stale.reservation_id.push_str("-stale");
-    assert!(
-        harness
-            .submit_child_turn(operation, "reader", (parent, &scope, &stale))
-            .await
-            .is_err()
+    let files = Arc::clone(&harness.task_files);
+    let reference = Component::new("reader").map_err(super::super::storage)?;
+    let file = FileValue::new(
+        FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::Request,
+        },
+        request.encode(),
+    );
+    let generation = files.inner.head().await.map_err(super::super::storage)?;
+    let (condition, deadline) = parent_context
+        .owned_mailbox
+        .as_ref()
+        .unwrap()
+        .file_publication_condition()
+        .await?;
+    files
+        .write_if(generation, &file, parent, condition, deadline)
+        .await
+        .map_err(super::super::storage)?;
+    let file = files
+        .observe(Query::File(file.key), None, 1)
+        .await
+        .map_err(super::super::storage)?
+        .snapshot
+        .unwrap()
+        .files
+        .remove(0);
+    let (child, view) = harness.admit_child_request(files.as_ref(), &file).await?;
+    let (same, replay) = harness.admit_child_request(files.as_ref(), &file).await?;
+    assert_eq!(
+        (same, replay.workspace().id()),
+        (child, view.workspace().id())
     );
     let admitted = host.observe_admission(child).await?;
     assert_eq!(admitted.parent, Some(parent));
-    assert_eq!(admitted.grants, *scope.grants());
-    assert_eq!(admitted.limits, scope.limits());
-    assert_eq!(admitted.run_limits, scope.run_limits());
+    assert_eq!(admitted.limits, parent_context.scope().limits());
+    assert_eq!(admitted.run_limits, parent_context.scope().run_limits());
     assert!(admitted.grants.contains("tool:call:read"));
+    assert!(admitted.grants.contains("tool:call:spawn"));
     assert!(!admitted.grants.contains("tool:call:write"));
-    let children = harness.runtime.children(parent, None, None, 8).await?;
-    assert_eq!(children.entries.len(), 1);
-    assert_eq!(children.entries[0].task_id, child);
-
-    let WorkPull::Claimed(lease) = host.pull_work(&worker, Some(operation), &mut None).await?
+    assert!(
+        harness
+            .runtime
+            .children(parent, None, None, 8)
+            .await?
+            .entries
+            .iter()
+            .any(|entry| entry.task_id == child)
+    );
+    let child_operation = OperationId::from_bytes(child.into_bytes());
+    let WorkPull::Claimed(lease) = host
+        .pull_work(&worker, Some(child_operation), &mut None)
+        .await?
     else {
-        panic!("child lease was not claimed");
+        panic!("child lease");
     };
     host.start_task(&lease, &mut None).await?;
-    let fence = LeaseFence::from(&lease.reservation);
-    assert!(matches!(
-        harness
-            .submit_child_turn(
-                OperationId::new(),
-                "too deep",
-                (child, &scope, &fence)
-            )
-            .await,
-        Err(Error::Invalid(reason)) if reason.contains("depth limit exhausted")
-    ));
+    let context = harness
+        .runtime
+        .task_context(child, LeaseFence::from(&lease.reservation))
+        .await?;
+    let child_files = files
+        .for_created_task(&context, context.scope())
+        .await?
+        .unwrap();
+    let file = FileValue::new(
+        FileKey::Child {
+            reference: Component::new("too-deep").map_err(super::super::storage)?,
+            file: ChildFile::Request,
+        },
+        b"too deep".to_vec(),
+    );
+    let generation = child_files
+        .inner
+        .head()
+        .await
+        .map_err(super::super::storage)?;
+    let (condition, deadline) = context
+        .owned_mailbox
+        .as_ref()
+        .unwrap()
+        .file_publication_condition()
+        .await?;
+    child_files
+        .write_if(generation, &file, child, condition, deadline)
+        .await
+        .map_err(super::super::storage)?;
+    let file = child_files
+        .observe(Query::File(file.key), None, 1)
+        .await
+        .map_err(super::super::storage)?
+        .snapshot
+        .unwrap()
+        .files
+        .remove(0);
+    assert!(
+        matches!(harness.admit_child_request(&child_files, &file).await,
+        Err(Error::Invalid(reason)) if reason.contains("depth limit exhausted"))
+    );
     assert!(
         harness
             .runtime

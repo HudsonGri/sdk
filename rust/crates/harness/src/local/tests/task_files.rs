@@ -96,15 +96,15 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
 }
 
 #[tokio::test]
-async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> {
+async fn default_spawn_dispatch_writes_the_bound_private_volume() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "spawn-worker".into(),
-                "agent".into(),
-                json!({"command":"spawn","reference":"worker","prompt":"inspect files","tools":["read"]}),
+                "spawn".into(),
+                json!({"name":"worker","task":"inspect files","grants":["model:generate","tool:call:read"]}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: Value::Null,
@@ -151,7 +151,7 @@ async fn default_agent_dispatch_writes_the_bound_private_volume() -> Result<()> 
     assert!(
         std::str::from_utf8(&snapshot.files[0].bytes)
             .unwrap()
-            .contains("\"tools\":[\"read\"]")
+            .contains("\"grants\":[\"model:generate\",\"tool:call:read\"]")
     );
     Ok(())
 }
@@ -227,13 +227,13 @@ async fn cancelled_parent_cannot_publish_a_late_agent_file() -> Result<()> {
         Err(crate::task_volume::Error::FenceConflict)
     ));
     let registry = crate::tools::defaults()?;
-    let tool = registry.get("agent", None, None)?.unwrap();
+    let tool = registry.get("spawn", None, None)?.unwrap();
     let operation = OperationId::new();
     let call = ToolInvocation {
         operation_id: operation,
         call_id: "late-spawn".into(),
-        name: "agent".into(),
-        arguments: json!({"command":"spawn","reference":"worker","prompt":"late work"}),
+        name: "spawn".into(),
+        arguments: json!({"name":"worker","task":"late work"}),
     };
     assert!(
         tool.executor
@@ -351,5 +351,51 @@ async fn agent_file_deadline_uses_the_admission_clock_at_commit() -> Result<()> 
         .unwrap();
     assert_eq!(after.generation, snapshot.generation);
     assert!(after.files.is_empty());
+    Ok(())
+}
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn delegate_dispatch_uses_spawn_and_publishes_a_child_result() -> Result<()> {
+    use crate::client::{CommandResolution, CommandTool};
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([ScriptedTurn::Text("delegated answer".into())]);
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
+        directory.path(),
+        (model()?, provider.clone()),
+    )?)
+    .await?;
+    let result = harness
+        .dispatch_command(
+            OperationId::new(),
+            None,
+            CommandResolution::Tool {
+                tool: CommandTool::Spawn,
+                input: json!({"task":"delegate this task", "name":"delegate"}),
+            },
+        )
+        .await?;
+    assert_eq!(result, json!({"agent":"delegate"}));
+    let snapshot = harness
+        .task_files()
+        .observe(
+            Query::File(FileKey::Child {
+                reference: Component::new("delegate").map_err(super::super::storage)?,
+                file: crate::task_volume::ChildFile::Result(1),
+            }),
+            None,
+            1,
+        )
+        .await
+        .map_err(super::super::storage)?
+        .snapshot
+        .unwrap();
+    let result = crate::task_volume::ChildTurnResult::parse(&snapshot.files[0].bytes)
+        .map_err(super::super::storage)?;
+    assert!(
+        matches!(result.outcome, crate::Outcome::Succeeded(ref answer) if answer.text == "delegated answer")
+    );
+    assert_eq!(provider.requests().len(), 1);
+    harness.close().await?;
     Ok(())
 }

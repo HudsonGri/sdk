@@ -8,12 +8,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "original work",
-            "model": "worker"
+            "task": "original work",
+            "name": "worker"
           }
         },
         {
@@ -27,10 +25,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -44,11 +43,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "control",
-          "name": "agent",
+          "name": "archive",
           "arguments": {
-            "command": "control",
-            "reference": "worker",
-            "action": "archive"
+            "agent": "worker"
           }
         },
         {
@@ -62,10 +59,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -79,9 +77,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "list",
-          "name": "agent",
+          "name": "fs",
           "arguments": {
-            "command": "list"
+            "command": "ls .volumes/agents"
           }
         },
         {
@@ -112,9 +110,50 @@
     "model_requests": {
       "parent": [
         {
-          "messages": [{"role":"tool","content":{"kind":"tool_result","call_id":"list","name":"agent","content":{"kind":"json","value":{"agents":[]}}}}]
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "archive",
+                "name": "archive",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "state": "Archived",
+                    "settled": true
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "list",
+                "name": "fs",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "success": true,
+                    "stdout": {
+                      "$contains": ".volumes/agents/worker/"
+                    }
+                  }
+                }
+              }
+            }
+          ]
         }
       ]
-    }
+    },
+    "active": []
+  },
+  "routes": {
+    "original work": "worker"
   }
 }

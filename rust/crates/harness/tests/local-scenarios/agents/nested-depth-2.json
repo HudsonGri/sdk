@@ -8,12 +8,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "original work",
-            "model": "worker"
+            "task": "original work",
+            "name": "worker"
           }
         },
         {
@@ -27,10 +25,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -63,12 +62,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "grandchild",
-            "prompt": "write nested result",
-            "model": "grandchild"
+            "task": "write nested result",
+            "name": "grandchild"
           }
         },
         {
@@ -82,10 +79,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "grandchild"
+            "agents": [
+              "grandchild"
+            ]
           }
         },
         {
@@ -152,5 +150,9 @@
     "files": {
       "deep.txt": "nested result"
     }
+  },
+  "routes": {
+    "original work": "worker",
+    "write nested result": "grandchild"
   }
 }

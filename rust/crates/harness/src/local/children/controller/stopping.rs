@@ -56,7 +56,14 @@ pub(super) fn cancelled_turn_is_quiet(
         return false;
     }
     match suspension {
-        None => previous.is_none() && published == 0,
+        None => {
+            published == 0
+                && previous.is_none_or(|status| {
+                    // An unstarted child has no receive slot. Its frozen cancellation
+                    // acknowledgement already proves quiescence for a later archive.
+                    status.state == ChildState::Cancelled && status.settled
+                })
+        }
         Some(slot) => {
             slot.waiting_command.is_some()
                 && published.checked_mul(2).and_then(|n| n.checked_add(1)) == Some(slot.revision)

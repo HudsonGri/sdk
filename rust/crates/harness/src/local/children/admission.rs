@@ -124,7 +124,16 @@ impl LocalHarness {
             ));
         }
         let request = ChildRequest::parse(&file.bytes, context.scope().limits().file_bytes)?;
-        let narrowed = crate::task_volume::child_scope(context.scope(), request.tools.as_deref())?;
+        if !context.scope().grants().contains("tool:call:spawn") {
+            return Err(Error::Unauthorized(
+                "child parent lacks the spawn capability".into(),
+            ));
+        }
+        let narrowed = crate::task_volume::child_scope(
+            context.scope(),
+            request.tools.as_deref(),
+            request.grants.as_deref(),
+        )?;
         let (source_project, source_private) =
             source_volumes(&context, &self.project, &self.scratch)?;
         let source_agent = match source_private.owner() {
@@ -141,7 +150,7 @@ impl LocalHarness {
             .ok_or_else(|| Error::Unauthorized("child source has no issuing authority".into()))?;
         let signed = issuer.issue(
             "child-source",
-            narrowed.grants(),
+            context.scope().grants(),
             Some(source_agent),
             None,
             &mut None,

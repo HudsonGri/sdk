@@ -37,9 +37,15 @@ impl ChildStatus {
 pub(crate) fn child_scope(
     parent: &crate::runtime::RuntimeScope,
     tools: Option<&[String]>,
+    grants: Option<&[String]>,
 ) -> crate::Result<crate::runtime::RuntimeScope> {
+    let selected = match grants {
+        Some(grants) => parent.narrow(crate::Capabilities::new(grants), parent.limits())?,
+        None => parent.clone(),
+    };
+    let parent = &selected;
     let Some(tools) = tools else {
-        return Ok(parent.clone());
+        return Ok(selected);
     };
     let requested = crate::Capabilities::new(tools.iter().map(|name| format!("tool:call:{name}")));
     if requested
@@ -68,6 +74,8 @@ pub struct ChildRequest {
     pub model: Option<String>,
     /// Requested subset of the parent's tool grants.
     pub tools: Option<Vec<String>>,
+    /// Optional attenuated capability selection, before child resource bindings.
+    pub grants: Option<Vec<String>>,
 }
 
 #[derive(Default, Deserialize)]
@@ -75,6 +83,7 @@ pub struct ChildRequest {
 struct RequestMetadata {
     model: Option<String>,
     tools: Option<Vec<String>>,
+    grants: Option<Vec<String>>,
 }
 
 impl ChildRequest {
@@ -116,6 +125,10 @@ impl ChildRequest {
                 .tools
                 .as_ref()
                 .is_some_and(|tools| tools.iter().any(String::is_empty))
+            || metadata
+                .grants
+                .as_ref()
+                .is_some_and(|grants| grants.iter().any(String::is_empty))
         {
             return Err(invalid());
         }
@@ -123,6 +136,7 @@ impl ChildRequest {
             prompt: prompt.into(),
             model: metadata.model,
             tools: metadata.tools,
+            grants: metadata.grants,
         })
     }
 
@@ -131,13 +145,14 @@ impl ChildRequest {
     pub fn encode(&self) -> Vec<u8> {
         if self.model.is_some()
             || self.tools.is_some()
+            || self.grants.is_some()
             || self.prompt.starts_with("---\n")
             || self.prompt.starts_with("---\r\n")
         {
             format!(
                 "---\n{}\n---\n{}",
                 serde_json::json!({
-                    "model":self.model,"tools":self.tools,
+                    "model":self.model,"tools":self.tools,"grants":self.grants,
                 }),
                 self.prompt
             )
@@ -253,11 +268,19 @@ pub enum ChildState {
 }
 
 impl ChildState {
-    /// Pure lifecycle reducer. Terminal identities cannot be reused or resumed.
+    /// Pure lifecycle reducer. Cancelled identities can only advance to archive;
+    /// neither terminal state can be reused or resumed.
     #[must_use]
     pub const fn apply(self, control: Control) -> Self {
-        if matches!(self, Self::Cancelled | Self::Archived) {
+        if matches!(self, Self::Archived) {
             return self;
+        }
+        if matches!(self, Self::Cancelled) {
+            return if matches!(control, Control::Archive) {
+                Self::Archived
+            } else {
+                self
+            };
         }
         match control {
             Control::Pause => Self::Paused,
@@ -283,7 +306,7 @@ mod tests {
     ];
 
     #[test]
-    fn every_transition_is_idempotent_and_terminal_states_are_absorbing() {
+    fn every_transition_is_idempotent_and_terminal_states_never_thaw() {
         // Exhaust the complete bounded reducer domain rather than sample it.
         for state in [
             ChildState::Running,
@@ -295,8 +318,18 @@ mod tests {
             for control in CONTROLS {
                 let next = state.apply(control);
                 assert_eq!(next.apply(control), next);
-                if matches!(state, ChildState::Cancelled | ChildState::Archived) {
+                if state == ChildState::Archived {
                     assert_eq!(next, state);
+                }
+                if state == ChildState::Cancelled {
+                    assert_eq!(
+                        next,
+                        if control == Control::Archive {
+                            ChildState::Archived
+                        } else {
+                            ChildState::Cancelled
+                        }
+                    );
                 }
                 assert_eq!(Control::parse(control.bytes()).unwrap(), control);
             }
@@ -312,6 +345,9 @@ mod tests {
             "tools: [read]\ncapabilities: [admin]",
             "model: ''",
             "tools: ['']",
+            "grants: ['']",
+            "grants: [[read]]",
+            "grants: [read]\ngrants: [write]",
         ] {
             let request = format!("---\n{header}\n---\nwork");
             assert!(
@@ -324,6 +360,7 @@ mod tests {
                 prompt: prompt.into(),
                 model: None,
                 tools: None,
+                grants: None,
             };
             assert_eq!(
                 ChildRequest::parse(&request.encode(), 4096).unwrap(),
@@ -357,7 +394,7 @@ mod tests {
                 .chain(parent_tools.iter().map(|name| format!("tool:call:{name}"))));
             let parent = RuntimeScope::new(grants, Limits::default()).unwrap();
             let requested: Vec<_> = requested_tools.iter().cloned().collect();
-            let child = child_scope(&parent, Some(&requested));
+            let child = child_scope(&parent, Some(&requested), None);
             prop_assert_eq!(child.is_ok(), requested_tools.is_subset(&parent_tools));
             if let Ok(child) = child {
                 prop_assert_eq!(child.limits(), parent.limits());
@@ -371,11 +408,30 @@ mod tests {
         }
 
         #[test]
+        fn child_grants_are_a_subset_and_never_change_limits(
+            parent_grants in prop::collection::btree_set("[a-z:]{1,24}", 0..10),
+            requested_grants in prop::collection::btree_set("[a-z:]{1,24}", 0..10),
+        ) {
+            use crate::{Capabilities, conversation::Limits, runtime::RuntimeScope};
+            let parent = RuntimeScope::new(Capabilities::new(&parent_grants), Limits::default()).unwrap();
+            let requested: Vec<_> = requested_grants.iter().cloned().collect();
+            let child = child_scope(&parent, None, Some(&requested));
+            prop_assert_eq!(child.is_ok(), requested_grants.is_subset(&parent_grants));
+            if let Ok(child) = child {
+                prop_assert_eq!(child.grants(), &Capabilities::new(&requested_grants));
+                prop_assert_eq!(child.limits(), parent.limits());
+                prop_assert_eq!(child.run_limits(), parent.run_limits());
+            }
+            prop_assert_eq!(child_scope(&parent, None, None).unwrap().grants(), parent.grants());
+        }
+
+        #[test]
         fn request_metadata_round_trips_without_changing_the_literal_prompt(
             prompt in ".{1,100}", model in prop::option::of("[a-z]{1,10}"),
             tools in prop::option::of(prop::collection::vec("[a-z]{1,10}", 0..8)),
+            grants in prop::option::of(prop::collection::vec("[a-z:]{1,24}", 0..8)),
         ) {
-            let request = ChildRequest { prompt, model, tools };
+            let request = ChildRequest { prompt, model, tools, grants };
             let encoded = request.encode();
             prop_assert_eq!(ChildRequest::parse(&encoded, encoded.len() as u64).unwrap(), request);
             prop_assert!(ChildRequest::parse(&encoded, encoded.len() as u64 - 1).is_err());
@@ -385,7 +441,10 @@ mod tests {
         fn terminal_state_survives_every_suffix(commands in prop::collection::vec(0usize..5, 0..100)) {
             for terminal in [ChildState::Archived, ChildState::Cancelled] {
                 let state = commands.iter().fold(terminal, |state, &i| state.apply(CONTROLS[i]));
-                prop_assert_eq!(state, terminal);
+                let expected = if terminal == ChildState::Cancelled
+                    && commands.iter().any(|&i| CONTROLS[i] == Control::Archive)
+                { ChildState::Archived } else { terminal };
+                prop_assert_eq!(state, expected);
             }
         }
 

@@ -8,12 +8,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "original work",
-            "model": "worker"
+            "task": "original work",
+            "name": "worker"
           }
         },
         {
@@ -27,10 +25,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -44,10 +43,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "send",
-          "name": "agent",
+          "name": "send",
           "arguments": {
-            "command": "send",
-            "reference": "worker",
+            "agent": "worker",
             "message": "followup work"
           }
         },
@@ -62,10 +60,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -152,5 +151,9 @@
         }
       ]
     }
+  },
+  "routes": {
+    "original work": "worker",
+    "followup work": "worker"
   }
 }

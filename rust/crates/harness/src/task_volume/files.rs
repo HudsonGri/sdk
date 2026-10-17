@@ -143,7 +143,7 @@ fn owns_volume(volume: &VolumeRef, agent: Option<AgentId>) -> bool {
     matches!(volume.owner(), VolumeOwner::Agent(owner) if agent == Some(*owner))
 }
 
-fn authorize_write(key: &FileKey, bytes: u64, maximum: u64) -> super::Result<()> {
+pub(crate) fn authorize_write(key: &FileKey, bytes: u64, maximum: u64) -> super::Result<()> {
     if !matches!(key.owner(), Owner::Caller | Owner::Agent) {
         return Err(Error::Unauthorized);
     }

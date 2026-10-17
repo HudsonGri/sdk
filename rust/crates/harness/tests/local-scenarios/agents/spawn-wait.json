@@ -8,12 +8,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "Answer with child finished",
-            "model": "worker"
+            "task": "Answer with child finished",
+            "name": "worker"
           }
         },
         {
@@ -27,10 +25,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -93,20 +92,24 @@
               "content": {
                 "kind": "tool_result",
                 "call_id": "wait",
-                "name": "agent",
+                "name": "wait",
                 "content": {
                   "kind": "json",
                   "value": {
-                    "result": {
-                      "file": {
-                        "path": ".volumes/agents/worker/results/1.json"
-                      },
-                      "outcome": {
-                        "Succeeded": {
-                          "text": "child finished"
+                    "agents": [
+                      {
+                        "result": {
+                          "file": {
+                            "path": ".volumes/agents/worker/results/1.json"
+                          },
+                          "outcome": {
+                            "Succeeded": {
+                              "text": "child finished"
+                            }
+                          }
                         }
                       }
-                    }
+                    ]
                   }
                 }
               }
@@ -136,5 +139,8 @@
         }
       ]
     }
+  },
+  "routes": {
+    "Answer with child finished": "worker"
   }
 }

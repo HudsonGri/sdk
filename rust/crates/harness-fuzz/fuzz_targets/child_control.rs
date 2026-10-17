@@ -67,16 +67,20 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         decoded.validate(&mut None).unwrap();
         assert_eq!(decoded, seed);
     }
-    if let Ok(command) =
-        serde_json::from_slice::<acyclic_harness::tools::agent::AgentCommand>(bytes)
-    {
-        let encoded = serde_json::to_vec(&command).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<acyclic_harness::tools::agent::AgentCommand>(&encoded)
-                .unwrap(),
-            command
-        );
+    macro_rules! tool_input {
+        ($ty:ty) => {
+            if let Ok(input) = serde_json::from_slice::<$ty>(bytes) {
+                assert_eq!(
+                    serde_json::from_slice::<$ty>(&serde_json::to_vec(&input).unwrap()).unwrap(),
+                    input
+                );
+            }
+        };
     }
+    tool_input!(acyclic_harness::tools::SpawnInput);
+    tool_input!(acyclic_harness::tools::SendInput);
+    tool_input!(acyclic_harness::tools::WaitInput);
+    tool_input!(acyclic_harness::tools::ArchiveInput);
     if let Ok(result) = acyclic_harness::task_volume::ChildTurnResult::parse(bytes) {
         assert_eq!(
             acyclic_harness::task_volume::ChildTurnResult::parse(

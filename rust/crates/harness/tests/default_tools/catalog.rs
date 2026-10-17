@@ -72,6 +72,6 @@ proptest! {
             let bound = spec.bind().unwrap();
             prop_assert_eq!(bound.hook_names, spec.hook_names);
         }
-        prop_assert_eq!(names.len(), 6);
+        prop_assert_eq!(names.len(), 9);
     }
 }

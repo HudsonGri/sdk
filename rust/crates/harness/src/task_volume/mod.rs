@@ -23,6 +23,7 @@ mod segment;
 mod source;
 mod watermarks;
 pub use files::TaskFiles;
+pub(crate) use files::authorize_write;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
@@ -578,7 +579,10 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
                 }
                 // The first quiescent terminal acknowledgement freezes this
                 // status too. No later result or input binding can replace it.
+                let archival_ack =
+                    previous.state == ChildState::Cancelled && status.state == ChildState::Archived;
                 if matches!(previous.state, ChildState::Archived | ChildState::Cancelled)
+                    && !archival_ack
                     && index.files.get(&file.key).map(|stored| &stored.file) != Some(file)
                 {
                     return Err(Error::ImmutableConflict(file.key.clone()));
@@ -597,7 +601,10 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
                             !matches!(status.state, ChildState::Cancelled | ChildState::Archived)
                         })
                     });
-            if !draining_result {
+            let archival_intent = state == ChildState::Cancelled
+                && matches!(child_file, ChildFile::Control)
+                && Control::parse(&file.bytes)? == Control::Archive;
+            if !draining_result && !archival_intent {
                 return Err(Error::ImmutableConflict(control_key));
             }
         }

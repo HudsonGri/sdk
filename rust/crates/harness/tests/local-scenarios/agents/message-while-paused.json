@@ -8,12 +8,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "original work",
-            "model": "worker"
+            "task": "original work",
+            "name": "worker"
           }
         },
         {
@@ -27,10 +25,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -44,11 +43,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "control",
-          "name": "agent",
+          "name": "fs",
           "arguments": {
-            "command": "control",
-            "reference": "worker",
-            "action": "pause"
+            "command": "cat .volumes/agents/worker/control"
           }
         },
         {
@@ -62,10 +59,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -79,10 +77,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "queued-message",
-          "name": "agent",
+          "name": "send",
           "arguments": {
-            "command": "send",
-            "reference": "worker",
+            "agent": "worker",
             "message": "queued while paused"
           }
         },
@@ -97,11 +94,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "control",
-          "name": "agent",
+          "name": "fs",
           "arguments": {
-            "command": "control",
-            "reference": "worker",
-            "action": "resume"
+            "command": "cat .volumes/agents/worker/control"
           }
         },
         {
@@ -115,10 +110,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -205,5 +201,23 @@
         }
       ]
     }
-  }
+  },
+  "routes": {
+    "original work": "worker",
+    "queued while paused": "worker"
+  },
+  "actions": [
+    {
+      "model": "parent",
+      "request": 3,
+      "agent": "worker",
+      "control": "pause"
+    },
+    {
+      "model": "parent",
+      "request": 6,
+      "agent": "worker",
+      "control": "resume"
+    }
+  ]
 }

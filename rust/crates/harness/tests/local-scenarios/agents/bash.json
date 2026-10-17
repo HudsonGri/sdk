@@ -24,12 +24,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "run shell in the prepared fork",
-            "model": "worker"
+            "task": "run shell in the prepared fork",
+            "name": "worker"
           }
         },
         {
@@ -43,10 +41,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -134,5 +133,8 @@
       "child.txt": "shell-result",
       ".volumes/scratch/parent-secret": "parent-private"
     }
+  },
+  "routes": {
+    "run shell in the prepared fork": "worker"
   }
 }

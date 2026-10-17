@@ -8,12 +8,10 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "spawn",
-          "name": "agent",
+          "name": "spawn",
           "arguments": {
-            "command": "spawn",
-            "reference": "worker",
-            "prompt": "original work",
-            "model": "worker"
+            "task": "original work",
+            "name": "worker"
           }
         },
         {
@@ -27,10 +25,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -44,11 +43,9 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "control",
-          "name": "agent",
+          "name": "fs",
           "arguments": {
-            "command": "control",
-            "reference": "worker",
-            "action": "cancel"
+            "command": "cat .volumes/agents/worker/control"
           }
         },
         {
@@ -62,10 +59,11 @@
           "type": "event",
           "kind": "tool_call",
           "call_id": "wait",
-          "name": "agent",
+          "name": "wait",
           "arguments": {
-            "command": "wait",
-            "reference": "worker"
+            "agents": [
+              "worker"
+            ]
           }
         },
         {
@@ -92,6 +90,18 @@
         "settled": true,
         "inputs": 1
       }
+    },
+    "active": []
+  },
+  "routes": {
+    "original work": "worker"
+  },
+  "actions": [
+    {
+      "model": "parent",
+      "request": 3,
+      "agent": "worker",
+      "control": "cancel"
     }
-  }
+  ]
 }

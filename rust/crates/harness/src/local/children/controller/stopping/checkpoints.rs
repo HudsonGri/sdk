@@ -28,6 +28,37 @@ fn checkpoint_cuts(predicate: Predicate, task: TaskId, turns: u64, assert_proper
     let (mut actual, mut expected) = (Vec::new(), Vec::new());
     actual.push(predicate(None, task, 0, None));
     expected.push(true);
+    let unstarted = ChildStatus {
+        task,
+        state: ChildState::Cancelled,
+        settled: true,
+        inputs: 1,
+    };
+    actual.push(predicate(Some(unstarted), task, 0, None));
+    expected.push(true);
+    actual.push(predicate(
+        Some(ChildStatus {
+            state: ChildState::Running,
+            ..unstarted
+        }),
+        task,
+        0,
+        None,
+    ));
+    expected.push(false);
+    actual.push(predicate(
+        Some(ChildStatus {
+            settled: false,
+            ..unstarted
+        }),
+        task,
+        0,
+        None,
+    ));
+    expected.push(false);
+    actual.push(predicate(Some(unstarted), task, 1, None));
+    expected.push(false);
+
     for turn in 1..=turns {
         let previous = Some(ChildStatus {
             task,
