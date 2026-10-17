@@ -96,6 +96,7 @@ fn alias_parameters_follow_the_target_container() {
 #[test]
 fn source_corpus_survives_parse_print_and_keeps_the_expected_verdict() {
     for source in [
+        include_str!("../fuzz/corpus/source/external-module"),
         include_str!("../fuzz/corpus/source/raw-type"),
         include_str!("../fuzz/corpus/source/raw-method"),
         include_str!("../fuzz/corpus/source/alias"),
@@ -305,4 +306,22 @@ fn inferred_types_are_resolved_or_indeterminate() {
     // A borrowed lock is not a lock type written by value.
     let borrowed = "fn m(lock: &SyncMutex<u8>) { let a = Default::default(); }";
     assert!(indeterminate(borrowed));
+}
+
+#[test]
+fn unseen_item_bodies_are_indeterminate_at_every_nesting_level() {
+    for source in [
+        "mod hidden; fn check() { loom::model(|| {}); }",
+        "mod visible { mod hidden; }",
+        "#[cfg(any())] #[path = \"elsewhere.rs\"] mod hidden;",
+        "unsafe extern \"C\" { fn unknown(); }",
+        "extern crate hidden as std;",
+    ] {
+        assert!(indeterminate(source), "{source}: {:?}", verdict(source));
+    }
+    assert_eq!(scan("mod visible { fn p() -> u8 { 0 } }").ok(), Some(false));
+    assert_eq!(
+        scan("mod visible { fn p() { std::sync::Mutex::new(0); } }").ok(),
+        Some(true)
+    );
 }

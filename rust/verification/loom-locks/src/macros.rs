@@ -155,6 +155,31 @@ impl Collector {
 }
 
 impl Visit<'_> for Collector {
+    fn visit_item(&mut self, item: &Item) {
+        match item {
+            Item::Mod(module) if module.content.is_none() => self.fail(format!(
+                "module `{}` has an unseen body outside this source file",
+                module.ident
+            )),
+            Item::Const(_)
+            | Item::Enum(_)
+            | Item::Fn(_)
+            | Item::Impl(_)
+            | Item::Macro(_)
+            | Item::Mod(_)
+            | Item::Static(_)
+            | Item::Struct(_)
+            | Item::Trait(_)
+            | Item::TraitAlias(_)
+            | Item::Type(_)
+            | Item::Union(_)
+            | Item::Use(_) => visit::visit_item(self, item),
+            _ => self.fail(
+                "an item has external or unsupported contents the scan cannot resolve".into(),
+            ),
+        }
+    }
+
     fn visit_macro(&mut self, mac: &Macro) {
         let path = segments(&mac.path);
         let name = path.join("::");

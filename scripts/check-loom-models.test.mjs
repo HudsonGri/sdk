@@ -45,6 +45,8 @@ const mutants = [
   ['locks', {[path]: owning('let state = SyncMutex /* x */ ::<u8>::new(0);')}, real],
   // A real model that does not parse cannot be judged lock-free.
   ['locks', {[path]: healthy + '\nfn broken( {'}, real],
+  // A child source without its own model marker is still unseen executable code.
+  ['locks', {[path]: 'mod hidden;\n' + healthy}, real],
   ['bound', {[path]: bounded + healthy}, real],
   ['bound', {[path]: healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   // A constant or forwarded bound is still a bound.
