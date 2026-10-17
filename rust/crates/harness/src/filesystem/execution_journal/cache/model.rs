@@ -91,16 +91,20 @@ pub fn verify_cached_summary_publication(release_early: bool) {
     for _ in 0..2 {
         let journal = journal.clone();
         workers.push(loom::thread::spawn(move || {
-            loom::future::block_on(async {
-                let event = ExecutionEvent::Started {
-                    request_digest: [1; 32],
-                };
-                journal
-                    .append(operation, "retry", &event, None)
+            let event = ExecutionEvent::Started {
+                request_digest: [1; 32],
+            };
+            // Construct the boxed future on an ordinary OS stack: the large
+            // temporary exceeds Loom's coroutine stack. Construction never
+            // polls it or accesses a modeled lock. All polling, including
+            // append/refresh and nested provider locking, stays on Loom.
+            let future = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| journal.append(operation, "retry", &event, None).unwrap())
+                    .join()
                     .unwrap()
-                    .await
-                    .unwrap();
-            })
+            });
+            loom::future::block_on(future).unwrap();
         }));
     }
     for worker in workers {
@@ -110,14 +114,12 @@ pub fn verify_cached_summary_publication(release_early: bool) {
         let cache = journal.verified.lock().await;
         assert_eq!(cache.summary.tail, 1);
         assert!(cache.summary.fence.is_some());
-        assert_eq!(
-            journal
-                .replay(operation, 0, 8, None)
+        let future = std::thread::scope(|scope| {
+            scope
+                .spawn(|| journal.replay(operation, 0, 8, None).unwrap())
+                .join()
                 .unwrap()
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
+        });
+        assert_eq!(future.await.unwrap().len(), 1);
     });
 }
