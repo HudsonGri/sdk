@@ -38,8 +38,28 @@ async fn malformed_task_files_leave_other_tasks_and_workspaces_live_after_restar
     let fixture = Fixture::new()?;
     let other = fixture.path().parent().ok_or("workspace parent missing")?.join("other");
     std::fs::create_dir(&other)?;
+    let canonical = std::fs::canonicalize(fixture.path())?;
+    let principal = blake3::hash(canonical.as_os_str().as_encoded_bytes()).to_hex();
+    let registration = fixture.path().parent().unwrap().join("owner/workspaces")
+        .join(format!("{principal}.json"));
+    assert!(!registration.exists());
+    let mut retained_binding = None;
     for round in 0..2 {
         let owner = fixture.start_owner().await?;
+        if round == 0 {
+            // Use the production hook bootstrap before making a raw SDK client.
+            // On restart, open the retained stream before any hook can repair it.
+            hook(fixture.path(), "pi", "session_start", json!({
+                "sessionId":"workspace-binding","cwd":fixture.path(),
+            })).await?;
+        }
+        let binding = std::fs::read(&registration)
+            .map_err(|error| format!("round {round}: workspace {principal} has no registration: {error}"))?;
+        if let Some(previous) = &retained_binding {
+            assert_eq!(&binding, previous, "restart changed the authenticated workspace binding");
+        }
+        retained_binding = Some(binding);
+        eprintln!("round {round}: opening task files as registered workspace {principal}");
         let client = Arc::new(client(fixture.path()).await?);
         let rejected = request(ExternalHost::Pi, "session_start", json!({
             "sessionId":"malformed","cwd":fixture.path(),
