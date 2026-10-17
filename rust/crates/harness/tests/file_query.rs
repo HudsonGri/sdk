@@ -219,7 +219,8 @@ impl Fixture<CountingObjects> {
             acyclic_fs::StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
             objects,
             acyclic_fs::EmbeddedCapabilities::MEMORY,
-        );
+        )
+        .with_access_audit();
         Self::with_filesystem(filesystem, reads).await
     }
 }

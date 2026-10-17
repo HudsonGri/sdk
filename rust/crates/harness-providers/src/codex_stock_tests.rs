@@ -93,7 +93,8 @@ async fn stock(broken: bool) -> Result<()> {
         )
         .map_err(|_| invalid("fixture cache"))?,
         acyclic_fs::EmbeddedCapabilities::MEMORY,
-    );
+    )
+    .with_access_audit();
     let result = crate::tests::native_tests::stock::run_stock_turn(
         provider,
         Adapter::Responses,

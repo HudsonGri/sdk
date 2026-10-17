@@ -272,27 +272,3 @@ async fn append_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
     }
 }
-
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Volume<A, O> {
-    pub(crate) fn audit_view(
-        &self,
-        view: crate::access::PathTrie,
-        principal: Principal,
-        capability: Capability,
-        credential_fingerprint: Option<[u8; 32]>,
-    ) -> Result<crate::access::PathTrie, AuditError> {
-        let name =
-            crate::WorkspaceName::new("audit", &WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .map_err(|_| AuditError)?
-                .value;
-        let workspace = Workspace {
-            name,
-            id: crate::WorkspaceId::from_bytes(self.id.into_bytes()),
-            volume: self.clone(),
-            access: None,
-            #[cfg(feature = "native-watch")]
-            source: None,
-        };
-        workspace.audit_view(view, principal, capability, credential_fingerprint, None)
-    }
-}

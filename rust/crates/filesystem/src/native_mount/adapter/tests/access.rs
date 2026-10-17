@@ -148,10 +148,22 @@ where
     )
     .map_err(|_| MountSourceError::AccessDenied)?
     .with_policy_revision(head, revision);
-    source
-        .checkout
-        .volume
-        .audit_view(view, caller, cap, None)
+    let workspace = crate::Workspace {
+        name: crate::WorkspaceName::new(
+            "mount-test",
+            &WorkBudget::UNBOUNDED,
+            source.cancellation(),
+        )
+        .map_err(|_| MountSourceError::AccessDenied)?
+        .value,
+        id: crate::WorkspaceId::from_bytes(source.volume_id()?.into_bytes()),
+        volume: source.checkout.volume.clone(),
+        access: None,
+        #[cfg(feature = "native-watch")]
+        source: None,
+    };
+    workspace
+        .audit_view(view, caller, cap, None, None)
         .map_err(|_| MountSourceError::AccessDenied)
 }
 
