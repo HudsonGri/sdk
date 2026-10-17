@@ -90,6 +90,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         let generation = checkout.generation_id();
+        if let Some(selected) = permissions.data_generation() {
+            return if selected == generation {
+                Ok(())
+            } else {
+                Err(MountSourceError::AccessDenied)
+            };
+        }
         let revision = checkout
             .access_policy_revision(work, work.cancellation())
             .await?;

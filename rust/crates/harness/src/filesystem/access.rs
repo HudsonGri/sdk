@@ -425,13 +425,14 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
         drop(capability);
         drop(bytes);
         drop(head);
-        Ok((
-            compiled
-                .0
-                .with_policy_revision(policy_generation, policy_revision),
-            compiled.1,
-            policy_generation,
-        ))
+        let view = compiled
+            .0
+            .with_policy_revision(policy_generation, policy_revision);
+        let view = match generation {
+            Some(selected) => view.with_data_generation(selected),
+            None => view,
+        };
+        Ok((view, compiled.1, policy_generation))
     })?
     .await
 }

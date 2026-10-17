@@ -9,6 +9,8 @@ mod review;
 #[path = "access_roundtrip.rs"]
 mod roundtrip;
 
+#[path = "access_binding.rs"]
+mod binding;
 #[path = "access_uniform.rs"]
 mod uniform;
 

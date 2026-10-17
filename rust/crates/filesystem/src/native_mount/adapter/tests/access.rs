@@ -162,7 +162,7 @@ pub(in crate::native_mount) fn publish_test_access<
     Ok(())
 }
 
-fn seed(
+pub(super) fn seed(
     source: &MemorySource,
     name: &str,
     bytes: &'static [u8],

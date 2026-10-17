@@ -41,6 +41,7 @@ pub struct PathTrie {
         crate::GenerationId,
         crate::kernel::MetadataField<crate::ObjectId>,
     )>,
+    data_generation: Option<crate::GenerationId>,
     generation_sensitive: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) native_custody: Option<crate::NativeAllocation>,
@@ -251,6 +252,20 @@ impl PathTrie {
         self
     }
 
+    /// Bind an explicitly selected immutable data generation. Its authorization
+    /// uses current policy, whose storage fence remains independent.
+    #[must_use]
+    pub fn with_data_generation(mut self, generation: crate::GenerationId) -> Self {
+        self.data_generation = Some(generation);
+        self
+    }
+
+    /// Explicit immutable selection, absent for a tracking view.
+    #[must_use]
+    pub const fn data_generation(&self) -> Option<crate::GenerationId> {
+        self.data_generation
+    }
+
     /// Whether this view still represents the authenticated persisted policy.
     pub fn matches_policy_revision(
         &self,
@@ -305,6 +320,7 @@ impl PathTrie {
             && self.volume == other.volume
             && self.subject == other.subject
             && self.capability_binding == other.capability_binding
+            && self.data_generation == other.data_generation
     }
 
     /// Policy revision used for every decision in this view.
@@ -533,6 +549,7 @@ impl PathTrie {
                 subject: (principal.kind, principal.id.clone()),
                 capability_binding: super::capability::binding(capability)?,
                 policy_revision: None,
+                data_generation: None,
                 generation_sensitive: history_sensitive
                     || policy.layers.iter().flatten().any(|rule| {
                         rule.resource.generations != super::Generations::All

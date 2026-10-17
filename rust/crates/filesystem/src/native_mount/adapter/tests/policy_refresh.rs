@@ -1,5 +1,6 @@
-use super::access::deny;
+use super::access::{compiled, deny, seed};
 use super::*;
+use crate::access::AccessView;
 use crate::access::{
     Action, Capability, Context, Generations, Grant, PathTrie, Policy, Principal, PrincipalKind,
     Resource, ResourcePattern,
@@ -74,7 +75,8 @@ impl crate::native_mount::NativeMountCallbackGuard for Reload {
                 &capability,
             )
             .map_err(|_| MountSourceError::AccessDenied)?
-            .with_policy_revision(checkout.generation_id(), revision);
+            .with_policy_revision(checkout.generation_id(), revision)
+            .with_data_generation(source.checkout.lock().await.generation_id());
             source
                 .access_view
                 .as_ref()
@@ -144,13 +146,18 @@ pub(super) fn publish(
 fn cached_denial_observes_owner_policy_publication_before_host_probes()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
+    seed(&source, "file", b"pinned")?;
+    let selected = checkout_state(&source).0;
     let denied = crate::access::fixtures::denied(Action::Read, "file");
     publish(&source, &denied)?;
-    let source = bind_test_access(
-        source,
+    let view = compiled(
+        &source,
+        1,
         vec![deny("restricted", &[Action::Read], "file")],
         None,
-    )?;
+    )?
+    .with_data_generation(selected);
+    let source = source.with_access_view(Arc::new(AccessView::new(view)))?;
     let source = Arc::new_cyclic(|weak| {
         source.with_access_refresh(Some(Arc::new(Reload {
             source: weak.clone(),
@@ -167,6 +174,10 @@ fn cached_denial_observes_owner_policy_publication_before_host_probes()
     allowed.version = denied.version + 1;
     publish(&source, &allowed)?;
     source.require_paths(&[(Action::Read, &path)], &work)?;
+    assert_eq!(
+        source.open_file(&path)?.read_range(0, 6)?.as_ref(),
+        b"pinned"
+    );
     assert!(
         source
             .access_view

@@ -15,6 +15,16 @@ where
 {
     let config = checkout.volume_config();
     let access = options.require_access_view()?;
+    if access
+        .current()
+        .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?
+        .data_generation()
+        .is_some_and(|selected| selected != checkout.generation_id())
+    {
+        return Err(MountLifecycleError::NativePolicy(
+            "checkout differs from its authenticated data selection",
+        ));
+    }
     let shared = SharedCheckout::with_publication_meter(checkout, options.publication, work)?;
     let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1 else {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
@@ -62,6 +72,23 @@ pub struct MountOptions {
 }
 
 impl MountOptions {
+    pub(super) fn data_selector(
+        &self,
+    ) -> Result<crate::model::GenerationSelector, MountLifecycleError> {
+        let view = self
+            .require_access_view()?
+            .current()
+            .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+        Ok(if self.writable {
+            crate::model::GenerationSelector::Head
+        } else {
+            view.data_generation().map_or(
+                crate::model::GenerationSelector::Head,
+                crate::model::GenerationSelector::Exact,
+            )
+        })
+    }
+
     /// Bound policy/capability owner for preparation and inspection. Native
     /// operations additionally fence this view against current persisted policy.
     pub fn require_access_view(
