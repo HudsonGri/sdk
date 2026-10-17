@@ -12,7 +12,13 @@ use acyclic_stream::{Record, StreamPath, StreamProvider};
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc, time::Instant};
+
+fn phase(start: Option<Instant>, label: &str) {
+    if let Some(start) = start {
+        eprintln!("goal phase={label} elapsed={:?}", start.elapsed());
+    }
+}
 
 fn frame(record: Record, expected: usize) -> TestResult<Value> {
     let frame = acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
@@ -57,12 +63,14 @@ async fn goal(harness: &LocalHarness) -> acyclic_harness::Result<GoalView> {
 }
 
 pub(super) async fn run(mut case: GoalCase) -> TestResult {
+    let started = std::env::var_os("E2E_PHASES").map(|_| Instant::now());
     let temporary = super::local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
     let (_, project, _, reader) =
         super::local_workspace::seed(&directory, &Default::default()).await?;
+    phase(started, "seed");
     let provider = Arc::new(ScriptedModelProvider::new(std::mem::take(&mut case.turns)));
     let config = local_harness_config(
         &directory,
@@ -80,6 +88,7 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     })
     .goal_continuations(case.policy);
     let harness = LocalHarness::open(config).await?;
+    phase(started, "open");
     let workspace = workspace_ref(
         harness.scratch().provider().clone(),
         &harness.scratch().storage_name(&mut None)?,
@@ -106,12 +115,14 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
                 .await?,
         )
     };
+    phase(started, "seed-goal");
     let stream = local_task_stream(&harness);
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let (operation, task_id, status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
     // The seed reader owns a filesystem host. Release it before cold reopen.
     drop(reader);
+    phase(started, "submit");
     let mut followed = stream.follow(path.clone(), 0).await?;
     let mut frames = Vec::new();
     let result = {
@@ -122,11 +133,17 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
                 output = &mut execution => break output,
                 record = followed.try_next() => {
                     let event = frame(record?.ok_or("goal follow ended")?, frames.len())?;
+                    if let Some(started) = started
+                        && event["canonical_event_json"]["kind"] == "completed"
+                    {
+                        eprintln!("goal settled={} elapsed={:?}", event["operation_id"], started.elapsed());
+                    }
                     frames.push(event);
                 },
             }
         }
     };
+    phase(started, "resume");
     // Settle supplies a finite accepted cut. Drain that exact follow prefix;
     // never wait for an expected task count (disabled admission must fail fast).
     let accepted = stream.watermarks(path).await?.accepted;
@@ -151,6 +168,7 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
         _ => return Err(format!("unexpected goal runtime result: {result:?}").into()),
     }
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
+    phase(started, "frames-and-status");
     matchers::ordered(&case.expect.frames, &frames, "goal wire frames")?;
     let mut declared = Vec::new();
     let mut completed = Vec::new();
@@ -230,9 +248,11 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     }
     // Reopening with future admission disabled still replays the ordinary task.
     let count = provider.requests().len();
+    phase(started, "assertions");
     drop(followed);
     drop(stream);
     drop(harness);
+    phase(started, "drop");
     let config = local_harness_config(
         &directory,
         (
@@ -249,13 +269,16 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     })
     .goal_continuations(None);
     let reopened = LocalHarness::open(config).await?;
+    phase(started, "reopen");
     if reopened.resume(task_id).await?.text != case.expect.text {
         return Err("reopened goal task changed its settled result".into());
     }
+    phase(started, "replay");
     if provider.requests().len() != count {
         return Err("reopening a goal task redispatched the model".into());
     }
     check_files(&reopened, &case.expect.files).await?;
+    phase(started, "cold-files");
     Ok(())
 }
 
