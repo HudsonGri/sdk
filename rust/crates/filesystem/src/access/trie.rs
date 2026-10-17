@@ -28,7 +28,6 @@ struct State {
 /// Prepare paths once during namespace lookup, then check the resulting handle
 /// without scanning names, allocating, or depending on policy size.
 pub struct PathTrie {
-    pub(crate) audit: Option<std::sync::Arc<super::audit::Binding>>,
     alphabet: Alphabet,
     states: Vec<State>,
     pub(crate) rules: std::sync::Arc<[String]>,
@@ -50,6 +49,8 @@ pub struct PathTrie {
     generation_sensitive: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) native_custody: Option<crate::NativeAllocation>,
+    // Last: the shared audit identity funds rule strings until their final owner retires.
+    pub(crate) audit: Option<std::sync::Arc<super::audit::Binding>>,
 }
 
 struct PathWriter<'a> {
