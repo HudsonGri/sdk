@@ -32,6 +32,12 @@ pub fn fuzz_codex_hook_parent(bytes: &[u8]) {
     crate::external_executor::fuzz_codex_parent(bytes);
 }
 
+/// Exercises native file input using the shared file JSONL codec and task policy.
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+pub fn fuzz_native_file_input(bytes: &[u8]) {
+    crate::external_executor::fuzz_file_input(bytes);
+}
+
 /// Exercises native namespace normalization and request file round trips without I/O.
 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn fuzz_native_hook_request(

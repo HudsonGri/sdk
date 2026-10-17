@@ -58,6 +58,9 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
             }
         }
+        [command, task, path] if command == "__files" => {
+            runtime()?.block_on(acyclic_harness::external_executor::run_native_files(task, path))?;
+        }
         [command, rest @ ..] if command == "install" => install_command(rest).map_err(io::Error::other)?,
         [command, rest @ ..] if matches!(command.as_str(), "__installer-rename" | "__verify-certification") => {
             install::activation(command, rest)?;

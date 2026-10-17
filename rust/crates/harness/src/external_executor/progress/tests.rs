@@ -15,6 +15,7 @@ struct State {
     session_phase: u8,
 }
 
+mod native_files;
 mod settlement;
 struct Changes {
     state: Arc<Mutex<State>>,

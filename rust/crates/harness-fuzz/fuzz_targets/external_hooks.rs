@@ -42,6 +42,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     acyclic_harness::test_support::fuzz_native_child_binding(input);
     acyclic_harness::test_support::fuzz_native_launch(input);
     acyclic_harness::test_support::fuzz_native_context_file(input);
+    acyclic_harness::test_support::fuzz_native_file_input(input);
     if let Ok(executable) = std::str::from_utf8(input)
         && !executable.contains('\0')
     {

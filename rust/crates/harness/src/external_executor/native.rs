@@ -23,6 +23,10 @@ pub use task_volumes::local_hook_volumes;
 
 mod handler;
 pub use handler::handle_hook;
+pub(in crate::external_executor) mod files;
+#[cfg(feature = "test-support")]
+pub(crate) use files::fuzz as fuzz_file_input;
+pub use files::{native_input_files, run_native_files};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use handler::prepare as prepare_hook;
 mod codex_parent;
@@ -158,19 +162,23 @@ async fn platform_volumes(
     requests: StreamPath,
     results: StreamPath,
 ) -> Result<(TaskVolume<HttpStream>, TaskVolume<HttpStream>)> {
-    let token = read_bounded(
-        std::fs::File::open(bearer_file).map_err(storage)?,
-        acyclic_stream::MAX_BEARER_TOKEN_BYTES,
-    )?;
-    let token = std::str::from_utf8(&token).map_err(storage)?.trim();
-    let provider = Arc::new(
-        HttpStream::new(endpoint, token, acyclic_stream::MAX_RECORD_BYTES * 4).map_err(storage)?,
-    );
+    let provider = platform_provider(endpoint, bearer_file).await?;
     let requests = TaskVolume::open(provider.clone(), requests)
         .await
         .map_err(storage)?;
     let results = TaskVolume::open(provider, results).await.map_err(storage)?;
     Ok((requests, results))
+}
+
+async fn platform_provider(endpoint: &str, bearer_file: &Path) -> Result<Arc<HttpStream>> {
+    let token = read_bounded(
+        std::fs::File::open(bearer_file).map_err(storage)?,
+        acyclic_stream::MAX_BEARER_TOKEN_BYTES,
+    )?;
+    let token = std::str::from_utf8(&token).map_err(storage)?.trim();
+    Ok(Arc::new(
+        HttpStream::new(endpoint, token, acyclic_stream::MAX_RECORD_BYTES * 4).map_err(storage)?,
+    ))
 }
 
 async fn local_request(

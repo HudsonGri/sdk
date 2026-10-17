@@ -110,6 +110,12 @@ pub use mcp::{native_tool_catalog, serve_native_tools};
 ))]
 pub(crate) use native::fuzz_codex_parent;
 #[cfg(all(
+    feature = "test-support",
+    feature = "hooks",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use native::fuzz_file_input;
+#[cfg(all(
     feature = "hooks",
     feature = "filesystem-local",
     feature = "native-execution",
@@ -123,7 +129,7 @@ pub use native::local_hook_volumes;
 ))]
 pub(crate) use native::prepare_hook as fuzz_prepare_hook;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-pub use native::{HookBinding, handle_hook, run_hook};
+pub use native::{HookBinding, handle_hook, native_input_files, run_hook, run_native_files};
 pub use normalize::request;
 pub use request::{ExternalAction, ExternalRequest};
 pub use result::tool_result;
