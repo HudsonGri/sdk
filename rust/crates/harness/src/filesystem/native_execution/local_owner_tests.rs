@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::{CancellationToken, Lifecycle, VolumeConfig, WorkBudget};
+use acyclic_fs::{CancellationToken, FsWork, Lifecycle, VolumeConfig, WorkBudget};
 use proptest::prelude::*;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -130,7 +130,7 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
             access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
         },
         acyclic_fs::OperationId::new(),
-        &mut acyclic_fs::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+        &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
     )
     .await?
     .0;
@@ -215,10 +215,7 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
             .exactify(
                 "/hot",
                 PublicationPermit::Unrestricted,
-                &mut acyclic_fs::kernel::KernelAccounting::standalone(
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                ),
+                &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
             )
             .await?;
         exact
