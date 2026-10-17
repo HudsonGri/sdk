@@ -142,3 +142,125 @@ fn accepted_records_reuse_one_follow_and_cancellation_drops_its_pending_read() {
         one_open(old_work, false);
     }
 }
+
+fn one_publication(attempts: u64, check: bool) {
+    if check {
+        assert_eq!(attempts, 1, "worker published from its pre-admission cut");
+    }
+}
+
+#[test]
+fn accepted_metadata_refresh_avoids_replaying_a_stale_admission_cut() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let reference = Component::new("worker").unwrap();
+    let pair = differential::pair(
+        || {
+            runtime.block_on(async {
+                let (directory, harness, _) = fixture(1).await;
+                let snapshot = harness
+                    .task_files
+                    .inner
+                    .child_lifecycle(Some(&reference))
+                    .await
+                    .unwrap();
+                let control = FileValue::new(
+                    FileKey::Child {
+                        reference: reference.clone(),
+                        file: ChildFile::Control,
+                    },
+                    Control::Pause.bytes().to_vec(),
+                );
+                harness
+                    .task_files
+                    .inner
+                    .append(snapshot.generation, &control)
+                    .await
+                    .unwrap();
+                (directory, harness, snapshot)
+            })
+        },
+        |(_directory, harness, snapshot), old| {
+            runtime.block_on(async {
+                let files = harness.task_files.as_ref();
+                let mut cursor = Follow::new(snapshot.cursor);
+                let mut generation = snapshot.generation;
+                let mut values = snapshot
+                    .files
+                    .into_iter()
+                    .map(|file| (file.key.clone(), file))
+                    .collect();
+                if !old {
+                    refresh(files, &reference, &mut cursor, &mut values, &mut generation)
+                        .await
+                        .unwrap();
+                }
+                loop {
+                    let status = ChildStatus {
+                        task: TaskId::from_bytes([4; 16]),
+                        state: desired(&reference, &values).unwrap(),
+                        settled: true,
+                        inputs: 1,
+                    };
+                    if super::super::publish(
+                        files,
+                        &reference,
+                        status,
+                        &mut values,
+                        &mut generation,
+                    )
+                    .await
+                    .unwrap()
+                    {
+                        break;
+                    }
+                    assert!(old, "refreshed worker retried an unchanged publication cut");
+                    let change = next(files, Query::Child(reference.clone()), &mut cursor)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    super::super::advance_fold(&mut values, &mut generation, change);
+                }
+                let output = files
+                    .inner
+                    .child_lifecycle(Some(&reference))
+                    .await
+                    .unwrap()
+                    .files;
+                assert_eq!(
+                    execution(&reference, &values).unwrap().unwrap().state,
+                    ChildState::Paused
+                );
+                harness.disconnect().await.unwrap();
+                output
+            })
+        },
+    );
+    assert_eq!(
+        pair[0].0, pair[1].0,
+        "metadata refresh changed acknowledged bytes"
+    );
+    assert_eq!(
+        pair[0].1,
+        vec![
+            ("child-status-publish", 1),
+            ("child-follow-open", 1),
+            ("child-status-publish", 1)
+        ]
+    );
+    assert_eq!(pair[1].1, vec![("child-status-publish", 1)]);
+    let attempts = |trace: &[(&str, u64)]| {
+        trace
+            .iter()
+            .filter(|(kind, _)| *kind == "child-status-publish")
+            .map(|(_, count)| count)
+            .sum()
+    };
+    one_publication(attempts(&pair[1].1), true);
+    let old_work = attempts(&pair[0].1);
+    std::panic::catch_unwind(|| one_publication(old_work, true))
+        .expect_err("stale publication work escaped the work assertion");
+    one_publication(old_work, false);
+}

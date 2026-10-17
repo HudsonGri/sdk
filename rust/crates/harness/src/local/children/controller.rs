@@ -82,9 +82,14 @@ impl LocalHarness {
                 None,
             )?;
             loop {
-                // A pending follow may own a queued publication read permit.
-                // Never leave it parked while awaiting a write to the same stream.
-                // Generation conflicts below consume the accepted control prefix.
+                follow::refresh(
+                    files.as_ref(),
+                    &reference,
+                    &mut cursor,
+                    &mut values,
+                    &mut generation,
+                )
+                .await?;
                 #[cfg(all(test, not(acyclic_harness_loom)))]
                 super::cuts::follow_probe(files.as_ref(), &reference, &mut cursor).await?;
                 let state = desired(&reference, &values)?;
@@ -125,20 +130,16 @@ impl LocalHarness {
                         suspension.as_ref(),
                     );
                 if cancelled && !cancelled_checkpoint {
-                    // The host may be newer than this follow. Consume its accepted
-                    // result prefix before deciding whether the receive cut agrees.
-                    let head = files.inner.head().await.map_err(storage)?;
-                    while generation.position < head.position {
-                        let change = follow::next(
-                            files.as_ref(),
-                            Query::Child(reference.clone()),
-                            &mut cursor,
-                        )
-                        .await
-                        .ok_or_else(|| Error::Conflict("cancelled child follow ended".into()))?
-                        .map_err(storage)?;
-                        advance_fold(&mut values, &mut generation, change);
-                    }
+                    // The host may be newer than this fold. Refresh the bounded
+                    // result reference before checking its retained receive cut.
+                    follow::refresh(
+                        files.as_ref(),
+                        &reference,
+                        &mut cursor,
+                        &mut values,
+                        &mut generation,
+                    )
+                    .await?;
                     if !stopping::cancelled_turn_is_quiet(
                         execution(&reference, &values)?,
                         child,
@@ -202,12 +203,6 @@ impl LocalHarness {
                     {
                         return Ok((reference, generation.position));
                     }
-                    let change =
-                        follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
-                            .await
-                            .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                            .map_err(storage)?;
-                    advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
                 if state == ChildState::Running {
@@ -230,12 +225,6 @@ impl LocalHarness {
                     )
                     .await?
                 {
-                    let change =
-                        follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
-                            .await
-                            .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                            .map_err(storage)?;
-                    advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
                 #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -283,10 +272,7 @@ impl LocalHarness {
                                                 self.deliver_child_inputs(files.as_ref(), &reference, child, &request, status.inputs).await?;
                                                 break;
                                             }
-                                            let change = follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor).await
-                                                .ok_or_else(|| Error::Conflict("child input fence follow ended".into()))?
-                                                .map_err(storage)?;
-                                            advance_fold(&mut values, &mut generation, change);
+                                            follow::refresh(files.as_ref(), &reference, &mut cursor, &mut values, &mut generation).await?;
                                         }
                                     }
                                 }
@@ -316,15 +302,14 @@ impl LocalHarness {
                                 break;
                             }
                             Err(crate::task_volume::Error::Conflict(_)) => {
-                                let change = follow::next(
+                                follow::refresh(
                                     files.as_ref(),
-                                    Query::Child(reference.clone()),
+                                    &reference,
                                     &mut cursor,
+                                    &mut values,
+                                    &mut generation,
                                 )
-                                .await
-                                .ok_or_else(|| Error::Conflict("child result follow ended".into()))?
-                                .map_err(storage)?;
-                                advance_fold(&mut values, &mut generation, change);
+                                .await?;
                             }
                             Err(error) => return Err(storage(error)),
                         }
@@ -375,12 +360,6 @@ impl LocalHarness {
                 {
                     return Ok((reference, generation.position));
                 }
-                let change =
-                    follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
-                        .await
-                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                        .map_err(storage)?;
-                advance_fold(&mut values, &mut generation, change);
             }
         })
     }
@@ -558,6 +537,8 @@ async fn publish<P: StreamProvider + ?Sized>(
         },
         serde_json::to_vec(&status).map_err(storage)?,
     );
+    #[cfg(test)]
+    crate::test_support::differential::record("child-status-publish", 1);
     match files.inner.append(*generation, &file).await {
         Ok(next) => {
             *generation = next;
