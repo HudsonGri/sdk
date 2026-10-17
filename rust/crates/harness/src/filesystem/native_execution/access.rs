@@ -2,7 +2,7 @@ use super::*;
 use acyclic_fs::{
     GenerationId, Workspace,
     access::{AccessView, PathTrie},
-    native_mount::{NativeMountCallbackFuture, NativeMountCallbackGuard, NativeMountError},
+    native_mount::{NativeAccessOwner, NativeMountCallbackFuture, NativeMountError},
 };
 
 struct PolicyOwner<A, O> {
@@ -108,11 +108,8 @@ where
         bind_mount_options(
             workspace,
             generation,
-            NativeAccessAuthority {
-                verifier: self.verifier,
-                scope: self.scope,
-                ceiling: context.scope().grants(),
-            },
+            self.scope,
+            context.scope().grants(),
             self.writable,
             work,
         )
@@ -210,13 +207,22 @@ where
     {
         return Err(io.invalid("workspace mount requires an exact signed filesystem capability"));
     }
-    bind_mount_options(workspace, generation, authority, writable, work).await
+    bind_mount_options(
+        workspace,
+        generation,
+        authority.scope,
+        authority.ceiling,
+        writable,
+        work,
+    )
+    .await
 }
 
 async fn bind_mount_options<A, O>(
     workspace: &Workspace<A, O>,
     generation: GenerationId,
-    authority: NativeAccessAuthority<'_>,
+    admitted_scope: &Scope,
+    admitted_ceiling: &crate::Capabilities,
     writable: bool,
     work: &NativeMaterializationWork,
 ) -> Result<acyclic_fs::MountOptions>
@@ -227,23 +233,23 @@ where
     let io = PreparationIo::from_native_work(work)?;
     let (compiled, custody) = compile(
         workspace,
-        authority.scope,
-        authority.ceiling,
+        admitted_scope,
+        admitted_ceiling,
         generation,
         writable,
         &io,
     )
     .await?;
     let view = AccessView::new_native(compiled, custody)?;
-    let scope = authority.scope.copy(&mut Some(&mut io.history_io()))?;
+    let scope = admitted_scope.copy(&mut Some(&mut io.history_io()))?;
     io.retain_owned(
         (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
     )?;
     io.allocation_attempt(
         (std::mem::size_of::<PolicyOwner<A, O>>() + 2 * std::mem::size_of::<usize>()) as u64,
     )?;
-    let ceiling = (authority.ceiling != authority.scope.capabilities())
-        .then(|| crate::Capabilities::copy(authority.ceiling.iter(), work))
+    let ceiling = (admitted_ceiling != admitted_scope.capabilities())
+        .then(|| crate::Capabilities::copy(admitted_ceiling.iter(), work))
         .transpose()?;
     let retained = io.owned_bytes()?;
     let refresh = Arc::new(PolicyOwner {
@@ -264,7 +270,7 @@ where
     .access_refresh(refresh))
 }
 
-impl<A, O> NativeMountCallbackGuard for PolicyOwner<A, O>
+impl<A, O> NativeAccessOwner for PolicyOwner<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
@@ -296,10 +302,32 @@ where
             Ok(())
         })
     }
-    fn check_write<'a>(
+    fn select<'a>(
         &'a self,
+        generation: GenerationId,
         work: &'a NativeMaterializationWork,
-    ) -> std::result::Result<NativeMountCallbackFuture<'a>, NativeMountError> {
-        self.check(work)
+    ) -> std::result::Result<
+        NativeMountCallbackFuture<'a, acyclic_fs::MountOptions>,
+        NativeMountError,
+    > {
+        NativeMountCallbackFuture::new_guarded::<Error, _, _>(work, move || async move {
+            if !self._custody.work().shares_ledger(work) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native selection changed its ledger",
+                });
+            }
+            bind_mount_options(
+                &self.workspace,
+                generation,
+                &self.scope,
+                self.ceiling
+                    .as_ref()
+                    .map_or(self.scope.capabilities(), |(grants, _)| grants),
+                self.writable,
+                work,
+            )
+            .await
+        })
     }
 }

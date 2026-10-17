@@ -7,7 +7,7 @@ struct Reload {
     source: std::sync::Weak<MemorySource>,
 }
 
-impl crate::native_mount::NativeMountCallbackGuard for Reload {
+impl crate::native_mount::NativeAccessOwner for Reload {
     fn check<'a>(
         &'a self,
         work: &'a crate::NativeMaterializationWork,
@@ -50,11 +50,15 @@ impl crate::native_mount::NativeMountCallbackGuard for Reload {
         })
     }
 
-    fn check_write<'a>(
+    fn select<'a>(
         &'a self,
-        work: &'a crate::NativeMaterializationWork,
-    ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, NativeMountError> {
-        self.check(work)
+        _generation: crate::GenerationId,
+        _work: &'a crate::NativeMaterializationWork,
+    ) -> Result<
+        crate::native_mount::NativeMountCallbackFuture<'a, crate::MountOptions>,
+        NativeMountError,
+    > {
+        Err(MountSourceError::NativeUnsupported.into())
     }
 }
 

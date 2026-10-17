@@ -63,7 +63,7 @@ pub struct CheckoutMountSource<A, O> {
     root: NamespacePath,
     config: VolumeConfig,
     access_view: Option<Arc<crate::access::AccessView>>,
-    access_refresh: Option<Arc<dyn super::NativeMountCallbackGuard>>,
+    access_refresh: Option<Arc<dyn super::NativeAccessOwner>>,
     folds_names: bool,
     folded_directories: folded_cache::FoldedDirectoryCache<folded_names::FoldedKeys>,
     cancellation: CancellationToken,

@@ -75,7 +75,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     /// Reload an authenticated policy view after its persisted fence changes.
     pub fn with_access_refresh(
         mut self,
-        refresh: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
+        refresh: Option<Arc<dyn super::super::NativeAccessOwner>>,
     ) -> Self {
         self.access_refresh = refresh;
         self

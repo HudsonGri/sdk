@@ -1,28 +1,84 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+#[cfg(test)]
+#[path = "../tests/facade/observed_generation.rs"]
+mod tests;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct ObservedGeneration {
-    digest: [u8; 32],
-    // Genesis has no generation root; zero denotes an absent observation.
-    position: u64,
+    state: GenerationObservation,
 }
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum GenerationObservation {
+    Unknown,
+    Head {
+        generation: GenerationId,
+        position: Sequence,
+        last_operation: Option<OperationId>,
+    },
+    Committed(LastCommit),
+}
+
+const _: () = assert!(size_of::<ObservedGeneration>() == size_of::<Option<LastCommit>>());
 
 impl ObservedGeneration {
     pub(super) const UNKNOWN: Self = Self {
-        digest: [0; 32],
-        position: 0,
+        state: GenerationObservation::Unknown,
     };
 
     pub(super) fn head(generation: GenerationId, position: Sequence) -> Self {
         Self {
-            digest: generation.digest().into_bytes(),
-            position: position.get(),
+            state: GenerationObservation::Head {
+                generation,
+                position,
+                last_operation: None,
+            },
+        }
+    }
+
+    pub(super) fn refresh(&mut self, generation: GenerationId, position: Sequence) {
+        self.state = GenerationObservation::Head {
+            generation,
+            position,
+            last_operation: self.operation(),
+        };
+    }
+
+    pub(super) fn committed(commit: LastCommit) -> Self {
+        Self {
+            state: GenerationObservation::Committed(commit),
+        }
+    }
+
+    pub(super) fn commit(self) -> Option<LastCommit> {
+        match self.state {
+            GenerationObservation::Committed(commit) => Some(commit),
+            _ => None,
+        }
+    }
+
+    pub(super) fn operation(self) -> Option<OperationId> {
+        match self.state {
+            GenerationObservation::Unknown => None,
+            GenerationObservation::Head { last_operation, .. } => last_operation,
+            GenerationObservation::Committed(commit) => Some(commit.operation_id),
         }
     }
 
     pub(super) fn position(self, generation: GenerationId) -> Option<Sequence> {
-        (self.position != 0 && self.digest == generation.digest().into_bytes())
-            .then(|| Sequence::new(self.position))
+        let (observed, position) = match self.state {
+            GenerationObservation::Unknown => return None,
+            GenerationObservation::Head {
+                generation,
+                position,
+                ..
+            } => (generation, position),
+            GenerationObservation::Committed(commit) => {
+                (commit.generation_id, commit.head.sequence)
+            }
+        };
+        (observed == generation).then_some(position)
     }
 }
 
@@ -37,7 +93,6 @@ pub struct Checkout<A, O> {
     pub(super) observed_generation: ObservedGeneration,
     pub(super) authored_operation_id: Option<OperationId>,
     pub(super) live_operation_id: Option<OperationId>,
-    pub(super) last_commit: Option<LastCommit>,
     pub(super) publication_closure: Option<PublicationClosure<A, O>>,
     pub(super) prepared_merge_parent: Option<ObjectId>,
     pub(super) dependencies: DependencyLedger,
@@ -195,7 +250,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 },
                 authored_operation_id: None,
                 live_operation_id: None,
-                last_commit: None,
                 publication_closure: None,
                 prepared_merge_parent: None,
                 dependencies,
@@ -303,8 +357,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.reset_root(root, &mut accounting, cancellation).await?;
             }
             self.authority_head = Some(head);
-            self.observed_generation =
-                ObservedGeneration::head(self.generation_id(), head.sequence);
+            self.observed_generation
+                .refresh(self.generation_id(), head.sequence);
             Ok(self.generation_id())
         }
         .await;

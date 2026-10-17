@@ -15,16 +15,7 @@ where
 {
     let config = checkout.volume_config();
     let access = options.require_access_view()?;
-    if access
-        .current()
-        .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?
-        .data_generation()
-        .is_some_and(|selected| selected != checkout.generation_id())
-    {
-        return Err(MountLifecycleError::NativePolicy(
-            "checkout differs from its authenticated data selection",
-        ));
-    }
+    require_selection(options, checkout.generation_id())?;
     let shared = SharedCheckout::with_publication_meter(checkout, options.publication, work)?;
     let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1 else {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
@@ -46,6 +37,24 @@ where
     source.into_arc_meter(work).map_err(Into::into)
 }
 
+pub(super) fn require_selection(
+    options: &MountOptions,
+    generation: GenerationId,
+) -> Result<(), MountLifecycleError> {
+    if options
+        .require_access_view()?
+        .current()
+        .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?
+        .data_generation()
+        .is_some_and(|selected| selected != generation)
+    {
+        return Err(MountLifecycleError::NativePolicy(
+            "checkout differs from its authenticated data selection",
+        ));
+    }
+    Ok(())
+}
+
 /// When authored native mutations become a durable workspace generation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MountPublication {
@@ -62,7 +71,7 @@ pub enum MountPublication {
 #[derive(Clone)]
 pub struct MountOptions {
     pub(crate) access_view: Option<Arc<crate::access::AccessView>>,
-    pub(crate) access_refresh: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
+    pub(crate) access_refresh: Option<Arc<dyn super::super::NativeAccessOwner>>,
     pub(crate) writable: bool,
     pub(crate) subdirectory: std::borrow::Cow<'static, str>,
     pub(crate) publication: MountPublication,
@@ -153,10 +162,7 @@ impl MountOptions {
 
     /// Reload the authenticated view when the persisted policy fence changes.
     #[must_use]
-    pub fn access_refresh(
-        mut self,
-        refresh: Arc<dyn super::super::NativeMountCallbackGuard>,
-    ) -> Self {
+    pub fn access_refresh(mut self, refresh: Arc<dyn super::super::NativeAccessOwner>) -> Self {
         self.access_refresh = Some(refresh);
         self
     }

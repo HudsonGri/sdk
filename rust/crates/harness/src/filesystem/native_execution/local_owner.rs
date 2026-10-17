@@ -1,10 +1,29 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "local_owner_tests.rs"]
+mod tests;
+
 /// Create or recover an embedded native workspace with explicit initial policy.
 pub async fn local_owner_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     filesystem: &acyclic_fs::Fs<A, O>,
     name: &str,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    match filesystem
+        .open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+    {
+        Ok(receipt) => return Ok(receipt.value),
+        Err(failure)
+            if matches!(
+                failure.error,
+                acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
+                    acyclic_fs::AuthorityStoreError::Missing
+                ))
+            ) => {}
+        Err(failure) => return Err(Error::Invalid(failure.error.to_string())),
+    }
     let mut operation = [0; 16];
     operation.copy_from_slice(&blake3::hash(name.as_bytes()).as_bytes()[..16]);
     filesystem
@@ -16,7 +35,7 @@ pub async fn local_owner_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             },
             acyclic_fs::OperationId::from_bytes(operation),
             acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
+            &cancellation,
             None,
         )
         .await

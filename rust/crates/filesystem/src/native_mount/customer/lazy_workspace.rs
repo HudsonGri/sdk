@@ -32,6 +32,16 @@ where
         if let Some(guard) = &mount.callback_guard {
             guard.check(work)?.await?;
         }
+        let previous = mount
+            .require_access_view()?
+            .current()
+            .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+        let selected = previous.data_generation();
+        if !mount.writable && mount.access_refresh.is_none() {
+            return Err(MountLifecycleError::NativePolicy(
+                "exactification requires the authenticated selection owner",
+            ));
+        }
         mount.work = Some(work.clone());
         options::in_native_heap(work, || async move {
             let exact = self
@@ -41,6 +51,28 @@ where
                     &mut KernelAccounting::native(work, work.cancellation()),
                 )
                 .await?;
+            if !mount.writable && selected != Some(exact.id()) {
+                let owner =
+                    mount
+                        .access_refresh
+                        .as_ref()
+                        .ok_or(MountLifecycleError::NativePolicy(
+                            "exactification lost its selection owner",
+                        ))?;
+                let rebound = owner.select(exact.id(), work)?.await?;
+                let current = rebound.require_access_view()?.current().map_err(|_| {
+                    MountLifecycleError::NativePolicy("rebound access view is unavailable")
+                })?;
+                if current.data_generation() != Some(exact.id())
+                    || !previous.same_authority(&current)
+                {
+                    return Err(MountLifecycleError::NativePolicy(
+                        "exactification changed its authenticated authority or selection",
+                    ));
+                }
+                mount.access_view = rebound.access_view;
+                mount.access_refresh = rebound.access_refresh;
+            }
             exact
                 .prepare_native_working_set(&mount, options, capture_budget, cancellation)
                 .await

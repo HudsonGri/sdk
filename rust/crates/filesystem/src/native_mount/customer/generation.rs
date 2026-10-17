@@ -38,7 +38,20 @@ where
         cancellation: &crate::CancellationToken,
         expected_root_identity: Option<NativeRootIdentity>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        mount.require_access_view()?;
+        options::require_selection(mount, self.id())?;
+        let view = mount
+            .require_access_view()?
+            .current()
+            .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+        let now = super::super::adapter::access_time()?;
+        if !view.allows_every_path(
+            &[crate::access::Action::List, crate::access::Action::Read],
+            now,
+        ) {
+            return Err(MountLifecycleError::NativePolicy(
+                "materialized working sets require unrestricted disclosure",
+            ));
+        }
         let original = mount.work(capture_budget, cancellation)?;
         let work = &original;
         if let Some(guard) = mount.callback_guard.as_ref() {

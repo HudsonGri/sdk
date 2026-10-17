@@ -316,11 +316,14 @@ impl PathTrie {
     /// capability and native name semantics. Policy revisions may differ.
     #[must_use]
     pub fn same_binding(&self, other: &Self) -> bool {
+        self.same_authority(other) && self.data_generation == other.data_generation
+    }
+
+    pub(crate) fn same_authority(&self, other: &Self) -> bool {
         self.config == other.config
             && self.volume == other.volume
             && self.subject == other.subject
             && self.capability_binding == other.capability_binding
-            && self.data_generation == other.data_generation
     }
 
     /// Policy revision used for every decision in this view.
