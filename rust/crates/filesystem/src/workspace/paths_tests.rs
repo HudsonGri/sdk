@@ -386,10 +386,10 @@ fn reserved_copies_take_fewer_locks_than_check_only_admission() {
         [
             ((1, false), [(main, 0), (3, 0)]),
             ((1, true), [(main, 0), (3, 0)]),
-            ((2, false), [(main, per_level), (3, 6)]),
-            ((3, false), [(main, 2 * per_level), (3, 12)]),
-            ((3, true), [(main, 2 * per_level), (3, 12)]),
-            ((4, false), [(main, 2 * per_level), (3, 12)]),
+            ((2, false), [(main, per_level), (3, 5)]),
+            ((3, false), [(main, 2 * per_level), (3, 10)]),
+            ((3, true), [(main, 2 * per_level), (3, 10)]),
+            ((4, false), [(main, 2 * per_level), (3, 10)]),
         ]
     };
     for (restore, pins) in [(false, pins(7, 9)), (true, pins(6, 7))] {
