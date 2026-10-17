@@ -148,6 +148,10 @@ async fn reopening_after_hook_completion_reuses_its_outcome_without_relaunching(
     }
     drop(pending);
     assert!(request_has(&provider, 0, "retained-hook-context")?);
+    // The fixture owns the project backend across client reopen. A cancelled
+    // read may still be releasing its last native store handle; that teardown
+    // is independent of reloading the task stream and its retained hook output.
+    let project_backend = harness.workspace().unwrap().store.clone();
     drop(harness);
     // Recovery has neither the current settings nor the executable available.
     std::fs::remove_file(&user).map_err(super::super::storage)?;
@@ -169,6 +173,7 @@ async fn reopening_after_hook_completion_reuses_its_outcome_without_relaunching(
             }]),
     );
     let harness = LocalHarness::open(config(recovered.clone())?).await?;
+    drop(project_backend);
     assert_eq!(harness.resume(task).await?.text, "recovered");
     assert!(recovered.requests().is_empty());
     assert_eq!(
