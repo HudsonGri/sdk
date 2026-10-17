@@ -253,6 +253,8 @@ mod tests {
     use super::*;
 
     async fn publication(omit_lease: bool) -> Result<(), Box<dyn std::error::Error>> {
+        acyclic_native_runtime::initialize_native_io_services()?;
+        crate::initialize_native_mount_services()?;
         let cancel = crate::CancellationToken::new();
         let work = super::super::tests::test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
         let fs = crate::Fs::memory();
