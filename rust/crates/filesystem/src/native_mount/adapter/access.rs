@@ -283,7 +283,7 @@ where
                 "ProjFS requires a process-owned policy authority",
             ));
         }
-        let lease = crate::access::projection::enter(self.checkout.volume.id, true)
+        let lease = crate::access::projection::enter(self.checkout.volume.id)
             .map_err(MountSourceError::from)?;
         let view = self.access_snapshot_with_meter(work)?;
         crate::native_mount::actions::require_projfs_mode(&view, writable, access_time()?)

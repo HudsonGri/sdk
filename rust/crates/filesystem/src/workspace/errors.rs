@@ -251,7 +251,7 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::RebaseError<crate::kernel::AuthenticatedProbeError>; [Probe]; [Cancelled]);
     bounded!(crate::kernel::CheckpointError; [Storage]; []);
     bounded!(crate::kernel::ClosureError; [Storage]; []);
-    bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority]; []);
+    bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority, ProjectionValidation]; []);
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     bounded!(crate::DemandError; []; [Cancelled]);
     #[cfg(feature = "native-mount")]

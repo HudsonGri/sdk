@@ -140,12 +140,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
             }
-            if self.policy_editor.is_none() {
-                self.policy_editor = Some(Arc::new(crate::access::projection::enter(
-                    self.volume.id,
-                    false,
-                )?));
-            }
             let name = policy_name(
                 self.volume.config.limits.maximum_component_bytes,
                 &mut accounting,
