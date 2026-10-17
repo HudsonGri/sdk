@@ -761,6 +761,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 }
 
+#[cfg(feature = "filesystem")]
 fn verify_append(
     envelope: &acyclic_stream::CommittedEnvelope,
     path: &acyclic_stream::StreamPath,

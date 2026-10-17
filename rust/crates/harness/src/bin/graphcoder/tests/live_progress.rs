@@ -18,7 +18,40 @@ const DELTAS: &str = concat!(
 );
 const COMPLETED: &str = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
-async fn scenario(acknowledge_chunks: bool) {
+#[derive(Default)]
+struct ProgressObserver {
+    seen: (bool, bool),
+}
+
+impl ProgressObserver {
+    fn observe(&mut self, file: &acyclic_harness::task_volume::FileValue) {
+        if matches!(
+            file.key,
+            FileKey::Task {
+                file: TaskFile::Chunk { .. },
+                ..
+            }
+        ) {
+            match file.channel {
+                Some(Channel::Text) => {
+                    assert_eq!(file.bytes.as_ref(), b"working");
+                    self.seen.0 = true;
+                }
+                Some(Channel::Reasoning) => {
+                    assert_eq!(file.bytes.as_ref(), b"thinking");
+                    self.seen.1 = true;
+                }
+                _ => panic!("unexpected chunk channel"),
+            }
+        }
+    }
+
+    fn acknowledged(&self) -> bool {
+        self.seen == (true, true)
+    }
+}
+
+async fn scenario(final_output_only: bool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let release = Arc::new(Notify::new());
@@ -93,7 +126,8 @@ async fn scenario(acknowledge_chunks: bool) {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut pending = Vec::new();
-        let mut seen = (false, false);
+        let mut observer = ProgressObserver::default();
+        let mut final_seen = false;
         let output = ProcessTree::spawn(&mut command)
             .unwrap()
             .wait_with_output(
@@ -108,29 +142,23 @@ async fn scenario(acknowledge_chunks: bool) {
                             let line: Vec<_> = pending.drain(..=end).collect();
                             if let Ok(change) = serde_json::from_slice::<Change>(&line) {
                                 for file in change.file.iter().chain(&change.files) {
-                                    if matches!(
+                                    let final_file = matches!(
                                         file.key,
-                                        FileKey::Task {
-                                            file: TaskFile::Chunk { .. },
+                                        FileKey::Session {
+                                            file: TaskFile::ExecutionResult(_),
                                             ..
                                         }
-                                    ) {
-                                        match file.channel {
-                                            Some(Channel::Text) => {
-                                                assert_eq!(file.bytes.as_ref(), b"working");
-                                                seen.0 = true;
-                                            }
-                                            Some(Channel::Reasoning) => {
-                                                assert_eq!(file.bytes.as_ref(), b"thinking");
-                                                seen.1 = true;
-                                            }
-                                            _ => panic!("unexpected chunk channel"),
-                                        }
+                                    );
+                                    final_seen |= final_file;
+                                    // The broken observer follows only final results.
+                                    // It still uses the identical acknowledgement gate.
+                                    if !final_output_only || final_file {
+                                        observer.observe(file);
                                     }
                                 }
                             }
                         }
-                        if acknowledge_chunks && seen == (true, true) {
+                        if observer.acknowledged() {
                             let _ = acknowledged.send(());
                         }
                     }
@@ -146,13 +174,14 @@ async fn scenario(acknowledge_chunks: bool) {
                     String::from_utf8_lossy(&failure.stderr)
                 )
             });
-        assert_eq!(seen, (true, true));
+        assert!(final_seen);
+        assert_eq!(observer.acknowledged(), !final_output_only);
         output
     });
     // Completion is controlled by observation, with the process timeout only a
     // watchdog. The final-only observer is explicitly released by this driver.
     ready.notified().await;
-    if acknowledge_chunks {
+    if !final_output_only {
         tokio::time::timeout(Duration::from_secs(6), acknowledgements.recv())
             .await
             .unwrap()
@@ -167,7 +196,7 @@ async fn scenario(acknowledge_chunks: bool) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    if !acknowledge_chunks {
+    if final_output_only {
         assert!(
             acknowledgements.try_recv().is_err(),
             "a final-output-only observer acknowledged live chunks"
@@ -186,14 +215,14 @@ async fn scenario(acknowledge_chunks: bool) {
 
 #[tokio::test]
 async fn text_and_reasoning_are_visible_before_the_provider_completes() {
-    tokio::time::timeout(Duration::from_secs(8), scenario(true))
+    tokio::time::timeout(Duration::from_secs(8), scenario(false))
         .await
         .unwrap();
 }
 
 #[tokio::test]
 async fn negative_control_final_output_cannot_acknowledge_live_chunks() {
-    tokio::time::timeout(Duration::from_secs(8), scenario(false))
+    tokio::time::timeout(Duration::from_secs(8), scenario(true))
         .await
         .unwrap();
 }
