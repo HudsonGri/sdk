@@ -140,8 +140,9 @@ impl LocalHarness {
                 let revision = self
                     .runtime
                     .task_host()
-                    .idle_workflow_revision(task)
-                    .await?;
+                    .idle_workflow(task)
+                    .await?
+                    .map(|idle| idle.operation_revision);
                 if revision.is_some() && previous == revision {
                     return Ok((previous, None));
                 }

@@ -1,22 +1,25 @@
-use crate::scheduler::{OperationPhase, OperationState, WorkflowSuspension};
+use crate::scheduler::{OperationPhase, WorkflowSuspension};
 
-pub(super) fn revision(operation: &OperationState) -> Option<u64> {
-    ready_for_input(
-        operation.phase,
-        operation.cancellation_requested,
-        operation.workflow.as_ref(),
-    )
-    .then_some(operation.revision)
+pub(crate) struct IdleWorkflow {
+    /// Cursor for avoiding repeated work on the same scheduler projection.
+    pub(crate) operation_revision: u64,
+    /// Exact committed workflow slot accepted by resume_workflow.
+    pub(crate) workflow_revision: u64,
 }
 
-fn ready_for_input(
+pub(super) fn snapshot(
+    operation_revision: u64,
     phase: OperationPhase,
     cancelled: bool,
     slot: Option<&WorkflowSuspension>,
-) -> bool {
-    phase == OperationPhase::Suspended
-        && !cancelled
-        && slot.is_some_and(WorkflowSuspension::is_empty)
+) -> Option<IdleWorkflow> {
+    let slot = slot.filter(|slot| {
+        phase == OperationPhase::Suspended && !cancelled && slot.is_empty()
+    })?;
+    Some(IdleWorkflow {
+        operation_revision,
+        workflow_revision: slot.revision,
+    })
 }
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -57,7 +60,7 @@ mod tests {
         // cursor and command identities. Command dependencies never qualify.
         #[test]
         fn only_an_empty_suspended_input_slot_can_skip_worker_work(
-            revision in any::<u64>(), operation in any::<[u8;16]>(),
+            revision in any::<u64>(), operation_revision in any::<u64>(), operation in any::<[u8;16]>(),
         ) {
             let input = input();
             let command = crate::OperationId::from_bytes(operation);
@@ -66,7 +69,7 @@ mod tests {
                 OperationPhase::Suspended, OperationPhase::Reconciling, OperationPhase::Terminal];
             for phase in phases {
                 for cancelled in [false, true] {
-                    prop_assert!(!ready_for_input(phase, cancelled, None));
+                    prop_assert!(snapshot(operation_revision, phase, cancelled, None).is_none());
                     for (waiting_command, input) in [(None,None), (Some(command),None),
                         (None,Some(input.clone())), (Some(command),Some(input.clone()))] {
                         let slot = WorkflowSuspension { revision, waiting_command, input };
@@ -74,7 +77,12 @@ mod tests {
                             (OperationPhase::Suspended, false, None, None) => true,
                             _ => false,
                         };
-                        prop_assert_eq!(ready_for_input(phase, cancelled, Some(&slot)), expected);
+                        let idle = snapshot(operation_revision, phase, cancelled, Some(&slot));
+                        prop_assert_eq!(idle.is_some(), expected);
+                        if let Some(idle) = idle {
+                            prop_assert_eq!(idle.operation_revision, operation_revision);
+                            prop_assert_eq!(idle.workflow_revision, revision);
+                        }
                     }
                 }
             }

@@ -262,9 +262,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator.lock().await.changes().await
     }
 
-    /// Authenticated revision only while no retained command or input can run.
+    /// Authenticated scheduler cursor and workflow slot, kept distinct at input admission.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn idle_workflow_revision(&self, task: TaskId) -> Result<Option<u64>> {
+    pub(crate) async fn idle_workflow(&self, task: TaskId) -> Result<Option<idle::IdleWorkflow>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
         let operation = coordinator.observe_operation(
@@ -274,7 +274,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             OperationId::from_bytes(task.into_bytes()),
             &mut None,
         )?;
-        Ok(idle::revision(operation))
+        Ok(idle::snapshot(
+            operation.revision,
+            operation.phase,
+            operation.cancellation_requested,
+            operation.workflow.as_ref(),
+        ))
     }
 
     /// Wakes the exact command wait with its stable null input.

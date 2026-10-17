@@ -100,10 +100,10 @@ impl LocalHarness {
                             match self
                                 .runtime
                                 .task_host()
-                                .idle_workflow_revision(parent)
+                                .idle_workflow(parent)
                                 .await?
                             {
-                                Some(revision) => Slot::Idle(revision),
+                                Some(idle) => Slot::Idle(idle.workflow_revision),
                                 None => Slot::Busy,
                             },
                         )
