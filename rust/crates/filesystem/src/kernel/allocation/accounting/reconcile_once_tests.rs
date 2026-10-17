@@ -144,25 +144,52 @@ proptest! {
 /// once; the replaced sequences took two of either.
 #[test]
 fn native_kernel_calls_reconcile_once_under_one_lock() {
-    let cancellation = crate::CancellationToken::new();
-    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let delta = WorkCounters {
         bytes_copied: 3,
         items_examined: 2,
         ..WorkCounters::UNCHARGED
     };
     for operation in 0..3 {
-        let (result, locks, reconciles) =
-            probed(&root, || new_call(operation, &root, &cancellation, delta));
-        result.unwrap();
-        assert_eq!((operation, locks, reconciles), (operation, 1, 1));
-        // Negative control: the replaced sequence is detected.
-        let (result, locks, reconciles) =
-            probed(&root, || old_call(operation, &root, &cancellation, delta));
-        result.unwrap();
+        let [
+            ((old_locks, old_reconciles, old_receipt, old_live), old_trace),
+            ((locks, reconciles, receipt, live), trace),
+        ] = acyclic_test_support::differential::pair::<_, _, (u8, WorkCounters)>(
+            || {
+                let cancellation = crate::CancellationToken::new();
+                let root =
+                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                        .unwrap();
+                // The initial receipt belongs to fixture setup, including the
+                // debug lock-order observer's first per-thread allocation.
+                let _initial = root.receipt();
+                (root, cancellation)
+            },
+            |(root, cancellation), previous| {
+                acyclic_test_support::differential::record((operation, delta));
+                let (result, locks, reconciles) = probed(&root, || {
+                    if previous {
+                        old_call(operation, &root, &cancellation, delta)
+                    } else {
+                        new_call(operation, &root, &cancellation, delta)
+                    }
+                });
+                result.unwrap();
+                (
+                    locks,
+                    reconciles,
+                    root.receipt(),
+                    root.live_allocation_bytes(),
+                )
+            },
+        );
+        let minimal = |locks, reconciles| (locks, reconciles) == (1, 1);
+        assert!(minimal(locks, reconciles));
+        // Restoring the replaced sequence fails the same exact oracle.
+        assert!(!minimal(old_locks, old_reconciles));
         assert_eq!(
-            (operation, locks + reconciles),
+            (operation, old_locks + old_reconciles),
             (operation, if operation == 2 { 4 } else { 3 })
         );
+        assert_eq!((old_receipt, old_live, old_trace), (receipt, live, trace));
     }
 }
