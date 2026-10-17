@@ -1,5 +1,8 @@
 //! Progress must escape the process while the provider's terminal SSE is withheld.
-use acyclic_harness::task_volume::{Change, Channel, FileKey, TaskFile};
+use acyclic_harness::{
+    client::jsonl,
+    task_volume::{Channel, FileKey, TaskFile},
+};
 use acyclic_native_runtime::{ProcessInput, ProcessOutput, ProcessTree};
 use axum::{Json, Router, body::Body, response::Response, routing::post};
 use futures::StreamExt as _;
@@ -140,7 +143,8 @@ async fn scenario(final_output_only: bool) {
                         pending.extend_from_slice(bytes);
                         while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
                             let line: Vec<_> = pending.drain(..=end).collect();
-                            if let Ok(change) = serde_json::from_slice::<Change>(&line) {
+                            let line = std::str::from_utf8(&line).unwrap();
+                            if let Ok(change) = jsonl::parse_change(line) {
                                 for file in change.file.iter().chain(&change.files) {
                                     let final_file = matches!(
                                         file.key,
@@ -156,6 +160,9 @@ async fn scenario(final_output_only: bool) {
                                         observer.observe(file);
                                     }
                                 }
+                            } else {
+                                jsonl::parse_snapshot(line)
+                                    .expect("stdout must use the shared JSONL codec");
                             }
                         }
                         if observer.acknowledged() {
