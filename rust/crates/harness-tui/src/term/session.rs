@@ -189,10 +189,16 @@ impl Drop for Tty {
     }
 }
 
+/// Restoration tests compare descriptor flags only through this helper.
+#[cfg(test)]
+#[path = "../../tests/support/status_flags.rs"]
+mod status_flags;
+
 #[cfg(test)]
 mod tests {
+    use super::status_flags::settable_status_flags as status_flags;
     use super::*;
-    use rustix::fs::{OFlags, fcntl_getfl};
+    use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
 
     #[test]
@@ -200,7 +206,7 @@ mod tests {
         let pty = rustix_openpty::openpty(None, None)?;
         let observer = File::from(pty.user);
         let original = tcgetattr(&observer)?;
-        let flags = fcntl_getfl(&observer)?;
+        let flags = status_flags(&observer)?;
         let mut old = Tty::from_file(observer.try_clone()?)?;
         let mut master = File::from(pty.controller);
         master.write_all(b"/delegate say hello\r\n\x1b[?1;2c")?;
@@ -242,7 +248,7 @@ mod tests {
                 .local_modes
                 .contains(LocalModes::ICANON)
         );
-        assert_eq!(fcntl_getfl(&observer)?, flags | OFlags::NONBLOCK);
+        assert_eq!(status_flags(&observer)?, flags | OFlags::NONBLOCK);
         drop(new);
         let restored = tcgetattr(&observer)?;
         assert_eq!(restored.input_modes, original.input_modes);
@@ -255,7 +261,7 @@ mod tests {
         );
         assert_eq!(restored.input_speed(), original.input_speed());
         assert_eq!(restored.output_speed(), original.output_speed());
-        assert_eq!(fcntl_getfl(&observer)?, flags);
+        assert_eq!(status_flags(&observer)?, flags);
         Ok(())
     }
 }
