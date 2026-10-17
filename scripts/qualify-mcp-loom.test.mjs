@@ -2,10 +2,34 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyFsRetryLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("filesystem retry qualification instruments both real lock shims and requires its exact model", () => {
+  for (const [passed, ignored] of [[1, 0], [0, 0], [1, 1], [2, 0]]) {
+    const calls = [];
+    const run = (command, args, options) => {
+      calls.push([command, args]);
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom(?: |$)/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom(?: |$)/);
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} }) };
+      }
+      assert.equal(options.timeout, 9500);
+      return { status: 0, stderr: "", stdout: summary(passed, ignored, 100) };
+    };
+    if (passed === 1 && ignored === 0) qualifyFsRetryLoom(run);
+    else assert.throws(() => qualifyFsRetryLoom(run), /requires a nonzero/);
+    assert.deepEqual(calls, [
+      ["cargo", ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run", "--features", "default,distributed,local,memory,model-checking,native-mount,native-watch"]],
+      ["model-binary", ["distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity", "--exact"]],
+    ]);
+  }
+  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --fs-retry/);
+});
 
 test("qualification opts into the crate cfg only for the model build and executes its binary", () => {
   const calls = [];

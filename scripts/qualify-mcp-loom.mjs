@@ -41,6 +41,16 @@ export function qualifyFsBindingLoom(features = [], run = spawnSync) {
   });
 }
 
+export function qualifyFsRetryLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "acyclic_fs", [
+    "--features", "default,distributed,local,memory,model-checking,native-mount,native-watch",
+  ], run, {
+    kind: "--lib", filter: "distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity",
+    timeout: 9500,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
+}
+
 export function qualifyMemoryAccountingLoom(run = spawnSync) {
   return qualifyLoom("acyclic-harness", "memory-accounting-model", [
     "--features", "filesystem,acyclic-fs/model-checking",
@@ -96,5 +106,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
   else if (features.length === 1 && features[0] === "--memory-accounting") qualifyMemoryAccountingLoom();
   else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
+  else if (features.length === 1 && features[0] === "--fs-retry") qualifyFsRetryLoom();
   else qualifyMcpLoom(features.length ? features : undefined);
 }
