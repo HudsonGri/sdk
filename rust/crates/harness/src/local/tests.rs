@@ -17,17 +17,42 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+mod compaction;
+mod context;
+mod compact;
 mod goals;
+#[cfg(feature = "hooks")]
+mod hook_configuration;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+
+// Independent disk/credential fixtures must execute on workers, rather than
+// monopolize a current-thread join. Share the worker pool across both sweeps.
+pub(super) static WORKERS: std::sync::LazyLock<tokio::runtime::Runtime> =
+    std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    });
 
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))
 }
 fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
+}
+
+#[cfg(feature = "native-execution")]
+fn checkout_config(
+    workspace: impl Into<std::path::PathBuf>,
+    model: (Model, Arc<dyn ModelProvider>),
+) -> Result<LocalHarnessConfig> {
+    // These scripts exercise filesystem commands, not summary-model requests.
+    Ok(crate::test_support::local_harness_config(workspace, model)?
+        .compaction(crate::context::CompactionPolicy::Disabled))
 }
 
 fn capacity() -> ModelContextCapacity {
@@ -148,11 +173,15 @@ pub(super) fn volume_config(
     volume: VolumeRef,
     provider: Arc<dyn ModelProvider>,
 ) -> Result<LocalHarnessConfig> {
+    let state = directory
+        .join("state")
+        .join(volume.storage_name(&mut None)?);
     Ok(crate::test_support::local_harness_config(
         directory.join("filesystem"),
         (model()?, provider),
     )?
-    .volume(volume))
+    .volume(volume)
+    .state_directory(state))
 }
 
 pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
@@ -178,6 +207,34 @@ pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
         .create_volume(&volume)
         .await?;
     Ok(volume)
+}
+
+#[tokio::test]
+async fn explicit_state_directory_reopens_the_durable_task_without_a_model_request() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::storage)?;
+    let project = volume(directory.path()).await?;
+    let state = directory.path().join("state");
+    let harness = LocalHarness::open(
+        volume_config(directory.path(), project.clone(), text())?.state_directory(&state),
+    )
+    .await?;
+    assert!(state.join("owner.json").is_file());
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(OperationId::new(), "persist").await?
+    else {
+        return Err(Error::Conflict("stock admission rejected".into()));
+    };
+    let output = harness.resume(task_id).await?;
+    assert_eq!(output.text, "done");
+    drop(harness);
+    let provider = scripted([]);
+    let reopened = LocalHarness::open(
+        volume_config(directory.path(), project, provider.clone())?.state_directory(&state),
+    )
+    .await?;
+    assert_eq!(reopened.resume(task_id).await?, output);
+    assert!(provider.requests().is_empty());
+    Ok(())
 }
 
 #[tokio::test]
@@ -529,9 +586,16 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
     assert!(!checkout.join("owner.json").exists());
+    // Default workspace tools expose their declared scratch volume. It is the
+    // only checkout entry; authority and owner state still live outside it.
+    assert!(checkout.join(".volumes/scratch").is_dir());
     assert_eq!(
-        std::fs::read_dir(checkout).map_err(super::storage)?.count(),
-        0
+        std::fs::read_dir(checkout)
+            .map_err(super::storage)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<std::collections::BTreeSet<_>>>()
+            .map_err(super::storage)?,
+        std::collections::BTreeSet::from([std::ffi::OsString::from(".volumes")])
     );
     #[cfg(unix)]
     {
@@ -673,59 +737,20 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
     Ok(())
 }
 
-#[tokio::test]
-async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(super::storage)?;
-    let project = volume(directory.path()).await?;
-    let provider = text();
-    let harness =
-        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
-    let operation = OperationId::new();
-    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) =
-        harness.submit(operation, "retained failure").await?
-    else {
-        return Err(Error::Conflict("stock admission rejected".into()));
-    };
-    let worker = crate::distributed::Worker {
-        id: "failure-test".into(),
-        available: Default::default(),
-        labels: Default::default(),
-    };
-    let crate::distributed::WorkPull::Claimed(lease) = harness
-        .runtime
-        .task_host()
-        .pull_work(&worker, Some(operation), &mut None)
-        .await?
-    else {
-        return Err(Error::Conflict("task was not claimed".into()));
-    };
-    harness
-        .runtime
-        .task_host()
-        .start_task(&lease, &mut None)
-        .await?;
-    harness
-        .runtime
-        .task_host()
-        .settle_task(
-            task,
-            &crate::scheduler::LeaseFence::from(&lease.reservation),
-            crate::Outcome::Failed {
-                message: "retained diagnostic".into(),
-            },
-            &mut None,
-        )
-        .await?;
-    assert!(matches!(harness.resume(task).await,
-        Err(Error::TaskFailed { task: failed, message }) if failed == task && message == "retained diagnostic"));
-    assert_eq!(provider.requests().len(), 0);
-    Ok(())
-}
+#[path = "tests/retained_failure.rs"]
+mod retained_failure;
 
+#[cfg(all(feature = "native-execution", windows))]
+mod bash_environment;
 #[cfg(feature = "native-execution")]
 mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod lazy_volumes;
+#[cfg(all(feature = "native-execution", unix))]
+mod volumes;
 
 #[cfg(feature = "native-execution")]
 #[path = "tests/checkout_reopen.rs"]
@@ -742,3 +767,20 @@ mod reconciliation_interruptions;
 
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;
+
+#[path = "tests/command_files.rs"]
+mod command_files;
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+#[path = "tests/documents.rs"]
+mod documents;
+
+#[path = "tests/headless.rs"]
+mod headless;
+
+#[path = "tests/task_files.rs"]
+mod task_files;
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+#[path = "tests/live_ui.rs"]
+mod live_ui;

@@ -295,6 +295,11 @@ impl<S: ClientStateStore> HarnessClient<S> {
         self.session.tool_output(authority, call_id, delta)
     }
 
+    /// Fold one platform file/model update through the same tracked TaskFileViews.
+    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
+        self.session.apply_update(update)
+    }
+
     /// Consumes one incoming streaming update and publishes it to the same views as replay.
     /// The source is the caller's platform stream follow; no second transport or journal.
     pub async fn next_update(
@@ -304,29 +309,59 @@ impl<S: ClientStateStore> HarnessClient<S> {
         let Some(update) = source.next().await.transpose()? else {
             return Ok(false);
         };
-        self.apply_update(update)?;
+        self.session.apply_update(update)?;
         Ok(true)
     }
 
-    /// Folds an input already selected by the host's existing event source.
-    /// Publication is synchronous so input selection cannot cancel half a fold.
-    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
-        match update {
-            super::ViewUpdate::File(change) => {
-                self.query_change(change)?;
-            }
-            super::ViewUpdate::Model {
-                authority,
-                turn,
-                event,
-            } => self.model_event(&authority, turn, event)?,
-            super::ViewUpdate::ToolOutput {
-                authority,
-                call_id,
-                delta,
-            } => self.tool_output(&authority, &call_id, &delta)?,
+    /// Replace a captured-volume query fold after opening its authenticated snapshot.
+    pub fn replace_diff(
+        &mut self,
+        authority: &wire::Authority,
+        view: super::DiffView,
+    ) -> Result<()> {
+        self.session.replace_diff(authority, view)
+    }
+
+    /// Fold a pushed exact-path publication using the client's bound file authority.
+    pub async fn diff_publication(
+        &mut self,
+        authority: &wire::Authority,
+        publication: &super::DiffPublication,
+        limits: super::DiffLimits,
+    ) -> Result<Vec<String>> {
+        let files = self.files.as_ref().ok_or_else(|| {
+            Error::Unauthorized("diff query requires bound file authority".into())
+        })?;
+        self.session
+            .diff_publication(authority, publication, files.as_ref(), limits)
+            .await
+    }
+
+    /// Forward a key action as ordinary command/UI file publications.
+    #[cfg(feature = "tui")]
+    pub async fn tui_input<P: acyclic_stream::StreamProvider + ?Sized>(
+        &self,
+        files: &mut super::CommandSession<P>,
+        effect: crate::tui::InputEffect,
+        page_rows: usize,
+        maximum_scroll: usize,
+    ) -> Result<()> {
+        if let crate::tui::InputEffect::Host(
+            action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
+        ) = effect
+        {
+            return super::scroll_tui(
+                files,
+                action == crate::tui::Action::TranscriptUp,
+                page_rows,
+                maximum_scroll,
+            )
+            .await;
         }
-        Ok(())
+        let reader = self.files.as_ref().ok_or_else(|| {
+            Error::Unauthorized("command input requires bound file authority".into())
+        })?;
+        super::handle_tui_input(files, reader.as_ref(), effect).await
     }
 
     /// Shared renderer state and outbox.
@@ -349,6 +384,18 @@ impl<S: ClientStateStore> HarnessClient<S> {
     /// Accepts one pushed volume record, without adding a semantic wire message.
     pub fn query_change(&mut self, change: crate::task_volume::Change) -> Result<bool> {
         self.session.query_change(change)
+    }
+
+    /// Selects both file sources required for goal status and continuation counts.
+    pub async fn select_goal_view(
+        &mut self,
+        goal: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        request: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        maximum_bytes: usize,
+    ) -> Result<crate::task_volume::ChangeStream> {
+        self.session
+            .select_goal_view(goal, request, maximum_bytes)
+            .await
     }
 
     /// Associates two ordinary file follows with the same shared goal rendering.

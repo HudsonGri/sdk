@@ -1,3 +1,4 @@
+//! Ordinary filesystem queries and shared client projections at accepted cuts.
 use acyclic_fs::{
     AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend, performance::BOUNDARY_BUDGET,
 };
@@ -21,6 +22,8 @@ mod goal_sources;
 mod goals;
 #[path = "file_query/objects.rs"]
 mod objects;
+#[path = "file_query/replacements.rs"]
+mod replacements;
 use objects::CountingObjects;
 
 async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Change {
@@ -67,7 +70,7 @@ async fn ordinary_plan_names_and_non_markdown_files_follow_without_consuming_mat
     view.apply(next(&mut changes).await)?;
     assert_eq!(
         view.files()[&acyclic_harness::task_volume::FileKey::parse("plans/release notes.md")?]
-            .bytes
+            .segments[0]
             .as_ref(),
         b"- [x] Done"
     );
@@ -130,7 +133,20 @@ fn empty_stem_publications_preserve_live_and_snapshot_plan_views()
                 .ok_or("latest snapshot missing")?;
             assert_eq!(view.cursor(), &latest.cursor);
             assert_eq!(latest.files, expected);
-            assert_eq!(view.files().values().cloned().collect::<Vec<_>>(), expected);
+            let actual = view
+                .files()
+                .values()
+                .map(|file| {
+                    assert_eq!(file.segments.len(), 1);
+                    acyclic_harness::task_volume::FileValue {
+                        key: file.key.clone(),
+                        channel: file.channel,
+                        publication: file.publication,
+                        bytes: file.segments[0].clone(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
             Ok(())
         });
         result.map_err(|error| TestCaseError::fail(error.to_string()))
@@ -209,6 +225,14 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
         filesystem: Fs<MemoryAuthorityBackend, O>,
         reads: Arc<std::sync::atomic::AtomicUsize>,
     ) -> Result<Self> {
+        Self::with_class(filesystem, reads, VolumeClass::AgentPrivate).await
+    }
+
+    async fn with_class(
+        filesystem: Fs<MemoryAuthorityBackend, O>,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+        class: VolumeClass,
+    ) -> Result<Self> {
         let provider =
             ProviderRef::new("query".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
@@ -216,8 +240,12 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
         let volume = VolumeRef::new(
             provider,
             "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
+            class,
+            if class == VolumeClass::Project {
+                VolumeOwner::Project("query".into())
+            } else {
+                VolumeOwner::Agent(agent)
+            },
             &mut None,
         )?;
         let issuer = AuthorityIssuer::new(
@@ -424,8 +452,8 @@ async fn editing_one_of_a_hundred_files_reads_only_its_content()
         view.apply(change)?;
         for key in view.files().keys().skip(changed) {
             assert_eq!(
-                view.files()[key].bytes.as_ptr(),
-                before.files()[key].bytes.as_ptr()
+                view.files()[key].segments[0].as_ptr(),
+                before.files()[key].segments[0].as_ptr()
             );
         }
     }
@@ -492,7 +520,7 @@ async fn ordinary_file_query_folds_atomic_replacements_removals_and_duplicate_re
     let pointer = change.files[0].bytes.as_ptr();
     let key = change.files[0].key.clone();
     assert!(view.apply(change)?);
-    assert_eq!(view.files()[&key].bytes.as_ptr(), pointer);
+    assert_eq!(view.files()[&key].segments[0].as_ptr(), pointer);
     fixture
         .write(&[
             ("plans/a.md", None),
@@ -674,4 +702,39 @@ async fn ordinary_file_queries_keep_authority_work_and_selection_bounds() -> Res
     let tiny = reader.file_query(&fixture.volume, acyclic_fs::performance::work_budget(0, 0))?;
     assert!(tiny.observe_files(Query::Plans, None, 2, 64).await.is_err());
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Ordinary project queries preserve their exact file bytes and require the
+    // signed read grant just like agent-private queries; class is no authority.
+    #[test]
+    fn project_and_agent_queries_preserve_signed_authority(
+        project in proptest::bool::ANY,
+        authorized in proptest::bool::ANY,
+        text in ".{0,32}",
+    ) {
+        futures::executor::block_on(async {
+            let fixture = Fixture::with_class(Fs::memory(), Arc::default(),
+                if project { VolumeClass::Project } else { VolumeClass::AgentPrivate }).await?;
+            fixture.write(&[("plans/a.md", Some(&text))]).await?;
+            let capabilities = if authorized {
+                Capabilities::new([fixture.volume.capability(VolumeOperation::Read, &mut None)?])
+            } else { Capabilities::default() };
+            let scope = fixture.issuer.issue("reader", &capabilities, Some(fixture.agent), None, &mut None)?;
+            let reader = FilesystemContentVerifier::new(fixture.host.clone(),
+                &fixture.issuer.verifier(&mut None)?, &scope, 65_536, None)?;
+            let result = reader.file_query(&fixture.volume, BOUNDARY_BUDGET)?
+                .observe_files(Query::Plans, None, 1, 4096).await;
+            if authorized {
+                let snapshot = result?.snapshot.unwrap();
+                assert_eq!(snapshot.files.len(), 1);
+                assert_eq!(snapshot.files[0].bytes.as_ref(), text.as_bytes());
+            } else {
+                assert!(matches!(result, Err(acyclic_harness::task_volume::Error::FileRead(
+                    acyclic_harness::Error::Unauthorized(_)))));
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }).unwrap();
+    }
 }

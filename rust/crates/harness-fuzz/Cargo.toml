@@ -17,7 +17,7 @@ notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/fil
 
 [dependencies]
 blake3.workspace = true
-acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
+acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -131,9 +131,18 @@ required-features = ["notifications"]
 test = false
 doc = false
 bench = false
+
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_mentions"
+path = "fuzz_targets/client_mentions.rs"
 required-features = ["runtime"]
 test = false
 doc = false
@@ -172,6 +181,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_commands"
+path = "fuzz_targets/client_commands.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "e2e_expectations"
 path = "fuzz_targets/e2e_expectations.rs"
 required-features = ["runtime"]
@@ -204,6 +221,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_offline"
+path = "fuzz_targets/client_offline.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recorded_invocation"
 path = "fuzz_targets/recorded_invocation.rs"
 required-features = ["runtime"]
@@ -212,10 +237,17 @@ doc = false
 bench = false
 
 [dev-dependencies]
-allocation-counter = "0.8.1"
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[[bin]]
+name = "swarm_case"
+path = "fuzz_targets/swarm_case.rs"
+test = false
+doc = false
+bench = false
 
 [[bench]]
 name = "memory_directory_page"
@@ -239,6 +271,7 @@ bench = false
 [[bin]]
 name = "wire_frames"
 path = "fuzz_targets/wire_frames.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -246,6 +279,38 @@ bench = false
 [[bin]]
 name = "journal_decode"
 path = "fuzz_targets/journal_decode.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "provider_scenario"
+path = "fuzz_targets/provider_scenario.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ui_prompt"
+path = "fuzz_targets/ui_prompt.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model_request"
+path = "fuzz_targets/model_request.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_swarm_views"
+path = "fuzz_targets/client_swarm_views.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false

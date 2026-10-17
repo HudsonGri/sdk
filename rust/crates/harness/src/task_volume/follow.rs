@@ -6,10 +6,13 @@ use uuid::Uuid;
 
 /// Serializable next-record cursor. Never infer continuity from a native watch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Cursor {
     /// Volume identity bound to its provider path.
     pub volume: [u8; 32],
     /// History incarnation, persisted in the volume header.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub epoch: Uuid,
     /// Namespace and segment format.
     pub schema: u32,
@@ -81,7 +84,7 @@ pub struct Observation {
     pub changes: ChangeStream,
 }
 
-fn query_id(query: &Query) -> Result<[u8; 32]> {
+pub(crate) fn query_id(query: &Query) -> Result<[u8; 32]> {
     Ok(*blake3::hash(&serde_json::to_vec(query).map_err(|_| Error::InvalidSegment)?).as_bytes())
 }
 
@@ -107,27 +110,59 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         })
     }
 
+    // Exact files and a follow cursor share one index observation. The index is
+    // a leaf lock; provider IO is always outside it.
+    pub(crate) async fn snapshot_files(
+        &self,
+        keys: &[super::FileKey],
+        query: &Query,
+    ) -> Result<Snapshot> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        let files = keys
+            .iter()
+            .filter_map(|key| index.files.get(key))
+            .map(|stored| stored.file.clone())
+            .collect();
+        let generation = self.generation(&index);
+        drop(index);
+        let watermarks = self.provider.watermarks(self.path.clone()).await?;
+        Ok(Snapshot {
+            files,
+            cursor: self.cursor(query, generation, watermarks)?,
+            generation,
+        })
+    }
+
     /// Captures a finite snapshot and cursor under one publication cut.
     pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
         self.refresh().await?;
         let index = self.index.lock().await;
-        let mut files = Vec::new();
-        for range in query.ranges() {
-            for (_, file) in index
-                .files
-                .range(range)
-                .filter(|(_, file)| query.matches_file(&file.file))
-            {
-                if files.len() == maximum_files {
-                    return Err(Error::LimitExceeded);
+        let files = if matches!(
+            query,
+            Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
+        ) {
+            super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::CommandSession { session, recent } = query {
+            super::command_query::snapshot(&index, session, *recent, maximum_files)?
+        } else {
+            let mut files = Vec::new();
+            for range in query.ranges() {
+                for (_, file) in index
+                    .files
+                    .range(range)
+                    .filter(|(_, file)| query.snapshot_matches_file(&file.file))
+                {
+                    if files.len() == maximum_files {
+                        return Err(Error::LimitExceeded);
+                    }
+                    files.push(file.file.clone());
                 }
-                files.push(file.file.clone());
             }
-        }
+            files
+        };
         let generation = self.generation(&index);
         drop(index);
-        // Stamp the captured cut with post-read durability without excluding
-        // another index operation while the provider answers.
         let watermarks = self.provider.watermarks(self.path.clone()).await?;
         Ok(Snapshot {
             files,
@@ -182,31 +217,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 acyclic_stream::CommitId::from_bytes(cursor.commit),
             )
             .await?;
-        let stream = futures::stream::try_unfold(
-            (records, query, cursor),
-            |(mut records, query, mut cursor)| async move {
-                let Some(record) = records.next().await else {
-                    return Err(Error::ResetRequired);
-                };
-                let record = record?;
-                if record.sequence != cursor.position {
-                    return Err(Error::ResetRequired);
-                }
-                let file = segment::decode(&record.value)?;
-                cursor.position += 1;
-                cursor.accepted = cursor.accepted.max(cursor.position);
-                cursor.commit = *record.commit_id.as_bytes();
-                let file = query.matches_file(&file).then_some(file);
-                let change = Change {
-                    file,
-                    files: Vec::new(),
-                    removed: Vec::new(),
-                    cursor: cursor.clone(),
-                };
-                Ok(Some((change, (records, query, cursor))))
-            },
-        );
-        Ok(Box::pin(stream))
+        Ok(record_changes(query, cursor, records))
     }
 
     /// Starts or resumes one query, returning an explicit reset with replacement snapshot.
@@ -276,4 +287,49 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             changes,
         })
     }
+}
+
+// One fold for provider follows and multiplexed client follows. Callers open a
+// checked record stream at this cursor; no file decoding or membership policy
+// is duplicated by the client transport.
+pub(crate) fn record_changes(
+    query: Query,
+    cursor: Cursor,
+    records: acyclic_stream::RecordStream,
+) -> ChangeStream {
+    let stream = futures::stream::try_unfold(
+        (records, query, cursor),
+        |(mut records, query, mut cursor)| async move {
+            let Some(record) = records.next().await else {
+                return Err(Error::ResetRequired);
+            };
+            let record = record?;
+            if record.sequence != cursor.position {
+                return Err(Error::ResetRequired);
+            }
+            let file = segment::decode(&record.value)?;
+            cursor.position += 1;
+            cursor.accepted = cursor.accepted.max(cursor.position);
+            cursor.commit = *record.commit_id.as_bytes();
+            let file = query.matches_file(&file).then_some(file);
+            let (file, removed) = if query == Query::ActiveAgents {
+                match file {
+                    Some(file) if !super::ChildStatus::parse(&file.bytes)?.active() => {
+                        (None, vec![file.key])
+                    }
+                    file => (file, Vec::new()),
+                }
+            } else {
+                (file, Vec::new())
+            };
+            let change = Change {
+                file,
+                files: Vec::new(),
+                removed,
+                cursor: cursor.clone(),
+            };
+            Ok(Some((change, (records, query, cursor))))
+        },
+    );
+    Box::pin(stream)
 }

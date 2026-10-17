@@ -21,8 +21,8 @@ caseless = { version = "0.2.2", optional = true }
 arrayvec = { version = "0.7", optional = true }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
-ratatui = { version = "0.30", default-features = false, optional = true }
-crossterm = { version = "0.28", optional = true }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
+crossterm = { version = "0.28", features = ["event-stream"], optional = true }
 serde_json = { workspace = true, optional = true }
 shell-words = { version = "1.1", optional = true }
 tempfile = { version = "3.27", optional = true }
@@ -31,7 +31,7 @@ tempfile = { version = "3.27", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 
 [dev-dependencies]
-allocation-counter = "=0.8.1"
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 alacritty_terminal = "0.26"
 serde = { workspace = true, features = ["derive"] }

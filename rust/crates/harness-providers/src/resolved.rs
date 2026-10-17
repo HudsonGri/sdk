@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    pub(crate) files: crate::files::Files,
     pub(crate) estimator: crate::accounting::TokenEstimator,
     /// Immutable harness model identity.
     pub(crate) model: Model,
@@ -16,6 +17,10 @@ pub struct ResolvedModel {
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
     pub(crate) transport: Arc<dyn HttpTransport>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) codex_count: crate::codex_count::Counter,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }
 
 impl ResolvedModel {
@@ -44,6 +49,22 @@ impl ResolvedModel {
             model: self.model.name.clone(),
             credential_scope: Some(*scope.finalize().as_bytes()),
         }
+    }
+
+    pub(crate) fn observe(
+        &self,
+        request: &PreparedModelRequest,
+        input_bytes: usize,
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
+        self.estimator.observe(input_bytes, metadata);
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.codex_login.is_some() {
+            self.codex_count.observe(request, metadata)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = request;
+        Ok(())
     }
 
     pub(crate) fn context_output(&self) -> u32 {

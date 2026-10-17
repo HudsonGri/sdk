@@ -355,6 +355,7 @@ struct Journal(
     Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
     AtomicUsize,
     AtomicUsize,
+    AtomicUsize,
 );
 
 impl Journal {
@@ -421,6 +422,7 @@ impl ExecutionJournal for Journal {
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
         _context: Option<&'a crate::runtime::TaskContext>,
+        _summary_files: &'a [&'a FileRef],
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         if io.is_some() {
             return Err(stock_boundary(
@@ -593,6 +595,9 @@ impl ExecutionJournal for Journal {
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.4.fetch_add(1, Ordering::SeqCst);
+            if reference.descriptor().media_type() == "text/plain" {
+                self.5.fetch_add(1, Ordering::SeqCst);
+            }
             self.1
                 .lock()
                 .unwrap()
@@ -691,8 +696,14 @@ impl crate::context::ContextStage for OnceStage {
 mod compaction;
 mod content;
 mod invocation_bounds;
+mod output_bounds;
 mod recovery;
 mod replay;
+mod summary_file;
+#[cfg(not(target_arch = "wasm32"))]
+mod request_ownership;
+#[cfg(feature = "filesystem")]
+mod summary_authorization;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;
