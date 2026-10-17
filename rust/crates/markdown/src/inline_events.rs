@@ -31,11 +31,12 @@ pub(in crate::inline_scan) struct Cache {
     destinations: labels::destinations::Index,
     keys: HashMap<Key, (usize, usize)>,
     first_key_end: Option<usize>,
-    nodes: Vec<Box<[Output; super::super::PAGE]>>,
+    nodes: Vec<Vec<Output>>,
     length: usize,
     targets: HashMap<(usize, usize), Arc<str>>,
     atoms: HashMap<(usize, usize), (usize, bool)>,
     last: usize,
+    alternate: Option<(usize, usize)>,
     rendered: bool,
     #[cfg(test)]
     committed: usize,
@@ -54,6 +55,7 @@ impl Default for Cache {
             targets: HashMap::new(),
             atoms: HashMap::new(),
             last: 0,
+            alternate: None,
             rendered: false,
             #[cfg(test)]
             committed: 0,
@@ -96,29 +98,35 @@ fn text_output(text: crate::Text, style: Style) -> Output {
 }
 
 impl Cache {
+    // Geometrically sized pages never move stored outputs. The directory has
+    // logarithmically many entries, so growing it cannot copy a linear-sized
+    // history of page handles at a single push boundary.
+    fn slot(id: usize) -> (usize, usize) {
+        let page = (id / super::super::PAGE + 1).ilog2() as usize;
+        let start = super::super::PAGE * ((1usize << page) - 1);
+        (page, id - start)
+    }
+
     fn output(&self, id: usize) -> Option<&Output> {
-        self.nodes
-            .get(id / super::super::PAGE)?
-            .get(id % super::super::PAGE)
+        let (page, offset) = Self::slot(id);
+        self.nodes.get(page)?.get(offset)
     }
 
     fn store(&mut self, output: Output) -> usize {
         #[cfg(test)]
         crate::work::scan(1);
         let id = self.length;
-        if id.is_multiple_of(super::super::PAGE) {
+        let (page, offset) = Self::slot(id);
+        if page == self.nodes.len() {
             #[cfg(test)]
             if self.nodes.len() == self.nodes.capacity() {
-                crate::work::copy(
-                    self.nodes.len() * std::mem::size_of::<Box<[Output; super::super::PAGE]>>(),
-                );
+                crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Output>>());
             }
-            #[cfg(test)]
-            crate::work::scan(super::super::PAGE);
             self.nodes
-                .push(Box::new(std::array::from_fn(|_| Output::default())));
+                .push(Vec::with_capacity(super::super::PAGE << page));
         }
-        self.nodes[id / super::super::PAGE][id % super::super::PAGE] = output;
+        debug_assert_eq!(offset, self.nodes[page].len());
+        self.nodes[page].push(output);
         self.length += 1;
         id
     }
@@ -509,9 +517,12 @@ impl Cache {
         links: &mut HashSet<*const u8>,
     ) -> (usize, usize) {
         let (mut payload, mut metadata) = self.input.retained(texts);
-        metadata += self.nodes.capacity()
-            * std::mem::size_of::<Box<[Output; super::super::PAGE]>>()
-            + self.nodes.len() * std::mem::size_of::<[Output; super::super::PAGE]>()
+        metadata += self.nodes.capacity() * std::mem::size_of::<Vec<Output>>()
+            + self
+                .nodes
+                .iter()
+                .map(|page| page.capacity() * std::mem::size_of::<Output>())
+                .sum::<usize>()
             + self.keys.capacity() * std::mem::size_of::<(Key, (usize, usize))>()
             + self.targets.capacity() * std::mem::size_of::<((usize, usize), Arc<str>)>()
             + self.atoms.capacity() * std::mem::size_of::<((usize, usize), (usize, bool))>();

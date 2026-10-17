@@ -245,6 +245,7 @@ impl Markdown {
                 inline.start,
                 &mut self.lines,
                 self.stable_lines,
+                Some(&mut self.spare),
             )?;
             self.visible_lines = if visible == 0 {
                 self.visibility.end

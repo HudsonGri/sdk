@@ -381,6 +381,7 @@ impl Scanner {
         start: usize,
         lines: &mut Vec<Line>,
         first: usize,
+        spare: Option<&mut crate::inline_views::Spare>,
     ) -> Option<(usize, usize)> {
         if self.state.invalid {
             return None;
@@ -397,6 +398,7 @@ impl Scanner {
             },
             lines,
             first,
+            spare,
         );
         #[cfg(test)]
         work::rendering(rendering);

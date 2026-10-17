@@ -604,6 +604,19 @@ impl Output {
         lines
     }
 
+    pub(super) fn same_mask(&self, previous: &Self) -> bool {
+        fn mask(rows: &Rows) -> Mask<'_> {
+            match rows.root.as_deref().map(|node| &node.kind) {
+                Some(Kind::Mask(_, style, link)) => Mask {
+                    style: *style,
+                    link: link.as_ref(),
+                },
+                _ => Mask::default(),
+            }
+        }
+        mask(&self.middle).same(mask(&previous.middle))
+    }
+
     pub(super) fn update(&self, previous: &Self, lines: &mut Vec<Line>, first: usize) -> usize {
         if self.head_count() != previous.head_count()
             || self.tail.is_some() != previous.tail.is_some()

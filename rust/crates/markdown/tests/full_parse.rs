@@ -753,3 +753,8 @@ proptest! {
         prop_assert_eq!(replay.into_source(), serialized);
     }
 }
+
+#[test]
+fn reference_titles_can_complete_after_a_provisional_plain_list_tail() {
+    check_chunks("paragraph [r]: /url\n* [r]: /url\n(url)", &[1]);
+}

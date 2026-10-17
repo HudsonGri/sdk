@@ -94,3 +94,67 @@ fn rendering_work_detects_replaying_completed_rules() {
     crate::SKIP_RULE_CHECKPOINT.set(false);
     assert!(replayed.0 > 128 * replayed.1 + 4096);
 }
+
+#[test]
+fn mixed_link_labels_keep_rendering_work_linear() {
+    let snapshots = samples(&["_", "[a *b*](<u> \"t\")", "~"], "x", &[1024, 2048], false);
+    let (small, _, _) = snapshots[0];
+    let (large, bytes, breakdown) = snapshots[1];
+    assert!(large <= 128 * bytes + 4096);
+    assert!(
+        large <= 2 * small + 4096,
+        "{small} -> {large}: {breakdown:?}"
+    );
+}
+
+#[test]
+fn provisional_multiline_previews_reuse_rendered_rows() {
+    let snapshots = samples(
+        &["_", "&#10;"],
+        "x",
+        &[64, 128, 256, 512, 1024, 2048],
+        false,
+    );
+    for pair in snapshots.windows(2) {
+        assert!(pair[1].0 <= 128 * pair[1].1 + 4096, "{pair:?}");
+        assert!(pair[1].0 <= 2 * pair[0].0 + 4096, "{pair:?}");
+    }
+}
+
+#[test]
+fn rendering_work_detects_replaying_provisional_rows() {
+    crate::inline_views::REPLAY.set(true);
+    let small = measure(&["_", "&#10;"], "x", 64, false);
+    let large = measure(&["_", "&#10;"], "x", 128, false);
+    crate::inline_views::REPLAY.set(false);
+    assert!(large.0 > 128 * large.1 + 4096);
+    assert!(large.0 > 2 * small.0 + 4096);
+}
+
+#[test]
+fn provisional_views_preserve_finalized_prefixes_and_consumer_snapshots() {
+    let mut markdown = Markdown::default();
+    let mut consumer = Vec::new();
+    for _ in 0..8 {
+        for part in ["prefix\n\n", "x "]
+            .into_iter()
+            .chain(["_", "x", "&#10;", "x"].into_iter().cycle().take(24))
+            .chain(["\n\n"])
+        {
+            let previous = markdown.lines().to_vec();
+            let mut expected_previous = Markdown::default();
+            expected_previous.push(&markdown.source);
+            let changed = markdown.push(part);
+            assert_eq!(previous, expected_previous.lines());
+            consumer.truncate(changed);
+            consumer.extend_from_slice(&markdown.lines()[changed..]);
+            assert_eq!(consumer, crate::tests::full_parse(&markdown.source));
+        }
+    }
+}
+
+#[test]
+fn escaped_reference_text_does_not_relocate_backing_chunks() {
+    let snapshots = samples(&["\\*", "[x][r]", "](u)"], "", &[1024, 2048], false);
+    assert!(snapshots[1].0 <= 2 * snapshots[0].0 + 4096, "{snapshots:?}");
+}

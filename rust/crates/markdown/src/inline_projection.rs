@@ -90,7 +90,8 @@ impl Cache {
             let mut saved: [Option<Output>; 4] = std::array::from_fn(|_| None);
             for i in 0..4 {
                 if ids[i] != 0 && !ids[..i].contains(&ids[i]) {
-                    let output = self.nodes.get_mut(ids[i] / PAGE)?.get_mut(ids[i] % PAGE)?;
+                    let (page, offset) = Self::slot(ids[i]);
+                    let output = self.nodes.get_mut(page)?.get_mut(offset)?;
                     saved[i] = Some(std::mem::take(output));
                     #[cfg(test)]
                     crate::work::scan(1);
@@ -171,6 +172,7 @@ impl Cache {
             },
             lines,
             first,
+            None,
         )
     }
 
@@ -181,6 +183,7 @@ impl Cache {
         projection: Projection<'_, '_>,
         lines: &mut Vec<Line>,
         first: usize,
+        spare: Option<&mut crate::inline_views::Spare>,
     ) -> Option<(usize, usize)> {
         let Rendered {
             trimmed: mut current,
@@ -192,8 +195,30 @@ impl Cache {
         {
             current = literal;
         }
+        #[cfg(test)]
+        let spare = spare.filter(|_| !crate::inline_views::REPLAY.get());
+        let mut exchanged = false;
+        if let Some(spare) = spare {
+            if self.alternate.is_some_and(|(_, start)| start != first) {
+                self.alternate = None;
+            }
+            if self.rendered && !self.output(current)?.same_mask(self.output(self.last)?) {
+                if let Some((alternate, _)) = self.alternate
+                    && self.output(current)?.same_mask(self.output(alternate)?)
+                {
+                    spare.exchange(lines, first);
+                    self.alternate = Some((self.last, first));
+                    self.last = alternate;
+                    exchanged = true;
+                } else {
+                    spare.capture(lines);
+                    self.alternate = Some((self.last, first));
+                }
+            }
+        }
         let output = self.output(current)?;
         let changed = output.update(self.output(self.last)?, lines, first);
+        let changed = if exchanged { first } else { changed };
         let visible = output.visible();
         self.last = current;
         self.rendered = true;

@@ -18,7 +18,7 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
         .iter()
         .map(|container| container.opening.capacity() + container.continuation.capacity())
         .sum::<usize>();
-    for line in &markdown.lines {
+    for line in markdown.lines.iter().chain(&markdown.spare.lines) {
         let (payload, metadata) = line.spans.retained(&mut nodes, &mut texts, &mut targets);
         bytes += payload;
         text_metadata += metadata;
@@ -62,7 +62,8 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
         + table_metadata
         + inline_metadata
         + markdown.context.capacity() * std::mem::size_of::<Container>()
-        + markdown.lines.capacity() * std::mem::size_of::<Line>()
+        + (markdown.lines.capacity() + markdown.spare.lines.capacity())
+            * std::mem::size_of::<Line>()
         + markdown.cached.capacity() * std::mem::size_of::<Cached>()
         + markdown.dependencies.capacity() * std::mem::size_of::<(Key, Vec<usize>)>()
         + markdown

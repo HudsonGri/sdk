@@ -2,12 +2,14 @@ use super::*;
 use proptest::prelude::*;
 
 fn advance(scanner: &mut Scanner, original: &str, base: usize) -> usize {
+    scanner.prepare_classification(original, 0);
+    let end = scanner.classification_end(original.len()).max(base);
     let context = if base == 0 {
         String::new()
     } else {
         crate::inline::left_context(original.get(..base).unwrap())
     };
-    let source = format!("{context}{}", original.get(base..).unwrap());
+    let source = format!("{context}{}", original.get(base..end).unwrap());
     let events: Vec<_> = pulldown_cmark::Parser::new_ext(&source, options())
         .into_offset_iter()
         .collect();
@@ -41,58 +43,125 @@ proptest! {
             ]).prop_map(str::to_owned),
         ], 0..48),
     ) {
-        let mut retained = Scanner::default();
-        let mut replay = Scanner { replay: true, ..Scanner::default() };
-        let mut source = String::new();
-        let mut origin = None;
-        let mut normalized = crate::Markdown::default();
-        let mut base = 0;
-        let parts: Vec<String> = if character_chunks {
-            parts.into_iter().flat_map(|part| part.chars().map(String::from).collect::<Vec<_>>()).collect()
-        } else { parts };
-        for part in parts {
-            normalized.push(&part);
-            prop_assert_eq!(normalized.lines(), crate::tests::full_parse(&normalized.source));
-            // The production dispatcher invokes the scanner only for its open
-            // paragraph. Code/HTML/list block transitions recreate that cache;
-            // do not interpret their literal source as an inline paragraph.
-            let leaf = pulldown_cmark::Parser::new_ext(&normalized.source, options())
-                .into_offset_iter().filter_map(|(event, range)| match event {
-                    Event::Start(tag) if crate::is_leaf(&tag) => Some((tag, range)),
-                    _ => None,
-                }).last();
-            let current = leaf.and_then(|(tag, range)| (tag == Tag::Paragraph).then_some(range));
-            if origin != current.as_ref().map(|range| range.start) {
-                retained = Scanner::default();
-                replay = Scanner { replay: true, ..Scanner::default() };
-                base = 0;
-                origin = current.as_ref().map(|range| range.start);
-            }
-            let Some(range) = current else { continue };
-            source.clear();
-            source.push_str(&normalized.source[range]);
-            let frontier = advance(&mut retained, &source, base);
-            prop_assert_eq!(frontier, advance(&mut replay, &source, base),
-                "source {:?}", source);
-            for position in source.char_indices().map(|(at, _)| at).chain([source.len()]).filter(|at| *at >= base) {
-                prop_assert_eq!(retained.checkpoint(position), replay.checkpoint(position), "source {:?}", source);
-            }
-            let left = retained.state.projection(retained.tokens.preview().as_ref());
-            let right = replay.state.projection(replay.tokens.preview().as_ref());
-            if !checkpoints {
-                prop_assert_eq!(retained.state.forest.rendered_at(left, &source),
-                    replay.state.forest.rendered_at(right, &source), "source {:?}", source);
+        check_sequence(checkpoints, character_chunks, parts)?;
+    }
+}
+
+fn check_sequence(
+    checkpoints: bool,
+    character_chunks: bool,
+    parts: Vec<String>,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    let mut retained = Scanner::default();
+    let mut replay = Scanner {
+        replay: true,
+        ..Scanner::default()
+    };
+    let mut source = String::new();
+    let mut origin = None;
+    let mut normalized = crate::Markdown::default();
+    let mut base = 0;
+    let parts: Vec<String> = if character_chunks {
+        parts
+            .into_iter()
+            .flat_map(|part| part.chars().map(String::from).collect::<Vec<_>>())
+            .collect()
+    } else {
+        parts
+    };
+    for part in parts {
+        normalized.push(&part);
+        prop_assert_eq!(
+            normalized.lines(),
+            crate::tests::full_parse(&normalized.source)
+        );
+        // The production dispatcher invokes the scanner only for its open
+        // paragraph. Code/HTML/list block transitions recreate that cache;
+        // do not interpret their literal source as an inline paragraph.
+        let leaf = pulldown_cmark::Parser::new_ext(&normalized.source, options())
+            .into_offset_iter()
+            .filter_map(|(event, range)| match event {
+                Event::Start(tag) if crate::is_leaf(&tag) => Some((tag, range)),
+                _ => None,
+            })
+            .last();
+        let current = leaf.and_then(|(tag, range)| (tag == Tag::Paragraph).then_some(range));
+        if origin != current.as_ref().map(|range| range.start)
+            || current
+                .as_ref()
+                .is_some_and(|range| !normalized.source[range.clone()].starts_with(&source))
+        {
+            retained = Scanner::default();
+            replay = Scanner {
+                replay: true,
+                ..Scanner::default()
+            };
+            base = 0;
+            origin = current.as_ref().map(|range| range.start);
+        }
+        let Some(range) = current else { continue };
+        source.clear();
+        source.push_str(&normalized.source[range]);
+        let frontier = advance(&mut retained, &source, base);
+        prop_assert_eq!(
+            frontier,
+            advance(&mut replay, &source, base),
+            "source {:?}",
+            source
+        );
+        for position in source
+            .char_indices()
+            .map(|(at, _)| at)
+            .chain([source.len()])
+            .filter(|at| *at >= base)
+        {
+            prop_assert_eq!(
+                retained.checkpoint(position),
+                replay.checkpoint(position),
+                "source {:?}",
+                source
+            );
+        }
+        let left = retained
+            .state
+            .projection(retained.tokens.preview().as_ref());
+        let right = replay.state.projection(replay.tokens.preview().as_ref());
+        if !checkpoints {
+            prop_assert_eq!(
+                retained.state.forest.rendered_at(left, &source),
+                replay.state.forest.rendered_at(right, &source),
+                "source {:?}",
+                source
+            );
+        } else {
+            prop_assert_eq!(
+                retained.state.forest.scopes_since(left, base),
+                replay.state.forest.scopes_since(right, base),
+                "source {:?}",
+                source
+            );
+            base += frontier.saturating_sub(if base == 0 {
+                0
             } else {
-                prop_assert_eq!(retained.state.forest.scopes_since(left, base),
-                    replay.state.forest.scopes_since(right, base), "source {:?}", source);
-                base += frontier.saturating_sub(if base == 0 { 0 } else {
-                    crate::inline::left_context(source.get(..base).unwrap()).len()
-                });
-                retained.discard_before(base);
-                replay.discard_before(base);
-            }
+                crate::inline::left_context(source.get(..base).unwrap()).len()
+            });
+            retained.discard_before(base);
+            replay.discard_before(base);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn shrinking_paragraph_recreates_scanner() {
+    let parts = ["\u{e}", "\n", "**", "*"].map(str::to_owned).to_vec();
+    check_sequence(false, false, parts).unwrap();
+}
+
+#[test]
+fn growing_tick_previews_keep_foreign_scope_classification() {
+    let parts = ["¡", "`", "<i>", "`", "`"].map(str::to_owned).to_vec();
+    check_sequence(true, false, parts).unwrap();
 }
 
 fn scope_feed_is_bounded(parts: &[&str], replay: bool) -> bool {

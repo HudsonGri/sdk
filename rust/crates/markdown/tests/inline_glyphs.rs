@@ -23,7 +23,7 @@ fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
     let parsed_nodes = scanner.state.forest.length;
     let mut lines = Vec::new();
     scanner
-        .render_tree(source, 0, &mut lines, 0)
+        .render_tree(source, 0, &mut lines, 0, None)
         .expect("retained inline events");
     assert_eq!(
         scanner.state.forest.length, parsed_nodes,

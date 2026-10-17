@@ -59,21 +59,26 @@ impl Text {
         }
         #[cfg(test)]
         crate::work::copy(text.len());
+        let mut capacity = text.len();
         if let Some(end) = self.range.end.checked_add(text.len())
             && let Some(Node(Kind::Chunk { prefix, data })) =
                 self.root.as_mut().and_then(Arc::get_mut)
             && self.range.end >= prefix.len()
         {
             data.truncate(self.range.end - prefix.len());
-            #[cfg(test)]
-            if data.capacity() - data.len() < text.len() {
-                crate::work::copy(data.len());
+            if data.capacity() - data.len() >= text.len() {
+                data.push_str(text);
+                self.range.end = end;
+                return;
             }
-            data.push_str(text);
-            self.range.end = end;
-            return;
+            // Seal a full backing chunk instead of reallocating and copying
+            // all its prior bytes. Geometric tail capacity bounds both the
+            // number of chunks and their unused space during unique appends.
+            capacity = capacity.max(data.capacity().saturating_mul(2));
         }
-        self.append_owned(text.to_owned());
+        let mut data = String::with_capacity(capacity);
+        data.push_str(text);
+        self.append_owned(data);
     }
 
     fn append_owned(&mut self, data: String) {

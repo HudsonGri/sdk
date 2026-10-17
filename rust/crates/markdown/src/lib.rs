@@ -6,6 +6,7 @@ mod context;
 mod events;
 mod inline;
 mod inline_scan;
+mod inline_views;
 mod reference_render;
 mod references;
 mod render;
@@ -41,6 +42,7 @@ pub struct Markdown {
     visibility: visibility::Visibility,
     visible_lines: usize,
     lines: Vec<Line>,
+    spare: inline_views::Spare,
     state: render::Renderer,
     context: Vec<Container>,
     references: References,
@@ -156,6 +158,12 @@ impl Markdown {
     /// A consumer can truncate its presentation there and replace the suffix
     /// from [`Self::lines`]. Empty deltas leave the presentation unchanged.
     pub fn push(&mut self, delta: &str) -> usize {
+        let changed = self.push_delta(delta);
+        self.spare.finish(&self.lines, self.stable_lines, changed);
+        changed
+    }
+
+    fn push_delta(&mut self, delta: &str) -> usize {
         let old_len = self.visible_lines;
         if delta.is_empty() {
             return old_len;
@@ -631,7 +639,8 @@ impl Markdown {
         let only_inline_leaf = matches!(last_leaf, Some((Tag::Paragraph | Tag::Heading { .. }, range))
             if !definition_candidate(source.get(range.start..).unwrap_or_default()))
             && leaves.next().is_none();
-        self.plain = tail.len() >= 8
+        self.plain = self.references.pending.is_empty()
+            && tail.len() >= 8
             // An unfinished block marker (for example `1.` on a new line)
             // can still become a list when a space arrives.
             && tail.rsplit('\n').next().is_some_and(|row| !row.trim_start_matches([' ', '\t']).starts_with('<') && row.chars().any(char::is_alphabetic))
