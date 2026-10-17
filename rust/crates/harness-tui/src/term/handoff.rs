@@ -121,13 +121,14 @@ impl Handoff {
     /// drained. The waker is registered under the same lock as the check.
     pub(crate) fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
         let mut state = self.lock();
+        // A continuous byte producer must not starve a pending window change.
+        if std::mem::take(&mut state.resized) {
+            return Poll::Ready(Some(Message::Resized));
+        }
         if let Some(batch) = state.ready.pop_at(0) {
             drop(state);
             self.space.notify_one();
             return Poll::Ready(Some(Message::Batch(batch)));
-        }
-        if std::mem::take(&mut state.resized) {
-            return Poll::Ready(Some(Message::Resized));
         }
         if state.finished {
             return Poll::Ready(None);
@@ -299,6 +300,52 @@ mod tests {
     #[test]
     fn negative_control_detects_resize_registration_split() {
         assert!(std::panic::catch_unwind(|| resize_model(true)).is_err());
+    }
+
+    fn resize_priority_model(bytes_first: bool) {
+        loom::model(move || {
+            let handoff = Handoff::new(1);
+            for _ in 0..QUEUED {
+                assert!(handoff.send(Ok(handoff.storage().unwrap())));
+            }
+            handoff.signal_resize();
+            handoff.signal_resize();
+            let mut cx = Context::from_waker(Waker::noop());
+            let next = if bytes_first {
+                // Negative control: always-ready bytes hide the resize flag.
+                handoff.lock().ready.pop_at(0).map(Message::Batch)
+            } else {
+                match handoff.poll_recv(&mut cx) {
+                    Poll::Ready(message) => message,
+                    Poll::Pending => panic!("resize parked"),
+                }
+            };
+            assert!(
+                matches!(next, Some(Message::Resized)),
+                "bytes starved resize"
+            );
+            for _ in 0..QUEUED {
+                assert!(matches!(
+                    handoff.poll_recv(&mut cx),
+                    Poll::Ready(Some(Message::Batch(_)))
+                ));
+            }
+            handoff.finish();
+            assert!(
+                matches!(handoff.poll_recv(&mut cx), Poll::Ready(None)),
+                "resize did not coalesce"
+            );
+        });
+    }
+
+    #[test]
+    fn resize_precedes_a_full_byte_queue_and_coalesces() {
+        resize_priority_model(false);
+    }
+
+    #[test]
+    fn negative_control_detects_byte_queue_starving_resize() {
+        assert!(std::panic::catch_unwind(|| resize_priority_model(true)).is_err());
     }
 
     // The queue is full before the producer starts, so its send waits for
