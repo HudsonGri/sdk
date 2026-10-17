@@ -1,7 +1,5 @@
 use super::*;
-use acyclic_fs::{
-    CancellationToken, MountOptions, MountPublication, WorkBudget, kernel::NamespacePath,
-};
+use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
@@ -69,19 +67,13 @@ pub(super) async fn attach(
             .map_err(|failure| Error::from(failure.error))?
             .value;
         let destination = root.join(relative);
-        create_mount_directory(root, Path::new(relative))?;
-        let options = if mount.mode.read_only() {
-            MountOptions::read_only()
-        } else {
-            MountOptions::read_write().publication(MountPublication::Manual)
-        };
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
             .await?;
-        let native = source.mount(&destination, options).await?;
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
-            native: Some(native),
+            destination,
+            native: StateArc::new(AsyncMutex::new(None)),
         }));
     }
     Ok(())
@@ -89,14 +81,33 @@ pub(super) async fn attach(
 
 pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
     for (_, mount) in mounts.mounts() {
-        if let Some(native) = mount
-            .view
-            .source
-            .as_ref()
-            .and_then(|source| source.native.as_ref())
-        {
-            native.sync().await?;
-            native.advance_to_head().await?;
+        if let Some(source) = &mount.view.source {
+            let native = source.native().await;
+            if let Some(native) = native.as_ref() {
+                native.sync().await?;
+                native.advance_to_head().await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(in crate::local) async fn project(mounts: &Mounts) -> Result<()> {
+    for (relative, mount) in mounts.mounts() {
+        if let Some(source) = &mount.view.source {
+            // A Linux task view aliases the original binding; mount at that
+            // binding's root, never below another owner-only FUSE mount.
+            let root = source
+                .destination
+                .ancestors()
+                .nth(Path::new(relative).components().count())
+                .filter(|_| source.destination.ends_with(relative))
+                .ok_or_else(|| {
+                    Error::Invalid("volume projection lies outside its binding".into())
+                })?;
+            source
+                .project(root, relative, mount.mode.read_only())
+                .await?;
         }
     }
     Ok(())
@@ -111,13 +122,12 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
         if relative.is_empty() {
             continue;
         }
-        let native = mount
+        let source = mount
             .view
             .source
             .as_ref()
-            .and_then(|source| source.native.as_ref())
             .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
-        let target = native.path();
+        let target = source.destination.as_path();
         let relative = Path::new(relative);
         if let Some(parent) = relative.parent() {
             create_mount_directory(root, parent)?;
@@ -150,7 +160,7 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
     Ok(())
 }
 
-fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let mut path = root.to_path_buf();
     for part in relative.components() {
         let std::path::Component::Normal(name) = part else {
