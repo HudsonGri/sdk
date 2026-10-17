@@ -9,7 +9,7 @@ description = "Parsed lock-construction scan behind scripts/check-loom-models.mj
 [workspace]
 
 [dependencies]
-syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "clone-impls", "visit"] }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "clone-impls", "visit", "visit-mut"] }
 quote = { version = "1", default-features = false }
 proc-macro2 = { version = "1", default-features = false }
 

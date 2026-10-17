@@ -120,7 +120,11 @@ impl Case {
     /// The program over `name` (a lock, or a non-lock stand-in).
     fn render(&self, name: &str) -> String {
         let mut items = String::new();
-        let mut current = format!("{}{name}", PREFIXES[self.prefix]);
+        let mut current = if name == "Cell" {
+            "std::cell::Cell".to_string()
+        } else {
+            format!("{}{name}", PREFIXES[self.prefix])
+        };
         for (index, link) in self.chain.iter().enumerate() {
             match link {
                 Link::Alias => {
@@ -206,8 +210,11 @@ proptest! {
     #[test]
     fn every_generated_construction_is_found(case in case()) {
         let source = case.render(LOCKS[case.lock]);
+        let file = syn::parse_file(&source).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        let rendered = quote::quote!(#file).to_string();
         let verdict = scan(&source).map_err(|error| error.to_string());
         prop_assert_eq!(verdict, Ok(true), "missed:\n{}", source);
+        prop_assert_eq!(scan(&source).ok(), scan(&rendered).ok(), "round trip changed the verdict");
     }
 
     #[test]
@@ -215,5 +222,34 @@ proptest! {
         let source = case.render("Cell");
         let verdict = scan(&source).map_err(|error| error.to_string());
         prop_assert_eq!(verdict, Ok(false), "flagged:\n{}", source);
+    }
+
+    #[test]
+    fn constructor_spellings_never_become_a_lock_free_verdict(
+        raw_type in any::<bool>(), raw_method in any::<bool>(),
+        aliases in 0usize..5, wrapper in 0usize..5,
+    ) {
+        let lock = if raw_type { "r#Mutex" } else { "Mutex" };
+        let method = if raw_method { "r#default" } else { "default" };
+        let ty = format!("std::sync::{lock}<u8>");
+        let mut prefix = "use std::default::Default as D0;\n".to_string();
+        for index in 0..aliases {
+            prefix.push_str(&format!("use D{index} as D{};\n", index + 1));
+        }
+        let constructor = format!("D{aliases}::{method}()");
+        let source = match wrapper {
+            0 => format!("{prefix}fn make() -> {ty} {{ {constructor} }}"),
+            1 => format!("proptest::proptest! {{ #[test] fn p(lock: {ty}) {{}} }}"),
+            2 => format!("fn p() {{ serde_json::json!({{ {{ let lock = std::sync::{lock}::new(0u8); \"key\" }}: 0 }}); }}"),
+            3 => format!("trait Factory {{ type Lock; }} impl Factory for () {{ type Lock = {ty}; }} fn p() {{ <() as Factory>::Lock::{method}(); }}"),
+            _ => format!("use std::mem::take as T0; {} fn make(slot: &mut {ty}) -> {ty} {{ T{aliases}(slot) }}",
+                (0..aliases).map(|index| format!("use T{index} as T{};", index + 1)).collect::<String>()),
+        };
+        match scan(&source) {
+            Ok(true) => {},
+            Err(error) if error.to_string().starts_with("indeterminate:") => {},
+            other => prop_assert!(false, "false clean or unexpected error: {:?}\n{}", other, source),
+        }
+        prop_assert_eq!(scan("fn plain() -> u8 { let value: u8 = Default::default(); value }").ok(), Some(false));
     }
 }

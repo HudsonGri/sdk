@@ -13,17 +13,12 @@
 //! tuples, arrays and references: typed `let`s, statics, consts, function
 //! returns and arguments of functions in the file, closures with a return
 //! type, and fields of structs in the file. An expected type holding a lock
-//! is a construction; one the file does not determine is indeterminate when
-//! the file writes a lock type by value anywhere (an annotation, a turbofish,
-//! a field, `Arc<Lock<T>>`), since that type can direct an inference to a
-//! lock. A file that writes none can only receive a lock type from a
-//! signature in another file, which is where a per-file scan ends, as it does
-//! for aliases reached through `use super::*`.
+//! is a construction; an unresolved expected type is indeterminate.
 //! Independently, a binding, static, const or field declared with a lock type
 //! is a construction whatever its initializer.
 use crate::{Names, macros::indeterminate};
 use quote::ToTokens;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use syn::{
     Block, Expr, ExprPath, Fields, FnArg, GenericParam, Generics, Local, Pat, Path, ReturnType,
     Signature, Stmt, Type,
@@ -46,6 +41,10 @@ const EMPTY: [&str; 9] = [
 const TRAITS: [&str; 5] = ["Default", "From", "Into", "TryFrom", "TryInto"];
 const INFERRED: [&str; 5] = ["default", "from", "into", "try_from", "try_into"];
 const GENERIC: [&str; 4] = ["new", "default", "from", "try_from"];
+const PLAIN: [&str; 22] = [
+    "bool", "char", "str", "String", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16",
+    "i32", "i64", "i128", "isize", "f32", "f64", "Arc", "Rc", "Box", "Cell",
+];
 /// Methods whose result type is inferred from where it goes, or which make
 /// a `Default` value of a type parameter.
 const METHODS: [&str; 5] = [
@@ -67,21 +66,8 @@ pub fn find<'ast>(
     stmts.iter().for_each(|stmt| items.visit_stmt(stmt));
     let mut finder = Finder {
         names,
-        locks: names.locks(),
-        traits: TRAITS
-            .iter()
-            .map(ToString::to_string)
-            .chain(
-                names
-                    .renames
-                    .iter()
-                    .filter(|(target, _)| TRAITS.contains(&target.as_str()))
-                    .map(|(_, alias)| alias.clone()),
-            )
-            .collect(),
         items,
         found: false,
-        mentions: false,
         unresolved: Vec::new(),
         expected: HashMap::new(),
         callees: HashSet::new(),
@@ -92,7 +78,6 @@ pub fn find<'ast>(
     finder.visit_file(file);
     stmts.iter().for_each(|stmt| finder.visit_stmt(stmt));
     match finder.unresolved.first() {
-        Some(_) if finder.found || !finder.mentions => Ok(finder.found),
         Some(expr) => Err(indeterminate(&format!(
             "the type `{expr}` constructs is inferred from context the scan cannot resolve; name the type"
         ))),
@@ -113,7 +98,7 @@ pub fn type_name(ty: &Type) -> Option<String> {
 fn last(path: &Path) -> Option<String> {
     path.segments
         .last()
-        .map(|segment| segment.ident.to_string())
+        .map(|segment| crate::name(&segment.ident))
 }
 
 fn key(expr: &Expr) -> *const Expr {
@@ -125,7 +110,7 @@ fn key(expr: &Expr) -> *const Expr {
 #[derive(Default)]
 struct Items<'ast> {
     functions: BTreeMap<String, Option<&'ast Signature>>,
-    structs: BTreeMap<String, Option<&'ast Fields>>,
+    structs: BTreeMap<String, Option<&'ast syn::ItemStruct>>,
     owner: Vec<Option<String>>,
 }
 
@@ -140,7 +125,7 @@ impl<'ast> Items<'ast> {
 
 impl<'ast> Visit<'ast> for Items<'ast> {
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        self.function(item.sig.ident.to_string(), &item.sig);
+        self.function(crate::name(&item.sig.ident), &item.sig);
         visit::visit_item_fn(self, item);
     }
 
@@ -159,9 +144,9 @@ impl<'ast> Visit<'ast> for Items<'ast> {
 
     fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
         self.structs
-            .entry(item.ident.to_string())
+            .entry(crate::name(&item.ident))
             .and_modify(|seen| *seen = None)
-            .or_insert(Some(&item.fields));
+            .or_insert(Some(item));
         visit::visit_item_struct(self, item);
     }
 }
@@ -174,13 +159,8 @@ enum Expect<'ast> {
 
 struct Finder<'a, 'ast> {
     names: &'a Names<'ast>,
-    locks: BTreeSet<String>,
-    /// The conversion traits and their renames.
-    traits: BTreeSet<String>,
     items: Items<'ast>,
     found: bool,
-    /// Whether the file writes a lock type by value.
-    mentions: bool,
     unresolved: Vec<String>,
     expected: HashMap<*const Expr, Expect<'ast>>,
     callees: HashSet<*const Expr>,
@@ -197,9 +177,16 @@ impl<'ast> Finder<'_, 'ast> {
     /// Whether `ty` is itself a lock; `None` when it is a generic parameter,
     /// `_` or `impl Trait`.
     fn is_lock(&self, ty: &Type) -> Option<bool> {
+        self.is_lock_at(ty, 0)
+    }
+
+    fn is_lock_at(&self, ty: &Type, depth: usize) -> Option<bool> {
+        if depth > 16 {
+            return None;
+        }
         match ty {
-            Type::Paren(inner) => self.is_lock(&inner.elem),
-            Type::Group(inner) => self.is_lock(&inner.elem),
+            Type::Paren(inner) => self.is_lock_at(&inner.elem, depth + 1),
+            Type::Group(inner) => self.is_lock_at(&inner.elem, depth + 1),
             Type::Infer(_) | Type::ImplTrait(_) | Type::Macro(_) | Type::Verbatim(_) => None,
             Type::Path(path) if path.qself.is_some() => None,
             Type::Path(path) => {
@@ -207,9 +194,35 @@ impl<'ast> Finder<'_, 'ast> {
                 if path.path.segments.len() == 1 && self.generic(&name) {
                     None
                 } else if path.path.is_ident("Self") {
-                    self.selves.last().and_then(|ty| self.is_lock(ty))
+                    self.selves
+                        .last()
+                        .and_then(|ty| self.is_lock_at(ty, depth + 1))
                 } else {
-                    Some(self.locks.contains(&name))
+                    let path = path
+                        .path
+                        .segments
+                        .iter()
+                        .map(|segment| crate::name(&segment.ident))
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    let name = self.names.resolve(&path)?;
+                    let terminal = name.rsplit("::").next()?;
+                    let builtin = !name.contains("::")
+                        || name.starts_with("std::")
+                        || name.starts_with("core::")
+                        || name.starts_with("alloc::");
+                    if let Some(expanded) = self.names.instantiated(ty) {
+                        self.is_lock_at(&expanded, depth + 1)
+                    } else if crate::LOCKS.contains(&terminal) {
+                        Some(true)
+                    } else if builtin && (PLAIN.contains(&terminal) || EMPTY.contains(&terminal))
+                        || self.items.structs.contains_key(&name)
+                        || self.names.alias(&name).is_some()
+                    {
+                        Some(false)
+                    } else {
+                        None
+                    }
                 }
             }
             _ => Some(false),
@@ -220,68 +233,50 @@ impl<'ast> Finder<'_, 'ast> {
     /// a lock, a tuple or array of one, an alias of one, or a type with a lock
     /// argument other than an [`EMPTY`] container.
     fn holds(&self, ty: &Type, depth: usize) -> Option<bool> {
-        self.holds_bound(ty, depth, &BTreeMap::new())
-    }
-
-    fn holds_bound(
-        &self,
-        ty: &Type,
-        depth: usize,
-        bindings: &BTreeMap<String, Option<bool>>,
-    ) -> Option<bool> {
         if depth > 16 {
             return None;
         }
+        if let Some(expanded) = self.names.instantiated(ty) {
+            return self.holds(&expanded, depth + 1);
+        }
         match ty {
-            Type::Paren(inner) => self.holds_bound(&inner.elem, depth, bindings),
-            Type::Group(inner) => self.holds_bound(&inner.elem, depth, bindings),
-            Type::Tuple(tuple) => any(tuple.elems.iter().map(|ty| self.holds_bound(ty, depth + 1, bindings))),
-            Type::Array(array) => self.holds_bound(&array.elem, depth + 1, bindings),
+            Type::Paren(inner) => self.holds(&inner.elem, depth + 1),
+            Type::Group(inner) => self.holds(&inner.elem, depth + 1),
+            Type::Tuple(tuple) => any(tuple.elems.iter().map(|ty| self.holds(ty, depth + 1))),
+            Type::Array(array) => self.holds(&array.elem, depth + 1),
             Type::Path(path) if path.qself.is_none() => {
-                if path.path.segments.len() == 1
-                    && let Some(verdict) = bindings.get(&path.path.segments[0].ident.to_string())
-                {
-                    return *verdict;
-                }
-                if self.is_lock(ty)? {
+                if self.is_lock_at(ty, depth)? {
                     return Some(true);
                 }
-                let segment = path.path.segments.last()?;
-                let name = segment.ident.to_string();
-                let arguments: Vec<&Type> = match &segment.arguments {
-                    syn::PathArguments::AngleBracketed(angle) => angle
-                        .args
-                        .iter()
-                        .filter_map(|arg| match arg {
-                            syn::GenericArgument::Type(ty) => Some(ty),
-                            _ => None,
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                if path.path.segments.len() == 1
-                    && let Some((parameters, target)) = self.names.alias(&name)
-                {
-                    let mut resolved = BTreeMap::new();
-                    let mut supplied = arguments.iter();
-                    for parameter in parameters.type_params() {
-                        let verdict = match supplied.next() {
-                            Some(ty) => self.holds_bound(ty, depth + 1, bindings),
-                            None => parameter.default.as_ref().and_then(|ty| {
-                                self.holds_bound(ty, depth + 1, &resolved)
-                            }),
-                        };
-                        resolved.insert(parameter.ident.to_string(), verdict);
-                    }
-                    return self.holds_bound(target, depth + 1, &resolved);
-                }
+                let resolved = self.names.path(&path.path)?;
+                let spelling = resolved
+                    .segments
+                    .iter()
+                    .map(|segment| crate::name(&segment.ident))
+                    .collect::<Vec<_>>()
+                    .join("::");
+                let segment = resolved.segments.last()?;
+                let name = crate::name(&segment.ident);
                 if EMPTY.contains(&name.as_str()) {
-                    Some(false)
-                } else {
-                    any(arguments.iter().map(|ty| self.holds_bound(ty, depth + 1, bindings)))
+                    return Some(false);
+                }
+                if let Some(Some(item)) = self.items.structs.get(&spelling) {
+                    let types: Vec<_> = item.fields.iter().map(|field| &field.ty).collect();
+                    let target: Type = syn::parse_quote!((#(#types,)*));
+                    let expanded = crate::substitute(&item.generics, &segment.arguments, &target);
+                    return self.holds(&expanded, depth + 1);
+                }
+                match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(angle) => {
+                        any(angle.args.iter().filter_map(|arg| match arg {
+                            syn::GenericArgument::Type(ty) => Some(self.holds(ty, depth + 1)),
+                            _ => None,
+                        }))
+                    }
+                    _ => Some(false),
                 }
             }
-            _ => self.is_lock(ty),
+            _ => self.is_lock_at(ty, depth),
         }
     }
 
@@ -368,7 +363,7 @@ impl<'ast> Finder<'_, 'ast> {
     fn push(&mut self, generics: &Generics) {
         for param in &generics.params {
             if let GenericParam::Type(param) = param {
-                self.generics.push(param.ident.to_string());
+                self.generics.push(crate::name(&param.ident));
             }
         }
     }
@@ -388,18 +383,34 @@ impl<'ast> Finder<'_, 'ast> {
     // A context-typed constructor path: `Default::default`, `From::from`,
     // `<_>::default`, `T::new` for a generic `T`, ...
     fn inferred(&self, path: &ExprPath) -> bool {
-        let segments = &path.path.segments;
-        let Some(name) = segments.last().map(|segment| segment.ident.to_string()) else {
-            return false;
+        let Some(resolved) = self.names.path(&path.path) else {
+            return true;
         };
+        let segments = &resolved.segments;
+        let Some(name) = segments
+            .last()
+            .and_then(|segment| self.names.resolve(&crate::name(&segment.ident)))
+        else {
+            return true;
+        };
+        if segments.len() == 1
+            && (matches!(name.as_str(), "std::mem::take" | "core::mem::take")
+                || INFERRED.contains(&name.as_str())
+                || GENERIC.contains(&name.as_str()))
+        {
+            return true;
+        }
         if let Some(qself) = &path.qself {
             return INFERRED.contains(&name.as_str()) && self.is_lock(&qself.ty).is_none();
         }
         let Some(owner) = segments.len().checked_sub(2).map(|at| &segments[at]) else {
             return false;
         };
-        let owner_name = owner.ident.to_string();
-        (INFERRED.contains(&name.as_str()) && self.traits.contains(&owner_name))
+        let Some(owner_name) = self.names.resolve(&crate::name(&owner.ident)) else {
+            return true;
+        };
+        (INFERRED.contains(&name.as_str())
+            && TRAITS.contains(&owner_name.rsplit("::").next().unwrap_or(&owner_name)))
             || (name == "take" && owner_name == "mem")
             || (segments.len() == 2
                 && self.generic(&owner_name)
@@ -409,35 +420,36 @@ impl<'ast> Finder<'_, 'ast> {
     // A constructor named on a lock: `Lock::new`, `<Lock<T>>::new`,
     // `<Lock<T> as Default>::default`, `Self::new` in an impl for a lock, and
     // `default` of a type holding a lock, such as `Arc::<Lock<T>>::default`.
-    fn constructor(&self, path: &ExprPath) -> bool {
-        let segments = &path.path.segments;
-        let Some(name) = segments.last().map(|segment| segment.ident.to_string()) else {
-            return false;
+    fn constructor(&self, path: &ExprPath) -> Option<bool> {
+        let resolved = self.names.path(&path.path)?;
+        let segments = &resolved.segments;
+        let Some(name) = segments.last().map(|segment| crate::name(&segment.ident)) else {
+            return Some(false);
         };
         if !GENERIC.contains(&name.as_str()) {
-            return false;
+            return Some(false);
         }
         if let Some(qself) = &path.qself {
             return if name == "default" {
-                self.holds(&qself.ty, 0) == Some(true)
+                self.holds(&qself.ty, 0)
             } else {
-                self.is_lock(&qself.ty) == Some(true)
+                self.is_lock(&qself.ty)
             };
         }
-        let Some(owner) = segments.len().checked_sub(2).map(|at| &segments[at]) else {
-            return false;
-        };
+        if segments.len() < 2 {
+            return None;
+        }
         let owner_type = Type::Path(syn::TypePath {
             qself: None,
             path: Path {
-                leading_colon: None,
-                segments: std::iter::once(owner.clone()).collect(),
+                leading_colon: resolved.leading_colon,
+                segments: segments.iter().take(segments.len() - 1).cloned().collect(),
             },
         });
         if name == "default" {
-            self.holds(&owner_type, 0) == Some(true)
+            self.holds(&owner_type, 0)
         } else {
-            self.is_lock(&owner_type) == Some(true)
+            self.is_lock(&owner_type)
         }
     }
 
@@ -447,7 +459,7 @@ impl<'ast> Finder<'_, 'ast> {
             .path
             .segments
             .iter()
-            .map(|segment| segment.ident.to_string())
+            .map(|segment| crate::name(&segment.ident))
             .collect();
         let name = match segments.as_slice() {
             [name] => name.clone(),
@@ -462,7 +474,12 @@ impl<'ast> Finder<'_, 'ast> {
 
     fn fields(&self, path: &Path) -> Option<&'ast Fields> {
         let name = (path.segments.len() == 1).then(|| last(path))??;
-        self.items.structs.get(&name).copied().flatten()
+        self.items
+            .structs
+            .get(&name)
+            .copied()
+            .flatten()
+            .map(|item| &item.fields)
     }
 
     fn field_types(&self, fields: &'ast Fields) -> Vec<(Option<String>, &'ast Type)> {
@@ -480,7 +497,7 @@ fn identity(item: &syn::ItemConst) -> bool {
         return false;
     };
     let parameter = match closure.inputs.iter().collect::<Vec<_>>().as_slice() {
-        [Pat::Ident(parameter)] => parameter.ident.to_string(),
+        [Pat::Ident(parameter)] => crate::name(&parameter.ident),
         _ => return false,
     };
     item.ident == "_"
@@ -501,22 +518,12 @@ fn any(verdicts: impl Iterator<Item = Option<bool>>) -> Option<bool> {
 }
 
 impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
-    // A lock behind a reference or pointer is borrowed, never made here.
-    fn visit_type(&mut self, ty: &'ast Type) {
-        match ty {
-            Type::Reference(_) | Type::Ptr(_) => return,
-            Type::Path(_) => self.mentions |= self.is_lock(ty) == Some(true),
-            _ => {}
-        }
-        visit::visit_type(self, ty);
-    }
-
     fn visit_expr(&mut self, expr: &'ast Expr) {
         match expr {
             Expr::Call(call) => {
                 if let Expr::Path(path) = &*call.func {
                     self.callees.insert(key(&call.func));
-                    if self.inferred(path) {
+                    if self.inferred(path) && self.signature(&call.func).is_none() {
                         self.judge(expr);
                     }
                 }
@@ -547,15 +554,27 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
                 }
             }
             Expr::MethodCall(call)
-                if METHODS.contains(&call.method.to_string().as_str())
+                if METHODS.contains(&crate::name(&call.method).as_str())
                     && call.turbofish.is_none()
                     && call.args.is_empty() =>
             {
                 self.judge(expr);
             }
             Expr::Path(path) => {
-                self.found |= self.constructor(path);
-                if !self.callees.contains(&key(expr)) && self.inferred(path) {
+                match self.constructor(path) {
+                    Some(found) => self.found |= found,
+                    None if !self.inferred(path) || !self.callees.contains(&key(expr)) => {
+                        self.judge(expr)
+                    }
+                    None => {}
+                }
+                if path
+                    .qself
+                    .as_ref()
+                    .is_some_and(|qself| path.path.segments.len() > qself.position + 1)
+                {
+                    self.unresolved.push(expr.to_token_stream().to_string());
+                } else if !self.callees.contains(&key(expr)) && self.inferred(path) {
                     self.judge(expr);
                 }
             }

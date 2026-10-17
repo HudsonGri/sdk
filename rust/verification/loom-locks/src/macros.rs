@@ -10,6 +10,7 @@ use syn::{
     parse::{ParseStream, Parser},
     punctuated::Punctuated,
     visit::{self, Visit},
+    visit_mut::VisitMut,
 };
 
 #[derive(Clone, Copy)]
@@ -36,7 +37,7 @@ enum Grammar {
 /// `alloc::` prefix removed. A single-segment invocation may also name the
 /// last segment of a listed path; a `use` that binds such a name to any other
 /// path is an error, so the name cannot be redirected to another macro.
-const MACROS: [(&str, Grammar); 28] = [
+const MACROS: [(&str, Grammar); 27] = [
     ("assert", Grammar::Exprs),
     ("assert_eq", Grammar::Exprs),
     ("assert_ne", Grammar::Exprs),
@@ -57,7 +58,6 @@ const MACROS: [(&str, Grammar); 28] = [
     ("matches", Grammar::Matches),
     ("thread_local", Grammar::Statics),
     ("loom::thread_local", Grammar::Statics),
-    ("include", Grammar::Literals),
     ("compile_error", Grammar::Literals),
     ("proptest::proptest", Grammar::Proptest),
     ("proptest::prop_assert", Grammar::Exprs),
@@ -150,7 +150,7 @@ struct Collector {
 
 impl Collector {
     fn fail(&mut self, message: String) {
-        self.error.get_or_insert_with(|| hard(&message));
+        self.error.get_or_insert_with(|| indeterminate(&message));
     }
 }
 
@@ -165,7 +165,12 @@ impl Visit<'_> for Collector {
             );
         } else if let Some(grammar) = grammar(&path) {
             match parse(grammar, mac.tokens.clone()) {
-                Ok(stmts) => self.fragments.push(stmts),
+                Ok(mut stmts) => {
+                    stmts
+                        .iter_mut()
+                        .for_each(|stmt| crate::Normalize.visit_stmt_mut(stmt));
+                    self.fragments.push(stmts);
+                }
                 Err(error) => {
                     self.error.get_or_insert_with(|| {
                         indeterminate(&format!(
@@ -214,7 +219,7 @@ impl Visit<'_> for Collector {
 fn segments(path: &syn::Path) -> Vec<String> {
     path.segments
         .iter()
-        .map(|segment| segment.ident.to_string())
+        .map(|segment| crate::name(&segment.ident))
         .collect()
 }
 
@@ -249,8 +254,8 @@ fn parse(grammar: Grammar, tokens: TokenStream) -> syn::Result<Vec<Stmt>> {
         Grammar::Matches => (|input: ParseStream<'_>| {
             let scrutinee: Expr = input.parse()?;
             input.parse::<Token![,]>()?;
-            Pat::parse_multi_with_leading_vert(input)?;
-            let mut stmts = vec![expr(scrutinee)];
+            let pattern = Pat::parse_multi_with_leading_vert(input)?;
+            let mut stmts = vec![syn::parse_quote!(let #pattern = #scrutinee;)];
             if input.parse::<Option<Token![if]>>()?.is_some() {
                 stmts.push(expr(input.parse()?));
             }
@@ -325,12 +330,13 @@ fn proptest(input: ParseStream<'_>) -> syn::Result<Vec<Stmt>> {
         let arguments;
         syn::parenthesized!(arguments in input);
         while !arguments.is_empty() {
-            Pat::parse_single(&arguments)?;
+            let pattern = Pat::parse_single(&arguments)?;
             if arguments.parse::<Option<Token![in]>>()?.is_some() {
                 stmts.push(expr(arguments.parse()?));
             } else {
                 arguments.parse::<Token![:]>()?;
-                arguments.parse::<Type>()?;
+                let ty: Type = arguments.parse()?;
+                stmts.push(syn::parse_quote!(let #pattern: #ty;));
             }
             if arguments.parse::<Option<Token![,]>>()?.is_none() {
                 break;
@@ -387,7 +393,7 @@ fn json(tokens: TokenStream, stmts: &mut Vec<Stmt>) -> syn::Result<()> {
                 {
                     stmts.push(expr(syn::parse2(group.stream())?));
                 } else {
-                    syn::parse2::<Expr>(key)?;
+                    stmts.push(expr(syn::parse2::<Expr>(key)?));
                 }
                 json(entry[colon + 1..].iter().cloned().collect(), stmts)?;
             }

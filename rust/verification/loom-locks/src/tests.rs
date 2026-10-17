@@ -41,10 +41,10 @@ fn lock_types_inside_other_constructors_are_not_locks() {
         "let a: Option<SyncMutex<u8>> = Default::default();",
         "// SyncMutex::new(0)\nlet a = 1;",
         "let a = \"SyncMutex::new(0)\";",
-        "let a = production::Component::new();",
     ] {
         assert!(!constructs(body), "flagged {body}");
     }
+    assert!(indeterminate("fn p() { production::Component::new(); }"));
     let identity =
         "const _: fn(crate::sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;";
     assert_eq!(scan(identity).ok(), Some(false));
@@ -60,7 +60,7 @@ fn aliases_and_loom_imports_are_resolved() {
     let chained =
         "type Lock<T> = crate::sync::Mutex<T>;\ntype Cell<T> = Lock<T>;\nfn m() { Cell::new(0); }";
     assert_eq!(scan(chained).ok(), Some(true));
-    let unrelated = "use crate::cell::Cell as Slot;\nfn m() { Slot::new(0); }";
+    let unrelated = "use std::cell::Cell as Slot;\nfn m() { Slot::new(0); }";
     assert_eq!(scan(unrelated).ok(), Some(false));
     let imported = "use loom::{sync::Mutex as DataMutex, thread};";
     assert_eq!(scan(imported).ok(), Some(true));
@@ -68,12 +68,48 @@ fn aliases_and_loom_imports_are_resolved() {
     assert_eq!(scan(threads).ok(), Some(false));
 }
 
-fn verdict(source: &str) -> Result<bool, String> {
-    scan(source).map_err(|error| error.to_string())
+#[test]
+fn alias_parameters_follow_the_target_container() {
+    for container in ["Option<T>", "Vec<T>", "std::marker::PhantomData<T>"] {
+        let source = format!(
+            "type Slot<T> = {container}; type Other<U> = Slot<U>; fn p() {{ let _: Other<std::sync::Mutex<u8>> = Default::default(); }}"
+        );
+        assert_eq!(scan(&source).ok(), Some(false), "{source}");
+    }
+    for container in ["(T,)", "std::sync::Arc<T>"] {
+        let source = format!(
+            "type Slot<T> = {container}; type Other<U> = Slot<U>; fn p() {{ let _: Other<std::sync::Mutex<u8>> = Default::default(); }}"
+        );
+        assert_eq!(scan(&source).ok(), Some(true), "{source}");
+    }
 }
 
-fn rejected(source: &str) -> bool {
-    verdict(source).is_err_and(|error| !error.starts_with("indeterminate"))
+#[test]
+fn source_corpus_survives_parse_print_and_keeps_the_expected_verdict() {
+    for source in [
+        include_str!("../fuzz/corpus/source/raw-type"),
+        include_str!("../fuzz/corpus/source/raw-method"),
+        include_str!("../fuzz/corpus/source/alias"),
+        include_str!("../fuzz/corpus/source/take"),
+        include_str!("../fuzz/corpus/source/projection"),
+        include_str!("../fuzz/corpus/source/proptest"),
+        include_str!("../fuzz/corpus/source/json-key"),
+    ] {
+        let file = syn::parse_file(source).unwrap_or_else(|error| panic!("{source}: {error}"));
+        let rendered = quote::quote!(#file).to_string();
+        assert_ne!(scan(source).ok(), Some(false), "{source}");
+        assert_eq!(scan(source).ok(), scan(&rendered).ok());
+    }
+    for source in [
+        include_str!("../fuzz/corpus/source/empty-alias"),
+        include_str!("../fuzz/corpus/source/non-lock"),
+    ] {
+        assert_eq!(scan(source).ok(), Some(false), "{source}");
+    }
+}
+
+fn verdict(source: &str) -> Result<bool, String> {
+    scan(source).map_err(|error| error.to_string())
 }
 
 fn indeterminate(source: &str) -> bool {
@@ -97,10 +133,10 @@ fn generated_code_is_rejected() {
         "use crate::locks::make as vec;\nfn m() { vec![]; }",
         "use crate::locks::vec;",
     ] {
-        assert!(rejected(source), "{source}: {:?}", verdict(source));
+        assert!(indeterminate(source), "{source}: {:?}", verdict(source));
     }
     let definition = verdict("macro_rules! m { () => {}; }");
-    assert!(definition.is_err_and(|error| error.starts_with("a macro_rules! definition")));
+    assert!(definition.is_err_and(|error| error.contains("a macro_rules! definition")));
     for source in [
         "use serde_json::json;\nfn m() { json!({\"a\": 1}); }",
         "use std::vec;\n#[derive(Clone, Debug, Default)]\nstruct S;\n#[test]\nfn m() { vec![1]; }",
@@ -205,19 +241,25 @@ fn inferred_types_are_resolved_or_indeterminate() {
         let source = format!("{MENTION}fn m() {{ {body} }}");
         assert!(indeterminate(&source), "{body}: {:?}", verdict(&source));
         let elsewhere = format!("fn m() {{ {body} }}");
-        assert_eq!(verdict(&elsewhere), Ok(false), "{elsewhere}");
+        assert!(
+            indeterminate(&elsewhere),
+            "{elsewhere}: {:?}",
+            verdict(&elsewhere)
+        );
     }
     for source in [
         "fn m() { let a: Vec<SyncMutex<u8>> = (0..2).map(|_| 0.into()).collect(); }",
         "fn make<T: Default>() -> T { T::default() }\nfn m() { make::<SyncMutex<u8>>(); }",
         "type Lock = SyncMutex<u8>;\nfn m() { let a = Default::default(); }",
+        "fn m() { Mutex::new(()); let unresolved = Default::default(); }",
+        "struct S { a: u8 } fn m() { let t = Other { a: 1, ..Default::default() }; }",
     ] {
         assert!(indeterminate(source), "{source}: {:?}", verdict(source));
     }
     for source in [
         "fn m() { let a: u8 = Default::default(); let s: String = \"x\".into(); }",
         "fn take(_: String, _: &str) {}\nfn m() { take(\"x\".into(), &Default::default()); }",
-        "struct S { a: u8 }\nfn m() { let s = S { a: 0.into() }; let t = Other { a: 1, ..Default::default() }; }",
+        "struct S { a: u8 }\nfn m() { let s = S { a: 0.into() }; let t = S { a: 1, ..Default::default() }; }",
         "fn make() -> u8 { if a { return 1.into(); } Default::default() }",
         "fn m() { let f = || -> u8 { Default::default() }; }",
         "fn m() { let a: Option<SyncMutex<u8>> = Default::default(); }",
@@ -227,5 +269,5 @@ fn inferred_types_are_resolved_or_indeterminate() {
     }
     // A borrowed lock is not a lock type written by value.
     let borrowed = "fn m(lock: &SyncMutex<u8>) { let a = Default::default(); }";
-    assert_eq!(verdict(borrowed), Ok(false));
+    assert!(indeterminate(borrowed));
 }

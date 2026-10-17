@@ -12,6 +12,15 @@ import {fileURLToPath} from 'node:url';
 // fixture instead. A schedule capped at a numeric preemption bound states that
 // bound and cannot claim exhaustive exploration.
 export const models = {
+  "rust/crates/harness/src/hooks/effects/models.rs": { grade: "abstract", scope: "Actual prepared hook claims, task-volume index, codecs and CAS; the model Journal replaces provider IO with a single journal topology. Not disk durability." },
+  "rust/crates/harness/src/local/checkout_tools/hooks/models.rs": { grade: "abstract", scope: "Actual serialized/with_workers guard retention and shim; hook process completion is a synthetic worker and cleanup flag. Not real subprocess cleanup." },
+  "rust/crates/harness/src/local/children/controller/draining/models.rs": { grade: "abstract", scope: "Actual child drain/finish paths and cancellation tokens; leaf signal lock and synthetic futures replace external effect IO. Not executor or filesystem completion." },
+  "rust/crates/harness/src/local/children/controller/drive/models.rs": { grade: "abstract", scope: "Actual during() driver; a shim mutex and synthetic metadata jobs represent the coordinator owner. Not the complete coordinator implementation." },
+  "rust/crates/harness/src/local/children/controller/follow/models.rs": { grade: "abstract", scope: "Actual follow/control refresh and task-volume file queries on MemoryStream; admission is a supplied future. Not child executor admission or persistent IO." },
+  "rust/crates/harness/src/local/children/controller/inputs/models.rs": { grade: "abstract", scope: "Actual input acknowledgement/publication paths on task files and MemoryStream; supplied futures stand in for live child execution. Not executor effects." },
+  "rust/crates/harness/src/local/children/controller/stopping/models.rs": { grade: "abstract", scope: "Actual controller stop/drain path and task files; synthetic effect future and accepted control cut exclude publication/follow registration races and disk IO." },
+  "rust/crates/harness/src/local/children/preparation/models.rs": { grade: "abstract", scope: "Actual fenced_inputs() and cancellation wakeup; synthetic flusher/commit futures and an atomic witness replace native staged writes. Not filesystem durability." },
+  "rust/crates/native-runtime/src/apple_model.rs": { grade: "real" },
   "rust/crates/actors/src/guest/state.rs": { grade: "real", constructs: "production State constructor in this source file" },
   "rust/crates/actors/tests/timer_loom.rs": { grade: "real" },
   "rust/crates/filesystem/fuzz/tests/model.rs": { grade: "real" },
