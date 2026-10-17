@@ -56,6 +56,8 @@ mod request;
 mod result;
 mod session;
 #[cfg(feature = "filesystem-local")]
+pub(crate) mod settlement;
+#[cfg(feature = "filesystem-local")]
 pub(crate) mod task_bindings;
 #[cfg(feature = "filesystem")]
 mod tool_input;

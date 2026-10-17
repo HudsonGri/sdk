@@ -12,7 +12,10 @@ struct State {
     ready: bool,
     revision: u64,
     wake: Option<Waker>,
+    session_phase: u8,
 }
+
+mod settlement;
 struct Changes {
     state: Arc<Mutex<State>>,
     cursor: u64,

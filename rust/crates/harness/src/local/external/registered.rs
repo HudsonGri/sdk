@@ -115,14 +115,15 @@ impl LocalHarness {
                 }
                 result
             };
-            crate::external_executor::cancellation::settle(progress, stopped, || {
+            let progress = crate::external_executor::cancellation::settle(progress, stopped, || {
                 cancellation.cancel();
             })
-            .await?;
+            .await;
             #[cfg(all(feature = "native-execution", feature = "hooks"))]
             if let Some(parent) = native_parent {
                 self.finish_native_process(task, parent).await?;
             }
+            progress?;
             Ok(true)
         })
     }

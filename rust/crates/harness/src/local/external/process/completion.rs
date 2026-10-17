@@ -82,35 +82,6 @@ impl LocalHarness {
                 // The process task's guard has retired before taking this guard.
                 // Native hooks hold only their own task guard during execution.
                 let (_binding, volumes) = self.binding(parent).await?;
-                if self.runtime.task_host().outcome(parent).await?.is_some() {
-                    return Ok(((), Some(())));
-                }
-                let Some(revision) = self
-                    .runtime
-                    .task_host()
-                    .idle_workflow_revision(parent)
-                    .await?
-                else {
-                    return Ok(((), None));
-                };
-                if let Err(error) = self
-                    .runtime
-                    .task_host()
-                    .resume_workflow(
-                        parent,
-                        revision,
-                        payload.clone(),
-                        crate::IdempotencyKey::new(format!("native-finished:{process}"))?,
-                        None,
-                        &mut None,
-                    )
-                    .await
-                {
-                    if self.runtime.task_host().outcome(parent).await?.is_some() {
-                        return Ok(((), Some(())));
-                    }
-                    return Err(error);
-                }
                 let commands = RequestCommands::new(
                     &self.runtime,
                     &volumes.requests,
@@ -118,11 +89,41 @@ impl LocalHarness {
                     publisher.as_ref(),
                 )
                 .with_child_admission(self);
-                self.advance(parent, &commands).await?;
-                Ok((
-                    (),
-                    self.runtime.task_host().outcome(parent).await?.map(|_| ()),
-                ))
+                use crate::external_executor::settlement::{self, Slot};
+                let settled = settlement::step(
+                    async || Box::pin(self.advance(parent, &commands)).await,
+                    async || {
+                        if self.runtime.task_host().outcome(parent).await?.is_some() {
+                            return Ok(Slot::Settled);
+                        }
+                        Ok(
+                            match self
+                                .runtime
+                                .task_host()
+                                .idle_workflow_revision(parent)
+                                .await?
+                            {
+                                Some(revision) => Slot::Idle(revision),
+                                None => Slot::Busy,
+                            },
+                        )
+                    },
+                    async |revision| {
+                        self.runtime
+                            .task_host()
+                            .resume_workflow(
+                                parent,
+                                revision,
+                                payload.clone(),
+                                crate::IdempotencyKey::new(format!("native-finished:{process}"))?,
+                                None,
+                                &mut None,
+                            )
+                            .await
+                    },
+                )
+                .await?;
+                Ok(((), settled.then_some(())))
             },
             async {
                 Ok(self
