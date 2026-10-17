@@ -44,7 +44,11 @@ proptest! {
                 assert!(owner.invocation_cancellation().unwrap().is_cancelled());
                 // Stopping an invocation preserves its fence for cleanup and
                 // result settlement; it does not invent permanent task loss.
-                owner.verify_owner(None)?.await?;
+                assert!(owner.verify_owner(None)?.await.is_err());
+                let mailbox = (owner.as_ref() as &dyn std::any::Any)
+                    .downcast_ref::<TaskJournalMailbox<acyclic_stream::MemoryStream>>()
+                    .unwrap();
+                mailbox.owner.verify(true, &mut None).await?;
 
                 let other = TaskId::from_bytes([103; 16]);
                 assert!(runtime.bind_task_owner(context.as_ref().clone(), other, fence.clone()).await.is_err());
