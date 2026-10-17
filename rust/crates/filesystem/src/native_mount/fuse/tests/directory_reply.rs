@@ -42,13 +42,12 @@ fn paged_aliases(
         loop {
             let first = projection.next_directory_child(&mut stream, &work)?;
             let mut state = projection.core.state()?;
-            let mut frame = state.directory_reply(&mut reply);
             state
                 .list_directory(
                     source.as_ref(),
                     ROOT_INODE,
                     &mut stream,
-                    &mut frame,
+                    &mut reply,
                     first,
                     &work,
                 )

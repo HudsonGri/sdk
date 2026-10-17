@@ -190,17 +190,6 @@ impl DirectoryStreams {
 }
 
 impl ProjectionState {
-    pub(super) fn directory_reply<'a>(
-        &mut self,
-        listing: &'a mut Option<DirectoryReply>,
-    ) -> DirectoryFrame<'a> {
-        self.listing_replies = self.listing_replies.wrapping_add(1);
-        DirectoryFrame {
-            reply: self.listing_replies,
-            listing,
-        }
-    }
-
     pub(super) fn directory_stream(
         &mut self,
         source: &dyn MountFilesystem,
@@ -246,14 +235,14 @@ impl ProjectionState {
         source: &dyn MountFilesystem,
         inode: u64,
         stream: &mut DirectoryStream,
-        frame: &mut DirectoryFrame<'_>,
+        listing: &mut Option<DirectoryReply>,
         mut first: Option<ChildName>,
         work: &crate::NativeMaterializationWork,
     ) -> (Result<(), NativeMountError>, bool) {
         let mut listed = false;
         let mut unlisted_reference = None;
-        let reply = frame.reply;
-        let listing = &mut *frame.listing;
+        self.listing_replies = self.listing_replies.wrapping_add(1);
+        let reply = self.listing_replies;
         let result = (|| -> Result<(), NativeMountError> {
             let counts_lookups = listing.as_ref().ok_or(libc::EIO)?.counts_lookups();
             if stream.emitted < 2 {
@@ -405,13 +394,6 @@ impl ProjectionState {
     }
 }
 
-// One kernel request owns this identity across every storage page. A page
-// emitter receives the frame and cannot mint a second reply for that request.
-pub(super) struct DirectoryFrame<'a> {
-    reply: u64,
-    listing: &'a mut Option<DirectoryReply>,
-}
-
 pub(super) enum DirectoryReply {
     Basic(ReplyDirectory),
     Plus(ReplyDirectoryPlus),
@@ -518,41 +500,25 @@ impl FuseProjection {
             .state()?
             .directory_stream(source, inode, offset, work)?;
         self.position_directory_stream(&mut stream, offset, work)?;
-        let mut first = self.next_directory_child(&mut stream, work)?;
+        let first = self.next_directory_child(&mut stream, work)?;
         let expected = stream.binding_epoch;
-        let mut lease = Some(source.acquire_binding_lease_with_meter(expected, work)?);
+        let _lease = source.acquire_binding_lease_with_meter(expected, work)?;
         if !source.view_is_stable_with_meter(work)?
             || source.binding_epoch_with_meter(work)? != expected
         {
             return Err(libc::ESTALE.into());
         }
         let mut state = self.core.state()?;
-        let mut frame = state.directory_reply(listing);
         let parking = state.streams.prepare_park(work)?;
-        let started = stream.emitted;
-        let (result, partial) = loop {
-            let (result, partial) =
-                state.list_directory(source, inode, &mut stream, &mut frame, first.take(), work);
-            let more = result.is_ok() && stream.needs_page();
-            if !more {
-                break (result, partial || stream.emitted > started);
-            }
-            drop(state);
-            drop(lease.take());
-            first = match self.next_directory_child(&mut stream, work) {
-                Ok(next) => next,
-                Err(error) => {
-                    state = self.core.state()?;
-                    break (Err(error), stream.emitted > started);
-                }
-            };
-            lease = Some(source.acquire_binding_lease_with_meter(expected, work)?);
-            state = self.core.state()?;
-        };
+        // Advance hidden pages before emission, then emit one page under this
+        // state lock. One request cannot reset its reply identity between pages
+        // or lose inode markers to an interleaved listing.
+        let (result, partial) =
+            state.list_directory(source, inode, &mut stream, listing, first, work);
         state.streams.park(inode, stream, parking);
         drop(state);
         if result.is_ok() || partial {
-            frame.listing.take().ok_or(libc::EIO)?.ok();
+            listing.take().ok_or(libc::EIO)?.ok();
         }
         result
     }
