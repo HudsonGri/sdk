@@ -20,7 +20,7 @@ impl VerifiedSummary {
                 .and_then(PreparationIo::original_native_work),
         ) {
             (None, None) => true,
-            (Some(a), Some(b)) => a.shares_allocation_context(b),
+            (Some(a), Some(b)) => a.shares_invocation_context(b),
             _ => false,
         };
         #[cfg(target_arch = "wasm32")]

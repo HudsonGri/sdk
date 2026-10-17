@@ -64,6 +64,7 @@ async fn fixture() -> Result<Journal> {
     )
 }
 
+mod invocation;
 mod legacy;
 use serde_json::Value;
 
