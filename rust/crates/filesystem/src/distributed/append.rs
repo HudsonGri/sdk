@@ -16,21 +16,21 @@ pub(super) async fn seal<G: AuthorityGuard>(
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     pub(super) async fn append<G: AuthorityGuard>(
         &self,
-        request: crate::GuardedAppend,
+        request: &crate::GuardedAppend,
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
-        let crate::GuardedAppend {
+        let &crate::GuardedAppend {
             authority_id,
             epoch,
             expected,
-            commit,
+            ref commit,
             permit,
         } = request;
-        if let Some(existing) = self
-            .authority_find_operation(authority_id, commit.operation_id, work)
-            .await?
-        {
+        let (attempt, idempotency_key, existing) = self
+            .operation_attempt(authority_id, commit.operation_id, work)
+            .await?;
+        if let Some(existing) = existing {
             seal(work, guard).await?;
             return Ok(if existing.fingerprint == commit.fingerprint {
                 FsAppendOutcome::AlreadyCommitted(existing)
@@ -210,15 +210,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let idempotency_key = append_key(
-            authority_id,
-            commit.operation_id,
-            durable.digest,
-            snapshot.epoch_tail,
-            gate_tail,
-            lease_path.as_ref(),
-            work,
-        )?;
         let result = self
             .commit(
                 CommitRequest {
@@ -315,18 +306,35 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
                 acyclic_stream::StreamError::IdempotencyMismatch,
             ))) => {
-                let existing = self
-                    .authority_find_operation(authority_id, commit.operation_id, work)
-                    .await?
-                    .ok_or_else(|| {
-                        authority_corrupt(
-                            "Stream idempotency mismatch has no operation record",
-                            work,
-                        )
-                    })?;
-                seal(work, guard).await?;
-                Ok(FsAppendOutcome::IdempotencyConflict {
-                    committed_fingerprint: existing.fingerprint,
+                let (next_attempt, _, existing) = self
+                    .operation_attempt(authority_id, commit.operation_id, work)
+                    .await?;
+                if let Some(existing) = existing {
+                    seal(work, guard).await?;
+                    return Ok(if existing.fingerprint == commit.fingerprint {
+                        FsAppendOutcome::AlreadyCommitted(existing)
+                    } else {
+                        FsAppendOutcome::IdempotencyConflict {
+                            committed_fingerprint: existing.fingerprint,
+                        }
+                    });
+                }
+                if next_attempt == attempt {
+                    return Err(authority_corrupt(
+                        "Stream idempotency mismatch has no operation record",
+                        work,
+                    )
+                    .into());
+                }
+                // Another caller filled our attempt slot with a failed CAS.
+                // The binding retries at a fresh cut, under the same work owner.
+                let actual = self.fork_snapshot(authority_id, work).await?.head;
+                Ok(if actual.epoch != epoch {
+                    FsAppendOutcome::Fenced {
+                        actual_epoch: actual.epoch,
+                    }
+                } else {
+                    FsAppendOutcome::Conflict { actual }
                 })
             }
             Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
@@ -338,39 +346,3 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
     }
 }
-
-fn append_key(
-    authority: AuthorityId,
-    operation: OperationId,
-    record: Digest,
-    epoch_tail: u64,
-    gate_tail: u64,
-    lease: Option<&StreamPath>,
-    work: &mut AuthorityWork<'_>,
-) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
-    #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
-    if super::tests::append_retry::reuse_operation_key() {
-        return work.key(
-            b"operation\0",
-            &[&authority.into_bytes(), &operation.into_bytes()],
-        );
-    }
-    // Streams retains failed CAS outcomes too. Rebase changes the record's
-    // previous digest; a new epoch, reservation or lease changes its fence.
-    // Keep logical operation deduplication in the authority's operation record,
-    // while one immutable provider attempt retains its own stable retry key.
-    work.key(
-        b"append\0",
-        &[
-            &authority.into_bytes(),
-            &operation.into_bytes(),
-            record.as_bytes(),
-            &epoch_tail.to_le_bytes(),
-            &gate_tail.to_le_bytes(),
-            lease.map_or(&[], |path| path.as_str().as_bytes()),
-        ],
-    )
-}
-
-#[cfg(all(test, not(acyclic_fs_loom)))]
-mod key_tests;

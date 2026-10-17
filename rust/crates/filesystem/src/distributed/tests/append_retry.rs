@@ -14,7 +14,7 @@ fn ready<F: Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
 }
 
-fn scenario(broken: bool) {
+fn scenario(broken: bool, same_operation: bool) {
     BROKEN.with(|fault| fault.set(broken));
     let stream = Arc::new(MemoryStream::default());
     let authority = AuthorityId::from_bytes([71; 16]);
@@ -23,7 +23,7 @@ fn scenario(broken: bool) {
     let initial = StreamAuthorityStore::new(Arc::clone(&stream));
     ready(initial.create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)).unwrap();
     let head = ready(initial.head(authority, &mut work)).unwrap();
-    let peer = proposed(72);
+    let peer = proposed(if same_operation { 73 } else { 72 });
     let mut record = DurableCommit {
         epoch: head.epoch,
         sequence: head.sequence.checked_next().unwrap(),
@@ -57,7 +57,13 @@ fn scenario(broken: bool) {
                     .into(),
             ],
         }],
-        idempotency_key: stream_key(b"peer", b"append").unwrap(),
+        idempotency_key: super::super::replay::operation_key(
+            authority,
+            peer.operation_id,
+            0,
+            &mut work,
+        )
+        .unwrap(),
     };
     let once = ModeledBool::new(true);
     let inner = Arc::clone(&stream);
@@ -123,8 +129,10 @@ fn scenario(broken: bool) {
 
 #[test]
 fn a_lost_cas_does_not_poison_the_rebased_operation_identity() {
-    loom::model(|| scenario(false));
-    let error = std::panic::catch_unwind(|| loom::model(|| scenario(true)))
+    for same_operation in [false, true] {
+        loom::model(move || scenario(false, same_operation));
+    }
+    let error = std::panic::catch_unwind(|| loom::model(|| scenario(true, false)))
         .expect_err("reusing the failed attempt identity was accepted");
     let message = error
         .downcast_ref::<String>()
