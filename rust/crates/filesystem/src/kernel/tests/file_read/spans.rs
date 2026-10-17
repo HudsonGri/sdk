@@ -5,6 +5,9 @@ use super::*;
 use acyclic_test_support::differential::observe;
 use proptest::prelude::*;
 
+#[path = "baseline.rs"]
+mod baseline;
+
 /// One extent of the model file: `None` is a hole, `Some(offset)` content
 /// from that blob offset.
 type Shape = (Option<u64>, u64);
@@ -100,6 +103,32 @@ fn sparse(
 }
 
 impl Sparse {
+    fn run(&self, range: ByteRange, old: bool) -> Result<FileRangeRead, FileRangeReadFailure> {
+        let cancellation = CancellationToken::new();
+        let request = FileRangeRequest {
+            record: self.record,
+            range,
+            maximum_spans: 16,
+            limits: DecodeLimits::default(),
+            budget: WorkBudget::UNBOUNDED,
+        };
+        if !old {
+            return futures::executor::block_on(read_file_range_async(
+                &self.store,
+                request,
+                &cancellation,
+            ));
+        }
+        let mut accounting = KernelAccounting::standalone(request.budget, &cancellation);
+        futures::executor::block_on(baseline::read(
+            &self.store,
+            request,
+            &mut accounting,
+            &cancellation,
+        ))
+        .map_err(|error| failed(file_error(error), accounting.spent()))
+    }
+
     fn read(&self, range: ByteRange) -> (Result<FileRangeRead, FileRangeReadFailure>, Vec<Work>) {
         observe(
             || (),
@@ -137,11 +166,12 @@ impl Sparse {
                 continue;
             };
             let mut position = object_offset + start - offset;
+            let base = position;
             let object_end = object_offset + stop - offset;
             while position < object_end {
                 let chunk_end = (position / self.chunk_bytes + 1) * self.chunk_bytes;
                 let piece = chunk_end.min(object_end) - position;
-                work.push(("chunk", at, piece));
+                work.push(("chunk", position - base, piece));
                 at += piece;
                 position += piece;
             }
@@ -243,14 +273,36 @@ proptest! {
         let size = file.logical.len() as u64;
         let offset = start.index(size as usize + 1) as u64;
         let range = ByteRange { offset, length: size - offset + extra };
-        let (read, trace) = file.read(range);
+        let [(old, old_trace), (read, trace)] = acyclic_test_support::differential::pair(
+            || sparse(&content, chunk_bytes, &shapes).unwrap(),
+            |file, old| file.run(range, old),
+        );
+        let chunks = |trace: &[Work]| trace.iter().copied()
+            .filter(|(op, ..)| matches!(*op, "chunk" | "batch")).collect::<Vec<_>>();
+        prop_assert_eq!(chunks(&trace), chunks(&old_trace));
         if extra != 0 {
             let failure = read.expect_err("a range past the end must fail");
+            let old = old.expect_err("the baseline must reject the same range");
+            prop_assert_eq!(format!("{:?}", failure.error), format!("{:?}", old.error));
             prop_assert_eq!(failure.work.output_bytes, 0);
             prop_assert!(output_work(&trace).is_empty());
             return Ok(());
         }
         let read = read.unwrap();
+        let old = old.unwrap();
+        prop_assert_eq!(read.bytes.as_ref(), old.bytes.as_ref());
+        let mut content_bytes = 0;
+        let mut content_spans = 0;
+        for (offset, &(source, length)) in file.extent_offsets() {
+            let start = offset.max(range.offset);
+            let end = (offset + length).min(range.offset + range.length);
+            if source.is_some() && start < end {
+                content_bytes += end - start;
+                content_spans += 1;
+            }
+        }
+        prop_assert_eq!(old.work.bytes_copied, read.work.bytes_copied + 2 * content_bytes);
+        prop_assert_eq!(old.work.allocation_operations, read.work.allocation_operations + content_spans);
         prop_assert_eq!(read.bytes.as_ref(), &file.logical[offset as usize..]);
         prop_assert_eq!(output_work(&trace), file.expected_work(range));
         // The read copies what planning and a standalone read of each
@@ -343,28 +395,25 @@ fn measure_sparse_reads() -> Result<(), Box<dyn std::error::Error>> {
             ],
         ),
     ] {
-        let file = sparse(&content, 64 << 10, &shapes)?;
-        let range = ByteRange {
-            offset: 0,
-            length: file.logical.len() as u64,
-        };
-        let rounds = 64;
-        let started = std::time::Instant::now();
-        for _ in 0..rounds {
-            let read = futures::executor::block_on(read_file_range_async(
-                &file.store,
-                FileRangeRequest {
-                    record: file.record,
-                    range,
-                    maximum_spans: 16,
-                    limits: DecodeLimits::default(),
-                    budget: WorkBudget::UNBOUNDED,
-                },
-                &CancellationToken::new(),
-            ));
-            std::hint::black_box(read?);
+        for old in [true, false] {
+            let file = sparse(&content, 64 << 10, &shapes)?;
+            let range = ByteRange {
+                offset: 0,
+                length: file.logical.len() as u64,
+            };
+            // Each implementation warms only its own decoder cache.
+            std::hint::black_box(file.run(range, old)?);
+            let rounds = 64;
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                std::hint::black_box(file.run(range, old)?);
+            }
+            println!(
+                "{label} {}: {} ns/read",
+                if old { "baseline" } else { "candidate" },
+                started.elapsed().as_nanos() / rounds
+            );
         }
-        println!("{label}: {} ns/read", started.elapsed().as_nanos() / rounds);
     }
     Ok(())
 }

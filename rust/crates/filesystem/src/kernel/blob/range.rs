@@ -483,7 +483,11 @@ impl BlobRangeMachine {
         };
         accounting.admit(copied)?;
         #[cfg(test)]
-        crate::kernel::file_read::read_work::record("chunk", self.output.len(), region.len());
+        crate::kernel::file_read::read_work::record(
+            "chunk",
+            self.output.len() - self.base,
+            region.len(),
+        );
         self.output.extend_from_slice(region);
         accounting.record_completed(copied)
     }
