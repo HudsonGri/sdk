@@ -1,21 +1,19 @@
 //! Crash-cut enumeration over a real on-disk `LocalStream`.
 //!
-//! A clean run counts the operation's durable provider writes (`append`,
-//! `fork` and committed `commit`s; `LocalStream` publishes each only after its
-//! journal flush). Every cut then replays the operation in a fresh directory
-//! and crashes at one boundary:
-//! - `BeforeWrite(k)`: writes `1..=k` landed, along with every non-durable
-//!   effect performed before write `k + 1`, which never starts;
-//! - `LostAck(k)`: write `k` landed but the process died before seeing it.
+//! Cut points are the provider's journal appends, observed at the append
+//! itself: every persisted frame, including a conflicting commit retained
+//! with its idempotency receipt, and nothing else; an elided replay persists
+//! nothing. Snapshot compaction rewrites the same state and is not a cut. A
+//! clean run counts the frames, then every cut replays the operation in a
+//! fresh directory and crashes at one boundary:
+//! - `BeforeWrite(k)`: frames `1..=k` landed, along with every non-durable
+//!   effect performed before frame `k + 1`, which is never written;
+//! - `LostAck(k)`: frame `k` landed but the process died before seeing it.
 //!
-//! After a crash every provider call fails. All handles are dropped, an
-//! independent provider reopens the directory, and `recover` observes it.
-use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, LocalStream, ReadRequest, RecordStream, StreamBounds,
-    StreamError, StreamPath, StreamProvider, StreamWatermarks,
-};
+//! A crash poisons the provider, so every later call fails. All handles are
+//! dropped, an independent provider reopens the directory, and `recover`
+//! observes it.
+use acyclic_stream::{LocalStream, PersistenceCut};
 use std::{
     future::Future,
     path::Path,
@@ -25,7 +23,8 @@ use std::{
     },
 };
 
-type Storage<T> = Result<T, StreamError>;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Cut {
@@ -33,126 +32,49 @@ pub(crate) enum Cut {
     LostAck(usize),
 }
 
-pub(crate) struct CrashingStream {
-    inner: Arc<LocalStream>,
+#[cfg(test)]
+thread_local! {
+    /// Fault switch: a lost acknowledgement fires before its frame is written,
+    /// so the cut names a frame that never reached the journal.
+    static LOSE_UNWRITTEN_ACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct Cutter {
     cut: Option<Cut>,
-    writes: AtomicUsize,
+    landed: AtomicUsize,
     crashed: AtomicBool,
 }
 
-impl CrashingStream {
-    fn alive(&self) -> Storage<()> {
-        if self.crashed.load(Ordering::SeqCst) {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(())
-    }
-
-    async fn write<T>(
-        &self,
-        landed: impl FnOnce(&T) -> bool,
-        write: impl Future<Output = Storage<T>>,
-    ) -> Storage<T> {
-        self.alive()?;
-        let before = self.writes.load(Ordering::SeqCst);
-        if self.cut == Some(Cut::BeforeWrite(before)) {
+impl Cutter {
+    fn fires(&self, at: Cut) -> bool {
+        if self.cut == Some(at) {
             self.crashed.store(true, Ordering::SeqCst);
-            return Err(StreamError::Unavailable);
         }
-        let output = write.await?;
-        if landed(&output) {
-            self.writes.store(before + 1, Ordering::SeqCst);
-            if self.cut == Some(Cut::LostAck(before + 1)) {
-                self.crashed.store(true, Ordering::SeqCst);
-                return Err(StreamError::Unavailable);
-            }
-        }
-        Ok(output)
+        self.crashed.load(Ordering::SeqCst)
     }
 }
 
-#[async_trait::async_trait]
-impl StreamProvider for CrashingStream {
-    async fn inspect_idempotency(
-        &self,
-        key: IdempotencyKey,
-    ) -> Storage<Option<IdempotencyObservation>> {
-        self.alive()?;
-        self.inner.inspect_idempotency(key).await
+impl PersistenceCut for Cutter {
+    fn admit(&self) -> bool {
+        let landed = self.landed.load(Ordering::SeqCst);
+        #[cfg(test)]
+        if LOSE_UNWRITTEN_ACK.with(std::cell::Cell::get)
+            && self.cut == Some(Cut::LostAck(landed + 1))
+        {
+            self.landed.store(landed + 1, Ordering::SeqCst);
+            return !self.fires(Cut::LostAck(landed + 1));
+        }
+        !self.fires(Cut::BeforeWrite(landed))
     }
-    async fn tail(&self, path: StreamPath) -> Storage<u64> {
-        self.alive()?;
-        self.inner.tail(path).await
-    }
-    async fn bounds(&self, path: StreamPath) -> Storage<StreamBounds> {
-        self.alive()?;
-        self.inner.bounds(path).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Storage<StreamWatermarks> {
-        self.alive()?;
-        self.inner.watermarks(path).await
-    }
-    async fn append(&self, request: AppendRequest) -> Storage<AppendOutcome> {
-        self.write(
-            |outcome| matches!(outcome, AppendOutcome::Committed(_)),
-            self.inner.append(request),
-        )
-        .await
-    }
-    async fn fork(&self, request: ForkRequest) -> Storage<ForkReceipt> {
-        self.write(|_| true, self.inner.fork(request)).await
-    }
-    async fn read(&self, request: ReadRequest) -> Storage<RecordStream> {
-        self.alive()?;
-        self.inner.read(request).await
-    }
-    async fn follow(&self, path: StreamPath, from: u64) -> Storage<RecordStream> {
-        self.alive()?;
-        self.inner.follow(path, from).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-    ) -> Storage<RecordStream> {
-        self.alive()?;
-        self.inner.follow_checked(path, from, preceding).await
-    }
-    async fn children(&self, request: ChildrenRequest) -> Storage<ChildStream> {
-        self.alive()?;
-        self.inner.children(request).await
-    }
-    async fn children_page(&self, request: ChildrenPageRequest) -> Storage<ChildrenPage> {
-        self.alive()?;
-        self.inner.children_page(request).await
-    }
-    async fn commit(&self, request: CommitRequest) -> Storage<CommitOutcome> {
-        self.write(
-            |outcome| matches!(outcome, CommitOutcome::Committed(_)),
-            self.inner.commit(request),
-        )
-        .await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Storage<CommitOutcome> {
-        self.write(
-            |outcome| matches!(outcome, CommitOutcome::Committed(_)),
-            self.inner.commit_before(request, deadline_unix_millis),
-        )
-        .await
-    }
-    async fn read_commit(&self, id: CommitId) -> Storage<CommittedEnvelope> {
-        self.alive()?;
-        self.inner.read_commit(id).await
+
+    fn acknowledge(&self) -> bool {
+        let landed = self.landed.fetch_add(1, Ordering::SeqCst) + 1;
+        !self.fires(Cut::LostAck(landed))
     }
 }
 
 pub(crate) struct CrashCuts<O> {
-    /// Durable writes made by the uncrashed operation.
+    /// Journal frames persisted by the uncrashed operation.
     pub(crate) writes: usize,
     /// Recovery observation after the uncrashed operation.
     pub(crate) clean: O,
@@ -177,26 +99,26 @@ async fn once<O, S, SF, R, RF, V, VF>(
 where
     S: Fn(Arc<LocalStream>) -> SF,
     SF: Future<Output = ()>,
-    R: Fn(Arc<CrashingStream>) -> RF,
+    R: Fn(Arc<LocalStream>) -> RF,
     RF: Future<Output = ()>,
     V: Fn(Arc<LocalStream>) -> VF,
     VF: Future<Output = O>,
 {
     let directory = tempfile::tempdir().expect("crash-cut directory");
-    let inner = open(directory.path()).await;
-    setup(inner.clone()).await;
-    let crashing = Arc::new(CrashingStream {
-        inner,
+    let stream = open(directory.path()).await;
+    setup(stream.clone()).await;
+    let cutter = Arc::new(Cutter {
         cut,
-        writes: AtomicUsize::new(0),
+        landed: AtomicUsize::new(0),
         crashed: AtomicBool::new(false),
     });
-    run(crashing.clone()).await;
-    let writes = crashing.writes.load(Ordering::SeqCst);
-    let Ok(crashing) = Arc::try_unwrap(crashing) else {
+    stream.cut_persistence(cutter.clone());
+    run(stream.clone()).await;
+    let writes = cutter.landed.load(Ordering::SeqCst);
+    let Ok(stream) = Arc::try_unwrap(stream) else {
         panic!("operation retained the crashed provider");
     };
-    drop(crashing);
+    drop(stream);
     let observed = recover(open(directory.path()).await).await;
     (writes, observed)
 }
@@ -211,7 +133,7 @@ pub(crate) async fn enumerate<O, S, SF, R, RF, V, VF>(
 where
     S: Fn(Arc<LocalStream>) -> SF,
     SF: Future<Output = ()>,
-    R: Fn(Arc<CrashingStream>) -> RF,
+    R: Fn(Arc<LocalStream>) -> RF,
     RF: Future<Output = ()>,
     V: Fn(Arc<LocalStream>) -> VF,
     VF: Future<Output = O>,
