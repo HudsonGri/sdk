@@ -260,7 +260,7 @@ impl HostRoot {
             }
         })
     }
-    #[cfg(windows)]
+    #[cfg(all(windows, any(feature = "native-mount", test)))]
     pub(crate) fn clone_file_from<W: SourceDemandReadWork>(
         &self,
         source_root: &HostRoot,
