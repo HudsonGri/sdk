@@ -45,18 +45,7 @@ const DATALENGTH: usize = 136;
 /// End of the fixed section; variable-length names follow it.
 pub(super) const FIXED: usize = 144;
 
-fn field<const N: usize>(record: &[u8], at: usize) -> io::Result<[u8; N]> {
-    record
-        .get(at..at + N)
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed directory record"))
-}
-fn u32_at(record: &[u8], at: usize) -> io::Result<u32> {
-    field(record, at).map(u32::from_ne_bytes)
-}
-fn i64_at(record: &[u8], at: usize) -> io::Result<i64> {
-    field(record, at).map(i64::from_ne_bytes)
-}
+use super::super::macos_record::{field, i64_at, u32_at};
 
 impl HostStatReader {
     /// The packed facts of the record at the cursor, or `None` when this

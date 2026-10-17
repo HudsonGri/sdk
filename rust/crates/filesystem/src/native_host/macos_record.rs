@@ -4,11 +4,17 @@ use std::{ffi::CStr, io};
 fn malformed() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "malformed directory record")
 }
-fn field<const N: usize>(bytes: &[u8], at: usize) -> io::Result<[u8; N]> {
+pub(crate) fn field<const N: usize>(bytes: &[u8], at: usize) -> io::Result<[u8; N]> {
     bytes
         .get(at..at.checked_add(N).ok_or_else(malformed)?)
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or_else(malformed)
+}
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> io::Result<u32> {
+    field(bytes, at).map(u32::from_ne_bytes)
+}
+pub(crate) fn i64_at(bytes: &[u8], at: usize) -> io::Result<i64> {
+    field(bytes, at).map(i64::from_ne_bytes)
 }
 pub(crate) fn record(bytes: &[u8], start: usize) -> io::Result<&[u8]> {
     let tail = bytes.get(start..).ok_or_else(malformed)?;
