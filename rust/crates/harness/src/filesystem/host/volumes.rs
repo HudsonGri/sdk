@@ -117,6 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
                 super::super::access::require_current(&workspace, &access.0, io).await?;
+                drop(access);
                 let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
                 let options = match paths {
                     Some(paths) => options.inherit_paths(paths),
