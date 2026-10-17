@@ -76,7 +76,7 @@ pub(super) fn cancelled_turn_is_quiet(
 pub(in crate::local::children) async fn cancel(
     files: &Files,
     reference: &Component,
-    observation: &mut crate::task_volume::Observation,
+    cursor: &mut crate::task_volume::Cursor,
     values: &mut BTreeMap<FileKey, FileValue>,
     generation: &mut Generation,
 ) -> Result<()> {
@@ -101,9 +101,7 @@ pub(in crate::local::children) async fn cancel(
                 return Ok(());
             }
             Err(crate::task_volume::Error::Conflict(_)) => {
-                let change = observation
-                    .changes
-                    .next()
+                let change = follow::next(files, Query::Child(reference.clone()), cursor)
                     .await
                     .ok_or_else(|| Error::Conflict("inherited control follow ended".into()))?
                     .map_err(storage)?;

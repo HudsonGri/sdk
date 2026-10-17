@@ -8,192 +8,21 @@ use crate::{
     },
 };
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
-use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use std::collections::{BTreeMap, BTreeSet};
 
 type Files = TaskFiles<acyclic_stream::LocalStream>;
 
 mod delivery;
 mod draining;
+mod drive;
+pub(super) mod follow;
 mod inputs;
 mod lease;
 mod results;
 mod stopping;
 
 impl LocalHarness {
-    pub(in crate::local) fn advance_with_children<'a>(
-        &'a self,
-        task: TaskId,
-        commands: &'a dyn TaskCommandHost,
-        files: Arc<Files>,
-        control: Option<(Arc<Files>, Component)>,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
-            let mut observation = crate::task_volume::Observation {
-                snapshot: None,
-                reset: false,
-                changes: files
-                    .inner
-                    .follow(Query::Children, snapshot.cursor)
-                    .await
-                    .map_err(storage)?,
-            };
-            let mut generation = snapshot.generation;
-            let mut values: BTreeMap<_, _> = snapshot
-                .files
-                .into_iter()
-                .map(|file| (file.key.clone(), file))
-                .collect();
-            let mut active = BTreeSet::new();
-            let mut completions = BTreeMap::new();
-            let mut jobs = FuturesUnordered::new();
-            let inherited = commands.invocation_cancellation().cloned();
-            let mut inherited_stopped = false;
-            for reference in files.inner.child_references().await.map_err(storage)? {
-                if needs_work_count(
-                    &reference,
-                    &values,
-                    false,
-                    files
-                        .inner
-                        .child_input_count(&reference)
-                        .await
-                        .map_err(storage)?,
-                )? {
-                    active.insert(reference.clone());
-                    let request = files
-                        .inner
-                        .child_request(&reference)
-                        .await
-                        .map_err(storage)?;
-                    jobs.push(self.service_child(
-                        files.clone(),
-                        reference.clone(),
-                        request.clone(),
-                        inherited.clone(),
-                    ));
-                }
-            }
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let drained = acyclic_fs::CancellationToken::new();
-            let scoped = draining::Commands {
-                harness: self,
-                inner: commands,
-                cancellation: cancellation.clone(),
-                drained: drained.clone(),
-            };
-            let parent = self.advance_while(task, &scoped, || async {
-                if cancellation.is_cancelled()
-                    || commands
-                        .invocation_cancellation()
-                        .is_some_and(|token| token.is_cancelled())
-                {
-                    return Ok(false);
-                }
-                match &control {
-                    None => Ok(true),
-                    Some((files, reference)) => Ok(super::commands::state(
-                        files,
-                        reference,
-                        usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                    )
-                    .await?
-                        == ChildState::Running),
-                }
-            });
-            futures::pin_mut!(parent);
-            let mut parent_done = false;
-            let result = async {
-            loop {
-                if !inherited_stopped
-                    && inherited.as_ref().is_some_and(|token| token.is_cancelled())
-                {
-                    inherited_stopped = true;
-                    cancellation.cancel();
-                    for reference in files.inner.child_references().await.map_err(storage)? {
-                        if !active.contains(&reference)
-                            && !matches!(
-                                desired(&reference, &values)?,
-                                ChildState::Cancelled | ChildState::Archived
-                            )
-                        {
-                            active.insert(reference.clone());
-                            let request = files.inner.child_request(&reference).await.map_err(storage)?;
-                            jobs.push(self.service_child(
-                                files.clone(),
-                                reference.clone(),
-                                request.clone(),
-                                inherited.clone(),
-                            ));
-                        }
-                    }
-                }
-                if cancellation.is_cancelled() && jobs.is_empty() { drained.cancel(); }
-                if parent_done && jobs.is_empty() && completions.is_empty() {
-                    return Ok(());
-                }
-                tokio::select! {
-                    biased;
-                    change = observation.changes.next() => {
-                        let change = change.ok_or_else(|| Error::Conflict("child folder follow ended".into()))?.map_err(storage)?;
-                        let mut changed = BTreeSet::new();
-                        for file in change.file.iter().chain(&change.files) {
-                            if let FileKey::Child { reference, file: ChildFile::Request | ChildFile::Inbox(_) | ChildFile::Control } = &file.key {
-                                changed.insert(reference.clone());
-                            }
-                        }
-                        advance_fold(&mut values, &mut generation, change);
-                        changed.extend(release_completed(generation.position, &mut active, &mut completions));
-                        for reference in changed {
-                            if active.contains(&reference) || !needs_work_count(&reference, &values, inherited_stopped, files.inner.child_input_count(&reference).await.map_err(storage)?)? { continue; }
-                            let request = files.inner.child_request(&reference).await.map_err(storage)?;
-                            active.insert(reference.clone());
-                            jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
-                        }
-                    }
-                    result = jobs.next(), if !jobs.is_empty() => {
-                        let (reference, position) = result.ok_or_else(|| Error::Conflict("child worker disappeared".into()))??;
-                        completions.insert(reference, position);
-                        for reference in release_completed(generation.position, &mut active, &mut completions) {
-                        if needs_work_count(&reference, &values, inherited_stopped, files.inner.child_input_count(&reference).await.map_err(storage)?)? {
-                            let request = files.inner.child_request(&reference).await.map_err(storage)?;
-                            active.insert(reference.clone());
-                            jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
-                        }
-                        }
-                    }
-                    _ = async { inherited.as_ref().unwrap().cancelled().await },
-                        if inherited.is_some() && !inherited_stopped => {}
-                    result = &mut parent, if !parent_done => {
-                        parent_done = true;
-                        result?;
-                        if let Some(crate::Outcome::Indeterminate { operation_id }) = self.runtime.task_host().outcome(task).await? {
-                            return Err(Error::Indeterminate(operation_id));
-                        }
-                    }
-                }
-            }
-            }.await;
-            if result.is_err() {
-                draining::finish(
-                    async {
-                        if parent_done {
-                            Ok(())
-                        } else {
-                            parent.as_mut().await
-                        }
-                    },
-                    &mut jobs,
-                    &cancellation,
-                    &drained,
-                )
-                .await;
-            }
-            result
-        })
-    }
-
     pub(super) fn service_child<'a>(
         &'a self,
         files: Arc<Files>,
@@ -207,15 +36,7 @@ impl LocalHarness {
                 .child_lifecycle(Some(&reference))
                 .await
                 .map_err(storage)?;
-            let mut observation = crate::task_volume::Observation {
-                snapshot: None,
-                reset: false,
-                changes: files
-                    .inner
-                    .follow(Query::Child(reference.clone()), snapshot.cursor)
-                    .await
-                    .map_err(storage)?,
-            };
+            let mut cursor = snapshot.cursor;
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
                 .files
@@ -228,7 +49,7 @@ impl LocalHarness {
                 stopping::cancel(
                     files.as_ref(),
                     &reference,
-                    &mut observation,
+                    &mut cursor,
                     &mut values,
                     &mut generation,
                 )
@@ -260,12 +81,11 @@ impl LocalHarness {
                 None,
             )?;
             loop {
-                while let Some(next) = observation.changes.next().now_or_never() {
-                    let change = next
-                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                        .map_err(storage)?;
-                    advance_fold(&mut values, &mut generation, change);
-                }
+                // A pending follow may own a queued publication read permit.
+                // Never leave it parked while awaiting a write to the same stream.
+                // Generation conflicts below consume the accepted control prefix.
+                #[cfg(all(test, not(acyclic_harness_loom)))]
+                super::cuts::follow_probe(files.as_ref(), &reference, &mut cursor).await?;
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
                 let inputs = files
@@ -308,12 +128,14 @@ impl LocalHarness {
                     // result prefix before deciding whether the receive cut agrees.
                     let head = files.inner.head().await.map_err(storage)?;
                     while generation.position < head.position {
-                        let change = observation
-                            .changes
-                            .next()
-                            .await
-                            .ok_or_else(|| Error::Conflict("cancelled child follow ended".into()))?
-                            .map_err(storage)?;
+                        let change = follow::next(
+                            files.as_ref(),
+                            Query::Child(reference.clone()),
+                            &mut cursor,
+                        )
+                        .await
+                        .ok_or_else(|| Error::Conflict("cancelled child follow ended".into()))?
+                        .map_err(storage)?;
                         advance_fold(&mut values, &mut generation, change);
                     }
                     if !stopping::cancelled_turn_is_quiet(
@@ -379,12 +201,11 @@ impl LocalHarness {
                     {
                         return Ok((reference, generation.position));
                     }
-                    let change = observation
-                        .changes
-                        .next()
-                        .await
-                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                        .map_err(storage)?;
+                    let change =
+                        follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
+                            .await
+                            .ok_or_else(|| Error::Conflict("child follow ended".into()))?
+                            .map_err(storage)?;
                     advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
@@ -408,12 +229,11 @@ impl LocalHarness {
                     )
                     .await?
                 {
-                    let change = observation
-                        .changes
-                        .next()
-                        .await
-                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                        .map_err(storage)?;
+                    let change =
+                        follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
+                            .await
+                            .ok_or_else(|| Error::Conflict("child follow ended".into()))?
+                            .map_err(storage)?;
                     advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
@@ -444,7 +264,7 @@ impl LocalHarness {
                         loop {
                             tokio::select! {
                                 biased;
-                                change = observation.changes.next() => {
+                                change = follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor) => {
                                     let change = change.ok_or_else(|| Error::Conflict("child follow ended".into()))?.map_err(storage)?;
                                     let input = change.file.iter().chain(&change.files).any(|file| matches!(file.key,
                                         FileKey::Child { file: ChildFile::Request | ChildFile::Inbox(_), .. }));
@@ -462,7 +282,7 @@ impl LocalHarness {
                                                 self.deliver_child_inputs(files.as_ref(), &reference, child, &request, status.inputs).await?;
                                                 break;
                                             }
-                                            let change = observation.changes.next().await
+                                            let change = follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor).await
                                                 .ok_or_else(|| Error::Conflict("child input fence follow ended".into()))?
                                                 .map_err(storage)?;
                                             advance_fold(&mut values, &mut generation, change);
@@ -472,7 +292,7 @@ impl LocalHarness {
                                 _ = async { inherited.as_ref().unwrap().cancelled().await },
                                     if inherited.is_some() && !inherited_stopped => {
                                     cancellation.cancel();
-                                    stopping::cancel(files.as_ref(), &reference, &mut observation, &mut values, &mut generation).await?;
+                                    stopping::cancel(files.as_ref(), &reference, &mut cursor, &mut values, &mut generation).await?;
                                     inherited_stopped = true;
                                 }
                             }
@@ -495,14 +315,14 @@ impl LocalHarness {
                                 break;
                             }
                             Err(crate::task_volume::Error::Conflict(_)) => {
-                                let change = observation
-                                    .changes
-                                    .next()
-                                    .await
-                                    .ok_or_else(|| {
-                                        Error::Conflict("child result follow ended".into())
-                                    })?
-                                    .map_err(storage)?;
+                                let change = follow::next(
+                                    files.as_ref(),
+                                    Query::Child(reference.clone()),
+                                    &mut cursor,
+                                )
+                                .await
+                                .ok_or_else(|| Error::Conflict("child result follow ended".into()))?
+                                .map_err(storage)?;
                                 advance_fold(&mut values, &mut generation, change);
                             }
                             Err(error) => return Err(storage(error)),
@@ -554,12 +374,11 @@ impl LocalHarness {
                 {
                     return Ok((reference, generation.position));
                 }
-                let change = observation
-                    .changes
-                    .next()
-                    .await
-                    .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                    .map_err(storage)?;
+                let change =
+                    follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
+                        .await
+                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
+                        .map_err(storage)?;
                 advance_fold(&mut values, &mut generation, change);
             }
         })

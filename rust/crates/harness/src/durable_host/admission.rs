@@ -41,7 +41,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         Ok(Self {
-            coordinator: Arc::new(Mutex::new(coordinator)),
+            coordinator: Arc::new(crate::sync::Mutex::new(coordinator)),
             stream,
             payloads,
             reader,

@@ -57,3 +57,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(outcome)
     }
 }
+
+#[cfg(all(test, not(acyclic_loom)))]
+impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    pub(crate) async fn test_coordinator_barrier(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let _coordinator = self.coordinator.lock().await;
+        entered.send(()).unwrap();
+        let _ = release.await;
+    }
+}
