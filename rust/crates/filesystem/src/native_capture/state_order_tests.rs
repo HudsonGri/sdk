@@ -280,11 +280,16 @@ proptest! {
             charged(&kinds, states(&kinds, &entries), comparison_sort);
         let budget = WorkBudget {
             items_examined: old_items + spare,
-            peak_allocation_bytes: if no_bytes { 0 } else { u64::MAX },
-            allocation_operations: if no_operations { 0 } else { u64::MAX },
+            // The original ledger remains live throughout the sort. Fund only
+            // that required prefix, leaving zero spare scratch allowance.
+            peak_allocation_bytes: if no_bytes {
+                NativeMaterializationWork::accounting_state_bytes()
+            } else { u64::MAX },
+            allocation_operations: if no_operations { 1 } else { u64::MAX },
             ..WorkBudget::UNBOUNDED
         };
         let meter = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+        let initial = meter.receipt();
         let mut candidate = states(&kinds, &entries);
         let heap = acyclic_test_support::measure(|| {
             sort_capture_states(&mut candidate, &meter).unwrap();
@@ -295,13 +300,13 @@ proptest! {
         let needs_heap = count > 128 || depth + 1 >= 16;
         if count < 4 || (needs_heap && (no_bytes || no_operations)) {
             prop_assert_eq!(work.items_examined, old_items);
-            prop_assert_eq!(work.allocation_operations, 0);
-            prop_assert_eq!(work.peak_allocation_bytes, 0);
+            prop_assert_eq!(work.allocation_operations, initial.allocation_operations);
+            prop_assert_eq!(work.peak_allocation_bytes, initial.peak_allocation_bytes);
             prop_assert_eq!(heap.count_total, 0);
         } else {
             let requests = u64::from(count > 128) + u64::from(depth + 1 >= 16);
             prop_assert_eq!(heap.count_total, requests);
-            prop_assert_eq!(work.allocation_operations, requests);
+            prop_assert_eq!(work.allocation_operations, initial.allocation_operations + requests);
         }
     }
 }
@@ -319,8 +324,8 @@ fn rejected_counting_strategies_fail_the_same_budget_boundaries() {
         let (_, items, _) = charged(&kinds, states(&kinds, &entries), comparison_sort);
         let budget = WorkBudget {
             items_examined: items,
-            allocation_operations: 0,
-            peak_allocation_bytes: 0,
+            allocation_operations: 1,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
             ..WorkBudget::UNBOUNDED
         };
         let rejected = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
@@ -333,7 +338,7 @@ fn rejected_counting_strategies_fail_the_same_budget_boundaries() {
         assert!(result.is_err());
         let funded = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
         sort_capture_states(&mut states(&kinds, &entries), &funded).unwrap();
-        assert_eq!(funded.receipt().allocation_operations, 0);
+        assert_eq!(funded.receipt().allocation_operations, 1);
         assert!(funded.receipt().items_examined <= items);
     }
 }
