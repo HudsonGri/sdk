@@ -107,30 +107,19 @@ pub fn verify_cached_summary_publication(release_early: bool) {
             // temporary exceeds Loom's coroutine stack. Construction never
             // polls it or accesses a modeled lock. All polling, including
             // append/refresh and nested provider locking, stays on Loom.
-            let future = std::thread::scope(|scope| {
-                scope
-                    .spawn(|| {
-                        Box::pin(journal.append_validated(operation, None, "retry", &event, None))
-                    })
-                    .join()
-                    .unwrap()
-            });
+            let future =
+                model_future(|| journal.append_validated(operation, None, "retry", &event, None));
             loom::future::block_on(future).unwrap();
         }));
     }
     for worker in workers {
         worker.join().unwrap();
     }
-    loom::future::block_on(async {
-        let cache = journal.verified.lock().await;
+    {
+        let cache = loom::future::block_on(journal.verified.lock());
         assert_eq!(cache.summary.tail, 1);
         assert!(cache.summary.fence.is_some());
-        let future = std::thread::scope(|scope| {
-            scope
-                .spawn(|| Box::pin(journal.replay_page(operation, 0, 8, true, None)))
-                .join()
-                .unwrap()
-        });
-        assert_eq!(future.await.unwrap().len(), 1);
-    });
+    }
+    let future = model_future(|| journal.replay_page_fenced(operation, 0, 8, true, None, None));
+    assert_eq!(loom::future::block_on(future).unwrap().0.len(), 1);
 }
