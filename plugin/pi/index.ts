@@ -3,6 +3,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 // Installation substitutes one JSON string; no shell interprets it.
 const executable = "__ACYCLIC_EXECUTABLE__";
@@ -68,12 +69,24 @@ function identity(ctx: ExtensionContext) {
   return { sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
 }
 
-function nativeSpawn(input: unknown, ctx: ExtensionContext) {
+function nativeSpawn(input: unknown, ctx: ExtensionContext, toolCallId: string) {
   if (!input || typeof input !== "object" || !("id" in input) || "executor" in input) return input;
   if (!ctx.model || !process.argv[1]) throw new Error("Native spawn needs the current model and executable");
-  const session = SessionManager.inMemory(ctx.cwd);
+  const owner = ctx.sessionManager.getBranch().findLast(entry => entry.type === "message" &&
+    entry.message.role === "assistant" && entry.message.content.some(part => part.type === "toolCall" && part.id === toolCallId));
+  if (!owner) throw new Error("Native spawn has no owning assistant invocation");
+  // Retrying the same native invocation selects the same SDK session and seed;
+  // no process-local operation cache can lose this identity after a restart.
+  const bytes = createHash("sha256").update("acyclic.pi-native-session/v1\0")
+    .update(ctx.sessionManager.getSessionId()).update("\0").update(toolCallId).digest().subarray(0,16);
+  bytes[6] = (bytes[6]! & 15) | 128;
+  bytes[8] = (bytes[8]! & 63) | 128;
+  const hex = bytes.toString("hex");
+  const id = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  const session = SessionManager.inMemory(ctx.cwd,{id});
   const header = session.getHeader();
   if (!header) throw new Error("Native SDK omitted the child session header");
+  header.timestamp = owner.timestamp;
   const text = (value: string) => ({ kind: "text", value });
   const args: Array<Record<string, string>> = [process.argv[1], "--print", "--mode", "json", "--session"].map(text);
   args.push({ kind: "session_file" });
@@ -103,7 +116,7 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
         renderCall: args => new Text(tool.name + " " + JSON.stringify(args), 0, 0),
         renderResult: result => new Text(result.content.map(block => block.type === "text" ? block.text : "").join("\n"), 0, 0),
         async execute(toolCallId, input, signal, _onUpdate, context) {
-          if (tool.name === "acyclic_spawn") input = nativeSpawn(input, context);
+          if (tool.name === "acyclic_spawn") input = nativeSpawn(input, context, toolCallId);
           const result = await send("tool_call", { toolCallId, toolName: tool.name, input, ...identity(context) }, signal);
           if (!Array.isArray(result.content) || result.isError !== false) throw new Error("Invalid harness tool result");
           return { content: result.content, details: result.details };

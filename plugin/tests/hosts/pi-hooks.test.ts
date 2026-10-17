@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { test } from "bun:test";
 import fc from "fast-check";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Invoke } from "../../pi/index.ts";
 
@@ -66,6 +68,35 @@ test("Pi executes every registered tool exactly once through the harness", async
   assert.deepEqual(calls.at(-1),{event:"tool_result",input:{...completion,sessionId:"native-session",cwd:"/selected-project"}});
   await handlers.get("session_shutdown")!({},context);
   assert.equal(calls.at(-1)!.event,"session_shutdown");
+});
+
+test("native launch identity and seed survive exact retries without a memory cache",async () => {
+  await fc.assert(fc.asyncProperty(fc.uuid(),fc.stringMatching(/^[a-z]{1,16}$/),async (parent,callId) => {
+    const calls: Record<string,unknown>[]=[];
+    const make=async () => {
+      const fixture=setup(async (event,input)=> {
+        if(event === "catalog") return {tools:[{name:"acyclic_spawn",description:"spawn",input_schema:{type:"object"}}]};
+        if(event === "tool_call") calls.push(input);
+        return {content:[{type:"text",text:"child"}],isError:false};
+      });
+      const manager=SessionManager.inMemory("/selected-project",{id:parent});
+      manager.appendMessage(fauxAssistantMessage(fauxToolCall("acyclic_spawn",{id:"label",prompt:"literal $(prompt)"},{id:callId}),
+        {stopReason:"toolUse",timestamp:1}));
+      // Native entry timestamps are retained in the source session file.
+      const owner=manager.getEntries()[0]!;
+      owner.timestamp="2026-10-17T00:00:00Z";
+      const context={...fixture.context,sessionManager:manager,model:{id:"probe",provider:"test"}} as unknown as ExtensionContext;
+      await fixture.handlers.get("session_start")!({},context);
+      await fixture.tools.get("acyclic_spawn")!.execute(callId,{id:"label",prompt:"literal $(prompt)"},undefined,undefined,context);
+    };
+    await make();await make();
+    assert.deepEqual(calls[0],calls[1],"a fresh shim instance changed the immutable native invocation");
+    const declaration=(calls[0]!.input as {executor:{session:{session_id:string},session_bytes:string}}).executor;
+    assert.equal(JSON.parse(declaration.session_bytes).id,declaration.session.session_id);
+    assert.notEqual(declaration.session.session_id,parent);
+    assert.match(declaration.session.session_id,/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.ok(!("environment" in declaration));
+  }),{numRuns:32});
 });
 
 test("session activation preserves every additive tool and enables every harness tool",async () => {
