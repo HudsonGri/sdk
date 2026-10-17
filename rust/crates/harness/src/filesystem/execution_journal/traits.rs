@@ -174,12 +174,12 @@ where
         if io.is_none() {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
                 let span = obs_span!("acyclic.harness.journal.append");
-                crate::obs::traced_future(
-                    span,
-                    self.append_validated(operation, None, key, event, None),
-                )
+                crate::obs::traced_future(span, async {
+                    self.append_validated(operation, None, key, event, None)
+                        .await?;
+                    self.publish_chunk(key, event, None).await
+                })
                 .await
-                .map(|_| ())
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {

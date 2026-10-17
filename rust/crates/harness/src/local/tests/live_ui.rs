@@ -28,6 +28,9 @@ async fn streaming(bound: bool) -> Result<()> {
     let provider = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::Content {
+                delta: "graphcoder ".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::Content {
                 delta: "**intermediate answer**".into(),
             }),
             ScriptedEvent::Pending {},
@@ -91,6 +94,7 @@ async fn streaming(bound: bool) -> Result<()> {
                 let cells = &terminal.backend().buffer().content;
                 let text: String = cells.iter().map(|cell| cell.symbol()).collect();
                 if text.contains("intermediate answer") {
+                    assert!(text.contains("graphcoder intermediate answer"));
                     assert!(!text.contains("**intermediate answer**"));
                     let start = cells
                         .windows(19)
