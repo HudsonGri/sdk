@@ -2,19 +2,14 @@ use super::{
     session_runtime::{Fixture, VolumeBinding},
     *,
 };
-use acyclic_harness::{
-    TaskId,
-    runtime::TaskStateProvider,
-    task_volume::{Component, FileValue, Query},
-};
+use acyclic_harness::{TaskId, runtime::TaskStateProvider, task_volume::Component};
 use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
-    // Property: a delivered tool request reaches the session slot exactly when
-    // its host/session/caller tuple equals the immutable attachment's tuple.
-    // A newly admitted task has no suspended slot, so matching requests conflict;
-    // a mismatch must be rejected as unauthorized before touching that slot.
+    // Property: the fenced worker executes a tool exactly when its native tuple
+    // matches the immutable attachment. Rejection leaves content unchanged and
+    // the next authenticated command remains executable in that same session.
     #[test]
     fn attachment_authority_is_the_exact_native_session(
         session in "[a-z]{1,12}", caller in prop::option::of("[a-z]{1,12}"),
@@ -24,13 +19,10 @@ proptest! {
         runtime.block_on(Box::pin(async {
             let fixture = Fixture::new(VolumeBinding::Separate).await?;
             let task = Component::new(TaskId::from_bytes([78;16]).to_string()).map_err(storage)?;
-            let consumer = RequestConsumer::new(&fixture.runtime, &fixture.requests,
-                &fixture.results, fixture.publisher.as_ref(), "/project");
             let original = request(ExternalHost::Pi,"session_start", json!({
                 "sessionId":session,"agentId":caller,"cwd":"/project"
             }))?;
-            let file = publish(&fixture,&task,&original).await?;
-            consumer.accept(&task,&file).await?;
+            super::intake::deliver(&fixture,&task,&original).await?;
             let admitted = fixture.runtime.task_host()
                 .observe_admission(TaskId::from_bytes([78;16])).await?;
             let command: acyclic_harness::workflow::WorkflowCommand =
@@ -50,35 +42,30 @@ proptest! {
                 "tool_name":"Write","tool_input":{"file_path":"file","content":"text"}
             })};
             let native = request(host, if host == ExternalHost::Pi {"tool_call"} else {"PreToolUse"}, input)?;
-            let file = publish(&fixture,&task,&native).await?;
-            let answer = consumer.accept(&task,&file).await;
-            if host_changed || session_changed || caller_changed {
-                assert!(matches!(answer,Err(Error::Unauthorized(_))),"{answer:?}");
+            let answer = super::intake::deliver(&fixture,&task,&native).await?;
+            let rejected = host_changed || session_changed || caller_changed;
+            if rejected {
+                assert_eq!(answer,json!({"Failed":{"message":"request differs from the attached native session"}}));
             } else {
-                assert!(matches!(answer,Err(Error::Conflict(_))),"{answer:?}");
+                assert!(answer.get("Succeeded").is_some(),"{answer}");
             }
+            let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
+                fixture.files.clone(),&fixture.verifier,&fixture.signed,65_536,None)?;
+            let written = reader.read_private_path(&fixture.volume,"","file",None,65_536,None)?.await;
+            if rejected {assert!(matches!(written,Err(Error::NotFound(_))),"{written:?}");}
+            else {assert_eq!(written?.1.as_ref(),b"text");}
+            let next = request(ExternalHost::Pi,"tool_call",json!({
+                "sessionId":original.session_id,"agentId":original.caller,"toolCallId":"next",
+                "toolName":"write","input":{"path":"after","content":"still authorized"}
+            }))?;
+            let next = super::intake::deliver(&fixture,&task,&next).await?;
+            assert!(next.get("Succeeded").is_some(),"{next}");
+            assert_eq!(reader.read_private_path(&fixture.volume,"","after",None,65_536,None)?.await?.1.as_ref(),b"still authorized");
+            assert_eq!(fixture.runtime.task_host().observe_admission(TaskId::from_bytes([78;16])).await?,admitted);
+            assert_eq!(fixture.runtime.task_host().outcome(TaskId::from_bytes([78;16])).await?,None);
             Ok::<_,Error>(())
         }))?;
     }
-}
-
-async fn publish(
-    fixture: &Fixture,
-    task: &Component,
-    native: &ExternalRequest,
-) -> Result<FileValue> {
-    let file = native.to_file(task.clone()).map_err(storage)?;
-    let head = fixture
-        .requests
-        .snapshot(&Query::File(file.key.clone()), 1)
-        .await
-        .map_err(storage)?;
-    fixture
-        .requests
-        .append(head.generation, &file)
-        .await
-        .map_err(storage)?;
-    Ok(file)
 }
 
 fn storage(error: impl std::fmt::Display) -> Error {

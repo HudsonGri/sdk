@@ -206,6 +206,11 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
     };
     let commands = RequestCommands::new(&runtime, &requests, &results, publisher.as_ref());
     let guarded = SizeGuard(&commands);
+    let previous_results = results
+        .snapshot(&Query::Requests(task_folder.clone()), 64)
+        .await
+        .map_err(storage)?
+        .files;
     let attempt = Box::pin(runtime.run_operation(&worker, task, &guarded, 8, None)).await?;
     if !matches!(
         binding,
@@ -243,15 +248,14 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
             ));
         }
         let actor_files = results
-            .snapshot(&Query::Requests(task_folder), 2)
+            .snapshot(&Query::Requests(task_folder), 64)
             .await
             .map_err(storage)?
             .files;
         if binding != VolumeBinding::ForgedLifecycle {
-            assert!(
-                actor_files
-                    .iter()
-                    .all(|file| file.key.owner() == acyclic_harness::task_volume::Owner::Caller)
+            assert_eq!(
+                actor_files, previous_results,
+                "uncertain dispatch cannot change the authentic bootstrap's results"
             );
         }
         let reader = FilesystemContentVerifier::new(files, &verifier, &signed, 65_536, None)?;
