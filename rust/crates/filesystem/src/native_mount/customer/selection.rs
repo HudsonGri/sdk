@@ -251,81 +251,71 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_mount::{NativeAccessOwner, NativeMountCallbackFuture};
+    type MemoryWorkspace =
+        Workspace<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
+    type MemoryCheckout =
+        crate::Checkout<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-    async fn publication(omit_lease: bool) -> Result<(), Box<dyn std::error::Error>> {
-        acyclic_native_runtime::initialize_native_io_services()?;
-        crate::initialize_native_mount_services()?;
-        let cancel = crate::CancellationToken::new();
-        let work = super::super::tests::test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
-        let fs = crate::Fs::memory();
-        let workspace = fs
-            .create_workspace(
-                if omit_lease {
-                    "selection-unfenced"
-                } else {
-                    "selection-fenced"
-                },
-                crate::WorkBudget::UNBOUNDED,
-                &cancel,
-            )
-            .await?
-            .value;
-        let mount =
-            super::super::tests::fixture_options(&workspace, MountOptions::read_only()).await?;
-        let generation = workspace.head(&work, &cancel).await?;
-        let selection =
-            AdmittedSelection::admit(&mount, &workspace, generation.id(), &work).await?;
-        let selection = if omit_lease {
-            drop(selection);
-            None
-        } else {
-            Some(selection)
-        };
+    struct DuringAuthorization {
+        workspace: MemoryWorkspace,
+        inner: Arc<dyn NativeAccessOwner>,
+    }
+
+    impl NativeAccessOwner for DuringAuthorization {
+        fn check<'a>(
+            &'a self,
+            work: &'a NativeMaterializationWork,
+        ) -> Result<NativeMountCallbackFuture<'a>, NativeMountError> {
+            self.inner.check(work)
+        }
+
+        fn select<'a>(
+            &'a self,
+            generation: GenerationId,
+            work: &'a NativeMaterializationWork,
+        ) -> Result<NativeMountCallbackFuture<'a, MountOptions>, NativeMountError> {
+            let admission = self.inner.select(generation, work)?;
+            NativeMountCallbackFuture::new(work, || async move {
+                let binding = admission.await?;
+                // Publish after the owner has read policy but BEFORE it returns
+                // authorization. This exercises the actual admission ordering.
+                let mut edit = pending_policy(&self.workspace, work)
+                    .await
+                    .expect("policy edit fixture");
+                assert_refused(publish(&mut edit, work).await);
+                Ok(binding)
+            })
+        }
+    }
+
+    async fn pending_policy(
+        workspace: &MemoryWorkspace,
+        work: &NativeMaterializationWork,
+    ) -> TestResult<MemoryCheckout> {
         let mut edit = workspace
             .checkout(
                 GenerationSelector::Head,
                 CheckoutMode::tracking_transaction(),
-                &work,
-                &cancel,
+                work,
+                work.cancellation(),
             )
             .await?;
         edit.write_access_policy(
             crate::access::INITIAL_POLICY,
             crate::NamedAttributeWriteMode::Upsert,
-            &work,
-            &cancel,
+            work,
+            work.cancellation(),
         )
         .await?;
-        let commit = edit.commit(
-            crate::OperationId::new(),
-            None,
-            None,
-            None,
-            PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &cancel,
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
-        );
-        // Compare actual public publication outcomes, not a second evaluator.
-        let refused = matches!(
-            commit.await,
-            Err(crate::OperationFailure {
-                error: crate::FsError::Publication(
-                    crate::kernel::PublicationError::ActiveProjection
-                ),
-                ..
-            })
-        );
-        assert!(
-            refused,
-            "policy publication escaped materialization admission"
-        );
-        drop(selection);
+        Ok(edit)
+    }
+
+    async fn publish(
+        edit: &mut MemoryCheckout,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), crate::FsError> {
         edit.commit(
             crate::OperationId::new(),
             None,
@@ -333,7 +323,7 @@ mod tests {
             None,
             PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
-            &cancel,
+            work.cancellation(),
             |_| async {
                 Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
                     value: (),
@@ -342,19 +332,81 @@ mod tests {
             },
         )
         .await
-        .map_err(|failure| failure.error)?;
+        .map(|_| ())
+        .map_err(|failure| failure.error)
+    }
+
+    fn assert_refused(result: Result<(), crate::FsError>) {
+        assert!(
+            matches!(
+                result,
+                Err(crate::FsError::Publication(
+                    crate::kernel::PublicationError::ActiveProjection
+                ))
+            ),
+            "policy publication escaped materialization admission"
+        );
+    }
+
+    async fn publication(omit_lease: bool, late_admission: bool) -> TestResult {
+        acyclic_native_runtime::initialize_native_io_services()?;
+        crate::initialize_native_mount_services()?;
+        let cancel = crate::CancellationToken::new();
+        let work = super::super::tests::test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
+        let fs = crate::Fs::memory();
+        let name = if late_admission {
+            "selection-late"
+        } else if omit_lease {
+            "selection-unfenced"
+        } else {
+            "selection-fenced"
+        };
+        let workspace = fs
+            .create_workspace(name, crate::WorkBudget::UNBOUNDED, &cancel)
+            .await?
+            .value;
+        let mount =
+            super::super::tests::fixture_options(&workspace, MountOptions::read_only()).await?;
+        let owner = Arc::new(DuringAuthorization {
+            workspace: workspace.clone(),
+            inner: mount.access_refresh.clone().expect("fixture owner"),
+        });
+        let mount = mount.access_refresh(owner.clone());
+        let generation = workspace.head(&work, &cancel).await?;
+        if late_admission {
+            owner.select(generation.id(), &work)?.await?;
+            panic!("late admission did not exercise its policy publication check");
+        }
+        let selection =
+            AdmittedSelection::admit(&mount, &workspace, generation.id(), &work).await?;
+        let selection = if omit_lease {
+            drop(selection);
+            None
+        } else {
+            Some(selection)
+        };
+        let mut edit = pending_policy(&workspace, &work).await?;
+        assert_refused(publish(&mut edit, &work).await);
+        drop(selection);
+        publish(&mut edit, &work).await?;
         Ok(())
     }
 
     #[tokio::test]
-    async fn admitted_materialization_fences_policy_until_retirement()
-    -> Result<(), Box<dyn std::error::Error>> {
-        publication(false).await
+    async fn admitted_materialization_fences_authorization_and_copy_until_retirement() -> TestResult
+    {
+        publication(false, false).await
     }
 
     #[tokio::test]
     #[should_panic(expected = "policy publication escaped materialization admission")]
     async fn early_materialization_retirement_negative_control() {
-        publication(true).await.unwrap();
+        publication(true, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "policy publication escaped materialization admission")]
+    async fn authorizing_before_admission_negative_control() {
+        publication(false, true).await.unwrap();
     }
 }
