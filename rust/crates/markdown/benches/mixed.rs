@@ -26,7 +26,7 @@ fn percentile(samples: &mut [Duration], percent: usize) -> Duration {
         .unwrap_or_default()
 }
 
-fn measure_pair(small: &str, large: &str, chunk: usize) -> (Timing, Timing) {
+fn measure_pair(small: &str, large: &str, chunk: usize) -> Result<(Timing, Timing), &'static str> {
     let mut renderers = [Markdown::default(), Markdown::default()];
     let mut samples = [
         Vec::with_capacity(small.len().div_ceil(chunk)),
@@ -41,13 +41,15 @@ fn measure_pair(small: &str, large: &str, chunk: usize) -> (Timing, Timing) {
     for index in 0..small.len().div_ceil(chunk) {
         for which in [index % 2, 1 - index % 2] {
             for _ in 0..=which {
-                let Some(bytes) = chunks[which].next() else {
+                let markdown = renderers.get_mut(which).ok_or("renderer index")?;
+                let samples = samples.get_mut(which).ok_or("sample index")?;
+                let Some(bytes) = chunks.get_mut(which).ok_or("chunk index")?.next() else {
                     break;
                 };
-                let text = std::str::from_utf8(bytes).expect("ASCII benchmark fixture");
+                let text = std::str::from_utf8(bytes).map_err(|_| "ASCII benchmark fixture")?;
                 let start = Instant::now();
-                black_box(renderers[which].push(black_box(text)));
-                samples[which].push(start.elapsed());
+                black_box(markdown.push(black_box(text)));
+                samples.push(start.elapsed());
             }
         }
     }
@@ -56,10 +58,10 @@ fn measure_pair(small: &str, large: &str, chunk: usize) -> (Timing, Timing) {
         p50: percentile(&mut samples, 50),
         p99: percentile(&mut samples, 99),
     });
-    (small, large)
+    Ok((small, large))
 }
 
-fn history(source: &str, chunk: usize) -> (Duration, Duration) {
+fn history(source: &str, chunk: usize) -> Result<(Duration, Duration), &'static str> {
     let mut samples = [Vec::new(), Vec::new()];
     // Sample complete short windows in ABBA order. Interleaving individual
     // pushes makes two provisional highlighters compete for the same allocator
@@ -67,19 +69,19 @@ fn history(source: &str, chunk: usize) -> (Duration, Duration) {
     for round in 0..4 {
         let mut renderers = [Markdown::default(), Markdown::default()];
         for (markdown, offset) in renderers.iter_mut().zip([1024, MIB]) {
-            markdown.push(source.get(..offset).expect("benchmark history"));
+            markdown.push(source.get(..offset).ok_or("benchmark history")?);
         }
         for which in [round % 2, 1 - round % 2] {
             for bytes in source
                 .as_bytes()
                 .get(MIB..MIB + SAMPLES * chunk)
-                .expect("benchmark sample window")
+                .ok_or("benchmark sample window")?
                 .chunks(chunk)
             {
-                let text = std::str::from_utf8(bytes).expect("ASCII benchmark fixture");
-                if let (Some(markdown), Some(samples)) =
-                    (renderers.get_mut(which), samples.get_mut(which))
+                let text = std::str::from_utf8(bytes).map_err(|_| "ASCII benchmark fixture")?;
                 {
+                    let markdown = renderers.get_mut(which).ok_or("history renderer")?;
+                    let samples = samples.get_mut(which).ok_or("history samples")?;
                     let start = Instant::now();
                     black_box(markdown.push(black_box(text)));
                     samples.push(start.elapsed());
@@ -87,23 +89,18 @@ fn history(source: &str, chunk: usize) -> (Duration, Duration) {
             }
         }
     }
-    let mut results = samples
-        .into_iter()
-        .map(|mut samples| percentile(&mut samples, 99));
-    (
-        results.next().unwrap_or_default(),
-        results.next().unwrap_or_default(),
-    )
+    let [early, late] = samples.map(|mut samples| percentile(&mut samples, 99));
+    Ok((early, late))
 }
 
-fn main() {
+fn main() -> Result<(), &'static str> {
     let small = mixed::document(MIB);
     let large = mixed::document(2 * MIB);
     // Warm the syntax/theme tables and the parser before collecting latencies.
-    black_box(measure_pair(&small, &large, 4096));
+    black_box(measure_pair(&small, &large, 4096)?);
     for chunk in [1, 7, 4096] {
-        let (early, late) = history(&large, chunk);
-        let (small, large) = measure_pair(&small, &large, chunk);
+        let (early, late) = history(&large, chunk)?;
+        let (small, large) = measure_pair(&small, &large, chunk)?;
         let total_ratio = large.total.as_secs_f64() / small.total.as_secs_f64();
         let history_ratio = late.as_secs_f64() / early.as_secs_f64();
         println!(
@@ -126,4 +123,5 @@ fn main() {
             "per-chunk p99 grew with finalized history"
         );
     }
+    Ok(())
 }

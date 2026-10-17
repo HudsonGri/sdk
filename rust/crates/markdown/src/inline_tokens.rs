@@ -541,3 +541,7 @@ impl Tokens {
 #[cfg(test)]
 #[path = "../tests/inline_tokens.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/token_queue_work.rs"]
+mod queue_work;
