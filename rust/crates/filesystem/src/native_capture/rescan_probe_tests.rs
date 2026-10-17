@@ -302,9 +302,11 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
             );
             if after.result.is_ok() {
                 assert!(before.health_items > 0 && after.health_items > 0);
+                // Ordering the path-sorted states by one counting pass charges
+                // 2 fewer items than the heapsort's comparisons.
                 assert_eq!(
                     after.work["itemsExamined"],
-                    if cfg!(windows) { 436 } else { 331 }
+                    if cfg!(windows) { 434 } else { 329 }
                 );
             }
             assert_eq!(before.result, after.result);
