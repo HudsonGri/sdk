@@ -327,3 +327,29 @@ fn rejected_counting_strategies_fail_the_same_budget_boundaries() {
         assert!(funded.receipt().items_examined <= items);
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn small_batches_preserve_both_sides_of_the_old_boundary(
+        ranks in proptest::collection::vec(0u8..4, 2..4),
+    ) {
+        let kinds = kinds();
+        let entries: Vec<_> = ranks.iter().enumerate()
+            .map(|(index, rank)| (format!("/p{index}"), *rank)).collect();
+        let (_, exact, _) = charged(&kinds, states(&kinds, &entries), comparison_sort);
+        for limit in [exact - 1, exact, exact + 1] {
+            let budget = WorkBudget { items_examined: limit, ..WorkBudget::UNBOUNDED };
+            let old = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+            let new = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+            let mut baseline = states(&kinds, &entries);
+            let mut candidate = states(&kinds, &entries);
+            let expected = comparison_sort(&mut baseline, &old).map_err(|error| format!("{error:?}"));
+            let actual = sort_capture_states(&mut candidate, &new).map_err(|error| format!("{error:?}"));
+            prop_assert_eq!(actual.is_ok(), limit >= exact);
+            prop_assert_eq!(actual, expected);
+            prop_assert_eq!(order(&candidate), order(&baseline));
+            prop_assert_eq!(new.receipt(), old.receipt());
+        }
+    }
+}
