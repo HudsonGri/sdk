@@ -59,16 +59,13 @@ where
         let task = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(format_args!("{}", owner.task_id()), work)
         })?;
+        let key = files
+            .inner
+            .next_chunk_key(Component::new(task)?, execution, u64::from(*step), io)
+            .await?;
         files
             .inner
-            .prepare_next_chunk(
-                Component::new(task)?,
-                execution,
-                u64::from(*step),
-                channel,
-                payload,
-                io,
-            )
+            .prepare_named_chunk(key, channel, payload, io)
             .await
     }
 }

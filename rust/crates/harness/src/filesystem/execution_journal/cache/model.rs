@@ -27,7 +27,7 @@ impl Drop for AppendScope<'_> {
     }
 }
 
-/// Runs actual append factories, suffix replay, retry checking and provider
+/// Runs production append validation, suffix replay, retry checking and provider
 /// commits. The second append must refresh the first commit under the same
 /// journal lock; nested provider locks are instrumented by acyclic_loom.
 pub fn verify_cached_summary_publication(release_early: bool) {
@@ -100,7 +100,9 @@ pub fn verify_cached_summary_publication(release_early: bool) {
             // append/refresh and nested provider locking, stays on Loom.
             let future = std::thread::scope(|scope| {
                 scope
-                    .spawn(|| journal.append(operation, "retry", &event, None).unwrap())
+                    .spawn(|| {
+                        Box::pin(journal.append_validated(operation, None, "retry", &event, None))
+                    })
                     .join()
                     .unwrap()
             });
@@ -116,7 +118,7 @@ pub fn verify_cached_summary_publication(release_early: bool) {
         assert!(cache.summary.fence.is_some());
         let future = std::thread::scope(|scope| {
             scope
-                .spawn(|| journal.replay(operation, 0, 8, None).unwrap())
+                .spawn(|| Box::pin(journal.replay_page(operation, 0, 8, true, None)))
                 .join()
                 .unwrap()
         });

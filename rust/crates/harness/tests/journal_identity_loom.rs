@@ -35,3 +35,21 @@ fn cached_execution_summary_keeps_cursor_and_fence_atomic_with_negative_control(
         "{text}"
     );
 }
+
+#[test]
+fn task_wide_chunk_sequence_rechecks_reservations_with_negative_control() {
+    loom::model(|| acyclic_harness::task_volume::verify_chunk_sequence_publication(false));
+    let failure = std::panic::catch_unwind(|| {
+        loom::model(|| acyclic_harness::task_volume::verify_chunk_sequence_publication(true))
+    })
+    .expect_err("unchecked publication escaped the sequence model");
+    let text = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        text.contains("task chunk publication repeated its reserved sequence"),
+        "{text}"
+    );
+}

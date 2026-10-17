@@ -258,6 +258,7 @@ struct Index {
     next: u64,
     commit: CommitId,
     chunk_tails: BTreeMap<(Component, crate::OperationId, u64), u64>,
+    task_chunk_tails: BTreeMap<Component, u64>,
     chunk_positions: BTreeMap<(scoped_chunks::ChunkScope, u64), FileKey>,
     files: FileIndex,
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
@@ -609,3 +610,6 @@ impl TaskVolume<dyn StreamProvider> {
         Self::open(Arc::clone(&self.provider), self.path.clone()).await
     }
 }
+
+#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+pub use journal::verify_chunk_sequence_publication;

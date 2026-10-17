@@ -19,38 +19,45 @@ impl<P: StreamProvider> TaskVolume<P> {
             .await
     }
 
-    pub(crate) async fn prepare_next_chunk(
+    /// Reserve a name at the task's current chunk tail. Preparation rechecks it.
+    pub(crate) async fn next_chunk_key(
         &self,
         task: Component,
         execution: crate::OperationId,
         turn: u64,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> crate::Result<FileKey> {
+        self.refresh_journal(io).await?;
+        // Lock order: index only, released before returning the reserved name.
+        let index = self.index.lock().await;
+        Ok(FileKey::Task {
+            file: TaskFile::Chunk {
+                sequence: next_sequence(&index, &task)?,
+                execution,
+                turn,
+            },
+            task,
+        })
+    }
+
+    /// A peer's publication after naming is a conflict, never a reused sequence.
+    pub(crate) async fn prepare_named_chunk(
+        &self,
+        key: FileKey,
         channel: Channel,
         payload: &[u8],
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> crate::Result<Option<JournalFile>> {
-        self.prepare_chunk_file(
-            FileKey::Task {
-                task,
-                file: TaskFile::Chunk {
-                    execution,
-                    turn,
-                    sequence: 0,
-                },
-            },
-            channel,
-            payload,
-            true,
-            io,
-        )
-        .await
+        self.prepare_chunk_file(key, channel, payload, true, io)
+            .await
     }
 
     async fn prepare_chunk_file(
         &self,
-        mut key: FileKey,
+        key: FileKey,
         channel: Channel,
         payload: &[u8],
-        fresh: bool,
+        named: bool,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> crate::Result<Option<JournalFile>> {
         if !matches!(
@@ -70,22 +77,15 @@ impl<P: StreamProvider> TaskVolume<P> {
         // Lock order: index only across validation/encoding; no provider I/O.
         // The captured head fences the sequence choice against every peer write.
         let index = self.index.lock().await;
-        if fresh
+        if named
             && let FileKey::Task {
                 task,
-                file:
-                    TaskFile::Chunk {
-                        execution,
-                        turn,
-                        sequence,
-                    },
-            } = &mut key
+                file: TaskFile::Chunk { sequence, .. },
+            } = &key
         {
-            item_examined();
-            *sequence = match index.chunk_tails.get(&(task.clone(), *execution, *turn)) {
-                Some(previous) => previous.checked_add(1).ok_or(Error::LimitExceeded)?,
-                None => 0,
-            };
+            if *sequence != next_sequence(&index, task)? {
+                return Err(Error::SequenceConflict(key).into());
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
         let original = io.and_then(crate::filesystem::PreparationIo::original_native_work);
@@ -192,3 +192,94 @@ fn journal_error(error: Error) -> crate::Error {
 #[cfg(all(test, not(acyclic_harness_loom)))]
 #[path = "journal_tests.rs"]
 mod tests;
+
+// The per-task tail is rebuilt from published files, independently of execution
+// IDs or per-turn ordinals. Naming and preparation use this same indexed lookup.
+fn next_sequence(index: &Index, task: &Component) -> Result<u64> {
+    item_examined();
+    match index.task_chunk_tails.get(task) {
+        Some(previous) => previous.checked_add(1).ok_or(Error::LimitExceeded),
+        None => Ok(0),
+    }
+}
+
+#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+/// Model reservation, index recheck and the finalized publication transaction.
+pub fn verify_chunk_sequence_publication(unchecked: bool) {
+    let provider = Arc::new(acyclic_stream::MemoryStream::default());
+    let volume = loom::future::block_on(TaskVolume::open(
+        provider.clone(),
+        StreamPath::new("sequence-model").unwrap(),
+    ))
+    .unwrap();
+    let volume = Arc::new(volume);
+    let mut workers = Vec::new();
+    for id in [255, 1] {
+        let volume = volume.clone();
+        let provider = provider.clone();
+        workers.push(loom::thread::spawn(move || {
+            loom::future::block_on(async move {
+                let task = Component::new("task").unwrap();
+                let execution = crate::OperationId::from_bytes([id; 16]);
+                loop {
+                    let named = volume
+                        .next_chunk_key(task.clone(), execution, 0, None)
+                        .await
+                        .unwrap();
+                    loom::thread::yield_now();
+                    let prepared = if unchecked {
+                        volume
+                            .prepare_journal_file(named, Channel::Text, &[id], None)
+                            .await
+                    } else {
+                        volume
+                            .prepare_named_chunk(named, Channel::Text, &[id], None)
+                            .await
+                    };
+                    let prepared = match prepared {
+                        Err(crate::Error::TaskFiles(error))
+                            if matches!(*error, Error::SequenceConflict(_)) =>
+                        {
+                            continue;
+                        }
+                        result => result.unwrap().unwrap(),
+                    };
+                    let mut work = None;
+                    let key = acyclic_stream::IdempotencyKey::new(vec![id]).unwrap();
+                    let mut request = crate::distributed::commit_request(key, 0, &mut work);
+                    crate::distributed::add_condition(&mut request, prepared.condition).unwrap();
+                    crate::distributed::add_record(&mut request, prepared.path, prepared.record)
+                        .unwrap();
+                    match crate::distributed::commit_journal(request, 0, &provider, execution)
+                        .await
+                        .unwrap()
+                        .0
+                    {
+                        CommitOutcome::Committed(_) => break,
+                        CommitOutcome::Conflict(_) => continue,
+                    }
+                }
+            })
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let snapshot = loom::future::block_on(volume.snapshot(&Query::Root, 4)).unwrap();
+    let sequences: Vec<_> = snapshot
+        .files
+        .iter()
+        .map(|file| match file.key {
+            FileKey::Task {
+                file: TaskFile::Chunk { sequence, .. },
+                ..
+            } => sequence,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(
+        sequences,
+        [0, 1],
+        "task chunk publication repeated its reserved sequence"
+    );
+}

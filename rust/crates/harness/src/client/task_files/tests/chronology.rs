@@ -53,7 +53,12 @@ proptest! {
                         let text = format!("{ordinal}:{text}");
                         let prepared = if unscoped {
                             volume.prepare_journal_file(FileKey::parse(&format!(".tasks/{}/turns/{turn}/chunks/{part}", task.as_str())).unwrap(), Channel::Text, text.as_bytes(), None).await
-                        } else {volume.prepare_next_chunk(task.clone(), execution, turn, Channel::Text, text.as_bytes(), None).await}.unwrap().unwrap();
+                        } else {{
+                            let key=volume.next_chunk_key(task.clone(),execution,turn,None).await.unwrap();
+                            let FileKey::Task {file:TaskFile::Chunk {sequence,..},..}=key else {unreachable!()};
+                            assert_eq!(sequence,(ordinal*pieces.len()+part) as u64);
+                            volume.prepare_named_chunk(key,Channel::Text,text.as_bytes(),None).await
+                        }}.unwrap().unwrap();
                         let request = CommitRequest {conditions: vec![prepared.condition], mutations: vec![CommitMutation::Append {path: prepared.path, records: vec![prepared.record]}], idempotency_key: IdempotencyKey::new(format!("{ordinal}:{part}").into_bytes()).unwrap()};
                         assert!(matches!(provider.commit(request).await.unwrap(), CommitOutcome::Committed(_)));
                         client.next_change().await.unwrap();
@@ -78,12 +83,14 @@ proptest! {
                     let broken=FileQueryView::from_snapshot(Query::Root,keyed,32,65536).unwrap();
                     assert_ne!(projected(&broken,&task),expected,"key-order negative control escaped");
                 }
-                cut.files.sort_by_key(|file| match file.key {
-                    FileKey::Task {file:TaskFile::Chunk {sequence,turn,execution},..}=>(sequence,turn,execution),
-                    _=>unreachable!(),
-                });
-                let broken = FileQueryView::from_snapshot(Query::Root, cut, 32, 65536).unwrap();
-                assert_ne!(projected(&broken, &task), expected, "sequence-order negative control escaped");
+                if unscoped {
+                    cut.files.sort_by_key(|file| match file.key {
+                        FileKey::Task {file:TaskFile::Chunk {sequence,turn,execution},..}=>(sequence,turn,execution),
+                        _=>unreachable!(),
+                    });
+                    let broken = FileQueryView::from_snapshot(Query::Root, cut, 32, 65536).unwrap();
+                    assert_ne!(projected(&broken, &task), expected, "restarted-sequence negative control escaped");
+                }
             });
           }
         }

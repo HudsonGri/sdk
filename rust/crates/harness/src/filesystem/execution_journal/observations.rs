@@ -410,9 +410,17 @@ where
                 summary.validate_next(event, model.as_ref(), limits, io)?;
                 let preparing = self.prepare_chunk(operation_id, event, model.as_ref(), io);
                 #[cfg(all(test, not(target_arch = "wasm32")))]
-                let chunk = crate::test_support::accounted::observe_chunk(preparing, io).await?;
+                let chunk = crate::test_support::accounted::observe_chunk(preparing, io).await;
                 #[cfg(not(all(test, not(target_arch = "wasm32"))))]
-                let chunk = preparing.await?;
+                let chunk = preparing.await;
+                let chunk = match chunk {
+                    Err(Error::TaskFiles(error))
+                        if matches!(*error, crate::task_volume::Error::SequenceConflict(_)) =>
+                    {
+                        continue;
+                    }
+                    result => result?,
+                };
                 let committed = if let Some(owner) = owner {
                     let mut borrowed = io.map(PreparationIo::history_io);
                     owner

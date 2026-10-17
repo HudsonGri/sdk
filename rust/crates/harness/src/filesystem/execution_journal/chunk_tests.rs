@@ -673,3 +673,5 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
         }
     }
 }
+
+mod ordering;

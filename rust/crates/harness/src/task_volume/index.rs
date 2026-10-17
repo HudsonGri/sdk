@@ -171,6 +171,12 @@ pub(super) fn apply(index: &mut Index, file: FileValue, position: u64) {
             },
     } = &file.key
     {
+        item_examined();
+        index
+            .task_chunk_tails
+            .entry(task.clone())
+            .and_modify(|previous| *previous = (*previous).max(*sequence))
+            .or_insert(*sequence);
         index
             .chunk_tails
             .entry((task.clone(), *execution, *turn))
