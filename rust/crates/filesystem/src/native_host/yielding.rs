@@ -34,6 +34,9 @@ impl std::error::Error for Yielded {}
 pub struct YieldingFile {
     held: Arc<YieldingHeld>,
     wait: Option<HANDLE>,
+    // Declared after held storage: Drop closes the request, then fields free
+    // the Arc storage before this guard refunds the original ledger.
+    allocation: Option<crate::NativeAllocation>,
 }
 struct YieldingHeld {
     file: Mutex<Option<Arc<File>>>,
@@ -66,7 +69,16 @@ impl YieldingFile {
         let output_length = u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>())
             .map_err(|_| DemandError::InvalidRequest)?;
         let bytes = (size_of::<File>() + size_of::<YieldingHeld>()) as u64;
-        work.claim_allocation(bytes, 2, WorkCounters::UNCHARGED)?;
+        let allocation = if let Some(original) = work.native_source_work() {
+            Some(
+                original
+                    .claim(bytes, 2, WorkCounters::UNCHARGED)
+                    .map_err(crate::native_name::original_name_error)?,
+            )
+        } else {
+            work.claim_allocation(bytes, 2, WorkCounters::UNCHARGED)?;
+            None
+        };
         let handle = HANDLE(file.as_raw_handle());
         let mut yielding = Self {
             held: Arc::new(YieldingHeld {
@@ -74,6 +86,7 @@ impl YieldingFile {
                 request: std::ptr::null_mut(),
             }),
             wait: None,
+            allocation,
         };
         let result = (|| {
             let held = Arc::get_mut(&mut yielding.held).ok_or(DemandError::InvalidRequest)?;
@@ -82,7 +95,13 @@ impl YieldingFile {
                 Owned::new(CreateEventW(None, true, false, None).map_err(io::Error::other)?)
             };
             let bytes = size_of::<OplockRequest>() as u64;
-            work.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
+            if let Some(allocation) = &mut yielding.allocation {
+                allocation
+                    .grow(bytes)
+                    .map_err(crate::native_name::original_name_error)?;
+            } else {
+                work.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
+            }
             let request = Box::new(OplockRequest {
                 overlapped: OVERLAPPED {
                     hEvent: *event,
@@ -99,7 +118,13 @@ impl YieldingFile {
             });
             if let Err(error) = work.started_io(READ) {
                 drop(request);
-                work.release(bytes)?;
+                if let Some(allocation) = &mut yielding.allocation {
+                    allocation
+                        .release(bytes)
+                        .map_err(crate::native_name::original_name_error)?;
+                } else {
+                    work.release(bytes)?;
+                }
                 return Err(error);
             }
             let request = Box::into_raw(request);
@@ -121,7 +146,13 @@ impl YieldingFile {
                 held.request = std::ptr::null_mut();
                 // SAFETY: no pending request or registered callback refers to this storage.
                 drop(unsafe { Box::from_raw(request) });
-                work.release(bytes)?;
+                if let Some(allocation) = &mut yielding.allocation {
+                    allocation
+                        .release(bytes)
+                        .map_err(crate::native_name::original_name_error)?;
+                } else {
+                    work.release(bytes)?;
+                }
                 return Ok(());
             }
             let mut wait = HANDLE::default();
@@ -141,9 +172,12 @@ impl YieldingFile {
             Ok(())
         })();
         if let Err(error) = result {
+            let ordinary = yielding.allocation.is_none();
             let bytes = yielding.logical_owned_bytes();
             drop(yielding);
-            work.release(bytes)?;
+            if ordinary {
+                work.release(bytes)?;
+            }
             return Err(error);
         }
         Ok(yielding)

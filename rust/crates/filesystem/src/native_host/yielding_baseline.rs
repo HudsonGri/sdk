@@ -118,3 +118,37 @@ impl YieldingFile {
         })
     }
 }
+
+#[test]
+fn native_yielding_storage_refunds_exactly_when_the_handle_retires()
+-> Result<(), Box<dyn std::error::Error>> {
+    for delayed in [false, true] {
+        let token = crate::CancellationToken::new();
+        let mut work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+            .map_err(|(cause, _)| cause)?;
+        let baseline = crate::NativeMaterializationWork::accounting_state_bytes();
+        let mut file = YieldingFile::new(std::fs::File::open("NUL")?, &mut work)?;
+        let storage = (size_of::<File>() + size_of::<YieldingHeld>()) as u64;
+        assert_eq!(work.live_allocation_bytes(), baseline + storage);
+        assert_eq!(work.receipt().allocation_operations, 4);
+        assert_eq!(
+            work.receipt().peak_allocation_bytes,
+            baseline + storage + size_of::<OplockRequest>() as u64
+        );
+        // Negative control: leave the handle's charge alive after its storage.
+        let delayed_guard = if delayed {
+            file.allocation.take()
+        } else {
+            None
+        };
+        drop(file);
+        if delayed {
+            assert_ne!(work.live_allocation_bytes(), baseline);
+        } else {
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+        drop(delayed_guard);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}

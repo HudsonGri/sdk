@@ -361,24 +361,30 @@ fn refunded_while_live(baseline: u64, trace: &[Work]) -> Vec<Work> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
-    /// Native I/O errors release charged storage before its ledger refund.
+    /// Native stale-file and I/O errors release storage before its refund.
     #[test]
     fn native_read_errors_free_storage_before_refunding(
         size in 1_usize..5_000,
         offset in 0_u64..6_000,
         length in 1_u64..6_000,
+        edited in any::<bool>(),
         fail in any::<bool>(),
     ) {
         let runtime = runtime();
         let contents: Vec<u8> = (0..size).map(|byte| (byte * 7 + 3) as u8).collect();
-        let (_directory, _source, file) = held(&runtime, &contents, false).unwrap();
-        let (_old_directory, _old_source, old) = held_mode(&runtime, &contents, false, true).unwrap();
+        let (directory, _source, file) = held(&runtime, &contents, false).unwrap();
+        let (old_directory, _old_source, old) = held_mode(&runtime, &contents, false, true).unwrap();
+        if edited {
+            let edit: Vec<u8> = contents.iter().map(|byte| byte ^ 0x33).chain([2]).collect();
+            std::fs::write(directory.path().join("file"), &edit).unwrap();
+            std::fs::write(old_directory.path().join("file"), &edit).unwrap();
+        }
         let run = || {
             let (expected, _, _) = production_read(old.as_ref(), offset, length);
             let (actual, baseline, trace) = native_read(file, offset, length).unwrap();
             prop_assert_eq!(actual, expected);
             prop_assert_eq!(refunded_while_live(baseline, &trace), Vec::<Work>::new());
-            if fail && offset < size as u64 {
+            if (fail || edited) && offset < size as u64 {
                 prop_assert!(trace.iter().any(|&(operation, ..)| operation == "free"));
             }
             Ok(())
