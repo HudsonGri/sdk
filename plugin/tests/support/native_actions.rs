@@ -123,6 +123,38 @@ impl<'a> Tools<'a> {
         })
     }
 
+    pub async fn discover_tasks(&self, known: &[TaskId]) -> Result<Vec<TaskId>> {
+        use acyclic_stream::StreamProvider as _;
+        let page = self
+            .provider
+            .children_page(acyclic_stream::ChildrenPageRequest {
+                parent: Some(acyclic_stream::StreamPath::new("external/requests")?),
+                after: None,
+                hierarchy_version: None,
+                limit: 64,
+            })
+            .await?;
+        assert!(
+            page.next_after.is_none(),
+            "the fixture has at most twelve admitted tasks"
+        );
+        let mut tasks = Vec::new();
+        for child in page.children {
+            let task = TaskId::parse(
+                child
+                    .path
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .ok_or("missing discovered task")?,
+            )?;
+            if !known.contains(&task) {
+                tasks.push(task);
+            }
+        }
+        Ok(tasks)
+    }
+
     async fn outcome(&self, id: &str, name: &str, arguments: Value) -> Result<(Value, bool)> {
         let event = if self.host == ExternalHost::Pi {
             "tool_call"

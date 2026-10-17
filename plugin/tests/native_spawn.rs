@@ -191,41 +191,14 @@ async fn finish_child(
 async fn discover_children(
     cases: &[(Tools<'_>, TaskId, serde_json::Value)],
 ) -> Result<Vec<serde_json::Value>> {
-    use acyclic_stream::StreamProvider as _;
     let inspections =
         futures::future::try_join_all(cases.iter().map(|(parent, child, branch)| async move {
-            let page = parent
-                .provider
-                .children_page(acyclic_stream::ChildrenPageRequest {
-                    parent: Some(acyclic_stream::StreamPath::new("external/requests")?),
-                    after: None,
-                    hierarchy_version: None,
-                    limit: 64,
-                })
-                .await?;
-            assert!(
-                page.next_after.is_none(),
-                "the fixture has at most twelve admitted tasks"
-            );
             let known = [
                 parent.task,
                 *child,
                 TaskId::parse(branch.as_str().ok_or("missing branch task")?)?,
             ];
-            let mut children = Vec::new();
-            for child in page.children {
-                let task = TaskId::parse(
-                    child
-                        .path
-                        .as_str()
-                        .rsplit('/')
-                        .next()
-                        .ok_or("missing discovered task")?,
-                )?;
-                if !known.contains(&task) {
-                    children.push(task);
-                }
-            }
+            let children = parent.discover_tasks(&known).await?;
             assert_eq!(
                 children.len(),
                 1,

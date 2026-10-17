@@ -14,11 +14,31 @@ async fn mailbox_and_inspection_commands_use_authenticated_task_files_for_every_
     let owner = fixture.start_owner().await?;
     let result = async {
         let [codex, claude, pi] = Tools::hosts(fixture.path()).await?;
-        tokio::try_join!(
-            mailbox(&fixture, codex),
-            mailbox(&fixture, claude),
-            mailbox(&fixture, pi)
-        )
+        let expected = tokio::try_join!(
+            mailbox(&fixture, &codex),
+            mailbox(&fixture, &claude),
+            mailbox(&fixture, &pi)
+        )?;
+        let roots = [codex.task, claude.task, pi.task];
+        let tasks = codex.discover_tasks(&roots).await?;
+        assert_eq!(
+            tasks.len(),
+            3,
+            "all three hosts' children share the selected workspace's discovery"
+        );
+        for (parent, child) in roots.into_iter().zip([expected.0, expected.1, expected.2]) {
+            assert!(tasks.contains(&child));
+            let inspected = codex
+                .call(
+                    &format!("foreign-{child}"),
+                    "acyclic_inspect",
+                    json!({"task":child}),
+                )
+                .await?;
+            assert_eq!(inspected["admission"]["parent"], parent.to_string());
+            assert!(inspected["outcome"].is_null());
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
     fixture.close_owner(owner).await?;
@@ -26,7 +46,7 @@ async fn mailbox_and_inspection_commands_use_authenticated_task_files_for_every_
     Ok(())
 }
 
-async fn mailbox(fixture: &Fixture, tools: Tools<'_>) -> Result {
+async fn mailbox(fixture: &Fixture, tools: &Tools<'_>) -> Result<TaskId> {
     let host = tools.host;
     let child = tools.child("mail-child").await?;
     let filename = format!("{}-message.txt", host.name());
@@ -97,5 +117,5 @@ async fn mailbox(fixture: &Fixture, tools: Tools<'_>) -> Result {
         std::fs::read_to_string(fixture.path().join(next))?,
         "session usable"
     );
-    Ok(())
+    Ok(child.task)
 }
