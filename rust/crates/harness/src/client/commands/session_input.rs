@@ -121,15 +121,25 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }?;
             #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
             if prompt
-                && attachments.is_some()
+                && attachments
+                    .as_ref()
+                    .is_some_and(|value| value.as_array().is_some_and(|images| !images.is_empty()))
                 && self.state(CommandFileRoot::Session, "attachments.json")? == attachments
             {
-                self.write_unchanged_state(
-                    CommandFileRoot::Session,
-                    "attachments.json",
-                    &serde_json::json!([]),
-                )
-                .await?;
+                if let Err(error) = self
+                    .write_unchanged_state(
+                        CommandFileRoot::Session,
+                        "attachments.json",
+                        &serde_json::json!([]),
+                    )
+                    .await
+                {
+                    // The immutable request is already accepted. A peer's newer
+                    // draft wins without telling the user to submit it again.
+                    if !matches!(error, Error::Conflict(_)) {
+                        return Err(error);
+                    }
+                }
             }
             let _ = prompt;
             return Ok(published);

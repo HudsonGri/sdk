@@ -165,8 +165,7 @@ async fn apply_host_input<P: StreamProvider + ?Sized>(
                         .get_text()
                         .map_err(|e| Error::Unsupported(e.to_string()))?;
                     for effect in input.paste(&text, now_ms) {
-                        super::file_tui_input(files, reader, effect, page_rows, maximum_scroll)
-                            .await?;
+                        super::apply_tui_input(files, reader, effect).await?;
                     }
                     Ok(())
                 }
@@ -176,7 +175,7 @@ async fn apply_host_input<P: StreamProvider + ?Sized>(
             ref text,
             edit: None,
             ..
-        } if text.starts_with('/') => {
+        } if text.trim_start().starts_with('/') => {
             match files.catalog().resolve(text, reader, MAX_IMAGE).await? {
                 CommandResolution::Sdk { command, arguments } if command == "attach" => {
                     let (bytes, mime, ext) = attached(arguments.trim().trim_matches('"'))?;
@@ -201,7 +200,30 @@ pub async fn host_tui_input<P: StreamProvider + ?Sized>(
     maximum_scroll: usize,
     now_ms: u64,
 ) -> Result<()> {
-    match apply_host_input(
+    let host_action = match &effect {
+        InputEffect::Paste => true,
+        InputEffect::Submit {
+            text, edit: None, ..
+        } => text
+            .trim_start()
+            .strip_prefix('/')
+            .and_then(|text| text.split_whitespace().next())
+            .is_some_and(|name| {
+                files.catalog().commands().any(|spec| {
+                    matches!(&spec.action,super::CommandAction::Sdk{command} if command=="attach")
+                        && (spec.name.eq_ignore_ascii_case(name)
+                            || spec
+                                .aliases
+                                .iter()
+                                .any(|alias| alias.eq_ignore_ascii_case(name)))
+                })
+            }),
+        _ => false,
+    };
+    if !host_action {
+        return super::file_tui_input(files, reader, effect, page_rows, maximum_scroll).await;
+    }
+    let result = apply_host_input(
         files,
         reader,
         publisher,
@@ -211,23 +233,6 @@ pub async fn host_tui_input<P: StreamProvider + ?Sized>(
         maximum_scroll,
         now_ms,
     )
-    .await
-    {
-        Ok(()) => Ok(()),
-        Err(
-            error @ (Error::Invalid(_)
-            | Error::Unsupported(_)
-            | Error::NotFound(_)
-            | Error::Conflict(_)),
-        ) => {
-            files
-                .write_unchanged_state(
-                    CommandFileRoot::Session,
-                    "notifications.json",
-                    &serde_json::json!([error.to_string()]),
-                )
-                .await
-        }
-        Err(error) => Err(error),
-    }
+    .await;
+    super::input_files::input_feedback(files, result).await
 }

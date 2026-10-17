@@ -176,5 +176,36 @@ async fn host_image_rejections_preserve_the_followed_draft() -> Result<()> {
         );
         assert!(commands.take_request().is_none());
     }
+    let crate::tui::ClipboardContent::Image { jpeg, .. } =
+        crate::tui::prepare_image(1, 1, vec![255; 4]).unwrap()
+    else {
+        unreachable!()
+    };
+    let path = directory.path().join("valid.jpg");
+    std::fs::write(&path, jpeg).map_err(super::super::storage)?;
+    crate::client::host_tui_input(
+        &mut commands,
+        reader.as_ref(),
+        publisher.as_ref(),
+        &mut input,
+        InputEffect::Submit {
+            text: format!("/attach {}", path.display()),
+            edit: None,
+            queued: false,
+        },
+        20,
+        0,
+        0,
+    )
+    .await?;
+    assert!(
+        commands
+            .state(CommandFileRoot::Session, "notifications.json")?
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "successful host actions clear stale errors"
+    );
     Ok(())
 }
