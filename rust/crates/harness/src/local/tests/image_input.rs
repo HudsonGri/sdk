@@ -25,7 +25,7 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
     let crate::tui::ClipboardContent::Image { jpeg, .. } = prepared else {
         unreachable!()
     };
-    let source = directory.path().join("selected image.jpg");
+    let source = directory.path().join("selected 图像.jpg");
     std::fs::write(&source, &jpeg).map_err(super::super::storage)?;
     let mut input = PromptInput::default();
     crate::client::host_tui_input(
@@ -111,5 +111,62 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
         jpeg.as_slice()
     );
     assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_image_rejections_preserve_the_followed_draft() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::new(directory.path(), (model()?, text())).without_default_tools(),
+    )
+    .await?;
+    let mut commands = crate::client::local_ui(
+        &harness,
+        &OperationId::new().to_string(),
+        &harness.client_owner(),
+    )
+    .await?;
+    let reader = harness.client_reader()?;
+    let publisher = harness.client_publisher()?;
+    let mut input = PromptInput::default();
+    for (name, bytes) in [
+        ("empty.png", Vec::new()),
+        ("text.png", b"not an image".to_vec()),
+        ("oversized.png", vec![0; 4 * 1024 * 1024 + 1]),
+    ] {
+        let path = directory.path().join(name);
+        std::fs::write(&path, bytes).map_err(super::super::storage)?;
+        crate::client::host_tui_input(
+            &mut commands,
+            reader.as_ref(),
+            publisher.as_ref(),
+            &mut input,
+            InputEffect::Submit {
+                text: format!("/attach {}", path.display()),
+                edit: None,
+                queued: false,
+            },
+            20,
+            0,
+            0,
+        )
+        .await?;
+        assert!(
+            commands
+                .state(CommandFileRoot::Session, "attachments.json")?
+                .is_none()
+        );
+        assert!(
+            !commands
+                .state(CommandFileRoot::Session, "notifications.json")?
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
+        assert!(commands.take_request().is_none());
+    }
     Ok(())
 }

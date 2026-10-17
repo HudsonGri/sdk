@@ -45,6 +45,7 @@ impl PreparedInput {
         let generation = generation.into();
         let count = count.into();
         drop(body);
+        drop(images);
         Ok(Self {
             request,
             generation,

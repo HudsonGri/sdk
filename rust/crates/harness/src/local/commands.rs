@@ -47,7 +47,7 @@ impl LocalHarness {
                 let input = resolution.into_model_input()?;
                 let prompt = match &input {
                     ModelContent::Text(text) => text.as_str(),
-                    ModelContent::Parts(parts) => match parts.first() {
+                    _ => match input.parts().first() {
                         Some(crate::model::ModelContentPart::Text { text }) => text.as_str(),
                         _ => return Err(Error::Invalid("prompt lost its text".into())),
                     },

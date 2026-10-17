@@ -18,6 +18,7 @@ pub enum Authentication {
 /// Declared image support and finite bounds for one exact model.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ImageInput {
     /// Maximum raw bytes in one image.
     pub maximum_bytes: u64,
@@ -62,6 +63,10 @@ pub struct ProviderSpec {
     pub token_counter: Option<crate::TokenCounterSpec>,
     /// Exact image input limits; omitted models receive a fallback note.
     #[serde(default)]
+    #[cfg_attr(
+        all(target_arch = "wasm32", feature = "browser"),
+        tsify(type = "Record<string, ImageInput>")
+    )]
     pub images: BTreeMap<String, ImageInput>,
     /// Maximum bytes in one SSE event and aggregate retained protocol state.
     pub max_event_bytes: usize,

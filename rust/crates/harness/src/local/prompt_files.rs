@@ -61,7 +61,13 @@ impl LocalHarness {
         let mut input: ModelContent = serde_json::from_slice(&bytes).map_err(storage)?;
         input.validate_user_input(&mut None)?;
         match &mut input {
-            ModelContent::Text(text) => *text = prompt.into(),
+            ModelContent::Text(text)
+            | ModelContent::Part(crate::model::ModelContentPart::Text { text }) => {
+                *text = prompt.into()
+            }
+            ModelContent::Part(_) => {
+                return Err(Error::Invalid("submitted prompt lost its text".into()));
+            }
             ModelContent::Parts(parts) => {
                 let Some(crate::model::ModelContentPart::Text { text }) = parts.first_mut() else {
                     return Err(Error::Invalid("submitted prompt lost its text".into()));

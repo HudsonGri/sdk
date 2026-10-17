@@ -42,7 +42,7 @@ pub(super) fn draft_images<P: StreamProvider + ?Sized>(
     }
     Ok(images)
 }
-pub(crate) async fn publish<P: StreamProvider + ?Sized>(
+async fn publish<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
     publisher: &dyn ContentPublisher,
     bytes: &[u8],
@@ -85,6 +85,12 @@ pub(crate) async fn publish<P: StreamProvider + ?Sized>(
     Ok(())
 }
 fn attached(path: &str) -> Result<(Vec<u8>, &'static str, &'static str)> {
+    if !std::fs::metadata(path)
+        .map_err(|e| Error::Invalid(e.to_string()))?
+        .is_file()
+    {
+        return Err(Error::Invalid("attachment must be a regular file".into()));
+    }
     let file = std::fs::File::open(path).map_err(|e| Error::Invalid(e.to_string()))?;
     if !file
         .metadata()
@@ -106,6 +112,7 @@ fn attached(path: &str) -> Result<(Vec<u8>, &'static str, &'static str)> {
             imagesize::ImageType::Jpeg => ("image/jpeg", "jpg"),
             imagesize::ImageType::Gif => ("image/gif", "gif"),
             imagesize::ImageType::Webp => ("image/webp", "webp"),
+            imagesize::ImageType::Heif(_) => ("image/heif", "heif"),
             _ => return Err(Error::Invalid("unsupported image format".into())),
         };
     let size = imagesize::blob_size(&bytes).map_err(|e| Error::Invalid(e.to_string()))?;
