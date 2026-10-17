@@ -39,9 +39,7 @@ impl LocalHarness {
             )?;
         }
         #[cfg(feature = "hooks")]
-        let hooks = settings::load(&config.project, config.settings)
-            .await?
-            .hooks;
+        let settings = settings::configuration(&config.project, config.settings)?;
         let compaction = match &config.model {
             Some((model, provider)) => {
                 model.validate()?;
@@ -136,7 +134,7 @@ impl LocalHarness {
             model: config.model,
             context_manifest: config.context_manifest,
             #[cfg(feature = "hooks")]
-            hooks,
+            settings,
             #[cfg(test)]
             context_read_observer: None,
             limits: config.limits,

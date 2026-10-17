@@ -79,7 +79,7 @@ pub(super) fn attempt<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         };
         let mut transaction = crate::conversation::BoundedContentFuture::new(Some(io), || {
             workspace
-                .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
                 .map(|result| io.sdk(result))
         })?
         .await?;

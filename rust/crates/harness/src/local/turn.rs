@@ -340,6 +340,13 @@ impl LocalHarness {
         manifest: crate::conversation::FileRef,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        context::binding::retain(
+            &self.task_files.inner,
+            crate::runtime::task_id_for_admission(operation),
+            &manifest,
+            limits.file_bytes,
+        )
+        .await?;
         let model = crate::filesystem::ModelTaskCommand {
             summary_source: None,
             context_manifest: manifest,
