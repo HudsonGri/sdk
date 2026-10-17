@@ -61,7 +61,6 @@ pub(crate) async fn count(
                 .try_fold(0u64, |total, message| {
                     total
                         .checked_add(u64::from(crate::images::tokens(provider, message)?))
-                        .and_then(|n| n.checked_add(crate::images::text_bytes(message).ok()?))
                         .ok_or_else(|| crate::invalid("file token count overflows"))
                 })?;
             projection::plan(

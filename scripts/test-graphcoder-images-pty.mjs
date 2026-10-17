@@ -26,7 +26,7 @@ child.stdout.on("data",bytes=>{output+=bytes.toString();screen.write(bytes,()=>{
         const visible=screenText(screen);
         if(stage===0&&visible.includes("GraphCoder")&&output.includes("\x1b[?25h")){stage=1;submit(`/attach ${path}`);}
         else if(stage===1&&/1 image/i.test(visible)){stage=2;writeFileSync(path,"host file replaced");child.stdin.write("\x16");}
-        else if(stage===2&&/2 images/i.test(visible)){stage=3;submit("Describe both images in attachment order");}
+        else if(stage===2&&/2 images/i.test(visible)){stage=3;submit("");}
         else if(stage===3&&visible.includes("test answer")&&visible.includes("○")){stage=4;child.stdin.write("\x04");}
     }catch(error){failure=error;child.kill();}
 });});

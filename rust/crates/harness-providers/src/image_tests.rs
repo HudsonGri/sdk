@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod catalog;
 #[path = "image_native_tests.rs"]
 mod native;
+#[path = "image_projection_tests.rs"]
+mod projection_performance;
 
 fn reasoning_blocks(adapter: Adapter) -> usize {
     match adapter {
@@ -466,6 +468,11 @@ async fn image_prompt_files_resolve_utf8_on_the_same_authorized_path() -> Result
                     policy: FileProjectionPolicy::BoundedFull,
                 }])],
             )?;
+            assert_eq!(
+                crate::images::encoded_bytes(&provider, request.request())?,
+                0,
+                "text files use the shared text projection admission"
+            );
             let counted = provider.count_tokens(&request).await;
             if std::str::from_utf8(bytes).is_ok() {
                 assert!(counted?.message_tokens[0] >= bytes.len() as u32);

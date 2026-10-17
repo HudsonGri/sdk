@@ -107,7 +107,7 @@ impl Body<'_> {
                 _ => encoded_len(value),
             }
         }
-        let mut bytes = encoded_len(&self.fields)? + encoded_len(self.messages_field)? + 4;
+        let mut bytes = encoded_len(&self.fields)? + encoded_len(&self.messages_field)? + 4;
         for message in &self.messages {
             let size = match message {
                 Message::Item(value) => item(value)?,

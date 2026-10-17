@@ -65,16 +65,19 @@ pub(crate) fn plan(
             message_bytes = message_bytes
                 .checked_add(bytes)
                 .ok_or_else(|| invalid("token planning size overflow"))?;
-            let text = u32::try_from(crate::images::text_bytes(message)?)
-                .map_err(|_| invalid("file token planning weight exceeds u32"))?;
             // An image's volume, version and descriptor are ownership metadata,
             // not provider text. Its declared image-token bound accounts for media.
             let bytes = bytes
                 .checked_sub(crate::images::reference_bytes(provider, message)?)
                 .ok_or_else(|| invalid("image reference exceeds message size"))?;
+            let bytes = bytes
+                .checked_add(crate::files::extra_bytes(
+                    &message.content,
+                    provider.files.maximum_bytes,
+                )?)
+                .ok_or_else(|| invalid("file planning size overflow"))?;
             tokens(bytes)?
                 .checked_add(crate::images::tokens(provider, message)?)
-                .and_then(|tokens| tokens.checked_add(text))
                 .ok_or_else(|| invalid("file token planning weight exceeds u32"))
         })
         .collect::<Result<Vec<_>>>()?;

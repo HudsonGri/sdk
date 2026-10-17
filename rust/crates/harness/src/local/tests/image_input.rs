@@ -17,8 +17,8 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
     )
     .await?;
     let owner = harness.client_owner();
-    let mut commands =
-        crate::client::local_ui(&harness, &OperationId::new().to_string(), &owner).await?;
+    let session = OperationId::new();
+    let mut commands = crate::client::local_ui(&harness, &session.to_string(), &owner).await?;
     let reader = harness.client_reader()?;
     let publisher = harness.client_publisher()?;
     let prepared = crate::tui::prepare_image(2, 1, vec![255; 8]).unwrap();
@@ -61,6 +61,14 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
     prompt_files.refresh(&commands, &mut input)?;
     assert_eq!(input.images, 1);
     std::fs::write(&source, b"changed host file").map_err(super::super::storage)?;
+    drop(commands);
+    let mut commands = crate::client::local_ui(&harness, &session.to_string(), &owner).await?;
+    let mut input = PromptInput::default();
+    PromptFiles::default().refresh(&commands, &mut input)?;
+    assert_eq!(
+        input.images, 1,
+        "a reopened UI folds the private draft file"
+    );
     commands
         .submit("describe the attached image", reader.as_ref())
         .await?;

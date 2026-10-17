@@ -55,22 +55,6 @@ pub(crate) fn files(
     })
 }
 
-// JSON can escape every source byte into six output bytes. Counting needs no
-// content reads; the same bound funds the temporary text graph at dispatch.
-pub(crate) fn text_bytes(message: &ModelMessage) -> Result<u64> {
-    parts(message).try_fold(0u64, |total, (file, policy, _)| {
-        if matches!(policy, FileProjectionPolicy::BoundedFull) {
-            file.descriptor()
-                .byte_length()
-                .checked_mul(6)
-                .and_then(|bytes| total.checked_add(bytes))
-                .ok_or_else(|| invalid("text projection size overflows"))
-        } else {
-            Ok(total)
-        }
-    })
-}
-
 pub(crate) fn support<'a>(
     provider: &'a ResolvedModel,
     file: &FileRef,
@@ -120,17 +104,11 @@ pub(crate) fn encoded_bytes(provider: &ResolvedModel, request: &ModelRequest) ->
             return Err(invalid("request exceeds aggregate image limits"));
         }
     }
-    let text = request.messages.iter().try_fold(0u64, |total, message| {
-        total
-            .checked_add(text_bytes(message)?)
-            .ok_or_else(|| invalid("file projection size overflows"))
-    })?;
     total
         .checked_add(2)
         .and_then(|n| n.checked_div(3))
         .and_then(|n| n.checked_mul(4))
         .and_then(|n| n.checked_add(u64::from(count) * 4))
-        .and_then(|n| n.checked_add(text))
         .ok_or_else(|| invalid("encoded image size overflows"))
 }
 
