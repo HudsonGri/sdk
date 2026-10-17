@@ -11,13 +11,13 @@ use acyclic_stream::{IdempotencyKey as StreamKey, ReadRequest, StreamPath};
 use futures::StreamExt as _;
 use loom::sync::atomic::AtomicU8;
 
-fn scenario(peer_before_commit: bool, broken: bool) {
-    let phase = Arc::new(AtomicU8::new(0));
-    let provider = Arc::new(PublicationCut {
-        inner: MemoryStream::default(),
-        phase: phase.clone(),
-        omit_condition: false,
-    });
+#[inline(never)]
+fn setup(
+    provider: Arc<PublicationCut>,
+) -> (
+    Box<Fixture<PublicationCut>>,
+    Box<crate::durable_host::TaskJournalOwner<PublicationCut>>,
+) {
     let mut coordinator = block_on(Box::pin(open(&provider))).unwrap();
     fixture_event(
         &mut coordinator,
@@ -35,6 +35,29 @@ fn scenario(peer_before_commit: bool, broken: bool) {
     )
     .unwrap();
     let (fixture, owner) = Fixture::model(provider.clone(), coordinator, &lease).unwrap();
+    (Box::new(fixture), Box::new(owner))
+}
+
+fn peer(fixture: &Fixture<PublicationCut>) {
+    let mut coordinator = block_on(fixture.model_coordinator().lock());
+    fixture_event(
+        &mut coordinator,
+        SchedulerEvent::Declared {
+            spec: Box::new(spec(OperationId::from_bytes([9; 16]), 0).unwrap()),
+        },
+        "peer",
+    )
+    .unwrap();
+}
+
+fn scenario(peer_before_commit: bool, broken: bool) {
+    let phase = Arc::new(AtomicU8::new(0));
+    let provider = Arc::new(PublicationCut {
+        inner: MemoryStream::default(),
+        phase: phase.clone(),
+        omit_condition: false,
+    });
+    let (fixture, owner) = setup(provider.clone());
     let operation = OperationId::from_bytes([2; 16]);
     let event = ExecutionEvent::Started {
         request_digest: [1; 32],
@@ -53,20 +76,14 @@ fn scenario(peer_before_commit: bool, broken: bool) {
         publication
     };
     if peer_before_commit {
-        block_on(Box::pin(
-            fixture.model_peer(spec(OperationId::from_bytes([9; 16]), 0).unwrap()),
-        ))
-        .unwrap();
+        peer(&fixture);
     }
     assert!(
         block_on(publication).unwrap(),
         "execution stopped on unrelated coordinator generation"
     );
     if !peer_before_commit {
-        block_on(Box::pin(
-            fixture.model_peer(spec(OperationId::from_bytes([9; 16]), 0).unwrap()),
-        ))
-        .unwrap();
+        peer(&fixture);
     }
     let path = StreamPath::new(format!("harness/v2/execution/{operation}")).unwrap();
     let mut records = block_on(provider.read(ReadRequest {
@@ -103,6 +120,18 @@ fn unrelated_coordinator_publication_keeps_the_execution_with_negative_control()
     );
 }
 
+#[inline(never)]
+fn execution(
+    fixture: &Fixture<PublicationCut>,
+    owner: Box<crate::durable_host::TaskJournalOwner<PublicationCut>>,
+) -> Arc<dyn ExecutionJournal> {
+    Arc::new(
+        fixture
+            .execution(*owner, OperationId::from_bytes([2; 16]))
+            .unwrap(),
+    )
+}
+
 fn cancelled_candidate(accepted: bool, broken: bool) {
     let phase = Arc::new(AtomicU8::new(0));
     let provider = Arc::new(PublicationCut {
@@ -110,25 +139,9 @@ fn cancelled_candidate(accepted: bool, broken: bool) {
         phase: phase.clone(),
         omit_condition: false,
     });
-    let mut coordinator = block_on(Box::pin(open(&provider))).unwrap();
-    fixture_event(
-        &mut coordinator,
-        SchedulerEvent::Declared {
-            spec: Box::new(spec(OperationId::from_bytes([1; 16]), 0).unwrap()),
-        },
-        "declare",
-    )
-    .unwrap();
-    let lease = start_fixture(
-        &mut coordinator,
-        OperationId::from_bytes([1; 16]),
-        &worker("worker"),
-        "start",
-    )
-    .unwrap();
-    let (fixture, owner) = Fixture::model(provider.clone(), coordinator, &lease).unwrap();
+    let (fixture, owner) = setup(provider.clone());
     let operation = OperationId::from_bytes([2; 16]);
-    let journal = Arc::new(fixture.execution(owner, operation).unwrap());
+    let journal = execution(&fixture, owner);
     let event = ExecutionEvent::Started {
         request_digest: [1; 32],
     };

@@ -120,20 +120,7 @@ impl<P: StreamProvider + 'static> Fixture<P> {
         Ok((fixture, owner))
     }
 
-    pub(crate) async fn model_peer(&self, spec: OperationSpec) -> Result<bool> {
-        self.host
-            .coordinator
-            .lock()
-            .await
-            .declare_operation(
-                &self.host.owner,
-                &self.host.owner_scope,
-                &self.host.verifier,
-                spec,
-                IdempotencyKey::new("peer")?,
-                None,
-                &mut None,
-            )
-            .await
+    pub(crate) fn model_coordinator(&self) -> &Mutex<DistributedCoordinator<P>> {
+        &self.host.coordinator
     }
 }
