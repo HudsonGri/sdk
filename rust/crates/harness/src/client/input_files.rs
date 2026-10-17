@@ -199,6 +199,16 @@ pub async fn file_tui_input<P: StreamProvider + ?Sized>(
     page_rows: usize,
     maximum_scroll: usize,
 ) -> Result<()> {
+    if let InputEffect::ScrollTo { row } = effect {
+        let mut layout = files
+            .state(CommandFileRoot::Session, "layout.json")?
+            .unwrap_or_else(|| serde_json::json!({}));
+        layout["transcript_back"] =
+            serde_json::json!(maximum_scroll.saturating_sub(row.min(maximum_scroll)));
+        return files
+            .write_unchanged_state(CommandFileRoot::Session, "layout.json", &layout)
+            .await;
+    }
     if let InputEffect::Host(
         action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
     ) = effect

@@ -43,6 +43,8 @@ pub struct ScreenAreas {
     pub header: Rect,
     /// Transcript viewport.
     pub transcript: Rect,
+    /// Right-edge transcript scrollbar, separate from message hit testing.
+    pub scrollbar: Rect,
     /// Optional terminal panel.
     pub terminal: Rect,
     /// Optional right-hand file/diff views.
@@ -55,6 +57,49 @@ pub struct ScreenAreas {
     pub completions: Rect,
     /// Status hints.
     pub status: Rect,
+    scrollbar_maximum: usize,
+}
+
+impl ScreenAreas {
+    /// Route the rendered scrollbar before forwarding editor events. Drag
+    /// capture is ephemeral; the resulting position is a host file write.
+    pub fn event(
+        &self,
+        input: &mut PromptInput,
+        event: crate::key_event::InputEvent,
+        viewport: &mut Viewport,
+        now_ms: u64,
+    ) -> Vec<crate::InputEffect> {
+        use crate::key_event::{InputEvent, MouseButton, MouseEventKind};
+        if self.scrollbar_maximum == 0 {
+            input.scrollbar_dragging = false;
+        }
+        if let InputEvent::Mouse(mouse) = &event {
+            let down = mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && self.scrollbar.contains((mouse.column, mouse.row).into())
+                && self.scrollbar_maximum != 0;
+            let drag =
+                mouse.kind == MouseEventKind::Drag(MouseButton::Left) && input.scrollbar_dragging;
+            if down || drag {
+                input.scrollbar_dragging = true;
+                return vec![crate::InputEffect::ScrollTo {
+                    row: crate::TranscriptScrollbar::row_at(
+                        self.scrollbar,
+                        mouse.row,
+                        self.scrollbar_maximum,
+                    ),
+                }];
+            }
+            if mouse.kind == MouseEventKind::Up(MouseButton::Left) && input.scrollbar_dragging {
+                input.scrollbar_dragging = false;
+                return Vec::new();
+            }
+        }
+        if matches!(event, InputEvent::Focus(false)) {
+            input.scrollbar_dragging = false;
+        }
+        input.event(event, PromptBox::input_area(self.prompt), viewport, now_ms)
+    }
 }
 
 fn take_top(area: &mut Rect, height: u16) -> Rect {
@@ -141,6 +186,13 @@ impl Screen<'_> {
             remaining.height,
         );
         remaining.width -= side_width;
+        let scrollbar = Rect::new(
+            remaining.right().saturating_sub(1),
+            remaining.y,
+            u16::from(remaining.width > 1),
+            remaining.height,
+        );
+        remaining.width = remaining.width.saturating_sub(scrollbar.width);
         let completions = if input.completion.active(&input.editor) {
             CompletionPopup::new(&input.completion, &input.editor).area(prompt, area)
         } else {
@@ -149,6 +201,8 @@ impl Screen<'_> {
         ScreenAreas {
             header,
             transcript: remaining,
+            scrollbar,
+            scrollbar_maximum: 0,
             terminal,
             side,
             notifications,
@@ -168,7 +222,19 @@ impl Screen<'_> {
         transcript_scroll: usize,
         now_ms: u64,
     ) -> ScreenAreas {
-        let areas = self.areas(frame.area(), input);
+        let mut areas = self.areas(frame.area(), input);
+        if self.overlay.is_empty() && !self.feedback {
+            areas.scrollbar_maximum = (self.reasoning.len() + self.transcript.len())
+                .saturating_sub(usize::from(areas.transcript.height));
+            frame.render_widget(
+                crate::TranscriptScrollbar {
+                    top: transcript_scroll,
+                    maximum: areas.scrollbar_maximum,
+                    theme: &input.theme,
+                },
+                areas.scrollbar,
+            );
+        }
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);

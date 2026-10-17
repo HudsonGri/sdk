@@ -42,6 +42,10 @@ mod prompt_input;
 #[cfg(feature = "tui")]
 mod screen;
 #[cfg(feature = "tui")]
+mod scrollbar;
+#[cfg(feature = "tui")]
+pub use scrollbar::TranscriptScrollbar;
+#[cfg(feature = "tui")]
 mod widget;
 #[cfg(feature = "tui")]
 mod wrapped_lines;

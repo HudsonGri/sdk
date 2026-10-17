@@ -477,7 +477,7 @@
   {
     "section": "3. TUI polish",
     "row": "Clickable scrollbar",
-    "status": "Deferred follow-up; no production parity claimed"
+    "status": "Implemented on hf/gc-graphcoder-scrollbar: shared Screen click/drag routing and layout-file writes; TestBackend/replay/control and bounded geometry property"
   },
   {
     "section": "3. TUI polish",

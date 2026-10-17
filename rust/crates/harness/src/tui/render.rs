@@ -543,3 +543,7 @@ fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "scrollbar_tests.rs"]
+mod scrollbar_tests;

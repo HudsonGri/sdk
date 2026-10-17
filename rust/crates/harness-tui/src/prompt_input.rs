@@ -27,6 +27,11 @@ pub enum InputEffect {
     Paste,
     /// Suspend terminal presentation and edit the current text externally.
     ExternalEditor,
+    /// Set the transcript's top row through the host's followed layout file.
+    ScrollTo {
+        /// Absolute top row, bounded again by the current rendered window.
+        row: usize,
+    },
     /// Interrupt the active operation.
     Interrupt,
     /// Exit requested by double interrupt or Ctrl+D on an empty prompt.
@@ -85,6 +90,7 @@ pub struct PromptInput {
     editing: Option<MessageEdit>,
     click: Option<(u16, u16, u64, u8)>,
     pub(crate) dragging: bool,
+    pub(crate) scrollbar_dragging: bool,
     pub(crate) input_width: usize,
     last_activity: u64,
 }
