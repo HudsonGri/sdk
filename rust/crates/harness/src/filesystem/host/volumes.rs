@@ -11,7 +11,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         destination_grant: &ContentGrant,
         paths: Option<Vec<String>>,
         idempotency_key: &IdempotencyKey,
-    ) -> Result<WorkspaceObservation> {
+    ) -> Result<WorkspaceObservation>
+    where
+        A: 'static,
+    {
         source_grant.require(source, VolumeOperation::Read, None)?;
         destination_grant.require(destination, VolumeOperation::Write, None)?;
         if crate::core::filesystem_scope_label(
@@ -47,7 +50,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: &IdempotencyKey,
         io: Option<&PreparationIo>,
         preparation: Option<&Arc<crate::resource_preparation::TaskResourcePreparation>>,
-    ) -> Result<WorkspaceObservation> {
+    ) -> Result<WorkspaceObservation>
+    where
+        A: 'static,
+    {
         let host = self;
 
         if io.is_some_and(|io| io.original_native_work().is_some()) && preparation.is_none() {
@@ -87,60 +93,70 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = host.open(&reference, Some(io)).await?;
         let pinned = host.generation(&workspace, selected, Some(io)).await?;
         fork_preparer_io::retain(&pinned, Some(io)).await?;
-        let access = self
-            .volume_copy_access(
-                &workspace,
-                grant,
-                Some(pinned.id()),
-                VolumeOperation::Read,
-                &[
-                    acyclic_fs::access::Action::Read,
-                    acyclic_fs::access::Action::List,
-                    acyclic_fs::access::Action::Fork,
-                ],
-                io,
-            )
-            .await?;
-        super::super::access::require_current(&workspace, &access.0, io).await?;
-        drop(access);
         let name = crate::executor::with_history_io(Some(io), |work| child.storage_name(work))?;
         let operation = fork_preparer_io::operation_key(key, Some(io))?;
-        let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
-        let options = match paths {
-            Some(paths) => options.inherit_paths(paths),
-            None => options,
-        };
-        let forked = match preparation {
-            Some(task) => io.sdk(
-                workspace
-                    .fork::<_, _, Error>(
-                        &name,
-                        options,
-                        acyclic_fs::PublicationPermit::Unrestricted,
+        let forked = workspace
+            .with_stable_policy(|| async {
+                let access = self
+                    .volume_copy_access(
+                        &workspace,
+                        grant,
+                        Some(pinned.id()),
+                        VolumeOperation::Read,
+                        &[
+                            acyclic_fs::access::Action::Read,
+                            acyclic_fs::access::Action::List,
+                            acyclic_fs::access::Action::Fork,
+                        ],
                         io,
-                        io.cancellation(),
-                        task.as_ref(),
                     )
-                    .await,
-            )?,
-            None => io.sdk(
-                workspace
-                    .fork::<_, _, Error>(
-                        &name,
-                        options,
-                        acyclic_fs::PublicationPermit::Unrestricted,
-                        io,
-                        io.cancellation(),
-                        &mut |_| {
-                            std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                                value: (),
-                                work: WorkCounters::default(),
-                            }))
-                        },
-                    )
-                    .await,
-            )?,
-        };
+                    .await?;
+                if access.0.valid_until().is_some() {
+                    return Err(Error::FilesystemAccessConfiguration(
+                        "volume fork requires non-expiring authority",
+                    ));
+                }
+                super::super::access::require_current(&workspace, &access.0, io).await?;
+                let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
+                let options = match paths {
+                    Some(paths) => options.inherit_paths(paths),
+                    None => options,
+                };
+                let forked = match preparation {
+                    Some(task) => io.sdk(
+                        workspace
+                            .fork::<_, _, Error>(
+                                &name,
+                                options,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                io,
+                                io.cancellation(),
+                                task.as_ref(),
+                            )
+                            .await,
+                    )?,
+                    None => io.sdk(
+                        workspace
+                            .fork::<_, _, Error>(
+                                &name,
+                                options,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                io,
+                                io.cancellation(),
+                                &mut |_| {
+                                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: WorkCounters::default(),
+                                    }))
+                                },
+                            )
+                            .await,
+                    )?,
+                };
+                Ok::<_, Error>(forked)
+            })
+            .await
+            .map_err(map_error)??;
         io.remaining()?;
         let initial = io
             .sdk(

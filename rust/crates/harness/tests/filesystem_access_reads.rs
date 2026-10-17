@@ -17,15 +17,19 @@ mod policy_support;
 
 #[path = "filesystem_access_copies.rs"]
 mod copies;
+#[path = "filesystem_access_fork_fence.rs"]
+mod fork_fence;
+#[path = "file_query/objects.rs"]
+mod objects;
 #[path = "filesystem_access_ranges.rs"]
 mod ranges;
 
 #[path = "support/content_context.rs"]
 mod context;
 
-struct Fixture {
-    fs: acyclic_fs::MemoryFs,
-    host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
+struct Fixture<O = acyclic_fs::MemoryObjectBackend> {
+    fs: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
+    host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, O>>,
     issuer: AuthorityIssuer,
     volume: VolumeRef,
     scope: Scope,
@@ -33,6 +37,16 @@ struct Fixture {
 }
 
 impl Fixture {
+    async fn new() -> Result<Self, Box<dyn Error>> {
+        Self::with_policy(true).await
+    }
+
+    async fn with_policy(initialize: bool) -> Result<Self, Box<dyn Error>> {
+        Self::with_filesystem(Fs::memory(), initialize).await
+    }
+}
+
+impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
     fn generation(&self) -> Result<GenerationRef, Box<dyn Error>> {
         Ok(GenerationRef::new(
             self.volume.provider(),
@@ -43,12 +57,10 @@ impl Fixture {
         .0)
     }
 
-    async fn new() -> Result<Self, Box<dyn Error>> {
-        Self::with_policy(true).await
-    }
-
-    async fn with_policy(initialize: bool) -> Result<Self, Box<dyn Error>> {
-        let fs = Fs::memory();
+    async fn with_filesystem(
+        fs: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
+        initialize: bool,
+    ) -> Result<Self, Box<dyn Error>> {
         let provider = ProviderRef::new(
             "access-test".into(),
             "filesystem".into(),
@@ -58,7 +70,7 @@ impl Fixture {
         let host = FilesystemHost::new(fs.clone(), &provider, None)?;
         let volume = VolumeRef::new(
             provider,
-            "project".into(),
+            format!("project-{}", uuid::Uuid::new_v4()),
             VolumeClass::Project,
             VolumeOwner::Project("owner".into()),
             &mut None,
@@ -163,15 +175,8 @@ impl Fixture {
     fn reader(
         &self,
         scope: &Scope,
-    ) -> Result<
-        Arc<
-            FilesystemContentVerifier<
-                acyclic_fs::MemoryAuthorityBackend,
-                acyclic_fs::MemoryObjectBackend,
-            >,
-        >,
-        Box<dyn Error>,
-    > {
+    ) -> Result<Arc<FilesystemContentVerifier<acyclic_fs::MemoryAuthorityBackend, O>>, Box<dyn Error>>
+    {
         Ok(FilesystemContentVerifier::new(
             self.host.clone(),
             &self.issuer.verifier(&mut None)?,

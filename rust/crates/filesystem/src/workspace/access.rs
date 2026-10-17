@@ -2,6 +2,25 @@ use super::*;
 use crate::access::{Action, Capability, Context, PathTrie, Policy, Principal, Resource};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+    /// Authorize and publish under one process-owned policy cut. The operation
+    /// must reject clock-expiring authority, which this publication lease cannot freeze.
+    pub async fn with_stable_policy<F, T>(
+        &self,
+        operation: impl FnOnce() -> F,
+    ) -> Result<T, WorkspaceError>
+    where
+        A: 'static,
+        F: Future<Output = T>,
+    {
+        if !self.volume.fs.has_process_policy_owner() {
+            return Err(WorkspaceError::AccessDenied);
+        }
+        let policy = crate::access::projection::enter(self.id.volume_id())?;
+        let result = operation().await;
+        drop(policy);
+        Ok(result)
+    }
+
     /// Intersect a deployment-verified coarse action ceiling with persisted
     /// policy. Adapters lacking path enforcement must reject any restriction.
     pub async fn bind_coarse_access(

@@ -9,6 +9,7 @@ use std::sync::{
 };
 type ReadPause = (
     ObjectKind,
+    bool,
     futures::channel::oneshot::Sender<()>,
     futures::channel::oneshot::Receiver<()>,
 );
@@ -50,24 +51,47 @@ impl CountingObjects {
         futures::channel::oneshot::Receiver<()>,
         futures::channel::oneshot::Sender<()>,
     ) {
+        self.pause_io(kind, false)
+    }
+
+    pub(super) fn pause_write(
+        &self,
+        kind: ObjectKind,
+    ) -> (
+        futures::channel::oneshot::Receiver<()>,
+        futures::channel::oneshot::Sender<()>,
+    ) {
+        self.pause_io(kind, true)
+    }
+
+    fn pause_io(
+        &self,
+        kind: ObjectKind,
+        write: bool,
+    ) -> (
+        futures::channel::oneshot::Receiver<()>,
+        futures::channel::oneshot::Sender<()>,
+    ) {
         let (entered, arrival) = futures::channel::oneshot::channel();
         let (release, released) = futures::channel::oneshot::channel();
-        *self.pause.lock().unwrap() = Some((kind, entered, released));
+        *self.pause.lock().unwrap() = Some((kind, write, entered, released));
         (arrival, release)
     }
 
-    async fn pause_read(&self, id: ObjectId, bytes: &[u8]) {
+    async fn pause_at(&self, id: ObjectId, bytes: &[u8], write: bool) {
         let pause = {
             let mut gate = self.pause.lock().unwrap();
-            if gate.as_ref().is_some_and(|(kind, _, _)| {
-                *kind == id.kind && (*kind != ObjectKind::BlobChunk || bytes.starts_with(b"- ["))
+            if gate.as_ref().is_some_and(|(kind, writes, _, _)| {
+                *writes == write
+                    && *kind == id.kind
+                    && (*kind != ObjectKind::BlobChunk || bytes.starts_with(b"- ["))
             }) {
                 gate.take()
             } else {
                 None
             }
         };
-        if let Some((_, entered, released)) = pause {
+        if let Some((_, _, entered, released)) = pause {
             entered.send(()).unwrap();
             released.await.unwrap();
         }
@@ -81,6 +105,7 @@ impl AsyncObjectStore for CountingObjects {
         bytes: OwnedBytes,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
+        self.pause_at(id, &bytes, true).await;
         self.inner.put(id, bytes, work).await
     }
 
@@ -89,6 +114,9 @@ impl AsyncObjectStore for CountingObjects {
         writes: &[ObjectWrite],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
+        for write in writes {
+            self.pause_at(write.object_id, &write.bytes, true).await;
+        }
         self.inner.put_many(writes, work).await
     }
 
@@ -102,7 +130,7 @@ impl AsyncObjectStore for CountingObjects {
             self.reads.fetch_add(1, Ordering::SeqCst);
         }
         let read = self.inner.read(id, maximum, work).await?;
-        self.pause_read(id, &read.bytes).await;
+        self.pause_at(id, &read.bytes, false).await;
         Ok(read)
     }
 
@@ -120,7 +148,7 @@ impl AsyncObjectStore for CountingObjects {
         );
         let result = self.inner.read_many(requests, work).await?;
         for (request, read) in requests.iter().zip(&result.0) {
-            self.pause_read(request.object_id, &read.bytes).await;
+            self.pause_at(request.object_id, &read.bytes, false).await;
         }
         Ok(result)
     }
