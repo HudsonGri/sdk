@@ -1,5 +1,5 @@
 use super::*;
-use crate::conversation::ContentResidencyVerifier;
+use crate::conversation::{ContentPublisher, ContentResidencyVerifier};
 use crate::native_settings::SettingsConfig;
 use futures::StreamExt;
 
