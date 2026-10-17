@@ -249,7 +249,7 @@ fn fill_cut<const UNCHECKED: bool>(depth: u8, exhaust: bool) {
         let setup = root.live_allocation_bytes();
         let actual = Arc::new(AtomicU64::new(0));
         let (ready, receiver) = loom::sync::mpsc::channel();
-        let competing = root.clone();
+        let competing = work.clone();
         let worker = exhaust.then(|| {
             loom::thread::spawn(move || {
                 receiver.recv().unwrap();
@@ -281,7 +281,7 @@ fn fill_cut<const UNCHECKED: bool>(depth: u8, exhaust: bool) {
         );
         assert!(competing.is_none_or(|result| result.is_ok()));
         for (local, pending) in work.resource_chain() {
-            assert_eq!(local.bytes_copied, 0);
+            assert_eq!(local.bytes_copied, if exhaust { COPIED } else { 0 });
             assert_eq!(pending, crate::WorkCounters::UNCHARGED);
         }
     });
