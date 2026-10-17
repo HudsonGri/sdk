@@ -216,7 +216,7 @@ impl Ord for StreamPath {
         if std::ptr::eq(left, right) {
             std::cmp::Ordering::Equal
         } else {
-            left.cmp(right)
+            crate::owned_bytes::compare_bytes(left.as_bytes(), right.as_bytes())
         }
     }
 }
