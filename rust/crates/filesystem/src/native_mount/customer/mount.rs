@@ -151,7 +151,7 @@ where
                 CheckoutMode::read_only_pinned()
             };
             let checkout = self
-                .checkout(options.data_selector()?, mode, &work, cancellation)
+                .checkout(options.data_selector()?, mode, work, cancellation)
                 .await?;
             let source = AdmittedRoot::admit(&options, self, checkout.generation_id(), &work)
                 .await?
