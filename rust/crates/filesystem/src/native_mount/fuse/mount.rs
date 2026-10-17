@@ -122,46 +122,75 @@ impl Mount {
             child.wait()?;
             self.helper.take();
         }
+        self.attempt_unmount(
+            |mount| device.map_or(Ok(false), |device| mount.device_detached(device)),
+            |mount| {
+                unmount_with(
+                    |flags| nix::mount::umount2(path, flags),
+                    || {
+                        let program = mount.program.unwrap_or(c"fusermount3");
+                        let mut command = helper_command(program);
+                        command
+                            .args(["-u", "-q", "-z", "--"])
+                            .arg(std::ffi::OsStr::from_bytes(path.to_bytes()));
+                        mount.helper = Some(command.spawn()?);
+                        drop(command);
+                        mount
+                            .helper
+                            .as_mut()
+                            .ok_or(io::ErrorKind::NotFound)?
+                            .wait()?;
+                        mount.helper.take();
+                        // Helper exit alone cannot establish device destruction.
+                        Ok(())
+                    },
+                )
+            },
+        )
+    }
+
+    fn attempt_unmount(
+        &mut self,
+        detached: impl FnOnce(&mut Self) -> io::Result<bool>,
+        unmount: impl FnOnce(&mut Self) -> io::Result<()>,
+    ) -> io::Result<()> {
         if !self.pending {
             return Ok(());
         }
-        if let Some(device) = device {
+        if detached(self)? {
+            return Ok(());
+        }
+        unmount(self)?;
+        #[cfg(test)]
+        if tests::forget_pending() {
+            self.pending = false;
+        }
+        Ok(())
+    }
+
+    // This is the sole production transition that clears pending. A failed
+    // helper or an unsuccessful device check must leave the next retry enabled.
+    pub(super) fn device_detached(&mut self, device: &OwnedFd) -> io::Result<bool> {
+        self.observe_detachment(|| {
             let mut poll = libc::pollfd {
                 fd: device.as_raw_fd(),
                 events: 0,
                 revents: 0,
             };
-            // SAFETY: one initialized poll record; the state owner retains its fd.
+            // SAFETY: one initialized record; the state owner retains its descriptor.
             if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if poll.revents & libc::POLLERR != 0 {
-                self.pending = false;
-                return Ok(());
-            }
+            Ok(poll.revents & libc::POLLERR != 0)
+        })
+    }
+
+    fn observe_detachment(&mut self, query: impl FnOnce() -> io::Result<bool>) -> io::Result<bool> {
+        let detached = query()?;
+        if detached {
+            self.pending = false;
         }
-        unmount_with(
-            |flags| nix::mount::umount2(path, flags),
-            || {
-                let program = self.program.unwrap_or(c"fusermount3");
-                let mut command = helper_command(program);
-                command
-                    .args(["-u", "-q", "-z", "--"])
-                    .arg(std::ffi::OsStr::from_bytes(path.to_bytes()));
-                self.helper = Some(command.spawn()?);
-                drop(command);
-                self.helper
-                    .as_mut()
-                    .ok_or(io::ErrorKind::NotFound)?
-                    .wait()?;
-                self.helper.take();
-                // As with the original mounter, the caller checks POLLERR on
-                // the actual device; an exit status cannot prove destruction.
-                Ok(())
-            },
-        )?;
-        self.pending = false;
-        Ok(())
+        Ok(detached)
     }
     pub(super) fn pending(&self) -> bool {
         self.pending || self.helper.is_some()

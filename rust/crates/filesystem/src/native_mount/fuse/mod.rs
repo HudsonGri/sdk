@@ -26,7 +26,7 @@ use fuser::{
 };
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::OnceLock;

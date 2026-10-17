@@ -62,16 +62,7 @@ impl FuseSessionState {
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            let mut poll = libc::pollfd {
-                fd: device.as_raw_fd(),
-                events: 0,
-                revents: 0,
-            };
-            // SAFETY: poll owns one initialized descriptor record.
-            if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            if poll.revents & libc::POLLERR == 0 {
+            if !self.mount.device_detached(device)? {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {
