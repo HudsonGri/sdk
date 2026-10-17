@@ -93,6 +93,27 @@ fn email_local(byte: u8) -> bool {
 
 // Successor states and whether the byte completes a construct.
 fn step(state: usize, byte: u8) -> (u64, bool) {
+    match state {
+        LT => {
+            let (pointy, accept) = step(POINTY, byte);
+            let opened = match byte {
+                b'/' => (1 << CLOSE_START) | (1 << EMAIL_LOCAL),
+                b'!' => (1 << BANG) | (1 << EMAIL_LOCAL),
+                b'?' => (1 << INSTRUCTION) | (1 << EMAIL_LOCAL),
+                _ if byte.is_ascii_alphabetic() => {
+                    (1 << TAG_NAME) | (1 << SCHEME) | (1 << EMAIL_LOCAL)
+                }
+                _ if email_local(byte) => 1 << EMAIL_LOCAL,
+                _ => 0,
+            };
+            (pointy | opened, accept)
+        }
+        TAG_NAME..=CLOSE_SPACE => tag_step(state, byte),
+        _ => other_step(state, byte),
+    }
+}
+
+fn tag_step(state: usize, byte: u8) -> (u64, bool) {
     let to = |state: usize| 1u64 << state;
     let tag_end = |byte: u8, stay: u64| match byte {
         b'>' => (0, true),
@@ -101,18 +122,6 @@ fn step(state: usize, byte: u8) -> (u64, bool) {
         _ => (stay, false),
     };
     match state {
-        LT => {
-            let (pointy, accept) = step(POINTY, byte);
-            let opened = match byte {
-                b'/' => to(CLOSE_START) | to(EMAIL_LOCAL),
-                b'!' => to(BANG) | to(EMAIL_LOCAL),
-                b'?' => to(INSTRUCTION) | to(EMAIL_LOCAL),
-                _ if byte.is_ascii_alphabetic() => to(TAG_NAME) | to(SCHEME) | to(EMAIL_LOCAL),
-                _ if email_local(byte) => to(EMAIL_LOCAL),
-                _ => 0,
-            };
-            (pointy | opened, accept)
-        }
         TAG_NAME if byte.is_ascii_alphanumeric() || byte == b'-' => (to(TAG_NAME), false),
         TAG_NAME => tag_end(byte, 0),
         TAG_SPACE | AFTER_ATTRIBUTE if attribute_start(byte) => (to(ATTRIBUTE), false),
@@ -149,6 +158,13 @@ fn step(state: usize, byte: u8) -> (u64, bool) {
         CLOSE_NAME if byte.is_ascii_alphanumeric() || byte == b'-' => (to(CLOSE_NAME), false),
         CLOSE_NAME | CLOSE_SPACE if space(byte) => (to(CLOSE_SPACE), false),
         CLOSE_NAME | CLOSE_SPACE => (0, byte == b'>'),
+        _ => (0, false),
+    }
+}
+
+fn other_step(state: usize, byte: u8) -> (u64, bool) {
+    let to = |state: usize| 1u64 << state;
+    match state {
         BANG => match byte {
             b'-' => (to(BANG_DASH), false),
             b'[' => (to(CDATA_PREFIX), false),
@@ -162,13 +178,20 @@ fn step(state: usize, byte: u8) -> (u64, bool) {
             _ => (to(COMMENT), false),
         },
         COMMENT => (to(if byte == b'-' { COMMENT_DASH } else { COMMENT }), false),
-        COMMENT_DASH => (to(if byte == b'-' { COMMENT_DASHES } else { COMMENT }), false),
+        COMMENT_DASH => (
+            to(if byte == b'-' {
+                COMMENT_DASHES
+            } else {
+                COMMENT
+            }),
+            false,
+        ),
         COMMENT_DASHES => match byte {
             b'>' => (0, true),
             b'-' => (to(COMMENT_DASHES), false),
             _ => (to(COMMENT), false),
         },
-        CDATA_PREFIX..CDATA if byte == b"CDATA["[state - CDATA_PREFIX] => {
+        CDATA_PREFIX..CDATA if Some(&byte) == b"CDATA[".get(state - CDATA_PREFIX) => {
             (to(state + 1), false)
         }
         CDATA => (to(if byte == b']' { CDATA_BRACKET } else { CDATA }), false),
@@ -179,7 +202,14 @@ fn step(state: usize, byte: u8) -> (u64, bool) {
             _ => (to(CDATA), false),
         },
         DECLARATION => (if byte == b'>' { 0 } else { to(DECLARATION) }, byte == b'>'),
-        INSTRUCTION => (to(if byte == b'?' { INSTRUCTION_MARK } else { INSTRUCTION }), false),
+        INSTRUCTION => (
+            to(if byte == b'?' {
+                INSTRUCTION_MARK
+            } else {
+                INSTRUCTION
+            }),
+            false,
+        ),
         INSTRUCTION_MARK => match byte {
             b'>' => (0, true),
             b'?' => (to(INSTRUCTION_MARK), false),
@@ -229,13 +259,15 @@ impl Angles {
 
     /// The earliest opener that a later byte can still close.
     pub(super) fn floor(&self) -> Option<usize> {
-        let current = &self.earliest[self.side];
+        let [first, second] = &self.earliest;
+        let current = if self.side == 0 { first } else { second };
         let mut states = self.live;
         let mut floor = None::<usize>;
         while states != 0 {
             let state = states.trailing_zeros() as usize;
             states &= states - 1;
-            floor = Some(floor.map_or(current[state], |floor| floor.min(current[state])));
+            let &opener = current.get(state)?;
+            floor = Some(floor.map_or(opener, |floor| floor.min(opener)));
         }
         floor
     }
@@ -259,7 +291,9 @@ impl Angles {
             while states != 0 {
                 let state = states.trailing_zeros() as usize;
                 states &= states - 1;
-                let opener = current[state];
+                let Some(&opener) = current.get(state) else {
+                    unreachable!("live angle states fit the state array");
+                };
                 let (mut next, accept) = step(state, byte);
                 if accept {
                     closed = Some(closed.map_or(opener, |closed| closed.min(opener)));
@@ -267,7 +301,9 @@ impl Angles {
                 while next != 0 {
                     let target = next.trailing_zeros() as usize;
                     next &= next - 1;
-                    let slot = &mut next_side[target];
+                    let Some(slot) = next_side.get_mut(target) else {
+                        unreachable!("successor angle states fit the state array");
+                    };
                     *slot = if live & (1 << target) == 0 {
                         opener
                     } else {
@@ -277,7 +313,8 @@ impl Angles {
                 }
             }
             if byte == b'<' && !self.escaped && live & (1 << LT) == 0 {
-                next_side[LT] = self.fed + offset;
+                let [opener, ..] = next_side;
+                *opener = self.fed + offset;
                 live |= 1 << LT;
             }
             self.escaped = byte == b'\\' && !self.escaped;

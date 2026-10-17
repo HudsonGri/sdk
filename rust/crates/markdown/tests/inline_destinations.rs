@@ -26,6 +26,21 @@ fn compare(source: &str, cuts: &[usize]) {
     }
 }
 
+#[test]
+fn multiline_title_resumes_at_the_inline_node() {
+    for source in ["(<u> (\n\\))", "(<u> '\r\n  \\')", "(<u> \"\n\t\\\")"] {
+        let cuts: Vec<_> = (0..source.len()).collect();
+        compare(source, &cuts);
+        compare_index(&format!("]{source}"), &cuts);
+    }
+    let source = "(<u> (\n\\))";
+    let mut broken = Suffix {
+        keep_title_escape: true,
+        ..Suffix::default()
+    };
+    assert_ne!(broken.push(source), oracle(source).map(|(end, _)| end));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]

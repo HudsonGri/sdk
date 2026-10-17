@@ -72,7 +72,8 @@ pub(crate) fn paragraphs<'a>(
                 end += 1;
             }
             // An escaped first character's text begins after its backslash.
-            let begin = range.start - usize::from(source.as_bytes().get(range.start.wrapping_sub(1)) == Some(&b'\\'));
+            let begin = range.start
+                - usize::from(source.as_bytes().get(range.start.wrapping_sub(1)) == Some(&b'\\'));
             let range = begin..end;
             result.push((Event::Start(Tag::Paragraph), range.clone()));
             result.extend_from_slice(events.get(start..index).unwrap_or_default());

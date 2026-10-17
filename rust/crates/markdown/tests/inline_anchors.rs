@@ -2,6 +2,37 @@ use super::*;
 use crate::inline_scan::tokens::Tokens;
 use proptest::prelude::*;
 
+fn ordinals(anchor: &Anchor) -> [usize; 4] {
+    [
+        anchor.delimiter(),
+        anchor.forest(),
+        anchor.bracket(),
+        anchor.closed(),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn compact_anchors_preserve_every_ordinal(values in any::<[usize; 4]>()) {
+        let context = State::default().resume().context;
+        let anchor = Anchor::new(context, values);
+        prop_assert_eq!(ordinals(&anchor), values);
+        prop_assert_eq!(ordinals(&anchor.clone()), values);
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn ordinal_property_detects_truncating_large_paragraphs() {
+    let context = State::default().resume().context;
+    let values = [u32::MAX as usize + 1; 4];
+    let mut anchor = Anchor::new(context, values);
+    assert_eq!(ordinals(&anchor), values);
+    anchor.wide = None;
+    assert_ne!(ordinals(&anchor), values);
+}
+
 fn feed(state: &mut State, source: &str, start: usize) {
     let mut tokens = Tokens::at(
         start,

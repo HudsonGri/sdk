@@ -244,8 +244,6 @@ impl Markdown {
             let prefix = context_prefix(&self.context);
             let source = format!("{prefix}{tail}");
             #[cfg(test)]
-            if std::env::var("GC_LOOP").is_ok() { eprintln!("LOOP offset {} source {source:?}", self.offset); }
-            #[cfg(test)]
             work::copy(source.len());
             let keys = self.references.update(&source, self.offset, prefix.len());
             changed = changed.min(self.resolve(&keys));

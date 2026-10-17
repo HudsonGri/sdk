@@ -227,7 +227,11 @@ fn hard_break(source: &str, end: usize) -> Option<bool> {
 }
 
 impl Markdown {
-    pub(crate) fn advance_inline(&mut self, previous: usize, seed: Option<Seed<'_, '_>>) -> Option<usize> {
+    pub(crate) fn advance_inline(
+        &mut self,
+        previous: usize,
+        seed: Option<Seed<'_, '_>>,
+    ) -> Option<usize> {
         let mut changed = usize::MAX;
         let mut previous = previous;
         if let Some(mut held) = self.inline.as_mut()?.held.take() {
@@ -262,7 +266,9 @@ impl Markdown {
         let first = (self.stable_lines..self.visible_lines).find(|&index| {
             #[cfg(test)]
             work::scan(1);
-            self.lines.get(index).is_some_and(|line| !line.spans.is_empty())
+            self.lines
+                .get(index)
+                .is_some_and(|line| !line.spans.is_empty())
         });
         let (Some(first), Some(hard)) = (first, hard_break(&self.source, row - 1)) else {
             return self
@@ -275,7 +281,9 @@ impl Markdown {
             .find(|&index| {
                 #[cfg(test)]
                 work::scan(1);
-                self.lines.get(index).is_some_and(|line| !line.spans.is_empty())
+                self.lines
+                    .get(index)
+                    .is_some_and(|line| !line.spans.is_empty())
             })
             .map_or(0, |last| last + 1 - first);
         held.hard = hard;

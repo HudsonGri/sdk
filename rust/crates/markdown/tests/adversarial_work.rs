@@ -7,24 +7,101 @@ use super::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestError, TestRng, TestRunner};
 
 const CATEGORIES: usize = 10;
-const REPLAY: usize = 9;
 const NAMES: [&str; CATEGORIES] = [
-    "scan", "copy", "visibility", "feed", "parser", "visible", "cache", "moved", "boundary",
+    "scan",
+    "copy",
+    "visibility",
+    "feed",
+    "parser",
+    "visible",
+    "cache",
+    "moved",
+    "boundary",
     "replay",
 ];
 
 // Grammar terminals: inline delimiters, entities, links, images, code, HTML,
 // comments, fences, definitions, containers, tables and separators.
 const FRAGMENTS: &[&str] = &[
-    "x", "word", " ", "*", "**", "_", "__", "~", "~~", "`", "``", "\\", "\\*", "[", "]", "![",
-    "](u)", "[x](u)", "![x](u)", "[a *b*](<u> \"t\")", "[x][r]", "[r]", "![][r]", "[s]",
-    "<https://x>", "<a@b.example>", "&amp;", "&#10;", "&#0;", "&copy", ";", "<b>", "</b>",
-    "<!--", "-->", "<!--\n x\n-->", "`code`", "**bold**", "🦀", "¡", "\n", "\n\n", "- item\n",
-    "- item\n\n", "1. one\n", "> quote\n", "# head\n", "---\n", "***\n", "```\n",
-    "```rust\nlet x = 1;\n", "~~~\n", "    code\n", "<div>\n", "</div>\n", "<div>\n x\n</div>\n",
-    "[r]: /url\n\n", "[s]: /s\n", "[r]:", " /url", "| a | b |\n", "| - | - |\n", "| x | y |\n",
-    "\t", "-   parent\n\n      child\n", "<", ">", "<a ", "(", ")", "](", "<?", "?>", "<!X",
-    "<![CDATA[", "]]>", "\"", "'", "=",
+    "x",
+    "word",
+    " ",
+    "*",
+    "**",
+    "_",
+    "__",
+    "~",
+    "~~",
+    "`",
+    "``",
+    "\\",
+    "\\*",
+    "[",
+    "]",
+    "![",
+    "](u)",
+    "[x](u)",
+    "![x](u)",
+    "[a *b*](<u> \"t\")",
+    "[x][r]",
+    "[r]",
+    "![][r]",
+    "[s]",
+    "<https://x>",
+    "<a@b.example>",
+    "&amp;",
+    "&#10;",
+    "&#0;",
+    "&copy",
+    ";",
+    "<b>",
+    "</b>",
+    "<!--",
+    "-->",
+    "<!--\n x\n-->",
+    "`code`",
+    "**bold**",
+    "🦀",
+    "¡",
+    "\n",
+    "\n\n",
+    "- item\n",
+    "- item\n\n",
+    "1. one\n",
+    "> quote\n",
+    "# head\n",
+    "---\n",
+    "***\n",
+    "```\n",
+    "```rust\nlet x = 1;\n",
+    "~~~\n",
+    "    code\n",
+    "<div>\n",
+    "</div>\n",
+    "<div>\n x\n</div>\n",
+    "[r]: /url\n\n",
+    "[s]: /s\n",
+    "[r]:",
+    " /url",
+    "| a | b |\n",
+    "| - | - |\n",
+    "| x | y |\n",
+    "\t",
+    "-   parent\n\n      child\n",
+    "<",
+    ">",
+    "<a ",
+    "(",
+    ")",
+    "](",
+    "<?",
+    "?>",
+    "<!X",
+    "<![CDATA[",
+    "]]>",
+    "\"",
+    "'",
+    "=",
 ];
 const SEPARATORS: &[&str] = &["", " ", "\n", "\n\n", "x", "!"];
 const PREFIXES: &[&str] = &["", "x ", "- ", "> ", "| a |\n| - |\n", "```\n", "[r]\n\n"];
@@ -254,7 +331,11 @@ const FOUND: &[(&str, &[&str], &str)] = &[
     ("", &["\\", "**", "**", "&#0;"], "\n"),
     ("[r]\n\n", &["_", "<!--\n x\n-->", "    code\n"], " "),
     ("| a |\n| - |\n", &["<!--\n x\n-->", "- item\n", "="], " "),
-    ("| a |\n| - |\n", &["<!--\n x\n-->", "<div>\n", "=", ";"], " "),
+    (
+        "| a |\n| - |\n",
+        &["<!--\n x\n-->", "<div>\n", "=", ";"],
+        " ",
+    ),
     ("| a |\n| - |\n", &[")", "-->", "&#10;"], ""),
     ("| a |\n| - |\n", &["`"], " "),
     ("| a |\n| - |\n", &["``", "&#10;"], "x"),
@@ -297,42 +378,4 @@ fn duplicate_definitions_seal_the_frontier() {
     let stalled = superlinear(&case, 24);
     crate::references::STALL_DUPLICATES.set(false);
     assert!(stalled.is_some());
-}
-
-#[test]
-fn inventory() {
-    let Some(cases) = std::env::var("GC_INVENTORY").ok().and_then(|v| v.parse::<u32>().ok()) else {
-        return;
-    };
-    use proptest::strategy::ValueTree;
-    std::panic::set_hook(Box::new(|_| {}));
-    let mut runner = TestRunner::new_with_rng(Config::default(), TestRng::from_seed(RngAlgorithm::ChaCha, &[7; 32]));
-    let mut seen = std::collections::BTreeMap::new();
-    for _ in 0..cases {
-        let case = cycle().new_tree(&mut runner).unwrap().current();
-        let result = std::panic::catch_unwind(|| superlinear(&case, 24));
-        let message = match result {
-            Ok(None) => continue,
-            Ok(Some(message)) => message,
-            Err(panic) => panic
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_else(|| "panic".into()),
-        };
-        let key = if message.contains("increments") {
-            "doubling"
-        } else if message.contains("open +") {
-            "per-push"
-        } else {
-            "render"
-        };
-        let entry = seen.entry((key, case.prefix, case.separator)).or_insert((0, String::new()));
-        entry.0 += 1;
-        if entry.1.is_empty() || entry.1.len() > message.len() {
-            entry.1 = message;
-        }
-    }
-    for ((key, prefix, separator), (count, message)) in seen {
-        println!("{key} {prefix:?} {separator:?} x{count}: {}", &message[..message.len().min(600)]);
-    }
 }

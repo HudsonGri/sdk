@@ -20,18 +20,16 @@ fn complete(construct: &str) -> bool {
     });
     let pointy = construct.len() >= 2
         && construct.ends_with('>')
-        && construct
-            .get(1..construct.len() - 1)
-            .is_some_and(|inner| {
-                let mut escaped = false;
-                inner.bytes().all(|byte| {
-                    // Line endings end a destination even when escaped.
-                    let ok = !matches!(byte, b'\n' | b'\r')
-                        && (escaped || !matches!(byte, b'<' | b'>'));
-                    escaped = !escaped && byte == b'\\';
-                    ok
-                }) && !escaped
-            });
+        && construct.get(1..construct.len() - 1).is_some_and(|inner| {
+            let mut escaped = false;
+            inner.bytes().all(|byte| {
+                // Line endings end a destination even when escaped.
+                let ok =
+                    !matches!(byte, b'\n' | b'\r') && (escaped || !matches!(byte, b'<' | b'>'));
+                escaped = !escaped && byte == b'\\';
+                ok
+            }) && !escaped
+        });
     parsed || pointy
 }
 

@@ -23,10 +23,13 @@ pub(super) struct Suffix {
     offset: usize,
     escaped: bool,
     carriage_return: bool,
+    title_line: bool,
     #[cfg(test)]
     replay: bool,
     #[cfg(test)]
     forget_escape: bool,
+    #[cfg(test)]
+    keep_title_escape: bool,
 }
 
 impl Suffix {
@@ -37,6 +40,7 @@ impl Suffix {
             self.offset = 0;
             self.escaped = false;
             self.carriage_return = false;
+            self.title_line = false;
         }
         for &byte in source.as_bytes().get(self.offset..)? {
             if matches!(self.phase, Phase::Complete(_) | Phase::Invalid) {
@@ -48,6 +52,19 @@ impl Suffix {
             if self.carriage_return {
                 self.carriage_return = false;
                 if byte == b'\n' {
+                    continue;
+                }
+            }
+            if matches!(self.phase, Phase::Title(_)) {
+                // The parser resumes a multiline title at the first inline
+                // node. An escaped punctuation node starts after its leading
+                // backslash, so that backslash is outside the title scan.
+                let first = self.title_line;
+                self.title_line =
+                    matches!(byte, b'\n' | b'\r') || (first && matches!(byte, b' ' | b'\t'));
+                #[cfg(test)]
+                let first = first && !self.keep_title_escape;
+                if first && byte == b'\\' {
                     continue;
                 }
             }

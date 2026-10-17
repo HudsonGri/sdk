@@ -218,13 +218,6 @@ impl Markdown {
                 std::borrow::Cow::Borrowed(&[][..]),
             )
         };
-        #[cfg(test)]
-        if std::env::var_os("GC_INLINE_TRACE").is_some() {
-            eprintln!(
-                "input={:?} start={} base={base} end={end} classify={classify} foreign={foreign} sentinel={sentinel} events={events:?}",
-                self.source, inline.start
-            );
-        }
         if classify
             && (events
                 .first()

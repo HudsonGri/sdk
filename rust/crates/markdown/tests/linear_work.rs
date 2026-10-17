@@ -4,15 +4,15 @@ use super::*;
 mod mixed;
 
 fn work(chunk: usize) -> (usize, usize) {
-    // 256 copies of a 1 KiB record of every construct; doubling exposes any
+    // 1024 copies of a 1 KiB record of every construct; doubling exposes any
     // per-push cost that grows with the document.
-    let source = mixed::document(512 * 1024);
-    let (small, remainder) = source.split_at(256 * 1024);
+    let source = mixed::document(2 * 1024 * 1024);
+    let (small, remainder) = source.split_at(1024 * 1024);
     let mut totals = Vec::new();
     let before = work::current();
     let mut markdown = Markdown::default();
     let mut first = None;
-    // The 256 KiB run is exactly the prefix of the 512 KiB run. Retain its
+    // The 1 MiB run is exactly the prefix of the 2 MiB run. Retain its
     // counter checkpoint instead of executing that identical fixture twice.
     for part in [small, remainder] {
         for delta in part.as_bytes().chunks(chunk) {
@@ -68,7 +68,7 @@ fn mixed_document_total_work_is_linear() {
             .map(|chunk| {
                 scope.spawn(move || {
                     let (small, large) = work(chunk);
-                    println!("chunk {chunk}: 256 KiB / 512 KiB use {small} / {large} units");
+                    println!("chunk {chunk}: 1 MiB / 2 MiB use {small} / {large} units");
                     assert!(
                         large * 10 <= small * 22,
                         "chunk {chunk}: {small} -> {large} work"

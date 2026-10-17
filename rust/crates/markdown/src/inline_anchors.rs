@@ -19,24 +19,53 @@ pub(in crate::inline_scan) struct Anchor {
     forest: u32,
     bracket: u32,
     closed: u32,
-}
-
-fn narrow(ordinal: usize) -> u32 {
-    u32::try_from(ordinal).expect("paragraph entry ordinals fit in 32 bits")
+    wide: Option<std::sync::Arc<[usize; 4]>>,
 }
 
 impl Anchor {
+    fn new(context: std::sync::Arc<Context>, ordinals: [usize; 4]) -> Self {
+        let wide = ordinals
+            .iter()
+            .any(|&value| u32::try_from(value).is_err())
+            .then(|| std::sync::Arc::new(ordinals));
+        #[cfg(test)]
+        if wide.is_some() {
+            crate::work::copy(std::mem::size_of_val(&ordinals));
+        }
+        let [delimiter, forest, bracket, closed] =
+            ordinals.map(|value| u32::try_from(value).unwrap_or_default());
+        Self {
+            context,
+            delimiter,
+            forest,
+            bracket,
+            closed,
+            wide,
+        }
+    }
     pub(super) fn delimiter(&self) -> usize {
-        self.delimiter as usize
+        self.wide.as_deref().map_or(self.delimiter as usize, |v| {
+            let [value, ..] = v;
+            *value
+        })
     }
     pub(in crate::inline_scan) fn forest(&self) -> usize {
-        self.forest as usize
+        self.wide.as_deref().map_or(self.forest as usize, |v| {
+            let [_, value, ..] = v;
+            *value
+        })
     }
     pub(super) fn bracket(&self) -> usize {
-        self.bracket as usize
+        self.wide.as_deref().map_or(self.bracket as usize, |v| {
+            let [_, _, value, _] = v;
+            *value
+        })
     }
     pub(super) fn closed(&self) -> usize {
-        self.closed as usize
+        self.wide.as_deref().map_or(self.closed as usize, |v| {
+            let [.., value] = v;
+            *value
+        })
     }
 }
 
@@ -88,17 +117,13 @@ impl State {
         }
         #[cfg(test)]
         crate::work::copy(std::mem::size_of::<Anchor>());
-        Anchor {
-            context: self
-                .anchor_context
-                .as_ref()
-                .expect("resume context")
-                .clone(),
-            delimiter: narrow(delimiter),
-            forest: narrow(self.forest.snapshot()),
-            bracket: narrow(self.bracket),
-            closed: narrow(self.closed),
-        }
+        let Some(context) = self.anchor_context.clone() else {
+            unreachable!("resume initializes the context above");
+        };
+        Anchor::new(
+            context,
+            [delimiter, self.forest.snapshot(), self.bracket, self.closed],
+        )
     }
 
     pub(in crate::inline_scan) fn remember(&mut self, ordinal: usize) {
@@ -121,7 +146,8 @@ impl State {
                         self.anchors.len() * std::mem::size_of::<Vec<Option<Anchor>>>(),
                     );
                 }
-                self.anchors.push(super::forest::new_page(self.anchors.len()));
+                self.anchors
+                    .push(super::forest::new_page(self.anchors.len()));
             }
             let value = if self.anchor_slots == ordinal {
                 anchor.take()
@@ -148,12 +174,7 @@ impl State {
     pub(in crate::inline_scan) fn restore_at(&mut self, ordinal: usize) -> Option<()> {
         let ordinal = ordinal.checked_sub(self.anchor_origin)?;
         let (page, offset) = super::forest::slot(ordinal);
-        let anchor = self
-            .anchors
-            .get(page)?
-            .get(offset)?
-            .as_ref()?
-            .clone();
+        let anchor = self.anchors.get(page)?.get(offset)?.as_ref()?.clone();
         #[cfg(test)]
         if SKIP_RESTORE.get() {
             return Some(());
