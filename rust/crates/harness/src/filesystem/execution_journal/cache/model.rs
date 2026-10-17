@@ -6,9 +6,10 @@ use loom::sync::atomic::{AtomicUsize, Ordering};
 
 /// Construct lazy async operations off the coroutine's small stack. Their
 /// polling, and therefore every lock acquisition, remains inside Loom.
-pub(crate) fn model_future<F: std::future::Future + Send>(
+#[inline(never)]
+pub(crate) fn model_future<'a, F: std::future::Future + Send + 'a>(
     make: impl FnOnce() -> F + Send,
-) -> std::pin::Pin<Box<F>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = F::Output> + Send + 'a>> {
     std::thread::scope(|scope| scope.spawn(|| Box::pin(make())).join().unwrap())
 }
 

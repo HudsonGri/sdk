@@ -79,8 +79,8 @@ where
                         .await?
                     }
                     None => {
-                        let tail = summary.tail;
-                        let fence = summary.fence;
+                        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                        let (tail, fence) = (summary.tail, summary.fence);
                         journal_future!(
                             move || self.replay_page_fenced(
                                 operation,
@@ -92,10 +92,10 @@ where
                             ),
                             self.replay_page_fenced(
                                 operation,
-                                tail,
+                                summary.tail,
                                 EXECUTION_REPLAY_PAGE_RECORDS,
                                 true,
-                                fence,
+                                summary.fence,
                                 None,
                             )
                         )?
@@ -399,20 +399,29 @@ where
         let summary_io = funding.as_ref().or(io);
         let result = async {
             loop {
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                 let current = &mut *summary;
                 journal_future!(
                     move || self.refresh_summary(operation_id, current, summary_io),
-                    self.refresh_summary(operation_id, current, summary_io)
+                    self.refresh_summary(operation_id, summary, summary_io)
                 )?;
                 if let Some(owner) = owner {
                     let mut borrowed = io.map(PreparationIo::history_io);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                     let mut history = borrowed
                         .as_mut()
                         .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                     let work = &mut history;
                     journal_future!(
                         move || owner.verify_execution(operation_id, event, work),
-                        owner.verify_execution(operation_id, event, work)
+                        owner.verify_execution(
+                            operation_id,
+                            event,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo)
+                        )
                     )?;
                 }
                 if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
@@ -436,13 +445,14 @@ where
                     return Ok(false);
                 }
                 summary.validate_next(event, model.as_ref(), limits, io)?;
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                 let model_ref = model.as_ref();
                 #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                 let preparing = super::cache::model_future(move || {
                     self.prepare_chunk(operation_id, event, model_ref, io)
                 });
                 #[cfg(not(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom)))]
-                let preparing = self.prepare_chunk(operation_id, event, model_ref, io);
+                let preparing = self.prepare_chunk(operation_id, event, model.as_ref(), io);
                 #[cfg(all(test, not(target_arch = "wasm32")))]
                 let chunk = crate::test_support::accounted::observe_chunk(preparing, io).await;
                 #[cfg(not(all(test, not(target_arch = "wasm32"))))]
@@ -457,13 +467,14 @@ where
                 };
                 let committed = if let Some(owner) = owner {
                     let mut borrowed = io.map(PreparationIo::history_io);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                     let mut history = borrowed
                         .as_mut()
                         .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                     let work = &mut history;
-                    let tail = summary.tail;
-                    let key_ref = &key;
-                    let content = bytes.clone();
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let (tail, key_ref, content) = (summary.tail, &key, bytes.clone());
                     journal_future!(
                         move || owner.append_execution(
                             operation_id,
@@ -476,22 +487,29 @@ where
                         ),
                         owner.append_execution(
                             operation_id,
-                            tail,
-                            key_ref,
-                            content,
+                            summary.tail,
+                            &key,
+                            bytes.clone(),
                             event,
                             chunk,
-                            work,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
                         )
                     )?
                 } else {
-                    let view = &observation;
-                    let tail = summary.tail;
-                    let key = key.clone();
-                    let content = bytes.clone();
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let (view, tail, key, content) =
+                        (&observation, summary.tail, key.clone(), bytes.clone());
                     journal_future!(
                         move || self.append_local_with_io(view, tail, key, content, io),
-                        self.append_local_with_io(view, tail, key, content, io)
+                        self.append_local_with_io(
+                            &observation,
+                            summary.tail,
+                            key.clone(),
+                            bytes.clone(),
+                            io
+                        )
                     )?
                 };
                 if committed {
@@ -535,8 +553,11 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                 let stream_ref = &stream;
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                 let mut history = Some(&mut borrowed as &mut dyn crate::store::history::HistoryIo);
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                 let work = &mut history;
                 journal_future!(
                     move || crate::distributed::append(
@@ -549,21 +570,22 @@ where
                         work,
                     ),
                     crate::distributed::append(
-                        (stream_ref, &self.stream),
+                        (&stream, &self.stream),
                         [bytes],
                         0,
                         Some(tail),
                         key,
                         operation_id,
-                        work,
+                        &mut Some(&mut borrowed),
                     )
                 )
             }
             None => {
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
                 let stream_ref = &stream;
                 journal_future!(
                     move || stream_ref.append_batch(vec![bytes], Some(tail), Some(key)),
-                    stream_ref.append_batch(vec![bytes], Some(tail), Some(key))
+                    stream.append_batch(vec![bytes], Some(tail), Some(key))
                 )
                 .map_err(|error| match error {
                     StreamError::IdempotencyMismatch => {
