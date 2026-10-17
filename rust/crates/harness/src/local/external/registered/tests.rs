@@ -44,9 +44,6 @@ async fn unrelated_task_changes_do_not_repeat_worker_or_view_work() -> Result<()
     // Root disconnects retain their resumable task; the changed input still
     // invalidates its idle cursor and runs the canonical worker/view path.
     assert_eq!(terminal, None);
-    assert!(
-        reads > 0,
-        "own input change must refresh canonical views"
-    );
+    assert!(reads > 0, "own input change must refresh canonical views");
     harness.close().await
 }

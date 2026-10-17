@@ -8,8 +8,12 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak, mpsc};
+#[cfg(test)]
+use std::sync::mpsc;
+use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
+mod sync;
+use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;

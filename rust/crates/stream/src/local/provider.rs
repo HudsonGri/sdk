@@ -17,30 +17,26 @@ impl StreamProvider for LocalStream {
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        let accepted = self.inner.provider.tail(path.clone()).await?;
-        let synced = {
-            let journal = self
+        self.accepted(async {
+            let accepted = self.inner.provider.tail(path.clone()).await?;
+            // Both frame counters are published before publication is released.
+            // Do not borrow the journal: compaction may hold it during device I/O.
+            let synced = *self.inner.synced.borrow() >= *self.inner.revision.borrow();
+            let mut tails = self
                 .inner
-                .journal
+                .durable_tails
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
-            journal.synced >= journal.appended
-        };
-        let mut tails = self
-            .inner
-            .durable_tails
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?;
-        let durable = tails.entry(path).or_default();
-        if synced {
-            *durable = (*durable).max(accepted);
-        }
-        Ok(crate::StreamWatermarks {
-            accepted,
-            durable: *durable,
+            let durable = tails.entry(path).or_default();
+            if synced {
+                *durable = (*durable).max(accepted);
+            }
+            Ok(crate::StreamWatermarks {
+                accepted,
+                durable: *durable,
+            })
         })
+        .await?
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -161,14 +157,14 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        commit(self, request, None).await
+        commit::<true>(self, request, None).await
     }
     async fn commit_before(
         &self,
         request: CommitRequest,
         deadline: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        commit(self, request, Some(deadline)).await
+        commit::<true>(self, request, Some(deadline)).await
     }
 
     async fn read_commit(
@@ -268,7 +264,7 @@ impl StreamProvider for LocalStream {
     }
 }
 
-async fn commit(
+async fn commit<const ELIDE_REPLAY: bool>(
     stream: &LocalStream,
     request: CommitRequest,
     deadline: Option<u64>,
@@ -284,13 +280,30 @@ async fn commit(
     span.scope(async {
         stream
             .exclusive(&span, move |stream| async move {
-                let frame = stream.prepare(&Command::Commit(request.clone()))?;
+                // The visibility guard covers this lookup and settlement. A
+                // replay still passes through commit_inner for fingerprint and
+                // deadline semantics, then exclusive awaits the original WAL.
+                let replay = ELIDE_REPLAY
+                    && stream
+                        .inner
+                        .provider
+                        .has_replay(&request.idempotency_key)
+                        .await?;
+                let frame = if replay {
+                    None
+                } else {
+                    Some(stream.prepare(&Command::Commit(request.clone()))?)
+                };
                 let (outcome, _claim) = stream
                     .inner
                     .provider
                     .commit_inner(request, deadline)
                     .await?;
-                stream.persist(frame).await?;
+                if let Some(frame) = frame {
+                    stream.persist(frame).await?;
+                } else {
+                    stream.require_accepted::<true>()?;
+                }
                 Ok(outcome)
             })
             .await

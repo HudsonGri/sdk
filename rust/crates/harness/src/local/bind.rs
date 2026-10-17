@@ -89,6 +89,7 @@ impl LocalHarness {
                     operation,
                     true,
                     false,
+                    acyclic_fs::LocalCoreStateStore::new(directory.join("workspace")),
                 )
                 .await?,
             ))

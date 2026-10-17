@@ -57,12 +57,11 @@ pub(in crate::local) async fn close(root: Arc<LocalWorkspace>) -> Result<()> {
     let mut retired = std::collections::BTreeSet::new();
     for workspace in &workspaces {
         for (_, mount) in workspace.mounts.mounts() {
-            if let Some(native) = mount
-                .view
-                .source
-                .as_ref()
-                .and_then(|source| source.native.as_ref())
-            {
+            if let Some(source) = &mount.view.source {
+                let native = source.native().await;
+                let Some(native) = native.as_ref() else {
+                    continue;
+                };
                 if retired.insert(native.path().to_owned()) {
                     if let Err(error) = native.unmount().await {
                         failed.get_or_insert_with(|| storage(error));
