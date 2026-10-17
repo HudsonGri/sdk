@@ -2,6 +2,20 @@
 use super::*;
 use crate::{Admission, TaskId, durable_host::TaskJournalOwner, runtime::TaskSpawner};
 
+/// Binds a native child to the same resource preparation as other child tasks.
+pub(crate) trait ChildAdmission: Send + Sync {
+    /// Retains the supplied identity and inputs under the parent's current fence.
+    fn admit<'a>(
+        &'a self,
+        context: &'a TaskContext,
+        fence: &'a LeaseFence,
+        reference: &'a Component,
+        child: crate::runtime::TaskAdmissionRecord,
+        inputs: Vec<crate::conversation::FileRef>,
+        reconcile: bool,
+    ) -> BoxProviderFuture<'a, Result<TaskId>>;
+}
+
 impl<P, A, O> RequestCommands<'_, P, A, O>
 where
     P: StreamProvider + 'static,
@@ -59,10 +73,10 @@ where
             let command = WorkflowCommand {
                 operation_id: child.operation_id,
                 kind: LIFECYCLE.into(),
-                payload,
+                payload: payload.clone(),
             };
             let input = serde_json::json!({"command":command,"terminal":false});
-            let admission = self
+            let mut admission = self
                 .runtime
                 .harness()
                 .registered_admission(
@@ -75,6 +89,32 @@ where
                     None,
                 )?
                 .0;
+            if let Some(children) = self.children {
+                admission.resource_proofs.clear();
+                let reference = Component::new(task.to_string()).map_err(storage)?;
+                let admitted = match children
+                    .admit(
+                        context,
+                        fence,
+                        &reference,
+                        admission,
+                        vec![payload],
+                        reconcile,
+                    )
+                    .await
+                {
+                    Ok(task) => task,
+                    Err(Error::Indeterminate(_)) => return Ok(TaskCommandProgress::Indeterminate),
+                    Err(Error::AdmissionRejected(message)) => {
+                        return ready(crate::Outcome::<TaskId>::Failed { message });
+                    }
+                    Err(error) => return Err(error),
+                };
+                if admitted != task {
+                    return Err(Error::Conflict("native child identity changed".into()));
+                }
+                return ready(crate::Outcome::Succeeded(task));
+            }
             if reconcile {
                 match self
                     .runtime

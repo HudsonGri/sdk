@@ -21,6 +21,7 @@ use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde_json::Value;
 
 mod children;
+pub(crate) use children::ChildAdmission;
 
 /// Executes prepared request commands through the runtime's existing executors.
 /// Started/result files use the same provider transaction as the task fence.
@@ -30,6 +31,7 @@ pub struct RequestCommands<'a, P, A, O> {
     requests: &'a TaskVolume<P>,
     results: &'a TaskVolume<P>,
     payloads: &'a dyn crate::distributed::SchedulerPayloadStore,
+    children: Option<&'a dyn ChildAdmission>,
 }
 
 impl<'a, P, A, O> RequestCommands<'a, P, A, O>
@@ -50,7 +52,14 @@ where
             requests,
             results,
             payloads,
+            children: None,
         }
+    }
+
+    /// Shares the host's resource preparation for native command-session children.
+    pub(crate) fn with_child_admission(mut self, children: &'a dyn ChildAdmission) -> Self {
+        self.children = Some(children);
+        self
     }
 
     fn dispatch(
@@ -205,6 +214,13 @@ where
                     commands.execute(context, fence, command, payload).await?
                 }
             } else {
+                let context = if command.kind == TOOL_TASK_COMMAND_KIND
+                    && payload.get("name").and_then(Value::as_str) == Some("write")
+                {
+                    context.with_created_project_output()?
+                } else {
+                    context
+                };
                 // Establish the cancellation cut before polling any execution.
                 let follow = super::cancellation::prepare(
                     self.requests,

@@ -199,6 +199,8 @@ impl LocalHarness {
             )?;
             let commands =
                 RequestCommands::new(&self.runtime, requests, results, publisher.as_ref());
+            #[cfg(feature = "native-execution")]
+            let commands = commands.with_child_admission(self);
             let idle = self.prepare_external_slot(request, requests).await?;
             let initial = matches!(request.action, ExternalAction::Attach { .. });
             let answered = !cached.files.is_empty();

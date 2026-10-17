@@ -52,6 +52,8 @@ pub use answer::hook_answer;
 pub(crate) use append::publish as publish_request;
 pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};
 #[cfg(feature = "filesystem")]
+pub(crate) use commands::ChildAdmission;
+#[cfg(feature = "filesystem")]
 pub use commands::RequestCommands;
 pub use failure::hook_failure;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]

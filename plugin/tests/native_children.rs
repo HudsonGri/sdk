@@ -199,88 +199,158 @@ async fn exposed_wait_uses_the_returned_child_handle_for_every_host() -> Result 
 async fn native_subagent_stop_completes_the_child_before_parent_continuation() -> Result {
     let fixture = Fixture::new()?;
     let cwd = fixture.path();
-    for host in [
-        ExternalHost::Codex,
-        ExternalHost::ClaudeCode,
-        ExternalHost::Pi,
-    ] {
-        let pi = host == ExternalHost::Pi;
-        let session = host.name();
-        let attach = if pi { "session_start" } else { "SessionStart" };
-        hook(
-            cwd,
-            host.name(),
-            attach,
-            json!({"sessionId":session,"cwd":cwd}),
-        )
-        .await?;
-        hook(
-            cwd,
-            host.name(),
-            if pi {
-                "subagent_start"
-            } else {
-                "SubagentStart"
-            },
-            json!({"sessionId":session,"agentId":"child","agentType":"worker"}),
-        )
-        .await?;
-        hook(
-            cwd,
-            host.name(),
-            attach,
-            json!({"sessionId":session,"agentId":"child","cwd":cwd}),
-        )
-        .await?;
-        let event = if pi { "subagent_stop" } else { "SubagentStop" };
-        let input = json!({"sessionId":session,"agentId":"child"});
-        let join = request(host, event, input.clone())?;
-        // The native host sends no child SessionEnd before continuing its
-        // parent. Stop itself must settle the child, and retries must agree.
+    tokio::try_join!(
+        Box::pin(native_stop_lifecycle(cwd, ExternalHost::Codex)),
+        Box::pin(native_stop_lifecycle(cwd, ExternalHost::ClaudeCode)),
+        Box::pin(native_stop_lifecycle(cwd, ExternalHost::Pi)),
+    )?;
+    fixture.close().await
+}
+
+async fn native_stop_lifecycle(cwd: &std::path::Path, host: ExternalHost) -> Result {
+    let pi = host == ExternalHost::Pi;
+    let session = host.name();
+    let attach = if pi { "session_start" } else { "SessionStart" };
+    hook(
+        cwd,
+        host.name(),
+        attach,
+        json!({"sessionId":session,"cwd":cwd}),
+    )
+    .await?;
+    let spawned = hook(
+        cwd,
+        host.name(),
+        if pi {
+            "subagent_start"
+        } else {
+            "SubagentStart"
+        },
+        json!({"sessionId":session,"agentId":"child","agentType":"worker"}),
+    )
+    .await?;
+    let child = spawned["Succeeded"]
+        .as_str()
+        .ok_or("native child task missing")?;
+    hook(
+        cwd,
+        host.name(),
+        attach,
+        json!({"sessionId":session,"agentId":"child","cwd":cwd}),
+    )
+    .await?;
+    let filename = format!("{}-child-only.txt", host.name());
+    let writing = hook(cwd,host.name(),if pi {"tool_call"} else {"PreToolUse"},json!({
+            "sessionId":session,"agentId":"child","toolCallId":"child-write",
+            "toolName":if pi {"write"} else {"mcp__acyclic__write"},
+            "input":{"path":filename,"text":"isolated child contents","media_type":"text/plain","display_name":"child.txt"},
+        })).await?;
+    if pi {
+        assert_eq!(writing["isError"], false, "{writing}");
+    } else {
         assert_eq!(
-            hook(cwd, host.name(), event, input.clone()).await?,
-            json!({"Succeeded":null})
+            writing["hookSpecificOutput"]["permissionDecision"], "allow",
+            "{writing}"
         );
-        assert_eq!(
-            hook(cwd, host.name(), event, input).await?,
-            json!({"Succeeded":null})
-        );
-        let continued = hook(
-            cwd,
-            host.name(),
-            if pi { "tool_call" } else { "PreToolUse" },
-            json!({"session_id":session,"tool_use_id":"continued",
+    }
+    assert!(
+        !cwd.join(&filename).exists(),
+        "child write reached the parent checkout"
+    );
+    let event = if pi { "subagent_stop" } else { "SubagentStop" };
+    let input = json!({"sessionId":session,"agentId":"child"});
+    let join = request(host, event, input.clone())?;
+    // The native host sends no child SessionEnd before continuing its
+    // parent. Stop itself must settle the child, and retries must agree.
+    assert_eq!(
+        hook(cwd, host.name(), event, input.clone()).await?,
+        json!({"Succeeded":null})
+    );
+    assert_eq!(
+        hook(cwd, host.name(), event, input).await?,
+        json!({"Succeeded":null})
+    );
+    let continued = hook(
+        cwd,
+        host.name(),
+        if pi { "tool_call" } else { "PreToolUse" },
+        json!({"session_id":session,"tool_use_id":"continued",
                 "tool_name":if pi {"write"} else {"mcp__acyclic__write"},
                 "tool_input":{"path":format!("{}.txt",host.name()),"text":"parent continued",
                     "media_type":"text/plain","display_name":"continued.txt"}}),
-        )
-        .await?;
-        if pi {
-            assert_eq!(continued["isError"], false, "{continued}");
-        } else {
-            assert_eq!(
-                continued["hookSpecificOutput"]["permissionDecision"], "allow",
-                "{continued}"
-            );
-        }
+    )
+    .await?;
+    if pi {
+        assert_eq!(continued["isError"], false, "{continued}");
+    } else {
         assert_eq!(
-            std::fs::read_to_string(cwd.join(format!("{}.txt", host.name())))?,
-            "parent continued"
-        );
-        let results = files(cwd, &format!("external/results/{}", join.task_id())).await?;
-        assert_eq!(
-            results
-                .snapshot(
-                    &Query::File(join.result_key(Component::new(join.task_id().to_string())?)?),
-                    1,
-                )
-                .await?
-                .files
-                .len(),
-            1
+            continued["hookSpecificOutput"]["permissionDecision"], "allow",
+            "{continued}"
         );
     }
-    fixture.close().await
+    assert_eq!(
+        std::fs::read_to_string(cwd.join(format!("{}.txt", host.name())))?,
+        "parent continued"
+    );
+    let event = if pi { "tool_call" } else { "PreToolUse" };
+    let arguments = json!({"command":format!("diff agents/{child}")});
+    let diff = request(
+        host,
+        event,
+        json!({"sessionId":session,"toolCallId":"child-diff",
+            "toolName":"fs","input":arguments}),
+    )?;
+    let answer = hook(
+        cwd,
+        host.name(),
+        event,
+        json!({"sessionId":session,"toolCallId":"child-diff",
+            "toolName":if pi {"fs"} else {"mcp__acyclic__fs"},"input":arguments}),
+    )
+    .await?;
+    if pi {
+        assert_eq!(answer["isError"], false, "{answer}");
+    } else {
+        assert_eq!(
+            answer["hookSpecificOutput"]["permissionDecision"], "allow",
+            "{answer}"
+        );
+    }
+    let published = files(cwd, &format!("external/results/{}", diff.task_id()))
+        .await?
+        .snapshot(
+            &Query::File(diff.result_key(Component::new(diff.task_id().to_string())?)?),
+            1,
+        )
+        .await?;
+    assert_eq!(published.files.len(), 1);
+    let actual = acyclic_harness::external_executor::tool_result(serde_json::from_slice(
+        &published.files[0].bytes,
+    )?)?;
+    let command: acyclic_fs::GitCommandOutput =
+        serde_json::from_value(actual["details"]["result"].clone())?;
+    let acyclic_fs::GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+        kind,
+        value,
+    }) = command
+    else {
+        panic!("expected the native child's published diff: {actual}");
+    };
+    assert_eq!(kind, "diff");
+    assert!(value["fileChanges"].as_u64().unwrap() > 0, "{actual}");
+    let results = files(cwd, &format!("external/results/{}", join.task_id())).await?;
+    assert_eq!(
+        results
+            .snapshot(
+                &Query::File(join.result_key(Component::new(join.task_id().to_string())?)?),
+                1,
+            )
+            .await?
+            .files
+            .len(),
+        1
+    );
+    Ok(())
 }
 
 #[tokio::test]
