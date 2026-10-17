@@ -44,7 +44,11 @@ impl Inline {
 }
 
 impl Markdown {
-    pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
+    pub(super) fn advance_inline(
+        &mut self,
+        previous: usize,
+        seed: Option<(usize, &[(Event<'_>, Range<usize>)])>,
+    ) -> Option<usize> {
         let mut inline = self.inline.take()?;
         let appended = self.source.get(inline.classified..)?;
         let destination = inline
@@ -149,19 +153,30 @@ impl Markdown {
         };
         #[cfg(test)]
         work::copy(prefix.len());
+        let seed = seed.filter(|(seed_base, _)| {
+            *seed_base == base
+                && end == self.source.len()
+                && self.references.committed.is_empty()
+                && self.references.pending.is_empty()
+        });
         let (events, calls) = if classify {
-            events::scoped(
-                &source,
-                &self.references,
-                options(),
-                self.source
-                    .len()
-                    .max(100_000)
-                    .saturating_sub(self.reference_cost)
-                    .saturating_sub(cost),
-            )
+            if let Some((_, events)) = seed {
+                (std::borrow::Cow::Borrowed(events), Vec::new())
+            } else {
+                let (events, calls) = events::scoped(
+                    &source,
+                    &self.references,
+                    options(),
+                    self.source
+                        .len()
+                        .max(100_000)
+                        .saturating_sub(self.reference_cost)
+                        .saturating_sub(cost),
+                );
+                (std::borrow::Cow::Owned(events), calls)
+            }
         } else {
-            (Vec::new(), Vec::new())
+            (std::borrow::Cow::Borrowed(&[][..]), Vec::new())
         };
         if classify
             && (events
@@ -271,7 +286,7 @@ impl Markdown {
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
-        let _ = self.advance_inline(self.source.len());
+        let _ = self.advance_inline(self.source.len(), Some((base, events)));
         self.plain = plain;
     }
 }

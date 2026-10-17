@@ -211,7 +211,7 @@ impl Markdown {
             self.plain &= !appended.contains('\t');
             return old_len.min(self.visible_lines).min(budget_line);
         }
-        if let Some(changed) = self.advance_inline(previous) {
+        if let Some(changed) = self.advance_inline(previous, None) {
             return changed
                 .min(old_len)
                 .min(self.visible_lines)

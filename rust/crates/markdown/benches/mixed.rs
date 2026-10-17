@@ -26,21 +26,37 @@ fn percentile(samples: &mut [Duration], percent: usize) -> Duration {
         .unwrap_or_default()
 }
 
-fn measure(source: &str, chunk: usize) -> Timing {
-    let mut markdown = Markdown::default();
-    let mut samples = Vec::with_capacity(source.len().div_ceil(chunk));
-    for bytes in source.as_bytes().chunks(chunk) {
-        let text = std::str::from_utf8(bytes).expect("ASCII benchmark fixture");
-        let start = Instant::now();
-        black_box(markdown.push(black_box(text)));
-        let elapsed = start.elapsed();
-        samples.push(elapsed);
+fn measure_pair(small: &str, large: &str, chunk: usize) -> (Timing, Timing) {
+    let mut renderers = [Markdown::default(), Markdown::default()];
+    let mut samples = [
+        Vec::with_capacity(small.len().div_ceil(chunk)),
+        Vec::with_capacity(large.len().div_ceil(chunk)),
+    ];
+    let mut chunks = [
+        small.as_bytes().chunks(chunk),
+        large.as_bytes().chunks(chunk),
+    ];
+    // Advance both documents proportionally in the same scheduling window.
+    // Sequential whole-document runs confound doubling with changing VM load.
+    for index in 0..small.len().div_ceil(chunk) {
+        for which in [index % 2, 1 - index % 2] {
+            for _ in 0..=which {
+                let Some(bytes) = chunks[which].next() else {
+                    break;
+                };
+                let text = std::str::from_utf8(bytes).expect("ASCII benchmark fixture");
+                let start = Instant::now();
+                black_box(renderers[which].push(black_box(text)));
+                samples[which].push(start.elapsed());
+            }
+        }
     }
-    Timing {
+    let [small, large] = samples.map(|mut samples| Timing {
         total: samples.iter().sum(),
         p50: percentile(&mut samples, 50),
         p99: percentile(&mut samples, 99),
-    }
+    });
+    (small, large)
 }
 
 fn history(source: &str, chunk: usize) -> (Duration, Duration) {
@@ -81,11 +97,10 @@ fn main() {
     let small = mixed::document(MIB);
     let large = mixed::document(2 * MIB);
     // Warm the syntax/theme tables and the parser before collecting latencies.
-    black_box(measure(&small, 4096));
+    black_box(measure_pair(&small, &large, 4096));
     for chunk in [1, 7, 4096] {
         let (early, late) = history(&large, chunk);
-        let small = measure(&small, chunk);
-        let large = measure(&large, chunk);
+        let (small, large) = measure_pair(&small, &large, chunk);
         let total_ratio = large.total.as_secs_f64() / small.total.as_secs_f64();
         let history_ratio = late.as_secs_f64() / early.as_secs_f64();
         println!(

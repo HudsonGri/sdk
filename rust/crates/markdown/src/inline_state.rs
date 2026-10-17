@@ -88,6 +88,19 @@ impl State {
         }
     }
 
+    pub(super) fn finish_block(&mut self, end: usize) {
+        self.delimiter.restore(Default::default());
+        self.invalid |= !self.codes.restore(0);
+        self.bracket = 0;
+        self.closed = 0;
+        self.labels = [0, 0];
+        self.opaque = None;
+        self.link_floor = end;
+        if let Some(eof) = &mut self.eof {
+            eof.invalidate();
+        }
+    }
+
     fn snapshot(&mut self) -> Snapshot {
         #[cfg(test)]
         crate::work::copy(std::mem::size_of::<usize>());
@@ -297,14 +310,6 @@ impl State {
         .into_iter()
         .flatten()
         .fold(end, usize::min)
-    }
-
-    pub(super) fn opaque_text(&mut self, range: Range<usize>) {
-        if let Some(eof) = &mut self.eof {
-            eof.invalidate();
-        }
-        self.forest.text(range);
-        self.labels = [0, 0];
     }
 
     pub(super) fn feed(&mut self, range: Range<usize>, kind: Kind, linked: bool) {

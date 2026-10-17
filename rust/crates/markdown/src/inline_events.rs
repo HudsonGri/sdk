@@ -76,10 +76,6 @@ fn text_output(text: crate::Text, style: Style) -> Output {
 }
 
 impl Cache {
-    pub(in crate::inline_scan) fn rendered_origin(&self) -> Option<usize> {
-        self.input.origin.filter(|_| self.rendered)
-    }
-
     fn output(&self, id: usize) -> Option<&Output> {
         self.nodes
             .get(id / super::super::PAGE)?

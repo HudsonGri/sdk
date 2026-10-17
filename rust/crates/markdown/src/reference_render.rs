@@ -95,6 +95,7 @@ impl Markdown {
         let mut replacements = HashMap::new();
         let mut length = self.lines.len();
         let mut resize = false;
+        let mut growing = false;
         let mut complete = true;
         for index in first..self.cached.len() {
             let Some(cache) = self.cached.get_mut(index) else {
@@ -135,6 +136,7 @@ impl Markdown {
                 changed = changed.min(cache.lines.start);
                 length = length - cache.lines.len() + renderer.lines.len();
                 resize |= cache.lines.len() != renderer.lines.len();
+                growing |= renderer.lines.len() > cache.lines.len();
                 replacements.insert(index, renderer.lines);
             }
             cache.prefix = cost;
@@ -144,7 +146,7 @@ impl Markdown {
         if complete {
             self.reference_cost = cost;
         }
-        self.apply_reference_lines(replacements, length, resize);
+        self.apply_reference_lines(replacements, length, resize, growing);
         changed
     }
 
@@ -153,8 +155,14 @@ impl Markdown {
         replacements: HashMap<usize, Vec<Line>>,
         length: usize,
         resize: bool,
+        growing: bool,
     ) {
-        if resize {
+        let compact = resize && !growing;
+        #[cfg(test)]
+        let compact = compact && !COPY_SUFFIX.get();
+        if compact {
+            self.compact_reference_lines(replacements);
+        } else if resize {
             self.replace_reference_lines(replacements, length);
         } else {
             for (index, lines) in replacements {
@@ -180,6 +188,101 @@ impl Markdown {
                     }
                 }
             }
+        }
+    }
+
+    fn compact_reference_lines(&mut self, mut replacements: HashMap<usize, Vec<Line>>) {
+        let first = replacements
+            .keys()
+            .copied()
+            .min()
+            .expect("resized reference");
+        let first_line = self.cached[first].lines.start;
+        let previous_length = self.lines.len();
+        let previous_stable = self.stable_lines;
+        let mut caches = self.cached.iter_mut().enumerate().skip(first).peekable();
+        let (mut read, mut write) = (first_line, first_line);
+        #[cfg(test)]
+        let mut moved = 0;
+        let mut replacement = None::<(Range<usize>, std::vec::IntoIter<Line>)>;
+        // extract_if compacts the suffix in place. Each surviving old line moves
+        // at most once; no temporary copy of the entire suffix is necessary.
+        self.lines
+            .extract_if(first_line.., |line| {
+                while caches
+                    .peek()
+                    .is_some_and(|(_, cache)| cache.lines.start <= read)
+                {
+                    let (index, cache) = caches.next().expect("next cache");
+                    #[cfg(test)]
+                    {
+                        self.reference_cache_visits += 1;
+                    }
+                    let old = cache.lines.clone();
+                    let lines = replacements.remove(&index);
+                    let length = lines.as_ref().map_or(old.len(), Vec::len);
+                    let start = write + old.start - read;
+                    cache.lines = start..start + length;
+                    if !old.is_empty() {
+                        replacement = lines.map(|lines| (old, lines.into_iter()));
+                    }
+                }
+                #[cfg(test)]
+                work::scan(1);
+                #[cfg(test)]
+                let mut replaced = false;
+                let remove = if let Some((_, lines)) = replacement
+                    .as_mut()
+                    .filter(|(range, _)| range.contains(&read))
+                {
+                    if let Some(next) = lines.next() {
+                        #[cfg(test)]
+                        work::copy(std::mem::size_of::<Line>());
+                        *line = next;
+                        #[cfg(test)]
+                        {
+                            replaced = true;
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
+                if !remove {
+                    if read != write {
+                        #[cfg(test)]
+                        work::copy(std::mem::size_of::<Line>());
+                    }
+                    #[cfg(test)]
+                    {
+                        moved += usize::from(replaced || read != write);
+                    }
+                    write += 1;
+                }
+                read += 1;
+                remove
+            })
+            .for_each(drop);
+        for (_, cache) in caches {
+            #[cfg(test)]
+            {
+                self.reference_cache_visits += 1;
+            }
+            debug_assert!(cache.lines.is_empty());
+            cache.lines = write..write;
+        }
+        #[cfg(test)]
+        {
+            self.reference_moved_lines += moved;
+        }
+        self.stable_lines = self.stable_lines + self.lines.len() - previous_length;
+        for index in self.stable_lines..previous_stable {
+            self.visibility.set(index, false);
+        }
+        for index in first_line..self.stable_lines {
+            self.index_visible(index);
         }
     }
 
@@ -241,3 +344,6 @@ impl Markdown {
         }
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static COPY_SUFFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

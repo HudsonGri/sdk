@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 29c9ea00d9bea16048a6ede2da79c23c1ffd8d49769df4abbe7e996d2e106509 # shrinks to checkpoints = true, character_chunks = false, parts = ["A", "[x](u)", "¡"]
+cc 3b281c48e2044e1b91861bc76bced89256101e0c1c156f65dbc3459e5da26096
+cc b8f1ca588b40043bce2cb1d1fbccc7f5e5714807375b46d1ee712a9102d1b002

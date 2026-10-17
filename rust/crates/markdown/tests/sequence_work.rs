@@ -108,9 +108,10 @@ fn measure(
     let mut total = 0;
     let mut source = String::new();
     let mut consumer = Vec::new();
+    let mut expected = Vec::new();
     let mut peak = 0;
     let mut growth_total = 0;
-    let mut push = |delta: &str| {
+    let mut push = |delta: &str, finish: bool| {
         let growth_before = work::source_growth();
         let before = work::current()
             + markdown.visible_work.get()
@@ -120,11 +121,7 @@ fn measure(
         let open = markdown.source.len() - markdown.offset;
         let visits_before = markdown.reference_cache_visits;
         // Definition updates reopen dependency blocks; ordinary pushes do not.
-        let dependencies: usize = markdown
-            .cached
-            .iter()
-            .map(|cache| cache.template.source.len())
-            .sum();
+        let cached = markdown.cached.len();
         let changed = markdown.push(delta);
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
@@ -136,7 +133,13 @@ fn measure(
             + markdown.boundary_work
             - before;
         let dependent = if markdown.reference_cache_visits > visits_before {
-            dependencies
+            markdown
+                .cached
+                .get(..cached)
+                .expect("retained dependency blocks")
+                .iter()
+                .map(|cache| cache.template.source.len())
+                .sum::<usize>()
         } else {
             0
         };
@@ -155,22 +158,54 @@ fn measure(
         assert!(payload <= markdown.source.len() * 8 + 1024);
         peak = peak.max(bytes);
         source.push_str(delta);
+        // Empty chunks have the same one-shot oracle as the preceding push.
+        if !delta.is_empty() {
+            expected = full_parse(&source);
+        }
         assert!(
-            consumer == full_parse(&source),
+            consumer == expected,
             "consumer differs after {delta:?}, source {:?}",
             source.chars().take(256).collect::<String>()
         );
+        finish
+            .then(|| {
+                markdown.fence.as_ref().map(|fence| {
+                    if fence.indented {
+                        "\nend\n\n".to_owned()
+                    } else {
+                        format!(
+                            "\n{}{}\n\n",
+                            fence.opening,
+                            char::from(fence.marker).to_string().repeat(fence.count)
+                        )
+                    }
+                })
+            })
+            .flatten()
     };
     for index in 0..count * copies {
         for (position, action) in actions.iter().enumerate() {
-            production(*action, index, padding, &mut push);
-            push(["", " ", "\n", "!", "x"][separators[position % separators.len()] as usize]);
+            production(*action, index, padding, &mut |delta| {
+                push(delta, false);
+            });
+            push(
+                ["", " ", "\n", "!", "x"][separators[position % separators.len()] as usize],
+                false,
+            );
         }
     }
-    if actions.iter().any(|action| matches!(action, 3 | 15)) {
-        push(&format!("\n\n[r]: /{destination}\n\n"));
-    } else {
-        push("\n\n");
+    let definition = actions
+        .iter()
+        .any(|action| matches!(action, 3 | 15))
+        .then(|| format!("\n\n[r]: /{destination}\n\n"));
+    let closing = push(definition.as_deref().unwrap_or("\n\n"), true);
+    // Preserve the original prefix checks, then actually exercise late
+    // resolution even when repetition left the first definition inside code.
+    if let Some(closing) = closing {
+        push(&closing, false);
+        if let Some(definition) = definition {
+            push(&definition, false);
+        }
     }
     let (payload, bytes) = retained(&markdown);
     assert!(
@@ -266,4 +301,43 @@ proptest! {
         prop_assert!(large.0 <= 2 * small.0 + 1024, "work {} -> {}", small.0, large.0);
         prop_assert!(large.1 <= 2 * small.1 + 1024, "storage {} -> {}", small.1, large.1);
     }
+}
+
+#[test]
+fn grammar_property_detects_copying_the_reference_suffix() {
+    let measure_pair = |copy: bool| {
+        crate::reference_render::COPY_SUFFIX.set(copy);
+        let small = measure(&[15, 16, 7], 7, &"x".repeat(540), 2, &[0], 1).0;
+        let large = measure(&[15, 16, 7], 7, &"x".repeat(540), 2, &[0], 2).0;
+        crate::reference_render::COPY_SUFFIX.set(false);
+        (small, large)
+    };
+    let retained = measure_pair(false);
+    println!("retained batch: {} -> {}", retained.0, retained.1);
+    assert!(retained.1 <= 2 * retained.0 + 1024);
+    let copied = measure_pair(true);
+    println!(
+        "copied suffix negative control: {} -> {}",
+        copied.0, copied.1
+    );
+    assert!(copied.0 > retained.0 && copied.1 > retained.1);
+}
+
+#[test]
+fn grammar_property_detects_reclassifying_the_entire_suffix() {
+    let measure_pair = |replay| {
+        crate::inline::REPLAY_CLASSIFIER.set(replay);
+        let small = measure(&[18], 64, "unused", 1, &[0], 1).0;
+        let large = measure(&[18], 64, "unused", 1, &[0], 2).0;
+        crate::inline::REPLAY_CLASSIFIER.set(false);
+        (small, large)
+    };
+    let retained = measure_pair(false);
+    assert!(retained.1 <= 2 * retained.0 + 1024);
+    let replayed = measure_pair(true);
+    println!(
+        "classifier grammar negative control: {} -> {}",
+        replayed.0, replayed.1
+    );
+    assert!(replayed.1 > 2 * replayed.0 + 1024);
 }

@@ -41,6 +41,7 @@ pub(super) struct Scanner {
     pending_break: Option<usize>,
     pending_after_break: bool,
     first_expansion: Option<usize>,
+    line_content: bool,
     #[cfg(test)]
     replay: bool,
     #[cfg(test)]
@@ -54,18 +55,10 @@ struct Scope {
     close: usize,
 }
 
-struct ScopeFrame {
-    end: usize,
-    scope: usize,
-    labelled: bool,
-}
-
 #[derive(Default)]
 struct Syntax {
     outer: Vec<Scope>,
     hard_breaks: HashSet<usize>,
-    opaque: Vec<Range<usize>>,
-    links: Vec<Range<usize>>,
 }
 
 impl Syntax {
@@ -79,7 +72,7 @@ impl Syntax {
         frozen: usize,
     ) -> Self {
         let mut syntax = Self::default();
-        let mut links = Vec::<ScopeFrame>::new();
+        let mut links = Vec::<usize>::new();
         for (event_index, (event, range)) in events.iter().enumerate() {
             if base + range.end.saturating_sub(sentinel) <= frozen {
                 continue;
@@ -112,19 +105,9 @@ impl Syntax {
                     {
                         consumed.end = sentinel + end.saturating_sub(base);
                     }
-                    if let Some(frame) = links.last_mut() {
-                        frame.end = frame.end.max(consumed.end);
-                    }
-                    if syntax
-                        .links
-                        .last()
-                        .is_none_or(|parent| parent.end < consumed.end)
-                    {
-                        push_range(&mut syntax.links, consumed.clone());
-                    }
                     #[cfg(test)]
                     work::copy(
-                        std::mem::size_of::<ScopeFrame>()
+                        std::mem::size_of::<usize>()
                             * (1 + if links.len() == links.capacity() {
                                 links.len()
                             } else {
@@ -138,41 +121,37 @@ impl Syntax {
                         range: consumed.clone(),
                         close: 0,
                     });
-                    links.push(ScopeFrame {
-                        end: range.start,
-                        scope: index,
-                        labelled: !matches!(
-                            link_type,
-                            pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email
-                        ),
-                    });
+                    links.push(index);
                 }
                 Event::End(TagEnd::Link | TagEnd::Image) => {
                     if let Some(frame) = links.pop() {
                         let next = syntax.outer.len();
-                        let scope = &mut syntax.outer[frame.scope];
+                        let scope = &mut syntax.outer[frame];
                         scope.events.end = event_index + 1;
                         scope.next = next;
-                        if frame.labelled {
+                        if matches!(&events[scope.events.start].0,
+                            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. })
+                            if !matches!(link_type, pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email))
+                        {
+                            let end = if event_index > scope.events.start + 1 {
+                                events[event_index - 1].1.end
+                            } else {
+                                scope.range.start
+                            };
                             scope.close = parsed
-                                .get(frame.end..scope.range.end)
+                                .get(end..scope.range.end)
                                 .and_then(|tail| tail.find(']'))
                                 .map_or(0, |offset| {
                                     #[cfg(test)]
                                     work::scan(offset + 1);
-                                    frame.end + offset + 1
+                                    end + offset + 1
                                 });
                         }
                     }
                 }
-                _ => {
-                    if let Some(frame) = links.last_mut() {
-                        frame.end = frame.end.max(range.end);
-                    }
-                }
+                _ => {}
             }
             if matches!(event, Event::InlineHtml(_)) {
-                push_range(&mut syntax.opaque, range.clone());
                 syntax.scope(Scope {
                     next: syntax.outer.len() + 1,
                     events: event_index..event_index + 1,
@@ -214,18 +193,21 @@ impl Syntax {
                 scope.close = base + scope.close.saturating_sub(sentinel);
             }
         }
-        for range in self
-            .outer
-            .iter_mut()
-            .map(|scope| &mut scope.range)
-            .chain(&mut self.opaque)
-            .chain(&mut self.links)
-        {
+        for range in self.outer.iter_mut().map(|scope| &mut scope.range) {
             #[cfg(test)]
             work::scan(1);
             *range = base + range.start.saturating_sub(sentinel)
                 ..base + range.end.saturating_sub(sentinel);
         }
+    }
+
+    fn ranges(&self) -> impl Iterator<Item = &Range<usize>> {
+        let mut index = 0;
+        std::iter::from_fn(move || {
+            let scope = self.outer.get(index)?;
+            index = scope.next;
+            Some(&scope.range)
+        })
     }
 
     fn changed_before(
@@ -235,78 +217,39 @@ impl Syntax {
         end: usize,
         capsules: &[Range<usize>],
     ) -> Option<usize> {
-        fn first_difference(
-            left: &[Range<usize>],
-            right: &[Range<usize>],
-            base: usize,
-            end: usize,
-            capsules: &[Range<usize>],
-        ) -> Option<usize> {
-            let clipped = |range: &Range<usize>| {
+        let mut old = previous.ranges().peekable();
+        for range in self.ranges() {
+            #[cfg(test)]
+            work::scan(1);
+            let range = range.start.max(base)..range.end;
+            if range.start >= end || range.is_empty() {
+                continue;
+            }
+            while old.peek().is_some_and(|old| old.end < range.end) {
+                old.next();
                 #[cfg(test)]
                 work::scan(1);
-                let range = range.start.max(base)..range.end;
-                (range.start < end && !range.is_empty()).then_some(range)
-            };
-            let mut left = left.iter().filter_map(clipped).filter(|range| {
-                if capsules.last().is_none_or(|scope| scope.end < range.end) {
-                    return true;
-                }
-                let old = right.partition_point(|old| {
-                    #[cfg(test)]
-                    work::scan(1);
-                    old.end < range.end
-                });
-                if right.get(old) == Some(range) {
-                    return false;
-                }
+            }
+            if old.peek().is_some_and(|old| **old == range) {
+                continue;
+            }
+            if capsules.last().is_some_and(|scope| scope.end >= range.end) {
                 let index = capsules.partition_point(|old| {
                     #[cfg(test)]
                     work::scan(1);
                     old.end < range.end
                 });
-                !capsules
+                if capsules
                     .get(index)
-                    .is_some_and(|scope| range.end <= scope.end && scope.start <= range.start)
-            });
-            left.next().map(|range| range.start)
+                    .is_some_and(|scope| scope.start <= range.start && range.end <= scope.end)
+                {
+                    continue;
+                }
+            }
+            return Some(range.start);
         }
-        first_difference(&self.opaque, &previous.opaque, base, end, capsules)
-            .into_iter()
-            .chain(first_difference(
-                &self.links,
-                &previous.links,
-                base,
-                end,
-                capsules,
-            ))
-            .min()
+        None
     }
-}
-
-fn push_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
-    #[cfg(test)]
-    work::copy(
-        std::mem::size_of::<Range<usize>>()
-            * (1 + if ranges.len() == ranges.capacity() {
-                ranges.len()
-            } else {
-                0
-            }),
-    );
-    ranges.push(range);
-}
-
-fn inside(ranges: &[Range<usize>], cursor: &mut usize, position: usize) -> bool {
-    while ranges
-        .get(*cursor)
-        .is_some_and(|range| range.end <= position)
-    {
-        *cursor += 1;
-    }
-    ranges
-        .get(*cursor)
-        .is_some_and(|range| range.contains(&position))
 }
 
 impl Scanner {
@@ -332,8 +275,6 @@ impl Scanner {
             + self.state.retained()
             + self.syntax.outer.capacity() * std::mem::size_of::<Scope>()
             + self.syntax.hard_breaks.capacity() * std::mem::size_of::<usize>()
-            + (self.syntax.opaque.capacity() + self.syntax.links.capacity())
-                * std::mem::size_of::<Range<usize>>()
     }
 
     pub(super) fn plain(&self) -> bool {
@@ -510,10 +451,32 @@ impl Scanner {
                 .partition_point(|scope| scope.end <= base.max(self.frozen));
             let end = base + source.parsed.len().saturating_sub(sentinel);
             let mut next = 0;
+            let mut codes = events
+                .iter()
+                .filter_map(|(event, range)| {
+                    #[cfg(test)]
+                    work::scan(1);
+                    matches!(event, Event::Code(_)).then(|| {
+                        base + range.start.saturating_sub(sentinel)
+                            ..base + range.end.saturating_sub(sentinel)
+                    })
+                })
+                .peekable();
             self.capsules[first..].iter().find_map(|old| {
                 #[cfg(test)]
                 work::scan(1);
                 if old.start < base.max(self.frozen) || old.end > end {
+                    return None;
+                }
+                // Native code snapshots own hiding/restoring their children.
+                // A provisional closer must not erase those compiled children.
+                while codes.peek().is_some_and(|code| code.end < old.end) {
+                    codes.next();
+                }
+                if codes
+                    .peek()
+                    .is_some_and(|code| code.start <= old.start && old.end <= code.end)
+                {
                     return None;
                 }
                 while syntax
@@ -603,11 +566,8 @@ impl Scanner {
                 self.frontier = self.frontier.min(position);
             } else {
                 self.state.reset();
-                if self
-                    .render
-                    .rendered_origin()
-                    .is_some_and(|origin| base > origin)
-                {
+                self.line_content = false;
+                if !replay && base > source.start {
                     self.state.invalid = true;
                     return sentinel;
                 }
@@ -616,7 +576,7 @@ impl Scanner {
                 self.frontier = base;
             }
         }
-        let (mut opaque, mut link, mut scope) = (0, 0, 0);
+        let mut scope = 0;
         let mut token_index = self.fed;
         while let Some(token) = self.tokens.ready.get(token_index) {
             let kind = token.kind;
@@ -661,16 +621,27 @@ impl Scanner {
                 if let Some(after) = self.tokens.after_absolute(end) {
                     token_index = token_index.max(after.saturating_sub(self.discarded));
                 }
-            } else if inside(&syntax.opaque, &mut opaque, start) {
-                self.state.opaque_text(start..end);
             } else {
                 if matches!(kind, Kind::AngleOpen | Kind::Open { .. }) {
                     self.state
                         .remember(self.tokens.anchor_at(start).expect("scope opener"));
                 }
-                let linked = inside(&syntax.links, &mut link, start);
-                self.state.feed(start..end, kind, linked);
+                self.state.feed(start..end, kind, false);
             }
+            if kind == Kind::Break && !self.line_content {
+                self.state.finish_block(end);
+            }
+            self.line_content = match kind {
+                Kind::Break | Kind::Escape('\n') => false,
+                Kind::Text if !self.line_content => original.get(start..end).is_some_and(|text| {
+                    text.bytes().any(|byte| {
+                        #[cfg(test)]
+                        work::scan(1);
+                        !matches!(byte, b' ' | b'\t')
+                    })
+                }),
+                _ => true,
+            };
             if kind == Kind::Escape('\n') {
                 self.pending_break = Some(start);
                 self.pending_after_break = false;

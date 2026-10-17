@@ -60,6 +60,13 @@ impl Spans {
 
     /// The first canonical run.
     pub fn first(&self) -> Option<SpanRef<'_>> {
+        if self.prefix.is_none() {
+            return self.tail.as_ref().map(|tail| {
+                let mut span = SpanRef::borrowed(tail);
+                span.boundary = self.forced;
+                span
+            });
+        }
         self.iter().next()
     }
 

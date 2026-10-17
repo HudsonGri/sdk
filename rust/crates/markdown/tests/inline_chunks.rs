@@ -128,6 +128,7 @@ fn checked_in_chunk_corpus_matches_full_render() {
         include_bytes!("../fuzz/corpus/chunk_splits/scope-ancestor-frontier").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/table-checkpoint-context").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/native-label-compilation").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/unpublished-prefix-restore").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/frozen-row-scope").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/definition-provisional-tick").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/nested-reference-hint").as_slice(),
