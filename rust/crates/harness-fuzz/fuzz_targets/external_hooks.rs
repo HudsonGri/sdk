@@ -130,6 +130,9 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     {
         assert_eq!(FileKey::parse(&key.path())?, key);
     }
+    if let Ok(hook) = serde_json::from_slice::<Hook>(input) {
+        acyclic_harness::test_support::fuzz_native_hook_request(hook.host, &hook.event, hook.input);
+    }
     if let Ok(hook) = serde_json::from_slice::<Hook>(input)
         && let Ok(request) = request(hook.host, &hook.event, hook.input)
     {

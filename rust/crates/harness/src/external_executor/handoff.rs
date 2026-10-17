@@ -13,8 +13,13 @@ pub(super) fn normalize_tool(host: ExternalHost, event: &str, input: &mut Value)
     if host == ExternalHost::Pi || event != "PreToolUse" {
         return Ok(false);
     }
+    let name_field = if input.get("tool_name").is_some() {
+        "tool_name"
+    } else {
+        "toolName"
+    };
     let Some(name) = input
-        .get("tool_name")
+        .get(name_field)
         .and_then(Value::as_str)
         .and_then(|name| {
             name.strip_prefix("mcp__acyclic__")
@@ -25,8 +30,16 @@ pub(super) fn normalize_tool(host: ExternalHost, event: &str, input: &mut Value)
     };
     let name = name.to_owned();
     let object = input.as_object_mut().ok_or_else(invalid)?;
-    object.insert("tool_name".into(), Value::String(name));
-    if let Some(arguments) = object.get_mut("tool_input").and_then(Value::as_object_mut) {
+    object.insert(name_field.into(), Value::String(name));
+    let arguments_field = if object.contains_key("tool_input") {
+        "tool_input"
+    } else {
+        "input"
+    };
+    if let Some(arguments) = object
+        .get_mut(arguments_field)
+        .and_then(Value::as_object_mut)
+    {
         arguments.remove(FIELD);
     }
     Ok(true)
@@ -170,6 +183,36 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
+        // Native spelling aliases must select the same harness request and
+        // immutable result; a foreign namespace must remain host-executed.
+        #[test]
+        fn native_namespace_aliases_preserve_the_request(
+            session in "[a-z]{1,16}", command in ".{0,64}",
+            camel_name in any::<bool>(), camel_input in any::<bool>(),
+        ) {
+            for host in [ExternalHost::Codex,ExternalHost::ClaudeCode] {
+                for prefix in ["mcp__acyclic__", "mcp__plugin_acyclic_acyclic__"] {
+                    let mut input = json!({"session_id":session,"tool_use_id":"call"});
+                    input[if camel_name {"toolName"} else {"tool_name"}] = json!(format!("{prefix}bash"));
+                    input[if camel_input {"input"} else {"tool_input"}] = json!({"command":command,"_acyclic":"forged"});
+                    let (request,mcp) = super::super::native::prepare_hook(host,"PreToolUse",input.clone())?;
+                    prop_assert!(mcp);
+                    let canonical = super::super::request(host,"PreToolUse",json!({
+                        "session_id":session,"tool_use_id":"call","tool_name":"bash","tool_input":{"command":command}
+                    }))?;
+                    prop_assert_eq!(&request,&canonical);
+                    let task = Component::new(request.task_id().to_string())?;
+                    let file = request.to_file(task.clone())?;
+                    let answer = answer(request.clone(),task,&json!({"Succeeded":null}))?;
+                    prop_assert_eq!(native_tool_request("bash",answer["hookSpecificOutput"]["updatedInput"].clone(),&file)?,request);
+                    input[if camel_name {"toolName"} else {"tool_name"}] = json!("mcp__foreign__bash");
+                    let (foreign,mcp) = super::super::native::prepare_hook(host,"PreToolUse",input)?;
+                    prop_assert!(!mcp);
+                    prop_assert!(matches!(foreign.action,ExternalAction::HostTool {..}), "foreign tools must remain host-executed");
+                }
+            }
+        }
+
         // Property: handoffs preserve request identity and every argument;
         // changing the tool name, path or arguments cannot change the effect.
         #[test]

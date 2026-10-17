@@ -25,7 +25,7 @@ pub async fn handle_hook<P: StreamProvider + ?Sized, R: StreamProvider + ?Sized>
     answer(host, event, request, result, task, mcp)
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     host: ExternalHost,
     event: &str,
     mut input: Value,

@@ -25,6 +25,24 @@ pub fn fuzz_codex_hook_parent(bytes: &[u8]) {
     crate::external_executor::fuzz_codex_parent(bytes);
 }
 
+/// Exercises native namespace normalization and request file round trips without I/O.
+#[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+pub fn fuzz_native_hook_request(
+    host: crate::external_executor::ExternalHost,
+    event: &str,
+    input: serde_json::Value,
+) {
+    if let Ok((request, _)) = crate::external_executor::fuzz_prepare_hook(host, event, input) {
+        let task = crate::task_volume::Component::new(request.task_id().to_string()).unwrap();
+        if let Ok(file) = request.to_file(task.clone()) {
+            assert_eq!(
+                crate::external_executor::ExternalRequest::from_file(&task, &file).unwrap(),
+                request
+            );
+        }
+    }
+}
+
 /// Exercises the typed native-to-stock command decoder without dispatching effects.
 #[cfg(feature = "filesystem")]
 pub fn fuzz_external_command(request: &crate::external_executor::ExternalRequest) {

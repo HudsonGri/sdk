@@ -16,6 +16,8 @@ pub use task_volumes::local_hook_volumes;
 
 mod handler;
 pub use handler::handle_hook;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use handler::prepare as prepare_hook;
 mod codex_parent;
 #[cfg(feature = "test-support")]
 pub(crate) use codex_parent::fuzz as fuzz_codex_parent;

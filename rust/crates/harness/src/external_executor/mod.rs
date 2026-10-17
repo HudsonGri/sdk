@@ -98,6 +98,12 @@ pub(crate) use native::fuzz_codex_parent;
     not(target_arch = "wasm32")
 ))]
 pub use native::local_hook_volumes;
+#[cfg(all(
+    feature = "test-support",
+    feature = "hooks",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use native::prepare_hook as fuzz_prepare_hook;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use native::{HookBinding, handle_hook, run_hook};
 pub use normalize::request;
