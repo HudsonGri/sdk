@@ -2,8 +2,8 @@
 use serde_json::{Value, json};
 use std::path::Path;
 use tokio::{
-    io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
-    process::Child,
+    io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines},
+    process::{Child, ChildStdin, ChildStdout},
 };
 
 #[path = "support/native_hooks.rs"]
@@ -16,34 +16,58 @@ mod commands;
 #[path = "native_tools/parallel.rs"]
 mod parallel;
 
-async fn result(directory: &Path, arguments: Value) -> Result<Value> {
-    let mut child: Child = command(directory).arg("__tools").spawn()?;
-    let mut input = child.stdin.take().ok_or("MCP stdin missing")?;
-    let mut output = BufReader::new(child.stdout.take().ok_or("MCP stdout missing")?).lines();
-    let write = |value: Value| format!("{value}\n").into_bytes();
-    input.write_all(&write(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+struct ResultClient {
+    child: Child,
+    input: ChildStdin,
+    output: Lines<BufReader<ChildStdout>>,
+    next_id: u64,
+}
+
+impl ResultClient {
+    async fn open(directory: &Path) -> Result<Self> {
+        let mut child: Child = command(directory).arg("__tools").spawn()?;
+        let mut input = child.stdin.take().ok_or("MCP stdin missing")?;
+        let mut output = BufReader::new(child.stdout.take().ok_or("MCP stdout missing")?).lines();
+        let write = |value: Value| format!("{value}\n").into_bytes();
+        input.write_all(&write(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
         "protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"native-probe","version":"1"}}}))).await?;
-    let initialized: Value = serde_json::from_str(
-        &output
-            .next_line()
-            .await?
-            .ok_or("MCP initialization ended")?,
-    )?;
-    assert_eq!(initialized["id"], 1);
-    assert!(initialized.get("error").is_none(), "{initialized}");
-    input
-        .write_all(&write(
-            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        ))
-        .await?;
-    input.write_all(&write(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write","arguments":arguments}}))).await?;
-    let response: Value =
-        serde_json::from_str(&output.next_line().await?.ok_or("MCP result ended")?)?;
-    assert_eq!(response["id"], 2);
-    assert!(response.get("error").is_none(), "{response}");
-    drop(input);
-    assert!(child.wait().await?.success());
-    Ok(response["result"].clone())
+        let initialized: Value = serde_json::from_str(
+            &output
+                .next_line()
+                .await?
+                .ok_or("MCP initialization ended")?,
+        )?;
+        assert_eq!(initialized["id"], 1);
+        assert!(initialized.get("error").is_none(), "{initialized}");
+        input
+            .write_all(&write(
+                json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            ))
+            .await?;
+        Ok(Self {
+            child,
+            input,
+            output,
+            next_id: 2,
+        })
+    }
+
+    async fn result(&mut self, arguments: Value) -> Result<Value> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.input.write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"write","arguments":arguments}})).as_bytes()).await?;
+        let response: Value =
+            serde_json::from_str(&self.output.next_line().await?.ok_or("MCP result ended")?)?;
+        assert_eq!(response["id"], id);
+        assert!(response.get("error").is_none(), "{response}");
+        Ok(response["result"].clone())
+    }
+
+    async fn close(mut self) -> Result {
+        drop(self.input);
+        assert!(self.child.wait().await?.success());
+        Ok(())
+    }
 }
 
 #[tokio::test]
@@ -67,12 +91,14 @@ async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> R
                 assert_eq!(answer["hookSpecificOutput"]["permissionDecision"],"allow");
                 let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
                 assert!(arguments["_acyclic"].is_string());
-                let first = result(directory.path(),arguments.clone()).await?;
+                let mut results = ResultClient::open(directory.path()).await?;
+                let first = results.result(arguments.clone()).await?;
                 assert!(first["structuredContent"]["file"].is_object(),"{first}");
-                assert_eq!(result(directory.path(),arguments.clone()).await?,first);
+                assert_eq!(results.result(arguments.clone()).await?,first);
                 let mut changed = arguments;
                 changed["text"] = json!("forged");
-                assert_eq!(result(directory.path(),changed).await?["isError"],true);
+                assert_eq!(results.result(changed).await?["isError"],true);
+                results.close().await?;
             }
             assert_eq!(hook(directory.path(),host,if pi {"tool_call"} else {"PreToolUse"},request).await?,answer);
             assert_eq!(std::fs::metadata(directory.path().join("native.txt"))?.modified()?,published);
