@@ -3,6 +3,19 @@ use crate::conversation::ContentResidencyVerifier;
 use crate::native_settings::SettingsConfig;
 use futures::StreamExt;
 
+struct WarningWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for WarningWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // Test-only sink, a leaf lock; writing never invokes a provider/caller.
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn settings(script: &Path, text: &str) -> Value {
     json!({"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{
         "type":"command", "command":"sh", "args":[script, text], "onFailure":"block"
@@ -206,7 +219,19 @@ async fn start_failures_are_retained_and_only_explicit_failure_policy_blocks() -
         )
         .await?;
         let task = super::context::admitted(harness.submit(OperationId::new(), "guard").await?)?;
-        let result = harness.resume(task).await;
+        use tracing::instrument::WithSubscriber;
+        let warnings = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&warnings);
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || WarningWriter(Arc::clone(&sink)))
+            .finish();
+        let result = harness.resume(task).with_subscriber(subscriber).await;
+        let warnings = String::from_utf8(warnings.lock().unwrap().clone()).unwrap();
+        assert!(warnings.contains("configured hook failed"), "{warnings}");
+        assert!(warnings.contains("kind=NotFound"), "{warnings}");
         assert_eq!(result.is_err(), block, "{result:?}");
         assert_eq!(provider.requests().len(), usize::from(!block));
         let files = harness.task_files.inner.snapshot(&Query::Root, 64).await?;
@@ -215,12 +240,76 @@ async fn start_failures_are_retained_and_only_explicit_failure_policy_blocks() -
             .expect("missing hook outcome");
         let output: crate::hooks::HookOutput =
             serde_json::from_slice(&retained.bytes).map_err(super::super::storage)?;
-        assert_eq!(output.blocked.is_some(), block);
+        assert_eq!(output.blocks(), block);
         assert_eq!(output.diagnostics.len(), 1);
         assert!(
-            output.diagnostics[0].contains("process not_found:"),
+            output.diagnostics[0].kind == crate::hooks::HookErrorKind::NotFound,
             "{output:?}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn aggregate_capture_limits_retain_a_typed_outcome_instead_of_an_unresolved_claim()
+-> Result<()> {
+    use crate::task_volume::{FileKey, Query, TaskFile};
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = root.path().join("workspace");
+    let home = root.path().join("home");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let script = root.path().join("flood.sh");
+    std::fs::write(
+        &script,
+        "cat >/dev/null\nprintf 'started\\n' >> hook-runs\nhead -c 65536 /dev/zero\n",
+    )
+    .map_err(super::super::storage)?;
+    let command = json!({"type":"command","command":"sh","args":[script],"onFailure":"block"});
+    let settings = json!({"hooks":{"SessionStart":[{"hooks":[command.clone(),command]}]}});
+    std::fs::write(home.join(".claude/settings.json"), settings.to_string())
+        .map_err(super::super::storage)?;
+    let provider = text();
+    let harness = LocalHarness::open(
+        checkout_config(&workspace, (model()?, provider.clone()))?
+            .without_default_tools()
+            .state_directory(root.path().join("state"))
+            .limits(crate::conversation::Limits {
+                file_bytes: 4096,
+                ..Default::default()
+            })
+            .settings(SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))),
+    )
+    .await?;
+    let task =
+        super::context::admitted(harness.submit(OperationId::new(), "bounded guards").await?)?;
+    assert!(harness.resume(task).await.is_err());
+    let files = harness.task_files.inner.snapshot(&Query::Root, 64).await?;
+    let outcome = files
+        .files
+        .iter()
+        .find(|file| {
+            matches!(&file.key,
+        FileKey::Task { file:TaskFile::Context(id), .. } if id.as_str().ends_with("-outcome"))
+        })
+        .expect("capture limit left an unresolved hook claim");
+    assert!(outcome.bytes.len() <= 4096);
+    let output: crate::hooks::HookOutput =
+        serde_json::from_slice(&outcome.bytes).map_err(super::super::storage)?;
+    assert!(output.blocks());
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .all(|failure| failure.kind == crate::hooks::HookErrorKind::OutputLimit)
+    );
+    let before = std::fs::read(workspace.join("hook-runs")).map_err(super::super::storage)?;
+    assert_eq!(before, b"started\nstarted\n");
+    assert!(harness.resume(task).await.is_err());
+    assert_eq!(
+        std::fs::read(workspace.join("hook-runs")).map_err(super::super::storage)?,
+        before
+    );
+    assert!(provider.requests().is_empty());
     Ok(())
 }

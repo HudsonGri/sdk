@@ -137,6 +137,7 @@ impl CheckoutTools {
                     (&workspace.path, &workspace.path),
                     input,
                     registry,
+                    context.effective_scope().limits().file_bytes,
                     check,
                 )
             })

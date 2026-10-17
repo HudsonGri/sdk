@@ -42,6 +42,10 @@ where
         maximum_items: maximum_bytes,
         maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
     };
+    // Reject an unrepresentable failure before claiming an external effect.
+    // A capture/merge overflow must always have room for its bounded outcome.
+    let mut failure = HookOutput::output_limit(false);
+    super::budget::encoded_size(&failure, maximum_bytes)?;
     let maximum_owned = maximum_bytes
         .checked_mul(256)
         .ok_or_else(|| Error::Invalid("hook outcome ownership bound overflow".into()))?;
@@ -100,7 +104,14 @@ where
         }
     };
     let output = execute().await?;
-    let bytes = json_bytes_bounded(&output, bounds, None, &mut |_| Ok(()))?;
+    let (output, bytes) = match json_bytes_bounded(&output, bounds, None, &mut |_| Ok(())) {
+        Ok(bytes) => (output, bytes),
+        Err(_) => {
+            failure.diagnostics[0].blocking = output.blocks();
+            let bytes = json_bytes_bounded(&failure, bounds, None, &mut |_| Ok(()))?;
+            (failure, bytes)
+        }
+    };
     crate::task_volume::publish(
         volume,
         generation,

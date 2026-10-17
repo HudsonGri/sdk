@@ -77,6 +77,44 @@ fn guard(rules: &[HookRule], executable: &str) {
 }
 
 #[tokio::test]
+async fn new_sessions_query_current_settings_without_reopening_the_host() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = root.path().join("workspace");
+    let home = root.path().join("home");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let path = home.join(".claude/settings.json");
+    std::fs::write(&path, settings("current-A")).map_err(super::super::storage)?;
+    let provider = scripted([
+        ScriptedTurn::Text("A".into()),
+        ScriptedTurn::Text("B".into()),
+    ]);
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(&workspace, (model()?, provider))?
+            .state_directory(root.path().join("state"))
+            .settings(SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))),
+    )
+    .await?;
+    let first = OperationId::new();
+    let first_task = super::context::admitted(harness.submit(first, "queued A").await?)?;
+    let (original, rules) = pinned(&harness, first).await?;
+    guard(&rules, "current-A");
+    std::fs::write(&path, settings("current-B")).map_err(super::super::storage)?;
+    let second = OperationId::new();
+    let second_task = super::context::admitted(harness.submit(second, "queued B").await?)?;
+    let (current, rules) = pinned(&harness, second).await?;
+    guard(&rules, "current-B");
+    assert_ne!(original, current);
+    std::fs::remove_file(&path).map_err(super::super::storage)?;
+    let (retained, rules) = pinned(&harness, first).await?;
+    assert_eq!(retained, original);
+    guard(&rules, "current-A");
+    assert_eq!(harness.resume(first_task).await?.text, "A");
+    assert_eq!(harness.resume(second_task).await?.text, "B");
+    Ok(())
+}
+
+#[tokio::test]
 async fn queued_prompts_keep_normalized_user_hooks_after_settings_change_and_reopen() -> Result<()>
 {
     let root = tempfile::tempdir().map_err(super::super::storage)?;
@@ -216,7 +254,10 @@ async fn oversized_current_hooks(explicit_override: bool) -> Result<()> {
     }
     let reopened = LocalHarness::open(selected).await?;
     assert!(
-        reopened.hooks.encode(limits.file_bytes).is_err(),
+        crate::native_settings::NativeSettings::load_hooks(Arc::clone(&reopened.settings))
+            .await?
+            .encode(limits.file_bytes)
+            .is_err(),
         "fixture no longer exceeds the task file bound"
     );
     if explicit_override {

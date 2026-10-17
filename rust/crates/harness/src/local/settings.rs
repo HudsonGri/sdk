@@ -1,10 +1,10 @@
 use super::*;
-use crate::native_settings::{NativeSettings, SettingsConfig};
+use crate::native_settings::SettingsConfig;
 
-pub(super) async fn load(
+pub(super) fn configuration(
     project: &LocalProject,
     configured: Option<SettingsConfig>,
-) -> Result<NativeSettings> {
+) -> Result<Arc<SettingsConfig>> {
     let mut configured = match configured {
         Some(configured) => configured,
         None => SettingsConfig::new(
@@ -15,5 +15,5 @@ pub(super) async fn load(
         ),
     };
     configured.load_mcp = cfg!(any(feature = "mcp-stdio", feature = "mcp-http"));
-    NativeSettings::load(configured).await
+    Ok(Arc::new(configured))
 }

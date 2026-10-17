@@ -95,10 +95,13 @@ impl LocalHarness {
             ));
         }
         #[cfg(feature = "hooks")]
-        let hook_configuration = if self.hooks.is_empty() {
+        let hooks =
+            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
+        #[cfg(feature = "hooks")]
+        let hook_configuration = if hooks.is_empty() {
             None
         } else {
-            Some(self.hooks.publish(publisher, self.limits).await?)
+            Some(hooks.publish(publisher, self.limits).await?)
         };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
@@ -109,7 +112,9 @@ impl LocalHarness {
         let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
-            manifest.conventions.push(workspace.context_line().to_owned());
+            manifest
+                .conventions
+                .push(workspace.context_line().to_owned());
         }
         #[cfg(feature = "hooks")]
         manifest.sources.extend(hook_configuration);

@@ -113,6 +113,7 @@ impl StdioMcpTransport {
         .await
         .map_err(|_| Error::Process {
             kind: "timeout",
+            exit_code: None,
             message: "MCP initialization deadline elapsed".into(),
         })?
     }

@@ -7,6 +7,7 @@ use std::{future::Future, sync::Arc};
 
 pub(crate) mod imports;
 pub(crate) use imports::Document;
+mod budget;
 #[cfg(feature = "filesystem")]
 pub(crate) mod effects;
 mod snapshot;
@@ -116,7 +117,7 @@ impl Hooks {
         event: HookEvent,
         input: &'a Value,
         registry: &'a ToolRegistry,
-    ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>>> {
+    ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
         let subject = match event {
             HookEvent::SessionStart => input.get("source"),
             HookEvent::PreToolUse | HookEvent::PostToolUse => input.get("tool_name"),
@@ -150,28 +151,46 @@ impl Hooks {
         event: HookEvent,
         input: &Value,
         registry: &ToolRegistry,
+        maximum_bytes: u64,
         mut execute: F,
     ) -> Result<HookOutput>
     where
-        F: FnMut(&Arc<HookSpec>) -> Fut,
+        F: FnMut(&Arc<HookSpec>, usize) -> Fut,
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
-        let results =
-            futures::future::join_all(self.commands(event, input, registry)?.map(|hook| {
-                let execution = execute(hook);
-                async move { (hook.failure, execution.await) }
-            }))
-            .await;
+        let commands = self.commands(event, input, registry)?;
+        let count = commands.clone().count();
+        let blocks = event != HookEvent::Stop
+            && commands
+                .clone()
+                .any(|hook| hook.failure == HookFailure::Block);
+        let quota = capture_quota(maximum_bytes, count);
+        let mut budget = budget::Budget::new(maximum_bytes)?;
+        let results = futures::future::join_all(commands.map(|hook| {
+            let execution = execute(hook, quota);
+            async move { (hook.failure, execution.await) }
+        }))
+        .await;
         let mut output = HookOutput::default();
         for (failure, result) in results {
-            output.apply(event, failure, result);
+            if budget.apply(&mut output, event, failure, result).is_err() {
+                return Ok(HookOutput::output_limit(blocks));
+            }
         }
         Ok(output)
     }
 }
 
+// A static partition keeps total live capture storage bounded without a lock,
+// scheduling-dependent output truncation, or delaying concurrent hook dispatch.
+fn capture_quota(maximum: u64, count: usize) -> usize {
+    usize::try_from(maximum / (count.max(1) as u64))
+        .unwrap_or(usize::MAX)
+        .min(65_536)
+}
+
 mod output;
-pub use output::HookOutput;
+pub use output::{HookDiagnostic, HookErrorKind, HookOutput};
 
 mod native;
 pub(crate) use native::HookCheck;

@@ -51,11 +51,17 @@ fuzz_target!(|bytes: &[u8]| {
             HookFailure::Block,
             Ok((Some(0), bytes.to_vec(), vec![])),
         );
-        assert_eq!(reports.diagnostics, blocks.diagnostics);
+        assert_eq!(reports.diagnostics.len(), blocks.diagnostics.len());
+        for (report, block) in reports.diagnostics.iter().zip(&blocks.diagnostics) {
+            assert_eq!(report.kind, block.kind);
+            assert_eq!(report.exit_code, block.exit_code);
+            assert_eq!(report.message, block.message);
+            assert_eq!(block.blocking, event != HookEvent::Stop);
+        }
         if reports.diagnostics.is_empty() || event == HookEvent::Stop {
             assert_eq!(reports, blocks);
         } else {
-            assert!(blocks.blocked.is_some());
+            assert!(blocks.blocks());
             assert!(reports.blocked.is_none());
             assert!(reports.additional_context.is_empty());
             assert!(reports.updated_input.is_none());

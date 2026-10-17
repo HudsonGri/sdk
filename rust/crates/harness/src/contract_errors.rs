@@ -71,6 +71,8 @@ pub enum Error {
     Process {
         /// Platform-neutral operation failure classification.
         kind: &'static str,
+        /// Observed process exit code; absent for spawn, IO and deadline failures.
+        exit_code: Option<i32>,
         /// Diagnostic returned by the process or IO runtime.
         message: String,
     },
@@ -340,10 +342,12 @@ impl Error {
             std::io::ErrorKind::TimedOut => "timeout",
             std::io::ErrorKind::NotFound => "not_found",
             std::io::ErrorKind::PermissionDenied => "permission_denied",
+            std::io::ErrorKind::FileTooLarge => "output_limit",
             _ => "io",
         };
         Self::Process {
             kind,
+            exit_code: None,
             message: error.to_string(),
         }
     }

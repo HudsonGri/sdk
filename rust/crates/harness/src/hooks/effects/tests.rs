@@ -74,3 +74,26 @@ fn reconciliation_of_an_unstarted_phase_publishes_nothing() -> Result<()> {
         Ok(())
     })
 }
+
+proptest! {
+    // Property: overflow has a bounded, typed, replayable outcome. It never
+    // turns a completed process into an indefinitely uncertain dispatch claim.
+    #[test]
+    fn oversized_outcomes_retain_a_failure_and_are_not_resent(length in 513usize..4096, blocking in any::<bool>()) {
+        futures::executor::block_on(async {
+            let volume = TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("oversized-hooks")?).await?;
+            let task = TaskId::from_bytes([1;16]);
+            let operation = OperationId::from_bytes([2;16]);
+            let output = run_once::<_,_,_,_,_,true>(&volume, (task, operation, "SessionStart"), 512, true, authorization,
+                || async { Ok(HookOutput { blocked: blocking.then(|| "denied".into()),
+                    additional_context: vec!["x".repeat(length)], ..Default::default() }) }).await?;
+            prop_assert_eq!(output.diagnostics[0].kind, HookErrorKind::OutputLimit);
+            prop_assert_eq!(output.blocks(), blocking);
+            prop_assert!(serde_json::to_vec(&output)?.len() <= 512);
+            let replay = run_once::<_,_,_,_,_,true>(&volume, (task, operation, "SessionStart"), 512, false, authorization,
+                || async { panic!("overflow caused a hook resend") }).await?;
+            prop_assert_eq!(replay, output);
+            Ok(())
+        })?;
+    }
+}

@@ -113,22 +113,35 @@ struct ReadPolicy {
 
 impl NativeSettings {
     /// Reads each resolved file once, selecting its parser from the configured filename.
-    pub async fn load(config: SettingsConfig) -> Result<Self> {
+    pub async fn load(config: impl Into<std::sync::Arc<SettingsConfig>>) -> Result<Self> {
+        let config = config.into();
+        let load_mcp = config.load_mcp;
+        Self::snapshot(config, load_mcp).await
+    }
+
+    #[cfg(all(feature = "hooks", feature = "filesystem-local"))]
+    pub(crate) async fn load_hooks(
+        config: std::sync::Arc<SettingsConfig>,
+    ) -> Result<crate::hooks::Hooks> {
+        Ok(Self::snapshot(config, false).await?.hooks)
+    }
+
+    async fn snapshot(config: std::sync::Arc<SettingsConfig>, load_mcp: bool) -> Result<Self> {
         if config.maximum_file_bytes == 0 || config.maximum_file_bytes == u64::MAX {
             return Err(Error::Invalid(
                 "settings require a finite positive byte bound".into(),
             ));
         }
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
-        acyclic_native_runtime::run_blocking_io(move || Self::read(config), None)
+        acyclic_native_runtime::run_blocking_io(move || Self::read(&config, load_mcp), None)
             .map_err(Error::process_io)?
             .await
             .map_err(Error::process_io)?
     }
 
-    fn read(mut config: SettingsConfig) -> Result<Self> {
-        let configured_workspace = config.workspace.clone();
-        config.workspace = std::fs::canonicalize(&config.workspace).map_err(Error::process_io)?;
+    fn read(config: &SettingsConfig, load_mcp: bool) -> Result<Self> {
+        let configured_workspace = &config.workspace;
+        let workspace = std::fs::canonicalize(configured_workspace).map_err(Error::process_io)?;
         let hooks = cfg!(feature = "hooks");
         let mut sources = vec![
             Source {
@@ -163,7 +176,7 @@ impl NativeSettings {
                 ".codex/hooks.json",
             ] {
                 sources.push(Source {
-                    path: config.workspace.join(name),
+                    path: workspace.join(name),
                     hooks: true,
                     mcp: None,
                     local: false,
@@ -172,7 +185,7 @@ impl NativeSettings {
         }
         if config.trust_project_mcp {
             sources.push(Source {
-                path: config.workspace.join(".mcp.json"),
+                path: workspace.join(".mcp.json"),
                 hooks: false,
                 mcp: Some(Dialect::Claude),
                 local: false,
@@ -180,13 +193,13 @@ impl NativeSettings {
         }
         if hooks && config.trust_project_hooks || config.trust_project_mcp {
             sources.push(Source {
-                path: config.workspace.join(".codex/config.toml"),
+                path: workspace.join(".codex/config.toml"),
                 hooks: hooks && config.trust_project_hooks,
                 mcp: config.trust_project_mcp.then_some(Dialect::Codex),
                 local: false,
             });
         }
-        if !config.load_mcp {
+        if !load_mcp {
             for source in &mut sources {
                 source.mcp = None;
                 source.local = false;
@@ -285,7 +298,7 @@ impl NativeSettings {
                 if source.local
                     && let Some(projects) = document.remove("projects")
                     && let Some((_, project)) = object(projects)?.into_iter().find(|(path, _)| {
-                        workspace::matches(path, &configured_workspace, &config.workspace)
+                        workspace::matches(path, configured_workspace, &workspace)
                     })
                     && let Some(servers) = object(project)?.remove("mcpServers")
                 {

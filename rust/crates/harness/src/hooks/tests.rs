@@ -2,102 +2,7 @@ use super::*;
 use crate::native_settings::{NativeSettings, SettingsConfig};
 use serde_json::json;
 
-#[tokio::test]
-async fn imported_on_failure_controls_a_missing_guard() -> Result<()> {
-    for event in [HookEvent::PreToolUse, HookEvent::Stop] {
-        for (setting, expected) in [
-            (Some("block"), true),
-            (Some("continue"), false),
-            (None, false),
-        ] {
-            let mut guard = json!({"type":"command", "command":"missing-guard"});
-            if let Some(setting) = setting {
-                guard["onFailure"] = setting.into();
-            }
-            let mut hooks = Hooks::default();
-            hooks.add_json(
-                json!({"hooks":{event.name():[{"hooks":[guard]}]}})
-                    .to_string()
-                    .as_bytes(),
-            )?;
-            let output = hooks
-                .run_commands(event, &json!({"tool_name":"bash"}), &registry()?, |_| {
-                    std::future::ready(Err(Error::Process {
-                        kind: "not_found",
-                        message: "missing guard".into(),
-                    }))
-                })
-                .await?;
-            assert_eq!(
-                output.blocked.is_some(),
-                expected && event != HookEvent::Stop,
-                "{event:?} {setting:?}"
-            );
-            assert_eq!(output.diagnostics.len(), 1);
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn stop_failures_remain_diagnostics_while_explicit_denials_still_block() {
-    for policy in [HookFailure::Report, HookFailure::Block] {
-        for result in [
-            Err(Error::Process {
-                kind: "not_found",
-                message: "guard missing".into(),
-            }),
-            Err(Error::Process {
-                kind: "timeout",
-                message: "guard timed out".into(),
-            }),
-            Ok((Some(3), vec![], b"guard failed".to_vec())),
-            Ok((None, vec![], b"guard terminated".to_vec())),
-            Ok((Some(0), br#"{"decision":"block""#.to_vec(), vec![])),
-            Ok((
-                Some(0),
-                br#"{"hookSpecificOutput":{"permissionDecision":false}}"#.to_vec(),
-                vec![],
-            )),
-        ] {
-            let mut output = HookOutput::default();
-            output.apply(HookEvent::Stop, policy, result);
-            assert!(output.blocked.is_none(), "{output:?}");
-            assert_eq!(output.diagnostics.len(), 1);
-        }
-        for result in [
-            (Some(2), vec![], b"explicit denial".to_vec()),
-            (
-                Some(0),
-                br#"{"decision":"block","reason":"explicit denial"}"#.to_vec(),
-                vec![],
-            ),
-            (
-                Some(0),
-                br#"{"continue":false,"stopReason":"explicit denial"}"#.to_vec(),
-                vec![],
-            ),
-        ] {
-            let mut output = HookOutput::default();
-            output.apply(HookEvent::Stop, policy, Ok(result));
-            assert_eq!(output.blocked.as_deref(), Some("explicit denial"));
-            assert!(output.diagnostics.is_empty(), "{output:?}");
-        }
-    }
-}
-
-#[test]
-fn post_tool_block_preserves_feedback_alongside_additional_context() {
-    let mut output = HookOutput::default();
-    output.apply(HookEvent::PostToolUse, HookFailure::Report, Ok((Some(0),
-        br#"{"decision":"block","reason":"Fix lint errors","hookSpecificOutput":{"additionalContext":"Run lint again"}}"#.to_vec(), vec![])));
-    assert_eq!(
-        output.additional_context,
-        ["Fix lint errors", "Run lint again"]
-    );
-    assert!(output.blocked.is_none());
-    assert!(output.diagnostics.is_empty());
-}
+mod failures;
 
 #[tokio::test]
 async fn early_stdin_closure_preserves_a_deny_with_a_large_tool_payload() -> Result<()> {
@@ -264,7 +169,7 @@ fn bracket_prefixed_session_notes_remain_context_under_both_failure_policies() {
             Ok((Some(0), br#"{"decision":"block""#.to_vec(), vec![])),
         );
         assert_eq!(guard.diagnostics.len(), 1);
-        assert_eq!(guard.blocked.is_some(), policy == HookFailure::Block);
+        assert_eq!(guard.blocks(), policy == HookFailure::Block);
     }
 }
 
@@ -346,6 +251,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
         Arc::new(hook),
         Arc::new((root.clone(), root, vec![])),
         Arc::new(|| Ok(())),
+        65_536,
     ));
     let (mut stream, _) = tokio::select! {
         result = listener.accept() => result.map_err(process_error)?,
@@ -586,39 +492,47 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
                 )?;
                 let finished = Cell::new(0);
                 let output = hooks
-                    .run_commands(event, &json!({"tool_name":"bash"}), &registry, |hook| {
-                        finished.set(finished.get() + 1);
-                        let result = if command(hook) == "remaining" {
-                            Ok((
-                                Some(0),
-                                br#"{"hookSpecificOutput":{"additionalContext":"remaining"}}"#
-                                    .to_vec(),
-                                vec![],
-                            ))
-                        } else {
-                            match case {
-                                "spawn" => Err(Error::Process {
-                                    kind: "not_found",
-                                    message: "guard missing".into(),
-                                }),
-                                "timeout" => Err(Error::Process {
-                                    kind: "timeout",
-                                    message: "guard timed out".into(),
-                                }),
-                                "exit" => Ok((Some(3), vec![], b"guard failed".to_vec())),
-                                "exit2" => Ok((Some(2), vec![], b"guard blocked".to_vec())),
-                                "signal" => Ok((None, vec![], b"guard terminated".to_vec())),
-                                "output" => Ok((
+                    .run_commands(
+                        event,
+                        &json!({"tool_name":"bash"}),
+                        &registry,
+                        65_536,
+                        |hook, _| {
+                            finished.set(finished.get() + 1);
+                            let result = if command(hook) == "remaining" {
+                                Ok((
                                     Some(0),
-                                    br#"{"hookSpecificOutput":{"hookEventName":"invalid"}}"#
+                                    br#"{"hookSpecificOutput":{"additionalContext":"remaining"}}"#
                                         .to_vec(),
                                     vec![],
-                                )),
-                                _ => Ok((Some(0), vec![], vec![])),
-                            }
-                        };
-                        std::future::ready(result)
-                    })
+                                ))
+                            } else {
+                                match case {
+                                    "spawn" => Err(Error::Process {
+                                        kind: "not_found",
+                                        exit_code: None,
+                                        message: "guard missing".into(),
+                                    }),
+                                    "timeout" => Err(Error::Process {
+                                        kind: "timeout",
+                                        exit_code: None,
+                                        message: "guard timed out".into(),
+                                    }),
+                                    "exit" => Ok((Some(3), vec![], b"guard failed".to_vec())),
+                                    "exit2" => Ok((Some(2), vec![], b"guard blocked".to_vec())),
+                                    "signal" => Ok((None, vec![], b"guard terminated".to_vec())),
+                                    "output" => Ok((
+                                        Some(0),
+                                        br#"{"hookSpecificOutput":{"hookEventName":"invalid"}}"#
+                                            .to_vec(),
+                                        vec![],
+                                    )),
+                                    _ => Ok((Some(0), vec![], vec![])),
+                                }
+                            };
+                            std::future::ready(result)
+                        },
+                    )
                     .await?;
                 assert_eq!(finished.get(), 2);
                 assert_eq!(
@@ -630,7 +544,7 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
                 let policy_block =
                     policy == HookFailure::Block && event != HookEvent::Stop && case != "success";
                 assert_eq!(
-                    output.blocked.is_some(),
+                    output.blocks(),
                     conventional_block || policy_block,
                     "{event:?} {policy:?} {case}: {output:?}"
                 );
@@ -709,7 +623,8 @@ async fn tool_catalog_routes_approval_hooks() -> Result<()> {
                 HookEvent::PreToolUse,
                 &json!({"tool_name":spec.name}),
                 &registry,
-                |_| {
+                65_536,
+                |_, _| {
                     calls += 1;
                     std::future::ready(Ok((
                         Some(0),
@@ -754,8 +669,9 @@ fn non_blocking_failures_return_diagnostics() -> Result<()> {
             );
             assert!(output.blocked.is_none());
             assert_eq!(output.diagnostics.len(), 1);
-            assert!(output.diagnostics[0].contains(event.name()));
-            assert!(output.diagnostics[0].contains("command failed"));
+            assert_eq!(output.diagnostics[0].kind, HookErrorKind::Exit);
+            assert_eq!(output.diagnostics[0].exit_code, code);
+            assert!(output.diagnostics[0].message.contains("command failed"));
         }
     }
     let mut output = HookOutput::default();
@@ -764,7 +680,7 @@ fn non_blocking_failures_return_diagnostics() -> Result<()> {
         HookFailure::Report,
         Ok((Some(2), vec![], b"start failed".to_vec())),
     );
-    assert!(output.diagnostics[0].contains("start failed"));
+    assert!(output.diagnostics[0].message.contains("start failed"));
     Ok(())
 }
 
@@ -883,15 +799,22 @@ async fn invalid_structured_output_obeys_failure_policy_without_partial_decision
                 let session_note = event == HookEvent::SessionStart && *bytes == b"[";
                 let finished = std::cell::Cell::new(0);
                 let output = hooks
-                    .run_commands(event, &json!({"tool_name":"bash"}), &registry, |hook| {
-                        finished.set(finished.get() + 1);
-                        let stdout = if command(hook) == "guard" {
-                            bytes.to_vec()
-                        } else {
-                            br#"{"hookSpecificOutput":{"additionalContext":"remaining"}}"#.to_vec()
-                        };
-                        std::future::ready(Ok((Some(0), stdout, vec![])))
-                    })
+                    .run_commands(
+                        event,
+                        &json!({"tool_name":"bash"}),
+                        &registry,
+                        65_536,
+                        |hook, _| {
+                            finished.set(finished.get() + 1);
+                            let stdout = if command(hook) == "guard" {
+                                bytes.to_vec()
+                            } else {
+                                br#"{"hookSpecificOutput":{"additionalContext":"remaining"}}"#
+                                    .to_vec()
+                            };
+                            std::future::ready(Ok((Some(0), stdout, vec![])))
+                        },
+                    )
                     .await?;
                 assert_eq!(finished.get(), 2);
                 assert_eq!(
@@ -900,7 +823,7 @@ async fn invalid_structured_output_obeys_failure_policy_without_partial_decision
                     "{event:?} {policy:?} {bytes:?}: {output:?}"
                 );
                 assert_eq!(
-                    output.blocked.is_some(),
+                    output.blocks(),
                     policy == HookFailure::Block && event != HookEvent::Stop && !session_note,
                     "{event:?} {policy:?} {bytes:?}: {output:?}"
                 );
@@ -937,7 +860,7 @@ async fn matching_hooks_run_concurrently_and_merge_in_config_order() -> Result<(
     let (first_tx, first_rx) = oneshot::channel();
     let (second_tx, second_rx) = oneshot::channel();
     let mut receivers = [first_rx, second_rx].into_iter();
-    let future = hooks.run_commands(HookEvent::PreToolUse, &input, &registry, |_| {
+    let future = hooks.run_commands(HookEvent::PreToolUse, &input, &registry, 65_536, |_, _| {
         let receiver = receivers.next();
         let started = &started;
         async move {
@@ -990,32 +913,40 @@ async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_ot
     ]}]}}"#,
     )?;
     let output = hooks
-        .run_commands(HookEvent::SessionStart, &json!({}), &registry()?, |hook| {
-            let result = match command(hook) {
-                "timeout" => Err(Error::Process {
-                    kind: "timeout",
-                    message: "deadline elapsed".into(),
-                }),
-                "spawn" => Err(Error::Process {
-                    kind: "not_found",
-                    message: "shell missing".into(),
-                }),
-                "invalid" => Ok((
-                    Some(0),
-                    br#"{"hookSpecificOutput":{"hookEventName":"Stop"}}"#.to_vec(),
-                    vec![],
-                )),
-                _ => Ok((Some(0), b"ready".to_vec(), vec![])),
-            };
-            std::future::ready(result)
-        })
+        .run_commands(
+            HookEvent::SessionStart,
+            &json!({}),
+            &registry()?,
+            65_536,
+            |hook, _| {
+                let result = match command(hook) {
+                    "timeout" => Err(Error::Process {
+                        kind: "timeout",
+                        exit_code: None,
+                        message: "deadline elapsed".into(),
+                    }),
+                    "spawn" => Err(Error::Process {
+                        kind: "not_found",
+                        exit_code: None,
+                        message: "shell missing".into(),
+                    }),
+                    "invalid" => Ok((
+                        Some(0),
+                        br#"{"hookSpecificOutput":{"hookEventName":"Stop"}}"#.to_vec(),
+                        vec![],
+                    )),
+                    _ => Ok((Some(0), b"ready".to_vec(), vec![])),
+                };
+                std::future::ready(result)
+            },
+        )
         .await?;
     assert!(output.blocked.is_none());
     assert_eq!(output.additional_context, ["ready"]);
     assert_eq!(output.diagnostics.len(), 3);
-    assert!(output.diagnostics[0].contains("timeout"));
-    assert!(output.diagnostics[1].contains("shell missing"));
-    assert!(output.diagnostics[2].contains("another event"));
+    assert_eq!(output.diagnostics[0].kind, HookErrorKind::Timeout);
+    assert!(output.diagnostics[1].message.contains("shell missing"));
+    assert!(output.diagnostics[2].message.contains("another event"));
     Ok(())
 }
 
@@ -1126,7 +1057,7 @@ exit 2
         )
         .await?;
     assert!(
-        output.blocked.is_some(),
+        output.blocks(),
         "user Bash guard fires on registry tool bash: {output:?}"
     );
     assert!(output.diagnostics.is_empty(), "{output:?}");
@@ -1166,7 +1097,7 @@ exit 2
         4
     );
     let trusted_output = trusted
-        .run_commands(HookEvent::Stop, &json!({}), &registry, |_| {
+        .run_commands(HookEvent::Stop, &json!({}), &registry, 65_536, |_, _| {
             std::future::ready(Ok((Some(2), vec![], b"project guard".to_vec())))
         })
         .await?;
