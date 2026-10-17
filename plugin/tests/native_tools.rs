@@ -24,8 +24,47 @@ struct ResultClient {
 }
 
 impl ResultClient {
-    async fn open(directory: &Path) -> Result<Self> {
-        let mut child: Child = command(directory).arg("__tools").spawn()?;
+    async fn open(directory: &Path, host: &str) -> Result<Self> {
+        let mut launch = command(directory);
+        if host == "codex" {
+            // Codex gives MCP a small standard environment plus the manifest's
+            // explicit env_vars. Hooks inherit the calling host's environment.
+            launch.env("HOME", directory.parent().ok_or("MCP home missing")?);
+            let overrides: Vec<_> = launch
+                .as_std()
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(std::ffi::OsStr::to_owned)))
+                .collect();
+            launch.env_clear();
+            let manifest: Value = serde_json::from_str(include_str!("../mcp.json"))?;
+            let declared = manifest["mcpServers"]["acyclic"]["env_vars"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            for name in [
+                "HOME",
+                "PATH",
+                "USERPROFILE",
+                "SYSTEMROOT",
+                "COMSPEC",
+                "PATHEXT",
+                "TEMP",
+                "TMP",
+            ]
+            .into_iter()
+            .chain(declared)
+            {
+                let value = match overrides.iter().find(|(key, _)| key == name) {
+                    Some((_, value)) => value.clone(),
+                    None => std::env::var_os(name),
+                };
+                if let Some(value) = value {
+                    launch.env(name, value);
+                }
+            }
+        }
+        let mut child: Child = launch.arg("__tools").spawn()?;
         let mut input = child.stdin.take().ok_or("MCP stdin missing")?;
         let mut output = BufReader::new(child.stdout.take().ok_or("MCP stdout missing")?).lines();
         let write = |value: Value| format!("{value}\n").into_bytes();
@@ -95,7 +134,7 @@ async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> R
                 // of the user's selected checkout. The file names its binding.
                 let mcp = directory.path().parent().unwrap().join("mcp");
                 std::fs::create_dir(&mcp)?;
-                let mut results = ResultClient::open(&mcp).await?;
+                let mut results = ResultClient::open(&mcp, host).await?;
                 let first = results.result(arguments.clone()).await?;
                 assert!(first["structuredContent"]["file"].is_object(),"{first}");
                 assert_eq!(results.result(arguments.clone()).await?,first);

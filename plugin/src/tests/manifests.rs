@@ -9,10 +9,15 @@ fn host_manifests_route_every_event_to_the_common_client() -> Result {
     let manifest: Value = serde_json::from_str(include_str!("../../.codex-plugin/plugin.json"))?;
     assert_eq!(manifest["hooks"], "./hooks/hooks.json");
     assert_eq!(manifest["mcpServers"], "./mcp.json");
-    assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin.json").exists());
+    assert!(
+        !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("plugin.json")
+            .exists()
+    );
     let codex: Value = serde_json::from_str(include_str!("../../hooks/hooks.json"))?;
     let pi: Value = serde_json::from_str(include_str!("../../pi/package.json"))?;
-    let claude: Value = serde_json::from_str(include_str!("../../claude/.claude-plugin/plugin.json"))?;
+    let claude: Value =
+        serde_json::from_str(include_str!("../../claude/.claude-plugin/plugin.json"))?;
     assert_eq!(
         claude,
         acyclic_harness::external_executor::claude_manifest(env!("CARGO_PKG_VERSION"))
@@ -39,6 +44,10 @@ fn host_manifests_route_every_event_to_the_common_client() -> Result {
     assert_eq!(
         mcp["mcpServers"]["acyclic"]["args"],
         serde_json::json!(["__tools"])
+    );
+    assert_eq!(
+        mcp["mcpServers"]["acyclic"]["env_vars"],
+        serde_json::json!(["ACYCLIC_HARNESS_BINDING", "ACYCLIC_LOCAL_OWNER_DIR", "XDG_DATA_HOME", "LOCALAPPDATA"])
     );
     for file in ["../src/main.rs", "../pi/index.ts"] {
         let source = std::fs::read_to_string(
