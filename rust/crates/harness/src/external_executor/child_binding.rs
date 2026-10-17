@@ -1,4 +1,5 @@
 //! One immutable, fenced parent/label/native-child provenance file.
+use super::rejection::{Checked, RequestRejection};
 use super::{
     ChildSession, ExternalAction, ExternalRequest, normalize, publication::storage, volume,
 };
@@ -37,14 +38,12 @@ impl Binding {
         Ok(binding)
     }
 
-    fn require(&self, parent: TaskId, request: &ExternalRequest) -> Result<()> {
+    fn require(&self, parent: TaskId, request: &ExternalRequest) -> Result<Checked<()>> {
         let (label, child) = selection(request)?;
         if self.parent != parent || self.label != label || &self.child != child {
-            return Err(Error::Unauthorized(
-                "native child differs from its immutable fork binding".into(),
-            ));
+            return Ok(Err(RequestRejection::ChildBinding));
         }
-        Ok(())
+        Ok(Ok(()))
     }
 }
 
@@ -83,7 +82,7 @@ pub(super) async fn bind<P: StreamProvider + ?Sized>(
     request: &ExternalRequest,
     condition: CommitCondition,
     deadline: Option<u64>,
-) -> Result<()> {
+) -> Result<Checked<()>> {
     let binding = Binding::requested(parent, request)?;
     if !matches!(request.action, ExternalAction::Fork { .. }) {
         return Err(Error::Invalid(
@@ -95,10 +94,15 @@ pub(super) async fn bind<P: StreamProvider + ?Sized>(
         volume::encode(&binding).map_err(storage)?,
     );
     match super::append::publish(results, &file, Some(condition), deadline).await {
-        Ok(()) => Ok(()),
-        Err(crate::task_volume::Error::ImmutableConflict(_)) => Err(Error::Unauthorized(
-            "native child label is already bound to another fork".into(),
-        )),
+        Ok(()) => Ok(Ok(())),
+        Err(crate::task_volume::Error::ImmutableConflict(_)) => {
+            match require(results, parent, request).await? {
+                Err(rejected) => Ok(Err(rejected)),
+                Ok(()) => Err(Error::Conflict(
+                    "native child binding metadata changed".into(),
+                )),
+            }
+        }
         Err(error) => Err(storage(error)),
     }
 }
@@ -108,16 +112,15 @@ pub(super) async fn require<P: StreamProvider + ?Sized>(
     results: &TaskVolume<P>,
     parent: TaskId,
     request: &ExternalRequest,
-) -> Result<()> {
+) -> Result<Checked<()>> {
     let (label, _) = selection(request)?;
     let snapshot = results
         .snapshot(&Query::File(key(parent, request, label)?), 1)
         .await
         .map_err(storage)?;
-    let file = snapshot
-        .files
-        .first()
-        .ok_or_else(|| Error::NotFound("native child has no committed fork binding".into()))?;
+    let Some(file) = snapshot.files.first() else {
+        return Ok(Err(RequestRejection::UnboundChildLabel));
+    };
     Binding::decode(&file.bytes)?.require(parent, request)
 }
 

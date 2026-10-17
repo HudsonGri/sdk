@@ -5,9 +5,9 @@ mod append;
 #[cfg(feature = "filesystem")]
 pub(crate) mod cancellation;
 mod catalog;
-mod child_session;
 #[cfg(feature = "filesystem")]
 mod child_binding;
+mod child_session;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 pub(crate) use child_binding::fuzz as fuzz_child_binding;
 mod client;
@@ -15,6 +15,8 @@ mod client;
 mod command_catalog;
 #[cfg(feature = "filesystem")]
 mod commands;
+#[cfg(feature = "filesystem-local")]
+pub(crate) mod completion;
 mod failure;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 mod handoff;
@@ -40,6 +42,8 @@ mod normalize;
 mod prepared;
 #[cfg(feature = "filesystem-local")]
 pub(crate) mod progress;
+#[cfg(feature = "filesystem")]
+mod rejection;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 pub(crate) use prepared::fuzz_command;
 #[cfg(feature = "filesystem")]

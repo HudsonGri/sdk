@@ -43,22 +43,22 @@ proptest! {
             let results = TaskVolume::open(Arc::new(MemoryStream::default()),StreamPath::new("results").unwrap())
                 .await.map_err(storage)?;
             let condition = CommitCondition::Absent {path:StreamPath::new("owner").unwrap()};
-            bind(&results,fork_a.task_id(),&fork_a,condition.clone(),None).await?;
-            bind(&results,fork_a.task_id(),&fork_b,condition.clone(),None).await?;
-            require(&results,fork_a.task_id(),&stop_a).await?;
-            require(&results,fork_a.task_id(),&stop_b).await?;
+            bind(&results,fork_a.task_id(),&fork_a,condition.clone(),None).await?.unwrap();
+            bind(&results,fork_a.task_id(),&fork_b,condition.clone(),None).await?.unwrap();
+            require(&results,fork_a.task_id(),&stop_a).await?.unwrap();
+            require(&results,fork_a.task_id(),&stop_b).await?.unwrap();
             for swapped in [&swapped_session,&swapped_label,&foreign] {
-                assert!(require(&results,fork_a.task_id(),swapped).await.is_err());
+                assert!(require(&results,fork_a.task_id(),swapped).await?.is_err());
             }
             let before = results.snapshot(&Query::Root,16).await.map_err(storage)?;
             let changed_fork = request(host,event(true),input(&label_a,&session_b))?;
-            assert!(matches!(bind(&results,fork_a.task_id(),&changed_fork,condition.clone(),None).await,Err(Error::Unauthorized(_))));
-            bind(&results,fork_a.task_id(),&fork_a,condition,None).await?;
+            assert!(matches!(bind(&results,fork_a.task_id(),&changed_fork,condition.clone(),None).await?,Err(RequestRejection::ChildBinding)));
+            bind(&results,fork_a.task_id(),&fork_a,condition,None).await?.unwrap();
             let after = results.snapshot(&Query::Root,16).await.map_err(storage)?;
             assert_eq!(after.files,before.files);
             assert_eq!(after.generation,before.generation);
-            require(&results,fork_a.task_id(),&stop_a).await?;
-            require(&results,fork_a.task_id(),&stop_b).await?;
+            require(&results,fork_a.task_id(),&stop_a).await?.unwrap();
+            require(&results,fork_a.task_id(),&stop_b).await?.unwrap();
             Ok::<_,Error>(())
         })?;
     }

@@ -52,7 +52,10 @@ async fn native_request_files_admit_detach_and_reconnect_the_same_session() -> R
                 if host==ExternalHost::Pi {json!({"sessionId":"other"})} else {json!({"session_id":"other"})})?;
             let file=publish(&fixture,&folder,&foreign).await?;
             let consumer=RequestConsumer::new(&fixture.runtime,&fixture.requests,&fixture.results,fixture.publisher.as_ref(),"/project");
-            assert!(matches!(consumer.accept(&folder,&file).await,Err(Error::Unauthorized(_))));
+            consumer.accept(&folder,&file).await?;
+            execute(&fixture,task).await?;
+            let rejected = foreign.send(&fixture.requests,&fixture.results,folder.clone()).await.map_err(storage)?;
+            assert!(rejected.get("Failed").is_some(),"{rejected}");
             let stop = request(host,if host == ExternalHost::Pi {"session_shutdown"} else {"SessionEnd"},identity(host,json!({})))?;
             let detached = deliver(&fixture,&folder,&stop).await?;
             assert_eq!(detached["task"],task.to_string());

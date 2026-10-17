@@ -115,19 +115,31 @@ impl LocalHarness {
         Box::pin(async move {
             tokio::pin!(stopped);
             if matches!(request.action, ExternalAction::Join { .. }) {
-                let volumes = self.external_volumes(request.task_id()).await?;
-                let completion =
-                    RequestConsumer::child_completion(&self.runtime, &volumes.results, request.task_id(), request)
+                // Check cached/fenced outcomes before any child side effect.
+                // Rejected stops therefore stay rejected after owner restart.
+                return crate::external_executor::completion::after_delivery(
+                    self.external_step(request),
+                    || async {
+                        let volumes = self.external_volumes(request.task_id()).await?;
+                        let completion = RequestConsumer::child_completion(
+                            &self.runtime,
+                            &volumes.results,
+                            request.task_id(),
+                            request,
+                        )
                         .await?;
-                // No parent task guard is held while its child settles. This
-                // is the same Detach request as a later native SessionEnd.
-                if self
-                    .external_follow(&completion, stopped.as_mut())
-                    .await?
-                    .is_none()
-                {
-                    return Ok(None);
-                }
+                        // The parent's suspended join retains no task guard.
+                        if self
+                            .external_follow(&completion, stopped.as_mut())
+                            .await?
+                            .is_none()
+                        {
+                            return Ok(None);
+                        }
+                        self.external_follow(request, stopped.as_mut()).await
+                    },
+                )
+                .await;
             }
             self.external_follow(request, stopped).await
         })

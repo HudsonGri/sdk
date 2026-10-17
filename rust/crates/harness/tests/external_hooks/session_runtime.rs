@@ -2,7 +2,7 @@ use super::*;
 use acyclic_fs::Fs;
 use acyclic_harness::task_volume::{Component, Query, TaskVolume};
 use acyclic_harness::{
-    Admission, AgentId, Capabilities, OperationId, TaskId,
+    AgentId, Capabilities, OperationId, TaskId,
     conversation::{
         ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -15,7 +15,7 @@ use acyclic_harness::{
         TaskWorkerOutcome, ToolTaskCommand,
     },
     resources::ProviderRef,
-    runtime::{RuntimeScope, RuntimeTask, TaskRegistry, TaskStateProvider},
+    runtime::{RuntimeScope, TaskRegistry, TaskStateProvider},
     scheduler::{ResourceRequest, SessionLimits},
     workflow::{MachineRegistry, WorkflowCommand},
 };
@@ -79,19 +79,44 @@ async fn run_write_session(binding: VolumeBinding) -> Result<()> {
 }
 
 async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -> Result<()> {
+    let mut fixture = Fixture::at_revision(binding, selected_revision).await?;
+    let operation = OperationId::from_bytes([63; 16]);
+    let task = TaskId::from_bytes(operation.into_bytes());
+    let task_folder = Component::new(task.to_string()).map_err(storage)?;
+    // Establish the actual native attachment first. Bad provider bindings below
+    // still exercise dispatch, independently of this authenticated bootstrap.
+    let actual_results = if matches!(binding, VolumeBinding::Shared | VolumeBinding::Foreign) {
+        let bootstrap = TaskVolume::open(
+            fixture.runtime.task_host().workflow_stream(),
+            StreamPath::new("bootstrap-results").map_err(storage)?,
+        )
+        .await
+        .map_err(storage)?;
+        Some(std::mem::replace(&mut fixture.results, bootstrap))
+    } else {
+        None
+    };
+    let attach = request(
+        ExternalHost::Pi,
+        "session_start",
+        json!({"sessionId":"session","cwd":"/project"}),
+    )?;
+    super::intake::deliver(&fixture, &task_folder, &attach).await?;
+    if let Some(results) = actual_results {
+        fixture.results = results;
+    }
     let Fixture {
         runtime,
         files,
         volume,
         verifier,
         signed,
-        tasks,
+        tasks: _,
         revision,
         publisher,
         requests,
         results,
-    } = Fixture::at_revision(binding, selected_revision).await?;
-    let operation = OperationId::from_bytes([63; 16]);
+    } = fixture;
     let arguments = json!({
         "path":"session.txt","text":"written by the task worker",
         "media_type":"text/plain","display_name":"session.txt"
@@ -104,8 +129,6 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
         }),
     )?;
     let tool_operation = original.operation_id;
-    let task_folder =
-        Component::new(TaskId::from_bytes(operation.into_bytes()).to_string()).map_err(storage)?;
     let file = original.to_file(task_folder.clone()).map_err(storage)?;
     let snapshot = requests
         .snapshot(&Query::File(file.key.clone()), 1)
@@ -142,21 +165,31 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
         .into(),
         payload,
     };
-    let definition = tasks.get::<Value, ()>("acyclic.command_session@1")?;
-    let admission = runtime
-        .harness()
-        .admit(
-            operation,
-            &definition,
-            json!({"command":command,"terminal":true}),
+    let input = serde_json::to_vec(&json!({"command":command,"terminal":true})).map_err(storage)?;
+    let input = SchedulerPayloadStore::stage_input(
+        publisher.as_ref(),
+        tool_operation,
+        "native-session-command",
+        &input,
+        None,
+    )?
+    .await?;
+    let (_, slot) = runtime
+        .task_host()
+        .workflow_slot(task, None, &mut None)
+        .await?
+        .ok_or_else(|| Error::Conflict("attached session has no input slot".into()))?;
+    runtime
+        .task_host()
+        .resume_workflow(
+            task,
+            slot.revision,
+            input,
+            acyclic_harness::IdempotencyKey::new("native-session-command")?,
             None,
+            &mut None,
         )
         .await?;
-    let task = match admission {
-        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => task_id,
-        _ => return Err(Error::Storage("command session was not admitted".into())),
-    };
-    assert_eq!(task, TaskId::from_bytes(operation.into_bytes()));
     let worker = Worker {
         id: "session-worker".into(),
         available: ResourceRequest::default(),

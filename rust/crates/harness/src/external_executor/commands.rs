@@ -171,11 +171,46 @@ where
                 ));
             }
             drop(cached);
+            let attachment = super::RequestConsumer::authenticate(
+                self.runtime,
+                owner.task_id(),
+                owner.admission(),
+                &request,
+            )
+            .await?;
+            let rejected = match &attachment {
+                Err(rejected) => Some(*rejected),
+                Ok(_) if matches!(request.action, ExternalAction::Join { .. }) => {
+                    super::RequestConsumer::checked_child_completion(
+                        self.runtime,
+                        self.results,
+                        owner.task_id(),
+                        &request,
+                    )
+                    .await?
+                    .err()
+                }
+                Ok(_) => None,
+            };
             let mut cancelled = None;
-            let progress = if command.kind == LIFECYCLE
+            let progress = if let Some(rejected) = rejected {
+                TaskCommandProgress::Ready(
+                    serde_json::to_value(rejected.outcome())
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                )
+            } else if command.kind == LIFECYCLE
                 && matches!(request.action, ExternalAction::Fork { .. })
             {
-                self.fork(&context, &fence, &owner, &request, reconcile)
+                let Ok(ExternalRequest {
+                    action: ExternalAction::Attach { workspace },
+                    ..
+                }) = attachment
+                else {
+                    return Err(Error::Conflict(
+                        "authenticated attachment is missing".into(),
+                    ));
+                };
+                self.fork(&context, &fence, &owner, &request, &workspace, reconcile)
                     .await?
             } else if command.kind == LIFECYCLE {
                 if let ExternalAction::ToolFinished { call_id, .. } = &request.action {

@@ -28,31 +28,10 @@ where
         fence: &'a LeaseFence,
         owner: &'a TaskJournalOwner<P>,
         request: &'a ExternalRequest,
+        workspace: &'a str,
         reconcile: bool,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
-            let initial: WorkflowCommand = serde_json::from_value(
-                owner
-                    .admission()
-                    .input
-                    .get("command")
-                    .cloned()
-                    .ok_or_else(|| Error::Unauthorized("native parent has no attachment".into()))?,
-            )
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-            let parent: ExternalRequest =
-                volume::decode(&context.read_file(&initial.payload, None).await?)
-                    .map_err(storage)?;
-            let ExternalAction::Attach { workspace } = &parent.action else {
-                return Err(Error::Unauthorized("native parent is not attached".into()));
-            };
-            if (parent.host, &parent.session_id, &parent.caller)
-                != (request.host, &request.session_id, &request.caller)
-            {
-                return Err(Error::Unauthorized(
-                    "native fork differs from its parent attachment".into(),
-                ));
-            }
             let child = request.child_attachment(workspace)?;
             let task = child.task_id();
             if task == owner.task_id() {
@@ -60,7 +39,7 @@ where
                     message: "native child cannot replace its parent".into(),
                 });
             }
-            super::super::child_binding::bind(
+            if let Err(rejected) = super::super::child_binding::bind(
                 self.results,
                 owner.task_id(),
                 request,
@@ -76,7 +55,10 @@ where
                     .await?,
                 owner.admission().run_limits.deadline_epoch_ms,
             )
-            .await?;
+            .await?
+            {
+                return ready(rejected.outcome());
+            }
             let key = format!("external-command:{}", child.operation_id);
             let payload = self
                 .payloads
