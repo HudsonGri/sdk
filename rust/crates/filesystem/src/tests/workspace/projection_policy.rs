@@ -24,7 +24,14 @@ fn assert_projection_denied<T>(result: Result<T, WorkspaceError>) {
 
 async fn set_metadata(protected: bool) -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("root-metadata-policy"))?;
+    // Workspace identity is deterministic across independent memory stores.
+    // Keep the concurrent negative control in a different authority identity.
+    let name = if protected {
+        "root-metadata-protected"
+    } else {
+        "root-metadata-control"
+    };
+    let workspace = unbounded!(fs, create_workspace(name))?;
     let mut donor = current(&workspace, true).await?;
     let policy = denied_policy();
     unbounded!(
@@ -80,11 +87,16 @@ async fn root_set_metadata_missing_projection_negative_control() {
 
 async fn join(protected: bool) -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let parent = unbounded!(fs, create_workspace("join-policy-parent"))?;
+    let (parent_name, child_name) = if protected {
+        ("join-policy-protected", "join-child-protected")
+    } else {
+        ("join-policy-control", "join-child-control")
+    };
+    let parent = unbounded!(fs, create_workspace(parent_name))?;
     let base = unbounded!(parent, head())?;
     let child = fork_workspace(
         &parent,
-        "join-policy-child",
+        child_name,
         ForkOptions::from_generation(base, IdempotencyKey::new()),
     )
     .await?;
