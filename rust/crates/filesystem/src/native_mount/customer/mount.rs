@@ -143,37 +143,41 @@ where
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
         let destination = destination.0;
-        let mode = if options.writable {
-            CheckoutMode::tracking_transaction()
-        } else {
-            CheckoutMode::read_only_pinned()
-        };
-        let checkout = self
-            .checkout(options.data_selector()?, mode, &work, cancellation)
-            .await?;
-        let source = AdmittedRoot::admit(&options, self, checkout.generation_id(), &work)
-            .await?
-            .checkout_source(checkout, &work)
-            .await?;
-        let session_destination = work.path(&destination, None)?;
-        let prepared =
-            super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;
-        let session = prepared.start(
-            NativeMountRequest {
-                mount_id: MountId::new(),
-                volume_id: self.id().volume_id(),
-                destination: session_destination.0,
-                writable: options.writable,
-            },
-            Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
-            &work,
-            Some(session_destination.1),
-        )?;
-        Ok(Mount {
-            source,
-            session: Mutex::new(Some(session)),
-            destination,
-            _destination_custody: destination_custody,
+        let work = &work;
+        options::in_native_heap(work, || async move {
+            let mode = if options.writable {
+                CheckoutMode::tracking_transaction()
+            } else {
+                CheckoutMode::read_only_pinned()
+            };
+            let checkout = self
+                .checkout(options.data_selector()?, mode, &work, cancellation)
+                .await?;
+            let source = AdmittedRoot::admit(&options, self, checkout.generation_id(), &work)
+                .await?
+                .checkout_source(checkout, &work)
+                .await?;
+            let session_destination = work.path(&destination, None)?;
+            let prepared =
+                super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;
+            let session = prepared.start(
+                NativeMountRequest {
+                    mount_id: MountId::new(),
+                    volume_id: self.id().volume_id(),
+                    destination: session_destination.0,
+                    writable: options.writable,
+                },
+                Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
+                &work,
+                Some(session_destination.1),
+            )?;
+            Ok(Mount {
+                source,
+                session: Mutex::new(Some(session)),
+                destination,
+                _destination_custody: destination_custody,
+            })
         })
+        .await
     }
 }
