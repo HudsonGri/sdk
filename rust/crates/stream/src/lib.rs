@@ -171,3 +171,7 @@ mod test_meter;
     any(feature = "grpc", feature = "local")
 ))]
 mod test_trace;
+
+#[cfg(test)]
+#[path = "lib/path_text_tests.rs"]
+mod path_text_tests;
