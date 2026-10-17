@@ -8,7 +8,7 @@ pub(super) struct Utf16 {
 
 impl Utf16 {
     /// Encode `units` into `out`, which must hold three bytes per unit plus
-    /// one; returns the bytes written.
+    /// three; returns the bytes written.
     pub(super) fn decode(&mut self, units: &[u16], out: &mut [u8]) -> usize {
         if self.ended {
             return 0;

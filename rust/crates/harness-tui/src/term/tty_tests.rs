@@ -170,7 +170,10 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
                 Ok(count) => total += count,
             }
         }
-        total
+        // Keep the emulator endpoint alive through restoration. Closing it
+        // as soon as the last byte arrives hangs up the slave concurrently
+        // with tcsetattr, which then correctly reports EIO.
+        (total, controller)
     });
     let mut tty = RawTty::from_file(user)?;
     #[cfg(target_vendor = "apple")]
@@ -186,12 +189,11 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
     };
     let written = write_all(&mut traced, &vec![b'x'; FRAME], write_until);
     let trace = traced.trace;
-    let restored = tty.restore();
     written?;
-    restored?;
-    let drained = drain
+    let (drained, _controller) = drain
         .join()
         .map_err(|_| io::Error::other("drain panicked"))?;
+    tty.restore()?;
     assert_eq!(drained, FRAME);
     Ok(trace)
 }

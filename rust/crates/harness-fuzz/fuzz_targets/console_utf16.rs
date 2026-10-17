@@ -11,7 +11,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let chunk = usize::from(bytes.first().copied().unwrap_or(0) % 16) + 1;
     let mut decoder = utf16::Utf16::default();
     let mut output = Vec::new();
-    let mut buffer = [0; 49];
+    let mut buffer = [0; 51];
     for part in units.chunks(chunk) {
         let count = decoder.decode(part, &mut buffer);
         output.extend_from_slice(&buffer[..count]);

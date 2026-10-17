@@ -230,9 +230,6 @@ impl Drop for Reader {
 }
 
 #[cfg(unix)]
-pub(super) use unix::read_until_cancelled;
-
-#[cfg(unix)]
 mod unix {
     use std::fs::File;
     use std::io::{self, Read};
@@ -405,9 +402,9 @@ mod windows {
                 if !console_wait(&self.file, &self.cancel)? {
                     return Ok(None);
                 }
-                // Each unit encodes to at most three bytes, and a pending
-                // high surrogate completes to four with one more unit.
-                let room = (bytes.len().saturating_sub(1) / 3).clamp(1, self.units.len());
+                // Each unit needs at most three bytes; an unmatched high
+                // surrogate retained from the last read needs three more.
+                let room = (bytes.len().saturating_sub(3) / 3).min(self.units.len());
                 let count = match unless_cancelled(
                     console_read_text(&self.file, &mut self.units[..room]),
                     &self.cancel,

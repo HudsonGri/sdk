@@ -4,7 +4,7 @@ fn decode(reads: &[&[u16]]) -> (String, bool) {
     let mut text = Utf16::default();
     let mut bytes = Vec::new();
     for units in reads {
-        let mut out = vec![0; units.len() * 3 + 1];
+        let mut out = vec![0; units.len() * 3 + 3];
         let written = text.decode(units, &mut out);
         bytes.extend_from_slice(&out[..written]);
     }
@@ -181,7 +181,7 @@ proptest::proptest! {
         let units: Vec<_> = units.into_iter().take_while(|unit| *unit != 0x1a).collect();
         let mut decoder = Utf16::default();
         let mut output = Vec::new();
-        let mut buffer = [0; 49];
+        let mut buffer = [0; 51];
         for part in units.chunks(chunk) {
             let count = decoder.decode(part, &mut buffer);
             output.extend_from_slice(&buffer[..count]);
@@ -191,4 +191,16 @@ proptest::proptest! {
         proptest::prop_assert_eq!(output, String::from_utf16_lossy(&units).into_bytes());
         proptest::prop_assert!(decoder.ended);
     }
+}
+
+#[test]
+fn a_carried_high_surrogate_reserves_a_full_replacement_character() {
+    let mut decoder = Utf16::default();
+    let mut output = [0; 6];
+    assert_eq!(decoder.decode(&[0xd800], &mut output), 0);
+    let count = decoder.decode(&[0x800], &mut output);
+    assert_eq!(count, 6);
+    assert_eq!(&output, "\u{fffd}\u{800}".as_bytes());
+    // The old bound allowed four bytes here; the required six expose it.
+    assert!(count > 3 + 1);
 }
