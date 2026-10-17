@@ -22,6 +22,9 @@ struct Case {
     existing: usize,
     collision: u8,
     concurrent: bool,
+    // Leave a mutation pending before the call, so candidate lookups use the
+    // transaction root while observations stay on the base generation.
+    pending: bool,
     maximum_paths: u32,
 }
 
@@ -77,11 +80,23 @@ async fn fixture_with_profile(case: Case, profile: FilesystemProfile) -> TestTra
         }
     }
     commit(&mut seed).await.expect("seed commit");
-    unbounded!(
+    let mut transaction = unbounded!(
         workspace,
         begin_transaction(IdempotencyKey::from_bytes([3; 16]))
     )
-    .expect("transaction")
+    .expect("transaction");
+    if case.pending {
+        if case.collision == 0 {
+            transaction
+                .write_text("/pending", "pending bytes\n")
+                .await
+                .expect("pending write");
+        } else {
+            // The base still binds a non-directory where the transaction now has none.
+            unbounded!(transaction, remove(&path(case.existing + 1))).expect("pending remove");
+        }
+    }
+    transaction
 }
 
 // The original production implementation remains the fallback for folded profiles
@@ -277,24 +292,29 @@ fn compare_profile(
 
 #[test]
 fn shared_directory_frontier_preserves_outputs_errors_and_observations() {
-    for (depth, existing, collision, concurrent, maximum_paths) in [
-        (0, 0, 0, false, 64),
-        (1, 1, 0, false, 64),
-        (4, 4, 0, false, 64),
-        (8, 8, 0, false, 64),
-        (4, 0, 0, false, 64),
-        (4, 2, 0, false, 64),
-        (4, 2, 1, false, 64),
-        (4, 2, 2, false, 64),
-        (4, 4, 0, true, 64),
-        (4, 2, 1, true, 64),
-        (4, 2, 0, false, 1),
+    for (depth, existing, collision, concurrent, pending, maximum_paths) in [
+        (0, 0, 0, false, false, 64),
+        (1, 1, 0, false, false, 64),
+        (4, 4, 0, false, false, 64),
+        (8, 8, 0, false, false, 64),
+        (4, 0, 0, false, false, 64),
+        (4, 2, 0, false, false, 64),
+        (4, 2, 1, false, false, 64),
+        (4, 2, 2, false, false, 64),
+        (4, 4, 0, true, false, 64),
+        (4, 2, 1, true, false, 64),
+        (4, 2, 0, false, false, 1),
+        (4, 2, 0, false, true, 64),
+        (4, 2, 1, false, true, 64),
+        (4, 2, 2, false, true, 64),
+        (4, 2, 1, true, true, 64),
     ] {
         let case = Case {
             depth,
             existing,
             collision,
             concurrent,
+            pending,
             maximum_paths,
         };
         let work = compare(case);
@@ -307,10 +327,11 @@ proptest! {
     #[test]
     fn shared_directory_frontier_matches_original_for_every_bounded_prefix(
         depth in 1usize..7, existing in 0usize..7, collision in 0u8..3,
-        concurrent in any::<bool>(), maximum_paths in prop_oneof![Just(1u32), Just(64u32)],
+        concurrent in any::<bool>(), pending in any::<bool>(),
+        maximum_paths in prop_oneof![Just(1u32), Just(64u32)],
     ) {
         let existing = existing.min(depth);
-        compare(Case { depth, existing, collision: if existing < depth { collision } else { 0 }, concurrent, maximum_paths });
+        compare(Case { depth, existing, collision: if existing < depth { collision } else { 0 }, concurrent, pending, maximum_paths });
     }
 }
 
@@ -321,6 +342,7 @@ fn invalid_directory_paths_preserve_errors_and_later_mutations() {
         existing: 2,
         collision: 0,
         concurrent: false,
+        pending: false,
         maximum_paths: 64,
     };
     for requested in [
@@ -344,6 +366,7 @@ fn native_directory_frontier_preserves_the_original_custody() {
             existing,
             collision: 0,
             concurrent: false,
+            pending: false,
             maximum_paths: 64,
         };
         let results = pair::<_, _, Event>(
@@ -422,6 +445,7 @@ fn cancelled_directory_call_dispatches_no_storage_work() {
         existing: 4,
         collision: 0,
         concurrent: false,
+        pending: false,
         maximum_paths: 64,
     };
     let mut transaction = futures::executor::block_on(fixture(case));
@@ -446,6 +470,7 @@ fn missing_prefix_observation_fails_the_same_trace_comparison() {
         existing: 4,
         collision: 0,
         concurrent: false,
+        pending: false,
         maximum_paths: 64,
     };
     let failure = std::panic::catch_unwind(|| compare_variant(case, &path(case.depth), true))
@@ -488,8 +513,9 @@ fn assert_allocations(actual: &serde_json::Value, expected: &serde_json::Value) 
     );
 }
 
-#[test]
-fn directory_work_and_physical_allocations_are_exact() {
+// Measures both implementations on the pinned workloads. Page reads and parsed
+// components are also checked against counts derived independently of the fixture.
+fn measured_costs() -> serde_json::Map<String, serde_json::Value> {
     let mut measured = serde_json::Map::new();
     for (name, depth, existing, pages, components) in [
         ("existing4", 4, 4, [24, 9], [10, 4]),
@@ -502,6 +528,7 @@ fn directory_work_and_physical_allocations_are_exact() {
             existing,
             collision: 0,
             concurrent: false,
+            pending: false,
             maximum_paths: 64,
         };
         let samples = compare(case);
@@ -517,6 +544,12 @@ fn directory_work_and_physical_allocations_are_exact() {
         }
         measured.insert(name.into(), serde_json::json!(samples.map(costs)));
     }
+    measured
+}
+
+#[test]
+fn directory_work_and_physical_allocations_are_exact() {
+    let measured = measured_costs();
     eprintln!(
         "DIRECTORY_PROFILE {}",
         serde_json::Value::Object(measured.clone())
@@ -532,30 +565,26 @@ fn directory_work_and_physical_allocations_are_exact() {
 
 #[test]
 fn restored_prefix_walks_fail_the_same_work_and_allocation_assertions() {
-    let case = Case {
-        depth: 4,
-        existing: 4,
-        collision: 0,
-        concurrent: false,
-        maximum_paths: 64,
-    };
-    let [old, _] = compare(case).map(costs);
+    let measured = measured_costs();
     let expected = expected_costs();
-    for (check, message) in [
-        (assert_work as fn(&_, &_), "exact production work"),
-        (
-            assert_allocations as fn(&_, &_),
-            "exact physical allocations",
-        ),
-    ] {
-        let failure = std::panic::catch_unwind(|| check(&old, &expected["existing4"][1]))
-            .expect_err("restoring the original production traversal must be detected");
-        let text = failure
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| failure.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(text.contains(message), "wrong failure: {text}");
+    for (name, pair) in &measured {
+        for (check, message) in [
+            (assert_work as fn(&_, &_), "exact production work"),
+            (
+                assert_allocations as fn(&_, &_),
+                "exact physical allocations",
+            ),
+        ] {
+            // The original per-prefix traversal measured against the pinned candidate.
+            let failure = std::panic::catch_unwind(|| check(&pair[0], &expected[name][1]))
+                .expect_err("restoring the original production traversal must be detected");
+            let text = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            assert!(text.contains(message), "wrong failure ({name}): {text}");
+        }
     }
 }
 
@@ -573,6 +602,7 @@ fn directory_frontiers_preserve_each_filesystem_name_profile() {
                 existing,
                 collision,
                 concurrent: false,
+                pending: false,
                 maximum_paths: 64,
             };
             compare_profile(case, &path(case.depth), false, profile);
