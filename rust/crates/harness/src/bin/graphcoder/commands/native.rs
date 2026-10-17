@@ -90,7 +90,7 @@ fn arguments<T: serde::de::DeserializeOwned>(path: &Path, names: &[&str]) -> Res
     serde_json::from_slice(&serde_json::to_vec(&values).map_err(invalid)?).map_err(invalid)
 }
 
-fn emit(output: &mut impl std::io::Write, line: std::fmt::Arguments<'_>) -> Result<()> {
+fn emit(output: &mut dyn std::io::Write, line: std::fmt::Arguments<'_>) -> Result<()> {
     writeln!(output, "{line}")
         .and_then(|()| output.flush())
         .map_err(storage)
@@ -130,7 +130,7 @@ pub(super) async fn execute(
     backend: &mut Option<Backend>,
     parent: &mut Option<TaskId>,
     workers: &mut tokio::task::JoinSet<Result<String>>,
-    output: &mut impl std::io::Write,
+    output: &mut dyn std::io::Write,
 ) -> Result<String> {
     let api = backend
         .as_ref()

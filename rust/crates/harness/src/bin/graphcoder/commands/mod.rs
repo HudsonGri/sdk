@@ -10,7 +10,7 @@ pub(super) async fn execute(
     #[cfg(feature = "filesystem-local")] workers: &mut tokio::task::JoinSet<
         acyclic_harness::Result<String>,
     >,
-    output: &mut impl std::io::Write,
+    output: &mut dyn std::io::Write,
 ) -> acyclic_harness::Result<String> {
     use acyclic_harness::{Error, wire, wire_api::current_protocol};
     let api = backend
