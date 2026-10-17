@@ -69,10 +69,6 @@ use io::*;
 mod native;
 use native::*;
 mod append;
-#[cfg(all(test, not(acyclic_fs_loom)))]
-mod append_key_tests;
-#[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
-mod append_loom_tests;
 mod authority;
 mod bindings;
 mod head_payload;

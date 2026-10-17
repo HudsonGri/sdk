@@ -58,26 +58,22 @@ fn request(
     })
 }
 
-pub(super) fn digest(
+fn digest(
     request: &mut CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<[u8; 32], AuthorityStoreError> {
+    let Some(CommitMutation::Append { path, records }) = request.mutations.first() else {
+        return Err(AuthorityStoreError::RejectedStatic(
+            "publication gates only append",
+        ));
+    };
+    let record = records.first().ok_or(AuthorityStoreError::RejectedStatic(
+        "empty publication gate append",
+    ))?;
     let mut bytes = (b"acyclic.stream.request.v1\0".len() + b"commit".len()) as u64;
-    for mutation in &request.mutations {
-        let CommitMutation::Append { path, records } = mutation else {
-            return Err(AuthorityStoreError::RejectedStatic(
-                "authority requests only append",
-            ));
-        };
-        bytes = bytes
-            .checked_add(1 + 8 + path.as_str().len() as u64 + 8)
-            .ok_or(crate::WorkError::Overflow)?;
-        for record in records {
-            bytes = bytes
-                .checked_add(8 + record.len() as u64)
-                .ok_or(crate::WorkError::Overflow)?;
-        }
-    }
+    bytes = bytes
+        .checked_add(1 + 8 + path.as_str().len() as u64 + 8 + 8 + record.len() as u64)
+        .ok_or(crate::WorkError::Overflow)?;
     for condition in &request.conditions {
         let (path, scalar) = match condition {
             CommitCondition::Head { path, .. } => (path, 40),
