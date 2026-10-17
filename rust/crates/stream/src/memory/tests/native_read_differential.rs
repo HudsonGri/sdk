@@ -1,11 +1,11 @@
 use super::super::*;
 use super::cursor_work::BaselineCursor;
-use crate::test_meter::Meter;
+use crate::test_meter::{Meter, trace as meter_trace};
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Original native read, including its concrete old cursor frame and admission order.
-fn baseline_native_read<'a>(
+fn baseline_native_read<'a, const REORDER: bool>(
     provider: &'a MemoryStream,
     request: ReadRequest,
     meter: Arc<dyn NativeReadMeter>,
@@ -77,8 +77,14 @@ fn baseline_native_read<'a>(
                 let record = cursor
                     .next_record()
                     .ok_or(std::io::ErrorKind::InvalidData)?;
-                let examined = meter.record_examination(1, copied);
-                let read = bytes.record(length);
+                let (examined, read) = if REORDER {
+                    // Broken observer ordering with identical totals and output.
+                    let read = bytes.record(length);
+                    (meter.record_examination(1, copied), read)
+                } else {
+                    let examined = meter.record_examination(1, copied);
+                    (examined, bytes.record(length))
+                };
                 examined?;
                 read?;
                 Ok(Some((
@@ -123,15 +129,21 @@ async fn observe(
     from: u64,
     limit: u32,
     read_limit: u64,
-) -> (Trace, [u64; 8], u64) {
+    reorder: bool,
+) -> (Trace, [u64; 8], u64, Vec<meter_trace::Event>) {
     let path = StreamPath::new("native/differential").unwrap();
     let meter = Arc::new(Meter {
         read_limit,
         ..Meter::default()
     });
     let request = ReadRequest { path, from, limit };
+    meter_trace::begin();
     let result = if old {
-        baseline_native_read(provider, request, meter.original()).await
+        if reorder {
+            baseline_native_read::<true>(provider, request, meter.original()).await
+        } else {
+            baseline_native_read::<false>(provider, request, meter.original()).await
+        }
     } else {
         provider.native_read(request, meter.original()).await
     };
@@ -170,7 +182,7 @@ async fn observe(
         &meter.read_operations,
     ]
     .map(|counter| counter.load(Ordering::SeqCst));
-    (trace, work, opened_bytes)
+    (trace, work, opened_bytes, meter_trace::finish())
 }
 
 proptest! {
@@ -184,8 +196,8 @@ proptest! {
         let before_bytes = std::cell::Cell::new(0);
         let after_bytes = std::cell::Cell::new(0);
         let (_, [before, after]) = acyclic_test_support::differential(
-            || { let (trace, work, held) = futures::executor::block_on(observe(&baseline_provider, true, from, limit, read_limit)); before_bytes.set(held); (trace, work) },
-            || { let (trace, work, held) = futures::executor::block_on(observe(&candidate_provider, false, from, limit, read_limit)); after_bytes.set(held); (trace, work) },
+            || { let (trace, work, held, events) = futures::executor::block_on(observe(&baseline_provider, true, from, limit, read_limit, false)); before_bytes.set(held); (trace, work, normalize_baseline_events(events, held)) },
+            || { let (trace, work, held, events) = futures::executor::block_on(observe(&candidate_provider, false, from, limit, read_limit, false)); after_bytes.set(held); (trace, work, events) },
         );
         funding_bound(before_bytes.get(), after_bytes.get(), before, after)?;
     }
@@ -218,21 +230,28 @@ fn restoring_unused_native_cursor_fields_fails_the_same_funding_bound() {
         let after_held = std::cell::Cell::new(0);
         let (_, [before, after]) = acyclic_test_support::differential(
             || {
-                let (trace, work, held) =
-                    futures::executor::block_on(observe(&baseline_provider, true, 0, 1, 3));
+                let (trace, work, held, events) =
+                    futures::executor::block_on(observe(&baseline_provider, true, 0, 1, 3, false));
                 before_held.set(held);
-                (trace, work)
+                (trace, work, normalize_baseline_events(events, held))
             },
             || {
-                let (trace, work, held) = futures::executor::block_on(observe(
+                let (trace, work, held, events) = futures::executor::block_on(observe(
                     &candidate_provider,
                     old_candidate,
                     0,
                     1,
                     3,
+                    false,
                 ));
                 after_held.set(held);
-                (trace, work)
+                // This control changes only frame size, not the observer protocol.
+                let events = if old_candidate {
+                    normalize_baseline_events(events, held)
+                } else {
+                    events
+                };
+                (trace, work, events)
             },
         );
         assert_eq!(
@@ -240,4 +259,51 @@ fn restoring_unused_native_cursor_fields_fails_the_same_funding_bound() {
             !old_candidate
         );
     }
+}
+
+// The sole intentional observer difference is the smaller native cursor frame.
+// Retain every event and argument, adjusting exactly its allocation and the
+// final aggregate refund. The funding property independently checks this delta.
+fn normalize_baseline_events(
+    mut events: Vec<meter_trace::Event>,
+    held: u64,
+) -> Vec<meter_trace::Event> {
+    if held != 0 {
+        let saved = 2
+            * (std::mem::size_of::<BaselineCursor>()
+                - std::mem::size_of::<VecDeque<HistoryWindow>>()) as u64;
+        let allocation = events
+            .iter_mut()
+            .rfind(|event| event.0 == "allocate")
+            .unwrap();
+        allocation.1 = allocation.1.checked_sub(saved).unwrap();
+        let refund = events
+            .iter_mut()
+            .rfind(|event| event.0 == "release")
+            .unwrap();
+        assert_eq!(refund.1, held);
+        refund.1 -= saved;
+    }
+    events
+}
+
+#[test]
+fn reordered_recording_fails_observer_equality_with_unchanged_bytes_and_totals() {
+    let baseline = futures::executor::block_on(seed(2));
+    let broken = futures::executor::block_on(seed(2));
+    let before = futures::executor::block_on(observe(&baseline, true, 0, 2, 6, false));
+    let after = futures::executor::block_on(observe(&broken, true, 0, 2, 6, true));
+    assert_eq!(before.0, after.0);
+    assert_eq!(before.1, after.1);
+    assert_eq!(before.2, after.2);
+    assert_ne!(
+        before.3, after.3,
+        "reordering meter calls escaped the observer contract"
+    );
+    let expected = before
+        .3
+        .iter()
+        .position(|event| event.0 == "record_examination" && event.2 != 0)
+        .unwrap();
+    assert_eq!(after.3[expected].0, "record_reserved_bytes");
 }

@@ -15,6 +15,7 @@ mod path_work;
 
 mod read_hint;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod cursor_work;
 
 #[cfg(not(target_arch = "wasm32"))]
