@@ -28,6 +28,6 @@ proptest! {
         changed[0] ^= 1;
         prop_assert!(!view.matches_policy_revision(head, MetadataField::Value(ObjectId {
             kind: ObjectKind::Metadata, digest: Digest::from_bytes(changed),
-        })));
+        })), "a data pin must not replace the policy fence");
     }
 }
