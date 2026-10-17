@@ -5,6 +5,7 @@ mod native_actions;
 mod native_hooks;
 use acyclic_harness::{
     OperationId, TaskId,
+    external_executor::ExternalHost,
     filesystem::{MAIL_SEND_TASK_COMMAND_KIND, TASK_ADMIT_COMMAND_KIND},
 };
 use native_actions::Tools;
@@ -14,11 +15,24 @@ use serde_json::json;
 #[tokio::test]
 async fn registered_children_execute_and_reply_through_every_native_hook() -> Result {
     let fixture = Fixture::new()?;
+    let hosts = [
+        ExternalHost::Codex,
+        ExternalHost::ClaudeCode,
+        ExternalHost::Pi,
+    ];
+    let workspaces = hosts.map(|host| fixture.path().with_file_name(host.name()));
+    for workspace in &workspaces {
+        std::fs::create_dir(workspace)?;
+    }
     let owner = fixture.start_owner().await?;
     let result = async {
-        let [codex, claude, pi] = Tools::hosts(fixture.path()).await?;
-        let (codex, claude, pi) = tokio::try_join!(child(codex), child(claude), child(pi),)?;
-        let cases = [codex, claude, pi];
+        let cases =
+            futures::future::try_join_all(hosts.into_iter().zip(&workspaces).map(
+                |(host, workspace)| async move {
+                    child(Tools::open(workspace, host, None).await?).await
+                },
+            ))
+            .await?;
         let inspections = discover_children(&cases).await?;
         futures::future::try_join_all(
             cases
@@ -26,6 +40,17 @@ async fn registered_children_execute_and_reply_through_every_native_hook() -> Re
                 .map(|(parent, _, branch)| finish_child(parent, branch, &inspections)),
         )
         .await?;
+        for (host, workspace) in hosts.into_iter().zip(&workspaces) {
+            for source in hosts {
+                assert_eq!(
+                    workspace
+                        .join(format!("{}-payload.txt", source.name()))
+                        .exists(),
+                    source == host,
+                    "one owner's workspace binding must not share another checkout's writes"
+                );
+            }
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
@@ -167,56 +192,59 @@ async fn discover_children(
     cases: &[(Tools<'_>, TaskId, serde_json::Value)],
 ) -> Result<Vec<serde_json::Value>> {
     use acyclic_stream::StreamProvider as _;
-    let page = cases[0]
-        .0
-        .provider
-        .children_page(acyclic_stream::ChildrenPageRequest {
-            parent: Some(acyclic_stream::StreamPath::new("external/requests")?),
-            after: None,
-            hierarchy_version: None,
-            limit: 64,
-        })
+    let inspections =
+        futures::future::try_join_all(cases.iter().map(|(parent, child, branch)| async move {
+            let page = parent
+                .provider
+                .children_page(acyclic_stream::ChildrenPageRequest {
+                    parent: Some(acyclic_stream::StreamPath::new("external/requests")?),
+                    after: None,
+                    hierarchy_version: None,
+                    limit: 64,
+                })
+                .await?;
+            assert!(
+                page.next_after.is_none(),
+                "the fixture has at most twelve admitted tasks"
+            );
+            let known = [
+                parent.task,
+                *child,
+                TaskId::parse(branch.as_str().ok_or("missing branch task")?)?,
+            ];
+            let mut children = Vec::new();
+            for child in page.children {
+                let task = TaskId::parse(
+                    child
+                        .path
+                        .as_str()
+                        .rsplit('/')
+                        .next()
+                        .ok_or("missing discovered task")?,
+                )?;
+                if !known.contains(&task) {
+                    children.push(task);
+                }
+            }
+            assert_eq!(
+                children.len(),
+                1,
+                "the registered branch admitted exactly one grandchild"
+            );
+            let task = children[0];
+            parent
+                .call(
+                    &format!("discover-{task}"),
+                    "acyclic_inspect",
+                    json!({"task":task}),
+                )
+                .await
+        }))
         .await?;
-    assert!(
-        page.next_after.is_none(),
-        "the fixture has at most twelve admitted tasks"
-    );
-    let mut known = std::collections::BTreeSet::new();
-    for (parent, child, branch) in cases {
-        known.extend([
-            parent.task,
-            *child,
-            TaskId::parse(branch.as_str().ok_or("missing branch task")?)?,
-        ]);
-    }
-    let mut children = Vec::new();
-    for child in page.children {
-        let task = TaskId::parse(
-            child
-                .path
-                .as_str()
-                .rsplit('/')
-                .next()
-                .ok_or("missing discovered task")?,
-        )?;
-        if !known.contains(&task) {
-            children.push(task);
-        }
-    }
     assert_eq!(
-        children.len(),
+        inspections.len(),
         3,
         "each host's branch admitted one grandchild"
     );
-    let parent = &cases[0].0;
-    futures::future::try_join_all(children.into_iter().map(|task| async move {
-        parent
-            .call(
-                &format!("discover-{task}"),
-                "acyclic_inspect",
-                json!({"task":task}),
-            )
-            .await
-    }))
-    .await
+    Ok(inspections)
 }

@@ -35,7 +35,7 @@ impl<'a> Tools<'a> {
         Ok([codex, claude, pi])
     }
 
-    async fn open(
+    pub async fn open(
         cwd: &'a Path,
         host: ExternalHost,
         provider: Option<Arc<Client>>,
