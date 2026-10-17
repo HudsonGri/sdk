@@ -16,9 +16,8 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
                 acyclic_fs::EmbeddedCapabilities::MEMORY,
             );
             let fixture = Fixture::with_filesystem(filesystem, objects.reads.clone()).await?;
-            fixture
-                .write(&[("plans/a.md", Some("- [ ] private"))])
-                .await?;
+            let content = objects::blob_text(false);
+            fixture.write(&[("plans/a.md", Some(&content))]).await?;
             let scope = fixture.issuer.issue(
                 "read-race",
                 &Capabilities::new([fixture
@@ -53,7 +52,7 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
                 fixture.volume.clone(),
                 "plans/a.md".into(),
                 version,
-                FileDescriptor::from_bytes(b"- [ ] private", "text/plain", &mut None)?,
+                FileDescriptor::from_bytes(content.as_bytes(), "text/plain", &mut None)?,
                 "a.md".into(),
                 &mut None,
             )?;

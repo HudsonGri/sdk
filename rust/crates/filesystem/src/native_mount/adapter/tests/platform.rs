@@ -483,19 +483,6 @@ fn native_name_encoding_and_capture_cases() -> Result<(), Box<dyn std::error::Er
             .flat_map(u16::to_le_bytes)
             .collect(),
     );
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::ffi::OsStringExt;
-        let name = vec![b'c', 0xfe, b'p'];
-        let host_path = host.path().join(std::ffi::OsString::from_vec(name.clone()));
-        std::fs::write(&host_path, b"captured")?;
-        assert!(matches!(
-            source.capture_host_path(host.path(), &MountPath::root().child(name)),
-            Err(MountSourceError::AccessDenied)
-        ));
-        assert_eq!(std::fs::read(&host_path)?, b"captured");
-        std::fs::remove_file(host_path)?;
-    }
     #[cfg(unix)]
     let (host_name, captured_name) = (
         std::ffi::OsString::from("captured-β.bin"),

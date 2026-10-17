@@ -13,6 +13,17 @@ type ReadPause = (
     futures::channel::oneshot::Receiver<()>,
 );
 
+// Inline files do not await the blob backend. Use the smallest actual chunk
+// when a test must stop a content read after authorization.
+pub(super) fn blob_text(complete: bool) -> String {
+    let mut text = if complete { "- [x] " } else { "- [ ] " }.to_owned();
+    text.extend(std::iter::repeat_n(
+        'x',
+        acyclic_fs::kernel::MAXIMUM_INLINE_FILE_BYTES + 1 - text.len(),
+    ));
+    text
+}
+
 #[derive(Clone)]
 pub(super) struct CountingObjects {
     inner: Arc<MemoryObjectBackend>,

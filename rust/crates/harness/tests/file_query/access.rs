@@ -46,16 +46,15 @@ async fn pending_query_snapshots_and_follow_recheck_policy_before_disclosure()
                 acyclic_fs::EmbeddedCapabilities::MEMORY,
             );
             let fixture = Fixture::with_filesystem(filesystem, objects.reads.clone()).await?;
-            fixture
-                .write(&[("plans/a.md", Some("- [ ] private"))])
-                .await?;
+            let content = objects::blob_text(false);
+            fixture.write(&[("plans/a.md", Some(&content))]).await?;
             let mut observation = fixture
                 .source
-                .observe_files(Query::Plans, None, 2, 64)
+                .observe_files(Query::Plans, None, 2, content.len())
                 .await?;
             if follow {
                 fixture
-                    .write(&[("plans/a.md", Some("- [x] private"))])
+                    .write(&[("plans/a.md", Some(&objects::blob_text(true)))])
                     .await?;
             }
             let (entered, release) = objects.pause(acyclic_fs::ObjectKind::BlobChunk);
@@ -70,7 +69,7 @@ async fn pending_query_snapshots_and_follow_recheck_policy_before_disclosure()
                 } else {
                     fixture
                         .source
-                        .observe_files(Query::Plans, None, 2, 64)
+                        .observe_files(Query::Plans, None, 2, content.len())
                         .await
                         .map(|_| ())
                 }

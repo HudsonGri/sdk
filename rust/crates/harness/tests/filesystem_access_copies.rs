@@ -4,6 +4,28 @@ fn agrees(allowed: bool, succeeded: bool, contents: Option<&[u8]>) -> bool {
     succeeded == allowed && contents == allowed.then_some(b"private".as_slice())
 }
 
+fn legacy(
+    fixture: &Fixture,
+    volume: &VolumeRef,
+    operation: VolumeOperation,
+) -> Result<ContentGrant, Box<dyn Error>> {
+    let scope = fixture.issuer.issue(
+        "whole-volume",
+        &Capabilities::new([volume.capability(operation, &mut None)?]),
+        fixture.scope.agent(),
+        None,
+        &mut None,
+    )?;
+    Ok(ContentGrant::verify(
+        &fixture.issuer.verifier(&mut None)?,
+        &scope,
+        volume,
+        operation,
+        65536,
+        &mut None,
+    )?)
+}
+
 fn signed(
     fixture: &Fixture,
     volume: &VolumeRef,
@@ -50,21 +72,7 @@ async fn copies(action: bool, volume: bool, path: bool) -> Result<(), Box<dyn Er
         VolumeOwner::Project("owner".into()),
         &mut None,
     )?;
-    let destination_scope = fixture.issuer.issue(
-        "destination",
-        &Capabilities::new([destination.capability(VolumeOperation::Write, &mut None)?]),
-        fixture.scope.agent(),
-        None,
-        &mut None,
-    )?;
-    let destination_grant = ContentGrant::verify(
-        &fixture.issuer.verifier(&mut None)?,
-        &destination_scope,
-        &destination,
-        VolumeOperation::Write,
-        65536,
-        &mut None,
-    )?;
+    let destination_grant = legacy(&fixture, &destination, VolumeOperation::Write)?;
     let source = signed(
         &fixture,
         &fixture.volume,
@@ -203,7 +211,20 @@ async fn imports_check_both_signed_grants_through_the_policy_compiler() -> Resul
             VolumeOwner::Project("owner".into()),
             &mut None,
         )?;
-        fixture.host.create_volume(&destination).await?;
+        // A merge target must share lineage with its source. This setup uses
+        // the public, already-authorized fork before testing narrowed imports.
+        fixture
+            .host
+            .fork_volume(
+                &fixture.volume,
+                &legacy(&fixture, &fixture.volume, VolumeOperation::Read)?,
+                &fixture.generation()?,
+                &destination,
+                &legacy(&fixture, &destination, VolumeOperation::Write)?,
+                None,
+                &IdempotencyKey::new("import-base")?,
+            )
+            .await?;
         let source = signed(
             &fixture,
             &fixture.volume,
