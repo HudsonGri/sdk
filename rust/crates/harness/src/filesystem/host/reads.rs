@@ -1,4 +1,5 @@
 use super::*;
+mod media_type;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -177,7 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     volume.copy(work)?,
                     stock_string_copy(path, Some(io))?,
                     version,
-                    FileDescriptor::from_bytes(&bytes.0, "application/octet-stream", work)?,
+                    FileDescriptor::from_bytes(&bytes.0, media_type::classify(&bytes.0), work)?,
                     stock_string_copy(name, Some(io))?,
                     work,
                 )
