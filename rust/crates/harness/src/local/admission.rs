@@ -21,11 +21,16 @@ const HEAD: &str = "inputs/current.json";
 
 // Every admission entry point holds this gate across its head read, request
 // publication and admission. The admission race tests drive the real entry
-// points against a holder parked at each cut, with a separate-gate mutant.
+// points against a holder parked at each cut, observe the competitor park on
+// this gate before any head read, and run separate-gate and ungated mutants.
 pub(super) async fn serialized<T>(
     gate: &StateArc<Mutex<()>>,
     action: impl AsyncFnOnce() -> T,
 ) -> T {
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    if tests::probe::arrive(gate.try_lock().is_err()) {
+        return action().await;
+    }
     let _guard = lock_owned(StateArc::clone(gate)).await;
     action().await
 }
@@ -50,6 +55,8 @@ impl LocalHarness {
     }
 
     async fn current_turn(&self) -> Result<(Option<Turn>, GenerationRef)> {
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        tests::probe::note("head read");
         let generation = self
             .files
             .resolve(

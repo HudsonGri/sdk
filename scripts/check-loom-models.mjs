@@ -83,7 +83,7 @@ export const models = {
   "rust/crates/stream/src/local/compaction_model.rs": { grade: "real" },
   "rust/crates/stream/src/local/discovery_model.rs": { grade: "real" },
   "rust/crates/stream/src/local/follow_model.rs": { grade: "real" },
-  "rust/crates/stream/src/local/query_model.rs": { grade: "real", constructs: "assembles the production LocalStream/LocalInner fields, including their locks, over an in-memory journal" },
+  "rust/crates/stream/src/local/query_model.rs": { grade: "real", constructs: "assembles the production LocalStream/LocalInner fields, including their locks, over an in-memory journal", bound: "the accepted-query scenario takes its preemption cap from its caller; memory/recovery_model.rs runs it at four with a minimal-bound control" },
   "rust/crates/stream/src/memory/browser_follow_model.rs": { grade: "real" },
   "rust/crates/stream/src/memory/discovery_model.rs": { grade: "real" },
   "rust/crates/stream/src/memory/recovery_model.rs": { grade: "real", bound: "only the local accepted-query family is capped (four preemptions, minimal-bound control); the other families run without a preemption cap" },
@@ -103,9 +103,11 @@ export const models = {
 };
 
 const entry = /\bloom::model\b|\bcheck_with_bound\(|preemption_bound/;
-const construction = /\b(?:Mutex|RwLock|Condvar|SyncMutex)(?:::<[^>]*>)?::(?:new|default)\s*\(/;
+const lockNames = ['Mutex', 'RwLock', 'Condvar', 'SyncMutex', 'AsyncMutex'];
 const loomLock = /loom::sync::(?:Mutex|RwLock|Condvar)\b|loom::sync::\{[^}]*\b(?:Mutex|RwLock|Condvar)\b|loom::\{[^}]*\bsync::(?:\{[^}]*)?\b(?:Mutex|RwLock|Condvar)\b/;
-const numericBound = /preemption_bound\s*=\s*Some\(\s*\d|check_with_bound\(\s*Some\(\s*\d|assert_negative_control\(\s*\d+\s*,\s*\d/;
+// Any bound other than a literal `None` counts, whether a number, a constant
+// or a forwarded parameter: a named bound is still a bound.
+const numericBound = /preemption_bound\s*=\s*(?!None\b)\S|(?<!fn\s+)\bcheck_with_bound\(\s*(?!None\b)[^\s)]|assert_negative_control\(\s*\d+\s*,\s*\d/;
 const exhaustive = /exhaust|every (?:interleaving|schedule)|all (?:interleavings|schedules)/i;
 const grades = new Set(['real', 'abstract', 'external', 'runner']);
 
@@ -116,6 +118,28 @@ const code = source => source
   .filter(line => !/^\s*(?:\/\/|const _: fn\()/.test(line))
   .join('\n');
 
+// Lock type names visible in `source`: the known names plus every alias that
+// resolves to one (`use ...::SyncMutex as DataMutex`, `type Lock<T> = Mutex<T>`).
+export function lockAliases(source) {
+  const names = new Set(lockNames);
+  for (let grown = true; grown;) {
+    grown = false;
+    const known = [...names].join('|');
+    const alias = new RegExp(`\\b(?:${known})\\s+as\\s+(\\w+)|\\btype\\s+(\\w+)\\b[^=;]*=\\s*(?:[\\w:]*::)?(?:${known})\\s*<`, 'g');
+    for (const match of source.matchAll(alias)) {
+      const name = match[1] ?? match[2];
+      if (!names.has(name)) {
+        names.add(name);
+        grown = true;
+      }
+    }
+  }
+  return names;
+}
+
+const constructsLock = source =>
+  new RegExp(`\\b(?:${[...lockAliases(source)].join('|')})(?:::<[^>]*>)?::(?:new|default)\\s*\\(`).test(source);
+
 export const rules = {
   unregistered: (path, source, model) => model ? [] : [`${path}: Loom model is not classified in scripts/check-loom-models.mjs`],
   grade: (path, source, model) => !model || grades.has(model.grade) ? [] : [`${path}: grade ${model.grade} is not real, abstract, external or runner`],
@@ -123,21 +147,22 @@ export const rules = {
     ? [`${path}: ${model.grade} model does not state the boundary it substitutes`] : [],
   locks: (path, source, model) => {
     if (model?.grade !== 'real') return [];
-    const owned = construction.test(code(source)) || loomLock.test(code(source));
+    const owned = constructsLock(code(source)) || loomLock.test(code(source));
     if (owned && !model.constructs) return [`${path}: real model defines its own lock without naming the production lock it is`];
     if (!owned && model.constructs) return [`${path}: stale lock reason; the model constructs no lock`];
     return [];
   },
   bound: (path, source, model) => {
     const bounded = numericBound.test(code(source));
-    if (bounded && !model?.bound) return [`${path}: numeric preemption bound without a stated bounded claim`];
-    if (!bounded && model?.bound) return [`${path}: stale bound statement; the model has no numeric bound`];
+    if (bounded && !model?.bound) return [`${path}: preemption bound without a stated bounded claim`];
+    if (!bounded && model?.bound) return [`${path}: stale bound statement; the model has no preemption bound`];
     return [];
   },
   exhaustive: (path, source) => numericBound.test(code(source))
     ? source.split('\n').filter(line => exhaustive.test(line) && !/bound/i.test(line))
       .map(line => `${path}: unconditional exhaustive claim in a bounded model: ${line.trim()}`)
-    : [],  missing: path => [`${path}: classified Loom model is missing or no longer has a model entry`],
+    : [],
+  missing: path => [`${path}: classified Loom model is missing or no longer has a model entry`],
 };
 
 // `sources` maps each repository .rs path to its contents.
