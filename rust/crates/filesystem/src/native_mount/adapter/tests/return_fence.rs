@@ -33,12 +33,22 @@ struct Pause {
     release: tokio::sync::oneshot::Receiver<()>,
 }
 
-#[derive(Default)]
 struct Objects {
-    inner: crate::memory::MemoryObjectStore,
+    inner: crate::MemoryObjectBackend,
     reads: AtomicUsize,
     // Terminal fixture lock: release before either channel operation or await.
     pause: crate::sync::Mutex<Option<Pause>>,
+}
+
+impl Default for Objects {
+    fn default() -> Self {
+        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+        Self {
+            inner: crate::MemoryObjectBackend::new(Arc::new(objects), bucket),
+            reads: AtomicUsize::new(0),
+            pause: crate::sync::Mutex::new(None),
+        }
+    }
 }
 
 impl Objects {
@@ -65,6 +75,9 @@ impl Objects {
 }
 
 impl AsyncObjectStore for Objects {
+    fn supports_decoded_cache(&self) -> bool {
+        self.inner.supports_decoded_cache()
+    }
     async fn put_hashed(
         &self,
         object: crate::storage::HashedObject,
@@ -86,6 +99,20 @@ impl AsyncObjectStore for Objects {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
         self.inner.put_many(writes, work).await
+    }
+    async fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner.put_many_hashed(objects, work).await
+    }
+    async fn flush_before_publish(
+        &self,
+        scope: crate::PublicationScope<'_>,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
+        self.inner.flush_before_publish(scope, work).await
     }
     async fn read(
         &self,
@@ -115,12 +142,12 @@ impl AsyncObjectStore for Objects {
     }
 }
 
-type Source = CheckoutMountSource<crate::MemoryAuthorityStore, Arc<Objects>>;
+type Source = CheckoutMountSource<crate::MemoryAuthorityBackend, Arc<Objects>>;
 
 fn fixture() -> Result<(Arc<Source>, Arc<Objects>), Box<dyn std::error::Error>> {
     let objects = Arc::new(Objects::default());
     let fs = Fs::new(
-        crate::MemoryAuthorityStore::default(),
+        crate::StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
         objects.clone(),
         crate::EmbeddedCapabilities::MEMORY,
     );
