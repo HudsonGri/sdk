@@ -1,12 +1,9 @@
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(super) enum ObservedGeneration {
-    Unknown,
-    Head {
-        generation: GenerationId,
-        position: Sequence,
-    },
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum GenerationOrigin {
+    Exact,
+    Head,
 }
 
 /// Immutable generation-fenced checkout admitted by the embedded facade.
@@ -17,7 +14,7 @@ pub struct Checkout<A, O> {
     /// The base generation and the working tree, which a running collection
     pub(super) root: crate::collection::CheckoutRoots,
     pub(super) authority_head: Option<Head>,
-    pub(super) observed_generation: ObservedGeneration,
+    pub(super) generation_origin: GenerationOrigin,
     pub(super) authored_operation_id: Option<OperationId>,
     pub(super) live_operation_id: Option<OperationId>,
     pub(super) last_commit: Option<LastCommit>,
@@ -169,12 +166,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 base_root,
                 root,
                 authority_head,
-                observed_generation: match (selector, authority_head) {
-                    (GenerationSelector::Head, Some(head)) => ObservedGeneration::Head {
-                        generation: GenerationId::new(generation_root.digest),
-                        position: head.sequence,
-                    },
-                    _ => ObservedGeneration::Unknown,
+                generation_origin: if selector == GenerationSelector::Head {
+                    GenerationOrigin::Head
+                } else {
+                    GenerationOrigin::Exact
                 },
                 authored_operation_id: None,
                 live_operation_id: None,
@@ -286,10 +281,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.reset_root(root, &mut accounting, cancellation).await?;
             }
             self.authority_head = Some(head);
-            self.observed_generation = ObservedGeneration::Head {
-                generation: self.generation_id(),
-                position: head.sequence,
-            };
+            self.generation_origin = super::checkout::GenerationOrigin::Head;
             Ok(self.generation_id())
         }
         .await;

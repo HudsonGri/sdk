@@ -17,13 +17,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .authority_head
                 .ok_or(FsError::InvalidAuthorityHistory)?
                 .sequence;
-            if let super::checkout::ObservedGeneration::Head {
-                generation: observed,
-                position,
-            } = self.observed_generation
-                && generation == observed
+            if self.generation_origin == super::checkout::GenerationOrigin::Head
+                && generation == self.generation_id()
             {
-                return Ok((position, head));
+                return Ok((head, head));
             }
             let positions = &self.volume.fs.inner.generation_positions;
             let key = (self.volume.id, generation);
