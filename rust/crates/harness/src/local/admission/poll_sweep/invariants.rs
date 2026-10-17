@@ -56,6 +56,39 @@ pub(super) async fn observe(
 }
 
 impl Observations {
+    // Fresh roots choose different operation nonces. Compare their complete
+    // admission/effect ordering modulo a bijective renaming of those nonces.
+    // Each case separately audits the exact retained request bytes/digest.
+    pub(super) fn semantic_trace(&self) -> Vec<String> {
+        let mut ids = vec![self.root];
+        let mut identity = |id| {
+            if let Some(index) = ids.iter().position(|known| *known == id) {
+                index
+            } else {
+                ids.push(id);
+                ids.len() - 1
+            }
+        };
+        let mut trace = Vec::new();
+        for id in &self.admissions {
+            trace.push(format!("admit:{}", identity(*id)));
+        }
+        for id in &self.completions {
+            trace.push(format!("complete:{}", identity(*id)));
+        }
+        for model in &self.models {
+            trace.push(format!(
+                "model:{}:{}",
+                identity(model.operation_id),
+                model.step
+            ));
+        }
+        for (id, call) in &self.tools {
+            trace.push(format!("tool:{}:{call}", identity(*id)));
+        }
+        trace
+    }
+
     pub(super) fn check(&self, scenario: Scenario) -> std::result::Result<(), &'static str> {
         let (tasks, models, tools) = match scenario {
             Scenario::Text => (1, 1, 0),

@@ -17,6 +17,7 @@ use model::{Effect, ModelEffects};
 use schedule::{Exit, Schedule, check_cut, drive};
 mod coverage;
 mod invariants;
+mod isolation;
 mod read_contention;
 mod read_profile;
 mod requests;
@@ -602,7 +603,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
-                    let local = tokio::task::LocalSet::new();
+                    let mut local = tokio::task::LocalSet::new();
                     loop {
                         if failed.load(Ordering::Relaxed) {
                             return Ok(());
@@ -628,6 +629,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                             failed.store(true, Ordering::Relaxed);
                             error
                         })?;
+                        isolation::idle(&runtime, &mut local);
                         unadmitted.fetch_add(usize::from(coverage.unadmitted), Ordering::Relaxed);
                         completed.fetch_add(1, Ordering::Relaxed);
                     }
