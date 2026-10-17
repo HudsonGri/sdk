@@ -81,3 +81,68 @@ fn async_pool_matches_the_bounded_workload_and_detects_one_extra_worker() -> Tes
     }
     Ok(())
 }
+
+std::thread_local! {
+    static ADMISSION_CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn admission_capacity(count: usize) -> usize {
+    ADMISSION_CAP.get().unwrap_or(count)
+}
+
+fn probe_admission(count: usize, broken: bool) -> (usize, Vec<usize>) {
+    use futures::{FutureExt as _, Stream as _, StreamExt as _, channel::oneshot};
+    use std::{cell::Cell, pin::pin, rc::Rc, task::Context};
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ADMISSION_CAP.set(self.0);
+        }
+    }
+    // The fault restores the actual former buffer_unordered(8) capacity at the
+    // production choke point. No case is released until admission is observed.
+    let _restore = Restore(ADMISSION_CAP.replace(broken.then_some(8)));
+    let entered = Rc::new(Cell::new(0));
+    let mut releases = Vec::new();
+    let cases = (0..count)
+        .map(|index| {
+            let (release, gate) = oneshot::channel();
+            releases.push(release);
+            let entered = Rc::clone(&entered);
+            async move {
+                entered.set(entered.get() + 1);
+                gate.await.expect("admission gate was discarded");
+                index
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut admitted = pin!(super::scenario_admission(cases.into_iter()));
+    let mut context = Context::from_waker(futures::task::noop_waker_ref());
+    assert!(admitted.as_mut().poll_next(&mut context).is_pending());
+    let started = entered.get();
+    for release in releases {
+        release.send(()).expect("case was discarded");
+    }
+    let mut results = admitted
+        .collect::<Vec<_>>()
+        .now_or_never()
+        .expect("all case gates were already released");
+    results.sort_unstable();
+    (started, results)
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn all_blocked_cases_are_admitted_before_any_finishes(count in 9usize..32) {
+        for broken in [false, true] {
+            let (started, results) = probe_admission(count, broken);
+            proptest::prop_assert_eq!(results, (0..count).collect::<Vec<_>>());
+            proptest::prop_assert_eq!(started, if broken { 8 } else { count });
+            // Both paths finish every case; only the admission assertion rejects
+            // the old cap, independently of worker creation and elapsed time.
+            let accepted = std::panic::catch_unwind(|| assert_eq!(started, count)).is_ok();
+            proptest::prop_assert_eq!(accepted, !broken);
+        }
+    }
+}

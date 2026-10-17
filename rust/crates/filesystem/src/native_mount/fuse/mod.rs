@@ -116,6 +116,7 @@ mod lookup;
 use lookup::*;
 mod session;
 pub(super) use session::FuseSession;
+mod mount;
 mod lifecycle;
 pub(super) use lifecycle::FuseRecoveryControl;
 use lifecycle::*;
