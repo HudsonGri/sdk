@@ -180,7 +180,8 @@ proptest! {
                 let turn=if crossed_turns && ordinal==0 {5} else {0};
                 for (part,text) in pieces.iter().enumerate() {
                     let text=format!("{ordinal}:{text}");
-                    let prepared=volume.prepare_next_chunk(task.clone(),execution,turn,Channel::Text,text.as_bytes(),None).await.unwrap().unwrap();
+                    let key=volume.next_chunk_key(task.clone(),execution,turn,None).await.unwrap();
+                    let prepared=volume.prepare_named_chunk(key,Channel::Text,text.as_bytes(),None).await.unwrap().unwrap();
                     let request=CommitRequest { conditions:vec![prepared.condition],mutations:vec![CommitMutation::Append {path:prepared.path,records:vec![prepared.record]}],idempotency_key:IdempotencyKey::new(format!("{ordinal}:{part}").into_bytes()).unwrap() };
                     assert!(matches!(provider.commit(request).await.unwrap(),CommitOutcome::Committed(_)));
                     let files=volume.snapshot(&Query::Root,32).await.unwrap().files;

@@ -168,6 +168,7 @@ pub(crate) fn with_chunk_copy<R>(enabled: bool, run: impl FnOnce() -> R) -> R {
 thread_local! {
     static APPEND_METER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static APPEND_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DELTA_REWRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 pub(crate) fn append_scan_enabled() -> bool {
     APPEND_SCAN.get()
@@ -239,4 +240,18 @@ pub(crate) async fn observe_append<F: std::future::Future>(
         after.items_examined - before.items_examined,
     );
     output
+}
+/// Negative control: every delta also rewrites its whole growing transcript.
+pub(crate) fn delta_rewrite_enabled() -> bool {
+    DELTA_REWRITE.get()
+}
+pub(crate) fn with_delta_rewrite<R>(enabled: bool, run: impl FnOnce() -> R) -> R {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DELTA_REWRITE.set(self.0);
+        }
+    }
+    let _reset = Reset(DELTA_REWRITE.replace(enabled));
+    run()
 }

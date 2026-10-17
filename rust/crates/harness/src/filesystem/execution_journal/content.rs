@@ -158,6 +158,9 @@ where
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        if let Some(json) = self.load_chunk(reference, io).await? {
+            return Ok(json);
+        }
         if reference.volume() != &self.volume {
             return Err(canonical_boundary(
                 io,
@@ -195,6 +198,7 @@ where
     pub(super) async fn verify_event_refs_with_io(
         &self,
         event: &ExecutionEvent,
+        pending: Option<&acyclic_stream::OwnedBytes>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ModelEvent>> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -234,7 +238,12 @@ where
             for reference in refs.into_iter().flatten() {
                 let _bytes_hold;
                 crate::model::charge_items(io, 1)?;
-                let owned_bytes = self.load_content(reference, io).await?;
+                // A delta's chunk commits with this observation, so its JSON view
+                // is the one just encoded from the observed event.
+                let owned_bytes = match pending {
+                    Some(json) => json.clone(),
+                    None => self.load_content(reference, io).await?,
+                };
                 _bytes_hold = io
                     .map(|io| io.guard_bytes(&owned_bytes))
                     .transpose()?

@@ -75,6 +75,21 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>;
 
+    /// Records one observed model event whose payload is stored by its own live
+    /// file, returning `None` when the caller must stage the event privately.
+    /// A task-owned journal commits a response text or reasoning delta once, as
+    /// the chunk record in its observation's transaction.
+    fn record_model<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _idempotency_key: &'a str,
+        _turn: (u32, ModelPurpose),
+        _event: &'a ModelEvent,
+        _io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        Ok(None)
+    }
+
     /// Observes an already staged immutable payload by its original operation and retry key.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn staged_ref_with_native_work<'a>(

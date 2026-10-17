@@ -218,7 +218,8 @@ where
                         io: None,
                     },
                 )?
-                .with_turn(operation, turn);
+                .with_turn(operation, turn)
+                .with_task_files(self.task_files.clone());
                 (Arc::new(journal), operation)
             }
         };

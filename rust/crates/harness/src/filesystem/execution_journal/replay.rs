@@ -238,7 +238,7 @@ where
                 let before_model = io.map(PreparationIo::owned_bytes).transpose()?;
                 let (_model_hold, model) = {
                     let model = self
-                        .verify_event_refs_with_io(&observation.event, io)
+                        .verify_event_refs_with_io(&observation.event, None, io)
                         .await?;
                     let _model_hold = if retain_models {
                         None

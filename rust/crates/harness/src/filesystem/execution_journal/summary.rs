@@ -177,7 +177,7 @@ impl ExecutionSummary {
         #[cfg(target_arch = "wasm32")]
         let digest_io = io;
         let digest = crate::executor::with_history_io(digest_io, |work| {
-            crate::executor::json::canonical_json_digest(&record.event, limits.file_bytes, work)
+            super::chunks::identity_digest(&record.event, limits.file_bytes, work)
         })?;
         reserve_map_entry::<[u8; 32], (u64, [u8; 32])>(self.retries.len(), io)?;
         match &record.event {

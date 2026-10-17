@@ -342,6 +342,12 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
+                if let Some(recorded) =
+                    journal.record_model(operation_id, &key, (step, purpose), event, io)?
+                {
+                    recorded.await?;
+                    continue;
+                }
                 let reference = stage_json(journal, operation_id, &key, event, io).await?;
                 journal
                     .append(

@@ -15,42 +15,65 @@ impl<P: StreamProvider> TaskVolume<P> {
         payload: &[u8],
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> crate::Result<Option<JournalFile>> {
-        self.prepare_chunk_file(key, channel, payload, false, io)
+        self.prepare_chunk_file(key, channel, payload, Sequence::Given, io)
             .await
     }
 
-    pub(crate) async fn prepare_next_chunk(
+    /// Names the chunk `task`'s next publication would take; a commit that
+    /// prepares it with [`Self::prepare_named_chunk`] must still be next.
+    pub(crate) async fn next_chunk_key(
         &self,
         task: Component,
         execution: crate::OperationId,
         turn: u64,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> crate::Result<FileKey> {
+        self.refresh_journal(io).await?;
+        // Lock order: index only; released before returning.
+        let index = self.index.lock().await;
+        let sequence = next_sequence(&index, &task)?;
+        Ok(FileKey::Task {
+            task,
+            file: TaskFile::Chunk {
+                sequence,
+                turn,
+                execution,
+            },
+        })
+    }
+
+    /// Prepares a chunk already named by its observation. A peer publication
+    /// since [`Self::next_chunk_key`] is a sequence conflict, so task-wide
+    /// publication order never repeats or reorders.
+    pub(crate) async fn prepare_named_chunk(
+        &self,
+        key: FileKey,
         channel: Channel,
         payload: &[u8],
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> crate::Result<Option<JournalFile>> {
-        self.prepare_chunk_file(
-            FileKey::Task {
-                task,
-                file: TaskFile::Chunk {
-                    execution,
-                    turn,
-                    sequence: 0,
-                },
-            },
-            channel,
-            payload,
-            true,
-            io,
-        )
-        .await
+        self.prepare_chunk_file(key, channel, payload, Sequence::Expected, io)
+            .await
+    }
+
+    /// Reads one committed journal file at the provider's current tail.
+    pub(crate) async fn journal_file(
+        &self,
+        key: &FileKey,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> crate::Result<Option<FileValue>> {
+        self.refresh_journal(io).await?;
+        // Lock order: index only; released before returning.
+        let index = self.index.lock().await;
+        Ok(index.files.get(key).map(|stored| stored.file.clone()))
     }
 
     async fn prepare_chunk_file(
         &self,
-        mut key: FileKey,
+        key: FileKey,
         channel: Channel,
         payload: &[u8],
-        fresh: bool,
+        mode: Sequence,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> crate::Result<Option<JournalFile>> {
         if !matches!(
@@ -70,40 +93,17 @@ impl<P: StreamProvider> TaskVolume<P> {
         // Lock order: index only across validation/encoding; no provider I/O.
         // The captured head fences the sequence choice against every peer write.
         let index = self.index.lock().await;
-        if fresh
-            && let FileKey::Task {
+        if let (
+            Sequence::Expected,
+            FileKey::Task {
                 task,
                 file: TaskFile::Chunk { sequence, .. },
-            } = &mut key
+            },
+        ) = (mode, &key)
         {
-            let first = FileKey::Task {
-                task: task.clone(),
-                file: TaskFile::Chunk {
-                    sequence: 0,
-                    turn: 0,
-                    execution: crate::OperationId::from_bytes([0; 16]),
-                },
-            };
-            let last = FileKey::Task {
-                task: task.clone(),
-                file: TaskFile::Chunk {
-                    sequence: u64::MAX,
-                    turn: u64::MAX,
-                    execution: crate::OperationId::from_bytes([255; 16]),
-                },
-            };
-            *sequence = match index
-                .files
-                .range(first..=last)
-                .next_back()
-                .map(|(key, _)| key)
-            {
-                Some(FileKey::Task {
-                    file: TaskFile::Chunk { sequence, .. },
-                    ..
-                }) => sequence.checked_add(1).ok_or(Error::LimitExceeded)?,
-                _ => 0,
-            };
+            if *sequence != next_sequence(&index, task)? {
+                return Err(Error::SequenceConflict(key).into());
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
         let original = io.and_then(crate::filesystem::PreparationIo::original_native_work);
@@ -117,6 +117,10 @@ impl<P: StreamProvider> TaskVolume<P> {
             publication: None,
             bytes: record.slice(offset..),
         };
+        // A chunk is committed exactly once, with the observation that names it.
+        if index.files.contains_key(&file.key) {
+            return Err(Error::ImmutableConflict(file.key).into());
+        }
         validate_file(&index, &file)?;
         Ok(Some(JournalFile {
             condition: CommitCondition::Head {
@@ -208,3 +212,36 @@ fn journal_error(error: Error) -> crate::Error {
 #[cfg(all(test, not(acyclic_harness_loom)))]
 #[path = "journal_tests.rs"]
 mod tests;
+
+/// How a prepared chunk's task-wide publication sequence is chosen.
+#[derive(Clone, Copy)]
+enum Sequence {
+    /// The caller's key, validated only per stream.
+    Given,
+    /// The caller's key, which must still be the task's next sequence.
+    Expected,
+}
+
+/// The sequence after `task`'s last published chunk, in any execution.
+fn next_sequence(index: &Index, task: &Component) -> Result<u64> {
+    let bound = |sequence, turn, execution| FileKey::Task {
+        task: task.clone(),
+        file: TaskFile::Chunk {
+            sequence,
+            turn,
+            execution: crate::OperationId::from_bytes(execution),
+        },
+    };
+    match index
+        .files
+        .range(bound(0, 0, [0; 16])..=bound(u64::MAX, u64::MAX, [255; 16]))
+        .next_back()
+        .map(|(key, _)| key)
+    {
+        Some(FileKey::Task {
+            file: TaskFile::Chunk { sequence, .. },
+            ..
+        }) => sequence.checked_add(1).ok_or(Error::LimitExceeded),
+        _ => Ok(0),
+    }
+}

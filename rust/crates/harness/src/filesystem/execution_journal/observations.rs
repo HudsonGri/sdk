@@ -255,6 +255,7 @@ where
         expected_tail: Option<u64>,
         claim_id: &str,
         event: &ExecutionEvent,
+        pending: Option<&acyclic_stream::OwnedBytes>,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
         self.require_operation(operation_id, io)?;
@@ -266,7 +267,7 @@ where
             ));
         }
         let owner = self.owner.as_ref().map(|(owner, _)| owner);
-        let model = self.verify_event_refs_with_io(event, io).await?;
+        let model = self.verify_event_refs_with_io(event, pending, io).await?;
         let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)
             .await?;
@@ -337,7 +338,7 @@ where
         }
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
         let event_digest = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
+            super::chunks::identity_digest(
                 event,
                 if io.is_some() {
                     acyclic_stream::MAX_RECORD_BYTES as u64

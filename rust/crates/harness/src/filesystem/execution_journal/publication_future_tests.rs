@@ -105,6 +105,13 @@ macro_rules! factories {
                 if self.1 { legacy::append_if_tail(self.0, operation, tail, key, event, io) }
                 else { self.0.append_if_tail(operation, tail, key, event, io) }
             }
+            fn record_model<'a>(&'a self, operation: OperationId, key: &'a str,
+                turn: (u32, crate::executor::ModelPurpose), event: &'a ModelEvent,
+                io: Option<&'a PreparationIo>)
+                -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+                // Both factories share the one live-chunk delta path.
+                self.0.record_model(operation, key, turn, event, io)
+            }
             fn open_interaction<'a>(&'a self, id: InteractionId, interaction: &'a Interaction,
                 io: Option<&'a PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
                 self.0.open_interaction(id, interaction, io)
@@ -516,18 +523,21 @@ proptest! {
             })
         });
         prop_assert_eq!(initializations.get(), 2);
+        let mut saved = [0; 5];
         for (mode, (before, after)) in before.into_iter().zip(after).enumerate() {
             prop_assert!(after.0.0.is_err());
             prop_assert_eq!(&before.0.0, &after.0.0);
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Retained summary custody adds128bytes; the replay fence adds160.
-            let saved = [21328, 21152, 14464, 11840, 14192][mode];
-            eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
-            prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
+            saved[mode] = before.bytes_total - after.bytes_total;
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
         }
+        eprintln!("journal saved={saved:?}");
+        // Main added chunk publication to the accounted append frame (+64
+        // bytes); live-chunk deltas thread their encoded JSON view through
+        // append (+48), replay (+32) and chunk-aware loads.
+        prop_assert_eq!(saved, [21360, 21184, 14496, 11840, 14192]);
     }
 
     // Every old/new factory is compared at its exact admission boundary, after

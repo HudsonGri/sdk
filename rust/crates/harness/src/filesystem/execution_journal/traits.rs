@@ -164,6 +164,34 @@ where
         })
     }
 
+    fn record_model<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        (step, purpose): (u32, crate::executor::ModelPurpose),
+        event: &'a ModelEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        if !self.records_chunk(purpose, event) {
+            return Ok(None);
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                let local = PreparationIo::from_native_work(work)?;
+                let result = self
+                    .append_delta(operation, key, step, event, Some(&local))
+                    .await;
+                let retained = local.owned_bytes()?;
+                drop(local.into_native_custody(retained)?);
+                return result;
+            }
+            let span = obs_span!("acyclic.harness.journal.append");
+            traced(span, self.append_delta(operation, key, step, event, io)).await
+        })
+        .map(Some)
+    }
+
     fn append<'a>(
         &'a self,
         operation: OperationId,
@@ -176,7 +204,7 @@ where
                 let span = obs_span!("acyclic.harness.journal.append");
                 crate::obs::traced_future(
                     span,
-                    self.append_validated(operation, None, key, event, None),
+                    self.append_validated(operation, None, key, event, None, None),
                 )
                 .await
                 .map(|_| ())
@@ -187,7 +215,7 @@ where
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
                 let result = async {
-                    self.append_validated(operation, None, key, event, Some(&local))
+                    self.append_validated(operation, None, key, event, None, Some(&local))
                         .await?;
                     Ok(())
                 }
@@ -198,7 +226,7 @@ where
             }
             let span = obs_span!("acyclic.harness.journal.append");
             traced(span, async move {
-                self.append_validated(operation, None, key, event, io)
+                self.append_validated(operation, None, key, event, None, io)
                     .await
                     .map(|_| ())
             })
@@ -222,7 +250,7 @@ where
                 );
                 crate::obs::traced_future(
                     span,
-                    self.append_validated(operation, Some(expected_tail), key, event, None),
+                    self.append_validated(operation, Some(expected_tail), key, event, None, None),
                 )
                 .await
             });
@@ -232,7 +260,14 @@ where
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
                 let result = self
-                    .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                    .append_validated(
+                        operation,
+                        Some(expected_tail),
+                        key,
+                        event,
+                        None,
+                        Some(&local),
+                    )
                     .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
@@ -244,7 +279,7 @@ where
             );
             traced(
                 span,
-                self.append_validated(operation, Some(expected_tail), key, event, io),
+                self.append_validated(operation, Some(expected_tail), key, event, None, io),
             )
             .await
         })

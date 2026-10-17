@@ -25,18 +25,116 @@ impl acyclic_stream::UnixMillisClock for Clock {
     }
 }
 
-async fn fixture() -> Result<(
+type State = (
     Fixture<Provider>,
     Journal,
     Arc<TaskFiles<Provider>>,
-    ExecutionEvent,
-)> {
+    ModelEvent,
+);
+
+fn working() -> ModelEvent {
+    ModelEvent::Content {
+        delta: "working".into(),
+    }
+}
+
+/// The observation a recorded delta commits, for retries and stale appends.
+fn observed(journal: &Journal, step: u32, sequence: u64) -> Result<ExecutionEvent> {
+    Ok(ExecutionEvent::Model {
+        step,
+        purpose: crate::executor::ModelPurpose::Response,
+        event: journal
+            .delta_reference(OP, step, sequence, &working(), None)?
+            .0,
+    })
+}
+
+/// The task that owns `journal`'s chunks.
+fn task_of<P, A, O>(journal: &FilesystemExecutionJournal<P, A, O>) -> crate::task_volume::Component
+where
+    P: StreamProvider,
+{
+    crate::task_volume::Component::new(journal.owner.as_ref().unwrap().0.task_id().to_string())
+        .unwrap()
+}
+
+/// Commits `count` chunks from a peer execution whose UUID sorts after `OP`.
+/// Measurements start at task sequence 10, so every measured chunk path at
+/// N and 2N spells its sequence with the same two digits.
+async fn publish_peers<P: StreamProvider>(
+    stream: &P,
+    files: &TaskFiles<P>,
+    task: &crate::task_volume::Component,
+    count: u64,
+) {
+    use acyclic_stream::{CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey};
+    for _ in 0..count {
+        let key = files
+            .inner
+            .next_chunk_key(task.clone(), OperationId::from_bytes([255; 16]), 0, None)
+            .await
+            .unwrap();
+        let peer = files
+            .inner
+            .prepare_named_chunk(
+                key.clone(),
+                crate::task_volume::Channel::Text,
+                b"peer",
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let request = CommitRequest {
+            conditions: vec![peer.condition],
+            mutations: vec![CommitMutation::Append {
+                path: peer.path,
+                records: vec![peer.record],
+            }],
+            idempotency_key: IdempotencyKey::new(format!("peer:{key:?}").into_bytes()).unwrap(),
+        };
+        assert!(matches!(
+            stream.commit(request).await.unwrap(),
+            CommitOutcome::Committed(_)
+        ));
+    }
+}
+
+/// The former private-file observation of the same delta.
+async fn staged(journal: &Journal, key: &str) -> Result<ExecutionEvent> {
+    Ok(ExecutionEvent::Model {
+        step: 0,
+        purpose: crate::executor::ModelPurpose::Response,
+        event: crate::executor::stage_json(journal, OP, key, &working(), None).await?,
+    })
+}
+
+async fn fixture() -> Result<State> {
+    let stream = Provider {
+        inner: MemoryStream::new_with_clock(Default::default(), Arc::new(Clock)),
+        ..Default::default()
+    };
+    fixture_on(Arc::new(stream), acyclic_fs::Fs::memory()).await
+}
+
+/// The task-owned journal fixture on any stream and filesystem backend.
+async fn fixture_on<P, A, O>(
+    stream: Arc<P>,
+    backend: acyclic_fs::Fs<A, O>,
+) -> Result<(
+    Fixture<P, A, O>,
+    FilesystemExecutionJournal<P, A, O>,
+    Arc<TaskFiles<P>>,
+    ModelEvent,
+)>
+where
+    P: StreamProvider + 'static,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
     let f = Fixture::new(
-        Arc::new(Provider {
-            inner: MemoryStream::new_with_clock(Default::default(), Arc::new(Clock)),
-            ..Default::default()
-        }),
-        acyclic_fs::Fs::memory(),
+        stream,
+        backend,
         serde_json::json!({"type":"integer"}),
         Some(crate::scheduler::SessionLimits {
             active_tasks: 1,
@@ -121,29 +219,35 @@ async fn fixture() -> Result<(
             None,
         )?
         .await?;
-    let reference = crate::executor::stage_json(
-        &journal,
-        OP,
-        "delta",
-        &ModelEvent::Content {
-            delta: "working".into(),
-        },
-        None,
-    )
-    .await?;
-    let event = ExecutionEvent::Model {
-        step: 0,
-        purpose: crate::executor::ModelPurpose::Response,
-        event: reference,
-    };
-    Ok((f, journal, files, event))
+    Ok((f, journal, files, working()))
+}
+
+// The journal call is the exact crash cut: no caller continuation runs.
+async fn record(
+    journal: &Journal,
+    former: Option<&ExecutionEvent>,
+    model: &ModelEvent,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    match former {
+        Some(event) => journal
+            .append_validated(OP, None, "event:100", event, None, io)
+            .await
+            .map(|_| ()),
+        None => journal.append_delta(OP, "event:100", 0, model, io).await,
+    }
 }
 
 async fn crash_cut(cut: u8, native: bool, broken: bool) -> Result<bool> {
-    let (f, mut journal, files, event) = fixture().await?;
-    if broken {
+    let (f, mut journal, files, model) = fixture().await?;
+    // Former two-commit path: a privately staged delta, killed before any
+    // separate chunk publication.
+    let former = if broken {
         journal.task_files = None;
-    } // Former two-commit path, killed before publication.
+        Some(staged(&journal, "former").await?)
+    } else {
+        None
+    };
     f.stream.arm_execution(
         2,
         match cut {
@@ -152,7 +256,6 @@ async fn crash_cut(cut: u8, native: bool, broken: bool) -> Result<bool> {
             _ => ExecutionFaultMode::AfterHidden,
         },
     );
-    // append_validated is the exact old crash cut: no caller continuation runs.
     let result = if native {
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(1_000_000, 1 << 28),
@@ -165,24 +268,20 @@ async fn crash_cut(cut: u8, native: bool, broken: bool) -> Result<bool> {
             .await?
             .with_task_files(if broken { None } else { Some(files.clone()) });
         f.stream.native_only.store(true, SeqCst);
-        let result = journal
-            .append_validated(OP, None, "event:100", &event, Some(&io))
-            .await;
+        let result = record(&journal, former.as_ref(), &model, Some(&io)).await;
         f.stream.native_only.store(false, SeqCst);
         result
     } else {
-        journal
-            .append_validated(OP, None, "event:100", &event, None)
-            .await
+        record(&journal, former.as_ref(), &model, None).await
     };
     if let Err(error) = result {
         assert!(matches!(error, Error::Indeterminate(_)), "{error:?}");
     }
     drop(journal);
     f.stream.hide_receipt.store(false, SeqCst);
-    let reopened = f
-        .execution(f.owner(1).await?, OP)?
-        .with_task_files(Some(files.clone()));
+    let mut reopened = f.execution(f.owner(1).await?, OP)?;
+    // The former observation addresses its private file.
+    reopened.task_files = (!broken).then(|| files.clone());
     let before = files.inner.snapshot(&Query::Root, 16).await?;
     let records = reopened.replay(OP, 0, 8, None)?.await?;
     let committed = records.len() == 3;
@@ -202,28 +301,36 @@ async fn crash_cut(cut: u8, native: bool, broken: bool) -> Result<bool> {
                 "event and chunk must share the commit"
             );
         }
-        reopened.append(OP, "event:100", &event, None)?.await?;
+        reopened
+            .append_delta(OP, "event:100", 0, &model, None)
+            .await?;
         let after = files.inner.snapshot(&Query::Root, 16).await?;
         assert_eq!(after.files.len(), 1);
         let tail = after.generation;
-        reopened.append(OP, "event:100", &event, None)?.await?;
+        reopened
+            .append_delta(OP, "event:100", 0, &model, None)
+            .await?;
         assert_eq!(
             files.inner.head().await?,
             tail,
             "exact retry republished its chunk"
         );
+        let event = observed(&reopened, 0, 0)?;
         assert!(
             !reopened
                 .append_if_tail(OP, 0, "rejected:101", &event, None)?
                 .await?
         );
-        let mut invalid = event.clone();
-        if let ExecutionEvent::Model { step, .. } = &mut invalid {
-            *step = 1;
-        }
         assert!(
             reopened
-                .append(OP, "invalid:102", &invalid, None)?
+                .append_delta(OP, "invalid:102", 1, &model, None)
+                .await
+                .is_err()
+        );
+        // A committed chunk names exactly one observation.
+        assert!(
+            reopened
+                .append(OP, "again:103", &event, None)?
                 .await
                 .is_err()
         );
@@ -232,6 +339,7 @@ async fn crash_cut(cut: u8, native: bool, broken: bool) -> Result<bool> {
             tail,
             "rejected append published a chunk"
         );
+        assert_eq!(reopened.replay(OP, 0, 8, None)?.await?.len(), 3);
     }
     Ok(complete)
 }
@@ -253,38 +361,64 @@ fn chunk_transaction_survives_each_crash_cut() {
 async fn negative_control_split_commit_loses_the_chunk() {
     assert!(!crash_cut(2, false, true).await.unwrap());
 }
-async fn warm() -> Result<(
-    Fixture<Provider>,
-    Journal,
-    Arc<TaskFiles<Provider>>,
-    ExecutionEvent,
-)> {
-    let (f, mut journal, files, event) = fixture().await?;
+
+#[tokio::test]
+async fn task_response_delta_has_no_private_file_path() {
+    let (f, journal, files, _) = fixture().await.unwrap();
+    let head = files.inner.head().await.unwrap();
+    let mut former = f.execution(f.owner(1).await.unwrap(), OP).unwrap();
+    former.task_files = None;
+    let event = staged(&former, "former").await.unwrap();
+    let error = journal.append(OP, "former", &event, None).unwrap().await;
+    assert!(
+        format!("{error:?}").contains("must be recorded as its live chunk"),
+        "{error:?}"
+    );
+    // A reference to a chunk nobody committed is not content.
+    let forged = observed(&journal, 0, 7).unwrap();
+    let error = journal.append(OP, "forged", &forged, None).unwrap().await;
+    assert!(format!("{error:?}").contains("not published"), "{error:?}");
+    assert_eq!(files.inner.head().await.unwrap(), head);
+    assert_eq!(
+        journal.replay(OP, 0, 8, None).unwrap().await.unwrap().len(),
+        2
+    );
+    // Negative control: without task files the same private event is accepted.
+    former
+        .append(OP, "former", &event, None)
+        .unwrap()
+        .await
+        .unwrap();
+}
+
+async fn warm() -> Result<State> {
+    let (f, mut journal, files, model) = fixture().await?;
     journal.task_files = None;
     for ordinal in 0..8 {
+        let event = staged(&journal, &format!("warm:{ordinal}")).await?;
         journal
             .append(OP, &format!("warm:{ordinal}"), &event, None)?
             .await?;
     }
     journal.task_files = Some(files.clone());
+    publish_peers(f.stream.as_ref(), &files, &task_of(&journal), 8).await;
     // Both bounded prefix slots belong to setup, so every measured anchor
     // uses the same production suffix cursor (including its exact allocation).
-    journal.append(OP, "event:99", &event, None)?.await?;
-    journal.append(OP, "event:100", &event, None)?.await?;
-    Ok((f, journal, files, event))
+    journal
+        .append_delta(OP, "event:99", 0, &model, None)
+        .await?;
+    journal
+        .append_delta(OP, "event:100", 0, &model, None)
+        .await?;
+    Ok((f, journal, files, model))
 }
 
 async fn deltas(
-    state: (
-        Fixture<Provider>,
-        Journal,
-        Arc<TaskFiles<Provider>>,
-        ExecutionEvent,
-    ),
+    state: State,
     count: usize,
     io: Option<&PreparationIo>,
 ) -> Result<(Vec<Vec<u8>>, Vec<crate::task_volume::FileValue>, String)> {
-    let (f, journal, files, event) = state;
+    let (f, journal, files, model) = state;
     let journal = match io {
         Some(io) => f
             .native_execution(1, OP, io)
@@ -298,14 +432,16 @@ async fn deltas(
     f.stream
         .native_only
         .store(io.is_some() && !accounted::chunk_scan_enabled(), SeqCst);
-    for index in 101..101 + count {
+    for index in 101..101 + count as u64 {
         let key = format!("event:{index}");
-        accounted::observe_append(async { journal.append(OP, &key, &event, io)?.await }, io)
-            .await?;
+        accounted::observe_append(journal.append_delta(OP, &key, 0, &model, io), io).await?;
         differential::record(("commit.accept", f.stream.io_snapshot().writes));
-        accounted::observe_append(async { journal.append(OP, &key, &event, io)?.await }, io)
-            .await?; // Exact retries do no projection work.
+        // Exact retries do no projection work.
+        accounted::observe_append(journal.append_delta(OP, &key, 0, &model, io), io).await?;
         differential::record(("commit.retry", f.stream.io_snapshot().writes));
+        // Setup published task-wide chunk sequences 0..=9 (eight peer
+        // chunks, then events 99 and 100).
+        let event = observed(&journal, 0, index - 91)?;
         assert!(
             !accounted::observe_append(
                 async {
@@ -319,16 +455,10 @@ async fn deltas(
         );
         differential::record(("commit.reject", f.stream.io_snapshot().writes));
     }
-    let mut invalid = event.clone();
-    if let ExecutionEvent::Model { step, .. } = &mut invalid {
-        *step = 1;
-    }
-    let error = accounted::observe_append(
-        async { journal.append(OP, "invalid:999", &invalid, io)?.await },
-        io,
-    )
-    .await
-    .unwrap_err();
+    let error =
+        accounted::observe_append(journal.append_delta(OP, "invalid:999", 1, &model, io), io)
+            .await
+            .unwrap_err();
     differential::record(("commit.invalid", f.stream.io_snapshot().writes));
     f.stream.native_only.store(false, SeqCst);
     let writes = f.stream.io_snapshot();
@@ -338,7 +468,7 @@ async fn deltas(
         2 * count as u64,
         "each delta needs exactly one atomic pair"
     );
-    let records = journal.replay(OP, 2, 64, None)?.await?;
+    let records = journal.replay(OP, 12, 64, None)?.await?;
     let mut bytes = Vec::new();
     for record in records {
         let ExecutionEvent::Model { event, .. } = record.event else {
@@ -354,9 +484,11 @@ async fn deltas(
         bytes.push(authenticated);
     }
     let snapshot = files.inner.snapshot(&Query::Root, 64).await?;
-    assert_eq!(snapshot.files.len(), count + 2);
-    for file in &snapshot.files {
-        assert_eq!(file.bytes.as_ref(), b"working");
+    // Eight peer chunks, then the two setup deltas and every measured one.
+    assert_eq!(snapshot.files.len(), count + 10);
+    for (index, file) in snapshot.files.iter().enumerate() {
+        let expected: &[u8] = if index < 8 { b"peer" } else { b"working" };
+        assert_eq!(file.bytes.as_ref(), expected);
     }
     Ok((bytes, snapshot.files, error.to_string()))
 }
@@ -394,7 +526,8 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
         .enable_all()
         .build()
         .unwrap();
-    for native in [false, true] {
+    // Measure both modes before asserting, so a failure reports every count.
+    let modes = [false, true].map(|native| {
         let mut measured = Vec::new();
         for count in [8, 16] {
             let [baseline, candidate] = differential::pair(
@@ -421,32 +554,28 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
             let metric = totals(&candidate.1);
             let broken = totals(&baseline.1);
             eprintln!("chunk native={native} N={count} exact={metric:?}");
+            measured.push((metric, broken));
+        }
+        measured
+    });
+    for (native, measured) in [false, true].into_iter().zip(modes) {
+        for (count, &(metric, broken)) in [8, 16].into_iter().zip(&measured) {
             assert_eq!(
                 metric[0],
-                10 * count as u64,
-                "two records and eight index operations per chunk"
+                6 * count as u64,
+                "one record read, one sequence lookup and four index operations per chunk"
             );
-            let key_bytes = if native {
-                32 + std::mem::size_of::<Vec<u8>>()
-                    + std::mem::size_of::<acyclic_native_runtime::ReadAllocation>()
-                    + std::mem::size_of::<acyclic_fs::NativeAllocation>()
-                    + 2 * std::mem::size_of::<usize>()
-            } else {
-                32
-            } as u64;
-            let split = u64::from(count == 16);
             let n = count as u64;
-            let (allocations, bytes) = if native { (31, 2_821) } else { (21, 2_676) };
-            let wide = 8 * split; // Global sequences 10..17 have one extra digit.
-            assert_eq!(metric[1], n * allocations + 6 * split);
-            assert_eq!(
-                metric[2],
-                n * (bytes + key_bytes) + if native { 2 * wide } else { wide } + 9_184 * split
-            );
+            // Per delta: SDK allocations and bytes (the native side retains
+            // its read allocation and ledger key with each chunk record).
+            let (allocations, bytes) = if native { NATIVE_CHUNK } else { (23, 2_812) };
+            assert_eq!(metric[1], n * allocations, "native={native}");
+            assert_eq!(metric[2], n * bytes, "native={native}");
             if native {
                 assert_eq!(metric[3], n * 17);
-                assert_eq!(metric[4], n * 657 + 2 * wide);
-                assert_eq!(metric[5], n * 346 + 2 * wide);
+                assert_eq!(metric[4], n * 547);
+                assert_eq!(metric[5], n * 348);
+                assert_eq!(metric[6], n * 1_592);
                 assert!(metric[6] > 0);
             } else {
                 assert_eq!(&metric[3..], &[0, 0, 0, 0]);
@@ -459,22 +588,12 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
                 broken, metric,
                 "quadratic publication passed the work/allocation guarantee"
             );
-            measured.push((metric, broken));
         }
         for index in 0..7 {
             assert_eq!(
                 measured[1].0[index],
-                2 * measured[0].0[index]
-                    + [
-                        0,
-                        6,
-                        if native { 9_200 } else { 9_192 },
-                        0,
-                        if native { 16 } else { 0 },
-                        if native { 16 } else { 0 },
-                        if native { 8 } else { 0 }
-                    ][index],
-                "native={native}, metric={index}; first index split and eight wider sequence keys"
+                2 * measured[0].0[index],
+                "native={native}, metric={index}"
             );
         }
         assert_ne!(
@@ -520,7 +639,7 @@ fn projection_payload_copy_negative_control_has_exact_extra_allocations() {
         eprintln!("copy negative native={native} old={old:?} candidate={new:?}");
         assert_eq!(old[0], new[0]);
         assert_eq!(old[1] - new[1], if native { 16 } else { 8 });
-        assert_eq!(new[1], if native { 248 } else { 168 });
+        assert_eq!(new[1], 8 * if native { NATIVE_CHUNK.0 } else { 23 });
         if native {
             assert_eq!(old[3] - new[3], 16);
             assert_eq!(old[4] - new[4], 8 * b"working".len() as u64);
@@ -539,7 +658,7 @@ fn chunk_projection_preserves_the_bound_on_its_authorized_task_files() {
         .unwrap();
     for maximum in [6, 7] {
         for native in [false, true] {
-            let (f, mut journal, files, event) = runtime.block_on(fixture()).unwrap();
+            let (f, mut journal, files, model) = runtime.block_on(fixture()).unwrap();
             let limited = runtime
                 .block_on(TaskFiles::open(
                     f.stream.clone(),
@@ -561,15 +680,14 @@ fn chunk_projection_preserves_the_bound_on_its_authorized_task_files() {
                             .unwrap()
                             .with_task_files(Some(limited.clone()));
                         journal
-                            .append(OP, "bounded:100", &event, Some(io))
-                            .unwrap()
+                            .append_delta(OP, "bounded:100", 0, &model, Some(io))
                             .await
                     })
                 })
                 .unwrap()
                 .0
             } else {
-                runtime.block_on(journal.append(OP, "bounded:100", &event, None).unwrap())
+                runtime.block_on(journal.append_delta(OP, "bounded:100", 0, &model, None))
             };
             assert_eq!(appended.is_ok(), maximum == 7, "{appended:?}");
             let after = runtime
@@ -608,13 +726,13 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
     // fixed initial replay and the real index/map splits; no projection gap.
     let expected = [
         [
-            [25, 80, 10830, 3485007, 0, 0, 0, 0, 0],
-            [49, 160, 21054, 6824119, 0, 0, 0, 0, 0],
+            [25, 161, 3986, 1006314, 0, 0, 0, 0, 0],
+            [49, 313, 7761, 1954978, 0, 0, 0, 0, 0],
         ],
         [
-            [25, 80, 14064, 6215971, 12787, 407874, 305002, 290950, 7079],
+            [25, 163, 8338, 4249318, 6897, 188645, 188833, 164739, 6393],
             [
-                49, 160, 24296, 11492101, 22334, 728460, 540802, 523560, 13519,
+                49, 315, 13305, 7651650, 11051, 283977, 318001, 281359, 12209,
             ],
         ],
     ];
@@ -701,3 +819,14 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
         }
     }
 }
+
+/// Native allocations and bytes retained per chunk: Darwin's native read
+/// holds one more 64-byte allocation per record than Linux and Windows.
+const NATIVE_CHUNK: (u64, u64) = if cfg!(target_os = "macos") {
+    (25, 3_078)
+} else {
+    (24, 3_014)
+};
+
+mod ordering;
+mod publication;

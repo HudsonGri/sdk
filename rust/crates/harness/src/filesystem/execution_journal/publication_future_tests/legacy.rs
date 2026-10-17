@@ -14,7 +14,7 @@ pub(super) fn append<'a>(
             let local = PreparationIo::from_native_work(work)?;
             let result = async {
                 journal
-                    .append_validated(operation, None, key, event, Some(&local))
+                    .append_validated(operation, None, key, event, None, Some(&local))
                     .await?;
                 publish_chunk(journal, key, event, Some(&local)).await
             }
@@ -26,7 +26,7 @@ pub(super) fn append<'a>(
         let span = obs_span!("acyclic.harness.journal.append");
         traced(span, async move {
             journal
-                .append_validated(operation, None, key, event, io)
+                .append_validated(operation, None, key, event, None, io)
                 .await?;
             if io.is_some() {
                 publish_chunk(journal, key, event, io).await?;
@@ -50,7 +50,14 @@ pub(super) fn append_if_tail<'a>(
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let local = PreparationIo::from_native_work(work)?;
             let result = journal
-                .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                .append_validated(
+                    operation,
+                    Some(expected_tail),
+                    key,
+                    event,
+                    None,
+                    Some(&local),
+                )
                 .await;
             let retained = local.owned_bytes()?;
             drop(local.into_native_custody(retained)?);
@@ -62,7 +69,7 @@ pub(super) fn append_if_tail<'a>(
         );
         traced(
             span,
-            journal.append_validated(operation, Some(expected_tail), key, event, io),
+            journal.append_validated(operation, Some(expected_tail), key, event, None, io),
         )
         .await
     })
@@ -204,7 +211,7 @@ pub(super) async fn publish_chunk(
     else {
         return Ok(());
     };
-    let Some(model) = journal.verify_event_refs_with_io(event, io).await? else {
+    let Some(model) = journal.verify_event_refs_with_io(event, None, io).await? else {
         return Ok(());
     };
     let (channel, delta) = match model {

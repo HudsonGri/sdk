@@ -116,7 +116,8 @@ where
                 maximum_bytes: maximum_payload_bytes,
                 io: Some(&io),
             },
-        )?;
+        )?
+        .with_task_files(self.task_files.clone());
         Ok((journal.into_native_shared(work)?, operation))
     }
 
