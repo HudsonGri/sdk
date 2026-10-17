@@ -1,86 +1,28 @@
 use super::*;
-use acyclic_fs::access::{
-    AccessView, Action, Capability, Context, Generations, Grant, PathTrie, Policy, Principal,
-    PrincipalKind, Resource, ResourcePattern,
-};
 use acyclic_fs::native_mount::MountOptions;
-use std::sync::Arc;
 
-pub(super) async fn options<A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore>(
+pub(super) async fn options<A, O>(
     workspace: &acyclic_fs::Workspace<A, O>,
-) -> Result<MountOptions, Failure> {
-    let cancellation = CancellationToken::new();
-    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-    let mut head = workspace
-        .checkout(
-            GenerationSelector::Head,
-            CheckoutMode::read_only_pinned(),
-            budget,
-            &cancellation,
+) -> Result<MountOptions, Failure>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
+    Ok(
+        acyclic_harness::filesystem::native_execution::local_owner_mount_options(
+            workspace,
+            "mount-benchmark",
+            true,
         )
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let (policy, revision) = head
-        .read_access_policy(budget, &cancellation)
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let policy: Policy =
-        serde_json::from_slice(&policy.ok_or("benchmark policy is missing")?.bytes)?;
-    let positions = head
-        .generation_position(head.generation_id(), budget, &cancellation)
-        .await
-        .map_err(|failure| failure.error)?
-        .value;
-    let principal = Principal {
-        kind: PrincipalKind::Service,
-        id: "mount-benchmark".into(),
-        lineage: vec![],
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
-    };
-    let capability = Capability {
-        layers: vec![vec![Grant {
-            actions: Action::ALL.into_iter().collect(),
-            resource: ResourcePattern {
-                lineage_root: None,
-                volume: None,
-                generations: Generations::All,
-                path: "**".into(),
-            },
-        }]],
-        expires_at: None,
-    };
-    let volume = uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string();
-    let view = PathTrie::compile(
-        &policy,
-        &principal,
-        Resource {
-            config: head.volume_config(),
-            lineage: &[],
-            volume: &volume,
-            generation: positions.0.get(),
-            head: positions.1.get(),
-            path: "",
-        },
-        Context {
-            now: 0,
-            approvals: 0,
-        },
-        &capability,
-    )?
-    .with_policy_revision(head.generation_id(), revision);
-    Ok(MountOptions::read_write()
-        .publication(acyclic_fs::MountPublication::Manual)
-        .access_view(Arc::new(AccessView::new(view))))
+        .await?
+        .publication(acyclic_fs::MountPublication::Manual),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_fs::access::Action;
 
     #[tokio::test]
     async fn benchmark_mounts_bind_real_volume_policy() -> Result<(), Failure> {
@@ -108,6 +50,24 @@ mod tests {
             view.volume(),
             uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string()
         );
+        // Preparation exercises the retained owner through the public API;
+        // a compiled view alone (the former implementation) cannot pass it.
+        let destination = tempfile::tempdir()?;
+        let cancel = CancellationToken::new();
+        let generation = workspace
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let prepared = generation
+            .prepare_native_working_set(
+                &options,
+                &MaterializeOptions::native(destination.path()),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+            .await?;
+        drop(prepared);
         assert!(
             MountOptions::read_write().require_access_view().is_err(),
             "negative control must reject the former unbound options"

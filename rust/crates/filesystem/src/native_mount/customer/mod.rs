@@ -26,7 +26,7 @@ mod lazy_mount;
 mod mount;
 mod options;
 mod selection;
-use selection::AdmittedSelection;
+use selection::{AdmittedRoot, AdmittedSelection};
 mod working_set;
 pub use file_io::native_file_io;
 use working_set::*;

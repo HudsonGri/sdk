@@ -1,43 +1,5 @@
 use super::*;
 
-pub(super) fn checkout_source<A, O>(
-    checkout: crate::Checkout<A, O>,
-    root: (
-        crate::kernel::NamespacePath,
-        crate::kernel::allocation::KernelOwnedAllocation,
-    ),
-    options: &MountOptions,
-    work: &NativeMaterializationWork,
-    binding: &MountOptions,
-) -> Result<Arc<CheckoutMountSource<A, O>>, MountLifecycleError>
-where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let config = checkout.volume_config();
-    let access = binding.require_access_view()?;
-    require_selection(binding, checkout.generation_id())?;
-    let shared = SharedCheckout::with_publication_meter(checkout, options.publication, work)?;
-    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1 else {
-        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-    };
-    let source = CheckoutMountSource::new_at_meter(
-        shared,
-        config,
-        root.0,
-        custody,
-        work,
-        options.native_original.as_ref(),
-    )?
-    .with_access_view(Arc::clone(access))?;
-    let source = source.with_access_refresh(binding.access_refresh.clone());
-    let source = match options.callback_guard.as_ref() {
-        Some(guard) => source.with_native_callback_guard(guard.clone()),
-        None => source,
-    };
-    source.into_arc_meter(work).map_err(Into::into)
-}
-
 pub(super) fn require_selection(
     options: &MountOptions,
     generation: GenerationId,

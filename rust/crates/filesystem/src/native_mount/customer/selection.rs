@@ -1,5 +1,7 @@
 use super::*;
 use crate::access::{PathTrie, projection};
+mod root;
+pub(super) use root::AdmittedRoot;
 
 // Only this module can construct a selection. The lease is acquired BEFORE
 // calling its verified owner, and retained through import, copying and binding.
@@ -25,6 +27,27 @@ impl<'a> AdmittedSelection<'a> {
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
+        Self::bind(options, workspace, generation, work, true).await
+    }
+
+    async fn bind<A, O>(
+        options: &'a MountOptions,
+        workspace: &Workspace<A, O>,
+        generation: GenerationId,
+        work: &NativeMaterializationWork,
+        materialize: bool,
+    ) -> Result<Self, MountLifecycleError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        if options
+            .native_original
+            .as_ref()
+            .is_some_and(|binding| !work.shares_allocation_context(binding))
+        {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+        }
         let previous = options
             .require_access_view()?
             .current()
@@ -42,7 +65,7 @@ impl<'a> AdmittedSelection<'a> {
         }
         let policy =
             projection::enter(workspace.id().volume_id()).map_err(MountSourceError::from)?;
-        let (binding, view) = fresh(options, workspace, generation, work).await?;
+        let (binding, view) = fresh(options, workspace, generation, work, materialize).await?;
         Ok(Self {
             options,
             binding,
@@ -84,7 +107,7 @@ impl<'a> AdmittedSelection<'a> {
             .await?;
         // Import may advance data while the lease forbids policy changes. Check
         // the new data generation with the SAME verified capability ceiling.
-        let (binding, view) = fresh(self.options, lazy.workspace(), exact.id(), work).await?;
+        let (binding, view) = fresh(self.options, lazy.workspace(), exact.id(), work, true).await?;
         self.binding = binding;
         self.view = view;
         self.generation = exact.id();
@@ -105,7 +128,30 @@ impl<'a> AdmittedSelection<'a> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         self.require_checkout(&checkout)?;
-        options::checkout_source(checkout, root, self.options, work, &self.binding)
+        let config = checkout.volume_config();
+        let access = self.binding.require_access_view()?;
+        options::require_selection(&self.binding, checkout.generation_id())?;
+        let shared =
+            SharedCheckout::with_publication_meter(checkout, self.options.publication, work)?;
+        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1
+        else {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+        };
+        let source = CheckoutMountSource::new_at_meter(
+            shared,
+            config,
+            root.0,
+            custody,
+            work,
+            self.options.native_original.as_ref(),
+        )?
+        .with_access_view(Arc::clone(access))?;
+        let source = source.with_access_refresh(self.binding.access_refresh.clone());
+        let source = match self.options.callback_guard.as_ref() {
+            Some(guard) => source.with_native_callback_guard(guard.clone()),
+            None => source,
+        };
+        source.into_arc_meter(work).map_err(Into::into)
     }
 
     fn require_checkout<A, O>(
@@ -203,6 +249,7 @@ async fn fresh<A, O>(
     workspace: &Workspace<A, O>,
     generation: GenerationId,
     work: &NativeMaterializationWork,
+    materialize: bool,
 ) -> Result<(MountOptions, Arc<PathTrie>), MountLifecycleError>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -230,8 +277,10 @@ where
         ));
     }
     options::require_selection(&binding, generation)?;
-    options::require_disclosure(&view)?;
-    if view.valid_until().is_some() {
+    if materialize {
+        options::require_disclosure(&view)?;
+    }
+    if materialize && view.valid_until().is_some() {
         return Err(MountLifecycleError::NativePolicy(
             "materialization cannot fence expiring disclosure",
         ));
@@ -281,7 +330,7 @@ mod tests {
                 let binding = admission.await?;
                 // Publish after the owner has read policy but BEFORE it returns
                 // authorization. This exercises the actual admission ordering.
-                let mut edit = pending_policy(&self.workspace, work)
+                let mut edit = pending_policy(&self.workspace, work, crate::access::INITIAL_POLICY)
                     .await
                     .expect("policy edit fixture");
                 assert_refused(publish(&mut edit, work).await);
@@ -290,9 +339,10 @@ mod tests {
         }
     }
 
-    async fn pending_policy(
+    pub(super) async fn pending_policy(
         workspace: &MemoryWorkspace,
         work: &NativeMaterializationWork,
+        policy: &[u8],
     ) -> TestResult<MemoryCheckout> {
         let mut edit = workspace
             .checkout(
@@ -303,7 +353,7 @@ mod tests {
             )
             .await?;
         edit.write_access_policy(
-            crate::access::INITIAL_POLICY,
+            policy,
             crate::NamedAttributeWriteMode::Upsert,
             work,
             work.cancellation(),
@@ -312,7 +362,7 @@ mod tests {
         Ok(edit)
     }
 
-    async fn publish(
+    pub(super) async fn publish(
         edit: &mut MemoryCheckout,
         work: &NativeMaterializationWork,
     ) -> Result<(), crate::FsError> {
@@ -385,7 +435,7 @@ mod tests {
         } else {
             Some(selection)
         };
-        let mut edit = pending_policy(&workspace, &work).await?;
+        let mut edit = pending_policy(&workspace, &work, crate::access::INITIAL_POLICY).await?;
         assert_refused(publish(&mut edit, &work).await);
         drop(selection);
         publish(&mut edit, &work).await?;

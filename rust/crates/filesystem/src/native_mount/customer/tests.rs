@@ -11,12 +11,12 @@ async fn lifecycle_operations_reuse_the_mount_source_context()
     let physical = tempfile::tempdir()?;
     let lazy = native_lazy_source(physical.path(), "lifecycle-context", &cancellation).await?;
     let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
-    let (source, volume_id, _root) = lazy
-        .prepare_authored_mount_source(
-            &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
-            &work,
-        )
-        .await?;
+    let (source, volume_id, _root) = admitted_source(
+        &lazy,
+        &fixture_options(lazy.workspace(), MountOptions::read_write()).await?,
+        &work,
+    )
+    .await?;
     let session = Mutex::new(Some(NativeMountSession::new(
         NativeMountRequest {
             mount_id: MountId::new(),
@@ -71,7 +71,7 @@ async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
         MountOptions::read_write().publication(MountPublication::Manual),
     )
     .await?;
-    let (source, volume_id, _) = lazy.prepare_authored_mount_source(&options, &work).await?;
+    let (source, volume_id, _) = admitted_source(&lazy, &options, &work).await?;
     let original = source
         .native_original_work()?
         .ok_or("missing source work")?;
@@ -157,8 +157,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     )
     .await?;
     let work = test_work(budget, &cancellation)?;
-    let (ordinary_source, volume, root) =
-        lazy.prepare_authored_mount_source(&options, &work).await?;
+    let (ordinary_source, volume, root) = admitted_source(&lazy, &options, &work).await?;
     assert_eq!(volume, lazy.workspace().id().volume_id());
     assert_eq!(root.0, "/selected");
     work.receipt().verify(budget)?;
@@ -186,11 +185,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         ..crate::WorkBudget::UNBOUNDED
     };
     let denied = test_work(denied_budget, &cancellation)?;
-    assert!(
-        lazy.prepare_authored_mount_source(&options, &denied)
-            .await
-            .is_err()
-    );
+    assert!(admitted_source(&lazy, &options, &denied).await.is_err());
     denied.receipt().verify(denied_budget)?;
     assert_eq!(denied.receipt().backend_read_operations, 0);
     assert_eq!(head(lazy.workspace(), &fixture_work).await?, pinned);
@@ -218,12 +213,12 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert!(!ordinary_job.shares_ledger(&work));
     drop(ordinary_job);
     ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
-    let (native_source, _, _) = lazy
-        .prepare_authored_mount_source(
-            &options.clone().native_context(&work, None, Some(&work)),
-            &work,
-        )
-        .await?;
+    let (native_source, _, _) = admitted_source(
+        &lazy,
+        &options.clone().native_context(&work, None, Some(&work)),
+        &work,
+    )
+    .await?;
     let before_foreign_job = job.receipt();
     assert!(matches!(
         job.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?),
@@ -907,3 +902,31 @@ mod fixture_access {
     ));
 }
 pub(super) use fixture_access::options as fixture_options;
+
+async fn admitted_source(
+    lazy: &MemoryLazyWorkspace,
+    options: &MountOptions,
+    work: &NativeMaterializationWork,
+) -> Result<
+    (
+        Arc<
+            CheckoutMountSource<
+                crate::facade::MemoryAuthorityBackend,
+                crate::facade::MemoryObjectBackend,
+            >,
+        >,
+        VolumeId,
+        (String, crate::kernel::KernelOwnedAllocation),
+    ),
+    MountLifecycleError,
+> {
+    AdmittedRoot::admit(
+        options,
+        lazy.workspace(),
+        head(lazy.workspace(), work).await?,
+        work,
+    )
+    .await?
+    .lazy_source(lazy, work)
+    .await
+}

@@ -44,89 +44,6 @@ where
         .await
     }
 
-    pub(super) async fn prepare_authored_mount_source(
-        &self,
-        options: &MountOptions,
-        work: &NativeMaterializationWork,
-    ) -> Result<
-        (
-            Arc<CheckoutMountSource<A, O>>,
-            VolumeId,
-            (String, crate::kernel::allocation::KernelOwnedAllocation),
-        ),
-        MountLifecycleError,
-    > {
-        options.require_access_view()?;
-        if options
-            .native_original
-            .as_ref()
-            .is_some_and(|binding| !work.shares_allocation_context(binding))
-        {
-            return Err(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            )
-            .into());
-        }
-        let cancellation = work.cancellation();
-        let config = self.workspace().volume_config();
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let root = crate::workspace::customer_path_with_accounting(
-            &options.subdirectory,
-            config,
-            &mut accounting,
-            cancellation,
-        )?;
-        let root_text = root
-            .0
-            .unicode_text_with_accounting(&mut accounting, cancellation)
-            .map_err(WorkspaceError::from)?;
-        let selected = self.lookup(&root_text.0, &mut accounting).await?;
-        let selected_custody = selected.1;
-        let selected = selected.0;
-        if selected.stat().kind != SourceNodeKind::Directory {
-            return Err(WorkspaceError::NotDirectory.into());
-        }
-        if let LazyLookup::Source { node, .. } = &selected {
-            let expected_source = self.source_file_id(&node.file_identity, &mut accounting)?;
-            work.charge(crate::WorkCounters {
-                bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len()
-                    + 16
-                    + root_text.0.len()
-                    + node.version.0.len()) as u64,
-                ..crate::WorkCounters::default()
-            })?;
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"acyclic-fs-lazy-mount-root-v1\0");
-            hasher.update(&self.workspace().id().into_bytes());
-            hasher.update(root_text.0.as_bytes());
-            hasher.update(&node.version.0);
-            let mut key = [0; 16];
-            key.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            self.promote_exact(
-                &root_text.0,
-                expected_source,
-                0,
-                IdempotencyKey::from_bytes(key),
-                &mut accounting,
-            )
-            .await?;
-        }
-        drop(selected);
-        drop(selected_custody);
-        let mode = if options.writable {
-            CheckoutMode::tracking_transaction()
-        } else {
-            CheckoutMode::read_only_pinned()
-        };
-        let checkout = self
-            .workspace()
-            .checkout(GenerationSelector::Head, mode, work, cancellation)
-            .await?;
-        let source = options::checkout_source(checkout, root, options, work, options)?;
-        Ok((source, self.workspace().id().volume_id(), root_text))
-    }
-
     /// Mounts the actual sparse source without scanning unresolved descendants.
     pub async fn mount(
         &self,
@@ -149,8 +66,15 @@ where
         if options.writable && options.publication == MountPublication::PerMutation {
             return Err(MountSourceError::NativeUnsupported.into());
         }
-        let (authored, volume_id, root_text) =
-            self.prepare_authored_mount_source(&options, work).await?;
+        let (authored, volume_id, root_text) = AdmittedRoot::admit(
+            &options,
+            self.workspace(),
+            self.workspace().head(work, work.cancellation()).await?.id(),
+            work,
+        )
+        .await?
+        .lazy_source(self, work)
+        .await?;
         let root_custody = match root_text.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
