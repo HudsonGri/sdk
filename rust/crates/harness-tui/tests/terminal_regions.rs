@@ -12,7 +12,8 @@ use acyclic_harness_tui::ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
     layout::{Rect, Size},
-    text::Line,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::Paragraph,
 };
 use acyclic_harness_tui::term::{Capabilities, FrameTerminal, RegionScroll, RestoreGuard};
@@ -44,11 +45,10 @@ impl Device {
 }
 
 /// Rows of text and the cursor.
-type Scene = (Vec<String>, Option<(u16, u16)>);
+type Scene = (Vec<Line<'static>>, Option<(u16, u16)>);
 
 fn paint(frame: &mut Frame<'_>, (rows, cursor): &Scene) {
-    let lines: Vec<Line<'_>> = rows.iter().map(|row| Line::raw(row.as_str())).collect();
-    frame.render_widget(Paragraph::new(lines), frame.area());
+    frame.render_widget(Paragraph::new(rows.clone()), frame.area());
     if let Some(position) = cursor {
         frame.set_cursor_position(*position);
     }
@@ -139,7 +139,7 @@ fn screens(frames: &[Vec<u8>]) -> Vec<String> {
 /// Lines `top..top + height` of a long transcript.
 fn window(top: usize, height: u16) -> Scene {
     let rows = (top..top + usize::from(height))
-        .map(|line| format!("transcript line {line:04}"))
+        .map(|line| Line::raw(format!("transcript line {line:04}")))
         .collect();
     (rows, Some((2, height - 1)))
 }
@@ -154,14 +154,94 @@ fn hint() -> impl Strategy<Value = Option<RegionScroll>> {
 }
 
 fn steps() -> impl Strategy<Value = Vec<(Scene, Option<RegionScroll>)>> {
+    let style = (0u8..8, 0u8..8, any::<bool>()).prop_map(|(fg, bg, bold)| {
+        Style::default()
+            .fg(Color::Indexed(fg))
+            .bg(Color::Indexed(bg))
+            .add_modifier(if bold {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            })
+    });
+    let row = (
+        prop::collection::vec(("[a-z日 ]{0,12}", style.clone()), 0..4),
+        style,
+    )
+        .prop_map(|(spans, style)| {
+            Line::from(
+                spans
+                    .into_iter()
+                    .map(|(text, style)| Span::styled(text, style))
+                    .collect::<Vec<_>>(),
+            )
+            .style(style)
+        });
     let scene = prop_oneof![
         (0usize..40).prop_map(|top| window(top, HEIGHT)),
         (
-            prop::collection::vec("[a-z日 ]{0,30}", 0..=usize::from(HEIGHT)),
+            prop::collection::vec(row, 0..=usize::from(HEIGHT)),
             prop::option::of((0..WIDTH, 0..HEIGHT)),
         ),
     ];
     prop::collection::vec((scene, hint()), 1..10)
+}
+
+#[test]
+fn styled_blanks_and_moved_colours_match_the_independent_screen() {
+    let styled_window = |top: usize| -> Scene {
+        let rows = (top..top + usize::from(HEIGHT))
+            .map(|row| {
+                let style = Style::default()
+                    .fg(Color::Indexed((row % 8) as u8))
+                    .bg(Color::Indexed((row % 7 + 1) as u8));
+                Line::styled(
+                    if row % 2 == 0 {
+                        format!("row {row}")
+                    } else {
+                        String::new()
+                    },
+                    style,
+                )
+            })
+            .collect();
+        (rows, Some((2, HEIGHT - 1)))
+    };
+    let region = Rect::new(0, 0, WIDTH, HEIGHT);
+    // Both directions, a partial band, and a transition to default blanks.
+    let steps = vec![
+        (styled_window(0), None),
+        (styled_window(2), Some(RegionScroll { region, rows: 2 })),
+        (styled_window(0), Some(RegionScroll { region, rows: -2 })),
+        (
+            styled_window(3),
+            Some(RegionScroll {
+                region: Rect::new(0, 1, WIDTH, HEIGHT - 2),
+                rows: 1,
+            }),
+        ),
+        (
+            (vec![Line::raw(""); usize::from(HEIGHT)], None),
+            Some(RegionScroll { region, rows: 2 }),
+        ),
+    ];
+    let scenes: Vec<_> = steps.iter().map(|(scene, _)| scene.clone()).collect();
+    let expected = screens(&per_command(&scenes));
+    assert_eq!(
+        screens(&scrolled(&steps, Size::new(WIDTH, HEIGHT))),
+        expected
+    );
+    // Negative control: losing blank-row backgrounds is observable.
+    let mut unstyled = steps.clone();
+    for (scene, _) in &mut unstyled {
+        for line in &mut scene.0 {
+            line.style = Style::default();
+        }
+    }
+    assert_ne!(
+        screens(&scrolled(&unstyled, Size::new(WIDTH, HEIGHT))),
+        expected
+    );
 }
 
 proptest! {
