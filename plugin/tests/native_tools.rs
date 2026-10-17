@@ -68,6 +68,7 @@ impl ResultClient {
             }
         }
         let mut child: Child = launch.arg("__tools").spawn()?;
+        eprintln!("{host} MCP {:?} starting (explicit binding: {})", child.id(), binding.is_some());
         let mut input = child.stdin.take().ok_or("MCP stdin missing")?;
         let mut output = BufReader::new(child.stdout.take().ok_or("MCP stdout missing")?).lines();
         let write = |value: Value| format!("{value}\n").into_bytes();
@@ -81,6 +82,7 @@ impl ResultClient {
         )?;
         assert_eq!(initialized["id"], 1);
         assert!(initialized.get("error").is_none(), "{initialized}");
+        eprintln!("{host} MCP {:?} initialized", child.id());
         input
             .write_all(&write(
                 json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
@@ -97,17 +99,22 @@ impl ResultClient {
     async fn result(&mut self, arguments: Value) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
+        eprintln!("MCP {:?} request {id} started", self.child.id());
         self.input.write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"write","arguments":arguments}})).as_bytes()).await?;
         let response: Value =
             serde_json::from_str(&self.output.next_line().await?.ok_or("MCP result ended")?)?;
         assert_eq!(response["id"], id);
         assert!(response.get("error").is_none(), "{response}");
+        eprintln!("MCP {:?} request {id} answered", self.child.id());
         Ok(response["result"].clone())
     }
 
     async fn close(mut self) -> Result {
+        let id = self.child.id();
+        eprintln!("MCP {id:?} closing stdin");
         drop(self.input);
         assert!(self.child.wait().await?.success());
+        eprintln!("MCP {id:?} exited");
         Ok(())
     }
 }
@@ -166,6 +173,7 @@ async fn host_result_client(directory: &Path, host: &str) -> Result {
         json!({"session_id":session,"cwd":cwd}),
     )
     .await?;
+    eprintln!("{host} session attached");
     let arguments = json!({"path":"native.txt","text":"one harness write","media_type":"text/plain","display_name":"native.txt"});
     let request = json!({"session_id":session,"cwd":cwd,"tool_use_id":"call","tool_name":if pi {"write"} else {"mcp__acyclic__write"},"tool_input":arguments});
     let answer = hook(
@@ -175,6 +183,7 @@ async fn host_result_client(directory: &Path, host: &str) -> Result {
         request.clone(),
     )
     .await?;
+    eprintln!("{host} original write settled");
     assert_eq!(
         std::fs::read_to_string(directory.join("native.txt"))?,
         "one harness write"
@@ -232,6 +241,7 @@ async fn host_result_client(directory: &Path, host: &str) -> Result {
         .await?,
         answer
     );
+    eprintln!("{host} retry settled");
     assert_eq!(
         std::fs::metadata(directory.join("native.txt"))?.modified()?,
         published
@@ -243,5 +253,6 @@ async fn host_result_client(directory: &Path, host: &str) -> Result {
         json!({"session_id":session,"cwd":cwd}),
     )
     .await?;
+    eprintln!("{host} session detached");
     Ok(())
 }
