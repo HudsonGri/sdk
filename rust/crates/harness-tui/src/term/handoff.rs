@@ -131,6 +131,12 @@ impl Handoff {
         self.space.notify_all();
     }
 
+    /// Negative control: close that never notifies a send waiting for space.
+    #[cfg(acyclic_harness_tui_loom)]
+    fn close_unnotified(&self) {
+        self.lock().closed = true;
+    }
+
     #[cfg(acyclic_harness_tui_loom)]
     fn register_split(&self, cx: &mut Context<'_>) -> Poll<Option<Batch>> {
         // Negative control: the empty check and the registration in separate
@@ -229,6 +235,61 @@ mod tests {
     #[test]
     fn negative_control_detects_a_registration_split_from_its_check() {
         assert!(std::panic::catch_unwind(|| wake_model(true)).is_err());
+    }
+
+    // The queue is full before the producer starts, so its send waits for
+    // space that never comes; only the close can release it.
+    fn close_model(broken: bool) {
+        loom::model(move || {
+            let handoff = Arc::new(Handoff::new(1));
+            for _ in 0..QUEUED {
+                let batch = handoff.storage().unwrap();
+                assert!(handoff.send(Ok(batch)));
+            }
+            let producer = Arc::clone(&handoff);
+            let thread = loom::thread::spawn(move || {
+                if let Some(batch) = producer.storage() {
+                    assert!(!producer.send(Ok(batch)), "sent past a full queue");
+                }
+            });
+            if broken {
+                handoff.close_unnotified();
+            } else {
+                handoff.close();
+            }
+            thread.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn close_releases_a_send_blocked_on_a_full_queue() {
+        close_model(false);
+    }
+
+    /// Runs the broken close model; loom reports its permanent wait as a
+    /// deadlock and aborts, so the negative control below runs it in a child.
+    #[test]
+    fn unnotified_close_child() {
+        if std::env::var_os("ACYCLIC_HANDOFF_UNNOTIFIED_CLOSE").is_some() {
+            close_model(true);
+        }
+    }
+
+    #[test]
+    fn negative_control_detects_a_close_that_never_notifies_the_blocked_send() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "term::handoff::tests::unnotified_close_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("ACYCLIC_HANDOFF_UNNOTIFIED_CLOSE", "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "the blocked send was released");
+        assert!(stderr.contains("deadlock"), "{stderr}");
     }
 
     // The reader sends one batch more than the queue holds, so its last send

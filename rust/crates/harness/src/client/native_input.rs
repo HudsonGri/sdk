@@ -18,33 +18,63 @@ pub fn stdin_jsonl() -> Result<BoxStream<'static, Result<String>>> {
     ))
 }
 
-/// Unix stdin without a blocking-pool hop. Pipes, sockets and terminals wait
-/// on the reactor. On Linux they are reopened as a private open file
-/// description that can be nonblocking without affecting any other process,
-/// even if this one is killed. Elsewhere the shared description's flags are
-/// never changed: readiness is confirmed before each read, so a blocking read
-/// still returns at once. Regular files and block devices cannot signal
-/// readiness, so a dedicated reader keeps their reads off the reactor.
+/// Unix stdin. Only a description this process owns and opened nonblocking
+/// waits on the reactor: no other reader can turn a readiness edge into a
+/// blocking read, and its flags affect no other process even if this one is
+/// killed. That description exists only where stdin can be reopened (Linux's
+/// /proc/self/fd). Every other description is shared or blocking, so a
+/// dedicated reader thread reads it off the reactor, flags untouched.
 #[cfg(unix)]
 mod stdin {
     use std::fs::File;
     use std::io::{self, Read};
-    use std::os::fd::AsFd;
-    use std::os::unix::fs::FileTypeExt;
+    use std::os::fd::{AsFd, AsRawFd, RawFd};
     use std::pin::Pin;
     use std::task::{Context, Poll, ready};
 
-    use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use tokio::io::unix::AsyncFd;
     use tokio::io::{AsyncRead, ReadBuf};
 
     use super::reader::Reader;
 
+    /// A nonblocking open file description held by this process alone. The
+    /// only constructor reopens the input, so the reactor path cannot be
+    /// handed a shared or blocking description.
+    pub(super) struct Private(File);
+
+    impl Private {
+        #[cfg(target_os = "linux")]
+        fn reopen(file: &File) -> Option<Self> {
+            use rustix::fs::{Mode, OFlags};
+            let kind = file.metadata().ok()?.file_type();
+            // Regular files and block devices are always "ready" yet may
+            // block on storage: they belong to the reader as well.
+            if kind.is_file() || std::os::unix::fs::FileTypeExt::is_block_device(&kind) {
+                return None;
+            }
+            rustix::fs::open(
+                format!("/proc/self/fd/{}", file.as_raw_fd()),
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .ok()
+            .map(|fd| Self(File::from(fd)))
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        fn reopen(_: &File) -> Option<Self> {
+            None
+        }
+    }
+
+    impl AsRawFd for Private {
+        fn as_raw_fd(&self) -> RawFd {
+            self.0.as_raw_fd()
+        }
+    }
+
     pub(super) enum Stdin {
-        /// A private description opened nonblocking.
-        Private(AsyncFd<File>),
-        /// The shared description, flags untouched.
-        Shared(AsyncFd<File>),
+        Reactor(AsyncFd<Private>),
         Reader(Reader),
     }
 
@@ -53,38 +83,12 @@ mod stdin {
     }
 
     pub(super) fn from_file(file: File) -> io::Result<Stdin> {
-        let kind = file.metadata()?.file_type();
-        if kind.is_file() || kind.is_block_device() {
-            return Reader::spawn(file).map(Stdin::Reader);
-        }
-        #[cfg(target_os = "linux")]
-        if let Ok(private) = rustix::fs::open(
-            format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&file)),
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        ) && let Ok(fd) = AsyncFd::try_new(File::from(private))
+        if let Some(private) = Private::reopen(&file)
+            && let Ok(fd) = AsyncFd::try_new(private)
         {
-            return Ok(Stdin::Private(fd));
+            return Ok(Stdin::Reactor(fd));
         }
-        match AsyncFd::try_new(file) {
-            Ok(fd) => Ok(Stdin::Shared(fd)),
-            // Not pollable (a device the reactor rejects): read it off-reactor.
-            Err(error) => Reader::spawn(error.into_parts().0).map(Stdin::Reader),
-        }
-    }
-
-    /// Whether a read of the shared, blocking description returns at once:
-    /// data is queued, or end of input or an error is pending.
-    fn readable(file: &File) -> io::Result<bool> {
-        let mut fds = [PollFd::new(file, PollFlags::IN)];
-        poll(
-            &mut fds,
-            Some(&Timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            }),
-        )?;
-        Ok(!fds[0].revents().is_empty())
+        Reader::spawn(file).map(Stdin::Reader)
     }
 
     impl AsyncRead for Stdin {
@@ -93,22 +97,15 @@ mod stdin {
             cx: &mut Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
-            let (fd, shared) = match self.get_mut() {
+            let fd = match self.get_mut() {
                 Self::Reader(reader) => return reader.poll_read(cx, buf),
-                Self::Private(fd) => (fd, false),
-                Self::Shared(fd) => (fd, true),
+                Self::Reactor(fd) => fd,
             };
             loop {
                 let mut ready = ready!(fd.poll_read_ready(cx))?;
-                if shared && !readable(fd.get_ref())? {
-                    // Stale edge: the data it announced was already read.
-                    ready.clear_ready();
-                    continue;
-                }
-                match ready.try_io(|fd| {
-                    let mut file = fd.get_ref();
-                    file.read(buf.initialize_unfilled())
-                }) {
+                // Nonblocking: bytes taken by another reader since the edge
+                // yield WouldBlock, which clears readiness and waits again.
+                match ready.try_io(|fd| (&fd.get_ref().0).read(buf.initialize_unfilled())) {
                     Ok(Ok(count)) => {
                         buf.advance(count);
                         return Poll::Ready(Ok(()));
@@ -147,8 +144,9 @@ mod reader {
         pub(super) fn spawn(mut file: File) -> io::Result<Self> {
             let (send, batches) = tokio::sync::mpsc::channel(2);
             let (spare, recycled) = mpsc::channel::<Vec<u8>>();
-            // Detached: a dropped stream fails the next send, and file reads
-            // always complete, so the thread ends after at most one more read.
+            // Detached: a dropped stream fails the next send, so the thread
+            // ends after its current read completes (at the next input or end
+            // of input for a pipe or terminal).
             std::thread::Builder::new()
                 .name("harness-stdin".into())
                 .spawn(move || {
@@ -302,10 +300,9 @@ mod tests {
         let lines = runtime.block_on(async {
             let input = from_file(read)?;
             assert_eq!(
-                matches!(input, Stdin::Private(_)),
+                matches!(input, Stdin::Reactor(_)),
                 cfg!(target_os = "linux")
             );
-            assert!(!matches!(input, Stdin::Reader(_)));
             // Nothing a killed process could leave behind: the description
             // shared with the parent keeps its flags while input is followed.
             assert_eq!(fcntl_getfl(&observer)?, original);
@@ -334,6 +331,61 @@ mod tests {
             original,
             "a duplicate shares the description"
         );
+        Ok(())
+    }
+
+    /// Another reader takes the announced byte between the readiness edge and
+    /// this stream's read. The reactor path must keep waiting without
+    /// blocking the runtime. (The thread path cannot be raced into blocking
+    /// the runtime: only its own thread ever waits in a read.)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn input_stolen_after_readiness_leaves_the_runtime_running() -> io::Result<()> {
+        let (read, mut write) = pipe()?;
+        let mut thief = read.try_clone()?;
+        let runtime = runtime()?;
+        runtime.block_on(async {
+            let mut input = from_file(read)?;
+            let Stdin::Reactor(fd) = &input else {
+                return Err(io::ErrorKind::Unsupported.into());
+            };
+            write.write_all(b"x")?;
+            // Hold the edge, then let the thief consume its byte.
+            fd.readable().await?.retain_ready();
+            assert_eq!(io::Read::read(&mut thief, &mut [0; 1])?, 1);
+            let stalled = tokio::time::timeout(
+                Duration::from_millis(5),
+                tokio::io::AsyncReadExt::read(&mut input, &mut [0; 1]),
+            )
+            .await;
+            assert!(stalled.is_err(), "the stolen byte was read");
+            write.write_all(b"y\n")?;
+            let mut lines = FramedRead::new(input, LinesCodec::new());
+            let line = lines.next().await.ok_or(io::ErrorKind::UnexpectedEof)?;
+            assert_eq!(line.map_err(io::Error::other)?, "y");
+            io::Result::Ok(())
+        })
+    }
+
+    #[test]
+    fn negative_control_detects_a_blocking_read_after_stolen_readiness() -> io::Result<()> {
+        // The removed shared path: readiness seen, byte stolen, then a read of
+        // the blocking description holds its thread.
+        let (read, mut write) = pipe()?;
+        let mut thief = read.try_clone()?;
+        write.write_all(b"x")?;
+        let mut fds = [rustix::event::PollFd::new(
+            &read,
+            rustix::event::PollFlags::IN,
+        )];
+        rustix::event::poll(&mut fds, None)?;
+        assert_eq!(io::Read::read(&mut thief, &mut [0; 1])?, 1);
+        let mut shared = read;
+        let blocked = std::thread::spawn(move || io::Read::read(&mut shared, &mut [0; 1]));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!blocked.is_finished(), "the stale read returned");
+        write.write_all(b"y")?;
+        assert_eq!(blocked.join().map_err(|_| io::ErrorKind::Other)??, 1);
         Ok(())
     }
 
