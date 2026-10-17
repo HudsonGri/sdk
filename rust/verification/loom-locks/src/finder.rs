@@ -551,10 +551,14 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
                             let method = resolved.as_ref().and_then(last);
                             // These language/library entries do not manufacture a
                             // lock; their executable arguments are visited below.
-                            let transparent = matches!(
-                                spelling.as_deref(),
-                                Some("Some" | "Ok" | "Err" | "loom::model")
-                            );
+                            let transparent =
+                                matches!(spelling.as_deref(), Some("Some" | "Ok" | "Err"));
+                            let transparent = transparent
+                                || resolved.as_ref().is_some_and(|path| {
+                                    path.segments.len() == 2
+                                        && path.segments[0].ident == "loom"
+                                        && path.segments[1].ident == "model"
+                                });
                             if !transparent
                                 && !method
                                     .as_deref()

@@ -49,7 +49,7 @@ const mutants = [
   ['bound', {[path]: healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   // A constant or forwarded bound is still a bound.
   ['bound', {[path]: constant + healthy}, real],
-  ['bound', {[path]: healthy + '\nfn run(bound: Option<usize>) { check_with_bound(bound, scenario); }'}, real],
+  ['bound', {[path]: healthy + '\nfn check_with_bound(_: Option<usize>, _: ()) {} fn run(bound: Option<usize>) { check_with_bound(bound, ()); }'}, real],
   ['exhaustive', {[path]: '// Every interleaving of the race.\n' + constant + healthy}, {[path]: {grade: 'real', bound: 'CAP preemptions'}}],
   ['exhaustive', {[path]: '// Exhaustive schedules of the race.\n' + bounded + healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   ['missing', {}, real],
