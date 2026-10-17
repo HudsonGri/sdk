@@ -43,7 +43,7 @@ impl MountedVolume {
 
     pub(super) async fn project(&self, root: &Path, relative: &str) -> Result<()> {
         initialize(&self.native, async || {
-            volumes::create_mount_directory(root, Path::new(relative))?;
+            volumes::prepare_mount_directory(root, Path::new(relative))?;
             self.workspace
                 .workspace()
                 .mount(&self.destination, self.options.clone())

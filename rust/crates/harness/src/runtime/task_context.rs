@@ -195,6 +195,7 @@ impl TaskContext {
                 .is_some_and(|owner| owner.task_binding() == (task, fence))
     }
 
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) fn ancestors(
         &self,
         task: TaskId,
@@ -364,6 +365,10 @@ pub(crate) fn read_granted_with_work(
     )
 }
 
+#[cfg(any(
+    all(test, not(acyclic_harness_loom)),
+    all(feature = "filesystem-local", not(target_arch = "wasm32"))
+))]
 fn ancestor_stream<F, Fut>(task: TaskId, parent: F) -> impl futures::Stream<Item = Result<TaskId>>
 where
     F: FnMut(TaskId) -> Fut,

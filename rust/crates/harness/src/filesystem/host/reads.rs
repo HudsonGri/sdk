@@ -195,6 +195,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             (reference, hold)
         };
         grant.require_file_read(&reference.0, Some(io))?;
+        if publication.is_some() {
+            Self::read_selected_range(
+                &workspace,
+                &generation,
+                &reference.0,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                io,
+            )
+            .await?;
+        }
         reference.1.into_retained()?;
         if let Some(hold) = bytes.1 {
             hold.into_retained()?;
