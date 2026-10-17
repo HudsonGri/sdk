@@ -121,7 +121,7 @@ impl crate::filesystem::UploadRecord for ListFilesInput {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> LocalListFilesTool<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListFilesTool<A, O> {
     fn native_result_copy(
         result: &ToolResult,
         maximum_bytes: u64,
@@ -272,7 +272,9 @@ fn require_volume_grant(
     Ok(())
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ToolExecutor for LocalListFilesTool<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecutor
+    for LocalListFilesTool<A, O>
+{
     fn authorize(
         &self,
         scope: Option<&crate::runtime::RuntimeScope>,
@@ -481,7 +483,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ToolExecutor for LocalListFile
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ToolProjection for LocalListFilesTool<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjection
+    for LocalListFilesTool<A, O>
+{
     fn project(
         &self,
         _: &ToolInvocation,

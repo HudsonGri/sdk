@@ -5,7 +5,7 @@ pub(super) struct MemoryContentPublisher<A, O> {
     pub(super) memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentPublisher
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
     for MemoryContentPublisher<A, O>
 {
     fn volume(&self) -> &VolumeRef {
@@ -82,7 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentPublisher
     }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> MemoryContentPublisher<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MemoryContentPublisher<A, O> {
     pub(super) fn retain(
         &self,
         persisted: &FileRef,

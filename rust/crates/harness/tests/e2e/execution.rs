@@ -35,7 +35,9 @@ pub(super) struct Outcome<P, A = MemoryAuthorityBackend, O = MemoryObjectBackend
     operation: OperationId,
 }
 
-impl<P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore> Outcome<P, A, O> {
+impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    Outcome<P, A, O>
+{
     /// Event kinds and loaded model events: identical scenario data must
     /// replay the same observations on every Stream provider.
     pub(super) async fn trace(&self) -> TestResult<Vec<Value>> {
@@ -61,8 +63,8 @@ pub(super) async fn run_on<P: StreamProvider>(
 
 pub(super) async fn run_with_filesystem<
     P: StreamProvider,
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 >(
     mut case: Scenario,
     filesystem: Fs<A, O>,
@@ -131,7 +133,11 @@ async fn workspace_on<P: StreamProvider>(
     Ok(storage)
 }
 
-pub(super) async fn publish<P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn publish<
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     storage: &MemoryHarnessStorage<P, A, O>,
     files: &std::collections::BTreeMap<String, String>,
 ) -> acyclic_harness::Result<()> {
@@ -417,7 +423,11 @@ async fn replay(
     }
 }
 
-pub(super) async fn check_files<P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn check_files<
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
     expected: &std::collections::BTreeMap<String, Option<String>>,
     storage: &MemoryHarnessStorage<P, A, O>,
 ) -> TestResult {
@@ -427,6 +437,13 @@ pub(super) async fn check_files<P: StreamProvider, A: AsyncAuthorityStore, O: As
             .await;
         match (expected, actual) {
             (Some(expected), Ok((_, actual))) if actual.as_ref() == expected.as_bytes() => {}
+            (Some(expected), Ok((_, actual))) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("file {path}: expected {expected:?}, got {actual:?}"),
+                )
+                .into());
+            }
             (None, Err(acyclic_harness::Error::NotFound(_))) => {}
             (expected, actual) => {
                 return Err(format!("file {path}: expected {expected:?}, got {actual:?}").into());

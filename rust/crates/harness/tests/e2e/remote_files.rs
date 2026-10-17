@@ -104,7 +104,9 @@ async fn service_backed_files_match_and_wrong_file_bytes_are_rejected() -> TestR
     assert!(
         execution::run_with_filesystem(Scenario::from_value(wrong)?, files, stream,)
             .await
-            .is_err()
+            .is_err_and(|error| error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::InvalidData))
     );
     Ok(())
 }
@@ -132,7 +134,8 @@ proptest::proptest! {
             value["expect"]["files"]["src/lib.rs"] = Value::String(format!("{text}\0"));
             assert!(execution::run_with_filesystem(
                 Scenario::from_value(value)?, files, stream,
-            ).await.is_err());
+            ).await.is_err_and(|error| error.downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::InvalidData)));
             TestResult::Ok(())
         }).expect("file provider property");
     }

@@ -38,8 +38,8 @@ struct Root {
 impl Discovery {
     pub(super) async fn stage<
         P: acyclic_stream::StreamProvider,
-        A: acyclic_fs::AsyncAuthorityStore,
-        O: acyclic_fs::AsyncObjectStore,
+        A: acyclic_fs::AsyncAuthorityStore + 'static,
+        O: acyclic_fs::AsyncObjectStore + 'static,
     >(
         &self,
         storage: &MemoryHarnessStorage<P, A, O>,

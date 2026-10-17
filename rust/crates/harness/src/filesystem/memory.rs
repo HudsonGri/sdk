@@ -37,7 +37,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
-async fn new_memory_content<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     agent: AgentId,
     maximum_file_bytes: u64,
     filesystem: Fs<A, O>,
@@ -121,7 +121,9 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
     }
 }
 
-impl<P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore> MemoryHarnessStorage<P, A, O> {
+impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    MemoryHarnessStorage<P, A, O>
+{
     /// Builds an optional directory listing tool for explicit custom registration.
     pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
         limits.validate(&mut None)?;
@@ -560,7 +562,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore> MemoryHarne
     }
 }
 
-impl<P: StreamProvider, S: StreamProvider, O: AsyncObjectStore>
+impl<P: StreamProvider, S: StreamProvider, O: AsyncObjectStore + 'static>
     MemoryHarnessStorage<P, StreamAuthorityStore<S>, O>
 {
     /// Queries the same private files written by the ordinary tools.
