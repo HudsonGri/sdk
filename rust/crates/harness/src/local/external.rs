@@ -132,7 +132,8 @@ impl LocalHarness {
         Box::pin(async move {
             use futures::StreamExt as _;
             crate::external_executor::progress::follow(
-                || self.external_step(request),
+                (),
+                |cursor| async move { Ok((cursor, self.external_step(request).await?)) },
                 async {
                     let changes = self.runtime.task_host().workflow_changes().await?;
                     let changes = changes.map(|record| record.map(|_| ()).map_err(storage));

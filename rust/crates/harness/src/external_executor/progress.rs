@@ -3,22 +3,28 @@ use crate::{Error, Result};
 use futures::{Stream, StreamExt};
 
 pub(crate) async fn follow<
+    C,
     T,
-    F: Future<Output = Result<Option<T>>>,
+    F: Future<Output = Result<(C, Option<T>)>>,
     S: Stream<Item = Result<()>> + Unpin,
 >(
-    mut step: impl FnMut() -> F,
+    mut cursor: C,
+    mut step: impl FnMut(C) -> F,
     subscribe: impl Future<Output = Result<S>>,
     stopped: impl Future<Output = Result<()>>,
 ) -> Result<Option<T>> {
-    if let Some(result) = step().await? {
+    let (next, result) = step(cursor).await?;
+    cursor = next;
+    if let Some(result) = result {
         return Ok(Some(result));
     }
     let mut changes = subscribe.await?;
     tokio::pin!(stopped);
     loop {
         // The task can become ready between the first snapshot and this cut.
-        if let Some(result) = step().await? {
+        let (next, result) = step(cursor).await?;
+        cursor = next;
+        if let Some(result) = result {
             return Ok(Some(result));
         }
         tokio::select! {
@@ -29,6 +35,20 @@ pub(crate) async fn follow<
             }
         }
     }
+}
+
+// This cursor records the cut observed before work. A concurrent change during
+// the await must remain unprocessed, even if the work reads some newer state.
+pub(crate) async fn at_revision<T, F: Future<Output = Result<Option<T>>>>(
+    previous: Option<u64>,
+    observed: u64,
+    advance: impl FnOnce() -> F,
+) -> Result<(Option<u64>, Option<T>)> {
+    if previous == Some(observed) {
+        return Ok((previous, None));
+    }
+    let result = advance().await?;
+    Ok((Some(observed), result))
 }
 
 #[cfg(all(test, not(acyclic_harness_loom)))]

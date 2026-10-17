@@ -57,7 +57,8 @@ impl LocalHarness {
             }
             drop(admission);
             crate::external_executor::progress::follow(
-                || self.registered_step(task),
+                None,
+                |revision| self.registered_step(task, revision),
                 async {
                     Ok(self
                         .runtime
@@ -73,17 +74,30 @@ impl LocalHarness {
         })
     }
 
-    fn registered_step(&self, task: TaskId) -> impl Future<Output = Result<Option<()>>> + '_ {
+    fn registered_step(
+        &self,
+        task: TaskId,
+        previous: Option<u64>,
+    ) -> impl Future<Output = Result<(Option<u64>, Option<()>)>> + '_ {
         Box::pin(async move {
-            let terminal = {
+            let (revision, terminal) = {
                 let (_binding, _) = self.binding(task).await?;
-                if self.model.is_some() {
-                    let commands = self.commands()?;
-                    self.advance(task, &commands).await?;
-                } else {
-                    self.advance(task, &self.runtime.commands()).await?;
+                let revision = self.runtime.task_host().workflow_revision(task).await?;
+                if previous == Some(revision) {
+                    return Ok((previous, None));
                 }
-                self.runtime.task_host().outcome(task).await?
+                let (cursor, terminal) =
+                    crate::external_executor::progress::at_revision(previous, revision, || async {
+                        if self.model.is_some() {
+                            let commands = self.commands()?;
+                            self.advance(task, &commands).await?;
+                        } else {
+                            self.advance(task, &self.runtime.commands()).await?;
+                        }
+                        self.runtime.task_host().outcome(task).await
+                    })
+                    .await?;
+                (cursor, terminal)
             };
             // A registered child can admit its own children. Discover these
             // from the durable hierarchy after releasing its task gate.
@@ -102,14 +116,20 @@ impl LocalHarness {
                     break;
                 }
             }
-            Ok(match terminal {
-                Some(
-                    crate::Outcome::Succeeded(_)
-                    | crate::Outcome::Failed { .. }
-                    | crate::Outcome::Cancelled,
-                ) => Some(()),
-                _ => None,
-            })
+            Ok((
+                revision,
+                match terminal {
+                    Some(
+                        crate::Outcome::Succeeded(_)
+                        | crate::Outcome::Failed { .. }
+                        | crate::Outcome::Cancelled,
+                    ) => Some(()),
+                    _ => None,
+                },
+            ))
         })
     }
 }
+
+#[cfg(all(test, feature = "test-support", not(acyclic_harness_loom)))]
+mod tests;
