@@ -60,11 +60,14 @@ export default function(pi) {
 `;
 
 test("a child consumes the native parent's completed compaction across reopen", async () => {
+  const started=performance.now();
+  const phase=(name:string)=>console.error(`compaction ${name}: ${(performance.now()-started).toFixed(0)} ms`);
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-compaction-context-", import.meta.url)));
   let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     const oracle = join(directory,"compacted-child.json");
     fixture = await installedNativeFixture(directory,nativeProvider,{ACYCLIC_COMPACT_CHILD:oracle});
+    phase("installed");
     const {project,manager:parent,session:parentFile} = fixture;
     const settings = join(directory,"agent","settings.json");
     writeFileSync(settings, JSON.stringify({
@@ -97,13 +100,22 @@ export default function (pi) {
       [...probeArguments(parentFile, compactExtension), "/qualify-compact"], project, directory, fixture.environment,
     );
     const compacted = SessionManager.open(parentFile, directory);
+    phase("compacted");
     const compaction = compacted.getEntries().find(entry => entry.type === "compaction");
     assert.ok(compaction, `native CLI did not retain its completed compaction: ${compactResult.stdout} ${compactResult.stderr}`);
     assert.match(compaction.summary, /qualified native parent summary/);
     const selectedParent = readFileSync(parentFile,"utf8");
     await fixture.start();
-    const launched = await fixture.run("Launch and wait for a child inheriting this exact compacted context.");
-    assert.equal(launched.stdout.trim(),"compaction child completed");
+    phase("owner ready");
+    const launched = await fixture.runJson("Launch and wait for a child inheriting this exact compacted context.",line=>{
+      const event=JSON.parse(line);
+      if(event.type.startsWith("tool_")) phase(`${event.type} ${event.toolCallId}`);
+    });
+    phase("child settled");
+    const completed=launched.stdout.trim().split("\n").map(line=>JSON.parse(line))
+      .filter(event=>event.type==="message_end" && event.message?.role==="assistant")
+      .flatMap(event=>event.message.content.filter(part=>part.type==="text").map(part=>part.text));
+    assert.equal(completed.at(-1),"compaction child completed");
     const native = JSON.parse(readFileSync(oracle,"utf8"));
     assert.match(JSON.stringify(native.messages),/qualified native parent summary/);
     assert.doesNotMatch(JSON.stringify(native.messages),/old parent instruction|spawn-after-compaction/);
@@ -116,6 +128,7 @@ export default function (pi) {
     writeFileSync(extension, provider);
     for (const prompt of ["child after compaction", "resume compacted child"]) {
       const result = await invokePi([...probeArguments(child, extension), prompt], project, directory);
+      phase(prompt);
       assert.match(result.stdout, /qualified native parent summary/);
       assert.doesNotMatch(result.stdout, /old parent instruction|spawn-after-compaction/);
       assert.equal(SessionManager.open(child, directory).getSessionId(), native.native_session_id);
@@ -123,6 +136,7 @@ export default function (pi) {
     }
   } finally {
     await fixture?.close();
+    phase("owner closed");
     rmSync(directory, { recursive: true });
   }
 });
