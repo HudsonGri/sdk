@@ -119,9 +119,32 @@ impl AgentPanel {
         frame.render_widget(self.tree.view(self.selected.as_deref(), theme), area);
     }
 
+    /// Route one input effect as `view::run` does: structural navigation is
+    /// handled here and everything else takes the ordinary file input path.
+    /// Both report through the one input error policy, so a navigation write
+    /// that loses the layout race to a peer becomes feedback, not an exit.
+    #[cfg(feature = "tui")]
+    pub async fn dispatch<P: StreamProvider + ?Sized>(
+        &self,
+        files: &mut CommandSession<P>,
+        reader: &dyn crate::conversation::ContentResidencyVerifier,
+        effect: InputEffect,
+        page_rows: usize,
+        maximum_scroll: usize,
+    ) -> Result<()> {
+        match self.input(files, effect).await {
+            Ok(Some(effect)) => {
+                crate::client::file_tui_input(files, reader, effect, page_rows, maximum_scroll)
+                    .await
+            }
+            outcome => crate::client::report_tui_input(files, outcome.map(drop)).await,
+        }
+    }
+
     /// Consume structural navigation by selecting the target task in the
     /// session layout. Navigation without a target leaves the selection; every
-    /// other effect is returned for ordinary input handling.
+    /// other effect is returned for ordinary input handling. Callers route
+    /// input through [`Self::dispatch`], which applies the input error policy.
     pub async fn input<P: StreamProvider + ?Sized>(
         &self,
         files: &mut CommandSession<P>,

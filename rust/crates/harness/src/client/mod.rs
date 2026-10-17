@@ -173,7 +173,8 @@ pub use native_input::terminal_events;
 mod input_files;
 #[cfg(feature = "tui")]
 pub use input_files::{
-    apply_tui_input, file_tui_input, handle_tui_input, restore_tui_prompt, save_tui_draft,
+    apply_tui_input, file_tui_input, handle_tui_input, report_tui_input, restore_tui_prompt,
+    save_tui_draft,
 };
 #[cfg(feature = "tui")]
 mod prompt_files;

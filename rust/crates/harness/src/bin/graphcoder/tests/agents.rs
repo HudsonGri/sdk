@@ -9,7 +9,7 @@ use acyclic_harness::{
     },
     task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskVolume},
     tui::{
-        AgentPanel, InputEffect,
+        Action, AgentPanel, AppAction, InputEffect,
         key_event::{KeyCode, KeyEvent, KeyModifiers},
     },
 };
@@ -78,11 +78,10 @@ async fn press(
     modifiers: KeyModifiers,
 ) {
     for effect in input.key(KeyEvent::new(code, modifiers), 1, 80) {
-        if let Some(effect) = agents.input(files, effect).await.unwrap() {
-            file_tui_input(files, &NoFiles, effect, 10, 0)
-                .await
-                .unwrap();
-        }
+        agents
+            .dispatch(files, &NoFiles, effect, 10, 0)
+            .await
+            .unwrap();
     }
 }
 
@@ -386,11 +385,10 @@ async fn overlay_with_tree_open(close: bool) {
             queued: false,
             edit: None,
         };
-        if let Some(effect) = agents.input(&mut files, submit).await.unwrap() {
-            file_tui_input(&mut files, &NoFiles, effect, 10, 0)
-                .await
-                .unwrap();
-        }
+        agents
+            .dispatch(&mut files, &NoFiles, submit, 10, 0)
+            .await
+            .unwrap();
         if close {
             press(
                 &mut input,
@@ -429,4 +427,112 @@ async fn overlays_own_the_area_and_hide_the_tree() {
 #[should_panic(expected = "tree drawn over the /help overlay")]
 async fn a_visible_tree_is_detected_negative_control() {
     overlay_with_tree_open(true).await;
+}
+
+/// The command worker also writes this session's `layout.json` (for example
+/// when a prompt finishes). A navigation that loses that race must become
+/// feedback and leave GraphCoder running, and the next press must succeed.
+/// `POLICY` routes the press through `dispatch`, as `view::run` does; without
+/// it the bare navigation result is checked, as before the fix.
+async fn navigation_race<const POLICY: bool>() {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("agent-race").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    status(&volume, task(1), None, "completed", false).await;
+    status(&volume, task(2), Some(task(1)), "pending", false).await;
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task(1).to_string(),
+    };
+    let operation = || {
+        OperationId::from_bytes([9; 16])
+            .to_string()
+            .parse()
+            .unwrap()
+    };
+    let mut files = CommandSession::open(volume.clone(), operation(), 65_536, 128)
+        .await
+        .unwrap();
+    files
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &serde_json::json!({"selected_task": task(2), "tree": true}),
+        )
+        .await
+        .unwrap();
+    let mut client = TaskFileClient::observe_task(volume.as_ref(), &owner, task(1), 128, 65_536)
+        .await
+        .unwrap();
+    // Only the installed snapshot is read; the follow is never polled.
+    let _snapshot_only = task_overview_files(volume.as_ref(), client.views_mut(), 64, 65_536)
+        .await
+        .unwrap();
+    let mut agents = AgentPanel::default();
+    agents.update(client.views(), &files).unwrap();
+
+    // The worker's layout write lands after this session's cut.
+    let mut worker = CommandSession::open(volume.clone(), operation(), 65_536, 128)
+        .await
+        .unwrap();
+    worker
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &serde_json::json!({"selected_task": task(2), "tree": true, "history_after": 1}),
+        )
+        .await
+        .unwrap();
+    let parent = || InputEffect::Host(Action::App(AppAction::Parent));
+    let outcome = if POLICY {
+        agents.dispatch(&mut files, &NoFiles, parent(), 10, 0).await
+    } else {
+        agents.input(&mut files, parent()).await.map(drop)
+    };
+    assert!(
+        outcome.is_ok(),
+        "a lost layout race closed GraphCoder: {outcome:?}"
+    );
+    let feedback = files
+        .state(CommandFileRoot::Session, "notifications.json")
+        .unwrap()
+        .unwrap();
+    assert!(feedback.to_string().contains("retry"), "{feedback}");
+    assert_eq!(selected(&files), task(2), "the lost write changed nothing");
+
+    // From the refreshed cut the same press selects the parent, keeps the
+    // worker's write and clears the feedback.
+    agents
+        .dispatch(&mut files, &NoFiles, parent(), 10, 0)
+        .await
+        .unwrap();
+    assert_eq!(selected(&files), task(1));
+    let layout = files
+        .state(CommandFileRoot::Session, "layout.json")
+        .unwrap()
+        .unwrap();
+    assert_eq!(layout["history_after"], 1, "the worker's write survives");
+    assert_eq!(
+        files
+            .state(CommandFileRoot::Session, "notifications.json")
+            .unwrap()
+            .unwrap(),
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
+async fn a_lost_layout_race_is_feedback_not_an_exit() {
+    navigation_race::<true>().await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "a lost layout race closed GraphCoder")]
+async fn an_escaping_navigation_conflict_is_detected_negative_control() {
+    navigation_race::<false>().await;
 }

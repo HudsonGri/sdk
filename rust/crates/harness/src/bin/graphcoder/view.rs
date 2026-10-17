@@ -104,17 +104,15 @@ pub async fn run(
             now,
         );
         for effect in effects {
-            let Some(effect) = agents.input(&mut commands, effect).await? else {
-                continue;
-            };
-            client::file_tui_input(
-                &mut commands,
-                reader.as_ref(),
-                effect,
-                usize::from(areas.transcript.height),
-                maximum_scroll,
-            )
-            .await?;
+            agents
+                .dispatch(
+                    &mut commands,
+                    reader.as_ref(),
+                    effect,
+                    usize::from(areas.transcript.height),
+                    maximum_scroll,
+                )
+                .await?;
         }
         prompt_files.save(&mut commands, &mut input).await?;
     }
