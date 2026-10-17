@@ -104,7 +104,7 @@ async fn default_spawn_dispatch_writes_the_bound_private_volume() -> Result<()> 
             ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "spawn-worker".into(),
                 "spawn".into(),
-                json!({"name":"worker","task":"inspect files","grants":["model:generate","tool:call:read"]}),
+                json!({"name":"worker","task":"inspect files","grants":["model:generate","mail:read","tool:call:read"]}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: Value::Null,
@@ -151,7 +151,7 @@ async fn default_spawn_dispatch_writes_the_bound_private_volume() -> Result<()> 
     assert!(
         std::str::from_utf8(&snapshot.files[0].bytes)
             .unwrap()
-            .contains("\"grants\":[\"model:generate\",\"tool:call:read\"]")
+            .contains("\"grants\":[\"model:generate\",\"mail:read\",\"tool:call:read\"]")
     );
     Ok(())
 }

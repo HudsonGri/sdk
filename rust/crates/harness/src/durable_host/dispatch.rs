@@ -42,7 +42,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             None => RuntimeScope::new(admission.grants, admission.limits)?
                 .with_run_limits(admission.run_limits, quota.work())?,
         };
-        self.validate_parent_scope(admission.parent, &scope, quota.work())
+        self.validate_parent_scope(admission.parent, &scope, None, quota.work())
             .await?;
         self.claim_model_in_scope(
             operation_id,
@@ -79,7 +79,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let mut work = None;
         let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
-        self.validate_parent_scope(owner.admission().parent, scope, quota.work())
+        self.validate_parent_scope(owner.admission().parent, scope, None, quota.work())
             .await?;
         self.claim_model_in_scope(
             OperationId::from_bytes(owner.task_id().into_bytes()),

@@ -9,7 +9,8 @@ pub struct SpawnInput {
     pub task: String,
     /// Optional child name, scoped to this parent.
     pub name: Option<String>,
-    /// Optional subset of the parent's capabilities; omitted means inherit.
+    /// Optional capability subset; child turns need model:generate and mail:read.
+    /// Omitted means inherit the parent's capabilities.
     pub grants: Option<Vec<String>>,
 }
 

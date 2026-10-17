@@ -400,6 +400,110 @@ async fn cancelled_child_can_only_advance_to_an_archive_acknowledgement() {
     );
 }
 
+#[tokio::test]
+async fn new_messages_and_controls_wait_for_a_matching_settled_ack() {
+    let files = files().await;
+    let worker = Component::new("worker").unwrap();
+    let operation = OperationId::new();
+    publish(&files, &worker, ChildFile::Request, b"work", operation)
+        .await
+        .unwrap();
+    acknowledge(&files, &worker, ChildState::Running).await;
+    publish(
+        &files,
+        &worker,
+        ChildFile::Inbox(Component::new("next").unwrap()),
+        b"more",
+        operation,
+    )
+    .await
+    .unwrap();
+    let mut waiting = Box::pin(super::files::follow(&files, &worker, limits(), true, true));
+    assert!(futures::poll!(&mut waiting).is_pending());
+    publish(
+        &files,
+        &worker,
+        ChildFile::Control,
+        Control::Interrupt.bytes(),
+        operation,
+    )
+    .await
+    .unwrap();
+    assert!(futures::poll!(&mut waiting).is_pending());
+    acknowledge(&files, &worker, ChildState::Interrupted).await;
+    assert_eq!(
+        waiting.await.unwrap().unwrap()["state"],
+        json!(ChildState::Interrupted)
+    );
+    let before = files.inner.head().await.unwrap();
+    let request = FileValue::new(
+        FileKey::Child {
+            reference: worker.clone(),
+            file: ChildFile::Request,
+        },
+        b"work".to_vec(),
+    );
+    assert!(
+        super::files::write(&files, &worker, request.clone(), limits(), None, true)
+            .await
+            .unwrap()
+    );
+    let different = FileValue::new(request.key.clone(), b"different".to_vec());
+    assert!(
+        !super::files::write(&files, &worker, different, limits(), None, true)
+            .await
+            .unwrap()
+    );
+    assert_eq!(files.inner.head().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn child_files_preserve_the_callers_file_and_snapshot_bounds() {
+    let files = files().await;
+    let worker = Component::new("worker").unwrap();
+    let request = FileValue::new(
+        FileKey::Child {
+            reference: worker.clone(),
+            file: ChildFile::Request,
+        },
+        b"four".to_vec(),
+    );
+    let before = files.inner.head().await.unwrap();
+    assert!(
+        super::files::write(
+            &files,
+            &worker,
+            request.clone(),
+            Limits {
+                file_bytes: 3,
+                ..limits()
+            },
+            None,
+            false
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(files.inner.head().await.unwrap(), before);
+    super::files::write(&files, &worker, request, limits(), None, false)
+        .await
+        .unwrap();
+    assert!(
+        super::files::follow(
+            &files,
+            &worker,
+            Limits {
+                render_bytes: 3,
+                ..limits()
+            },
+            false,
+            false
+        )
+        .await
+        .is_err()
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
