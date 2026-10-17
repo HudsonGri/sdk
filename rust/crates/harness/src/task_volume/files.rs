@@ -164,3 +164,16 @@ mod tests;
 mod fixtures;
 #[cfg(all(test, acyclic_harness_loom))]
 mod models;
+
+#[cfg(all(test, acyclic_harness_loom))]
+pub(crate) async fn model_files(
+    provider: Arc<dyn StreamProvider>,
+    path: StreamPath,
+    volume: VolumeRef,
+) -> TaskFiles<dyn StreamProvider> {
+    TaskFiles {
+        inner: TaskVolume::open(provider, path).await.unwrap(),
+        volume,
+        maximum_bytes: 4096,
+    }
+}

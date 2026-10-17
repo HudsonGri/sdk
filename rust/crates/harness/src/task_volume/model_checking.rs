@@ -66,14 +66,5 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
     );
 }
 
-pub(crate) async fn files(
-    provider: Arc<dyn StreamProvider>,
-    path: StreamPath,
-    volume: crate::conversation::VolumeRef,
-) -> TaskFiles<dyn StreamProvider> {
-    TaskFiles {
-        inner: TaskVolume::open(provider, path).await.unwrap(),
-        volume,
-        maximum_bytes: 4096,
-    }
-}
+#[cfg(test)]
+pub(crate) use super::files::model_files as files;
