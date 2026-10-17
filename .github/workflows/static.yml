@@ -32,6 +32,10 @@ jobs:
           node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"
       - name: Verify lane artifact gate and its negative control
         run: node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs
+      - name: Check test, example, bench and bin targets declare their feature dependencies
+        run: node scripts/check-target-features.mjs
+      - name: Verify target feature gate and its negative controls
+        run: node --test scripts/target-features.test.mjs
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
   aarch64:
