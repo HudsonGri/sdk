@@ -29,8 +29,16 @@ async fn reserved_sequence_retries_and_reopens_across_reverse_sorted_executions(
         kind: crate::wire::AggregateKind::Task as i32,
         id: task_id.to_string(),
     };
+    // The fault adapter deliberately has no watch implementation. Observe its
+    // same underlying provider through the real query-capable MemoryStream.
+    let observed = crate::task_volume::TaskVolume::open(
+        Arc::new(f.stream.inner.clone()),
+        files.inner.path().clone(),
+    )
+    .await
+    .unwrap();
     let mut live =
-        crate::client::TaskFileClient::observe_task(&files.inner, &owner, task_id, 32, 65536)
+        crate::client::TaskFileClient::observe_task(&observed, &owner, task_id, 32, 65536)
             .await
             .unwrap();
     let named = files
@@ -97,7 +105,7 @@ async fn reserved_sequence_retries_and_reopens_across_reverse_sorted_executions(
         files.inner.head().await.unwrap(),
         "retry identity included a new publication sequence"
     );
-    let reopened = files.inner.reopen().await.unwrap();
+    let reopened = observed.reopen().await.unwrap();
     let snapshot = reopened.snapshot(&Query::Root, 8).await.unwrap();
     let actual: Vec<_> = snapshot
         .files

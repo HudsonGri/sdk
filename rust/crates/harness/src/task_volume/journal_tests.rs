@@ -108,3 +108,28 @@ async fn preparation_preserves_native_denial_before_publication() {
         "wrapper negative control did not erase native classification"
     );
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn task_wide_sequence_rebuild_uses_the_published_maximum(
+        a in prop_oneof![Just(0u64),Just(u64::MAX),any::<u64>()],
+        b in prop_oneof![Just(0u64),Just(u64::MAX),any::<u64>()],
+    ) {
+        let task=Component::new("task").unwrap();
+        let mut index=Index::default();
+        for (id,sequence) in [(1,a),(2,b)] {
+            let mut file=FileValue::new(FileKey::Task {task:task.clone(),file:TaskFile::Chunk {
+                execution:crate::OperationId::from_bytes([id;16]),turn:0,sequence,
+            }},vec![id]);
+            file.channel=Some(Channel::Text);
+            apply(&mut index,file,u64::from(id));
+        }
+        prop_assert_eq!(next_sequence(&index,&task).ok(),a.max(b).checked_add(1));
+        if a>b {
+            // Reintroduce a last-writer tail in the same derived index.
+            index.task_chunk_tails.insert(task.clone(),b);
+            prop_assert_ne!(next_sequence(&index,&task).ok(),a.max(b).checked_add(1));
+        }
+    }
+}

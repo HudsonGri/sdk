@@ -432,12 +432,14 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
     }
     // Exact production allocations include all three chunk scopes and their
     // actual node splits and shared StreamPath future frames. Neither temporary
-    // payload copies nor prefix scans fit.
+    // payload copies nor prefix scans fit. Naming plus fenced recheck adds one
+    // anchor read and task-tail lookup; rebuilding the tail adds one index step:
+    // exactly 3 items, 6/7 ordinary/native allocations per accepted delta.
     let expected = [
-        [[112, 171, 21672, 0, 0, 0, 0], [224, 349, 54128, 0, 0, 0, 0]],
+        [[136, 219, 27944, 0, 0, 0, 0], [272, 445, 66672, 0, 0, 0, 0]],
         [
-            [112, 251, 24368, 136, 5256, 2768, 13440],
-            [224, 509, 59528, 272, 10528, 5552, 26888],
+            [136, 307, 32240, 192, 6152, 2768, 13440],
+            [272, 621, 75272, 384, 12320, 5552, 26888],
         ],
     ];
     for (mode, measured) in modes.into_iter().enumerate() {
@@ -487,7 +489,7 @@ fn projection_payload_copy_negative_control_has_exact_extra_allocations() {
         eprintln!("copy negative native={native} old={old:?} candidate={new:?}");
         assert_eq!(old[0], new[0]);
         assert_eq!(old[1] - new[1], if native { 16 } else { 8 });
-        assert_eq!(new[1], if native { 251 } else { 171 });
+        assert_eq!(new[1], if native { 307 } else { 219 });
         if native {
             assert_eq!(old[3] - new[3], 16);
             assert_eq!(old[4] - new[4], 8 * b"working".len() as u64);
@@ -576,13 +578,13 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
     // Shared StreamPath clones remove 5*N+2 allocations from the old path owner.
     let expected = [
         [
-            [25, 112, 10494, 3400887, 0, 0, 0, 0, 0],
-            [49, 224, 20402, 6657175, 0, 0, 0, 0, 0],
+            [25, 136, 10542, 3407159, 0, 0, 0, 0, 0],
+            [49, 272, 20498, 6669719, 0, 0, 0, 0, 0],
         ],
         [
-            [25, 112, 14025, 6152305, 12787, 407874, 305002, 290950, 7083],
+            [25, 136, 14081, 6160177, 12843, 408770, 305002, 290950, 7115],
             [
-                49, 224, 24221, 11374955, 22334, 726156, 540802, 523560, 13515,
+                49, 272, 24333, 11390699, 22446, 727948, 540802, 523560, 13579,
             ],
         ],
     ];

@@ -612,4 +612,4 @@ impl TaskVolume<dyn StreamProvider> {
 }
 
 #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
-pub use journal::verify_chunk_sequence_publication;
+pub use model_checking::verify_chunk_sequence_publication;
