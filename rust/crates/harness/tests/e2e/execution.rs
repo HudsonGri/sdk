@@ -291,7 +291,7 @@ async fn check_provider(
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
         if let Some(expected) = &expected.requests {
-            matchers::ordered(expected, &requests, "requests")?;
+            matchers::model_requests(expected, &requests)?;
         }
         for forbidden in &expected.not_requests {
             if requests

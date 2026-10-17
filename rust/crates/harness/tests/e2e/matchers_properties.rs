@@ -1,4 +1,4 @@
-use super::{ordered, subset};
+use super::{model_requests, ordered, subset};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -73,16 +73,16 @@ proptest! {
             json!({"kind":"text", "text":"UNEXPECTED TEXT IN IMAGE-ONLY INPUT"})] {
             let mut actual = parts.clone();
             actual.insert(slot % (actual.len() + 1), inserted);
-            prop_assert!(!subset(&expected, &json!({"content":actual})), "content insertion");
+            prop_assert!(!model_requests(&[expected.clone()], &[json!({"content":actual})]).is_ok(), "content insertion");
         }
         if !parts.is_empty() {
             let mut actual = parts.clone();
             actual.remove(slot % actual.len());
-            prop_assert!(!subset(&expected, &json!({"content":actual})), "missing content part");
+            prop_assert!(!model_requests(&[expected.clone()], &[json!({"content":actual})]).is_ok(), "missing content part");
         }
         let expected = json!({"messages":[{"content":[{"kind":"file", "file":{"path":"image.png"}}]}]});
         let actual = json!({"messages":[{"content":[{"kind":"file", "file":{"path":"image.png", "descriptor":extra}}]}]});
-        prop_assert!(subset(&expected, &actual), "file metadata remains a subset");
+        prop_assert!(model_requests(&[expected.clone()], &[actual]).is_ok(), "file metadata remains a subset");
     }
 
     // Model payloads are a complete ordered list. Lifecycle frames can interleave;
