@@ -38,6 +38,12 @@ fn observations(steps: &[(bool, u8)], forget_operation: bool) {
             "a private data identity replaced the observed head"
         );
         assert_eq!(observation.commit().is_some(), *commit);
+        let retained = observation;
+        observation.refresh(generation, position);
+        assert!(
+            observation == retained,
+            "unchanged head lost its publication cache"
+        );
     }
 }
 

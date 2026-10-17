@@ -38,6 +38,9 @@ impl ObservedGeneration {
     }
 
     pub(super) fn refresh(&mut self, generation: GenerationId, position: Sequence) {
+        if self.position(generation) == Some(position) {
+            return;
+        }
         self.state = GenerationObservation::Head {
             generation,
             position,
