@@ -1,6 +1,12 @@
 use super::*;
 use crate::wire::ErrorCode::{Conflict, Invalid, Unauthorized};
 
+struct SettledTool {
+    content: crate::model::ToolResultContent,
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    feedback: crate::hooks::HookOutput,
+}
+
 impl StockExecution<'_> {
     pub(super) async fn settle_tool_call(
         &self,
@@ -18,23 +24,20 @@ impl StockExecution<'_> {
             &invocation.call_id,
             self.io,
         )?;
-        invocation.validate_recorded(
-            metadata,
-            crate::conversation::Limits {
-                file_bytes: self
-                    .stock
-                    .limits
-                    .file_bytes
-                    .min(self.stock.tool_scope.limits().file_bytes),
-                render_bytes: self
-                    .stock
-                    .limits
-                    .render_bytes
-                    .min(self.stock.tool_scope.limits().render_bytes),
-                ..self.stock.limits
-            },
-            self.io,
-        )?;
+        let invocation_limits = crate::conversation::Limits {
+            file_bytes: self
+                .stock
+                .limits
+                .file_bytes
+                .min(self.stock.tool_scope.limits().file_bytes),
+            render_bytes: self
+                .stock
+                .limits
+                .render_bytes
+                .min(self.stock.tool_scope.limits().render_bytes),
+            ..self.stock.limits
+        };
+        invocation.validate_recorded(metadata, invocation_limits, self.io)?;
         let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?;
         let _capability;
         let mut context;
@@ -53,6 +56,31 @@ impl StockExecution<'_> {
             } if *recorded == step && call_id == &invocation.call_id => Some(reference),
             _ => None,
         });
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        let (invocation, mut pre_hook) = {
+            let mut output = self
+                .tool_hook(
+                    operation_id,
+                    crate::hooks::HookEvent::PreToolUse,
+                    &invocation,
+                    None,
+                    started.is_some(),
+                )
+                .await?;
+            let mut effective = invocation;
+            if !output.blocks()
+                && let Some(arguments) = output.updated_input.take()
+            {
+                effective.arguments = arguments;
+                effective.validate_recorded(metadata, invocation_limits, self.io)?;
+                let (authorized, _) = self.authorize_tool_invocation(tool, &effective)?;
+                context = authorized;
+                if let Some(context) = &mut context {
+                    context.model_step = step;
+                }
+            }
+            (effective, output)
+        };
         if let Some(reference) = started {
             let recorded =
                 load_json::<crate::tool::RecordedInvocation>(journal, reference, self.io).await?;
@@ -90,13 +118,54 @@ impl StockExecution<'_> {
                 "completed tool has no admitted invocation",
             ));
         }
-        if self.stock.reconciliation_only && started.is_none() {
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        let blocked_content =
+            pre_hook
+                .take_block_reason()
+                .map(|text| crate::model::ToolResultContent::Parts {
+                    parts: vec![crate::model::ModelDataPart::Text { text }],
+                });
+        #[cfg(not(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32"))))]
+        let blocked_content: Option<crate::model::ToolResultContent> = None;
+        if blocked_content.is_some() && started.is_some() {
+            return Err(stock_boundary(
+                self.io,
+                Conflict,
+                "blocked tool was dispatched",
+            ));
+        }
+        if self.stock.reconciliation_only && started.is_none() && blocked_content.is_none() {
             return Err(Error::Indeterminate(operation_id));
         }
-        let content = if let Some((result, projection)) = completed {
-            self.replay_tool_output(journal, result, projection, tool)
+        let settled = if let Some(content) = blocked_content {
+            SettledTool {
+                content,
+                #[cfg(all(
+                    feature = "hooks",
+                    feature = "filesystem",
+                    not(target_arch = "wasm32")
+                ))]
+                feedback: crate::hooks::HookOutput::default(),
+            }
+        } else if let Some((result, projection)) = completed {
+            self.replay_tool_output(journal, operation_id, &invocation, result, projection, tool)
                 .await?
         } else {
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(prompt) = pre_hook.approval.take()
+                && let Some(progress) = self
+                    .hook_approval(
+                        journal,
+                        operation_id,
+                        &invocation,
+                        tool,
+                        prompt,
+                        started.is_some(),
+                    )
+                    .await?
+            {
+                return Ok(progress);
+            }
             if let Some(progress) = self
                 .require_tool_policy(journal, operation_id, &invocation, tool, started.is_some())
                 .await?
@@ -121,13 +190,18 @@ impl StockExecution<'_> {
             content: ModelContent::Part(ModelContentPart::ToolResult {
                 call_id: stock_string_copy(&invocation.call_id, self.io)?,
                 name: stock_string_copy(&invocation.name, self.io)?,
-                content,
+                content: settled.content,
             }),
         };
         with_history_io(self.io, |work| {
             message.content.validate_limits(self.stock.limits, work)
         })?;
         stock_vec_push(prior_messages, message, self.io)?;
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            self.append_hook_context(prior_messages, pre_hook)?;
+            self.append_hook_context(prior_messages, settled.feedback)?;
+        }
         Ok(ExecutionProgress::Ready(()))
     }
     fn authorize_tool_invocation(
@@ -248,7 +322,7 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
-    ) -> Result<crate::model::ToolResultContent> {
+    ) -> Result<SettledTool> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let claimed = self
@@ -313,6 +387,17 @@ impl StockExecution<'_> {
         let (projection, content) = self
             .project_tool_output(journal, (operation_id, step), invocation, tool, &result)
             .await?;
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        let feedback = self
+            .complete_with_post_hook::<true>(
+                journal,
+                (operation_id, step),
+                invocation,
+                &result,
+                &projection,
+            )
+            .await?;
+        #[cfg(not(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32"))))]
         self.publish_tool_completion(
             journal,
             (operation_id, step),
@@ -321,7 +406,45 @@ impl StockExecution<'_> {
             &projection,
         )
         .await?;
-        Ok(content)
+        Ok(SettledTool {
+            content,
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            feedback,
+        })
+    }
+
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(super) async fn complete_with_post_hook<const COMMIT_FIRST: bool>(
+        &self,
+        journal: &dyn ExecutionJournal,
+        identity: (OperationId, u32),
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+        projection: &Value,
+    ) -> Result<crate::hooks::HookOutput> {
+        let completion = self.publish_tool_completion(
+            journal,
+            identity,
+            &invocation.call_id,
+            result,
+            projection,
+        );
+        let feedback = self.tool_hook(
+            identity.0,
+            crate::hooks::HookEvent::PostToolUse,
+            invocation,
+            Some(result),
+            false,
+        );
+        if COMMIT_FIRST {
+            completion.await?;
+            feedback.await
+        } else {
+            // The qualification's negative control restores the former order.
+            let output = feedback.await?;
+            completion.await?;
+            Ok(output)
+        }
     }
 
     async fn claim_tool_invocation(
@@ -508,10 +631,12 @@ impl StockExecution<'_> {
     async fn replay_tool_output(
         &self,
         journal: &dyn ExecutionJournal,
+        _operation: OperationId,
+        _invocation: &ToolInvocation,
         result: &FileRef,
         projection: &FileRef,
         tool: &crate::tool::Tool,
-    ) -> Result<crate::model::ToolResultContent> {
+    ) -> Result<SettledTool> {
         let result = load_json::<ToolResult>(journal, result, self.io).await?;
         with_history_io(self.io, |work| {
             validate_json_schema_value(
@@ -522,8 +647,24 @@ impl StockExecution<'_> {
             )
         })?;
         let projection = load_json::<Value>(journal, projection, self.io).await?;
-        tool.definition
-            .validate_projection(&projection.0, self.stock.limits, self.io)
+        let content =
+            tool.definition
+                .validate_projection(&projection.0, self.stock.limits, self.io)?;
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        let feedback = self
+            .tool_hook(
+                _operation,
+                crate::hooks::HookEvent::PostToolUse,
+                _invocation,
+                Some(&result.0),
+                false,
+            )
+            .await?;
+        Ok(SettledTool {
+            content,
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            feedback,
+        })
     }
 }
 

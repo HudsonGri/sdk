@@ -8,6 +8,10 @@ use std::collections::BTreeMap;
 pub(super) struct LocalCase {
     #[serde(default)]
     pub seed: BTreeMap<String, String>,
+    /// Files in the fixture-owned user home, such as `.claude/settings.json`.
+    /// A JSON value other than a string is written as its JSON encoding.
+    #[serde(default)]
+    pub home: BTreeMap<String, Value>,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
     pub expect: Expectations,
@@ -25,6 +29,11 @@ pub(super) struct Expectations {
     pub files: BTreeMap<String, Option<String>>,
     pub diffs: Option<BTreeMap<String, Value>>,
     pub results: Option<BTreeMap<String, Value>>,
+    /// Ordered subsets of the model requests actually dispatched.
+    pub requests: Option<Vec<Value>>,
+    /// Subsets no dispatched model request may contain.
+    #[serde(default)]
+    pub not_requests: Vec<Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]

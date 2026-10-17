@@ -1,5 +1,6 @@
 #![no_main]
 
+use acyclic_harness::{TaskId, tool};
 use acyclic_harness::{Error, ProcessError, Result};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
@@ -30,10 +31,58 @@ fn apply(
     ledger.apply(output, event, policy, result);
     ledger.finish(output);
 }
+#[path = "../../harness/src/hooks/input.rs"]
+mod input;
+use input::HookInput;
 
 fuzz_target!(|bytes: &[u8]| {
     if bytes.len() > 4096 {
         return;
+    }
+    if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
+        let invocation = tool::ToolInvocation {
+            operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+            call_id: "fuzz-call".into(),
+            name: "fuzz-tool".into(),
+            arguments: fields.clone(),
+        };
+        let response = tool::ToolResult {
+            value: fields.clone(),
+        };
+        for post in [false, true] {
+            let event = if post {
+                HookEvent::PostToolUse
+            } else {
+                HookEvent::PreToolUse
+            };
+            let input = HookInput::Tool {
+                invocation: &invocation,
+                response: post.then_some(&response),
+                session_id: None,
+            };
+            let encoded = input
+                .encode(event, std::path::Path::new("workspace"))
+                .unwrap();
+            let decoded: Value = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(&decoded["tool_input"], &fields);
+            assert_eq!(decoded.get("tool_response"), post.then_some(&fields));
+            assert_eq!(decoded["hook_event_name"], event.name());
+            assert_eq!(decoded["cwd"], "workspace");
+        }
+        let encoded = HookInput::Fields(&fields)
+            .encode(HookEvent::PreToolUse, std::path::Path::new("workspace"));
+        if fields.is_object() {
+            let decoded: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
+            assert_eq!(decoded["cwd"], "workspace");
+            assert_eq!(decoded["hook_event_name"], "PreToolUse");
+            for (key, value) in fields.as_object().unwrap() {
+                if !matches!(key.as_str(), "cwd" | "hook_event_name") {
+                    assert_eq!(&decoded[key], value);
+                }
+            }
+        } else {
+            assert!(encoded.is_err());
+        }
     }
     if let Ok(output) = serde_json::from_slice::<HookOutput>(bytes) {
         let encoded = serde_json::to_vec(&output).unwrap();

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     context::{Context, ContextPlacement, SourceStage},
-    hooks::{HookEvent, Hooks},
+    hooks::{BoundHooks, HookEvent, Hooks},
     model::{ModelMessage, ModelRole},
 };
 
@@ -18,12 +18,12 @@ where
         context: Arc<TaskContext>,
         (fence, operation, reconcile_only, digest): (&LeaseFence, OperationId, bool, [u8; 32]),
         io: Option<&super::super::PreparationIo>,
-    ) -> Result<ContextPipeline> {
+    ) -> Result<(ContextPipeline, Option<Arc<BoundHooks>>)> {
         if !pipeline
             .configuration_sources()
             .any(|file| file.descriptor().media_type() == Hooks::MEDIA_TYPE)
         {
-            return Ok(pipeline);
+            return Ok((pipeline, None));
         }
         if io.is_some() {
             return Err(crate::executor::stock_boundary(
@@ -45,12 +45,16 @@ where
                 None => hooks = Some(next),
             }
         }
-        let hooks = hooks.unwrap_or_default();
+        let bound = Arc::new(BoundHooks {
+            rules: hooks.unwrap_or_default(),
+            manifest: digest,
+        });
+        let hooks = &bound.rules;
         let event = HookEvent::SessionStart;
         let input = serde_json::json!({"source":"startup",
             "session_id": context.durable_task_id().map(|task| task.to_string())});
         if hooks.commands(event, &input, tools)?.next().is_none() {
-            return Ok(pipeline);
+            return Ok((pipeline, Some(bound)));
         }
         let executor =
             context.harness.workspace_tools.as_ref().ok_or_else(|| {
@@ -63,25 +67,22 @@ where
         let issued = ToolContext::new(owned, operation, "session-start", None)?;
         let output = executor
             .run_hooks(
-                (&hooks, digest),
+                (hooks, digest),
                 event,
-                input,
+                (&input).into(),
                 tools,
                 issued,
                 reconcile_only,
             )
-            .await?;
-        for failure in &output.diagnostics {
-            tracing::warn!(hook_event = event.name(), cause = ?failure.cause,
-                exit_code = failure.cause.exit_code(), blocking = failure.blocking,
-                error = %failure.cause.message(), "configured hook failed");
-        }
+            .await?
+            .ok_or_else(|| Error::Invalid("started model has no session hook outcome".into()))?;
+        crate::hooks::report(event, &output);
         let output = output.into_result()?;
         if let Some(reason) = output.blocked {
             return Err(Error::Unauthorized(reason));
         }
         if output.additional_context.is_empty() {
-            return Ok(pipeline);
+            return Ok((pipeline, Some(bound)));
         }
         let source = Context {
             messages: output
@@ -94,11 +95,14 @@ where
                 .collect(),
             ..Default::default()
         };
-        Ok(pipeline.with(Arc::new(SourceStage::new(
-            "hooks.session-start",
-            "1",
-            Arc::new(source),
-            ContextPlacement::Prepend,
-        ))))
+        Ok((
+            pipeline.with(Arc::new(SourceStage::new(
+                "hooks.session-start",
+                "1",
+                Arc::new(source),
+                ContextPlacement::Prepend,
+            ))),
+            Some(bound),
+        ))
     }
 }

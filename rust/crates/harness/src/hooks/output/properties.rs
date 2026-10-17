@@ -29,6 +29,28 @@ fn json_value() -> impl Strategy<Value = Value> {
 }
 
 proptest! {
+    // Every explicit or failure-policy block supplies exactly one moved reason.
+    // Ignoring typed failures is the deliberately broken projection.
+    #[test]
+    fn tool_block_reason_preserves_typed_failure_policy(
+        reason in ".{0,96}", explicit in any::<bool>(), blocking in any::<bool>(),
+    ) {
+        let mut output = HookOutput {
+            blocked: explicit.then(|| reason.clone()),
+            diagnostics: vec![HookDiagnostic { cause: crate::ProcessError::Timeout {
+                exit_code:Some(3), message:reason.clone() }, blocking }],
+            ..Default::default()
+        };
+        let expected = output.blocks();
+        let broken = output.blocked.is_some();
+        let moved = output.take_block_reason();
+        prop_assert_eq!(moved.is_some(), expected);
+        if expected { prop_assert_eq!(moved.as_deref(), Some(reason.as_str())); }
+        prop_assert_eq!(&output.diagnostics[0].cause,
+            &crate::ProcessError::Timeout { exit_code: Some(3), message: reason.clone() });
+        if blocking && !explicit { prop_assert_ne!(broken, expected); }
+    }
+
     // Property: retaining a decision as an outcome file preserves every field,
     // including nested replacement arguments, escaped text and empty contexts.
     #[test]

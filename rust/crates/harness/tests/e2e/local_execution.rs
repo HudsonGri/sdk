@@ -8,6 +8,7 @@ use acyclic_harness::{
     LocalHarness, OperationId,
     client::{DiffLimits, DiffPath, DiffPublication, DiffView},
     context::{CompactionPolicy, ContextRoot, PinnedContextPath},
+    native_settings::SettingsConfig,
     conversation::{FileDescriptor, FileRef},
     model::{Model, ModelContent, ModelContentPart, ModelEvent, ModelRequest},
     task_volume::{FileQuerySource, Query},
@@ -72,7 +73,17 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let turns = super::local_case::bind_seed_files(case.turns, &references)?;
     let scripted_calls = super::local_tool_files::calls(&turns);
     let provider = Arc::new(ScriptedModelProvider::new(turns));
+    let home = temporary.path().join("home");
+    for (path, text) in &case.home {
+        let path = home.join(path);
+        std::fs::create_dir_all(path.parent().ok_or("home file has no parent")?)?;
+        match text {
+            Value::String(text) => std::fs::write(path, text)?,
+            value => std::fs::write(path, serde_json::to_vec(value)?)?,
+        }
+    }
     let config = local_harness_config(&directory, (model, provider.clone()))?
+        .settings(SettingsConfig::new(&directory, &home).codex_home(home.join(".codex")))
         .state_directory(&state)
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
@@ -104,6 +115,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     if requests.len() != steps {
         return Err("local scenario did not consume exactly its scripted model turns".into());
     }
+    check_requests(&case.expect, &requests)?;
     if let Some(expected) = &case.expect.results {
         let actual = model_results(requests.last().ok_or("missing model request")?)?;
         check_results(expected, &actual)?;
@@ -339,6 +351,28 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         .any(|message| message.content == prompt)
     {
         return Err("local scenario prompt was lost before model dispatch".into());
+    }
+    Ok(())
+}
+
+fn check_requests(
+    expected: &super::local_case::Expectations,
+    requests: &[ModelRequest],
+) -> TestResult {
+    let requests = requests
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(expected) = &expected.requests {
+        matchers::ordered(expected, &requests, "requests")?;
+    }
+    for forbidden in &expected.not_requests {
+        if requests
+            .iter()
+            .any(|request| matchers::subset(forbidden, request))
+        {
+            return Err(format!("forbidden request: {forbidden}").into());
+        }
     }
     Ok(())
 }
