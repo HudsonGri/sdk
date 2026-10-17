@@ -186,18 +186,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<Option<(GenerationId, MetadataField<ObjectId>)>, FsError> {
         let mut accounting = work.accounting(cancellation);
-        let before = readonly_standalone_live(&accounting);
+        let result = self
+            .current_access_policy_revision_accounted(&mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    pub(crate) async fn current_access_policy_revision_accounted(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(GenerationId, MetadataField<ObjectId>)>, FsError> {
+        let before = readonly_standalone_live(accounting);
         let result = async {
             let volume = &self.volume;
             let (generation, observed) = volume
-                .resolve_head_generation(&mut accounting, cancellation)
+                .resolve_head_generation(accounting, cancellation)
                 .await?;
             let metadata = {
                 let (root, _root_allocation) = read_generation_root_with_accounting(
                     &volume.fs.inner.objects,
                     generation,
                     volume.config,
-                    &mut accounting,
+                    accounting,
                     cancellation,
                 )
                 .await?;
@@ -209,7 +220,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
                     root.file_table,
                     root.root_file_id,
                     DecodeLimits::for_volume(volume.config),
-                    &mut accounting,
+                    accounting,
                     cancellation,
                     None,
                 )
@@ -217,19 +228,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
                 read_record_metadata_to_file_root_with_accounting(
                     volume,
                     record.ok_or(FsError::NotFound)?,
-                    &mut accounting,
+                    accounting,
                     cancellation,
                 )
                 .await?
             };
-            let mut authority = authority_work(&accounting, cancellation)?;
+            let mut authority = authority_work(accounting, cancellation)?;
             let current = volume
                 .fs
                 .inner
                 .authority
                 .head(volume_authority_id(volume.id), &mut authority)
                 .await;
-            record_authority_work(&mut accounting, &authority)?;
+            record_authority_work(accounting, &authority)?;
             Ok(
                 crate::facade::policy_head_is_current(observed, current?).then_some((
                     GenerationId::new(generation.digest),
@@ -238,8 +249,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
             )
         }
         .await;
-        let result = readonly_cleanup_standalone(&mut accounting, before, 0).and(result);
-        work.finish(result, &accounting)
+        readonly_cleanup_standalone(accounting, before, 0).and(result)
     }
 }
 

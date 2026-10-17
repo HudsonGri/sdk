@@ -168,6 +168,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         result
     }
 
+    pub(super) async fn check_current_access(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        let Some((view, actions)) = &self.access else {
+            return Ok(());
+        };
+        let observed = self
+            .current_access_policy_revision_accounted(accounting, cancellation)
+            .await?;
+        let now = access_time()?;
+        if !observed.is_some_and(|(generation, revision)| {
+            view.matches_policy_revision(generation, revision)
+        }) || !Action::ALL
+            .into_iter()
+            .filter(|action| *actions & (1 << *action as u16) != 0)
+            .all(|action| view.allows_every_path(&[action], now))
+        {
+            return Err(WorkspaceError::AccessDenied);
+        }
+        Ok(())
+    }
+
     async fn check_access_revision(
         &self,
         checkout: &mut Checkout<A, O>,
