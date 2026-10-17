@@ -76,7 +76,8 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
             let object = layout
                 .as_object_mut()
                 .ok_or_else(|| Error::Invalid("layout must be an object".into()))?;
-            if object.remove("open_view").is_none() {
+            // A null view (left by a submitted form) is closed, like a missing one.
+            if object.remove("open_view").is_none_or(|view| view.is_null()) {
                 // Escape ladder after the prompt widget's own steps: interrupt a
                 // running turn, otherwise only dismiss feedback (cleared below).
                 // TODO(#495): resume a stopped agent and enter message selection.

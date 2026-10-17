@@ -179,18 +179,38 @@ async fn idle_escape<const FEEDBACK: bool>() {
 
 #[tokio::test]
 async fn escape_while_a_turn_runs_publishes_its_cancellation() {
-    cancellation::<true>().await;
+    cancellation::<true, false>().await;
+}
+
+/// A submitted form leaves `open_view: null`; that closed view must not
+/// swallow the first Escape.
+#[tokio::test]
+async fn escape_after_a_submitted_form_cancels_the_turn() {
+    cancellation::<true, true>().await;
 }
 
 /// A key that leaves the running turn alone must fail the cancellation check.
 #[tokio::test]
 #[should_panic(expected = "Escape publishes the same cancellation request as Ctrl+C")]
 async fn an_ignored_escape_is_detected_negative_control() {
-    cancellation::<false>().await;
+    cancellation::<false, true>().await;
 }
 
-async fn cancellation<const ESCAPE: bool>() {
+async fn cancellation<const ESCAPE: bool, const CLOSED_VIEW: bool>() {
     let mut ui = Ui::open().await;
+    if CLOSED_VIEW {
+        // The layout a submitted feedback form leaves behind.
+        let mut layout = ui
+            .files
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap()
+            .unwrap();
+        layout["open_view"] = serde_json::Value::Null;
+        ui.files
+            .write_state(CommandFileRoot::Session, "layout.json", &layout)
+            .await
+            .unwrap();
+    }
     ui.type_text("hello").await;
     ui.key(KeyCode::Enter).await;
     let task = ui.files.active_task().expect("submitted prompt is active");
