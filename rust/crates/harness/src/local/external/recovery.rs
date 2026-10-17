@@ -5,9 +5,10 @@ use crate::Result;
 pub(super) async fn recover_before_delivery<F: Future<Output = Result<()>>>(
     initial: bool,
     answered: bool,
+    idle: bool,
     recovery: impl FnOnce() -> F,
 ) -> Result<()> {
-    if !initial || answered {
+    if answered || (!initial && !idle) {
         recovery().await?;
     }
     Ok(())

@@ -199,12 +199,15 @@ impl LocalHarness {
             )?;
             let commands =
                 RequestCommands::new(&self.runtime, requests, results, publisher.as_ref());
-            self.wake_cancelled_request(request, requests).await?;
-            recovery::recover_before_delivery(
-                matches!(request.action, ExternalAction::Attach { .. }),
-                !cached.files.is_empty(),
-                || Box::pin(self.advance(task_id, &commands)),
-            )
+            let idle = self.prepare_external_slot(request, requests).await?;
+            let initial = matches!(request.action, ExternalAction::Attach { .. });
+            let answered = !cached.files.is_empty();
+            // An authenticated empty input slot has no retained effect to
+            // recover. Admission rechecks its current cut before filling it.
+            // Cached answers still repair settlement and projected task files.
+            recovery::recover_before_delivery(initial, answered, idle, || {
+                Box::pin(self.advance(task_id, &commands))
+            })
             .await?;
             if let Some(file) = cached.files.first() {
                 return crate::external_executor::volume::decode(&file.bytes)
@@ -251,13 +254,15 @@ impl LocalHarness {
         })
     }
 
-    async fn wake_cancelled_request(
+    // Reuse the cancellation cut to identify an empty suspended input slot.
+    // workflow_slot excludes cancellation and authenticates this task's state.
+    async fn prepare_external_slot(
         &self,
         request: &ExternalRequest,
         requests: &TaskVolume<LocalStream>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if !matches!(request.action, ExternalAction::RunTool { .. }) {
-            return Ok(());
+            return Ok(false);
         }
         let Some((_, slot)) = self
             .runtime
@@ -269,10 +274,10 @@ impl LocalHarness {
             )
             .await?
         else {
-            return Ok(());
+            return Ok(false);
         };
         if slot.waiting_command != Some(request.operation_id) {
-            return Ok(());
+            return Ok(slot.is_empty());
         }
         let cancel = crate::external_executor::cancellation::prepare(
             requests,
@@ -293,6 +298,6 @@ impl LocalHarness {
                 )
                 .await?;
         }
-        Ok(())
+        Ok(false)
     }
 }

@@ -16,7 +16,7 @@ fn ready_for_input(
 ) -> bool {
     phase == OperationPhase::Suspended
         && !cancelled
-        && slot.is_some_and(|slot| slot.waiting_command.is_none() && slot.input.is_none())
+        && slot.is_some_and(WorkflowSuspension::is_empty)
 }
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
