@@ -39,6 +39,8 @@ struct Owner {
     registry: Arc<registry::Registry>,
     control: Arc<LocalStream>,
     secret: [u8; 32],
+    shutdown: Arc<TaskVolume<LocalStream>>,
+    instance: uuid::Uuid,
 }
 
 #[derive(Clone)]
@@ -62,6 +64,7 @@ impl Service<http::Request<Body>> for Follows {
         self.0.poll_ready(context)
     }
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        let streaming = response::streaming(request.uri().path());
         self.0.call(request)
     }
 }
@@ -105,17 +108,24 @@ impl Service<http::Request<Body>> for Owner {
                 Ok(provider) => provider,
                 Err(error) => return Ok(Status::permission_denied(error.to_string()).into_http()),
             };
-            if request.uri().path().split('/').nth(1) == Some(Follows::NAME) {
+            let response = if request.uri().path().split('/').nth(1) == Some(Follows::NAME) {
                 let mut service = acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer::new(
                     acyclic_stream::session::Service::new(Arc::new(provider), "local".into(), Default::default()),
                 );
-                service.call(request).await
+                service.call(request).await?
             } else {
                 let mut service =
                     acyclic_stream::wire::stream_service_server::StreamServiceServer::new(
                         StreamService::new(Arc::new(provider)),
                     );
-                service.call(request).await
+                service.call(request).await?
+            };
+            if streaming {
+                let shutdown = Arc::clone(&owner.shutdown);
+                let instance = owner.instance;
+                Ok(response::close_on_stop(response, async move { stopped(&shutdown, instance).await }))
+            } else {
+                Ok(response)
             }
         })
     }
@@ -128,7 +138,7 @@ fn stop_key(instance: uuid::Uuid) -> Result<FileKey> {
     })
 }
 
-async fn stopped<P: acyclic_stream::StreamProvider + ?Sized>(
+pub(super) async fn stopped<P: acyclic_stream::StreamProvider + ?Sized>(
     control: &TaskVolume<P>,
     instance: uuid::Uuid,
 ) -> Result<()> {
@@ -195,6 +205,8 @@ async fn serve() -> Result<()> {
         registry: Arc::clone(&registry),
         control,
         secret,
+        shutdown: Arc::clone(&files),
+        instance,
     };
     let server = Server::builder()
         .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(

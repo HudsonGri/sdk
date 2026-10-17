@@ -12,6 +12,7 @@ mod credential;
 mod provider;
 mod registry;
 mod request_feed;
+mod response;
 mod server;
 
 pub(super) use bootstrap::{binding, existing_binding};
