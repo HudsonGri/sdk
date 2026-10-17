@@ -42,7 +42,7 @@ impl Output {
                 .task()
                 .owned_mailbox
                 .as_ref()
-                .and_then(|owner| owner.execution_cancellation())
+                .and_then(|owner| owner.invocation_cancellation())
                 .cloned(),
             volume,
             generation,

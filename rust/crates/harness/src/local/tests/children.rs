@@ -521,14 +521,9 @@ async fn child_file_admission_replays_under_the_parent_lease_and_shared_depth_li
         .unwrap()
         .files
         .remove(0);
-    let rejected = harness
-        .admit_child_request(&child_files, &file)
-        .await
-        .map(|(task, _)| task);
     assert!(
-        matches!(&rejected,
-        Err(Error::AdmissionRejected(reason)) if reason.contains("depth limit exhausted")),
-        "unexpected child admission at the depth limit: {rejected:?}"
+        matches!(harness.admit_child_request(&child_files, &file).await,
+        Err(Error::Invalid(reason)) if reason.contains("depth limit exhausted"))
     );
     assert!(
         harness

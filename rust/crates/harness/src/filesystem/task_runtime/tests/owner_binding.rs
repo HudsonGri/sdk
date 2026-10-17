@@ -39,9 +39,9 @@ proptest! {
                 ).await?;
                 let cancellable = runtime.bind_task_owner(cancellable, task, fence.clone()).await?;
                 let owner = cancellable.owned_mailbox.as_ref().unwrap();
-                assert!(!owner.execution_cancellation().unwrap().is_cancelled());
+                assert!(!owner.invocation_cancellation().unwrap().is_cancelled());
                 token.cancel();
-                assert!(owner.execution_cancellation().unwrap().is_cancelled());
+                assert!(owner.invocation_cancellation().unwrap().is_cancelled());
                 // Stopping an invocation preserves its fence for cleanup and
                 // result settlement; it does not invent permanent task loss.
                 owner.verify_owner(None)?.await?;

@@ -126,7 +126,6 @@ where
             io.allocation_attempt(bytes)?;
             let custody = io.take_native_custody(io.owned_bytes()?)?;
             Arc::new(TaskJournalMailbox {
-                execution_cancellation: None,
                 host: Arc::clone(&self.host),
                 owner,
                 native_custody: Some(custody),

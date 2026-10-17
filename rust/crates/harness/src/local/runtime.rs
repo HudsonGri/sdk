@@ -58,6 +58,11 @@ pub(super) async fn open(
         ),
         format!(
             "task:spawn:{}@{}",
+            child_definition.identity().name,
+            child_definition.identity().version
+        ),
+        format!(
+            "task:spawn:{}@{}",
             definition.identity().name,
             definition.identity().version
         ),

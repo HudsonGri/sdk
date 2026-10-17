@@ -283,7 +283,6 @@ struct TaskJournalMailbox<P: StreamProvider> {
     owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
-    execution_cancellation: Option<acyclic_fs::CancellationToken>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -368,9 +367,6 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     #[cfg(not(target_arch = "wasm32"))]
     fn admission(&self) -> (&TaskAdmissionRecord, &crate::workflow::WorkflowAdmission) {
         (self.owner.admission(), self.owner.workflow_admission())
-    }
-    fn execution_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
-        self.execution_cancellation.as_ref()
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn claim_model_dispatch<'a>(
@@ -582,7 +578,6 @@ where
         let mut context =
             Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
         context.owned_mailbox = Some(Arc::new(TaskJournalMailbox {
-            execution_cancellation: cancellation.cloned(),
             host: Arc::clone(&self.host),
             owner: Arc::clone(&owner),
             #[cfg(not(target_arch = "wasm32"))]
@@ -601,7 +596,7 @@ where
         let cancellation = context
             .owned_mailbox
             .as_ref()
-            .and_then(|owner| owner.execution_cancellation())
+            .and_then(|owner| owner.invocation_cancellation())
             .cloned();
         self.bind_task_owner_cancellable(context, task, fence, cancellation.as_ref())
             .await
@@ -621,15 +616,19 @@ where
             ));
         }
         let owner = self.host.journal_owner(task, &fence, None).await?;
+        let owner = Arc::new(match cancellation {
+            Some(cancellation) => owner.with_invocation_cancellation(cancellation),
+            None => owner,
+        });
         let mailbox = Arc::new(TaskJournalMailbox {
-            execution_cancellation: cancellation.cloned(),
             host: Arc::clone(&self.host),
-            owner: Arc::new(owner),
+            owner: Arc::clone(&owner),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: None,
         });
         mailbox.validate_scope(context.scope(), None)?;
         context.owned_mailbox = Some(mailbox);
+        context.bind_ordinary_created_owner(owner)?;
         self.bind_default_output(context).await
     }
 

@@ -27,6 +27,7 @@ mod provider_tests;
 mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
+mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
@@ -248,9 +249,19 @@ fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
         return Err("scenario services must start before the async runtime".into());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
-    Ok(tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?)
+    Ok(scenario_builder().build()?)
+}
+
+const BLOCKING_WORKERS: usize = 16;
+const MAX_ASYNC_WORKERS: usize = 32;
+fn scenario_builder() -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    builder
+        .worker_threads(available.clamp(2, MAX_ASYNC_WORKERS))
+        .max_blocking_threads(BLOCKING_WORKERS)
+        .enable_all();
+    builder
 }
 
 #[tokio::test]
@@ -261,6 +272,17 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
             .to_string()
             .contains("services must start before the async runtime")
     );
+}
+
+fn scenario_admission<I>(
+    cases: I,
+) -> impl futures::Stream<Item = <I::Item as std::future::Future>::Output>
+where
+    I: ExactSizeIterator,
+    I::Item: std::future::Future,
+{
+    let capacity = runtime_tests::admission_capacity(cases.len());
+    stream::iter(cases).buffer_unordered(capacity)
 }
 
 async fn run_scenarios(started: Instant) -> TestResult {
@@ -279,7 +301,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    let mut results = stream::iter(paths.into_iter().map(|path| {
+    let mut results = scenario_admission(paths.into_iter().map(|path| {
         let root = root.clone();
         #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
         let root = if path.starts_with(&local_root) {
@@ -298,8 +320,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
             .unwrap_or_else(|error| Err(Box::new(error)));
             (path, result)
         }
-    }))
-    .buffer_unordered(count);
+    }));
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path

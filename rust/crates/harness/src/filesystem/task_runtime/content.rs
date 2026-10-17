@@ -11,10 +11,14 @@ where
         context: TaskContext,
     ) -> impl Future<Output = Result<TaskContext>> + '_ {
         Box::pin(async move {
-            if context.content_binding(None).is_some_and(|binding| binding.writer.is_some())
+            if context
+                .content_binding(None)
+                .is_some_and(|binding| binding.writer.is_some())
                 || !context.scope().resource_proofs().is_empty()
                 || !context.scope().grants().contains(
-                    &self.volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
+                    &self
+                        .volume
+                        .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 )
             {
                 return Ok(context);
@@ -23,12 +27,19 @@ where
                 .into_shared()?
                 .with_output_bindings(ContentBindings {
                     reader: FilesystemContentVerifier::new(
-                        self.filesystem.clone(), &self.verifier, &self.signed,
-                        self.maximum_payload_bytes, None,
+                        self.filesystem.clone(),
+                        &self.verifier,
+                        &self.signed,
+                        self.maximum_payload_bytes,
+                        None,
                     )?,
                     writer: Some(FilesystemContentPublisher::new(
-                        self.filesystem.clone(), &self.volume, &self.verifier, &self.signed,
-                        self.maximum_payload_bytes, None,
+                        self.filesystem.clone(),
+                        &self.volume,
+                        &self.verifier,
+                        &self.signed,
+                        self.maximum_payload_bytes,
+                        None,
                     )?),
                 })
                 .await?;
