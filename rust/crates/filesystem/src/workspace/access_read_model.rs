@@ -91,11 +91,14 @@ fn model(check_snapshot: bool) {
         // Each immutable digest names its policy and content together. Reading
         // commit 2 represents disclosing its denied bytes, without modeling
         // unrelated filesystem codecs or replacing the authority with a mock.
-        if (!check_snapshot
+        let served = (!check_snapshot
             || permissions
                 .matches_policy_revision(GenerationId::new(snapshot.digest), revision(snapshot)))
-            && permissions.decide(Action::Read, "", 0).allowed
-        {
+            && permissions.decide(Action::Read, "", 0).allowed;
+        writer
+            .join()
+            .expect("commit and publication finish without deadlock");
+        if served {
             assert_eq!(
                 snapshot.sequence.get(),
                 1,
@@ -103,9 +106,6 @@ fn model(check_snapshot: bool) {
             );
             assert_ne!(snapshot.digest, Digest::ZERO);
         }
-        writer
-            .join()
-            .expect("commit and publication finish without deadlock");
         assert_eq!(head(&store).sequence.get(), 2, "committed state was lost");
     });
 }
