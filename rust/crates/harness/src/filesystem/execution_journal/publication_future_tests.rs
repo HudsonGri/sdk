@@ -505,11 +505,14 @@ proptest! {
             [0u8,1,2,3,4].map(|mode| {
                 let observed = differential::observe::<_, _, (&'static str, u64)>(|| (), |()| {
                     let mut outcome = None;
+                    let mut layouts = (0, 0);
                     let allocation = acyclic_test_support::measure(|| {
-                        outcome = Some(runtime.block_on(run(&Choice(&journal, old), mode, 0,
-                            (operation, "key", &event), &file, &oversized).unwrap()).map_err(|e| e.to_string()));
+                        (outcome, layouts) = crate::obs::observe_box_layouts(|| {
+                            Some(runtime.block_on(run(&Choice(&journal, old), mode, 0,
+                                (operation, "key", &event), &file, &oversized).unwrap()).map_err(|e| e.to_string()))
+                        });
                     });
-                    (outcome.unwrap(), allocation)
+                    (outcome.unwrap(), allocation, layouts)
                 });
                 assert_eq!(&state, &runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap());
                 assert!(observed.1.is_empty(), "factory error reached storage work");
@@ -521,10 +524,14 @@ proptest! {
             prop_assert!(after.0.0.is_err());
             prop_assert_eq!(&before.0.0, &after.0.0);
             prop_assert_eq!(before.1, after.1);
+            let (before_layout, after_layout) = (before.0.2, after.0.2);
+            prop_assert_eq!(before_layout.0, 2);
+            prop_assert_eq!(after_layout.0, 1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Retained summary custody adds128bytes; the replay fence adds160.
-            let saved = [21328, 21152, 14464, 11840, 14192][mode];
+            // Predict allocator bytes from concrete boxed layouts, including
+            // both factories' outer frames, rather than compiler-sensitive pins.
+            let saved = before_layout.1 - after_layout.1;
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
