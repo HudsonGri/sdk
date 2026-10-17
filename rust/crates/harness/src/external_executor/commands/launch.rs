@@ -28,11 +28,15 @@ where
             {
                 return failed("native process execution is not bound to this task".into());
             }
-            let bytes = volume::encode(&super::super::launch::Launch {
+            let bytes = match super::super::launch::encode(&super::super::launch::Launch {
                 parent: owner.task_id(),
                 request,
-            })
-            .map_err(storage)?;
+            }) {
+                Ok(bytes) if bytes.len() as u64 <= context.scope().limits().file_bytes => bytes,
+                _ => {
+                    return failed("native executor declaration exceeds its file allowance".into());
+                }
+            };
             let executor = self
                 .payloads
                 .stage_input(request.operation_id, "native-launch", &bytes, None)?

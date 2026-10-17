@@ -35,7 +35,7 @@ proptest! {
         let request=request(&label,&prompt,id,&literal);
         let spawn=Spawn::from_request(&request)?;
         let launch=Launch {parent:TaskId::from_bytes(parent),request};
-        let bytes=volume::encode(&launch).unwrap();
+        let bytes=encode(&launch)?;
         prop_assert_eq!(Launch::decode(&bytes)?,(launch,spawn));
         let (launch,spawn)=Launch::decode(&bytes)?;
         let path=std::env::temp_dir().join("literal session.jsonl");
@@ -72,4 +72,28 @@ fn native_decoder_rejects_unknown_fields_and_duplicate_headers() {
         r#"{"type":"session","type":"session","version":3,"id":"00000000-0000-0000-0000-000000000000","timestamp":"now","cwd":"/project"}"#
     );
     assert!(Spawn::from_request(&request).is_err());
+}
+
+#[test]
+fn a_full_request_record_fits_its_retained_parent_envelope() -> Result<()> {
+    let mut request = request("child", "x", uuid::Uuid::nil(), "literal");
+    let task = crate::task_volume::Component::new(request.task_id().to_string()).unwrap();
+    let available =
+        acyclic_stream::MAX_RECORD_BYTES - request.to_file(task.clone()).unwrap().bytes.len();
+    let ExternalAction::RunTool { arguments, .. } = &mut request.action else {
+        unreachable!()
+    };
+    arguments["prompt"] = json!("x".repeat(available + 1));
+    assert_eq!(
+        request.to_file(task).unwrap().bytes.len(),
+        acyclic_stream::MAX_RECORD_BYTES
+    );
+    let launch = Launch {
+        parent: request.task_id(),
+        request,
+    };
+    let bytes = encode(&launch)?;
+    assert_eq!(bytes.len() as u64, BOUNDS.maximum_bytes);
+    assert_eq!(Launch::decode(&bytes)?.0, launch);
+    Ok(())
 }

@@ -4,6 +4,20 @@ use crate::{Error, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+// The retained file contains one already-bounded request plus its fixed parent
+// envelope. It is not a transport frame and must not reuse the record bound.
+const BOUNDS: crate::JsonBounds = crate::JsonBounds {
+    maximum_bytes: (acyclic_stream::MAX_RECORD_BYTES
+        + br#"{"parent":"00000000-0000-0000-0000-000000000000","request":}"#.len())
+        as u64,
+    maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
+    maximum_depth: 256,
+};
+
+pub(crate) fn encode<T: Serialize>(launch: &Launch<T>) -> Result<Vec<u8>> {
+    crate::json_bytes_bounded(launch, BOUNDS, None, &mut |_| Ok(()))
+}
+
 /// Native arguments are literal argv entries, never shell interpolation.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -182,7 +196,16 @@ impl Spawn {
 
 impl Launch {
     pub(crate) fn decode(bytes: &[u8]) -> Result<(Self, Spawn)> {
-        let launch: Self = volume::decode(bytes).map_err(|_| invalid())?;
+        let launch: Self = crate::json_from_slice_bounded(
+            std::marker::PhantomData,
+            bytes,
+            BOUNDS,
+            bytes.len() as u64,
+            None,
+            None,
+            &mut |_| Ok(()),
+        )
+        .map_err(|_| invalid())?;
         if !launch.request.valid() {
             return Err(invalid());
         }
@@ -207,8 +230,9 @@ fn invalid() -> Error {
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn fuzz(bytes: &[u8]) {
     if let Ok((launch, spawn)) = Launch::decode(bytes) {
-        let encoded = volume::encode(&launch).unwrap();
-        assert_eq!(Launch::decode(&encoded).unwrap(), (launch, spawn));
+        if let Ok(encoded) = encode(&launch) {
+            assert_eq!(Launch::decode(&encoded).unwrap(), (launch, spawn));
+        }
     }
 }
 
