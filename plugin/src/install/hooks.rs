@@ -218,7 +218,7 @@ pub(crate) fn normalize_claude_hook_document(
         let entries = entries
             .as_array_mut()
             .ok_or_else(|| format!("Claude Code hooks.{event} must be an array"))?;
-        entries.retain(|entry| !is_acyclic_claude_hook_group(event, entry));
+        entries.retain(|entry| !acyclic_harness::external_executor::owns_claude_hook(event, entry));
         if entries.is_empty() {
             hooks.remove(event);
         }
@@ -227,55 +227,6 @@ pub(crate) fn normalize_claude_hook_document(
         document.remove("hooks");
     }
     Ok(Some(Value::Object(document)))
-}
-
-pub(crate) fn is_acyclic_claude_hook_group(event: &str, group: &Value) -> bool {
-    let Some(group) = group.as_object() else {
-        return false;
-    };
-    let expected_fields = if matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure") {
-        2
-    } else {
-        1
-    };
-    if group.len() != expected_fields
-        || expected_fields == 2 && group.get("matcher").and_then(Value::as_str) != Some(".*")
-    {
-        return false;
-    }
-    let Some(hook) = group
-        .get("hooks")
-        .and_then(Value::as_array)
-        .filter(|hooks| hooks.len() == 1)
-        .and_then(|hooks| hooks.first())
-        .and_then(Value::as_object)
-    else {
-        return false;
-    };
-    if hook.len() != 5
-        || hook.get("type").and_then(Value::as_str) != Some("command")
-        || hook.get("args") != Some(&json!(["__hook", "claude-code", event]))
-        || hook.get("timeout").and_then(Value::as_u64)
-            != Some(
-                acyclic_harness::external_executor::hooks(
-                    acyclic_harness::external_executor::ExternalHost::ClaudeCode,
-                )
-                .find(|spec| spec.event == event)
-                .map_or(120, |spec| spec.timeout_seconds()),
-            )
-        || hook.get("statusMessage").and_then(Value::as_str)
-            != Some("Acyclic is routing the workspace")
-    {
-        return false;
-    }
-    hook.get("command")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| {
-            name.eq_ignore_ascii_case("acyclic") || name.eq_ignore_ascii_case("acyclic.exe")
-        })
 }
 
 pub(crate) fn remove_claude_hooks(project: bool) -> Result<(), String> {

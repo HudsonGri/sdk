@@ -82,7 +82,7 @@ pub(crate) use local_owner::fuzz_request as fuzz_request_record;
     not(target_arch = "wasm32")
 ))]
 pub use local_owner::{run_local_owner, stop_local_owner};
-pub use manifest::{claude_hooks, claude_manifest};
+pub use manifest::{claude_hooks, claude_manifest, owns_claude_hook};
 #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
 pub use mcp::{native_tool_catalog, serve_native_tools};
 #[cfg(all(

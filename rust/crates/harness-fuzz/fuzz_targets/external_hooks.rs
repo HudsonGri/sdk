@@ -38,6 +38,31 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     acyclic_harness::test_support::fuzz_local_owner_input(input);
+    if let Ok(executable) = std::str::from_utf8(input)
+        && !executable.contains('\0')
+    {
+        let executable = format!("{executable}/acyclic");
+        #[cfg(windows)]
+        let expected = executable.replace('\\', "/");
+        #[cfg(not(windows))]
+        let expected = executable.clone();
+        for (event, groups) in acyclic_harness::external_executor::claude_hooks(&executable) {
+            let command = groups[0]["hooks"][0]["command"].as_str().unwrap();
+            let arguments = acyclic_harness::tools::parse_command(command).expect("quoted hook command");
+            assert_eq!(
+                arguments,
+                [expected.as_str(), "__hook", "claude-code", event]
+            );
+            assert!(acyclic_harness::external_executor::owns_claude_hook(
+                event, &groups[0]
+            ));
+        }
+    }
+    if let Ok(group) = serde_json::from_slice::<serde_json::Value>(input) {
+        for spec in hooks(ExternalHost::ClaudeCode) {
+            acyclic_harness::external_executor::owns_claude_hook(spec.event, &group);
+        }
+    }
     let task = Component::new("task")?;
     if let Ok(arguments) = serde_json::from_slice::<serde_json::Value>(input) {
         if let Ok(result) = acyclic_harness::external_executor::tool_result(arguments.clone()) {

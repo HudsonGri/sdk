@@ -12,12 +12,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
-            "args": [
-              "__hook",
-              "claude-code",
-              "SessionStart"
-            ],
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SessionStart",
             "timeout": 120,
             "statusMessage": "Acyclic is routing the workspace"
           }
@@ -30,12 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
-            "args": [
-              "__hook",
-              "claude-code",
-              "PreToolUse"
-            ],
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PreToolUse",
             "timeout": 120,
             "statusMessage": "Acyclic is routing the workspace"
           }
@@ -48,12 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
-            "args": [
-              "__hook",
-              "claude-code",
-              "PostToolUse"
-            ],
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PostToolUse",
             "timeout": 120,
             "statusMessage": "Acyclic is routing the workspace"
           }
@@ -66,12 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
-            "args": [
-              "__hook",
-              "claude-code",
-              "PostToolUseFailure"
-            ],
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PostToolUseFailure",
             "timeout": 120,
             "statusMessage": "Acyclic is routing the workspace"
           }
@@ -83,12 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
-            "args": [
-              "__hook",
-              "claude-code",
-              "SubagentStart"
-            ],
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SubagentStart",
             "timeout": 120,
             "statusMessage": "Acyclic is routing the workspace"
           }
@@ -100,12 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
-            "args": [
-              "__hook",
-              "claude-code",
-              "SubagentStop"
-            ],
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SubagentStop",
             "timeout": 120,
             "statusMessage": "Acyclic is routing the workspace"
           }
@@ -117,12 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
-            "args": [
-              "__hook",
-              "claude-code",
-              "SessionEnd"
-            ],
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code SessionEnd",
             "timeout": 3,
             "statusMessage": "Acyclic is routing the workspace"
           }
