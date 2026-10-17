@@ -257,14 +257,19 @@ mod unix {
 
     /// Explicit cancellation is independent of duplicated or inherited writers.
     pub(in super::super) struct Stopper {
-        cancel: io::PipeWriter,
+        cancel: Option<io::PipeWriter>,
+        // Keep a read peer alive until cancellation, even if the worker ended.
+        // Writing the cancel byte therefore cannot raise SIGPIPE.
+        _reader: io::PipeReader,
     }
 
     impl Stopper {
         pub(super) fn stop(&mut self) {
             // The private pipe receives exactly this one byte. Hangup alone
             // can be delayed by a writer inherited across a concurrent spawn.
-            let _ = self.cancel.write_all(&[0]);
+            if let Some(mut cancel) = self.cancel.take() {
+                let _ = cancel.write_all(&[0]);
+            }
         }
     }
 
@@ -277,7 +282,10 @@ mod unix {
             let mut input = File::from(std::os::fd::OwnedFd::from(input));
             let (cancelled, cancel) = io::pipe()?;
             let _inherited_writer = cancel.try_clone()?;
-            let mut stop = Stopper { cancel };
+            let mut stop = Stopper {
+                cancel: Some(cancel),
+                _reader: cancelled.try_clone()?,
+            };
             if !hangup_only {
                 stop.stop();
             }
@@ -315,9 +323,13 @@ mod unix {
     impl Reader {
         pub(in super::super) fn spawn(file: File) -> io::Result<Self> {
             let (cancelled, cancel) = io::pipe()?;
+            let reader = cancelled.try_clone()?;
             // Detached: an explicit cancel byte ends its wait.
             Reader::start(Polled { file, cancelled }, |_detached| {
-                Stop(Stopper { cancel })
+                Stop(Stopper {
+                    cancel: Some(cancel),
+                    _reader: reader,
+                })
             })
         }
     }
