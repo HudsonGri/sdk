@@ -1,6 +1,9 @@
 use super::*;
 
-fn shared_tail_append(copy: bool, frozen: bool) -> (Spans, Spans, usize) {
+fn shared_tail_append(
+    copy: bool,
+    frozen: bool,
+) -> (Spans, Spans, usize, acyclic_test_support::AllocationInfo) {
     let mut spans = Spans::default();
     spans.push_content(
         Span {
@@ -19,17 +22,35 @@ fn shared_tail_append(copy: bool, frozen: bool) -> (Spans, Spans, usize) {
     };
     COPY_SHARED_TAIL.set(copy);
     let before = crate::work::parts()[1];
-    spans.push_content(suffix, false);
+    let allocations = acyclic_test_support::measure(|| spans.push_content(suffix, false));
     let copied = crate::work::parts()[1] - before;
     COPY_SHARED_TAIL.set(false);
-    (spans, snapshot, copied)
+    (spans, snapshot, copied, allocations)
 }
 
 #[test]
 fn appending_after_a_snapshot_never_copies_the_shared_tail() {
     for frozen in [false, true] {
-        let (actual, snapshot, copied) = shared_tail_append(false, frozen);
-        let (baseline, previous, redundant) = shared_tail_append(true, frozen);
+        let previous_work =
+            std::cell::Cell::new((0, acyclic_test_support::AllocationInfo::default()));
+        let current_work =
+            std::cell::Cell::new((0, acyclic_test_support::AllocationInfo::default()));
+        let ((actual, snapshot), _) = acyclic_test_support::differential(
+            || {
+                let (spans, snapshot, copied, allocations) = shared_tail_append(true, frozen);
+                previous_work.set((copied, allocations));
+                (spans.to_vec(), snapshot.to_vec())
+            },
+            || {
+                let (spans, snapshot, copied, allocations) = shared_tail_append(false, frozen);
+                current_work.set((copied, allocations));
+                (spans.to_vec(), snapshot.to_vec())
+            },
+        );
+        let (copied, allocations) = current_work.get();
+        let (redundant, previous_allocations) = previous_work.get();
+        assert_eq!(allocations.count_total, if frozen { 2 } else { 3 });
+        assert_eq!(previous_allocations.count_total, if frozen { 2 } else { 4 });
         assert_eq!(
             copied,
             if frozen {
@@ -47,8 +68,13 @@ fn appending_after_a_snapshot_never_copies_the_shared_tail() {
                     std::mem::size_of::<Span>()
                 }
         );
-        assert_eq!(actual.to_vec(), baseline.to_vec());
-        assert_eq!(snapshot.to_vec(), previous.to_vec());
+        assert_eq!(
+            actual
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+            "retained suffix"
+        );
         assert_eq!(snapshot.first().unwrap().text.as_str(), "retained");
     }
 }

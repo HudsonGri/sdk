@@ -35,6 +35,7 @@ unicode-segmentation = "1.13"
 unicase = "2.10"
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 
 [lints]
