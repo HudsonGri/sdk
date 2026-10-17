@@ -33,6 +33,14 @@
           "tool_result"
         ]
       },
+      "tool_cancel": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "tool_cancel"
+        ]
+      },
       "subagent_start": {
         "command": "acyclic",
         "args": [
