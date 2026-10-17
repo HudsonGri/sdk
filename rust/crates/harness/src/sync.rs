@@ -7,6 +7,9 @@ pub(crate) use tokio::sync::Mutex;
 #[path = "sync/primitives.rs"]
 mod primitives;
 pub(crate) use primitives::{Arc, Mutex as SyncMutex, atomic};
+// The dedicated stdin reader's handoff.
+#[cfg(all(feature = "terminal", any(unix, windows)))]
+pub(crate) use primitives::{Condvar as SyncCondvar, MutexGuard as SyncGuard};
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "sync/owned.rs"]

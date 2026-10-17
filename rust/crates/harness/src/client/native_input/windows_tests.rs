@@ -48,14 +48,19 @@ fn anonymous_pipes_are_read_by_the_dedicated_reader_until_the_writer_closes() ->
 }
 
 #[test]
-fn disk_files_are_read_directly() -> io::Result<()> {
+fn files_and_devices_are_read_off_the_runtime() -> io::Result<()> {
+    // A file may sit on a slow share and a character device may be a serial
+    // port: the runtime never waits on either.
     let mut file = tempfile::tempfile()?;
     file.write_all(b"alpha\nbeta\n")?;
     io::Seek::rewind(&mut file)?;
     runtime()?.block_on(async {
         let input = from_file(file)?;
-        assert!(matches!(input, Stdin::Ready(_)));
+        assert!(matches!(input, Stdin::Reader(_)));
         assert_eq!(lines(input).await?, ["alpha", "beta"]);
+        let input = from_file(std::fs::OpenOptions::new().read(true).open("NUL")?)?;
+        assert!(matches!(input, Stdin::Reader(_)));
+        assert!(lines(input).await?.is_empty());
         Ok(())
     })
 }
@@ -134,5 +139,65 @@ fn negative_control_detects_a_blocking_pool_read_left_behind() -> io::Result<()>
         "the orphaned read never took the byte"
     );
     runtime.shutdown_background();
+    Ok(())
+}
+
+/// Child for scripts/test-console-stdin.ps1, which runs it in a
+/// pseudoconsole so stdin is a real console. While this thread holds std's
+/// stdin lock: the console reader drops promptly, and the removed reader
+/// (a read through std's stdin, cancelled until it ends) cannot until the
+/// lock is released. Before that control, the reader decodes typed text to
+/// its end, still under the lock.
+#[test]
+fn console_stdin_child() -> io::Result<()> {
+    let Some(report) = std::env::var_os("ACYCLIC_CONSOLE_STDIN_CHILD") else {
+        return Ok(());
+    };
+    let report = std::path::PathBuf::from(report);
+    let runtime = runtime()?;
+    let lock = io::stdin().lock();
+    let started = Instant::now();
+    runtime.block_on(async {
+        let mut input = super::stdin::open()?;
+        assert!(matches!(input, Stdin::Reader(_)));
+        let waited = tokio::time::timeout(Duration::from_millis(5), input.read(&mut [0; 1])).await;
+        assert!(waited.is_err());
+        drop(input);
+        io::Result::Ok(())
+    })?;
+    let dropped = started.elapsed();
+    assert!(dropped < Duration::from_millis(500), "{dropped:?}");
+    // Still under the lock: the reader needs nothing std's stdin holds. The
+    // text is read before the control, whose cancelled cooked read would
+    // otherwise be completed by the console with the next typed line.
+    let text = runtime.block_on(async {
+        let input = super::stdin::open()?;
+        std::fs::write(report.with_extension("ready"), b"ready")?;
+        lines(input).await
+    })?;
+    let removed = std::thread::spawn(|| {
+        let reader = std::thread::spawn(|| drop(io::Read::read(&mut io::stdin(), &mut [0; 1])));
+        while !reader.is_finished() {
+            acyclic_native_runtime::terminal::cancel_thread(&reader);
+        }
+        let _ = reader.join();
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        !removed.is_finished(),
+        "the removed reader dropped under the lock"
+    );
+    drop(lock);
+    let released = Instant::now();
+    removed.join().map_err(|_| io::ErrorKind::Other)?;
+    let control = format!(
+        "removed reader's drop held 200 ms by the stdin lock, ended {:?} after release",
+        released.elapsed()
+    );
+    let summary = format!(
+        "console reader dropped in {dropped:?} under the stdin lock\n{control}\n{} then end of input",
+        text.join("|")
+    );
+    std::fs::write(&report, summary)?;
     Ok(())
 }

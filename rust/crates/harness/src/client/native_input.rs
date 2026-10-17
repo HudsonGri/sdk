@@ -123,17 +123,18 @@ mod stdin {
 }
 
 /// Windows stdin, awaited the way its handle allows. Overlapped pipes
-/// complete on the runtime's IOCP with no thread; disk files and NUL never
-/// wait for a peer and are read directly. Synchronous pipes and consoles are
-/// observable only by a blocking read, so the dedicated reader takes them
-/// (the console through std's stdin, which decodes its UTF-16); on
-/// anonymous pipes it measured about 1.7x the throughput of
-/// `tokio::io::stdin` at equal latency, and dropping it cancels the pending
-/// read and joins the thread, so no orphaned read consumes later input.
+/// complete on the runtime's IOCP with no thread. Everything else may block
+/// (a pipe on its writer, a file on a slow share, a device on its peer), so
+/// the dedicated reader takes it: the console through its own handle, waited
+/// on with a cancel event and decoded from UTF-16 there, never through std's
+/// locked stdin. On anonymous pipes the reader measured about 1.7x the
+/// throughput of `tokio::io::stdin` at equal latency, and dropping it
+/// cancels the pending wait or read and joins the thread, so no orphaned
+/// read consumes later input.
 #[cfg(windows)]
 mod stdin {
     use std::fs::File;
-    use std::io::{self, Read};
+    use std::io;
     use std::os::windows::io::AsHandle;
     use std::pin::Pin;
     use std::task::{Context, Poll, ready};
@@ -145,7 +146,6 @@ mod stdin {
     use super::reader::{Reader, end_of_input};
 
     pub(super) enum Stdin {
-        Ready(File),
         Overlapped(NamedPipeClient),
         Reader(Reader),
     }
@@ -156,11 +156,9 @@ mod stdin {
 
     pub(super) fn from_file(file: File) -> io::Result<Stdin> {
         Ok(match async_input(file)? {
-            AsyncInput::Ready(file) => Stdin::Ready(file),
             AsyncInput::Overlapped(pipe) => Stdin::Overlapped(pipe),
-            AsyncInput::Blocking(file) => Stdin::Reader(Reader::spawn(file)?),
-            // The console decodes its UTF-16 input through std's stdin.
-            AsyncInput::Console(_) => Stdin::Reader(Reader::spawn(io::stdin())?),
+            AsyncInput::Blocking(file) => Stdin::Reader(Reader::blocking(file)?),
+            AsyncInput::Console(file) => Stdin::Reader(Reader::console(file)?),
         })
     }
 
@@ -171,11 +169,6 @@ mod stdin {
             buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
             match self.get_mut() {
-                Self::Ready(file) => {
-                    let count = end_of_input(file.read(buf.initialize_unfilled()))?;
-                    buf.advance(count);
-                    Poll::Ready(Ok(()))
-                }
                 Self::Overlapped(pipe) => {
                     let before = buf.filled().len();
                     let read = ready!(Pin::new(pipe).poll_read(cx, buf));
@@ -188,168 +181,8 @@ mod stdin {
     }
 }
 
-/// A dedicated reader for input the runtime cannot wait on. One persistent
-/// thread fills recycled batches and feeds a bounded channel, so a slow or
-/// stalled read never blocks the runtime.
-mod reader {
-    use std::io::{self, Read};
-    use std::sync::mpsc;
-    use std::task::{Context, Poll, ready};
-
-    use tokio::io::ReadBuf;
-
-    const BATCH: usize = 64 * 1024;
-
-    /// Input the dedicated reader can wait on with a blocking read.
-    pub(super) trait Source: Send + 'static {
-        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize>;
-    }
-
-    #[cfg(unix)]
-    impl Source for std::fs::File {
-        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            read_blocking(self, bytes)
-        }
-    }
-
-    #[cfg(windows)]
-    impl Source for std::fs::File {
-        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            end_of_input(self.read(bytes))
-        }
-    }
-
-    #[cfg(windows)]
-    impl Source for io::Stdin {
-        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            end_of_input(self.read(bytes))
-        }
-    }
-
-    /// ERROR_BROKEN_PIPE: the writer closed, which is the end of input.
-    #[cfg(windows)]
-    const BROKEN_PIPE: i32 = 109;
-
-    /// A closed pipe's writer is the end of input, not an error.
-    #[cfg(windows)]
-    pub(super) fn end_of_input(read: io::Result<usize>) -> io::Result<usize> {
-        match read {
-            Err(error) if error.raw_os_error() == Some(BROKEN_PIPE) => Ok(0),
-            read => read,
-        }
-    }
-
-    #[cfg(unix)]
-    /// Read, waiting as a blocking read would. An inherited description may
-    /// be nonblocking (a socket, say): WouldBlock then waits in poll for
-    /// input instead of ending it, without changing the shared flags.
-    pub(super) fn read_blocking(file: &mut std::fs::File, bytes: &mut [u8]) -> io::Result<usize> {
-        use rustix::event::{PollFd, PollFlags, poll};
-        loop {
-            match file.read(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    let mut fds = [PollFd::new(&*file, PollFlags::IN)];
-                    match poll(&mut fds, None) {
-                        Err(error) if error != rustix::io::Errno::INTR => {
-                            return Err(error.into());
-                        }
-                        // A device poll cannot watch (macOS reports some
-                        // as invalid) would turn the retry into a spin.
-                        Ok(_) if fds[0].revents().contains(PollFlags::NVAL) => {
-                            return Err(error);
-                        }
-                        _ => {}
-                    }
-                }
-                read => return read,
-            }
-        }
-    }
-
-    pub(super) struct Reader {
-        batches: tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
-        spare: mpsc::Sender<Vec<u8>>,
-        current: Vec<u8>,
-        offset: usize,
-        #[cfg(windows)]
-        thread: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl Reader {
-        pub(super) fn spawn(mut file: impl Source) -> io::Result<Self> {
-            let (send, batches) = tokio::sync::mpsc::channel(2);
-            let (spare, recycled) = mpsc::channel::<Vec<u8>>();
-            // A dropped stream fails the next send. On Unix the thread is
-            // detached and ends once its current read completes; it holds no
-            // lock or runtime resource, so process exit never waits for it.
-            // On Windows the drop cancels the read and joins.
-            let thread = std::thread::Builder::new()
-                .name("harness-stdin".into())
-                .spawn(move || {
-                    loop {
-                        let mut batch = recycled.try_recv().unwrap_or_default();
-                        batch.resize(BATCH, 0);
-                        let result = file.read_input(&mut batch).map(|count| {
-                            batch.truncate(count);
-                            batch
-                        });
-                        let last = !matches!(&result, Ok(batch) if !batch.is_empty());
-                        if send.blocking_send(result).is_err() || last {
-                            return;
-                        }
-                    }
-                })?;
-            #[cfg(unix)]
-            drop(thread);
-            Ok(Self {
-                batches,
-                spare,
-                current: Vec::new(),
-                offset: 0,
-                #[cfg(windows)]
-                thread: Some(thread),
-            })
-        }
-
-        pub(super) fn poll_read(
-            &mut self,
-            cx: &mut Context<'_>,
-            buf: &mut ReadBuf<'_>,
-        ) -> Poll<io::Result<()>> {
-            if self.offset == self.current.len() {
-                let batch = match ready!(self.batches.poll_recv(cx)) {
-                    Some(batch) => batch?,
-                    None => return Poll::Ready(Ok(())),
-                };
-                let spent = std::mem::replace(&mut self.current, batch);
-                self.offset = 0;
-                if spent.capacity() != 0 {
-                    let _ = self.spare.send(spent);
-                }
-            }
-            let count = buf.remaining().min(self.current.len() - self.offset);
-            buf.put_slice(&self.current[self.offset..self.offset + count]);
-            self.offset += count;
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    #[cfg(windows)]
-    impl Drop for Reader {
-        fn drop(&mut self) {
-            // The closed channel fails the reader's next send; cancellation is
-            // retried until the thread has left its read and observed it.
-            self.batches.close();
-            if let Some(thread) = self.thread.take() {
-                while !thread.is_finished() {
-                    acyclic_native_runtime::terminal::cancel_thread(&thread);
-                }
-                let _ = thread.join();
-            }
-        }
-    }
-}
+#[cfg(any(unix, windows))]
+mod reader;
 
 /// Waits for UI input or a validated delivery. Publication/commit is completed
 /// outside select, so an input event cannot cancel a half-published delivery.

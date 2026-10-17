@@ -308,3 +308,46 @@ fn negative_control_detects_exit_waiting_for_a_parked_reader() -> io::Result<()>
     assert!(!child_exits("joined", Duration::from_millis(300))?);
     Ok(())
 }
+
+/// Writes one byte after `drop_reader` and reports whether it is still
+/// unread once the reader has had time to take it.
+fn byte_after_drop_unread(
+    spawn: impl FnOnce(File) -> io::Result<Box<dyn FnOnce()>>,
+) -> io::Result<bool> {
+    let (read, mut write) = pipe()?;
+    let probe = read.try_clone()?;
+    let drop_reader = spawn(read)?;
+    // Let the reader reach its wait before the stream goes away.
+    std::thread::sleep(Duration::from_millis(5));
+    drop_reader();
+    write.write_all(b"x")?;
+    std::thread::sleep(Duration::from_millis(20));
+    let mut fds = [rustix::event::PollFd::new(
+        &probe,
+        rustix::event::PollFlags::IN,
+    )];
+    Ok(rustix::event::poll(&mut fds, Some(&rustix::event::Timespec::default()))? == 1)
+}
+
+#[test]
+fn a_dropped_reader_reads_nothing_written_after_it() -> io::Result<()> {
+    let unread = byte_after_drop_unread(|read| {
+        let runtime = runtime()?;
+        let reader = runtime.block_on(async { super::reader::Reader::spawn(read) })?;
+        Ok(Box::new(move || drop((reader, runtime))))
+    })?;
+    assert!(unread);
+    Ok(())
+}
+
+#[test]
+fn negative_control_detects_a_dropped_reader_left_reading() -> io::Result<()> {
+    // The removed reader waited inside read, which the stream's drop
+    // could not interrupt: the next byte after the drop was consumed.
+    let unread = byte_after_drop_unread(|mut read| {
+        std::thread::spawn(move || io::Read::read(&mut read, &mut [0; 8]));
+        Ok(Box::new(|| {}))
+    })?;
+    assert!(!unread);
+    Ok(())
+}

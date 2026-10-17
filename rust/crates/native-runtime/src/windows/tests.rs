@@ -117,11 +117,13 @@ fn input_handles_classify_by_how_they_can_be_awaited() -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_OUTBOUND;
     use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, CreatePipe, PIPE_TYPE_BYTE};
     let directory = tempfile::tempdir()?;
+    // A file may sit on a slow share and a character device may be a serial
+    // port: neither is read on the runtime.
     let disk = std::fs::File::create(directory.path().join("disk"))?;
-    assert_eq!(input_kind(&disk), InputKind::Ready);
+    assert_eq!(input_kind(&disk), InputKind::Blocking);
     assert_eq!(
         input_kind(&OpenOptions::new().read(true).open("NUL")?),
-        InputKind::Ready
+        InputKind::Blocking
     );
     let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
     // SAFETY: both outputs are valid for writes; the handles are owned below.
