@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    pub(crate) files: crate::files::Files,
     pub(crate) estimator: crate::accounting::TokenEstimator,
     /// Immutable harness model identity.
     pub(crate) model: Model,
@@ -16,7 +17,6 @@ pub struct ResolvedModel {
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
     pub(crate) transport: Arc<dyn HttpTransport>,
-    pub(crate) content: Option<Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_count: crate::codex_count::Counter,
     #[cfg(not(target_arch = "wasm32"))]
@@ -29,7 +29,7 @@ impl ResolvedModel {
         mut self,
         reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
     ) -> Self {
-        self.content = Some(reader);
+        self.files.reader = Some(reader);
         self
     }
 
@@ -88,6 +88,28 @@ impl ResolvedModel {
 }
 
 impl ModelProvider for ResolvedModel {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+        maximum_bytes: u64,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        Some(Arc::new(Self {
+            files: crate::files::Files {
+                reader: Some(reader),
+                maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
+            },
+            estimator: crate::accounting::TokenEstimator::new(self.config.adapter),
+            model: self.model.clone(),
+            config: self.config.clone(),
+            capacity: self.capacity,
+            key: self.key.clone(),
+            transport: self.transport.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_count: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_login: self.codex_login.clone(),
+        }))
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;

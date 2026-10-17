@@ -1,11 +1,13 @@
 {
-  "blocking:completed": 92,
-  "blocking:submitted": 92,
+  "blocking:completed": 100,
+  "blocking:submitted": 100,
   "model:accepted": 1,
   "model:dispatch": 1,
-  "native:completed": 21,
-  "native:submitted": 21,
-  "task:completed": 53,
-  "task:submitted": 53,
-  "stream:read:ready": 2754
+  "native:completed": 22,
+  "native:submitted": 22,
+  "task:completed": 57,
+  "task:submitted": 57,
+  "stream:read:blocked": 2,
+  "stream:read:completed": 2,
+  "stream:read:ready": 2370
 }

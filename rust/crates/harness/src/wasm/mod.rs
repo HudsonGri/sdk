@@ -46,9 +46,12 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 mod admission;
+mod bytes;
 use admission::*;
 mod content;
 use content::*;
+mod reader;
+pub use reader::BrowserContentReader;
 mod context;
 use context::*;
 mod contract;
@@ -63,12 +66,15 @@ mod reducer;
 use reducer::schema_registry;
 mod tool;
 use tool::*;
-mod wire;
 #[cfg(target_arch = "wasm32")]
 mod file_client;
 mod file_worker;
 #[cfg(target_arch = "wasm32")]
 mod query;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod swarm;
+mod task_views;
+mod wire;
 
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;

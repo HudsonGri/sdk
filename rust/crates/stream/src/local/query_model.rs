@@ -17,7 +17,7 @@ pub(super) async fn spawn_blocking<T>(
     Ok(work())
 }
 
-pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
+pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let limits = LocalStreamLimits::default();
     let mut file = tempfile::tempfile()?;
     let header = encode_header(limits, 0)?;
@@ -37,6 +37,8 @@ pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
         root: PathBuf::new(),
         torn_tail: None,
         _ownership_anchor: None,
+        #[cfg(feature = "test-support")]
+        flushed: 0,
     };
     let clock: Arc<dyn UnixMillisClock> = Arc::new(SystemUnixMillisClock);
     let commit_clock = Arc::new(PinnedCommitClock {
@@ -53,10 +55,14 @@ pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
             commit_clock,
             journal: Arc::new(Mutex::new(journal)),
             visibility: RwLock::new(()),
+            publication: RwLock::new(()),
             synced: watch::channel(0).0,
-            changed: watch::channel(Some(0)).0,
-            omit_persist_wake,
+            failed: watch::channel(false).0,
+            revision: watch::channel(0).0,
+            omit_follow_wake,
             durable_tails: Mutex::new(Default::default()),
+            #[cfg(feature = "test-support")]
+            persistence_cut: Default::default(),
         }),
         work: None,
     })

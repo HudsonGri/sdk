@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 
 use crate::OwnedBytes as Bytes;
 use async_trait::async_trait;
@@ -32,14 +32,14 @@ pub mod http;
 mod browser;
 #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
 mod change;
-#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
-mod interest;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod http_codec;
 mod http_validation;
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
+mod interest;
 #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 mod journal;
 #[cfg(feature = "local")]
@@ -66,11 +66,16 @@ pub mod wire_codec;
 /// Bounded schedule verification of production query concurrency paths.
 pub mod verification;
 #[cfg(all(acyclic_loom, feature = "local"))]
-/// Bounded models of the real child-discovery providers.
-pub use memory::discovery_model as discovery_verification;
+#[doc(hidden)]
+pub use local::replay_model::{
+    negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
+};
 #[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
+#[cfg(all(acyclic_loom, feature = "local"))]
+/// Bounded models of the real child-discovery providers.
+pub use memory::discovery_model as discovery_verification;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
@@ -95,6 +100,8 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
 };
+#[cfg(all(feature = "local", feature = "test-support"))]
+pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.
@@ -132,7 +139,9 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
     "list", "read", "follow", "append", "fork", "create", "commit",
 ];
 
-include!("lib/path.rs");
+#[path = "lib/path.rs"]
+mod path;
+pub use path::StreamPath;
 
 include!("lib/domain.rs");
 
@@ -156,5 +165,17 @@ pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
     PreparedNativeCommit,
 };
+#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+mod test_latency;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_meter;
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "grpc", feature = "local")
+))]
+mod test_trace;
+
+#[cfg(test)]
+#[path = "lib/path_text_tests.rs"]
+mod path_text_tests;

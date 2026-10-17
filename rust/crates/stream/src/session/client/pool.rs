@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(any(test, acyclic_stream_loom))]
+#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
 pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
@@ -8,6 +8,9 @@ pub(super) mod model;
 mod ordering;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod retry_model;
+
+#[cfg(acyclic_stream_loom)]
+pub(super) mod discovery_model;
 
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
@@ -330,8 +333,7 @@ impl Pool {
             }
             Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
             Some(Body::Closed(closed)) => {
-                let error =
-                    StreamError::from_code(&closed.code).unwrap_or(StreamError::Unavailable);
+                let error = StreamError::from_session_close(&closed.code);
                 if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
                     && let Some(ready) = route.ready.take()
                 {

@@ -2,13 +2,14 @@ pub(crate) mod arguments;
 mod call;
 pub(crate) mod gemini;
 mod gemini_results;
+mod image;
 mod json_string;
 mod media;
 pub(crate) mod native_reasoning;
 mod sequence;
 pub(crate) mod text;
 pub(crate) mod wire;
-use crate::{Adapter, ResolvedModel, invalid, registry::validate_url};
+use crate::{Adapter, ResolvedModel, files::FileText, invalid, registry::validate_url};
 use acyclic_harness::{
     Result,
     context::ModelTokenCount,
@@ -104,13 +105,23 @@ pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
     Ok(count.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
+    body_with_files(provider, request, &mut FileText::default())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn body_with_files(
+    provider: &ResolvedModel,
+    request: &ModelRequest,
+    files: &mut FileText,
+) -> Result<Value> {
     serde_json::to_value(body_named(
         provider,
         request,
         &crate::tool_names::Names::new(request),
         &provider.reasoning_origin(provider.key.as_deref(), None),
+        files,
     )?)
     .map_err(|_| invalid("cannot encode projected request"))
 }
@@ -121,8 +132,9 @@ pub(crate) fn body_named<'a>(
     request: &'a ModelRequest,
     names: &crate::tool_names::Names,
     target: &acyclic_harness::model::ReasoningOrigin,
+    files: &mut FileText,
 ) -> Result<Body<'a>> {
-    let mut files = std::iter::empty();
+    let mut images = std::iter::empty();
     project_body(
         provider,
         request,
@@ -130,18 +142,20 @@ pub(crate) fn body_named<'a>(
         target,
         &mut media::Media {
             provider,
-            files: &mut files,
+            files: &mut images,
+            text_files: files,
             planning: true,
         },
     )
 }
 
-pub(crate) fn body_with_images<'a, 'b>(
+pub(crate) fn body_with_images<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
     names: &crate::tool_names::Names,
     target: &acyclic_harness::model::ReasoningOrigin,
-    mut files: impl Iterator<Item = &'b [u8]>,
+    mut images: impl Iterator<Item = &'a [u8]>,
+    files: &mut FileText,
 ) -> Result<Body<'a>> {
     crate::images::encoded_bytes(provider, request)?;
     project_body(
@@ -151,7 +165,8 @@ pub(crate) fn body_with_images<'a, 'b>(
         target,
         &mut media::Media {
             provider,
-            files: &mut files,
+            files: &mut images,
+            text_files: files,
             planning: false,
         },
     )
@@ -162,7 +177,7 @@ fn project_body<'a>(
     request: &'a ModelRequest,
     names: &crate::tool_names::Names,
     target: &acyclic_harness::model::ReasoningOrigin,
-    media: &mut media::Media<'_, '_, '_>,
+    media: &mut media::Media<'_, '_, 'a>,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
     let call_ids = crate::call_ids::CallIds::new(request, adapter);
@@ -195,7 +210,7 @@ fn project_body<'a>(
             )? {
                 if adapter == Adapter::Chat
                     && message.role == ModelRole::Tool
-                    && matches!(&projected, Message::Item(Item::Json(value)) if value["role"] == "user")
+                    && matches!(&projected, Message::Item(Item::Parts { fields, .. }) if fields["role"] == "user")
                 {
                     tool_images.push(projected);
                 } else {
@@ -320,7 +335,7 @@ fn project_message<'a>(
     call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness::model::ReasoningOrigin,
     gemini: &mut gemini::Replay<'a>,
-    media: &mut media::Media<'_, '_, '_>,
+    media: &mut media::Media<'_, '_, 'a>,
 ) -> Result<Vec<Message<'a>>> {
     let role: &'static str = match message.role {
         ModelRole::System => "system",
@@ -346,7 +361,7 @@ fn project_message<'a>(
             }
             ModelContentPart::File { file, policy } => {
                 let part = media.file(file, policy, message.role == ModelRole::User)?;
-                if let Some(text) = part["text"].as_str() {
+                if let Some(text) = part.text() {
                     project_text(adapter, role, text.to_owned(), &mut texts, &mut ordered);
                 } else {
                     match adapter {
@@ -354,14 +369,16 @@ fn project_message<'a>(
                             chat_parts.extend(
                                 texts
                                     .drain(..)
-                                    .map(|text| json!({"type":"text","text":text})),
+                                    .map(|text| Item::Json(json!({"type":"text","text":text}))),
                             );
                             chat_parts.push(part);
                         }
-                        Adapter::Responses => ordered.push(Item::Json(
-                            json!({"type":"message","role":role,"content":[part]}),
-                        )),
-                        _ => ordered.push(Item::Json(part)),
+                        Adapter::Responses => ordered.push(Item::Parts {
+                            fields: json!({"type":"message","role":role}),
+                            key: "content",
+                            parts: vec![part],
+                        }),
+                        _ => ordered.push(part),
                     }
                 }
             }
@@ -442,48 +459,72 @@ fn project_message<'a>(
             } => {
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
-                let parts = media.result(content)?;
+                let mut parts = media.result(content)?;
                 let text = parts
                     .iter()
-                    .filter_map(|part| part["text"].as_str())
+                    .filter_map(Item::text)
                     .collect::<Vec<_>>()
                     .join("\n");
-                let has_images = parts.iter().any(|part| !part["text"].is_string());
+                let has_images = parts.iter().any(|part| part.text().is_none());
                 let result = match adapter {
                     Adapter::Anthropic => {
-                        json!({"type":"tool_result","tool_use_id":call_id,"content":if has_images { json!(parts) } else { json!(text) }})
+                        if has_images {
+                            Item::Parts {
+                                fields: json!({"type":"tool_result","tool_use_id":call_id}),
+                                key: "content",
+                                parts: std::mem::take(&mut parts),
+                            }
+                        } else {
+                            Item::Json(
+                                json!({"type":"tool_result","tool_use_id":call_id,"content":text}),
+                            )
+                        }
                     }
                     Adapter::Responses => {
-                        json!({"type":"function_call_output","call_id":call_id,"output":if has_images { json!(parts) } else { json!(text) }})
+                        if has_images {
+                            Item::Parts {
+                                fields: json!({"type":"function_call_output","call_id":call_id}),
+                                key: "output",
+                                parts: std::mem::take(&mut parts),
+                            }
+                        } else {
+                            Item::Json(
+                                json!({"type":"function_call_output","call_id":call_id,"output":text}),
+                            )
+                        }
                     }
-                    Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
-                    Adapter::Gemini => {
-                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
+                    Adapter::Chat => {
+                        Item::Json(json!({"role":"tool","tool_call_id":call_id,"content":text}))
                     }
+                    Adapter::Gemini => Item::Json(
+                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}}),
+                    ),
                 };
                 if has_images && matches!(adapter, Adapter::Chat | Adapter::Gemini) {
                     let caption = format!("Images from tool {name} ({call_id}):");
-                    let mut captioned = vec![if adapter == Adapter::Gemini {
+                    let mut captioned = vec![Item::Json(if adapter == Adapter::Gemini {
                         json!({"text":caption})
                     } else {
                         json!({"type":"text","text":caption})
-                    }];
-                    captioned.extend(parts.into_iter().filter(|part| !part["text"].is_string()));
+                    })];
+                    captioned.extend(parts.into_iter().filter(|part| part.text().is_none()));
                     if adapter == Adapter::Chat {
-                        extra_images.push(Message::Item(Item::Json(
-                            json!({"role":"user","content":captioned}),
-                        )));
+                        extra_images.push(Message::Item(Item::Parts {
+                            fields: json!({"role":"user"}),
+                            key: "content",
+                            parts: captioned,
+                        }));
                     } else {
                         extra_images.extend(captioned.into_iter().map(|part| Message::Gemini {
                             role: "user",
-                            parts: vec![Item::Json(part)],
+                            parts: vec![part],
                         }));
                     }
                 }
                 if adapter == Adapter::Chat {
                     results.push(result);
                 } else {
-                    ordered.push(Item::Json(result));
+                    ordered.push(result);
                 }
             }
         }
@@ -495,11 +536,13 @@ fn project_message<'a>(
                 chat_parts.extend(
                     texts
                         .drain(..)
-                        .map(|text| json!({"type":"text","text":text})),
+                        .map(|text| Item::Json(json!({"type":"text","text":text}))),
                 );
-                output.push(Message::Item(Item::Json(
-                    json!({"role":role,"content":chat_parts}),
-                )));
+                output.push(Message::Item(Item::Parts {
+                    fields: json!({"role":role}),
+                    key: "content",
+                    parts: chat_parts,
+                }));
             }
             if !texts.is_empty() || !calls.is_empty() || !chat_reasoning.is_empty() {
                 output.push(Message::Chat(wire::Chat {
@@ -513,11 +556,7 @@ fn project_message<'a>(
                     reasoning_content: (!chat_reasoning.is_empty()).then_some(chat_reasoning),
                 }));
             }
-            output.extend(
-                results
-                    .into_iter()
-                    .map(|value| Message::Item(Item::Json(value))),
-            );
+            output.extend(results.into_iter().map(Message::Item));
             output.extend(extra_images);
             Ok(output)
         }
@@ -534,17 +573,22 @@ fn project_message<'a>(
             let mut output: Vec<Message<'a>> = Vec::new();
             for item in ordered {
                 match (output.last_mut(), item) {
-                    (Some(Message::Item(Item::Json(previous))), Item::Json(mut next))
-                        if previous["type"] == "message"
-                            && next["type"] == "message"
-                            && previous["role"] == next["role"] =>
+                    (
+                        Some(Message::Item(Item::Parts {
+                            fields: previous,
+                            parts,
+                            ..
+                        })),
+                        Item::Parts {
+                            fields: next,
+                            parts: mut more,
+                            ..
+                        },
+                    ) if previous["type"] == "message"
+                        && next["type"] == "message"
+                        && previous["role"] == next["role"] =>
                     {
-                        if let (Some(previous), Some(next)) = (
-                            previous["content"].as_array_mut(),
-                            next["content"].as_array_mut(),
-                        ) {
-                            previous.append(next);
-                        }
+                        parts.append(&mut more);
                     }
                     (_, item) => output.push(Message::Item(item)),
                 }
@@ -607,10 +651,7 @@ fn project_text(
     }
     match adapter {
         Adapter::Chat => texts.push(text),
-        Adapter::Responses => ordered.push(Item::Json(json!({
-            "type":"message", "role":if role == "tool" { "user" } else { role },
-            "content":[{"type":if role=="assistant" {"output_text"} else {"input_text"},"text":text}],
-        }))),
+        Adapter::Responses => ordered.push(Item::Parts {fields:json!({"type":"message", "role":if role == "tool" { "user" } else { role }}),key:"content",parts:vec![Item::Json(json!({"type":if role=="assistant" {"output_text"} else {"input_text"},"text":text}))]}),
         Adapter::Anthropic => ordered.push(Item::Json(json!({"type":"text","text":text}))),
         Adapter::Gemini => ordered.push(Item::Json(json!({"text":text}))),
     }

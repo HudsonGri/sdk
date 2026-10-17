@@ -27,6 +27,7 @@ pub enum ModelEvent {
     Completed {
         /// Usage and finish metadata.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+        #[serde(deserialize_with = "crate::deserialize_json_value")]
         metadata: Value,
     },
 }
@@ -131,6 +132,15 @@ fn unsupported() -> Error {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Binds the composition's authenticated reader for file-backed model input.
+    /// Providers that consume canonical file references directly need no rebinding.
+    fn bind_content(
+        &self,
+        _: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        _: u64,
+    ) -> Option<std::sync::Arc<dyn ModelProvider>> {
+        None
+    }
     /// Capacities of the exact immutable model selection.
     fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
         Err(Error::Unsupported(

@@ -276,6 +276,7 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
         };
         let provider = Arc::new(provider);
         let command = ModelTaskCommand {
+            summary_source: None,
             context_manifest: ContextManifest::default()
                 .publish(
                     payloads.as_ref(),

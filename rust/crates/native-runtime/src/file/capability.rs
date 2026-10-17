@@ -16,6 +16,9 @@ pub enum NativeFileMeter<'a> {
     Owned(Arc<dyn NativeReadMeter>),
 }
 
+/// A spare-capacity read's returned storage and its filled length.
+type SpareRead<G> = ((Vec<u8>, G), usize);
+
 impl NativeFile {
     /// Imports a handle, returning it unchanged on admission failure.
     pub fn from_file(
@@ -251,7 +254,7 @@ impl NativeFile {
         length: usize,
         require_full: bool,
         meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeCompletion<((Vec<u8>, G), usize)>> {
+    ) -> io::Result<NativeCompletion<SpareRead<G>>> {
         meter.check()?;
         meter.admit_bytes(length)?;
         if !storage.0.is_empty() || storage.0.capacity() < length {
@@ -380,7 +383,7 @@ impl NativeFile {
 
     /// Submits owned writes while retaining this handle.
     pub fn write_all_batch_async(&self, writes: Vec<OwnedWrite>) -> NativeCompletion<()> {
-        let state = Arc::new(Mutex::new(CompletionState::default()));
+        let state = Arc::new(CompletionMutex::new(CompletionState::default()));
         let span = obs::file_span!(DEBUG, "acyclic.runtime.write_batch")
             .sized(writes.len(), || {
                 writes.iter().map(|write| write.bytes.len()).sum()

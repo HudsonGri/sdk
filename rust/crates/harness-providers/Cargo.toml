@@ -12,7 +12,7 @@ description = "Streaming model providers for the acyclic harness"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-browser = ["acyclic-harness/browser"]
+browser = ["acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
 fuzzing = []
 
 [dependencies]
@@ -39,6 +39,8 @@ time = { workspace = true, features = ["formatting", "parsing"] }
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+serde-wasm-bindgen = { workspace = true, optional = true }
+tsify = { workspace = true, optional = true }
 js-sys.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
@@ -46,6 +48,7 @@ web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Hea
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["tui"] }
+acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
 tokio.workspace = true
 tempfile = "3.27.0"
@@ -54,6 +57,7 @@ proptest.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
+proptest.workspace = true
 
 [lints]
 workspace = true

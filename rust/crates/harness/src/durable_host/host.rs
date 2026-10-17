@@ -151,8 +151,13 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
 
     async fn admit_batch(&self, request: DurableBatchRequest) -> Result<Vec<Admission<TaskId>>> {
         self.validate_batch(&request)?;
-        self.validate_parent_scope(request.parent, &request.scope, &mut None)
-            .await?;
+        self.validate_parent_scope(
+            request.parent,
+            &request.scope,
+            Some(&request.task),
+            &mut None,
+        )
+        .await?;
         self.commit_batch(&request).await?;
         let observed = self
             .reconcile_batch(request.clone())
@@ -350,6 +355,8 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
     }
 
     async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord> {
+        #[cfg(feature = "test-support")]
+        crate::test_support::admission_work::observed();
         let operation_id = OperationId::from_bytes(task_id.into_bytes());
         self.admission(operation_id, &mut None).await
     }

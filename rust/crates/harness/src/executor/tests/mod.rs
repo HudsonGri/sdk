@@ -264,6 +264,7 @@ async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime:
 
 struct ContextOnlyTool {
     admission: OperationId,
+    lost_response: fn() -> Error,
     calls: AtomicUsize,
     reconciles: AtomicUsize,
 }
@@ -282,7 +283,7 @@ impl ToolExecutor for ContextOnlyTool {
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Err(Error::Storage("response lost after effect".into()))
+            Err((self.lost_response)())
         })
     }
 
@@ -353,6 +354,7 @@ struct Journal(
     Mutex<Vec<ExecutionRecord>>,
     Mutex<HashMap<String, (FileRef, acyclic_stream::OwnedBytes)>>,
     Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
+    AtomicUsize,
     AtomicUsize,
     AtomicUsize,
 );
@@ -594,6 +596,9 @@ impl ExecutionJournal for Journal {
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.4.fetch_add(1, Ordering::SeqCst);
+            if reference.descriptor().media_type() == "text/plain" {
+                self.5.fetch_add(1, Ordering::SeqCst);
+            }
             self.1
                 .lock()
                 .unwrap()
@@ -695,8 +700,11 @@ mod invocation_bounds;
 mod output_bounds;
 mod recovery;
 mod replay;
+#[cfg(not(target_arch = "wasm32"))]
+mod request_ownership;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
+mod summary_file;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;

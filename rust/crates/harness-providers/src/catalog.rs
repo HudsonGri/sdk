@@ -166,6 +166,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                             )
                         })
                         .collect(),
+                    headers: BTreeMap::new(),
                     models,
                     token_counter: COUNTERS.iter().find(|(provider, ..)| *provider == id).map(
                         |&(_, path, adapter, response_field)| TokenCounterSpec {

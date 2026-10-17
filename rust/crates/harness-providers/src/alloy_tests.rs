@@ -52,6 +52,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     adapter: *adapter,
                     authentication: Authentication::Optional,
                     base_url: format!("http://localhost/{name}"),
+                    headers: BTreeMap::new(),
                     max_event_bytes: 65536,
                     token_counter: Some(TokenCounterSpec {
                         path: "count".into(),
@@ -313,6 +314,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             prepared.request(),
             &crate::tool_names::Names::new(prepared.request()),
             &provider.reasoning_origin(None, None),
+            &mut crate::files::FileText::default(),
         )?)
         .unwrap();
         for message in &history {

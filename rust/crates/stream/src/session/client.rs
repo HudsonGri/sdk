@@ -33,6 +33,8 @@ pub use admissions::verify_admission_binding;
 #[cfg(acyclic_stream_loom)]
 pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
+pub use pool::discovery_model::verify_discovery_admission;
+#[cfg(acyclic_stream_loom)]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_follow_data,
     verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,

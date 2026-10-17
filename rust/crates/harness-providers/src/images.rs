@@ -35,6 +35,13 @@ fn parts(message: &ModelMessage) -> impl Iterator<Item = (&FileRef, &FileProject
     })
 }
 
+pub(crate) fn has_images(request: &ModelRequest) -> bool {
+    request
+        .messages
+        .iter()
+        .any(|message| files(message).next().is_some())
+}
+
 pub(crate) fn files(
     message: &ModelMessage,
 ) -> impl Iterator<Item = (&FileRef, &NativeMediaPolicy)> {
@@ -175,7 +182,7 @@ pub(crate) async fn load<'a>(
     let mut result = Vec::new();
     for (file, policy, allowed) in request.messages.iter().flat_map(parts) {
         let limits = match policy {
-            FileProjectionPolicy::BoundedFull => None,
+            FileProjectionPolicy::BoundedFull => continue,
             FileProjectionPolicy::Native(policy)
                 if allowed && matches!(policy.intent, NativeMediaIntent::Image { .. }) =>
             {
@@ -187,7 +194,8 @@ pub(crate) async fn load<'a>(
             _ => continue,
         };
         let reader = provider
-            .content
+            .files
+            .reader
             .as_ref()
             .ok_or_else(|| invalid("file input requires an owner-authorized content reader"))?;
         let payload = verified_content_bytes(

@@ -27,14 +27,19 @@ mod admission;
 mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
+mod children;
 mod command_machine;
 mod command_views;
 mod commands;
+mod compact;
 mod compaction;
 mod config;
 mod context;
+mod files;
+mod inheritance;
 mod owner;
 mod owner_record;
+mod prompt_files;
 mod runtime;
 #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
@@ -58,21 +63,21 @@ pub type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
     verifier: AuthorityVerifier,
+    issuer: Option<AuthorityIssuer>,
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
     #[cfg(feature = "hooks")]
-    hooks: crate::hooks::Hooks,
+    settings: Arc<crate::native_settings::SettingsConfig>,
     #[cfg(test)]
-    context_read_observer: Option<
-        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
-    >,
+    context_read_observer:
+        Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -88,24 +93,6 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
-    /// Publishes pending mount writes and awaits physical mount retirement.
-    /// Reopening after this completes can immediately acquire the destination.
-    pub async fn close(self) -> Result<()> {
-        #[cfg(feature = "native-execution")]
-        if let Some(workspace) = &self.workspace {
-            for (_, mount) in workspace.mounts.mounts() {
-                if let Some(native) = mount
-                    .view
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.native.as_ref())
-                {
-                    native.unmount().await?;
-                }
-            }
-        }
-        Ok(())
-    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
@@ -135,13 +122,17 @@ impl LocalHarness {
                 tools.register((tool, None), &mut None, None)?;
             }
             #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-            let settings = settings::load(&config.project, config.settings).await?;
+            let settings_configuration = settings::configuration(&config.project, config.settings)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
+                &settings_configuration,
+            ))
+            .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let mcp_workspace =
                 std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = settings
-                .mcp
+            let installation = mcp
                 .install(tools, &mcp_workspace, config.mcp_limits)
                 .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -212,6 +203,13 @@ impl LocalHarness {
             files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            // This standalone composition owns its private companion namespace.
+            // Retain the existing owned WAL instead of reopening/checkpointing it
+            // for every transaction. Embedded bind() retains shared-store semantics.
+            #[cfg(feature = "native-execution")]
+            let store =
+                acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+                    .map_err(storage)?;
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
@@ -225,6 +223,7 @@ impl LocalHarness {
                         workspace::attach_operation(owner.task),
                         false,
                         native_mounts,
+                        store,
                     )
                     .await?,
                 ),
@@ -236,6 +235,7 @@ impl LocalHarness {
                         &directory,
                         workspace::attach_operation(owner.task),
                         native_mounts,
+                        store,
                     )
                     .await?,
                 ),
@@ -261,9 +261,13 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             let workspace = workspace.map(Arc::new);
             let stream = Arc::new(
-                LocalStream::open(directory.join("stream"), Default::default())
-                    .await
-                    .map_err(storage)?,
+                LocalStream::open_with_clock(
+                    directory.join("stream"),
+                    Default::default(),
+                    config.clock.clone(),
+                )
+                .await
+                .map_err(storage)?,
             );
             let issuer = AuthorityIssuer::new(
                 "acyclic.local",
@@ -296,7 +300,7 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            Ok(Self {
+            let mut local = Self {
                 files,
                 runtime,
                 task_files,
@@ -304,6 +308,7 @@ impl LocalHarness {
                 scratch,
                 journal,
                 verifier,
+                issuer: Some(issuer),
                 signed,
                 model,
                 provider,
@@ -313,7 +318,7 @@ impl LocalHarness {
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 #[cfg(feature = "hooks")]
-                hooks: settings.hooks,
+                settings: settings_configuration,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -322,12 +327,19 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
-            })
+            };
+            if let Some(provider) = local
+                .provider
+                .bind_content(local.context_reader()?, local.limits.file_bytes)
+            {
+                local.provider = provider;
+            }
+            Ok(local)
         })
     }
 
     /// Trusted host's task-file volume; clients render its bounded live queries.
-    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<LocalStream>> {
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>> {
         &self.task_files
     }
 

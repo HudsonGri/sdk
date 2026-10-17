@@ -126,25 +126,29 @@ impl LocalStream {
         }
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
-        let (changed, _) = watch::channel(Some(0_u64));
+        let (failed, _) = watch::channel(false);
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
                 commit_clock,
                 journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
+                publication: RwLock::new(()),
                 synced: watch::channel(0_u64).0,
-                changed,
+                failed,
+                revision: watch::channel(0).0,
                 #[cfg(acyclic_loom)]
-                omit_persist_wake: false,
+                omit_follow_wake: false,
                 durable_tails: Mutex::new(Default::default()),
+                #[cfg(feature = "test-support")]
+                persistence_cut: Default::default(),
             }),
             work: None,
         })
     }
 
     fn check_available(&self) -> Result<(), StreamError> {
-        if self.inner.changed.borrow().is_none() {
+        if *self.inner.failed.borrow() {
             Err(StreamError::Unavailable)
         } else {
             Ok(())
@@ -198,10 +202,16 @@ impl LocalStream {
     }
 
     fn flush_all(&self, span: &tracing::Span) -> Result<(), StreamError> {
+        #[cfg(feature = "test-support")]
+        let written;
         let (target, file, durability) = {
             let journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
             if journal.synced >= journal.appended {
                 return Ok(());
+            }
+            #[cfg(feature = "test-support")]
+            {
+                written = (journal.epoch, journal.bytes);
             }
             span.record("batch_len", journal.appended - journal.synced);
             (
@@ -213,11 +223,24 @@ impl LocalStream {
         sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
         self.inner.publish_synced(&mut journal, target);
+        // A restart in between already marked its own header flushed.
+        #[cfg(feature = "test-support")]
+        if journal.epoch == written.0 {
+            journal.flushed = journal.flushed.max(written.1);
+        }
         Ok(())
     }
 
     /// Writes `frame`, in the order its mutation applied, without waiting for
     async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
+        #[cfg(feature = "test-support")]
+        let cut = self.inner.persistence_cut.get().cloned();
+        #[cfg(feature = "test-support")]
+        if let Some(cut) = &cut
+            && !cut.admit()
+        {
+            return Err(self.cut_crash(cut.as_ref()).await);
+        }
         let required = !deferred();
         let journal = self.inner.journal.clone();
         let persist = spawn_blocking(move || {
@@ -233,12 +256,25 @@ impl LocalStream {
         if result.is_err() {
             return Err(self.inner.poison());
         }
-        #[cfg(acyclic_loom)]
-        if self.inner.omit_persist_wake {
-            return self.compact_if_due().await;
+        #[cfg(feature = "test-support")]
+        if let Some(cut) = cut {
+            return self.cut_after_write(cut).await;
         }
         self.inner.published();
-        self.compact_if_due().await
+        Ok(())
+    }
+
+    // Native builds reduce this to drop. The modeled old variant returns the
+    // guard so the caller retains it through maintenance, exposing the stall.
+    fn release_publication<G>(&self, publication: G) -> Option<G> {
+        #[cfg(acyclic_loom)]
+        if crate::verification::fault_is(
+            crate::verification::Fault::HoldPublicationDuringMaintenance,
+        ) {
+            return Some(publication);
+        }
+        drop(publication);
+        None
     }
 
     /// Writes the whole state as the snapshot and starts the journal again,
@@ -265,6 +301,27 @@ impl LocalStream {
                     .journal
                     .lock()
                     .map_err(|_| LocalStreamError::Corrupt)?;
+                #[cfg(test)]
+                {
+                    let identity = Arc::as_ptr(&inner.journal) as usize;
+                    let gate = {
+                        let mut hook = JOURNAL_COMPACT_BLOCKER
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        if hook
+                            .as_ref()
+                            .is_some_and(|(expected, _, _)| *expected == identity)
+                        {
+                            hook.take()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((_, started, release)) = gate {
+                        let _ = started.send(());
+                        let _ = release.recv();
+                    }
+                }
                 journal.compact(&state, work.as_ref())?;
                 let appended = journal.appended;
                 inner.publish_synced(&mut journal, appended);
@@ -275,6 +332,20 @@ impl LocalStream {
         .map_err(|_| LocalStreamError::Executor)
         .and_then(|result| result)
         .map_err(|_| self.inner.poison())
+    }
+
+    // Called under visibility before releasing an ordinary replay. A deferred
+    // original must become required, without appending a duplicate frame.
+    fn require_accepted<const REQUIRE: bool>(&self) -> Result<(), StreamError> {
+        if REQUIRE && !deferred() {
+            let mut journal = self
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            journal.required = journal.appended;
+        }
+        Ok(())
     }
 
     /// Returns once every frame through `sequence` is durable: group commit.
@@ -350,8 +421,13 @@ impl LocalStream {
                     let (result, required) = {
                         let _visibility = stream.inner.visibility.write().await;
                         stream.check_available()?;
+                        let publication = stream.inner.publication.write().await;
                         let result = mutation(stream.clone()).await;
                         stream.inner.commit_clock.unpin();
+                        let _retained = stream.release_publication(publication);
+                        if result.is_ok() {
+                            stream.compact_if_due().await?;
+                        }
                         (result, stream.inner.required()?)
                     };
                     stream.await_durable(required).await?;
@@ -371,7 +447,7 @@ impl LocalStream {
     async fn accepted<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
         let read = async {
             self.check_available()?;
-            let _visibility = self.inner.visibility.read().await;
+            let _visibility = self.inner.publication.read().await;
             self.check_available()?;
             Ok(read.await)
         };

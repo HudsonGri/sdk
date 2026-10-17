@@ -26,10 +26,14 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
     let workers = NativeWorkers {
         sender,
         admission: Arc::new(Mutex::new(AdmissionState::new())),
+        threads: 1,
     };
-    let filler = run_blocking_io(|| (), None)?.pending.take().unwrap();
+    let filler = run_blocking_io(|| (), None)?
+        .pending
+        .take()
+        .ok_or(io::ErrorKind::NotFound)?;
     assert!(workers.sender.try_send(filler).is_ok());
-    workers.admission.lock().unwrap().queued_jobs = 1;
+    lock(&workers.admission).queued_jobs = 1;
 
     let effects = Arc::new(AtomicUsize::new(0));
     let executed = effects.clone();
@@ -40,7 +44,7 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         },
         None,
     )?;
-    let job = task.pending.take().unwrap();
+    let job = task.pending.take().ok_or(io::ErrorKind::NotFound)?;
     let mut completion: Pin<Box<dyn Future<Output = io::Result<()>> + '_>> = if bypass {
         // The former controlled path: executes before queue acceptance.
         Box::pin(async move {
@@ -60,16 +64,16 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         "capacity wait was bypassed"
     );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
-    assert_eq!(workers.admission.lock().unwrap().waiter_count, 1);
+    assert_eq!(lock(&workers.admission).waiter_count, 1);
 
-    let filler = receiver.recv().unwrap();
+    let filler = receiver.recv().map_err(io::Error::other)?;
     notify_capacity_released(&workers.admission);
     drop(filler);
     assert!(flag.0.swap(false, Ordering::SeqCst), "capacity wake lost");
     assert!(completion.as_mut().poll(&mut cx).is_pending());
     assert_eq!(effects.load(Ordering::SeqCst), 0);
-    assert_eq!(workers.admission.lock().unwrap().waiter_count, 0);
-    assert_eq!(workers.admission.lock().unwrap().queued_jobs, 1);
+    assert_eq!(lock(&workers.admission).waiter_count, 0);
+    assert_eq!(lock(&workers.admission).queued_jobs, 1);
 
     let admission = workers.admission.clone();
     std::thread::spawn(move || {
@@ -80,7 +84,7 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         }
     })
     .join()
-    .unwrap();
+    .map_err(|_| io::Error::other("worker panicked"))?;
     assert!(flag.0.load(Ordering::SeqCst), "terminal wake lost");
     assert!(matches!(
         completion.as_mut().poll(&mut cx),
@@ -127,5 +131,56 @@ async fn scoped_completion_uses_the_real_host_worker() -> io::Result<()> {
     schedule.drained().await;
     assert_eq!(boundaries, ["native:submitted", "native:completed"]);
     assert!(worker.unwrap().starts_with("acyclic-host-io-"));
+    Ok(())
+}
+
+#[test]
+fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Result<()> {
+    let threads = Arc::new(AtomicUsize::new(0));
+    let observed = threads.clone();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .on_thread_start(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })
+        .build()?;
+    runtime.block_on(async {
+        let _inline = crate::InlineBlocking::enter();
+        let driver = std::thread::current().id();
+        let worker = spawn_blocking(|| std::thread::current().name().map(String::from))
+            .await
+            .unwrap();
+        assert!(worker.unwrap().starts_with("acyclic-host-io-"));
+        let (schedule, mut events) = Schedule::new();
+        let mut controlled = Box::pin(schedule.scope(async {
+            spawn_blocking(|| std::thread::current().id())
+                .await
+                .unwrap()
+        }));
+        let mut boundaries = Vec::new();
+        loop {
+            tokio::select! {
+                actual = &mut controlled => { assert_eq!(actual, driver); break; },
+                boundary = events.recv() => {
+                    let boundary = boundary.unwrap();
+                    boundaries.push(boundary.name);
+                    boundary.release();
+                }
+            }
+        }
+        schedule.drained().await;
+        assert_eq!(boundaries, ["blocking:submitted", "blocking:completed"]);
+    });
+    let check = || {
+        assert_eq!(
+            threads.load(Ordering::SeqCst),
+            0,
+            "private blocking pool created"
+        );
+    };
+    check();
+    // The former untracked branch starts a real private worker. The same
+    // thread-count assertion must reject it, not just compare modeled counts.
+    runtime.block_on(async { tokio::task::spawn_blocking(|| ()).await.unwrap() });
+    assert!(std::panic::catch_unwind(check).is_err());
     Ok(())
 }

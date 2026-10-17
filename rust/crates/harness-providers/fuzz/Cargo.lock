@@ -231,6 +231,7 @@ dependencies = [
  "hex",
  "imbl",
  "js-sys",
+ "loom",
  "pin-project-lite",
  "prost",
  "prost-types",

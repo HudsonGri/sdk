@@ -50,11 +50,13 @@ mod records;
 mod request;
 mod response;
 mod summary;
+mod summary_file;
+#[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem"))]
 pub(crate) use content::verify_model_contents_with_summary_authorization;
 mod retained;
 mod turn;
@@ -248,6 +250,13 @@ pub enum ExecutionEvent {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
     },
+    /// The local model producer stopped after invocation cancellation.
+    ModelStopped {
+        /// Zero-based executor step.
+        step: u32,
+        /// Admitted response or summary attempt.
+        purpose: ModelPurpose,
+    },
     /// Tool dispatch is about to begin.
     ToolStarted {
         /// Zero-based executor step.
@@ -426,6 +435,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    summary_source: Option<Box<FileRef>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

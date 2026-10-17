@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::FileRef;
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
@@ -61,6 +62,40 @@ where
         tools: ToolRegistry,
         output: Option<&VolumeRef>,
     ) -> Result<FilesystemTaskExecution<P, A, O>> {
+        let task_context = Arc::new(self.task_context(task, fence.clone()).await?);
+        self.stock_execution_with_context(
+            task_context,
+            fence,
+            turn,
+            model,
+            provider,
+            context,
+            tools,
+            output,
+        )
+        .await
+    }
+
+    pub(in crate::filesystem) async fn stock_execution_with_context(
+        &self,
+        task_context: Arc<TaskContext>,
+        fence: LeaseFence,
+        turn: OperationId,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        context: ContextPipeline,
+        tools: ToolRegistry,
+        output: Option<&VolumeRef>,
+    ) -> Result<FilesystemTaskExecution<P, A, O>> {
+        let task = task_context.durable_task_id().ok_or_else(|| {
+            Error::Unauthorized("stock model has no admitted task context".into())
+        })?;
+        if !task_context.original_task_binding_matches(task, &fence) {
+            return Err(Error::Unauthorized(
+                "stock model context differs from its worker lease".into(),
+            ));
+        }
+        task_context.owned_task_binding(None)?;
         let admission = self.host.observe_admission(task).await?;
         if !admission.grants.contains("model:generate") {
             return Err(Error::Unauthorized(
@@ -72,7 +107,6 @@ where
                 "persistent local stock composition has no routed execution provider".into(),
             ));
         }
-        let task_context = Arc::new(self.task_context(task, fence.clone()).await?);
         let task_context = match output {
             Some(volume) => task_context.with_output_volume(volume).await?,
             None => task_context,
@@ -81,15 +115,23 @@ where
         let limits = scope.limits();
         let run_limits = scope.run_limits();
         let operation_id = execution_operation(task, turn, None)?;
+        let task_files = match &self.task_files {
+            Some(files) => match files.for_created_task(&task_context, &scope).await? {
+                Some(created) => Some(Arc::new(created)),
+                None => Some(files.clone()),
+            },
+            None => None,
+        };
         let journal = self
             .open_execution_journal(task, fence.clone(), turn, &admission)
             .await?
+            .with_task_files(task_files)
             .with_input_verifier(task_context.clone());
         let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?
             .with_durable_task(self.host.clone(), task, fence.clone())
-            .with_task_context(&task_context, operation_id)?;
+            .with_shared_task_context(task_context, operation_id)?;
         Ok(FilesystemTaskExecution {
             operation_id,
             executor,
@@ -136,6 +178,11 @@ where
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
         self.executor = self.executor.with_max_output_tokens(maximum)?;
         Ok(self)
+    }
+
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        self.executor = self.executor.with_summary_source(source);
+        self
     }
 
     /// Executes or reconciles using the bound journal and existing stock loop.

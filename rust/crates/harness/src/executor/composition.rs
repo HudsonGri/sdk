@@ -40,6 +40,7 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            summary_source: None,
             max_output_tokens: None,
             provider,
             context,
@@ -63,6 +64,15 @@ impl StockExecutor {
         }
         self.max_output_tokens = Some(maximum);
         Ok(self)
+    }
+
+    #[cfg(any(test, feature = "filesystem"))]
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        if source.is_some() {
+            self.compaction = crate::context::CompactionPolicy::Disabled;
+        }
+        self.summary_source = source;
+        self
     }
 
     /// Replaces or disables the ordinary threshold policy without starting effects.
@@ -195,6 +205,23 @@ impl StockExecutor {
         }
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
         self.task_context = Some((Arc::new(context), execution_operation));
+        StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
+        Ok(self)
+    }
+
+    pub(crate) fn with_shared_task_context(
+        mut self,
+        context: Arc<crate::runtime::TaskContext>,
+        execution_operation: OperationId,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if context.native_work().is_ok() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "native stock context requires its original work",
+            });
+        }
+        self.task_context = Some((context, execution_operation));
         StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
         Ok(self)
     }

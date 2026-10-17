@@ -53,9 +53,15 @@ const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 #[cfg(acyclic_loom)]
+pub(crate) mod compaction_model;
+#[cfg(acyclic_loom)]
 pub(crate) mod discovery_model;
 #[cfg(acyclic_loom)]
+pub(crate) mod follow_model;
+#[cfg(acyclic_loom)]
 pub(crate) mod query_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod replay_model;
 
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
@@ -68,6 +74,9 @@ type JournalPersistBlocker = (
 );
 #[cfg(test)]
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
+// Lock order: journal -> test hook; release the hook before a device-gate wait.
+#[cfg(test)]
+static JOURNAL_COMPACT_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 
 #[cfg(test)]
 mod tests;
@@ -89,6 +98,8 @@ include!("pinned_commit_clock.rs");
 include!("recovered.rs");
 
 include!("local_stream.rs");
+
+include!("persistence_cut.rs");
 
 include!("provider.rs");
 
@@ -118,3 +129,6 @@ include!("frames.rs");
 include!("snapshot.rs");
 
 include!("frame_checksum.rs");
+
+#[cfg(all(feature = "test-support", not(acyclic_loom)))]
+mod publication_barrier;

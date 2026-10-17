@@ -5,28 +5,20 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 mod bootstrap;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod performance_tests;
 
 mod mounts;
+mod projection;
 pub(super) mod volumes;
-#[cfg(test)]
+#[cfg(all(test, feature = "native-execution", unix))]
 pub(super) use crate::sync::owned::lock_owned;
 pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
-    pub(super) native: Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>,
-}
-
-impl Drop for MountedVolume {
-    fn drop(&mut self) {
-        if let Some(native) = &self.native {
-            // Provider retirement joins callbacks and releases the actual OS
-            // destination fence before the final workspace owner disappears.
-            if let Err(error) = native.abandon() {
-                tracing::error!(?error, "workspace mount retirement failed");
-            }
-        }
-    }
+    pub(super) destination: PathBuf,
+    pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
@@ -56,8 +48,8 @@ pub struct LocalWorkspace {
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
-    // Lock order: view state -> coordinator -> command-local cache or native
-    // completion, then task-file index -> provider visibility -> provider state.
+    // Lock order: view state -> volume projection -> coordinator -> command-local
+    // cache or native completion, then task-file index -> provider visibility -> provider state.
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
@@ -102,7 +94,51 @@ impl LocalWorkspace {
         volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }
-    #[cfg(test)]
+    pub(super) async fn created_mounts(
+        &self,
+        project: &VolumeRef,
+        context: &crate::runtime::ToolContext,
+    ) -> Result<Arc<Mounts>> {
+        let access = context
+            .task()
+            .scope()
+            .created_access
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Unauthorized("child mounts require authenticated allocations".into())
+            })?;
+        let mut private = None;
+        for binding in &access.content {
+            if binding.volume.class() != VolumeClass::AgentPrivate {
+                continue;
+            }
+            let granted = [VolumeOperation::Read, VolumeOperation::Write]
+                .into_iter()
+                .map(|operation| binding.volume.capability(operation, &mut None))
+                .collect::<Result<Vec<_>>>()?
+                .iter()
+                .all(|grant| context.effective_scope().grants().contains(grant));
+            if granted && private.replace(binding.volume.clone()).is_some() {
+                return Err(Error::Unauthorized(
+                    "child private mount is ambiguous".into(),
+                ));
+            }
+        }
+        // Bind auxiliary volumes outside the sparse projection. Linux's
+        // elevated mount helper cannot traverse an owner-only FUSE parent.
+        let root = self.mount_directory.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).map_err(storage)?;
+        let mut mounts = mounts::owner(
+            &root,
+            project,
+            None,
+            private.map(|volume| ("scratch".into(), volume, None)),
+        )?;
+        volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
+        Ok(Arc::new(mounts))
+    }
+
+    #[cfg(all(test, feature = "native-execution", unix))]
     pub(super) async fn current(
         &self,
     ) -> acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {
@@ -123,7 +159,7 @@ impl LocalWorkspace {
         self: &Arc<Self>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
             super::checkout_tools::CheckoutTools::new(Arc::clone(self), project, clock, task_files)
@@ -201,8 +237,13 @@ pub(super) async fn open(
     operation: acyclic_fs::OperationId,
     existing: bool,
     native_mounts: bool,
+    store: LocalCoreStateStore,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
+    #[cfg(target_os = "linux")]
+    if native_mounts {
+        volumes::recover_after_crash(&path)?;
+    }
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -212,7 +253,6 @@ pub(super) async fn open(
     };
     let name = volume.storage_name(&mut None)?;
     let id = filesystem.workspace_id(&name).map_err(storage)?;
-    let store = LocalCoreStateStore::new(directory.join("workspace"));
     let original = store
         .load_lazy_workspace(id, &mut accounting)
         .await
@@ -331,6 +371,7 @@ pub(super) async fn open_volume(
     directory: &Path,
     operation: acyclic_fs::OperationId,
     native_mounts: bool,
+    store: LocalCoreStateStore,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -385,6 +426,7 @@ pub(super) async fn open_volume(
         operation,
         true,
         native_mounts,
+        store,
     )
     .await
 }

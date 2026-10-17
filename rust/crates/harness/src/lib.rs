@@ -24,11 +24,11 @@ mod sync;
     feature = "filesystem",
     not(target_arch = "wasm32")
 ))]
-#[path = "memory_store/retention_scan_trace.rs"]
-mod accounting_trace;
+mod accounting_trace {
+    include!("memory_store/retention_scan_trace.rs");
+    include!("memory_store/retention_scan_capture.rs");
+}
 pub mod agent_loop;
-#[cfg(feature = "tui")]
-pub use acyclic_harness_tui as tui;
 pub mod bundle;
 pub mod client;
 pub mod context;
@@ -51,6 +51,7 @@ pub mod grpc;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub mod hooks;
 pub mod interaction;
+mod json_literal;
 pub mod live;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub mod local;
@@ -65,13 +66,13 @@ pub mod mcp;
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_future;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
 ))]
 pub mod native_settings;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod native_future;
 #[cfg(feature = "objects")]
 pub mod objects;
 mod obs;
@@ -85,10 +86,12 @@ pub mod search;
 pub mod source_authorization;
 pub mod store;
 pub mod task_volume;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool;
 pub mod tools;
+#[cfg(feature = "tui")]
+pub mod tui;
 #[cfg(feature = "tui")]
 pub mod tui_config;
 #[cfg(feature = "tui")]
@@ -96,6 +99,8 @@ pub mod tui_files;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::BrowserContentReader;
 pub mod wire_api;
 pub mod wire_codec;
 pub mod workspace;
@@ -172,6 +177,7 @@ pub use contract::{
 pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
+pub use json_literal::deserialize as deserialize_json_value;
 pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{LocalHarness, LocalHarnessConfig};
@@ -179,3 +185,6 @@ pub use local::{LocalHarness, LocalHarnessConfig};
 pub use native_future::NativeFutureBundle;
 #[cfg(feature = "filesystem")]
 pub use resource_preparation::ChildScratchCreationProof;
+
+mod process_error;
+pub use process_error::ProcessError;

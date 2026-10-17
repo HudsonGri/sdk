@@ -1,3 +1,4 @@
+use super::wire::Item;
 use crate::{Adapter, ResolvedModel, invalid};
 use acyclic_harness::{
     Result,
@@ -5,21 +6,21 @@ use acyclic_harness::{
         FileProjectionPolicy, ModelContent, ModelContentPart, ModelDataPart, ToolResultContent,
     },
 };
-use base64::Engine as _;
-use serde_json::{Value, json};
+use serde_json::json;
 
 pub(super) struct Media<'p, 'i, 'b> {
     pub provider: &'p ResolvedModel,
     pub files: &'i mut dyn Iterator<Item = &'b [u8]>,
+    pub text_files: &'i mut crate::files::FileText,
     pub planning: bool,
 }
-impl Media<'_, '_, '_> {
+impl<'p, 'i, 'a> Media<'p, 'i, 'a> {
     pub fn file(
         &mut self,
-        file: &acyclic_harness::conversation::FileRef,
-        policy: &FileProjectionPolicy,
+        file: &'a acyclic_harness::conversation::FileRef,
+        policy: &'a FileProjectionPolicy,
         allowed: bool,
-    ) -> Result<Value> {
+    ) -> Result<Item<'a>> {
         file_part(
             self.provider,
             file,
@@ -27,60 +28,44 @@ impl Media<'_, '_, '_> {
             self.files,
             self.planning,
             allowed,
+            self.text_files,
         )
     }
-    pub fn text(&mut self, content: &ModelContent) -> Result<String> {
-        text_content(self.provider, content, self.files, self.planning)
+    pub fn text(&mut self, content: &'a ModelContent) -> Result<String> {
+        text_content(
+            self.provider,
+            content,
+            self.files,
+            self.planning,
+            self.text_files,
+        )
     }
-    pub fn result(&mut self, content: &ToolResultContent) -> Result<Vec<Value>> {
-        result_parts(self.provider, content, self.files, self.planning)
+    pub fn result(&mut self, content: &'a ToolResultContent) -> Result<Vec<Item<'a>>> {
+        result_parts(
+            self.provider,
+            content,
+            self.files,
+            self.planning,
+            self.text_files,
+        )
     }
 }
 
-fn text_part(adapter: Adapter, text: &str) -> Value {
-    match adapter {
+fn text_part(adapter: Adapter, text: &str) -> Item<'static> {
+    Item::Json(match adapter {
         Adapter::Gemini => json!({"text":text}),
         Adapter::Responses => json!({"type":"input_text","text":text}),
         _ => json!({"type":"text","text":text}),
-    }
-}
-
-fn image_part(
-    adapter: Adapter,
-    file: &acyclic_harness::conversation::FileRef,
-    policy: &acyclic_harness::model::NativeMediaPolicy,
-    bytes: &[u8],
-) -> Value {
-    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let mime = file.descriptor().media_type();
-    let detail = match policy.intent {
-        acyclic_harness::model::NativeMediaIntent::Image { detail } => match detail {
-            acyclic_harness::model::ImageDetail::Auto => "auto",
-            acyclic_harness::model::ImageDetail::Low => "low",
-            acyclic_harness::model::ImageDetail::High => "high",
-        },
-        _ => "auto",
-    };
-    match adapter {
-        Adapter::Anthropic => {
-            json!({"type":"image","source":{"type":"base64","media_type":mime,"data":data}})
-        }
-        Adapter::Gemini => json!({"inlineData":{"mimeType":mime,"data":data}}),
-        Adapter::Responses => {
-            json!({"type":"input_image","image_url":format!("data:{mime};base64,{data}"),"detail":detail})
-        }
-        Adapter::Chat => {
-            json!({"type":"image_url","image_url":{"url":format!("data:{mime};base64,{data}"),"detail":detail}})
-        }
-    }
+    })
 }
 
 pub(super) fn result_parts<'a>(
     provider: &ResolvedModel,
-    content: &ToolResultContent,
+    content: &'a ToolResultContent,
     images: &mut dyn Iterator<Item = &'a [u8]>,
     counting: bool,
-) -> Result<Vec<Value>> {
+    text_files: &mut crate::files::FileText,
+) -> Result<Vec<Item<'a>>> {
     match content {
         ToolResultContent::Json { value } => {
             let text = serde_json::to_string(value).map_err(|error| invalid(error.to_string()))?;
@@ -91,7 +76,7 @@ pub(super) fn result_parts<'a>(
             .map(|part| match part {
                 ModelDataPart::Text { text } => Ok(text_part(provider.config.adapter, text)),
                 ModelDataPart::File { file, policy } => {
-                    file_part(provider, file, policy, images, counting, true)
+                    file_part(provider, file, policy, images, counting, true, text_files)
                 }
             })
             .collect(),
@@ -100,9 +85,10 @@ pub(super) fn result_parts<'a>(
 
 pub(super) fn text_content<'a>(
     provider: &ResolvedModel,
-    content: &ModelContent,
+    content: &'a ModelContent,
     images: &mut dyn Iterator<Item = &'a [u8]>,
     counting: bool,
+    text_files: &mut crate::files::FileText,
 ) -> Result<String> {
     if let ModelContent::Text(text) = content {
         return Ok(text.clone());
@@ -113,9 +99,8 @@ pub(super) fn text_content<'a>(
         .map(|part| match part {
             ModelContentPart::Text { text } => Ok(text.clone()),
             ModelContentPart::File { file, policy } => {
-                let part = file_part(provider, file, policy, images, counting, false)?;
-                part["text"]
-                    .as_str()
+                let part = file_part(provider, file, policy, images, counting, false, text_files)?;
+                part.text()
                     .map(str::to_owned)
                     .ok_or_else(|| invalid("system image was not reduced to a fallback note"))
             }
@@ -127,20 +112,18 @@ pub(super) fn text_content<'a>(
 
 pub(super) fn file_part<'a>(
     provider: &ResolvedModel,
-    file: &acyclic_harness::conversation::FileRef,
-    policy: &FileProjectionPolicy,
+    file: &'a acyclic_harness::conversation::FileRef,
+    policy: &'a FileProjectionPolicy,
     images: &mut dyn Iterator<Item = &'a [u8]>,
     counting: bool,
     allowed: bool,
-) -> Result<Value> {
+    text_files: &mut crate::files::FileText,
+) -> Result<Item<'a>> {
     if matches!(policy, FileProjectionPolicy::BoundedFull) {
-        let bytes = match images.next() {
-            Some(bytes) => bytes,
-            None if counting => &[],
-            None => return Err(invalid("text file was not resolved before dispatch")),
-        };
-        let text = std::str::from_utf8(bytes).map_err(|_| invalid("text file is not UTF-8"))?;
-        return Ok(text_part(provider.config.adapter, text));
+        return Ok(text_part(
+            provider.config.adapter,
+            &text_files.project(file, policy)?,
+        ));
     }
     if let FileProjectionPolicy::Native(policy) = policy
         && matches!(
@@ -154,7 +137,12 @@ pub(super) fn file_part<'a>(
                 None if counting => &[],
                 None => return Err(invalid("image file was not resolved before dispatch")),
             };
-            return Ok(image_part(provider.config.adapter, file, policy, bytes));
+            return Ok(Item::Image(super::image::Image {
+                adapter: provider.config.adapter,
+                mime: file.descriptor().media_type(),
+                policy,
+                bytes,
+            }));
         }
         let note = format!(
             "[Image {} omitted: {}/{} does not support this image format or message role]",

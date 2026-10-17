@@ -62,6 +62,7 @@ impl<'a> KernelAccounting<'a> {
     }
 
     /// Borrows standalone allocation and work state.
+    #[inline]
     pub fn standalone_parts(
         &mut self,
     ) -> Option<(
@@ -146,7 +147,7 @@ impl<'a> KernelAccounting<'a> {
                     .map_err(|error| {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
-                let verified = work.verify(*budget).map_err(crate::FsError::from);
+                let verified = work.verify_within(budget).map_err(crate::FsError::from);
                 Ok((
                     KernelOwnedAllocation::Standalone,
                     verified.and_then(|()| cancellation.check().map_err(Into::into)),
@@ -163,7 +164,7 @@ impl<'a> KernelAccounting<'a> {
                     .map_err(|error| {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
-                let verified = work.verify(*budget).map_err(crate::FsError::from);
+                let verified = work.verify_within(budget).map_err(crate::FsError::from);
                 Ok((
                     KernelOwnedAllocation::Standalone,
                     verified.and_then(|()| cancellation.check().map_err(Into::into)),
@@ -209,7 +210,7 @@ impl<'a> KernelAccounting<'a> {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
                 }
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             (
@@ -232,7 +233,7 @@ impl<'a> KernelAccounting<'a> {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
                 }
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -299,7 +300,7 @@ impl<'a> KernelAccounting<'a> {
                 ..
             } => {
                 work.try_add_assign(&delta)?;
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             Self::BorrowedStandalone {
@@ -309,7 +310,7 @@ impl<'a> KernelAccounting<'a> {
                 ..
             } => {
                 work.try_add_assign(&delta)?;
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -324,30 +325,132 @@ impl<'a> KernelAccounting<'a> {
     /// Records and checks bounded work.
     #[inline]
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
-        self.check()?;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        charge_tests::redundant_allocation();
         match self {
-            Self::Standalone { work, budget, .. } => {
+            Self::Standalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.charge(&delta, budget).map_err(Into::into)
             }
-            Self::BorrowedStandalone { work, budget, .. } => {
+            Self::BorrowedStandalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.charge(&delta, budget).map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.charge(delta).map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => {
+                #[cfg(all(test, acyclic_fs_loom))]
+                if charge_model::split_charge() {
+                    work.admit(WorkCounters::UNCHARGED)?;
+                    cancellation.check()?;
+                    work.admit(delta)?;
+                    loom::thread::yield_now();
+                    return work.record_admitted(delta).map_err(Into::into);
+                }
+                work.state(|state| {
+                    // Preserve ledger failure, caller cancellation, proposed
+                    // work failure priority while keeping the leaf held.
+                    let native = crate::materializer::native_materialization_work_error;
+                    state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+                    cancellation.check()?;
+                    state.charge(delta).map_err(native).map_err(Into::into)
+                })
+            }
+        }
+    }
+
+    pub(crate) fn perform<T>(
+        &mut self,
+        delta: WorkCounters,
+        effect: impl FnOnce() -> T,
+    ) -> Result<T, crate::FsError> {
+        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        if super::effects::broken_reservation() {
+            self.admit(delta)?;
+            let output = effect();
+            self.record_completed(delta)?;
+            return Ok(output);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Self::NativeOriginal { work, cancellation } = self {
+            return super::effects::perform(work, cancellation, delta, effect);
+        }
+        self.admit(delta)?;
+        let output = effect();
+        self.record_completed(delta)?;
+        Ok(output)
+    }
+
+    /// Charges an examined-item count without constructing or summing zero fields.
+    pub(crate) fn charge_items(&mut self, count: u64) -> Result<(), crate::FsError> {
+        match self {
+            Self::Standalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
+                work.charge_items(count, budget).map_err(Into::into)
+            }
+            Self::BorrowedStandalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
+                work.charge_items(count, budget).map_err(Into::into)
+            }
+            // Keep native charges on the existing single-leaf admission path.
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { .. } => self.charge(WorkCounters {
+                items_examined: count,
+                ..WorkCounters::UNCHARGED
+            }),
         }
     }
 
     /// Checks work before performing it.
     #[inline]
     pub fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
-        self.check()?;
         match self {
-            Self::Standalone { work, budget, .. } => work.admit(&delta, budget).map_err(Into::into),
-            Self::BorrowedStandalone { work, budget, .. } => {
+            Self::Standalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
+                work.admit(&delta, budget).map_err(Into::into)
+            }
+            Self::BorrowedStandalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.admit(&delta, budget).map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.admit(delta).map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => work.state(|state| {
+                // Keep existing ledger failures before caller cancellation,
+                // and caller cancellation before the proposed work's limit.
+                let native = crate::materializer::native_materialization_work_error;
+                state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+                cancellation.check()?;
+                state.admit(delta).map_err(native).map_err(Into::into)
+            }),
         }
     }
 
@@ -407,3 +510,9 @@ impl<'a> KernelAccounting<'a> {
 #[cfg(test)]
 #[path = "accounting_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+mod charge_tests;
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod charge_model;

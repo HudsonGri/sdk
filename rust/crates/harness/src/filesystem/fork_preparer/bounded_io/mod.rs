@@ -7,6 +7,8 @@ use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 mod codec;
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+mod codec_properties;
 mod history;
 mod quota;
 mod records;
@@ -103,9 +105,7 @@ impl PreparationIo {
                 "measured content requires finite work allowances".into(),
             ));
         }
-        cancellation
-            .check()
-            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        cancellation.check()?;
         Ok(Self::Owned {
             budget,
             work: Box::new(SyncMutex::new((
@@ -116,9 +116,7 @@ impl PreparationIo {
         })
     }
     pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
-        cancellation
-            .check()
-            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        cancellation.check()?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
             work: Box::new(SyncMutex::new((
@@ -147,6 +145,8 @@ impl PreparationIo {
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_native_custody(self, retained: u64) -> Result<acyclic_fs::NativeAllocation> {
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("custody-transfer", retained));
         let Self::Native { custody, .. } = self else {
             return Err(self.invalid("native custody requires the original native ledger"));
         };
@@ -173,6 +173,8 @@ impl PreparationIo {
         &self,
         mut incoming: acyclic_fs::NativeAllocation,
     ) -> Result<()> {
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("custody-absorb", incoming.bytes()));
         let Self::Native { custody, .. } = self else {
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
@@ -191,6 +193,8 @@ impl PreparationIo {
     #[cfg(not(target_arch = "wasm32"))]
     /// Transfers retained output storage to its caller.
     pub fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("custody-take", bytes));
         let Self::Native { custody, .. } = self else {
             return Err(self.invalid("native custody requires the original native ledger"));
         };
@@ -216,7 +220,7 @@ impl PreparationIo {
                     custody: None,
                 };
             }
-            Error::Storage(cause.to_string())
+            Error::from(cause)
         })
     }
     pub(crate) fn invalid(&self, reason: &'static str) -> Error {
@@ -249,6 +253,7 @@ impl PreparationIo {
                 .bytes()),
         }
     }
+    #[inline]
     fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,

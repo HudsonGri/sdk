@@ -17,16 +17,22 @@ struct Parser<'work> {
     allocation: NativeAllocation,
 }
 
-async fn send(
+async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
     names: &crate::tool_names::Names<'_>,
-    dispatch_id: ModelDispatch,
     auth: (Option<&str>, Option<&str>),
     work: &NativeMaterializationWork,
-) -> Result<(crate::HttpResponse, usize)> {
+) -> Result<bytes::Bytes> {
     let (key, account) = auth;
-    let (bytes, nodes) = shape(request.bytes());
+    let (mut bytes, nodes) = shape(request.bytes());
+    for message in &request.request().messages {
+        bytes = bytes
+            .checked_add(
+                crate::files::extra_bytes(&message.content, provider.files.maximum_bytes)? as u64,
+            )
+            .ok_or_else(|| invalid("model file size overflow"))?;
+    }
     let mut allocation = reserve(
         work,
         bytes,
@@ -35,39 +41,54 @@ async fn send(
     )?;
     crate::images::admit(provider, request.request(), work, &mut allocation)?;
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
-    let images = diagnostic(
-        crate::images::load(provider, request.request(), Some(&io)).await,
+    let origin = provider.reasoning_origin(key, account);
+    let body = diagnostic(
+        dispatch::encode(provider, request, names, Some(&io), &origin).await,
         &mut allocation,
     )?;
-    let (url, headers, body) = diagnostic(
-        dispatch::request(
-            provider,
-            request,
-            names,
-            dispatch_id,
-            key,
-            account,
-            images.iter().map(|image| image.0.as_ref()),
-        ),
-        &mut allocation,
+    retain(&mut allocation, body.capacity() as u64)?;
+    crate::http::owned_bytes::owned(body, allocation)
+}
+
+async fn send(
+    provider: &ResolvedModel,
+    body: bytes::Bytes,
+    dispatch_id: ModelDispatch,
+    auth: (Option<&str>, Option<&str>),
+    work: &NativeMaterializationWork,
+) -> Result<crate::HttpResponse> {
+    let (key, account) = auth;
+    let bytes = provider.config.base_url.len()
+        + provider
+            .config
+            .headers
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum::<usize>()
+        + key.map_or(0, str::len)
+        + account.map_or(0, str::len);
+    let mut allocation = reserve(
+        work,
+        bytes as u64,
+        provider.config.headers.len() as u64 + 16,
+        0,
     )?;
-    let input_bytes = if images.is_empty() { body.len() } else { 0 };
+    let url = diagnostic(crate::projection::endpoint(provider), &mut allocation)?;
+    let headers = dispatch::request_headers(provider, dispatch_id, key, account);
     let retained = (std::mem::size_of::<crate::HttpRequest>()
         + url.capacity()
-        + body.capacity()
         + headers.len() * std::mem::size_of::<(String, String)>()
         + headers
             .iter()
             .map(|(name, value)| name.capacity() + value.capacity())
             .sum::<usize>()) as u64;
-    drop(images);
     retain(&mut allocation, retained)?;
-    let body = crate::http::owned_bytes::owned(body, allocation)?;
     let response = provider
         .transport
         .send_with_native_work(crate::HttpRequest { url, headers, body }, work)?
         .await?;
-    Ok((response, input_bytes))
+    drop(allocation);
+    Ok(response)
 }
 
 fn invalid(reason: &'static str) -> Error {
@@ -180,11 +201,23 @@ pub(crate) fn generate<'a>(
             let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
             let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
-            work.remaining()?;
-            let (response, input_bytes) = send(
+            let body = encode(
                 provider,
                 request,
                 &names,
+                (auth.0.as_deref(), auth.1.as_deref()),
+                work,
+            )
+            .await?;
+            let input_bytes = if crate::images::has_images(request.request()) {
+                0
+            } else {
+                body.len()
+            };
+            work.remaining()?;
+            let response = send(
+                provider,
+                body.clone(),
                 dispatch_id,
                 (auth.0.as_deref(), auth.1.as_deref()),
                 work,
@@ -194,7 +227,6 @@ pub(crate) fn generate<'a>(
                 async_stream::try_stream! {
                     let _name_custody = name_custody;
                     let mut response = response;
-                    let mut input_bytes = input_bytes;
                     let mut recovery = dispatch::Recovery::default();
                     loop {
                         let failure = if !(200..300).contains(&response.status) {
@@ -225,12 +257,12 @@ pub(crate) fn generate<'a>(
                                     let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), Some(&mut auth_custody)).await?;
                                     auth = (Some(std::borrow::Cow::Owned(key)), account);
                                     work.remaining()?;
-                                    send(provider, request, &names, dispatch_id,
+                                    send(provider, body.clone(), dispatch_id,
                                         (auth.0.as_deref(), auth.1.as_deref()), work).await
                                 };
                                 let cancelled = work.cancellation_wait()?;
                                 futures::pin_mut!(exchange, cancelled);
-                                (response, input_bytes) = match futures::future::select(cancelled, exchange).await {
+                                response = match futures::future::select(cancelled, exchange).await {
                                     futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
                                     futures::future::Either::Right((result, _)) => result?,
                                 };
