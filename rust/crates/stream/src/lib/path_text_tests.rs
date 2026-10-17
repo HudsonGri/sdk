@@ -8,7 +8,7 @@ mod baseline;
 use baseline::BaselinePath;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "path_text_tests/native.rs"]
-mod native;
+pub(super) mod native;
 
 fn input() -> impl Strategy<Value = String> {
     prop_oneof![3 => "[a-zA-Z0-9_.-]{1,16}(/[a-zA-Z0-9_.-]{1,16}){0,6}", 1 => any::<String>()]

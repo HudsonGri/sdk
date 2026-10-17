@@ -1,5 +1,4 @@
 /// Permanent account-relative slash-separated ASCII path.
-#[derive(Clone)]
 pub struct StreamPath {
     text: PathText,
     length: usize,
@@ -166,6 +165,20 @@ impl std::hash::Hash for StreamPath {
 impl std::borrow::Borrow<str> for StreamPath {
     fn borrow(&self) -> &str {
         self.as_str()
+    }
+}
+
+impl Clone for StreamPath {
+    fn clone(&self) -> Self {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if matches!(&self.text, PathText::Plain(_)) && path_text_tests::native::copy_on_clone() {
+            return Self::new(self.as_str())
+                .unwrap_or_else(|_| unreachable!("validated path clone"));
+        }
+        Self {
+            text: self.text.clone(),
+            length: self.length,
+        }
     }
 }
 

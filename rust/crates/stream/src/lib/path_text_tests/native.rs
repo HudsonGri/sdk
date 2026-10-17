@@ -2,6 +2,28 @@ use super::*;
 use crate::test_meter::{Meter, trace};
 use std::sync::atomic::Ordering;
 
+std::thread_local! { static COPY_ON_CLONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+pub(super) fn copy_on_clone() -> bool {
+    COPY_ON_CLONE.with(std::cell::Cell::get)
+}
+
+fn clone_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
+    let output_bytes = text.len() + text.rfind('/').unwrap();
+    let text_allocation = std::alloc::Layout::new::<[usize; 2]>()
+        .extend(std::alloc::Layout::array::<u8>(text.len()).unwrap())
+        .unwrap()
+        .0
+        .pad_to_align()
+        .size();
+    // Two identical output Strings, plus one shared text allocation.
+    assert_eq!(heap.count_total, 3);
+    assert_eq!(heap.bytes_total as usize, text_allocation + output_bytes);
+}
+fn cloned_output(text: &str) -> (String, String) {
+    let path = StreamPath::new(text).unwrap();
+    let cloned = path.clone();
+    (path.to_string(), cloned.parent().unwrap().to_string())
+}
 #[test]
 fn cloned_plain_paths_allocate_once_and_original_storage_fails_the_same_bound() {
     let text = "swarm/agent/task/files";
@@ -11,31 +33,33 @@ fn cloned_plain_paths_allocate_once_and_original_storage_fails_the_same_bound() 
             let cloned = path.clone();
             (path.to_string(), cloned.parent().unwrap().to_string())
         },
-        || {
-            let path = StreamPath::new(text).unwrap();
-            let cloned = path.clone();
-            (path.to_string(), cloned.parent().unwrap().to_string())
-        },
+        || cloned_output(text),
     );
     eprintln!("path_heap before={before:?} after={after:?}");
-    // The two output Strings are identical measured work on both paths.
-    let output_bytes = text.len() + text.rfind('/').unwrap();
-    assert_eq!(after.count_total, 3);
+    clone_heap_bound(after, text);
     assert_eq!(before.count_total, 4);
-    let text_allocation = std::alloc::Layout::new::<[usize; 2]>()
-        .extend(std::alloc::Layout::array::<u8>(text.len()).unwrap())
-        .unwrap()
-        .0
-        .pad_to_align()
-        .size();
-    assert_eq!(after.bytes_total as usize, text_allocation + output_bytes);
-    let bound = |heap: acyclic_test_support::AllocationInfo| {
-        heap.count_total == 3 && heap.bytes_total as usize == text_allocation + output_bytes
-    };
-    assert!(bound(after));
+    assert!(std::panic::catch_unwind(|| clone_heap_bound(before, text)).is_err());
+}
+#[test]
+fn copying_on_the_real_clone_path_fails_the_same_heap_assertion() {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            COPY_ON_CLONE.with(|flag| flag.set(self.0));
+        }
+    }
+    let text = "swarm/agent/task/files";
+    let mut clean = None;
+    let heap = acyclic_test_support::measure(|| clean = Some(cloned_output(text)));
+    clone_heap_bound(heap, text);
+    let restore = Restore(COPY_ON_CLONE.with(|flag| flag.replace(true)));
+    let mut broken = None;
+    let heap = acyclic_test_support::measure(|| broken = Some(cloned_output(text)));
+    drop(restore);
+    assert_eq!(clean, broken);
     assert!(
-        !bound(before),
-        "original path clone allocation escaped the same bound"
+        std::panic::catch_unwind(|| clone_heap_bound(heap, text)).is_err(),
+        "a production-path copy escaped the same allocation bound"
     );
 }
 
