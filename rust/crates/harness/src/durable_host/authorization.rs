@@ -97,7 +97,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         (self.task_id(), self.workflow.request_digest, &self.fence)
     }
 
-    pub(crate) async fn lock_root_binding(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+    pub(crate) async fn lock_root_binding(
+        &self,
+    ) -> Option<impl std::ops::DerefMut<Target = ()> + '_> {
         if !self.root() {
             return None;
         }

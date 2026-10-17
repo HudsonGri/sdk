@@ -1,15 +1,15 @@
-use super::model_provider::{PublicationCut, block_on, pause_before_publish, publish_until_cut};
+use super::model_provider::{
+    PublicationCut, block_on, fixture_event, pause_before_publish, publish_until_cut, start_fixture,
+};
 use super::*;
 use crate::{
     durable_host::tests::fixture::Fixture,
     executor::{ExecutionEvent, ExecutionJournal},
-    runtime::TaskSpawner,
     task_volume::model_checking::{Fault, set_fault},
 };
 use acyclic_stream::{IdempotencyKey as StreamKey, ReadRequest, StreamPath};
 use futures::StreamExt as _;
 use loom::sync::atomic::AtomicU8;
-use serde_json::json;
 
 fn scenario(peer_before_commit: bool, broken: bool) {
     let phase = Arc::new(AtomicU8::new(0));
@@ -18,15 +18,23 @@ fn scenario(peer_before_commit: bool, broken: bool) {
         phase: phase.clone(),
         omit_condition: false,
     });
-    let fixture = block_on(Fixture::new(
-        provider.clone(),
-        acyclic_fs::Fs::memory(),
-        json!({"type":"integer"}),
-        None,
-        &[],
-    ))
+    let mut coordinator = block_on(Box::pin(open(&provider))).unwrap();
+    fixture_event(
+        &mut coordinator,
+        SchedulerEvent::Declared {
+            spec: Box::new(spec(OperationId::from_bytes([1; 16]), 0).unwrap()),
+        },
+        "declare",
+    )
     .unwrap();
-    let owner = block_on(fixture.running(1)).unwrap();
+    let lease = start_fixture(
+        &mut coordinator,
+        OperationId::from_bytes([1; 16]),
+        &worker("worker"),
+        "start",
+    )
+    .unwrap();
+    let (fixture, owner) = Fixture::model(provider.clone(), coordinator, &lease).unwrap();
     let operation = OperationId::from_bytes([2; 16]);
     let event = ExecutionEvent::Started {
         request_digest: [1; 32],
@@ -45,14 +53,20 @@ fn scenario(peer_before_commit: bool, broken: bool) {
         publication
     };
     if peer_before_commit {
-        block_on(fixture.host.admit(fixture.admission(9, json!(0)))).unwrap();
+        block_on(Box::pin(
+            fixture.model_peer(spec(OperationId::from_bytes([9; 16]), 0).unwrap()),
+        ))
+        .unwrap();
     }
     assert!(
         block_on(publication).unwrap(),
         "execution stopped on unrelated coordinator generation"
     );
     if !peer_before_commit {
-        block_on(fixture.host.admit(fixture.admission(9, json!(0)))).unwrap();
+        block_on(Box::pin(
+            fixture.model_peer(spec(OperationId::from_bytes([9; 16]), 0).unwrap()),
+        ))
+        .unwrap();
     }
     let path = StreamPath::new(format!("harness/v2/execution/{operation}")).unwrap();
     let mut records = block_on(provider.read(ReadRequest {
@@ -96,16 +110,24 @@ fn cancelled_candidate(accepted: bool, broken: bool) {
         phase: phase.clone(),
         omit_condition: false,
     });
-    let fixture = block_on(Fixture::new(
-        provider,
-        acyclic_fs::Fs::memory(),
-        json!({"type":"integer"}),
-        None,
-        &[],
-    ))
+    let mut coordinator = block_on(Box::pin(open(&provider))).unwrap();
+    fixture_event(
+        &mut coordinator,
+        SchedulerEvent::Declared {
+            spec: Box::new(spec(OperationId::from_bytes([1; 16]), 0).unwrap()),
+        },
+        "declare",
+    )
     .unwrap();
+    let lease = start_fixture(
+        &mut coordinator,
+        OperationId::from_bytes([1; 16]),
+        &worker("worker"),
+        "start",
+    )
+    .unwrap();
+    let (fixture, owner) = Fixture::model(provider.clone(), coordinator, &lease).unwrap();
     let operation = OperationId::from_bytes([2; 16]);
-    let owner = block_on(fixture.running(1)).unwrap();
     let journal = Arc::new(fixture.execution(owner, operation).unwrap());
     let event = ExecutionEvent::Started {
         request_digest: [1; 32],

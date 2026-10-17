@@ -528,3 +528,7 @@ impl FixtureMachine {
         })
     }
 }
+
+#[cfg(acyclic_harness_loom)]
+#[path = "fixture_model.rs"]
+mod model;

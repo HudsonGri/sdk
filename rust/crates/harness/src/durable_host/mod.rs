@@ -30,7 +30,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-use tokio::sync::Mutex;
+// Lock order: owner root_gate, coordinator, then provider publication locks.
+use crate::sync::Mutex;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
