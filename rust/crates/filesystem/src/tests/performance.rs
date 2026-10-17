@@ -240,3 +240,6 @@ fn in_place_charges_equal_a_verified_sum_for_every_counter() {
         assert_eq!(charged, prior);
     }
 }
+
+#[path = "performance/recorded.rs"]
+mod recorded;

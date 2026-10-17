@@ -9,6 +9,15 @@ pub(super) fn idle(runtime: &tokio::runtime::Runtime, local: &mut tokio::task::L
     );
 }
 
+fn isolated(runtime: &tokio::runtime::Runtime, local: &mut tokio::task::LocalSet) {
+    idle(runtime, local);
+    assert_eq!(
+        runtime.metrics().num_alive_tasks(),
+        0,
+        "replay runtime retained work from an earlier cut"
+    );
+}
+
 fn equivalent(fresh: &Coverage, reused: &Coverage) {
     assert_eq!(
         fresh.points, reused.points,
@@ -39,7 +48,7 @@ fn successive_cuts_match_fresh_drivers_in_both_orders() -> Result<()> {
             acyclic_native_runtime::testing::with_local_tasks(Seed::new(scenario)),
         ))?;
         let baseline = replay_case(&runtime, &reused, scenario, None, &[], Some(&seed))?;
-        idle(&runtime, &mut reused);
+        isolated(&runtime, &mut reused);
         coverage::check_boundaries(scenario, &baseline.points, baseline.ready_reads)?;
         inputs.push((scenario, seed, baseline.points));
     }
@@ -62,7 +71,7 @@ fn successive_cuts_match_fresh_drivers_in_both_orders() -> Result<()> {
                     let driver = if independent { &mut fresh } else { &mut reused };
                     let result =
                         replay_case(&runtime, driver, scenario, Some(cut), points, Some(seed));
-                    idle(&runtime, driver);
+                    isolated(&runtime, driver);
                     if let Ok(coverage) = &result {
                         for point in &coverage.points {
                             crate::test_support::differential::record(point, 1);
@@ -77,7 +86,17 @@ fn successive_cuts_match_fresh_drivers_in_both_orders() -> Result<()> {
             );
             let [(expected, expected_trace), (observed, observed_trace)] = pair;
             equivalent(&expected?, &observed?);
-            assert_eq!(expected_trace, observed_trace);
+            // Independent run() calls generate different operation nonces.
+            // Their descriptor JSON can have different lengths. Compare the
+            // semantic observer sequence; exact request bytes are audited in
+            // each case, and cut/ready-read counts remain exact above.
+            let semantic = |trace: Vec<(&'static str, u64)>| {
+                trace
+                    .into_iter()
+                    .map(|(name, amount)| (name, if name == "ready-read" { amount } else { 0 }))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(semantic(expected_trace), semantic(observed_trace));
         }
     }
     Ok(())
@@ -97,9 +116,26 @@ fn surviving_task_control_fails_the_same_driver_isolation_check() -> Result<()> 
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| idle(&runtime, &mut local)));
     assert!(dirty.get(), "the deliberately surviving owner never ran");
-    assert!(
-        result.is_err(),
-        "dirty driver escaped the same isolation check"
-    );
+    let failure = result.expect_err("dirty driver escaped the same isolation check");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("replay driver retained work from an earlier cut"));
     Ok(())
+}
+
+#[test]
+#[should_panic(expected = "replay runtime retained work from an earlier cut")]
+fn escaped_runtime_task_control_fails_the_same_isolation_check() {
+    let (runtime, _) = replay_runtime().unwrap();
+    let mut local = tokio::task::LocalSet::new();
+    let (ready, started) = tokio::sync::oneshot::channel();
+    runtime.spawn(async move {
+        ready.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    runtime.block_on(started).unwrap();
+    isolated(&runtime, &mut local);
 }

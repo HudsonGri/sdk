@@ -292,7 +292,7 @@ impl WorkCounters {
     }
 
     /// Checks, without changing `self`, that adding `delta` neither overflows nor exceeds `budget`: exactly the outcome of `self.checked_add(*delta)` followed by [`Self::verify`] of that sum.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn admit(&self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
         let mut overflow = false;
         let mut within = true;
@@ -331,7 +331,7 @@ impl WorkCounters {
     }
 
     /// Adds `delta` in place once [`Self::admit`] accepts it: exactly `*self = self.checked_add(*delta)?` after that sum verifies against `budget`, but copies neither counter set.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn charge(&mut self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
         self.admit(delta, budget)?;
         self.add_admitted(delta);
@@ -339,7 +339,7 @@ impl WorkCounters {
     }
 
     /// Adds `delta` in place: exactly `*self = self.checked_add(*delta)?`, without copying either counter set.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn try_add_assign(&mut self, delta: &Self) -> Result<(), WorkError> {
         let mut overflow = false;
         macro_rules! check {
@@ -356,7 +356,7 @@ impl WorkCounters {
     }
 
     /// Adds `delta` in place after [`Self::admit`] or an equivalent overflow check has accepted exactly this `self` and `delta`.
-    #[inline]
+    #[inline(always)]
     fn add_admitted(&mut self, delta: &Self) {
         macro_rules! add_in_place {
             ($($field:ident),*) => {
@@ -368,7 +368,7 @@ impl WorkCounters {
     }
 
     /// Verifies every counter against an admitted hard budget.
-    #[inline]
+    #[inline(always)]
     pub fn verify(self, budget: WorkBudget) -> Result<(), WorkError> {
         self.verify_within(&budget)
     }
@@ -401,7 +401,7 @@ impl WorkCounters {
         })
     }
 
-    #[inline]
+    #[inline(always)]
     fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
         // Charged once per examined item on hot paths: compare every counter
         // without branching and name the exceeded one only on failure.

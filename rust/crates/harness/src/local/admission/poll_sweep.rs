@@ -565,6 +565,9 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         let observed = replay_case(&runtime, &setup, scenario, None, &[], Some(&seed))?;
         let baseline = observed.points;
         coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
+        if std::env::var_os("GC_LOCAL_CUT_SET").is_some() {
+            eprintln!("CUT_SET {:?} {}", scenario, serde_json::to_string(&baseline).map_err(storage)?);
+        }
         assert!(!baseline.is_empty());
         eprintln!(
             "{scenario:?}: {} deterministic cancellation points",

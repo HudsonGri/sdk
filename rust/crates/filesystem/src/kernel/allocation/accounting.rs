@@ -291,6 +291,9 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
+    // Keep sparse literal deltas at their callers: an out-of-line boundary
+    // materializes and copies all 24 counters for every completed codec item.
+    #[inline(always)]
     pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone {
@@ -323,7 +326,7 @@ impl<'a> KernelAccounting<'a> {
     }
 
     /// Records and checks bounded work.
-    #[inline]
+    #[inline(always)]
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
         self.check()?;
         match self {
@@ -339,7 +342,7 @@ impl<'a> KernelAccounting<'a> {
     }
 
     /// Checks work before performing it.
-    #[inline]
+    #[inline(always)]
     pub fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone {
