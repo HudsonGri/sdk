@@ -26,6 +26,15 @@ struct InterruptedRestore(loom::sync::Mutex<Vec<(OperationId, GitFilesystemActio
 impl GitFilesystemExecutor for InterruptedRestore {
     type Error = TestExecutorError;
 
+    async fn validate_merge_resolution(
+        &self,
+        _: OperationId,
+        _: &GitFilesystemAction,
+        _: GitTreeRef,
+    ) -> Result<GitFilesystemResult, Self::Error> {
+        Err(TestExecutorError)
+    }
+
     async fn execute(
         &self,
         operation: OperationId,
