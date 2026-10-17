@@ -136,8 +136,11 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
     let transport = Recorded::new(&case);
-    parsed(&case, transport.clone()).await?;
-    transport.restart()?;
+    // The parse oracle replays successful exchanges one per step; refusals are task-level.
+    if case.statuses.iter().all(|status| *status == 200) {
+        parsed(&case, transport.clone()).await?;
+        transport.restart()?;
+    }
     let temporary = local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
@@ -154,10 +157,17 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     let stream = local_task_stream(&harness);
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let mut frames = stream.follow(path.clone(), 0).await?;
-    let output = harness.resume(task_id).await?;
+    let output = harness.resume(task_id).await;
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
-    if output.text != case.expect.text || output.steps as usize != case.responses.len() {
-        return Err(format!("provider task output differs: {output:?}").into());
+    match (case.expect.outcome, output) {
+        (super::local_case::ExpectedOutcome::Succeeded, Ok(output))
+            if output.text == case.expect.text
+                && output.steps as usize == case.completed_steps() => {}
+        (
+            super::local_case::ExpectedOutcome::Failed,
+            Err(acyclic_harness::Error::TaskFailed { task, .. }),
+        ) if task == task_id => {}
+        (_, output) => return Err(format!("provider task output differs: {output:?}").into()),
     }
     let cut = stream.tail(path).await?;
     let mut wire = Vec::new();
@@ -174,7 +184,7 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
         &case.expect.frames,
         &wire,
         operation,
-        super::local_case::ExpectedOutcome::Succeeded,
+        case.expect.outcome,
     )?;
     // Keep other child completions: only the root publication is dropped.
     let root = serde_json::to_value(operation)?;
@@ -187,7 +197,7 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
         &case.expect.frames,
         &wire,
         operation,
-        super::local_case::ExpectedOutcome::Succeeded,
+        case.expect.outcome,
     )
     .is_ok()
     {
