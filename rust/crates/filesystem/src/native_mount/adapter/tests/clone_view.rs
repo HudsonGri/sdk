@@ -1,6 +1,19 @@
 use super::*;
 use proptest::prelude::*;
 
+fn agrees(
+    result: &Result<(), MountSourceError>,
+    before: &[u8],
+    source: &[u8],
+    after: &[u8],
+) -> bool {
+    match result {
+        Ok(()) => after == source,
+        Err(MountSourceError::NativeUnsupported) => after == before,
+        Err(_) => false,
+    }
+}
+
 fn check(source_bytes: &[u8], destination_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let (source, destination) = sources(
         FilesystemProfile::Portable,
@@ -23,18 +36,23 @@ fn check(source_bytes: &[u8], destination_bytes: &[u8]) -> Result<(), Box<dyn st
     let input = source.open_file(&from)?;
     let output = destination.open_file(&to)?;
     assert_eq!(input.read_range(0, 8)?.as_ref(), source_bytes);
-    assert!(matches!(
-        output.clone_range_from(input.as_ref(), 0, 0, 8, &work),
-        Err(MountSourceError::NativeUnsupported)
+    let result = output.clone_range_from(input.as_ref(), 0, 0, 8, &work);
+    assert!(agrees(
+        &result,
+        b"original",
+        source_bytes,
+        &output.read_range(0, 8)?
     ));
+    assert!(matches!(result, Err(MountSourceError::NativeUnsupported)));
     assert_eq!(output.read_range(0, 8)?.as_ref(), b"original");
     // The old implementation silently selected this checkout's different bytes.
     let local = destination.open_file(&from)?;
-    output.clone_range_from(local.as_ref(), 0, 0, 8, &work)?;
-    assert_eq!(output.read_range(0, 8)?.as_ref(), destination_bytes);
-    assert_ne!(
-        destination_bytes, source_bytes,
-        "negative control must distinguish the wrong checkout"
+    let result = output.clone_range_from(local.as_ref(), 0, 0, 8, &work);
+    let bytes = output.read_range(0, 8)?;
+    assert!(agrees(&result, b"original", destination_bytes, &bytes));
+    assert!(
+        !agrees(&result, b"original", source_bytes, &bytes),
+        "the same oracle must detect the former destination-checkout read"
     );
     Ok(())
 }

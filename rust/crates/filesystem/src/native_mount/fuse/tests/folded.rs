@@ -270,8 +270,13 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
     let first = source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
     assert_eq!(first.entries.len(), 256);
     assert!(work.receipt().bytes_encoded >= 1024 * 9);
+    // Current-policy authentication is mandatory for every page. Fund exactly
+    // that shared probe; cached namespace validation must add no encoding work.
+    let probe = fuse_fixture_work();
+    source.access_snapshot_with_meter(&probe)?;
+    let policy_bytes = probe.receipt().bytes_encoded;
     let budget = crate::WorkBudget {
-        bytes_encoded: 0,
+        bytes_encoded: policy_bytes,
         ..crate::WorkBudget::UNBOUNDED
     };
     let cached = cache_work(budget, &crate::CancellationToken::new());
@@ -283,9 +288,16 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
     )?;
     assert_eq!(next.entries.len(), 256);
     assert!(first.entries.last().ok_or("first page missing")?.name < next.entries[0].name);
-    assert_eq!(cached.receipt().bytes_encoded, 0);
+    assert_eq!(cached.receipt().bytes_encoded, policy_bytes);
     // An edit changes the tree identity: the old validation must not transfer.
     source.create_directory(&name("New"), FileMetadata::default(), &work)?;
+    let stale = cache_work(budget, &crate::CancellationToken::new());
+    assert!(
+        source
+            .read_directory_with_meter(&MountPath::root(), None, 256, &stale)
+            .is_err(),
+        "the same bound must reject an actual namespace-validation scan"
+    );
     let before = work.receipt().bytes_encoded;
     source.read_directory_with_meter(&MountPath::root(), None, 256, &work)?;
     assert!(work.receipt().bytes_encoded >= before + 1024 * 9);

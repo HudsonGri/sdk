@@ -475,10 +475,14 @@ impl DarwinMountContext {
             None
         };
         let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
-        let count = files
-            .values()
-            .filter(|entry| entry.file_id == lookup.node.file_id)
-            .count();
+        let count = if detached.is_some() {
+            files
+                .values()
+                .filter(|entry| entry.file_id == lookup.node.file_id)
+                .count()
+        } else {
+            0
+        };
         let mut replacements = vector(work, count)?;
         if let Some(detached) = detached {
             for (handle, entry) in files
