@@ -389,20 +389,39 @@ impl CaptureBatch<'_> {
         canonical_metadata: FileMetadata,
         existing: (Option<FileRecord>, bool),
     ) -> Result<bool, CaptureError> {
+        #[cfg(test)]
+        if super::verified_reuse_tests::mode() == super::verified_reuse_tests::Reuse::PersistFirst {
+            return super::verified_reuse_baseline::regular(
+                self,
+                checkout,
+                path,
+                host_path,
+                metadata,
+                canonical_metadata,
+                existing,
+            )
+            .await;
+        }
         let logical_bytes = metadata.len();
         // A prior record that may still hold these bytes is compared by content
         // root first; its objects already exist, so nothing is written unless
         // the bytes differ. Every byte is read either way: no host stamp
         // reflects a write through a shared mapping.
+        // Metadata edits do not require writing identical immutable content.
+        // A single-link record may reuse its body and author metadata alone.
+        let can_reuse = existing.1
+            || (metadata.nlink() == 1 && existing.0.is_some_and(|record| record.link_count == 1));
         let verify = logical_bytes != 0
-            && existing.1
+            && can_reuse
             && existing.0.is_some_and(|record| {
                 matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
             });
         #[cfg(test)]
         let verify = match super::verified_reuse_tests::mode() {
             super::verified_reuse_tests::Reuse::Verified
-            | super::verified_reuse_tests::Reuse::VerifySparse => verify,
+            | super::verified_reuse_tests::Reuse::VerifySparse
+            | super::verified_reuse_tests::Reuse::RedundantLargeStat
+            | super::verified_reuse_tests::Reuse::OmitLargeValidation => verify,
             super::verified_reuse_tests::Reuse::PersistFirst => false,
             super::verified_reuse_tests::Reuse::MetadataOnly => {
                 if verify {
@@ -446,7 +465,7 @@ impl CaptureBatch<'_> {
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
         let unchanged = if logical_bytes == 0
             && ranges.is_empty()
-            && existing.1
+            && can_reuse
             && existing.0.is_some_and(|record| record.link_count == 1)
             && existing.0.is_some_and(|record| match record.payload {
                 crate::kernel::FilePayload::InlineRegular(data) => data.as_bytes().is_empty(),
@@ -454,7 +473,7 @@ impl CaptureBatch<'_> {
             }) {
             true
         } else if let (Some(record), true, [(range, content)]) =
-            (existing.0, existing.1, ranges.as_slice())
+            (existing.0, can_reuse, ranges.as_slice())
             && matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
             && range.offset == 0
             && range.length == logical_bytes
@@ -519,12 +538,20 @@ impl CaptureBatch<'_> {
                 .receipt
                 .staged_file_bytes
                 .checked_add(verified_bytes)
-                .ok_or(CaptureError::from(WorkError::Overflow))?;
+                .ok_or(WorkError::Overflow)?;
             if let Some(host_path) = retained_path {
                 capture_drop_host_path(host_path, self.meter)?;
             }
-            capture_drop_path(path, self.meter)?;
-            return Ok(false);
+            if existing.1 {
+                capture_drop_path(path, self.meter)?;
+                return Ok(false);
+            }
+            capture_reserve(&mut self.mutations, 1, self.meter)?;
+            self.mutations.push(AuthoredMutation::SetMetadata {
+                path,
+                metadata: canonical_metadata,
+            });
+            return Ok(true);
         }
         let (ranges, ranges_bytes) = if let Some(host_path) = retained_path {
             // Verified roots were never written; stage the changed bytes.
@@ -553,7 +580,7 @@ impl CaptureBatch<'_> {
         let count = ranges
             .len()
             .checked_add(2 + usize::from(logical_bytes != 0))
-            .ok_or(CaptureError::from(WorkError::Overflow))?;
+            .ok_or(WorkError::Overflow)?;
         capture_reserve(&mut self.mutations, count, self.meter)?;
         if existing.0.is_some() {
             self.mutations.push(AuthoredMutation::Resize {

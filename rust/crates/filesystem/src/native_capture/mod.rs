@@ -26,6 +26,8 @@ mod native_view_baseline_tests;
 #[cfg(all(test, feature = "memory"))]
 mod reserve_tests;
 #[cfg(test)]
+mod verified_reuse_baseline;
+#[cfg(test)]
 mod verified_reuse_tests;
 use accounting::*;
 #[cfg(windows)]

@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(any(target_os = "linux", windows))]
 use acyclic_test_support::differential;
 use acyclic_test_support::{AllocationInfo, measure};
 use std::cell::Cell;
@@ -15,6 +14,10 @@ pub(super) enum Reuse {
     MetadataOnly,
     /// Restores the rejected verify-then-stage path for sparse layouts.
     VerifySparse,
+    /// A query confined to the large-file path, outside the old work oracle.
+    RedundantLargeStat,
+    /// Omits the large-file held-handle and final-path validation.
+    OmitLargeValidation,
 }
 
 thread_local! {
@@ -159,6 +162,21 @@ fn rescan(
     AllocationInfo,
     crate::kernel::GenerationRoot,
 ) {
+    rescan_with_baseline(runtime, fixture, reuse, cancelled, true)
+}
+
+fn rescan_with_baseline(
+    runtime: &tokio::runtime::Runtime,
+    fixture: &mut Fixture,
+    reuse: Reuse,
+    cancelled: bool,
+    read_only: bool,
+) -> (
+    Output,
+    serde_json::Value,
+    AllocationInfo,
+    crate::kernel::GenerationRoot,
+) {
     let (work, cancellation) = fixture
         .setup
         .native_volume_work(WorkBudget::UNBOUNDED)
@@ -169,7 +187,7 @@ fn rescan(
         cancellation.cancel();
     }
     let prior = fixture.checkout.root().clone();
-    let baseline = NativeViewBaseline::new(fixture.options.expected_root_identity, true);
+    let baseline = NativeViewBaseline::new(fixture.options.expected_root_identity, read_only);
     let roots = [NamespacePath::new(Vec::new(), fixture.checkout.volume_config().limits).unwrap()];
     let policy = CapturePolicy::default();
     let live_before = work.live_allocation_bytes();
@@ -292,6 +310,81 @@ fn candidate(fixture: &Fixture) -> crate::facade::MemoryCheckout {
         .unwrap()
 }
 
+fn set_prior_access_time(runtime: &tokio::runtime::Runtime, fixture: &mut Fixture, nanos: i64) {
+    let work = &fixture.setup;
+    let cancellation = work.cancellation();
+    let path = fixture.paths[2].clone();
+    runtime.block_on(async {
+        let (lookup, _custody) = fixture
+            .checkout
+            .lookup_batch_no_follow(std::slice::from_ref(&path), work, cancellation)
+            .await
+            .unwrap();
+        let mut metadata = fixture
+            .checkout
+            .read_metadata(
+                lookup.entries[0].record.unwrap().file_id,
+                work,
+                cancellation,
+            )
+            .await
+            .unwrap();
+        metadata.accessed_ns = MetadataField::Value(nanos);
+        let changes = vec![AuthoredMutation::SetMetadata { path, metadata }];
+        let slots = work
+            .claim(
+                (changes.capacity() * std::mem::size_of::<AuthoredMutation>()) as u64,
+                1,
+                WorkCounters::UNCHARGED,
+            )
+            .unwrap();
+        fixture
+            .checkout
+            .apply_borrowed_authored_transaction_with_native_work(
+                &changes,
+                &slots,
+                work,
+                cancellation,
+            )
+            .await
+            .unwrap();
+    });
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    #[test]
+    fn metadata_changes_reuse_the_authenticated_body(accessed in 1_i64..32, cancelled in proptest::bool::ANY) {
+        let _subscriber = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        let runtime = setup();
+        let [((old, old_work, old_heap, _), old_trace), ((new, work, heap, _), trace)] =
+            differential::pair::<_, _, &'static str>(|| {
+                let mut state = fixture(&runtime);
+                set_prior_access_time(&runtime, &mut state, accessed);
+                state
+            }, |mut state, old| {
+                #[cfg(any(target_os = "linux", windows))]
+                let probe = crate::native_host::stat_probe::Probe::rescan(false);
+                let observed = rescan_with_baseline(&runtime, &mut state,
+                    if old { Reuse::PersistFirst } else { Reuse::Verified }, cancelled, false);
+                #[cfg(any(target_os = "linux", windows))]
+                probe.publish();
+                observed
+            });
+        proptest::prop_assert_eq!((&old.result, &old.bytes), (&new.result, &new.bytes));
+        proptest::prop_assert_eq!(new.result.is_ok(), !cancelled);
+        proptest::prop_assert_eq!(old_trace, trace);
+        proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), work["sourceBytesRead"].as_u64());
+        if !cancelled {
+            proptest::prop_assert!(!new.unchanged_root && !old.unchanged_root);
+            proptest::prop_assert_eq!(new.bytes, FILES.map(|(_, length)| body(length, 7)).to_vec());
+            proptest::prop_assert!(work["objectBytesWritten"].as_u64() < old_work["objectBytesWritten"].as_u64());
+            eprintln!("METADATA_REUSE heap={} old_heap={} work={work} old_work={old_work}", heap.count_total, old_heap.count_total);
+        }
+    }
+}
+
 fn setup() -> tokio::runtime::Runtime {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     tokio::runtime::Builder::new_current_thread()
@@ -342,7 +435,7 @@ fn matching_stamps_never_hide_changed_bytes() {
 // independent of the restored staging control, which must fail them.
 #[cfg(target_os = "linux")]
 const RESCAN: (u64, [(&str, u64); 6]) = (
-    429,
+    424,
     [
         ("objectBytesWritten", 0),
         ("bytesHashed", 72_231),
@@ -354,7 +447,7 @@ const RESCAN: (u64, [(&str, u64); 6]) = (
 );
 #[cfg(windows)]
 const RESCAN: (u64, [(&str, u64); 6]) = (
-    417,
+    412,
     [
         ("objectBytesWritten", 0),
         ("bytesHashed", 72_087),
@@ -388,9 +481,9 @@ fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
     for cancelled in [false, true] {
         // Separate host roots, stores, checkouts, cancellations and ledgers.
         let [
-            ((before, before_work, before_heap, _), _),
-            ((after, after_work, after_heap, _), _),
-        ] = differential::pair::<_, _, ()>(
+            ((before, before_work, before_heap, _), before_trace),
+            ((after, after_work, after_heap, _), trace),
+        ] = differential::pair::<_, _, &'static str>(
             || fixture(&runtime),
             |mut state, old| {
                 let reuse = if old {
@@ -398,7 +491,9 @@ fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
                 } else {
                     Reuse::Verified
                 };
+                let probe = crate::native_host::stat_probe::Probe::rescan(false);
                 let observed = rescan(&runtime, &mut state, reuse, cancelled);
+                probe.publish();
                 drop(state.source);
                 observed
             },
@@ -421,12 +516,14 @@ fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
         );
         assert!(retained(&after) <= retained(&before));
         assert_eq!(after.result.is_ok(), !cancelled);
+        assert_eq!(trace, before_trace);
         if cancelled {
             assert_eq!(before_work, after_work);
             assert_eq!(before_heap, after_heap);
             continue;
         }
         assert!(after.unchanged_root);
+        assert!(!before_trace.is_empty());
         assert_eq!(
             after.bytes,
             FILES.map(|(_, length)| body(length, 7)).to_vec()
@@ -442,6 +539,25 @@ fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
             before_work["sourceBytesRead"],
             after_work["sourceBytesRead"]
         );
+        for fault in [Reuse::RedundantLargeStat, Reuse::OmitLargeValidation] {
+            let ((broken, work, heap, _), broken_trace) = differential::observe::<_, _, &'static str>(
+                || fixture(&runtime),
+                |mut state| {
+                    let probe = crate::native_host::stat_probe::Probe::rescan(false);
+                    let observed = rescan(&runtime, &mut state, fault, false);
+                    probe.publish();
+                    observed
+                },
+            );
+            assert_eq!(
+                (&broken.result, &broken.bytes),
+                (&after.result, &after.bytes)
+            );
+            // Neither bug changes the six-counter oracle. The same ordered
+            // trace comparison with the frozen baseline detects both.
+            exact_rescan(heap, &work).unwrap();
+            assert_ne!(broken_trace, before_trace, "{fault:?}");
+        }
     }
 }
 
@@ -483,7 +599,9 @@ proptest::proptest! {
         eprintln!("SPARSE_REUSE ranges={ranges} heap={} broken_heap={} work={work}", heap.count_total, broken_heap.count_total);
         proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(expected));
         proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), Some(expected));
-        proptest::prop_assert_eq!(heap.count_total, old_heap.count_total);
+        // The frozen baseline eagerly boxed one error per range and one
+        // mutation-count error; the candidate keeps those failures scalar.
+        proptest::prop_assert_eq!(old_heap.count_total, heap.count_total + ranges + 1);
         // Restoring speculative verification reads the sparse data a second time.
         proptest::prop_assert_eq!(broken_work["sourceBytesRead"].as_u64(), Some(expected + data));
         proptest::prop_assert_ne!(

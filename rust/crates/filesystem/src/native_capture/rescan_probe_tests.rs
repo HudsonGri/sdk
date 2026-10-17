@@ -150,7 +150,7 @@ fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool 
             .into_iter()
             .flatten()
     });
-    heap.count_total == if cfg!(windows) { 297 } else { 304 } && trace.iter().copied().eq(expected)
+    heap.count_total == if cfg!(windows) { 294 } else { 301 } && trace.iter().copied().eq(expected)
 }
 
 fn run(

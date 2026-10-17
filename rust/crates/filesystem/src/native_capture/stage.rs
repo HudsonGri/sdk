@@ -141,7 +141,7 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
         }
         *staged_file_bytes = staged_file_bytes
             .checked_add(range.length)
-            .ok_or(CaptureError::from(WorkError::Overflow))?;
+            .ok_or(WorkError::Overflow)?;
         staged.push((*range, content));
     }
     finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
@@ -159,6 +159,18 @@ pub(super) fn finish_regular_capture(
     file: &std::fs::File,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
+    #[cfg(test)]
+    if snapshot.len() > 65_536 {
+        match super::verified_reuse_tests::mode() {
+            super::verified_reuse_tests::Reuse::OmitLargeValidation => return Ok(()),
+            super::verified_reuse_tests::Reuse::RedundantLargeStat => {
+                source_root
+                    .stat_file_metadata(file, &mut meter.clone())
+                    .map_err(capture_demand_error)?;
+            }
+            _ => (),
+        }
+    }
     #[cfg(all(test, feature = "memory"))]
     if super::empty_stage_tests::omit_finish() {
         return Ok(());
