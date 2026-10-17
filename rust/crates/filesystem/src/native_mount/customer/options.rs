@@ -94,12 +94,15 @@ impl MountOptions {
     pub fn require_access_view(
         &self,
     ) -> Result<&Arc<crate::access::AccessView>, MountLifecycleError> {
-        let view = self
-            .access_view
+        self.access_view
             .as_ref()
             .ok_or(MountLifecycleError::NativePolicy(
                 "native mounts require an authenticated policy and capability view",
-            ))?;
+            ))
+    }
+
+    pub(super) fn require_projection(&self) -> Result<(), MountLifecycleError> {
+        let view = self.require_access_view()?;
         #[cfg(windows)]
         {
             let current = view
@@ -111,7 +114,9 @@ impl MountOptions {
                 super::super::adapter::access::access_time()?,
             )?;
         }
-        Ok(view)
+        #[cfg(not(windows))]
+        let _ = view;
+        Ok(())
     }
 
     pub(super) fn work(
