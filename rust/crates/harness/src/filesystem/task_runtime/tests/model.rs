@@ -629,7 +629,7 @@ proptest::proptest! {
             let execution = runtime.stock_execution_with_context(
                 context, fence, OperationId::new(), model, provider.clone(),
                 ContextPipeline::default(), fixture.tools.clone(), None,
-            ).await?;
+            ).await?.with_compaction_policy(crate::context::CompactionPolicy::Disabled);
             // Ownership identity, rather than elapsed time, proves composition
             // retained the issued owner instead of reopening its proof chain.
             assert_eq!(Arc::strong_count(&owner), retained);
@@ -638,8 +638,9 @@ proptest::proptest! {
             let input = TurnInput { operation_id: execution.operation_id(),
                 input: crate::model::ModelContent::Text("stopped invocation".into()),
                 selected_context: None, max_steps: 1 };
-            assert!(matches!(execution.execute(input).await,
-                Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled))));
+            let stopped = execution.execute(input).await;
+            assert!(matches!(stopped,
+                Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled))), "{stopped:?}");
             assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
             drop(execution);
             assert_eq!(Arc::strong_count(&owner), retained - 1);
