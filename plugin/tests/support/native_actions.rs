@@ -55,7 +55,6 @@ impl<'a> Tools<'a> {
             Some(provider) => provider,
             None => Arc::new(native_hooks::client(cwd).await?),
         };
-        let (requests, results) = local_hook_volumes(Arc::clone(&provider), task).await?;
         if timings {
             eprintln!(
                 "native attach {}: {:.3} s",
@@ -63,6 +62,25 @@ impl<'a> Tools<'a> {
                 started.elapsed().as_secs_f64()
             );
         }
+        let attached = Self::attached(cwd, host, session, provider).await?;
+        assert_eq!(attached.task, task);
+        Ok(attached)
+    }
+
+    /// Reuses an authenticated provider after a real native SessionStart.
+    pub async fn attached(
+        cwd: &'a Path,
+        host: ExternalHost,
+        session: String,
+        provider: Arc<Client>,
+    ) -> Result<Self> {
+        let event = if host == ExternalHost::Pi {
+            "session_start"
+        } else {
+            "SessionStart"
+        };
+        let task = request(host, event, json!({"session_id":session,"cwd":cwd}))?.task_id();
+        let (requests, results) = local_hook_volumes(Arc::clone(&provider), task).await?;
         Ok(Self {
             cwd,
             host,
@@ -72,7 +90,7 @@ impl<'a> Tools<'a> {
             provider,
             requests,
             results,
-            timings,
+            timings: std::env::var_os("ACYCLIC_NATIVE_TIMINGS").is_some(),
         })
     }
 

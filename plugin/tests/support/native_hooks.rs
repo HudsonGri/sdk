@@ -1,6 +1,6 @@
 //! Real hook-process fixture shared by focused integration suites.
 #[path = "sdk_client.rs"]
-mod sdk_client;
+pub mod sdk_client;
 use serde_json::Value;
 use std::{path::Path, process::Stdio};
 use tokio::{
