@@ -23,21 +23,20 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        self.validate_workspace_tree(workspace_tree).await?;
+        Box::pin(self.validate_workspace_tree(workspace_tree)).await?;
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
-        let output = self
-            .prepare_validated(|_| {
-                Ok(GitCommandOutput::Action(
-                    GitFilesystemAction::RestorePaths {
-                        tree: source,
-                        paths: paths.clone(),
-                    },
-                ))
-            })
-            .await?;
+        let output = Box::pin(self.prepare_validated(|_| {
+            Ok(GitCommandOutput::Action(
+                GitFilesystemAction::RestorePaths {
+                    tree: source,
+                    paths: paths.clone(),
+                },
+            ))
+        }))
+        .await?;
         executor
             .validate()
             .await
@@ -45,7 +44,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let GitCommandOutput::Prepared { transition, action } = output else {
             return Err(GitCompatError::InvalidState.into());
         };
-        self.finish(transition, &action, executor).await
+        Box::pin(self.finish(transition, &action, executor)).await
     }
 }
 
@@ -61,11 +60,22 @@ mod tests {
         let boundary =
             repository.restore_paths_from(tree(2), vec!["/selected".into()], tree(1), &executor);
         let body = repository.restore_paths(tree(2), vec!["/selected".into()], tree(1), &executor);
+        let validation = repository.validate_workspace_tree(tree(1));
+        let preparation = repository.prepare_validated(|_| Ok(GitCommandOutput::NoOp));
+        let action = GitFilesystemAction::RestorePaths {
+            tree: tree(2),
+            paths: vec!["/selected".into()],
+        };
+        let settlement = repository.finish(GitTransitionId::from_bytes([1; 16]), &action, &executor);
         eprintln!(
-            "published restore futures: boundary {} bytes, body {} bytes",
+            "published restore futures: boundary {}, body {}, validation {}, preparation {}, settlement {} bytes",
             std::mem::size_of_val(&boundary),
-            std::mem::size_of_val(&body)
+            std::mem::size_of_val(&body),
+            std::mem::size_of_val(&validation),
+            std::mem::size_of_val(&preparation),
+            std::mem::size_of_val(&settlement),
         );
         assert!(std::mem::size_of_val(&boundary) < 1024);
+        assert!(std::mem::size_of_val(&body) < 4096);
     }
 }
