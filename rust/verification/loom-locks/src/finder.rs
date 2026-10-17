@@ -468,8 +468,8 @@ impl<'ast> Finder<'_, 'ast> {
 
     fn signature(&self, func: &Expr) -> Option<&'ast Signature> {
         let Expr::Path(path) = func else { return None };
-        let segments: Vec<String> = path
-            .path
+        let resolved = self.names.path(&path.path)?;
+        let segments: Vec<String> = resolved
             .segments
             .iter()
             .map(|segment| crate::name(&segment.ident))
@@ -536,9 +536,37 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
             Expr::Call(call) => {
                 if let Expr::Path(path) = &*call.func {
                     self.callees.insert(key(&call.func));
-                    if self.inferred(path) && self.signature(&call.func).is_none() {
-                        self.judge(expr);
+                    if self.signature(&call.func).is_none() && self.fields(&path.path).is_none() {
+                        if self.inferred(path) {
+                            self.judge(expr);
+                        } else {
+                            let resolved = self.names.path(&path.path);
+                            let spelling = resolved.as_ref().map(|path| {
+                                path.segments
+                                    .iter()
+                                    .map(|segment| crate::name(&segment.ident))
+                                    .collect::<Vec<_>>()
+                                    .join("::")
+                            });
+                            let method = resolved.as_ref().and_then(last);
+                            // These language/library entries do not manufacture a
+                            // lock; their executable arguments are visited below.
+                            let transparent = matches!(
+                                spelling.as_deref(),
+                                Some("Some" | "Ok" | "Err" | "loom::model")
+                            );
+                            if !transparent
+                                && !method
+                                    .as_deref()
+                                    .is_some_and(|method| GENERIC.contains(&method))
+                            {
+                                self.unresolved.push(expr.to_token_stream().to_string());
+                            }
+                        }
                     }
+                }
+                if !matches!(&*call.func, Expr::Path(_) | Expr::Closure(_)) {
+                    self.unresolved.push(expr.to_token_stream().to_string());
                 }
                 let inputs: Vec<Option<Expect<'ast>>> =
                     if let Some(signature) = self.signature(&call.func) {
@@ -573,6 +601,7 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
             {
                 self.judge(expr);
             }
+            Expr::MethodCall(_) => self.unresolved.push(expr.to_token_stream().to_string()),
             Expr::Path(path) => {
                 match self.constructor(path) {
                     Some(found) => self.found |= found,

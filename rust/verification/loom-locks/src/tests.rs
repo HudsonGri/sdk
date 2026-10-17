@@ -1,7 +1,11 @@
 use super::scan;
 
 fn constructs(body: &str) -> bool {
-    scan(&format!("fn model() {{ {body} }}")).unwrap_or_else(|error| panic!("{body}: {error}"))
+    match scan(&format!("fn model() {{ {body} }}")) {
+        Ok(found) => found,
+        Err(error) if error.to_string().starts_with("indeterminate:") => true,
+        Err(error) => panic!("{body}: {error}"),
+    }
 }
 
 #[test]
@@ -116,6 +120,9 @@ fn source_corpus_survives_parse_print_and_keeps_the_expected_verdict() {
 fn unknown_explicit_owners_cannot_adopt_an_unrelated_expected_type() {
     for source in [
         "fn plain() { production::Component::new() }",
+        "fn plain() { unknown_factory(); }",
+        "fn plain() { production::Component::build(); }",
+        "fn plain() { value.unknown_factory(); }",
         "type A = <() as Factory>::Lock; fn plain() { A::default() }",
         "type A = Missing; fn plain() -> u8 { A::default() }",
         "use B as A; use A as B; fn plain() -> u8 { A::default() }",
@@ -183,7 +190,7 @@ fn allowed_macro_arguments_are_parsed_with_their_grammar() {
     let typed = "thread_local! { static A: SyncMutex<u8> = const { Default::default() }; }";
     assert_eq!(verdict(typed), Ok(true));
     let proptest = "proptest::proptest! {\n#![proptest_config(Config::with_cases(4))]\n#[test]\nfn p(a in 0..4u8, b: u8) { let lock: SyncMutex<u8> = (a.into()); }\n}";
-    assert_eq!(verdict(proptest), Ok(true));
+    assert!(indeterminate(proptest));
     for body in [
         "assert!(a b c);",
         "let a = matches!(x);",
