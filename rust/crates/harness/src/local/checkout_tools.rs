@@ -28,7 +28,7 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    task_files: Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -80,7 +80,7 @@ impl CheckoutTools {
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        task_files: Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Self> {
         if workspace
             .filesystem

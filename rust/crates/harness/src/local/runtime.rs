@@ -161,7 +161,7 @@ pub(super) async fn open(
                     workspace,
                     config.project,
                     config.clock,
-                    Arc::clone(&task_files),
+                    Arc::clone(&projection_files),
                 )
                 .await?,
             );

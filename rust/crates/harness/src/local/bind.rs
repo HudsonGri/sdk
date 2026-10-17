@@ -111,7 +111,7 @@ impl LocalHarness {
                     Arc::clone(workspace),
                     volume,
                     config.clock,
-                    Arc::clone(&erased_files),
+                    Arc::clone(&task_files),
                 )
                 .await?,
             ))?

@@ -159,7 +159,7 @@ impl LocalWorkspace {
         self: &Arc<Self>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        task_files: Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
             super::checkout_tools::CheckoutTools::new(Arc::clone(self), project, clock, task_files)

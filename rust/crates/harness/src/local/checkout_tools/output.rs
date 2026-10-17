@@ -14,7 +14,7 @@ pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
 
 pub(super) struct Output {
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
-    volume: Arc<TaskFiles<dyn acyclic_stream::StreamProvider>>,
+    volume: Arc<TaskFiles<acyclic_stream::LocalStream>>,
     generation: Generation,
     task: Component,
     call: Component,
@@ -26,7 +26,7 @@ pub(super) struct Output {
 impl Output {
     pub(super) async fn open(
         context: &ToolContext,
-        volume: Arc<TaskFiles<dyn acyclic_stream::StreamProvider>>,
+        volume: Arc<TaskFiles<acyclic_stream::LocalStream>>,
         request: Vec<u8>,
     ) -> Result<Self> {
         let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
