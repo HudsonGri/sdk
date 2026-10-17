@@ -52,40 +52,44 @@ impl HistoryCursor {
         } {
             return;
         }
+        // The common follow update is one append above the retained root.
+        // Reuse the cursor queue directly instead of allocating a scratch Vec.
+        if let (Some(old), Some(current)) = (&self.root, root) {
+            #[cfg(test)]
+            HISTORY_VISITS.with(|count| count.set(count.get() + 1));
+            if let History::Batch {
+                parent: Some(parent),
+                records,
+                ..
+            } = current.as_ref()
+                && Arc::ptr_eq(old, parent)
+            {
+                if let Some(window) = history_window(Arc::clone(records), tail, self.next) {
+                    self.windows.push_back(window);
+                }
+                self.root = root.cloned();
+                return;
+            }
+        }
         let mut added = Vec::new();
-        let mut node = root;
-        while let Some(current) = node {
+        for (node, ceiling) in HistoryWalk::new(root, tail, self.next) {
             if self
                 .root
                 .as_ref()
-                .is_some_and(|old| Arc::ptr_eq(old, current))
+                .is_some_and(|old| std::ptr::eq(old.as_ref(), node))
             {
                 added.reverse();
                 self.windows.extend(added);
                 self.root = root.cloned();
                 return;
             }
-            match current.as_ref() {
-                History::Batch {
-                    parent, records, ..
-                } => {
-                    if let Some(window) = history_window(Arc::clone(records), tail, self.next) {
-                        added.push(window);
-                    }
-                    if records
-                        .records
-                        .first()
-                        .is_some_and(|first| first.sequence <= self.next)
-                    {
-                        break;
-                    }
-                    node = parent.as_ref();
-                }
-                History::Prefix { .. } => break,
+            if let History::Batch { records, .. } = node
+                && let Some(window) = history_window(Arc::clone(records), ceiling, self.next)
+            {
+                added.push(window);
             }
         }
-        added.clear();
-        collect_history_windows(root, tail, self.next, &mut added);
+        added.reverse();
         self.windows = added.into();
         self.root = root.cloned();
     }
