@@ -169,7 +169,14 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
 pub(super) fn context_prefix(context: &[Container]) -> String {
     let mut prefix: String = context
         .iter()
-        .map(|container| container.opening.as_str())
+        .enumerate()
+        .filter(|(index, container)| {
+            !matches!(container.end, TagEnd::List(_))
+                || context
+                    .get(index + 1)
+                    .is_none_or(|next| next.end != TagEnd::Item)
+        })
+        .map(|(_, container)| container.opening.as_str())
         .collect();
     if let Some(container) = context
         .iter()

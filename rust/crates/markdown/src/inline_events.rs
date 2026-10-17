@@ -34,7 +34,7 @@ pub(in crate::inline_scan) struct Cache {
     nodes: Vec<Box<[Output; super::super::PAGE]>>,
     length: usize,
     targets: HashMap<(usize, usize), Arc<str>>,
-    atoms: HashMap<(usize, usize), (usize, usize)>,
+    atoms: HashMap<(usize, usize), usize>,
     last: usize,
     rendered: bool,
     #[cfg(test)]
@@ -150,8 +150,24 @@ impl Cache {
         self.insert(key, output)
     }
 
-    pub(in crate::inline_scan) fn track_destinations(&mut self, source: &str, origin: usize) {
+    pub(in crate::inline_scan) fn seed_input(&mut self, source: &str, start: usize) {
+        self.input.feed(source, start);
+    }
+
+    pub(in crate::inline_scan) fn completed_destinations(
+        &self,
+    ) -> impl Iterator<Item = usize> + '_ {
+        self.destinations.completions()
+    }
+
+    pub(in crate::inline_scan) fn track_destinations(
+        &mut self,
+        source: &str,
+        origin: usize,
+    ) -> bool {
+        let previous = self.destinations.completed();
         self.destinations.push(source, origin);
+        self.destinations.completed() != previous
     }
 
     fn target(
@@ -300,139 +316,125 @@ impl Cache {
             }
             let range = source.base + relative.start.saturating_sub(source.sentinel)
                 ..source.base + relative.end.saturating_sub(source.sentinel);
-            let leaf = if let Some(&(output, count)) =
-                self.atoms.get(&(range.start, range.end)).filter(|_| {
-                    matches!(
-                        event,
-                        Event::Start(Tag::Link { .. } | Tag::Image { .. }) | Event::InlineHtml(_)
-                    )
-                }) {
-                // Slice iteration skips a compiled subtree without visiting its events.
-                if count > 1 {
-                    remaining.nth(count - 2)?;
+            let leaf = match event {
+                Event::Start(tag) => {
+                    let (style, link) = match tag {
+                        Tag::Paragraph => (Style::default(), None),
+                        Tag::Emphasis => (
+                            Style {
+                                italic: true,
+                                ..Style::default()
+                            },
+                            None,
+                        ),
+                        Tag::Strong => (
+                            Style {
+                                bold: true,
+                                ..Style::default()
+                            },
+                            None,
+                        ),
+                        Tag::Strikethrough => (
+                            Style {
+                                dim: true,
+                                strikethrough: true,
+                                ..Style::default()
+                            },
+                            None,
+                        ),
+                        Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => (
+                            Style {
+                                foreground: Some(crate::style::BLUE),
+                                underline: true,
+                                ..Style::default()
+                            },
+                            Some(self.target(&range, dest_url, id, references)),
+                        ),
+                        _ => return None,
+                    };
+                    frames.push(Frame {
+                        body: 0,
+                        style,
+                        link,
+                    });
+                    continue;
                 }
-                output
-            } else {
-                match event {
-                    Event::Start(tag) => {
-                        let (style, link) = match tag {
-                            Tag::Paragraph => (Style::default(), None),
-                            Tag::Emphasis => (
-                                Style {
-                                    italic: true,
-                                    ..Style::default()
-                                },
-                                None,
-                            ),
-                            Tag::Strong => (
-                                Style {
-                                    bold: true,
-                                    ..Style::default()
-                                },
-                                None,
-                            ),
-                            Tag::Strikethrough => (
-                                Style {
-                                    dim: true,
-                                    strikethrough: true,
-                                    ..Style::default()
-                                },
-                                None,
-                            ),
-                            Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => (
-                                Style {
-                                    foreground: Some(crate::style::BLUE),
-                                    underline: true,
-                                    ..Style::default()
-                                },
-                                Some(self.target(&range, dest_url, id, references)),
-                            ),
-                            _ => return None,
-                        };
-                        frames.push(Frame {
-                            body: 0,
-                            style,
-                            link,
-                        });
-                        continue;
+                Event::End(
+                    TagEnd::Paragraph
+                    | TagEnd::Emphasis
+                    | TagEnd::Strong
+                    | TagEnd::Strikethrough
+                    | TagEnd::Link
+                    | TagEnd::Image,
+                ) => {
+                    if frames.len() <= 1 {
+                        return None;
                     }
-                    Event::End(
-                        TagEnd::Paragraph
-                        | TagEnd::Emphasis
-                        | TagEnd::Strong
-                        | TagEnd::Strikethrough
-                        | TagEnd::Link
-                        | TagEnd::Image,
-                    ) => {
-                        if frames.len() <= 1 {
-                            return None;
-                        }
-                        let frame = frames.pop()?;
-                        self.mask(frame.body, frame.style, frame.link)
-                    }
-                    Event::Text(text) => {
-                        let trim = source.sentinel.saturating_sub(relative.start);
-                        let text = text.get(trim..)?;
-                        let begin = relative.start.max(source.sentinel);
-                        let cut = source.boundary.saturating_sub(begin);
-                        if frames.len() == 1
-                            && cut > 0
-                            && cut < text.len()
-                            && source.parsed.get(begin..relative.end).is_some_and(|raw| {
-                                raw.as_ptr() == text.as_ptr() && raw.len() == text.len()
-                            })
-                        {
-                            let left = self.value(
-                                0,
-                                range.start..range.start + cut,
-                                text.get(..cut)?,
-                                source,
-                                Style::default(),
-                            )?;
-                            let frame = frames.last_mut()?;
-                            frame.body = self.join(frame.body, left);
-                            committed = Some(frame.body);
-                            self.value(
-                                0,
-                                range.start + cut..range.end,
-                                text.get(cut..)?,
-                                source,
-                                Style::default(),
-                            )?
-                        } else {
-                            self.value(0, range, text, source, Style::default())?
-                        }
-                    }
-                    Event::Code(text) => self.value(
-                        1,
-                        range,
-                        text,
-                        source,
-                        Style {
-                            foreground: Some(crate::style::YELLOW),
-                            ..Style::default()
-                        },
-                    )?,
-                    Event::InlineHtml(text)
-                    | Event::Html(text)
-                    | Event::InlineMath(text)
-                    | Event::DisplayMath(text) => {
-                        self.value(2, range, text, source, Style::default())?
-                    }
-                    Event::SoftBreak => self.value(3, range, " ", source, Style::default())?,
-                    Event::HardBreak => {
-                        let key = Key::Leaf(4, range.start, range.end);
-                        if let Some(&id) = self.keys.get(&key) {
-                            id
-                        } else {
-                            self.insert(key, Output::newline(false))
-                        }
-                    }
-                    Event::FootnoteReference(text) => {
-                        self.value(5, range, &format!("[{text}]"), source, Style::default())?
-                    }
-                    _ => return None,
+                    let frame = frames.pop()?;
+                    self.mask(frame.body, frame.style, frame.link)
                 }
+                Event::Text(text) => {
+                    let trim = source.sentinel.saturating_sub(relative.start);
+                    let text = text.get(trim..)?;
+                    let begin = relative.start.max(source.sentinel);
+                    let cut = source.boundary.saturating_sub(begin);
+                    if frames.len() == 1
+                        && cut > 0
+                        && cut < text.len()
+                        && source.parsed.get(begin..relative.end).is_some_and(|raw| {
+                            raw.as_ptr() == text.as_ptr() && raw.len() == text.len()
+                        })
+                    {
+                        let left = self.value(
+                            0,
+                            range.start..range.start + cut,
+                            text.get(..cut)?,
+                            source,
+                            Style::default(),
+                        )?;
+                        let frame = frames.last_mut()?;
+                        frame.body = self.join(frame.body, left);
+                        committed = Some(frame.body);
+                        self.value(
+                            0,
+                            range.start + cut..range.end,
+                            text.get(cut..)?,
+                            source,
+                            Style::default(),
+                        )?
+                    } else {
+                        self.value(0, range, text, source, Style::default())?
+                    }
+                }
+                Event::Code(text) => self.value(
+                    1,
+                    range,
+                    text,
+                    source,
+                    Style {
+                        foreground: Some(crate::style::YELLOW),
+                        ..Style::default()
+                    },
+                )?,
+                Event::InlineHtml(text)
+                | Event::Html(text)
+                | Event::InlineMath(text)
+                | Event::DisplayMath(text) => {
+                    self.value(2, range, text, source, Style::default())?
+                }
+                Event::SoftBreak => self.value(3, range, " ", source, Style::default())?,
+                Event::HardBreak => {
+                    let key = Key::Leaf(4, range.start, range.end);
+                    if let Some(&id) = self.keys.get(&key) {
+                        id
+                    } else {
+                        self.insert(key, Output::newline(false))
+                    }
+                }
+                Event::FootnoteReference(text) => {
+                    self.value(5, range, &format!("[{text}]"), source, Style::default())?
+                }
+                _ => return None,
             };
             let current = frames.last_mut()?;
             current.body = self.join(current.body, leaf);
@@ -465,7 +467,7 @@ impl Cache {
             + self.nodes.len() * std::mem::size_of::<[Output; super::super::PAGE]>()
             + self.keys.capacity() * std::mem::size_of::<(Key, usize)>()
             + self.targets.capacity() * std::mem::size_of::<((usize, usize), Arc<str>)>()
-            + self.atoms.capacity() * std::mem::size_of::<((usize, usize), (usize, usize))>();
+            + self.atoms.capacity() * std::mem::size_of::<((usize, usize), usize)>();
         for target in self.targets.values() {
             if links.insert(Arc::as_ptr(target).cast::<u8>()) {
                 payload += target.len();

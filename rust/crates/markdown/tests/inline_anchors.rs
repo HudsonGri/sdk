@@ -33,9 +33,9 @@ proptest! {
         let prefix = format!("x {}x", prefix.concat());
         let mut retained = State::default();
         feed(&mut retained, &prefix, 0);
-        retained.remember(prefix.len(), 42);
+        retained.remember(prefix.len());
         feed(&mut retained, &format!("{prefix}{}x", first.concat()), prefix.len());
-        prop_assert_eq!(retained.restore_at(prefix.len()), Some(42));
+        prop_assert_eq!(retained.restore_at(prefix.len()), Some(()));
         let source = format!("{prefix}{}x", second.concat());
         feed(&mut retained, &source, prefix.len());
         let mut replay = State::default();
@@ -50,9 +50,9 @@ fn removed_code_context_restores_the_original_prefix() {
     let prefix = "x `a x";
     let mut state = State::default();
     feed(&mut state, prefix, 0);
-    state.remember(prefix.len(), 42);
+    state.remember(prefix.len());
     feed(&mut state, &format!("{prefix}` x ``b x"), prefix.len());
-    assert_eq!(state.restore_at(prefix.len()), Some(42));
+    assert_eq!(state.restore_at(prefix.len()), Some(()));
     let source = format!("{prefix}new` x");
     feed(&mut state, &source, prefix.len());
     let mut replay = State::default();
@@ -68,10 +68,10 @@ fn opener_model_detects_missing_restore() {
     let prefix = "x *p x";
     let mut state = State::default();
     feed(&mut state, prefix, 0);
-    state.remember(prefix.len(), 42);
+    state.remember(prefix.len());
     feed(&mut state, &format!("{prefix}**old** x"), prefix.len());
     SKIP_RESTORE.set(true);
-    assert_eq!(state.restore_at(prefix.len()), Some(42));
+    assert_eq!(state.restore_at(prefix.len()), Some(()));
     SKIP_RESTORE.set(false);
     let source = format!("{prefix}new x");
     feed(&mut state, &source, prefix.len());

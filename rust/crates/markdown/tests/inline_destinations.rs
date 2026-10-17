@@ -96,15 +96,19 @@ fn destination_properties_detect_replay_and_lost_escape_state() {
 
 fn compare_index(source: &str, cuts: &[usize]) {
     let mut index = Index::default();
+    let mut completed = std::collections::HashMap::new();
     for end in cuts.iter().copied().chain([source.len()]) {
         let prefix = &source[..end];
         index.push(prefix, 0);
+        completed.extend(index.finished.iter().copied());
         for (at, _) in prefix.match_indices("](") {
             let start = at + 1;
             let expected = oracle(&prefix[start..]).map(|(end, url)| (start + end, url));
-            let actual = index
-                .target(prefix, start)
-                .map(|(end, url)| (end, url.to_string()));
+            let actual = completed.get(&start).and_then(|&end| {
+                index
+                    .target(prefix, start, end)
+                    .map(|url| (end, url.to_string()))
+            });
             assert_eq!(actual, expected, "prefix {prefix:?}, candidate {start}");
         }
     }
@@ -180,8 +184,10 @@ fn index_properties_detect_replay_and_lost_escape_state() {
     }
     assert_ne!(
         index
-            .target(source, 1)
-            .map(|(end, url)| (end, url.to_string())),
-        oracle(&source[1..]).map(|(end, url)| (1 + end, url))
+            .finished
+            .iter()
+            .find(|(start, _)| *start == 1)
+            .map(|(_, end)| *end),
+        oracle(&source[1..]).map(|(end, _)| 1 + end)
     );
 }

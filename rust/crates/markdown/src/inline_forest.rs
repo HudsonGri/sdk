@@ -36,7 +36,7 @@ struct Node {
     output: Option<Rendered>,
 }
 
-pub(super) const PAGE: usize = 8;
+pub(super) const PAGE: usize = 16;
 
 #[derive(Default)]
 pub(super) struct Forest {
@@ -217,6 +217,26 @@ impl Forest {
         self.scopes_since(cursor, 0)
     }
 
+    pub(super) fn scope_covering(
+        &self,
+        mut cursor: usize,
+        position: usize,
+    ) -> Option<Range<usize>> {
+        while let Some(node) = self.node(cursor) {
+            #[cfg(test)]
+            crate::work::scan(1);
+            if node.range.end <= position {
+                break;
+            }
+            if node.kind != Kind::Text && node.range.start < position {
+                return Some(node.range.clone());
+            }
+            cursor = node.previous;
+        }
+        None
+    }
+
+    #[cfg(test)]
     pub(super) fn scopes_since(&self, mut cursor: usize, start: usize) -> Vec<Range<usize>> {
         let mut result = Vec::new();
         while let Some(node) = self.node(cursor) {

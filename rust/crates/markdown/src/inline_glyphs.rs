@@ -2,7 +2,7 @@ use crate::Text;
 use std::ops::Range;
 
 #[path = "inline_rank.rs"]
-mod rank;
+pub(in crate::inline_scan) mod rank;
 
 #[derive(Default)]
 pub(super) struct Input {

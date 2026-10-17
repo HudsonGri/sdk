@@ -78,10 +78,19 @@ proptest! {
             "\\", "*", "[", "]", "&", ";", "x",
         ]).prop_map(str::to_owned), 1..5),
     ) {
-        for count in [64, 128, 256, 1024] {
+        let mut previous = None;
+        for count in [64, 128, 256, 512, 1024] {
             let (work, bytes, parts) = units(&chunks, count);
             prop_assert!(work <= 128 * bytes + 4096,
                 "{chunks:?}: {count} chunks, {work} work for {bytes} bytes; scan/copy/visibility/feed/parser {parts:?}");
+            if let Some(smaller) = previous {
+                prop_assert!(10 * work <= 22 * smaller + 40960,
+                    "{chunks:?}: doubling to {count} chunks: {smaller} -> {work}");
+            }
+            if std::env::var_os("GC_WORK_REPORT").is_some() {
+                eprintln!("{chunks:?}: {count} chunks, {bytes} bytes, {work} units, {parts:?}");
+            }
+            previous = Some(work);
         }
     }
 }
@@ -119,6 +128,15 @@ fn checked_in_chunk_corpus_matches_full_render() {
         include_bytes!("../fuzz/corpus/chunk_splits/scope-ancestor-frontier").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/table-checkpoint-context").as_slice(),
         include_bytes!("../fuzz/corpus/chunk_splits/native-label-compilation").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/frozen-row-scope").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/definition-provisional-tick").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/nested-reference-hint").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/reference-hint-removal").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/escaped-reference-hint").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/inactive-bracket-hint").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/expanded-break-lookahead").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/provisional-code-labels").as_slice(),
+        include_bytes!("../fuzz/corpus/chunk_splits/nested-image-destination").as_slice(),
     ] {
         let encoded = data
             .get(..8)
@@ -163,4 +181,15 @@ fn shortcut_scope_extension_replaces_the_entire_previous_scope() {
             replay(source, &[first, second]);
         }
     }
+}
+
+#[test]
+fn work_property_detects_classifying_the_entire_unfinished_suffix() {
+    let chunks = vec!["**bold**".to_owned()];
+    crate::inline::REPLAY_CLASSIFIER.set(true);
+    let (small, _, _) = units(&chunks, 128);
+    let (large, _, _) = units(&chunks, 256);
+    crate::inline::REPLAY_CLASSIFIER.set(false);
+    eprintln!("whole-suffix classifier negative control: {small} -> {large}");
+    assert!(10 * large > 22 * small + 40960, "{small} -> {large}");
 }

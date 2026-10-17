@@ -3,9 +3,9 @@ use super::{
     forest,
     tokens::Kind,
 };
-use std::{collections::HashMap, ops::Range};
+use std::ops::Range;
 #[path = "inline_anchors.rs"]
-mod anchors;
+pub(in crate::inline_scan) mod anchors;
 #[path = "inline_brackets.rs"]
 mod brackets;
 #[path = "inline_codes.rs"]
@@ -20,16 +20,20 @@ pub(super) struct State {
     delimiter: Delimiters,
     pub(super) forest: forest::Forest,
     pub(super) invalid: bool,
-    brackets: Vec<Bracket>,
+    brackets: Vec<Vec<Bracket>>,
+    bracket_count: usize,
     bracket: usize,
     link_floor: usize,
     labels: [usize; 2],
     closed: usize,
-    closed_labels: Vec<brackets::Closed>,
+    closed_labels: Vec<Vec<brackets::Closed>>,
+    closed_count: usize,
     opaque: Option<usize>,
     codes: codes::Codes,
     eof: Option<Box<eof::Projections>>,
-    anchors: HashMap<usize, anchors::Anchor>,
+    anchors: Vec<Vec<Option<Box<anchors::Anchor>>>>,
+    anchor_slots: usize,
+    anchor_context: Option<std::sync::Arc<anchors::Context>>,
     #[cfg(test)]
     stale: bool,
     #[cfg(test)]
@@ -42,20 +46,21 @@ struct Bracket {
     previous: usize,
     start: usize,
     frontier: usize,
+    first: usize,
     image: bool,
+    image_parent: usize,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Snapshot {
-    delimiter: delimiters::Snapshot,
-    forest: usize,
-    bracket: usize,
-    labels: [usize; 2],
-    closed: usize,
-    opaque: Option<usize>,
+    resume: anchors::Anchor,
     frontier: usize,
-    code: usize,
-    links: usize,
+}
+impl std::ops::Deref for Snapshot {
+    type Target = anchors::Anchor;
+    fn deref(&self) -> &Self::Target {
+        &self.resume
+    }
 }
 
 impl State {
@@ -63,15 +68,19 @@ impl State {
         #[cfg(test)]
         crate::work::scan(self.anchors.len());
         self.anchors.clear();
+        self.anchor_slots = 0;
+        self.anchor_context = None;
         self.delimiter.reset();
         self.forest.reset();
         self.invalid = false;
         self.brackets.clear();
+        self.bracket_count = 0;
         self.bracket = 0;
         self.link_floor = 0;
         self.labels = [0, 0];
         self.closed = 0;
         self.closed_labels.clear();
+        self.closed_count = 0;
         self.opaque = None;
         self.codes.reset();
         if let Some(eof) = &mut self.eof {
@@ -79,58 +88,200 @@ impl State {
         }
     }
 
-    fn snapshot(&self) -> Snapshot {
+    fn snapshot(&mut self) -> Snapshot {
         #[cfg(test)]
-        crate::work::copy(std::mem::size_of::<Snapshot>());
+        crate::work::copy(std::mem::size_of::<usize>());
+        let frontier = self.earliest(usize::MAX);
         Snapshot {
-            delimiter: self.delimiter.snapshot(),
-            forest: self.forest.snapshot(),
-            bracket: self.bracket,
-            labels: self.labels,
-            closed: self.closed,
-            opaque: self.opaque,
-            frontier: self.earliest(usize::MAX),
-            code: self.codes.head(),
-            links: self.link_floor,
+            resume: self.resume(),
+            frontier,
         }
     }
 
     fn restore(&mut self, before: Snapshot) {
-        if !self.codes.restore(before.code) {
+        let (code, closed, links) = (before.context.code, before.closed, before.context.links);
+        self.restore_resume(before.resume, code, closed, links);
+    }
+
+    fn restore_resume(
+        &mut self,
+        before: anchors::Anchor,
+        code: usize,
+        closed: usize,
+        links: usize,
+    ) {
+        if !self.codes.restore(code) {
             self.invalid = true;
             return;
         }
-        self.delimiter.restore(before.delimiter);
+        self.delimiter.restore(delimiters::Snapshot::from_parts(
+            before.delimiter,
+            before.context.floor,
+        ));
         self.invalid |= !self.forest.restore(before.forest);
         self.bracket = before.bracket;
-        self.labels = before.labels;
+        self.labels = if before.context.hint {
+            [closed, 0]
+        } else {
+            [0, 0]
+        };
         #[cfg(test)]
         let restore_closed = !brackets::FORGET_RESTORE.get();
         #[cfg(not(test))]
         let restore_closed = true;
         if restore_closed {
-            self.closed = before.closed;
+            self.closed = closed;
         }
-        self.opaque = before.opaque;
-        self.link_floor = before.links;
+        self.opaque = before.context.opaque.map(|position| position.get() - 1);
+        self.link_floor = links;
     }
 
     pub(super) fn neutral(&self) -> bool {
         self.delimiter.neutral()
-            && self.bracket == 0
+            && self
+                .pending_bracket(self.bracket, self.link_floor)
+                .is_none()
             && self.labels == [0, 0]
             && self.opaque.is_none()
             && self.codes.head() == 0
     }
 
+    fn defer(&mut self, start: usize) {
+        self.opaque = Some(self.opaque.map_or(start, |previous| previous.min(start)));
+    }
+
     pub(super) fn outside_brackets(&self) -> bool {
-        self.bracket == 0
+        self.pending_bracket(self.bracket, self.link_floor)
+            .is_none()
     }
 
     fn bracket(&self) -> Option<&Bracket> {
+        self.opening(self.bracket)
+    }
+
+    fn opening(&self, id: usize) -> Option<&Bracket> {
+        let index = id.checked_sub(1)?;
+        self.brackets
+            .get(index / forest::PAGE)?
+            .get(index % forest::PAGE)
+    }
+
+    fn pending_bracket(&self, cursor: usize, floor: usize) -> Option<&Bracket> {
+        let bracket = self.opening(cursor)?;
+        if bracket.image || bracket.start >= floor {
+            Some(bracket)
+        } else {
+            self.opening(bracket.image_parent)
+        }
+    }
+
+    pub(super) fn has_opaque(&self) -> bool {
+        self.opaque.is_some()
+    }
+
+    pub(super) fn label_code_pending(&self, start: usize) -> bool {
+        self.codes
+            .latest_start()
+            .is_some_and(|opening| opening >= start)
+    }
+
+    pub(super) fn resume_bracket(&self) -> usize {
         self.bracket
-            .checked_sub(1)
-            .and_then(|index| self.brackets.get(index))
+    }
+    pub(super) fn resume_opener(&self, cursor: usize) -> Option<(usize, usize)> {
+        self.opening(cursor)
+            .map(|bracket| (bracket.first, bracket.previous))
+    }
+    pub(super) fn resume_code_depth(&self) -> usize {
+        self.codes.depth_at(self.codes.head())
+    }
+    pub(super) fn resume_code(&self, width: usize) -> Option<(usize, usize, usize, usize)> {
+        let code = self.codes.get(width)?;
+        let start = self
+            .pending_bracket(code.before.bracket, code.before.context.links)
+            .map_or(code.opening.start, |bracket| {
+                bracket.first.min(code.opening.start)
+            });
+        Some((
+            code.depth,
+            self.codes.depth_at(code.before.context.code),
+            code.before.bracket,
+            start,
+        ))
+    }
+
+    pub(super) fn destination_possible(&self, end: usize) -> bool {
+        if self.codes.head() != 0 {
+            return true;
+        }
+        let mut cursor = self.closed;
+        while let Some(label) = self.label(cursor) {
+            #[cfg(test)]
+            crate::work::scan(1);
+            if label.range.end <= end {
+                return label.range.end == end
+                    && (label.opening == 0
+                        || self.opening(label.opening).is_some_and(|opening| {
+                            opening.image || opening.start >= self.link_floor
+                        }));
+            }
+            cursor = label.previous;
+        }
+        false
+    }
+
+    pub(super) fn resume_closures(
+        &self,
+        count: usize,
+        end: usize,
+        destination: Option<usize>,
+    ) -> usize {
+        let mut base = self
+            .labels
+            .iter()
+            .find_map(|&id| self.label(id).map(|label| label.range.start))
+            .unwrap_or(end);
+        if let Some(opaque) = self.opaque {
+            base = base.min(opaque);
+        }
+        let mut cursor = self.bracket;
+        for _ in 0..count {
+            let Some(bracket) = self.opening(cursor) else {
+                break;
+            };
+            base = base.min(bracket.first);
+            cursor = bracket.previous;
+        }
+        if let Some(destination) = destination {
+            let mut cursor = self.closed;
+            while let Some(label) = self.label(cursor) {
+                #[cfg(test)]
+                crate::work::scan(1);
+                if label.range.end <= destination {
+                    if label.range.end == destination {
+                        base = base.min(label.range.start);
+                    }
+                    break;
+                }
+                cursor = label.previous;
+            }
+        }
+        base
+    }
+
+    pub(super) fn classification_start(&self, end: usize) -> usize {
+        [
+            self.pending_bracket(self.bracket, self.link_floor)
+                .map(|bracket| bracket.first),
+            self.labels
+                .iter()
+                .find_map(|&id| self.label(id).map(|label| label.range.start)),
+            self.opaque,
+            self.codes.classification_start(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(end, usize::min)
     }
 
     pub(super) fn earliest(&self, end: usize) -> usize {
@@ -183,7 +334,7 @@ impl State {
                 .iter()
                 .find_map(|&id| self.label(id).map(|label| label.range.start))
         {
-            self.opaque.get_or_insert(start);
+            self.defer(start);
         }
         let opening = match kind {
             Kind::Open { image } => Some((image, range.start)),
@@ -194,46 +345,55 @@ impl State {
         }
         if let Some((image, start)) = opening.filter(|_| !linked) {
             let frontier = self.earliest(range.start);
-            #[cfg(test)]
-            if self.brackets.len() == self.brackets.capacity() {
-                crate::work::copy(self.brackets.len() * std::mem::size_of::<Bracket>());
+            if self.bracket_count.is_multiple_of(forest::PAGE) {
+                #[cfg(test)]
+                if self.brackets.len() == self.brackets.capacity() {
+                    crate::work::copy(self.brackets.len() * std::mem::size_of::<Vec<Bracket>>());
+                }
+                self.brackets.push(Vec::with_capacity(forest::PAGE));
             }
-            self.brackets.push(Bracket {
-                previous: self.bracket,
-                start,
-                frontier,
-                image,
-            });
-            self.bracket = self.brackets.len();
+            let image_parent = if image {
+                self.bracket_count + 1
+            } else {
+                self.bracket().map_or(0, |bracket| bracket.image_parent)
+            };
+            let first = self
+                .labels
+                .iter()
+                .find_map(|&id| self.label(id).map(|label| label.range.start))
+                .unwrap_or(start);
+            self.brackets
+                .last_mut()
+                .expect("bracket page")
+                .push(Bracket {
+                    previous: self.bracket,
+                    start,
+                    frontier,
+                    first,
+                    image,
+                    image_parent,
+                });
+            self.bracket_count += 1;
+            self.bracket = self.bracket_count;
+            self.labels = [0, 0];
             return;
         }
         match kind {
             Kind::Close if !linked => {
+                self.labels = [0, 0];
                 if let Some(bracket) = self.bracket() {
                     let opening = self.bracket;
-                    let (previous, start, image, active) = (
+                    let (previous, start, active) = (
                         bracket.previous,
                         bracket.start,
-                        bracket.image,
                         bracket.image || bracket.start >= self.link_floor,
                     );
                     self.bracket = previous;
-                    let label = self.remember_closed(start..range.end, image, opening);
-                    if previous == 0 && active {
+                    let label = self.remember_closed(start..range.end, opening);
+                    if active {
                         #[cfg(test)]
                         crate::work::copy(2 * std::mem::size_of::<usize>());
-                        self.labels = if self.labels == [0, 0] {
-                            [label, 0]
-                        } else {
-                            [
-                                if self.labels[1] == 0 {
-                                    self.labels[0]
-                                } else {
-                                    self.labels[1]
-                                },
-                                label,
-                            ]
-                        };
+                        self.labels = [label, 0];
                     }
                 }
             }
@@ -243,11 +403,11 @@ impl State {
                     .iter()
                     .find_map(|&id| self.label(id).map(|label| label.range.start))
                 {
-                    self.opaque.get_or_insert(start);
+                    self.defer(start);
                 }
             }
             Kind::AngleOpen => {
-                self.opaque.get_or_insert(range.start);
+                self.defer(range.start);
             }
             Kind::Run {
                 byte,
@@ -296,7 +456,7 @@ impl State {
             if restore {
                 self.restore(before);
             } else {
-                self.codes.restore(before.code);
+                self.codes.restore(before.context.code);
             }
             self.forest.code(opening, physical);
             self.labels = [0, 0];
@@ -326,10 +486,30 @@ impl State {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
         self.delimiter.retained()
-            + self.anchors.capacity() * std::mem::size_of::<(usize, anchors::Anchor)>()
+            + self.anchors.capacity() * std::mem::size_of::<Vec<Option<Box<anchors::Anchor>>>>()
+            + self
+                .anchors
+                .iter()
+                .map(|page| {
+                    page.capacity() * std::mem::size_of::<Option<Box<anchors::Anchor>>>()
+                        + page.iter().filter(|slot| slot.is_some()).count()
+                            * (std::mem::size_of::<anchors::Anchor>()
+                                + std::mem::size_of::<anchors::Context>())
+                })
+                .sum::<usize>()
             + self.forest.retained()
-            + self.brackets.capacity() * std::mem::size_of::<Bracket>()
-            + self.closed_labels.capacity() * std::mem::size_of::<brackets::Closed>()
+            + self.brackets.capacity() * std::mem::size_of::<Vec<Bracket>>()
+            + self
+                .brackets
+                .iter()
+                .map(|page| page.capacity() * std::mem::size_of::<Bracket>())
+                .sum::<usize>()
+            + self.closed_labels.capacity() * std::mem::size_of::<Vec<brackets::Closed>>()
+            + self
+                .closed_labels
+                .iter()
+                .map(|page| page.capacity() * std::mem::size_of::<brackets::Closed>())
+                .sum::<usize>()
             + self.codes.retained()
             + self
                 .eof

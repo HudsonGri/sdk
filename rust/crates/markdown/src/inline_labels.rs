@@ -60,7 +60,7 @@ impl Cache {
                 if self.atoms.contains_key(&key) {
                     continue;
                 }
-                if !ready {
+                if !ready && index + 1 < scope.next {
                     push(&mut pending, (index, true));
                     let mut child = index + 1;
                     while child < scope.next {
@@ -87,6 +87,7 @@ impl Cache {
                         self.reduce(
                             &Slice {
                                 boundary: source.sentinel,
+                                classified: true,
                                 ..*source
                             },
                             window,
@@ -98,18 +99,18 @@ impl Cache {
                 };
                 #[cfg(test)]
                 crate::work::copy(
-                    std::mem::size_of::<((usize, usize), (usize, usize))>()
+                    std::mem::size_of::<((usize, usize), usize)>()
                         * (1 + if self.atoms.len() == self.atoms.capacity() {
                             self.atoms.len()
                         } else {
                             0
                         }),
                 );
-                self.atoms.insert(key, (body, window.len()));
+                self.atoms.insert(key, body);
             }
             self.atoms
                 .get(&key(source, scopes.get(scope)?, events)?)
-                .map(|entry| entry.0)
+                .copied()
         })();
         #[cfg(test)]
         crate::work::rendering(rendering);
@@ -151,7 +152,7 @@ impl Cache {
             crate::work::scan(1);
             if child < scope.next && scopes.get(child)?.events.start == event_index {
                 let child_scope = scopes.get(child)?;
-                let output = self.atoms.get(&key(source, child_scope, events)?)?.0;
+                let output = *self.atoms.get(&key(source, child_scope, events)?)?;
                 push(
                     &mut atoms,
                     Atom {
@@ -270,26 +271,9 @@ impl Cache {
             )?
             .full;
         let target = if *link_type == pulldown_cmark::LinkType::Inline {
-            if let Some(target) = self.targets.get(&(scope.range.start, scope.range.end)) {
-                target.clone()
-            } else {
-                let (target_end, target) = self.destinations.target(source.original, end + 1)?;
-                if target_end != scope.range.end {
-                    return None;
-                }
-                #[cfg(test)]
-                crate::work::copy(
-                    std::mem::size_of::<((usize, usize), std::sync::Arc<str>)>()
-                        * (1 + if self.targets.len() == self.targets.capacity() {
-                            self.targets.len()
-                        } else {
-                            0
-                        }),
-                );
-                self.targets
-                    .insert((scope.range.start, scope.range.end), target.clone());
-                target
-            }
+            #[cfg(test)]
+            crate::work::copy(dest_url.len());
+            std::sync::Arc::from(dest_url.as_ref())
         } else {
             self.target(&scope.range, dest_url, id, references)
         };

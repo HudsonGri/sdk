@@ -49,6 +49,7 @@ pub struct Markdown {
     fence: Option<Fence>,
     inline: Option<inline::Inline>,
     table: Option<stream_table::Stream>,
+    rule: Option<u8>,
     reference_cost: usize,
     reference_limit: usize,
     plain: bool,
@@ -166,7 +167,19 @@ impl Markdown {
         }
         let budget_line = self.advance_budget();
         let appended = self.source.get(previous..).unwrap_or_default();
+        if let Some(marker) = self.rule.take() {
+            #[cfg(test)]
+            work::scan(appended.len());
+            if appended
+                .bytes()
+                .all(|byte| byte == marker || matches!(byte, b' ' | b'\t'))
+            {
+                self.rule = Some(marker);
+                return old_len.min(self.visible_lines).min(budget_line);
+            }
+        }
         if self.plain
+            && self.inline.as_ref().is_none_or(inline::Inline::plain)
             && plain_text(appended)
             && !(self.plain_links && appended.contains(['(', ')']))
             && !(self.plain_entity && appended.contains(';'))
@@ -350,6 +363,14 @@ impl Markdown {
         let mut cost = self.reference_cost;
         let mut synthetic_leaf = false;
         for (index, (event, range)) in events.iter().enumerate() {
+            if matches!(event, Event::End(TagEnd::Item))
+                && range.end <= prefix.len()
+                && stack
+                    .last()
+                    .is_none_or(|container| container.end != TagEnd::Item)
+            {
+                continue;
+            }
             let html_end = matches!(event, Event::End(TagEnd::HtmlBlock))
                 && stack
                     .last()
@@ -406,9 +427,11 @@ impl Markdown {
                 ));
             }
             if let Event::End(end) = event {
-                if stack.last().is_some_and(|container| container.end == *end) {
-                    stack.pop();
-                }
+                let closing = if stack.last().is_some_and(|container| container.end == *end) {
+                    stack.pop()
+                } else {
+                    None
+                };
                 let leaf_end = is_leaf_end(*end);
                 let closed = leaf.as_ref().is_some_and(|leaf| leaf.4);
                 if leaf_end
@@ -430,12 +453,25 @@ impl Markdown {
                 if inline_end(*end) {
                     continue;
                 }
+                let sibling = *end == TagEnd::Item
+                    && events
+                        .get(index + 1)
+                        .is_some_and(|(event, _)| matches!(event, Event::Start(Tag::Item)));
+                if sibling
+                    && let Some(item) = closing
+                    && let Some(list) = stack.last_mut()
+                {
+                    list.opening = item.opening;
+                    list.opening.truncate(list.opening.len().saturating_sub(2));
+                    list.opening.push('\n');
+                }
                 let next_block = following_blocks.get(index).copied().unwrap_or_default();
-                let sealed = closed
+                let sealed = sibling
+                    || closed
                     || sealed(&source, range.end, *end, next_block)
                     || (*end == TagEnd::HtmlBlock && context::html_closed(&source, range, &stack));
                 if range.end >= prefix.len()
-                    && (leaf_end || (stack.is_empty() && next_block))
+                    && (leaf_end || sibling || (stack.is_empty() && next_block))
                     && sealed
                 {
                     candidate = Some((
@@ -454,6 +490,15 @@ impl Markdown {
         self.lines.extend(out.lines);
         self.finish_tail(candidate, caches, (base, prefix.len()));
         self.finish_definitions(&source, &events, (base, prefix.len()));
+        self.rule = events.last().and_then(|(event, range)| {
+            if !matches!(event, Event::Rule) || !self.context.is_empty() || source.ends_with('\n') {
+                return None;
+            }
+            source
+                .get(range.clone())?
+                .bytes()
+                .find(|byte| matches!(byte, b'*' | b'-' | b'_'))
+        });
         self.begin_inline(&source, &events, base);
         self.begin_table(&source, &events, base);
         false

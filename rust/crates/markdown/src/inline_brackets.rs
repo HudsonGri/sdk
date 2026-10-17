@@ -4,7 +4,6 @@ use std::ops::Range;
 pub(super) struct Closed {
     pub(super) previous: usize,
     pub(super) range: Range<usize>,
-    pub(super) image: bool,
     pub(super) opening: usize,
 }
 
@@ -31,38 +30,40 @@ impl State {
     }
 
     pub(super) fn label(&self, cursor: usize) -> Option<&Closed> {
-        let label = self.closed_labels.get(cursor.checked_sub(1)?)?;
+        let index = cursor.checked_sub(1)?;
+        let label = self
+            .closed_labels
+            .get(index / super::forest::PAGE)?
+            .get(index % super::forest::PAGE)?;
         debug_assert!(label.previous < cursor);
         if label.opening != 0 {
-            let opening = self.brackets.get(label.opening - 1)?;
+            let opening = self.opening(label.opening)?;
             debug_assert_eq!(opening.start, label.range.start);
-            debug_assert_eq!(opening.image, label.image);
         }
         Some(label)
     }
 
-    pub(super) fn remember_closed(
-        &mut self,
-        range: Range<usize>,
-        image: bool,
-        opening: usize,
-    ) -> usize {
+    pub(super) fn remember_closed(&mut self, range: Range<usize>, opening: usize) -> usize {
         #[cfg(test)]
-        crate::work::copy(
-            std::mem::size_of::<Closed>()
-                * (1 + if self.closed_labels.len() == self.closed_labels.capacity() {
-                    self.closed_labels.len()
-                } else {
-                    0
-                }),
-        );
-        self.closed_labels.push(Closed {
-            previous: self.closed,
-            range,
-            image,
-            opening,
-        });
-        self.closed = self.closed_labels.len();
+        crate::work::copy(std::mem::size_of::<Closed>());
+        if self.closed_count.is_multiple_of(super::forest::PAGE) {
+            #[cfg(test)]
+            if self.closed_labels.len() == self.closed_labels.capacity() {
+                crate::work::copy(self.closed_labels.len() * std::mem::size_of::<Vec<Closed>>());
+            }
+            self.closed_labels
+                .push(Vec::with_capacity(super::forest::PAGE));
+        }
+        self.closed_labels
+            .last_mut()
+            .expect("closed-label page")
+            .push(Closed {
+                previous: self.closed,
+                range,
+                opening,
+            });
+        self.closed_count += 1;
+        self.closed = self.closed_count;
         self.closed
     }
 }

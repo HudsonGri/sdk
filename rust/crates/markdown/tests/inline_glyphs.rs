@@ -15,6 +15,7 @@ fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
             base: 0,
             sentinel: 0,
             boundary: 0,
+            classified: true,
         },
         &events,
         &References::default(),

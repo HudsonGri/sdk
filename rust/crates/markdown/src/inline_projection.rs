@@ -20,6 +20,7 @@ impl Cache {
             start: self.input.origin?,
             sentinel: 0,
             boundary: 0,
+            classified: true,
         };
         let mut body = 0;
         for (event, part) in events {

@@ -6,8 +6,9 @@ pub(super) struct Code {
     pub(super) opening: Range<usize>,
     pub(super) before: Snapshot,
     previous: usize,
-    depth: usize,
+    pub(super) depth: usize,
     earliest: usize,
+    first: usize,
 }
 
 #[derive(Default)]
@@ -21,6 +22,14 @@ pub(super) struct Codes {
 }
 
 impl Codes {
+    pub(super) fn latest_start(&self) -> Option<usize> {
+        self.node(self.head).map(|code| code.opening.start)
+    }
+
+    pub(super) fn depth_at(&self, cursor: usize) -> usize {
+        self.node(cursor).map_or(0, |code| code.depth)
+    }
+
     pub(super) fn head(&self) -> usize {
         self.head
     }
@@ -41,6 +50,10 @@ impl Codes {
         self.node(*self.index.get(&width)?)
     }
 
+    pub(super) fn classification_start(&self) -> Option<usize> {
+        self.node(self.head).map(|code| code.first)
+    }
+
     pub(super) fn earliest(&self) -> Option<usize> {
         self.node(self.head).map(|code| code.earliest)
     }
@@ -56,7 +69,7 @@ impl Codes {
     }
 
     pub(super) fn push(&mut self, opening: Range<usize>, before: Snapshot) {
-        debug_assert_eq!(before.code, self.head);
+        debug_assert_eq!(before.context.code, self.head);
         debug_assert!(!self.index.contains_key(&opening.len()));
         let depth = self.node(self.head).map_or(0, |node| node.depth) + 1;
         let earliest = self
@@ -75,6 +88,9 @@ impl Codes {
                 self.nodes[page].clear();
             }
         }
+        let first = self
+            .classification_start()
+            .map_or(opening.start, |first| first.min(opening.start));
         let width = opening.len();
         self.nodes[self.length / PAGE].push(Code {
             opening,
@@ -82,6 +98,7 @@ impl Codes {
             previous: self.head,
             depth,
             earliest,
+            first,
         });
         self.length += 1;
         self.head = self.length;

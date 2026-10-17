@@ -4,17 +4,11 @@ use proptest::prelude::*;
 type Model = Vec<(usize, Range<usize>)>;
 
 fn snapshot(code: usize, frontier: usize) -> Snapshot {
-    Snapshot {
-        delimiter: Default::default(),
-        forest: 0,
-        bracket: 0,
-        labels: [0, 0],
-        closed: 0,
-        opaque: None,
-        frontier,
-        code,
-        links: 0,
-    }
+    let mut state = super::super::State::default();
+    state.codes.head = code;
+    let mut before = state.snapshot();
+    before.frontier = frontier;
+    before
 }
 
 fn agrees(codes: &Codes, model: &Model) -> bool {

@@ -35,6 +35,18 @@ proptest! {
         full.push(&prefix);
         prop_assert_eq!(&streamed.ready, &full.ready);
         prop_assert_eq!(streamed.preview(), full.preview());
+        let mut opener = 0;
+        for (ordinal, token) in full.ready.iter().enumerate() {
+            if ordinal < full.ordinal_origin || !full.indexed { continue; }
+            prop_assert_eq!(full.ordinal_at(token.range.start), Some(ordinal));
+            prop_assert_eq!(full.after_absolute(token.range.end), Some(ordinal + 1));
+            if matches!(token.kind, Kind::Open { .. } | Kind::AngleOpen) {
+                prop_assert_eq!(full.anchor_at(token.range.start), Some(opener));
+                opener += 1;
+            } else {
+                prop_assert_eq!(full.anchor_at(token.range.start), None);
+            }
+        }
         let mut next = 0;
         for token in full.ready.iter().cloned().chain(full.preview()) {
             prop_assert_eq!(token.range.start, next);

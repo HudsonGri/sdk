@@ -1,4 +1,6 @@
 use super::*;
+#[path = "inline_classify.rs"]
+mod classify;
 
 #[derive(Default)]
 pub(super) struct Checkpoint {
@@ -12,6 +14,9 @@ pub(super) struct Inline {
     pub(super) checkpoint: Checkpoint,
     start: usize,
     scanner: inline_scan::Scanner,
+    classified: usize,
+    rows: classify::Rows,
+    charges: Vec<(usize, usize, Range<usize>)>,
 }
 
 impl Inline {
@@ -23,7 +28,15 @@ impl Inline {
         links: &mut HashSet<*const u8>,
     ) -> (usize, usize) {
         let (payload, metadata) = self.scanner.glyph_retained(nodes, texts, links);
-        (payload, metadata + self.scanner.retained())
+        (
+            payload,
+            metadata
+                + self.scanner.retained()
+                + self.charges.capacity() * std::mem::size_of::<(usize, usize, Range<usize>)>(),
+        )
+    }
+    pub(super) fn plain(&self) -> bool {
+        self.scanner.plain()
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         (stable, fallback)
@@ -33,11 +46,68 @@ impl Inline {
 impl Markdown {
     pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
         let mut inline = self.inline.take()?;
-        let checkpoint = &inline.checkpoint;
-        let cost = checkpoint.cost;
-        let base = checkpoint.offset;
-        let tail = self.source.get(base..).unwrap_or_default();
-        let context = if base == inline.start {
+        let appended = self.source.get(inline.classified..)?;
+        let destination = inline
+            .scanner
+            .prepare_classification(&self.source, inline.start);
+        let reopen =
+            appended.contains('>') && (inline.scanner.pending_angle() || appended.contains('<'));
+        let foreign = destination
+            || reopen
+            || ((!self.references.committed.is_empty() || !self.references.pending.is_empty())
+                && appended.contains(']'));
+        let mut base = if foreign {
+            inline
+                .scanner
+                .classification_resume(inline.classified, reopen)
+        } else {
+            inline.classified
+        };
+        let row = inline.rows.push(&self.source);
+        let classify = foreign || row.is_some() || appended.contains('\n');
+        #[cfg(test)]
+        let classify = if REPLAY_CLASSIFIER.get() {
+            base = inline.start;
+            true
+        } else {
+            classify
+        };
+        if let Some(row) = row {
+            base = base.min(row);
+        }
+        if classify {
+            base = inline.scanner.classification_boundary(base);
+        }
+        while inline.charges.last().is_some_and(|(end, _, _)| *end > base) {
+            #[cfg(test)]
+            work::scan(1);
+            inline.charges.pop();
+        }
+        let (cost, interval) = inline
+            .charges
+            .last()
+            .map_or((0, 0..usize::MAX), |(_, cost, valid)| {
+                (*cost, valid.clone())
+            });
+        // EOF tick runs remain provisional in the native scanner. Exclude them
+        // from foreign-scope classification so their temporary code projection
+        // cannot hide label syntax needed when the run extends.
+        let end = if classify {
+            inline
+                .scanner
+                .classification_end(self.source.len())
+                .max(base)
+        } else {
+            self.source.len()
+        };
+        let end = if inline.rows.inline_at(end) {
+            end
+        } else {
+            self.source.len()
+        };
+        let tail = self.source.get(base..end).unwrap_or_default();
+
+        let context = if !classify || base == inline.start {
             String::new()
         } else if self
             .source
@@ -51,7 +121,15 @@ impl Markdown {
             left_context(self.source.get(..base).unwrap_or_default())
         };
         let mut prefix = context;
-        if inline.scanner.expanded_before(base) {
+        #[cfg(test)]
+        if classify {
+            work::scan(tail.len());
+        }
+        if classify
+            && tail.contains("\\\n")
+            && inline.scanner.expanded_before(base)
+            && !inline.scanner.expands_after(base)
+        {
             // Insert inside an existing cell without introducing a new row.
             let at = prefix
                 .char_indices()
@@ -71,26 +149,34 @@ impl Markdown {
         };
         #[cfg(test)]
         work::copy(prefix.len());
-        let (events, calls) = events::scoped(
-            &source,
-            &self.references,
-            options(),
-            self.source
-                .len()
-                .max(100_000)
-                .saturating_sub(self.reference_cost)
-                .saturating_sub(cost),
-        );
-        if !paragraph(&source, &events)
-            || events.iter().any(|(event, range)| {
-                matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
-                    && range.start < sentinel
-                    && range.end > sentinel
-            })
+        let (events, calls) = if classify {
+            events::scoped(
+                &source,
+                &self.references,
+                options(),
+                self.source
+                    .len()
+                    .max(100_000)
+                    .saturating_sub(self.reference_cost)
+                    .saturating_sub(cost),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        if classify
+            && (events
+                .first()
+                .is_some_and(|(_, range)| range.start > sentinel)
+                || !paragraph(&source, &events)
+                || events.iter().any(|(event, range)| {
+                    matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
+                        && range.start < sentinel
+                        && range.end > sentinel
+                }))
         {
             return None;
         }
-        let frontier = inline.scanner.frontier(
+        inline.scanner.frontier(
             inline_scan::Slice {
                 original: &self.source,
                 parsed: &source,
@@ -98,38 +184,62 @@ impl Markdown {
                 base,
                 sentinel,
                 boundary: sentinel,
+                classified: classify,
             },
             &events,
             &self.references,
         );
-        let boundary = boundary(&source, &events, sentinel, frontier);
-        let boundary = inline
-            .scanner
-            .checkpoint(base + boundary.saturating_sub(sentinel))
-            .saturating_sub(base)
-            + sentinel;
-        let (cost, valid) = references::extend_expansion(
-            cost,
-            &checkpoint.valid,
-            calls.iter().filter(|(end, _)| *end <= boundary),
-        );
-        let (changed, visible) = inline.scanner.render_tree(
-            &self.source,
-            inline.start,
-            &mut self.lines,
-            self.stable_lines,
-        )?;
-        self.visible_lines = if visible == 0 {
-            self.visibility.end
+        let frontier = inline.scanner.neutral_frontier();
+        let boundary = if classify && frontier >= base {
+            base + boundary(&source, &events, sentinel, frontier - base + sentinel)
+                .saturating_sub(sentinel)
         } else {
-            self.stable_lines + visible
+            frontier
         };
-        self.plain = false;
-        let offset = base + boundary.saturating_sub(sentinel);
+        let boundary = inline.scanner.checkpoint(boundary);
+        let (mut cost, mut valid) = (cost, interval);
+        for (end, charge) in calls.iter().filter(|(end, _)| *end >= sentinel) {
+            (cost, valid) =
+                references::extend_expansion(cost, &valid, std::iter::once(&(*end, *charge)));
+            #[cfg(test)]
+            work::copy(
+                std::mem::size_of::<(usize, usize, Range<usize>)>()
+                    * (1 + if inline.charges.len() == inline.charges.capacity() {
+                        inline.charges.len()
+                    } else {
+                        0
+                    }),
+            );
+            inline
+                .charges
+                .push((base + end.saturating_sub(sentinel), cost, valid.clone()));
+        }
+        let changed = if previous < self.source.len() {
+            let (changed, visible) = inline.scanner.render_tree(
+                &self.source,
+                inline.start,
+                &mut self.lines,
+                self.stable_lines,
+            )?;
+            self.visible_lines = if visible == 0 {
+                self.visibility.end
+            } else {
+                self.stable_lines + visible
+            };
+            self.plain = false;
+            changed
+        } else {
+            inline.scanner.seed_input(&self.source, inline.start);
+            // The block parser has just rendered this initial tail. Seed only
+            // the retained state; its first projection will replace that tail.
+            self.stable_lines
+        };
+        let offset = inline.checkpoint.offset.max(boundary);
         inline.scanner.discard_before(offset);
         inline.checkpoint.offset = offset;
         inline.checkpoint.cost = cost;
         inline.checkpoint.valid = valid;
+        inline.classified = self.source.len();
         self.inline = Some(inline);
         Some(changed)
     }
@@ -143,11 +253,7 @@ impl Markdown {
         let paragraph_start = events.first().map_or(0, |(_, range)| range.start);
         let body = source.get(paragraph_start..).unwrap_or_default();
         let content = body.trim_start_matches([' ', '\t']);
-        if possible_definition(content)
-            || !self.context.is_empty()
-            || self.offset != base
-            || !paragraph(source, events)
-        {
+        if !self.context.is_empty() || self.offset != base || !paragraph(source, events) {
             return;
         }
         let start = base + paragraph_start + body.len() - content.len();
@@ -159,6 +265,9 @@ impl Markdown {
             },
             start,
             scanner: inline_scan::Scanner::new(&self.source, start),
+            classified: start,
+            rows: classify::Rows::at(start),
+            charges: Vec::new(),
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
@@ -167,13 +276,13 @@ impl Markdown {
     }
 }
 
-fn left_context(source: &str) -> String {
+pub(super) fn left_context(source: &str) -> String {
     match source.chars().next_back() {
         Some('\n') => "x\n".into(),
         Some(c) if c.is_whitespace() => "x ".into(),
         Some(c) if !c.is_ascii() => format!("x{c}"),
         Some(c) if !c.is_ascii_punctuation() => "x".into(),
-        _ => "x.".into(),
+        _ => ".".into(),
     }
 }
 
@@ -248,30 +357,6 @@ fn paragraph(source: &str, events: &[(Event<'_>, Range<usize>)]) -> bool {
             && source.get(range.end..).unwrap_or_default().bytes().all(|byte| matches!(byte, b' ' | b'\t')))
 }
 
-fn possible_definition(source: &str) -> bool {
-    let Some(label) = source.strip_prefix('[') else {
-        return false;
-    };
-    let mut escaped = false;
-    for (at, character) in label.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match character {
-            '\\' => escaped = true,
-            '[' => return false,
-            ']' => {
-                return label
-                    .get(at + 1..)
-                    .is_some_and(|tail| tail.is_empty() || tail.starts_with(':'));
-            }
-            _ => {}
-        }
-    }
-    true
-}
-
 fn boundary(
     source: &str,
     events: &[(Event<'_>, Range<usize>)],
@@ -311,3 +396,6 @@ fn boundary(
     }
     boundary
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static REPLAY_CLASSIFIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

@@ -337,6 +337,31 @@ impl Clone for Spans {
             forced: self.forced,
         }
     }
+
+    fn clone_from(&mut self, source: &Self) {
+        #[cfg(test)]
+        if COPY_PREFIX.get() {
+            *self = source.clone();
+            return;
+        }
+        if self.tail.is_none() && source.tail.is_none() {
+            #[cfg(test)]
+            crate::work::copy(2 * std::mem::size_of::<Option<Arc<Node>>>());
+            let old = Self {
+                prefix: self.prefix.take(),
+                stop: self.stop.take(),
+                tail: None,
+                forced: false,
+            };
+            self.prefix = source.prefix.clone();
+            self.stop = source.stop.clone();
+            drop(old);
+        } else {
+            #[cfg(test)]
+            crate::work::copy(std::mem::size_of::<Self>());
+            *self = source.clone();
+        }
+    }
 }
 
 impl Drop for Spans {

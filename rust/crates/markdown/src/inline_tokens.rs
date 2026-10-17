@@ -1,14 +1,17 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    ops::Range,
-};
+use std::{collections::VecDeque, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
     Text,
     Escape(char),
-    Run { byte: u8, before: char, after: char },
-    Open { image: bool },
+    Run {
+        byte: u8,
+        before: super::delimiters::Flank,
+        after: super::delimiters::Flank,
+    },
+    Open {
+        image: bool,
+    },
     Close,
     Entity,
     AngleOpen,
@@ -63,12 +66,115 @@ enum Pending {
     },
 }
 
+#[derive(Default, Debug)]
+pub(super) struct Queue {
+    pages: VecDeque<Vec<Token>>,
+    start: usize,
+    length: usize,
+}
+impl Queue {
+    pub(super) fn len(&self) -> usize {
+        self.length
+    }
+    #[cfg(test)]
+    fn capacity(&self) -> usize {
+        self.pages.len() * super::forest::PAGE
+    }
+    pub(super) fn get(&self, index: usize) -> Option<&Token> {
+        if index >= self.length {
+            return None;
+        }
+        let at = self.start + index;
+        self.pages
+            .get(at / super::forest::PAGE)?
+            .get(at % super::forest::PAGE)
+    }
+    fn front(&self) -> Option<&Token> {
+        self.get(0)
+    }
+    fn front_mut(&mut self) -> Option<&mut Token> {
+        self.pages.front_mut()?.get_mut(self.start)
+    }
+    pub(super) fn back(&self) -> Option<&Token> {
+        self.pages.back()?.last()
+    }
+    fn back_mut(&mut self) -> Option<&mut Token> {
+        self.pages.back_mut()?.last_mut()
+    }
+    #[cfg(test)]
+    pub(super) fn iter(&self) -> impl Iterator<Item = &Token> {
+        self.pages
+            .iter()
+            .enumerate()
+            .flat_map(move |(index, page)| {
+                page.iter().skip(if index == 0 { self.start } else { 0 })
+            })
+    }
+    pub(super) fn pop_front(&mut self) -> Option<Token> {
+        let token = self.front()?.clone();
+        self.start += 1;
+        self.length -= 1;
+        if self
+            .pages
+            .front()
+            .is_some_and(|page| self.start == page.len())
+        {
+            self.pages.pop_front();
+            self.start = 0;
+        }
+        Some(token)
+    }
+    fn push_back(&mut self, token: Token) {
+        if self
+            .pages
+            .back()
+            .is_none_or(|page| page.len() == super::forest::PAGE)
+        {
+            #[cfg(test)]
+            if self.pages.len() == self.pages.capacity() {
+                crate::work::copy(self.pages.len() * std::mem::size_of::<Vec<Token>>());
+            }
+            self.pages
+                .push_back(Vec::with_capacity(super::forest::PAGE));
+        }
+        self.pages.back_mut().expect("token page").push(token);
+        self.length += 1;
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for Queue {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+#[cfg(test)]
+impl Iterator for Queue {
+    type Item = Token;
+    fn next(&mut self) -> Option<Token> {
+        self.pop_front()
+    }
+}
+#[cfg(test)]
+impl<'a> IntoIterator for &'a Queue {
+    type Item = &'a Token;
+    type IntoIter = Box<dyn Iterator<Item = &'a Token> + 'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Tokens {
-    pub(super) ready: VecDeque<Token>,
-    pub(super) ends: HashMap<usize, usize>,
+    pub(super) ready: Queue,
+    starts: super::forest::glyphs::rank::Rank,
+    openers: super::forest::glyphs::rank::Rank,
+    ranked: usize,
+    origin: usize,
+    ordinal_origin: usize,
+    indexed: bool,
     emitted: usize,
-    pub(super) code_ends: VecDeque<usize>,
+    expansion: Option<usize>,
     offset: usize,
     previous: Option<char>,
     pending: Pending,
@@ -78,6 +184,8 @@ impl Tokens {
     pub(super) fn at(offset: usize, previous: Option<char>) -> Self {
         Self {
             offset,
+            ranked: offset,
+            origin: offset,
             previous,
             ..Self::default()
         }
@@ -91,9 +199,6 @@ impl Tokens {
         {
             self.ready.pop_front();
         }
-        while self.code_ends.front().is_some_and(|end| *end <= offset) {
-            self.code_ends.pop_front();
-        }
         if let Some(token) = self.ready.front_mut() {
             token.range.start = token.range.start.max(offset);
         }
@@ -102,8 +207,8 @@ impl Tokens {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
         self.ready.capacity() * std::mem::size_of::<Token>()
-            + self.ends.capacity() * std::mem::size_of::<(usize, usize)>()
-            + self.code_ends.capacity() * std::mem::size_of::<usize>()
+            + self.starts.retained()
+            + self.openers.retained()
     }
 
     pub(super) fn push(&mut self, source: &str) {
@@ -139,8 +244,8 @@ impl Tokens {
                 } else {
                     Kind::Run {
                         byte,
-                        before,
-                        after: ' ',
+                        before: before.into(),
+                        after: ' '.into(),
                     }
                 },
             ),
@@ -154,16 +259,77 @@ impl Tokens {
         })
     }
 
+    pub(super) fn expands_after(&self, start: usize) -> bool {
+        self.expansion.is_some_and(|at| at >= start)
+            || self.preview().is_some_and(|token| {
+                token.range.start >= start && token.kind.expands(token.range.clone())
+            })
+    }
+
+    pub(super) fn covering(&self, position: usize) -> Option<Range<usize>> {
+        let indexed = position
+            .checked_sub(self.origin)
+            .and_then(|position| self.starts.before(position))
+            .and_then(|ordinal| {
+                (ordinal + self.ordinal_origin).checked_sub(self.emitted - self.ready.len())
+            })
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| self.ready.get(index));
+        let settled = if let Some(token) = indexed {
+            Some(token)
+        } else {
+            (0..self.ready.len()).rev().find_map(|index| {
+                #[cfg(test)]
+                crate::work::scan(1);
+                let token = self.ready.get(index)?;
+                (token.range.start < position).then_some(token)
+            })
+        };
+        settled
+            .filter(|token| token.kind != Kind::Text)
+            .map(|token| token.range.clone())
+            .into_iter()
+            .chain(self.preview().map(|token| token.range))
+            .find(|range| range.start < position && position < range.end)
+    }
+
+    pub(super) fn anchor_at(&self, position: usize) -> Option<usize> {
+        let ordinal = self.ordinal_at(position)?;
+        let index = ordinal.checked_sub(self.emitted - self.ready.len())?;
+        if !matches!(
+            self.ready.get(index)?.kind,
+            Kind::Open { .. } | Kind::AngleOpen
+        ) {
+            return None;
+        }
+        self.openers
+            .before(ordinal.checked_sub(self.ordinal_origin)? + 1)?
+            .checked_sub(1)
+    }
+
+    pub(super) fn ordinal_at(&self, position: usize) -> Option<usize> {
+        let ordinal = self.starts.before(position.checked_sub(self.origin)?)? + self.ordinal_origin;
+        let index = ordinal.checked_sub(self.emitted - self.ready.len())?;
+        (self.ready.get(index)?.range.start == position).then_some(ordinal)
+    }
+
+    pub(super) fn after_absolute(&self, end: usize) -> Option<usize> {
+        let ordinal = self.starts.before(end.checked_sub(self.origin)?)? + self.ordinal_origin;
+        let index = ordinal
+            .checked_sub(self.emitted - self.ready.len())?
+            .checked_sub(1)?;
+        (self.ready.get(index)?.range.end == end).then_some(ordinal)
+    }
+
     pub(super) fn after(&self, end: usize) -> Option<usize> {
-        self.ends
-            .get(&end)?
+        self.after_absolute(end)?
             .checked_sub(self.emitted - self.ready.len())
     }
 
     pub(super) fn collapsed_end(&self, end: usize, discarded: usize) -> Option<usize> {
         #[cfg(test)]
         crate::work::scan(2);
-        let after = self.ends.get(&end)?.checked_sub(discarded)?;
+        let after = self.after_absolute(end)?.checked_sub(discarded)?;
         let opening = self.ready.get(after)?;
         let closing = self.ready.get(after + 1)?;
         (opening.range.start == end
@@ -239,8 +405,8 @@ impl Tokens {
                         end..position,
                         Kind::Run {
                             byte,
-                            before: if escaped { char::from(byte) } else { before },
-                            after: character,
+                            before: if escaped { char::from(byte) } else { before }.into(),
+                            after: character.into(),
                         },
                     );
                 }
@@ -297,60 +463,45 @@ impl Tokens {
         self.emit(position..position + character.len_utf8(), kind);
     }
 
-    fn record_end(&mut self, end: usize, ordinal: usize) {
-        #[cfg(test)]
-        work_end(self.ends.len(), self.ends.capacity());
-        self.ends.insert(end, ordinal);
+    fn rank(&mut self, end: usize, start: Option<usize>) {
+        if !self.indexed {
+            return;
+        }
+        while self.ranked < end {
+            self.starts.push(start == Some(self.ranked));
+            self.ranked += 1;
+        }
     }
 
     fn emit(&mut self, range: Range<usize>, kind: Kind) {
-        if matches!(kind, Kind::Run { byte: b'`', .. })
-            || kind == Kind::Escape('`') && range.len() > 2
-        {
-            #[cfg(test)]
-            crate::work::copy(
-                std::mem::size_of::<usize>()
-                    * (1 + if self.code_ends.len() == self.code_ends.capacity() {
-                        self.code_ends.len()
-                    } else {
-                        0
-                    }),
-            );
-            self.code_ends.push_back(range.end);
-        }
         if kind == Kind::Text
             && let Some(last) = self.ready.back_mut()
             && last.kind == Kind::Text
             && last.range.end == range.start
         {
             last.range.end = range.end;
+            self.rank(range.end, None);
             return;
         }
         #[cfg(test)]
-        crate::work::copy(
-            std::mem::size_of::<Token>()
-                * (1 + if self.ready.len() == self.ready.capacity() {
-                    self.ready.len()
-                } else {
-                    0
-                }),
-        );
-        self.emitted += 1;
-        if matches!(
-            kind,
-            Kind::Open { .. } | Kind::Close | Kind::AngleClose | Kind::ParenClose
-        ) {
-            self.record_end(range.end, self.emitted);
+        crate::work::copy(std::mem::size_of::<Token>());
+        if kind.expands(range.clone()) {
+            self.expansion = Some(range.start);
         }
+        let opener = matches!(kind, Kind::Open { .. } | Kind::AngleOpen);
+        if opener && !self.indexed {
+            self.indexed = true;
+            self.origin = range.start;
+            self.ranked = range.start;
+            self.ordinal_origin = self.emitted;
+        }
+        if self.indexed {
+            self.openers.push(opener);
+        }
+        self.emitted += 1;
+        self.rank(range.end, Some(range.start));
         self.ready.push_back(Token { range, kind });
     }
-}
-
-#[cfg(test)]
-fn work_end(length: usize, capacity: usize) {
-    crate::work::copy(
-        std::mem::size_of::<(usize, usize)>() * (1 + if length == capacity { length } else { 0 }),
-    );
 }
 
 #[cfg(test)]

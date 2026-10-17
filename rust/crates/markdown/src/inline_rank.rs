@@ -1,4 +1,4 @@
-use super::super::PAGE;
+use crate::inline_scan::forest::PAGE;
 
 struct Word {
     bits: u64,
@@ -7,7 +7,7 @@ struct Word {
 }
 
 #[derive(Default)]
-pub(super) struct Rank {
+pub(in crate::inline_scan) struct Rank {
     pages: Vec<Box<[Word]>>,
     tail: Vec<Word>,
     length: usize,
@@ -25,7 +25,7 @@ impl Rank {
             .get(index % PAGE)
     }
 
-    pub(super) fn push(&mut self, value: bool) {
+    pub(in crate::inline_scan) fn push(&mut self, value: bool) {
         let bit = self.length % 64;
         let index = self.length / 64;
         #[cfg(test)]
@@ -71,7 +71,7 @@ impl Rank {
         self.length += 1;
     }
 
-    pub(super) fn before(&self, position: usize) -> Option<usize> {
+    pub(in crate::inline_scan) fn before(&self, position: usize) -> Option<usize> {
         if position > self.length {
             return None;
         }
@@ -88,7 +88,7 @@ impl Rank {
         Some(word.prefix + bits.count_ones() as usize)
     }
 
-    pub(super) fn last_before(&self, position: usize) -> Option<usize> {
+    pub(in crate::inline_scan) fn last_before(&self, position: usize) -> Option<usize> {
         #[cfg(test)]
         crate::work::scan(1);
         if position > self.length {
@@ -107,7 +107,7 @@ impl Rank {
     }
 
     #[cfg(test)]
-    pub(super) fn retained(&self) -> usize {
+    pub(in crate::inline_scan) fn retained(&self) -> usize {
         self.pages.capacity() * std::mem::size_of::<Box<[Word]>>()
             + (self.pages.len() * PAGE + self.tail.capacity()) * std::mem::size_of::<Word>()
     }

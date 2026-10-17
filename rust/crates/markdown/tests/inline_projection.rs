@@ -117,6 +117,7 @@ fn atom(
                 base: start,
                 sentinel: 2,
                 boundary: 2,
+                classified: true,
             },
             &events,
             &crate::References::default(),

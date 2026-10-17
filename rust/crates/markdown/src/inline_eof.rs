@@ -26,7 +26,7 @@ impl Heads {
 struct Key {
     start: usize,
     byte: u8,
-    before: char,
+    before: delimiters::Flank,
     escaped: bool,
 }
 
@@ -64,7 +64,7 @@ impl Projections {
         let (byte, before, escaped) = match token.kind {
             Kind::Run { byte, before, .. } => (byte, before, false),
             Kind::Escape(character) if matches!(character, '*' | '_' | '~' | '`') => {
-                (character as u8, character, true)
+                (character as u8, character.into(), true)
             }
             _ => {
                 let previous = state.forest.snapshot();

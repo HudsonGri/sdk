@@ -1,4 +1,5 @@
-use std::{collections::HashMap, sync::Arc};
+#[cfg(test)]
+use std::sync::Arc;
 #[path = "inline_bare.rs"]
 mod bare;
 
@@ -172,6 +173,7 @@ impl Suffix {
     }
 }
 
+#[cfg(test)]
 fn resolve(source: &str, end: usize) -> Option<Arc<str>> {
     let source = source.get(..end)?;
     #[cfg(test)]
@@ -198,7 +200,8 @@ pub(in crate::inline_scan) struct Index {
     closing: bool,
     pending: Vec<(usize, Suffix)>,
     bare: bare::Bare,
-    completed: HashMap<usize, (usize, Option<Option<Arc<str>>>)>,
+    finished: Vec<(usize, usize)>,
+    generation: usize,
     #[cfg(test)]
     replay: bool,
     #[cfg(test)]
@@ -206,6 +209,13 @@ pub(in crate::inline_scan) struct Index {
 }
 
 impl Index {
+    pub(in crate::inline_scan) fn completions(&self) -> impl Iterator<Item = usize> + '_ {
+        self.finished.iter().map(|&(start, _)| start)
+    }
+
+    pub(in crate::inline_scan) fn completed(&self) -> usize {
+        self.generation
+    }
     pub(in crate::inline_scan) fn push(&mut self, source: &str, origin: usize) {
         #[cfg(test)]
         if self.replay {
@@ -213,12 +223,16 @@ impl Index {
             self.closing = false;
             self.pending.clear();
             self.bare = bare::Bare::default();
-            self.completed.clear();
+            self.finished.clear();
         }
         #[cfg(test)]
         {
             self.bare.forget_escape = self.forget_escape;
         }
+        if self.offset == Some(source.len()) {
+            return;
+        }
+        self.finished.clear();
         let offset = *self.offset.get_or_insert(origin);
         for (relative, character) in source
             .get(offset..)
@@ -255,14 +269,15 @@ impl Index {
     fn complete(&mut self, start: usize, end: usize) {
         #[cfg(test)]
         crate::work::copy(
-            std::mem::size_of::<(usize, (usize, Option<Option<Arc<str>>>))>()
-                * (1 + if self.completed.len() == self.completed.capacity() {
-                    self.completed.len()
+            std::mem::size_of::<(usize, usize)>()
+                * (1 + if self.finished.len() == self.finished.capacity() {
+                    self.finished.len()
                 } else {
                     0
                 }),
         );
-        self.completed.insert(start, (end, None));
+        self.finished.push((start, end));
+        self.generation += 1;
     }
 
     fn advance(&mut self, source: &str, end: usize, character: char) {
@@ -312,40 +327,36 @@ impl Index {
                     continue;
                 }
             }
-            #[cfg(test)]
-            crate::work::copy(std::mem::size_of::<(usize, Suffix)>());
-            self.pending.swap_remove(next);
+            if next + 1 == self.pending.len() {
+                self.pending.truncate(next);
+            } else {
+                #[cfg(test)]
+                crate::work::copy(std::mem::size_of::<(usize, Suffix)>());
+                self.pending.swap_remove(next);
+            }
         }
     }
 
+    #[cfg(test)]
     pub(in crate::inline_scan) fn target(
-        &mut self,
+        &self,
         source: &str,
         start: usize,
-    ) -> Option<(usize, Arc<str>)> {
-        let (end, target) = self.completed.get_mut(&start)?;
-        let target = target.get_or_insert_with(|| resolve(source.get(start..*end)?, *end - start));
-        Some((*end, target.as_ref()?.clone()))
+        end: usize,
+    ) -> Option<Arc<str>> {
+        resolve(source.get(start..end)?, end - start)
     }
 
     #[cfg(test)]
     pub(in crate::inline_scan) fn retained(
         &self,
-        links: &mut std::collections::HashSet<*const u8>,
+        _links: &mut std::collections::HashSet<*const u8>,
     ) -> (usize, usize) {
-        let payload = self
-            .completed
-            .values()
-            .filter_map(|(_, target)| target.as_ref()?.as_ref())
-            .filter(|target| links.insert(Arc::as_ptr(target).cast::<u8>()))
-            .map(|target| target.len())
-            .sum();
         (
-            payload,
+            0,
             self.bare.retained()
                 + self.pending.capacity() * std::mem::size_of::<(usize, Suffix)>()
-                + self.completed.capacity()
-                    * std::mem::size_of::<(usize, (usize, Option<Option<Arc<str>>>))>(),
+                + self.finished.capacity() * std::mem::size_of::<(usize, usize)>(),
         )
     }
 }

@@ -53,7 +53,8 @@ fn label_property_detects_dropping_compiled_children() {
     let source = "x ![a ![b](v)c](u) z";
     FORGET_CHILD.set(true);
     let mut markdown = Markdown::default();
-    markdown.push(source);
+    markdown.push(&source[..source.len() - 1]);
+    markdown.push(&source[source.len() - 1..]);
     FORGET_CHILD.set(false);
     assert_ne!(markdown.lines(), crate::tests::full_parse(source));
 }

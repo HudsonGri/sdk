@@ -43,3 +43,6 @@ cc 9d9299b9b2ab19abe1c5afc2a01f7b8aff773081c6a736f6b3156706749bde97
 cc 34f955f1f7bae66ad702ed718c7fac1a8069bd09baa36ca9923ebddbd7379529
 
 cc 2168e777b549e1c1a3d3395f1bc8d974a3740368c197c21257b131dffb41a8f4
+
+# Fenced repetition changes whether the final definition resolves prior image blocks.
+cc 8189f2be6c05329df176f7b0440eb1ab0ba7a5e662e09f2d0fe2c5abf5b25aa7

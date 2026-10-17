@@ -636,11 +636,7 @@ impl Output {
             lines.truncate(end);
         }
         if self.head_count() != 0 && !self.head.same_snapshot(&previous.head) {
-            #[cfg(test)]
-            crate::work::copy(std::mem::size_of::<Line>());
-            lines[first] = Line {
-                spans: self.head.clone(),
-            };
+            lines[first].spans.clone_from(&self.head);
             changed = first;
         }
         for (index, row) in self.middle.changed(&previous.middle) {
@@ -654,11 +650,7 @@ impl Output {
             && (self.len() != previous.len() || !next.same_snapshot(old))
         {
             let at = first + self.len() - 1;
-            #[cfg(test)]
-            crate::work::copy(std::mem::size_of::<Line>());
-            lines[at] = Line {
-                spans: next.clone(),
-            };
+            lines[at].spans.clone_from(next);
             changed = changed.min(at);
         }
         changed

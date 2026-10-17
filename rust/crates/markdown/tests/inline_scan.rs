@@ -5,13 +5,7 @@ fn advance(scanner: &mut Scanner, original: &str, base: usize) -> usize {
     let context = if base == 0 {
         String::new()
     } else {
-        format!(
-            "x{}",
-            original
-                .get(..base)
-                .and_then(|s| s.chars().next_back())
-                .unwrap()
-        )
+        crate::inline::left_context(original.get(..base).unwrap())
     };
     let source = format!("{context}{}", original.get(base..).unwrap());
     let events: Vec<_> = pulldown_cmark::Parser::new_ext(&source, options())
@@ -25,6 +19,7 @@ fn advance(scanner: &mut Scanner, original: &str, base: usize) -> usize {
             base,
             sentinel: context.len(),
             boundary: context.len(),
+            classified: true,
         },
         &events,
         &References::default(),
@@ -58,7 +53,9 @@ proptest! {
             let frontier = advance(&mut retained, &source, base);
             prop_assert_eq!(frontier, advance(&mut replay, &source, base),
                 "source {:?}", source);
-            prop_assert_eq!(&retained.atomic, &replay.atomic, "source {:?}", source);
+            for position in source.char_indices().map(|(at, _)| at).chain([source.len()]).filter(|at| *at >= base) {
+                prop_assert_eq!(retained.checkpoint(position), replay.checkpoint(position), "source {:?}", source);
+            }
             let left = retained.state.projection(retained.tokens.preview().as_ref());
             let right = replay.state.projection(replay.tokens.preview().as_ref());
             if !checkpoints {
@@ -68,7 +65,7 @@ proptest! {
                 prop_assert_eq!(retained.state.forest.scopes_since(left, base),
                     replay.state.forest.scopes_since(right, base), "source {:?}", source);
                 base += frontier.saturating_sub(if base == 0 { 0 } else {
-                    1 + source.get(..base).and_then(|s| s.chars().next_back()).unwrap().len_utf8()
+                    crate::inline::left_context(source.get(..base).unwrap()).len()
                 });
                 retained.discard_before(base);
                 replay.discard_before(base);
@@ -136,6 +133,7 @@ fn fed_bytes(count: usize, replay: bool) -> (usize, usize) {
                 base: 0,
                 sentinel: 0,
                 boundary: 0,
+                classified: true,
             },
             &[],
             &References::default(),
