@@ -1,0 +1,98 @@
+{
+  "turns": [
+    [
+      {
+        "type": "event",
+        "kind": "content",
+        "delta": "before"
+      },
+      {
+        "type": "event",
+        "kind": "reasoning",
+        "delta": "thinking"
+      }
+    ]
+  ],
+  "expect": {
+    "text": "beforeafter",
+    "task_files": [
+      {
+        "path": "turns/0/request.json",
+        "model": {
+          "provider": "scripted",
+          "name": "local",
+          "revision": "1"
+        }
+      },
+      {
+        "path": "turns/0/chunks/0",
+        "channel": "Text",
+        "text": "before"
+      },
+      {
+        "path": "turns/0/chunks/4294967296",
+        "channel": "Reasoning",
+        "text": "thinking"
+      },
+      {
+        "path": "turns/0/errors/2.json",
+        "channel": null,
+        "text": "{\"error\":\"operation outcome is indeterminate: <operation>\"}"
+      },
+      {
+        "channel": "Text",
+        "text": "after",
+        "path": "turns/0/chunks/8589934592"
+      },
+      {
+        "channel": null,
+        "text": "{\"metadata\":null}",
+        "path": "turns/0/completion.json"
+      }
+    ],
+    "statuses": [
+      {
+        "state": "pending",
+        "attention": false,
+        "parent": null
+      },
+      {
+        "state": "indeterminate",
+        "attention": true,
+        "parent": null
+      },
+      {
+        "state": "completed",
+        "attention": true,
+        "parent": null
+      }
+    ]
+  },
+  "interruptions": [
+    "indeterminate"
+  ],
+  "recoveries": [
+    {
+      "continuation": [
+        {
+          "kind": "content",
+          "delta": "after"
+        },
+        {
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "observed": [
+        {
+          "kind": "content",
+          "delta": "before"
+        },
+        {
+          "kind": "reasoning",
+          "delta": "thinking"
+        }
+      ]
+    }
+  ]
+}

@@ -238,6 +238,16 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                     observation,
                     prefix,
                     expected,
+                    dispatches
+                        .first()
+                        .map(|dispatch| dispatch.operation_id)
+                        .or_else(|| {
+                            provider
+                                .dispatches()
+                                .first()
+                                .map(|dispatch| dispatch.operation_id)
+                        })
+                        .ok_or("task stream has no model dispatch")?,
                 )
                 .await?,
             )
@@ -482,7 +492,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     drop(cold);
-    if let Some(cursor) = task_cursor {
+    if let Some(cursor) = task_cursor.filter(|_| case.expect.outcome == ExpectedOutcome::Succeeded)
+    {
         let recovered_provider = Arc::new(ScriptedModelProvider::new([]));
         let recovered = LocalHarness::open(
             local_harness_config(

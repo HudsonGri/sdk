@@ -361,7 +361,9 @@ where
             let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
             traced(
                 span,
-                Box::pin(self.stage_with_io(operation, key, bytes, media, io)),
+                crate::conversation::BoundedContentFuture::new(io, || {
+                    self.stage_with_io(operation, key, bytes, media, io)
+                })?,
             )
             .await
         })

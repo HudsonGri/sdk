@@ -1,6 +1,7 @@
 use super::TestResult;
 use acyclic_harness::{
-    LocalHarness,
+    LocalHarness, OperationId,
+    client::{ClientViewLimits, ClientViews, FileQueryView, QueryViewLimits},
     task_volume::{Change, Cursor, FileKey, FileValue, Observation, Query, TaskFile, ToolFile},
 };
 use futures::StreamExt as _;
@@ -13,30 +14,46 @@ pub(super) async fn check(
     mut observation: Observation,
     prefix: Vec<Change>,
     expected: &[Value],
+    operation: OperationId,
 ) -> TestResult<Cursor> {
     let initial = observation
         .snapshot
         .take()
         .ok_or("missing stream snapshot")?;
     let mut position = initial.cursor.position;
-    let mut cursor = initial.cursor;
-    let cut = harness
+    let mut cursor = initial.cursor.clone();
+    let identity = (cursor.volume, cursor.query);
+    let mut views = ClientViews::new(
+        acyclic_stream::StreamPath::new("chunks")?,
+        ClientViewLimits {
+            agents: 1,
+            selected: 1,
+            overview_values: 1,
+            overview_bytes: 128,
+            query: QueryViewLimits {
+                files: 128,
+                segments: 128,
+                bytes: 1_048_576,
+            },
+        },
+    )?;
+    let settled = harness
         .task_files()
         .observe(query.clone(), None, 128)
         .await?
         .snapshot
-        .ok_or("missing settled stream snapshot")?
-        .cursor
-        .position;
+        .ok_or("missing settled stream snapshot")?;
+    let cut = settled.cursor.position;
     let mut turns = BTreeMap::new();
     let mut calls = BTreeMap::new();
     let mut actual = Vec::new();
     let mut prefix = prefix.into_iter();
-    for file in initial.files {
-        if normalize(file, &mut turns, &mut calls)?.is_some() {
+    for file in &initial.files {
+        if normalize(file.clone(), &mut turns, &mut calls, operation)?.is_some() {
             return Err("streaming started before the admission snapshot".into());
         }
     }
+    views.query_snapshot(query.clone(), initial, 128, 1_048_576)?;
     while position < cut {
         let change = match prefix.next() {
             Some(change) => change,
@@ -49,10 +66,22 @@ pub(super) async fn check(
         if change.cursor.position <= position || change.cursor.position > cut {
             return Err("task file cursor reordered a publication".into());
         }
+        views.query_change(Change {
+            file: change.file.clone(),
+            files: change.files.clone(),
+            removed: change.removed.clone(),
+            cursor: change.cursor.clone(),
+        })?;
+        let selection = views
+            .selection(&identity)
+            .ok_or("client lost its task query")?;
+        if selection.cursor() != &change.cursor {
+            return Err("client did not consume the exact follower cursor".into());
+        }
         position = change.cursor.position;
         cursor = change.cursor.clone();
         if let Some(file) = change.file
-            && let Some(file) = normalize(file, &mut turns, &mut calls)?
+            && let Some(file) = normalize(file, &mut turns, &mut calls, operation)?
         {
             actual.push(file);
         }
@@ -66,6 +95,15 @@ pub(super) async fn check(
         if observation.reset || observation.snapshot.is_some() {
             return Err("task stream cursor could not resume".into());
         }
+    }
+    let snapshot_view = FileQueryView::from_snapshot(query, settled, 128, 1_048_576)?;
+    if views
+        .selection(&identity)
+        .ok_or("client lost its task query")?
+        .files()
+        != snapshot_view.files()
+    {
+        return Err("client snapshot and resumed file fold differ".into());
     }
     if actual != expected {
         return Err(format!("task files differ: expected {expected:?}, got {actual:?}").into());
@@ -120,6 +158,7 @@ fn normalize(
     file: FileValue,
     turns: &mut BTreeMap<u64, usize>,
     calls: &mut BTreeMap<String, usize>,
+    operation: OperationId,
 ) -> TestResult<Option<Value>> {
     let FileKey::Task { file: kind, .. } = &file.key else {
         return Ok(None);
@@ -167,6 +206,9 @@ fn normalize(
         _ => unreachable!(),
     };
     let mut text = std::str::from_utf8(&file.bytes)?.to_owned();
+    if matches!(kind, TaskFile::Error { .. }) {
+        text = text.replace(&operation.to_string(), "<operation>");
+    }
     if let TaskFile::Tool {
         call,
         file: ToolFile::Request,

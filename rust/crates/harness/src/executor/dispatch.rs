@@ -97,7 +97,24 @@ impl StockExecution<'_> {
                     return Err(error);
                 }
             };
-            let continuation = continuation.ok_or(Error::Indeterminate(input.operation_id))?;
+            let continuation = match continuation {
+                Some(continuation) => continuation,
+                None => {
+                    drop(replayed);
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    drop(replayed_hold);
+                    let error = Error::Indeterminate(input.operation_id);
+                    self.publish_model_error(
+                        journal,
+                        input.operation_id,
+                        (step, purpose),
+                        admission.count,
+                        &error,
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
             #[cfg(feature = "filesystem")]
             {
                 _continuation_hold = io
@@ -170,6 +187,18 @@ impl StockExecution<'_> {
         .await?;
         #[cfg(feature = "filesystem")]
         drop(_continuation_hold);
+        if !admission.completed {
+            let error = Error::Indeterminate(input.operation_id);
+            self.publish_model_error(
+                journal,
+                input.operation_id,
+                (step, purpose),
+                admission.count,
+                &error,
+            )
+            .await?;
+            return Err(error);
+        }
         crate::obs::obs_record!("items" = admission.count);
         // Streaming owns only the current event. Assemble the executor's final
         // result once, from the same immutable files used by recovery/readers.

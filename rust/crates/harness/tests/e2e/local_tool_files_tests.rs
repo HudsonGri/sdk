@@ -103,8 +103,14 @@ mod tests {
                 broken.insert(request.clone(),head_file(request.clone(),serde_json::to_vec(&payload)?));
                 prop_assert!(check(&broken,task,operation,&calls,&results).is_err());
             }
-            let mut missing = files.clone();missing.remove(result);
-            prop_assert!(check(&missing,task,operation,&calls,&results).is_err());
+            let arguments = files.keys().find(|key| matches!(key, FileKey::Task {file:TaskFile::Tool {file:ToolFile::Arguments(_),..},..})).unwrap();
+            for key in [result, arguments] {
+                let mut missing = files.clone(); missing.remove(key);
+                prop_assert!(check(&missing,task,operation,&calls,&results).is_err());
+            }
+            let mut corrupt = files.clone();
+            corrupt.insert(arguments.clone(),head_file(arguments.clone(),b"{\"command\":\"changed\"}".to_vec()));
+            prop_assert!(check(&corrupt,task,operation,&calls,&results).is_err());
             let mut broken = files.clone();
             let mut payload: Value = serde_json::from_slice(&broken[result].segments[0])?;
             payload["injected"]=true.into();

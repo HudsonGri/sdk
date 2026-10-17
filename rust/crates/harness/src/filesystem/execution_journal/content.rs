@@ -195,91 +195,98 @@ where
         Ok(bytes)
     }
 
-    pub(super) async fn verify_event_refs_with_io(
-        &self,
-        event: &ExecutionEvent,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<ModelEvent>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let recheck = io
-            .and_then(PreparationIo::original_native_work)
-            .map(|work| PreparationIo::from_native_work(&work.recheck_admitted()))
-            .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let check_io = recheck.as_ref().or(io);
-        #[cfg(target_arch = "wasm32")]
-        let check_io = io;
-        let result = async {
-            let io = check_io;
-            let refs = match event {
-                ExecutionEvent::ContextPrepared {
-                    projection,
-                    accounting,
-                    ..
-                } => [Some(projection), accounting.as_ref(), None],
-                ExecutionEvent::ContextCompacted {
-                    projection,
-                    compaction,
-                    accounting,
-                    ..
-                } => [Some(projection), Some(compaction), Some(accounting)],
-                ExecutionEvent::ModelStarted { request, .. } => [Some(request), None, None],
-                ExecutionEvent::Model { event, .. } => [Some(event), None, None],
-                ExecutionEvent::ToolStarted { invocation, .. } => [Some(invocation), None, None],
-                ExecutionEvent::ToolCompleted {
-                    result, projection, ..
-                } => [Some(result), Some(projection), None],
-                ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => {
-                    [None, None, None]
-                }
-            };
-            let mut model = None;
-            for reference in refs.into_iter().flatten() {
-                let _bytes_hold;
-                crate::model::charge_items(io, 1)?;
-                let owned_bytes = self.load_content(reference, io).await?;
-                _bytes_hold = io
-                    .map(|io| io.guard_bytes(&owned_bytes))
-                    .transpose()?
-                    .flatten();
-                let bytes = owned_bytes.as_ref();
-                if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
-                    let limits = self
-                        .owner
-                        .as_ref()
-                        .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
-                    let before = io.map(PreparationIo::owned_bytes).transpose()?;
-                    let _prepared_hold;
-                    let prepared = crate::model::PreparedModelRequest::decode(bytes, limits, io)?;
-                    _prepared_hold = match (io, before) {
-                        (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
-                        _ => None,
-                    };
-                    if &prepared.request_digest() != request_digest {
-                        return Err(stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Invalid,
-                            "model start digest differs from its retained request",
-                        ));
+    pub(super) fn verify_event_refs_with_io<'a>(
+        &'a self,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ModelEvent>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            let recheck = io
+                .and_then(PreparationIo::original_native_work)
+                .map(|work| PreparationIo::from_native_work(&work.recheck_admitted()))
+                .transpose()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let check_io = recheck.as_ref().or(io);
+            #[cfg(target_arch = "wasm32")]
+            let check_io = io;
+            let result = async {
+                let io = check_io;
+                let refs = match event {
+                    ExecutionEvent::ContextPrepared {
+                        projection,
+                        accounting,
+                        ..
+                    } => [Some(projection), accounting.as_ref(), None],
+                    ExecutionEvent::ContextCompacted {
+                        projection,
+                        compaction,
+                        accounting,
+                        ..
+                    } => [Some(projection), Some(compaction), Some(accounting)],
+                    ExecutionEvent::ModelStarted { request, .. } => [Some(request), None, None],
+                    ExecutionEvent::Model { event, .. } => [Some(event), None, None],
+                    ExecutionEvent::ToolStarted { invocation, .. } => {
+                        [Some(invocation), None, None]
+                    }
+                    ExecutionEvent::ToolCompleted {
+                        result, projection, ..
+                    } => [Some(result), Some(projection), None],
+                    ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => {
+                        [None, None, None]
+                    }
+                };
+                let mut model = None;
+                for reference in refs.into_iter().flatten() {
+                    let _bytes_hold;
+                    crate::model::charge_items(io, 1)?;
+                    let owned_bytes = self.load_content(reference, io).await?;
+                    _bytes_hold = io
+                        .map(|io| io.guard_bytes(&owned_bytes))
+                        .transpose()?
+                        .flatten();
+                    let bytes = owned_bytes.as_ref();
+                    if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
+                        let limits = self
+                            .owner
+                            .as_ref()
+                            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+                        let before = io.map(PreparationIo::owned_bytes).transpose()?;
+                        let _prepared_hold;
+                        let prepared =
+                            crate::model::PreparedModelRequest::decode(bytes, limits, io)?;
+                        _prepared_hold = match (io, before) {
+                            (Some(io), Some(before)) => {
+                                Some(io.guard_owned(io.owned_since(before)?)?)
+                            }
+                            _ => None,
+                        };
+                        if &prepared.request_digest() != request_digest {
+                            return Err(stock_boundary(
+                                io,
+                                crate::wire::ErrorCode::Invalid,
+                                "model start digest differs from its retained request",
+                            ));
+                        }
+                    }
+                    if matches!(event, ExecutionEvent::Model { .. }) {
+                        model = Some(crate::executor::retain_preparation(
+                            crate::executor::decode_model_event(reference, bytes, io)?,
+                        )?);
                     }
                 }
-                if matches!(event, ExecutionEvent::Model { .. }) {
-                    model = Some(crate::executor::retain_preparation(
-                        crate::executor::decode_model_event(reference, bytes, io)?,
-                    )?);
-                }
+                Ok(model)
             }
-            Ok(model)
-        }
-        .await;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let (Ok(model), Some(recheck), Some(io)) = (&result, recheck, io) {
-            let held = model
-                .as_ref()
-                .map_or(Ok(0), ModelEvent::logical_owned_bytes)?;
-            io.absorb_native_custody(recheck.into_native_custody(held)?)?;
-        }
-        result
+            .await;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let (Ok(model), Some(recheck), Some(io)) = (&result, recheck, io) {
+                let held = model
+                    .as_ref()
+                    .map_or(Ok(0), ModelEvent::logical_owned_bytes)?;
+                io.absorb_native_custody(recheck.into_native_custody(held)?)?;
+            }
+            result
+        })
     }
 
     pub(super) async fn verify_input_file_with_io(

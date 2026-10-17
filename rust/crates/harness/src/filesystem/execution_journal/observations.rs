@@ -15,83 +15,85 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn refresh_summary(
-        &self,
+    pub(super) fn refresh_summary<'a>(
+        &'a self,
         operation: OperationId,
-        summary: &mut ExecutionSummary,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        let pending = summary.pending;
-        #[cfg(acyclic_harness_loom)]
-        let pending = pending
-            && !crate::task_volume::model_checking::enabled(
-                crate::task_volume::model_checking::Fault::RetainPendingExecutionCache,
-            );
-        if summary.operation != Some(operation) || pending {
-            *summary = ExecutionSummary {
-                operation: Some(operation),
-                ..ExecutionSummary::default()
-            };
-        }
-        let limits = self
-            .owner
-            .as_ref()
-            .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
-        loop {
-            let before = io.map(PreparationIo::owned_bytes).transpose()?;
-            let (page_hold, page) = {
-                let page = match io {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) if io.original_native_work().is_some() => {
-                        let work = io.original_native_work().ok_or_else(|| {
-                            io.invalid("execution replay requires original native work")
-                        })?;
-                        crate::NativeFutureBundle::new(work, || {
-                            self.replay_page(
+        summary: &'a mut ExecutionSummary,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let pending = summary.pending;
+            #[cfg(acyclic_harness_loom)]
+            let pending = pending
+                && !crate::task_volume::model_checking::enabled(
+                    crate::task_volume::model_checking::Fault::RetainPendingExecutionCache,
+                );
+            if summary.operation != Some(operation) || pending {
+                *summary = ExecutionSummary {
+                    operation: Some(operation),
+                    ..ExecutionSummary::default()
+                };
+            }
+            let limits = self
+                .owner
+                .as_ref()
+                .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
+            loop {
+                let before = io.map(PreparationIo::owned_bytes).transpose()?;
+                let (page_hold, page) = {
+                    let page = match io {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        Some(io) if io.original_native_work().is_some() => {
+                            let work = io.original_native_work().ok_or_else(|| {
+                                io.invalid("execution replay requires original native work")
+                            })?;
+                            crate::NativeFutureBundle::new(work, || {
+                                self.replay_page(
+                                    operation,
+                                    summary.tail,
+                                    EXECUTION_REPLAY_PAGE_RECORDS,
+                                    true,
+                                    Some(io),
+                                )
+                            })?
+                            .await?
+                        }
+                        Some(io) => {
+                            Box::pin(self.replay_page(
                                 operation,
                                 summary.tail,
                                 EXECUTION_REPLAY_PAGE_RECORDS,
                                 true,
                                 Some(io),
+                            ))
+                            .await?
+                        }
+                        None => {
+                            self.replay_page(
+                                operation,
+                                summary.tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                None,
                             )
-                        })?
-                        .await?
-                    }
-                    Some(io) => {
-                        Box::pin(self.replay_page(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            Some(io),
-                        ))
-                        .await?
-                    }
-                    None => {
-                        self.replay_page(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            None,
-                        )
-                        .await?
-                    }
+                            .await?
+                        }
+                    };
+                    let page_hold = match (io, before) {
+                        (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
+                        _ => None,
+                    };
+                    (page_hold, page)
                 };
-                let page_hold = match (io, before) {
-                    (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
-                    _ => None,
-                };
-                (page_hold, page)
-            };
-            if page.is_empty() {
-                return Ok(());
+                if page.is_empty() {
+                    return Ok(());
+                }
+                for (record, model) in page {
+                    summary.accept(&record, model.as_ref(), limits, io)?;
+                }
+                drop(page_hold);
             }
-            for (record, model) in page {
-                summary.accept(&record, model.as_ref(), limits, io)?;
-            }
-            drop(page_hold);
-        }
+        })
     }
 
     /// Checks settled dispatches under their original owner and optional IO.
@@ -118,7 +120,7 @@ where
             let mut transient = ExecutionSummary::default();
             let summary = shared.as_deref_mut().unwrap_or(&mut transient);
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            self.refresh_summary(*operation, summary, io).await?;
+            self.refresh_summary(*operation, summary, io)?.await?;
             let summary_hold = io
                 .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
@@ -149,7 +151,7 @@ where
             let tail = {
                 let before = io.owned_bytes()?;
                 let mut summary = ExecutionSummary::default();
-                self.refresh_summary(*operation, &mut summary, Some(&io))
+                self.refresh_summary(*operation, &mut summary, Some(&io))?
                     .await?;
                 let summary_hold = io.guard_owned(io.owned_since(before)?)?;
                 let quiescent = summary.quiescent(Some(&io));
@@ -208,7 +210,7 @@ where
                     }
                     Error::Unsupported("quiescence requires a task-owned execution journal".into())
                 })?;
-                self.refresh_summary(*operation, summary, io).await?;
+                self.refresh_summary(*operation, summary, io)?.await?;
                 if !summary.quiescent(io)? {
                     return Err(Error::Indeterminate(*operation));
                 }
@@ -254,7 +256,7 @@ where
                 ));
             }
             let owner = self.owner.as_ref().map(|(owner, _)| owner);
-            let model = self.verify_event_refs_with_io(event, io).await?;
+            let model = self.verify_event_refs_with_io(event, io)?.await?;
             #[cfg(not(target_arch = "wasm32"))]
             let _model_hold = io
                 .filter(|io| io.original_native_work().is_some())
@@ -262,8 +264,13 @@ where
                 .map(|(io, model)| io.guard_owned(model.logical_owned_bytes()?))
                 .transpose()?;
             let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
-            self.verify_canonical_publication_with_io(operation_id, event, limits, io)?
-                .await?;
+            if let Some(io) = io {
+                io.check_cancellation()?;
+            }
+            if matches!(event, ExecutionEvent::ContextCompacted { .. }) {
+                self.verify_canonical_publication_with_io(operation_id, event, limits, io)?
+                    .await?;
+            }
             let digest = super::content::operation_digest(operation_id, claim_id, io)?;
             let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
             if let Some(io) = io {
@@ -296,18 +303,21 @@ where
             let mut transient = ExecutionSummary::default();
             let summary = shared.as_deref_mut().unwrap_or(&mut transient);
             loop {
-                self.refresh_summary(operation_id, summary, io).await?;
+                self.refresh_summary(operation_id, summary, io)?.await?;
                 if let Some(owner) = owner {
                     let mut borrowed = io.map(PreparationIo::history_io);
-                    owner
-                        .verify_execution(
-                            operation_id,
-                            event,
-                            &mut borrowed
-                                .as_mut()
-                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                        )
-                        .await?;
+                    crate::conversation::BoundedContentFuture::new(io, || async {
+                        owner
+                            .verify_execution(
+                                operation_id,
+                                event,
+                                &mut borrowed
+                                    .as_mut()
+                                    .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                            )
+                            .await
+                    })?
+                    .await?;
                 }
                 if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
                     if *previous != event_digest {
@@ -329,11 +339,15 @@ where
                 if expected_tail.is_some_and(|tail| tail != summary.tail) {
                     return Ok(false);
                 }
-                self.validate_model_file_position(operation_id, event, summary, io)
-                    .await?;
+                crate::conversation::BoundedContentFuture::new(io, || {
+                    self.validate_model_file_position(operation_id, event, summary, io)
+                })?
+                .await?;
                 summary.validate_next(event, model.as_ref(), limits, io)?;
-                self.publish_tool_event_file(operation_id, event, io)
-                    .await?;
+                crate::conversation::BoundedContentFuture::new(io, || {
+                    self.publish_tool_event_file(operation_id, event, io)
+                })?
+                .await?;
                 if let ExecutionEvent::ModelStarted {
                     step,
                     purpose: crate::executor::ModelPurpose::Response,
@@ -341,8 +355,10 @@ where
                     ..
                 } = event
                 {
-                    self.publish_model_request(operation_id, *step, request, io)
-                        .await?;
+                    crate::conversation::BoundedContentFuture::new(io, || {
+                        self.publish_model_request(operation_id, *step, request, io)
+                    })?
+                    .await?;
                 }
                 let tail = summary.tail;
                 // Admit and retain the candidate while this guard excludes readers.
@@ -364,24 +380,9 @@ where
                 // Cancellation can drop this future at the provider await below.
                 // Its next reader must replay before trusting an unacknowledged candidate.
                 summary.pending = true;
-                let committed = if let Some(owner) = owner {
-                    let mut borrowed = io.map(PreparationIo::history_io);
-                    owner
-                        .append_execution(
-                            operation_id,
-                            tail,
-                            &key,
-                            bytes.clone(),
-                            event,
-                            &mut borrowed
-                                .as_mut()
-                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                        )
-                        .await
-                } else {
-                    self.append_local_with_io(&observation, tail, key.clone(), bytes.clone(), io)
-                        .await
-                };
+                let committed = self
+                    .append_observation(&observation, tail, &key, &bytes, io)?
+                    .await;
                 if matches!(committed, Ok(true)) {
                     summary.pending = false;
                     drop(key);
@@ -396,6 +397,36 @@ where
                 // invalidates the candidate. Replay the authoritative accepted cut.
                 *summary = ExecutionSummary::default();
                 committed?;
+            }
+        })
+    }
+
+    fn append_observation<'a>(
+        &'a self,
+        observation: &'a BorrowedObservation<'a>,
+        tail: u64,
+        key: &'a StreamKey,
+        bytes: &'a acyclic_stream::OwnedBytes,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some((owner, _)) = &self.owner {
+                let mut borrowed = io.map(PreparationIo::history_io);
+                owner
+                    .append_execution(
+                        observation.operation_id,
+                        tail,
+                        key,
+                        bytes.clone(),
+                        observation.event,
+                        &mut borrowed
+                            .as_mut()
+                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                    )
+                    .await
+            } else {
+                self.append_local_with_io(observation, tail, key.clone(), bytes.clone(), io)
+                    .await
             }
         })
     }
