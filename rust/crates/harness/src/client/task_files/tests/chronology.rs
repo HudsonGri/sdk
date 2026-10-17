@@ -73,7 +73,7 @@ proptest! {
                 // Restore the rejected snapshot key ordering at the public fold.
                 let mut cut = reopened_volume.snapshot(&Query::Root, 32).await.unwrap();
                 if !unscoped {
-                    let mut keyed=cut.clone();
+                    let mut keyed=reopened_volume.snapshot(&Query::Root,32).await.unwrap();
                     keyed.files.sort_by(|a,b| a.key.cmp(&b.key));
                     let broken=FileQueryView::from_snapshot(Query::Root,keyed,32,65536).unwrap();
                     assert_ne!(projected(&broken,&task),expected,"key-order negative control escaped");
