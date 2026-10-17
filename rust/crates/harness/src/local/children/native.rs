@@ -10,6 +10,16 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 
 impl ChildAdmission for LocalHarness {
+    fn native_workspace(&self, task: TaskId) -> Result<PathBuf> {
+        let workspace = self
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("native child has no workspace".into()))?;
+        Ok(crate::external_executor::launch::process_directory(
+            &workspace.mount_directory,
+            task,
+        ))
+    }
     fn admit<'a>(
         &'a self,
         context: &'a TaskContext,

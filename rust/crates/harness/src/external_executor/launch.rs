@@ -44,6 +44,8 @@ pub(crate) struct Executor {
     pub executable: PathBuf,
     pub arguments: Vec<Argument>,
     pub session_bytes: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<super::native_context::source::Selection>,
     pub timeout_ms: u32,
 }
 
@@ -53,6 +55,20 @@ pub(crate) struct Spawn {
     pub id: String,
     pub prompt: String,
     pub executor: Executor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Context>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Context {
+    Scratch,
+    NativeCut,
+}
+
+pub(crate) struct Prepared {
+    pub executor: crate::conversation::FileRef,
+    pub context: Option<crate::conversation::FileRef>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -114,6 +130,11 @@ impl Spawn {
             if spawn.executor.session.caller.is_some() {
                 return Err(invalid());
             }
+        }
+        if spawn.executor.context.is_some() != matches!(spawn.context, Some(Context::NativeCut))
+            || (spawn.executor.context.is_some() && request.host != ExternalHost::Pi)
+        {
+            return Err(invalid());
         }
         Ok(spawn)
     }
@@ -197,6 +218,12 @@ pub(crate) fn process_operation(child: TaskId) -> crate::OperationId {
     let mut id = [0; 16];
     id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     crate::OperationId::from_bytes(id)
+}
+
+pub(crate) fn process_directory(mount: &Path, session: TaskId) -> PathBuf {
+    mount
+        .join("native-processes")
+        .join(TaskId::from_bytes(process_operation(session).into_bytes()).to_string())
 }
 
 fn invalid() -> Error {

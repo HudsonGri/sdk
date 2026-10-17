@@ -2,6 +2,8 @@ use super::*;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
+mod source;
+
 fn header() -> Value {
     json!({"type":"session","version":3,
     "id":"00000000-0000-0000-0000-000000000001","timestamp":"2026-10-17T00:00:00Z","cwd":"/project"})

@@ -4,6 +4,7 @@ use crate::{Admission, TaskId, durable_host::TaskJournalOwner, runtime::TaskSpaw
 
 /// Binds a native child to the same resource preparation as other child tasks.
 pub(crate) trait ChildAdmission: Send + Sync {
+    fn native_workspace(&self, task: TaskId) -> Result<std::path::PathBuf>;
     /// Retains the supplied identity and inputs under the parent's current fence.
     fn admit<'a>(
         &'a self,
@@ -29,7 +30,7 @@ where
         owner: &'a TaskJournalOwner<P>,
         request: &'a ExternalRequest,
         workspace: &'a str,
-        executor: Option<crate::conversation::FileRef>,
+        executor: Option<super::super::launch::Prepared>,
         reconcile: bool,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
@@ -78,9 +79,14 @@ where
             let mut input = serde_json::json!({"command":command,"terminal":false});
             let mut inputs = vec![payload];
             if let Some(executor) = executor {
-                input["executor"] = serde_json::to_value(&executor)
+                input["executor"] = serde_json::to_value(&executor.executor)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                inputs.push(executor);
+                inputs.push(executor.executor);
+                if let Some(selected) = executor.context {
+                    input["native_context"] = serde_json::to_value(&selected)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    inputs.push(selected);
+                }
             }
             let admission = self
                 .runtime

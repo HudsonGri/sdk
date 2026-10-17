@@ -23,6 +23,8 @@ struct Input {
     terminal: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     executor: Option<crate::conversation::FileRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_context: Option<crate::conversation::FileRef>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -203,6 +205,7 @@ fn require_result(input: &Value, operation_id: OperationId) -> Result<&Value> {
 fn input_schema() -> Value {
     json!({"type":"object","required":["command","terminal"],"properties":{
         "executor":{"type":"object"},
+        "native_context":{"type":"object"},
         "command":{"type":"object","required":["operation_id","kind","payload"],"properties":{
             "operation_id":{"type":"string"},"kind":{"type":"string"},"payload":{"type":"object"}
         },"additionalProperties":false},"terminal":{"type":"boolean"}

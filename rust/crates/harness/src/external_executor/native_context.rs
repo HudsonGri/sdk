@@ -7,7 +7,8 @@ use std::{borrow::Cow, collections::BTreeMap};
 mod header;
 mod projection;
 mod selection;
-pub(crate) use header::{fresh, seed};
+pub(crate) mod source;
+pub(crate) use header::{fresh, rebase, seed};
 
 /// A decoded append-only native session file. Rows borrow their source bytes.
 pub struct SessionFile<'a> {
@@ -191,6 +192,7 @@ impl<'a> SessionFile<'a> {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn fuzz(bytes: &[u8]) {
+    source::fuzz(bytes);
     if let Ok(file) = SessionFile::decode(bytes, acyclic_stream::MAX_RECORD_BYTES as u64) {
         if let Some(row) = file.rows.last() {
             if let Ok(cut) = file.cut(Some(&row.meta.id), "spawn") {

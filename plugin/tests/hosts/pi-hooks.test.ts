@@ -6,6 +6,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Invoke } from "../../pi/index.ts";
+import { createHash } from "node:crypto";
 import { loadPiExtension } from "./pi-fixture.ts";
 
 const { default: extension } = await loadPiExtension(fileURLToPath(new URL("../../pi/index.ts", import.meta.url)));
@@ -14,7 +15,7 @@ type Handler = (event: Record<string, unknown>, context: ExtensionContext) => Pr
 const definitions = ["bash", "fs", "read", "write", "edit"].map(name => ({
   name, description: `Harness ${name}`, input_schema: { type: "object", properties: {} },
 }));
-function setup(send: Invoke, initial: string[] = ["foreign-mcp"]) {
+function setup(send: Invoke, initial: string[] = ["foreign-mcp"], write?: Parameters<typeof extension>[2]) {
   const handlers = new Map<string, Handler>();
   const tools = new Map<string, ToolDefinition>();
   let active = [...initial];
@@ -24,7 +25,7 @@ function setup(send: Invoke, initial: string[] = ["foreign-mcp"]) {
     getActiveTools() { return [...active]; },
     setActiveTools(names: string[]) { active = [...names]; },
   } as unknown as ExtensionAPI;
-  extension(api, send);
+  extension(api, send, write);
   const context = {
     cwd: "/selected-project", sessionManager: { getSessionId: () => "native-session" },
   } as unknown as ExtensionContext;
@@ -90,6 +91,46 @@ test("native launch identity and seed survive exact retries without a memory cac
     assert.match(declaration.session.session_id,/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.ok(!("environment" in declaration));
   }),{numRuns:32});
+});
+
+test("selected native source uses task files and revalidates the SDK before admission",async () => {
+  for (const mutation of ["unchanged","entry","branch"] as const) {
+    const manager=SessionManager.inMemory("/selected-project");
+    const root=manager.appendMessage({role:"user",content:"selected ".repeat(1800),timestamp:1});
+    manager.appendMessage(fauxAssistantMessage(fauxToolCall("acyclic_spawn",{id:"child",prompt:"instruction",context:"native_cut"},{id:"spawn"}),{stopReason:"toolUse",timestamp:2}));
+    const before=[manager.getHeader(),...manager.getEntries()].map(entry=>JSON.stringify(entry)).join("\n")+"\n";
+    const files:Array<{key:{Input:string},channel:null,bytes:number[]}>=[];
+    const calls:Record<string,unknown>[]=[];
+    const task="00000000-0000-0000-0000-000000000001";
+    const fixture=setup(async (event,input)=> {
+      if(event==="session_start") return {task};
+      if(event==="catalog") return {tools:[{name:"acyclic_spawn",description:"spawn",input_schema:{type:"object"}}]};
+      if(event==="tool_call") calls.push(input);
+      return {content:[{type:"text",text:"child"}],isError:false};
+    },[],async (bound,path,source)=> {
+      assert.equal(bound,task);files.push(...source);
+      assert.equal(files.at(-1)!.key.Input,path);
+      if(mutation==="entry") manager.appendCustomEntry("changed",{});
+      if(mutation==="branch") manager.branch(root);
+    });
+    const context={...fixture.context,sessionManager:manager,model:{id:"probe",provider:"test"}} as unknown as ExtensionContext;
+    await fixture.handlers.get("session_start")!({},context);
+    const run=()=>fixture.tools.get("acyclic_spawn")!.execute("spawn",{id:"child",prompt:"instruction",context:"native_cut"},undefined,undefined,context);
+    if(mutation==="unchanged") await run();
+    else await assert.rejects(run,/Native source changed before admission/);
+    const manifest=JSON.parse(Buffer.from(files.at(-1)!.bytes).toString());
+    assert.ok(manifest.chunks>1);
+    const source=Buffer.concat(files.slice(0,-1).map(file=>Buffer.from(file.bytes)));
+    assert.equal(source.toString(),before);
+    assert.equal(source.length,manifest.length);
+    assert.equal(calls.length,mutation==="unchanged"?1:0);
+    if(mutation==="unchanged") {
+      const declaration=(calls[0]!.input as {executor:{context:{manifest:string,head:string,sha256:number[]}}}).executor.context;
+      assert.equal(declaration.head,manager.getLeafId());
+      assert.equal(declaration.manifest,files.at(-1)!.key.Input);
+      assert.deepEqual(declaration.sha256,Array.from(createHash("sha256").update(source).digest()));
+    }
+  }
 });
 
 test("session activation preserves every additive tool and enables every harness tool",async () => {

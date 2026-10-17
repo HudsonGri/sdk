@@ -4,6 +4,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 // Installation substitutes one JSON string; no shell interprets it.
 const executable = "__ACYCLIC_EXECUTABLE__";
@@ -69,7 +71,21 @@ function identity(ctx: ExtensionContext) {
   return { sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
 }
 
-function nativeSpawn(input: unknown, ctx: ExtensionContext, toolCallId: string) {
+type Publish = (task: string, path: string, files: Iterable<{key:{Input:string},channel:null,bytes:number[]}>) => Promise<void>;
+const publish: Publish = async (task,path,files) => {
+  const child=spawn(executable,["__files",task,path],{windowsHide:true,stdio:["pipe","ignore","pipe"]});
+  const closed=new Promise<void>((resolve,reject)=> {
+    child.on("error",reject);
+    child.on("close",code=>code===0 ? resolve() : reject(new Error("Native source publication failed")));
+  });
+  child.stderr.on("data",(chunk:Buffer)=>process.stderr.write(chunk));
+  const sent=pipeline(Readable.from((function*(){for(const file of files) yield JSON.stringify(file)+"\n";})()),child.stdin);
+  try {
+    await Promise.all([sent,closed]);
+  } catch (error) {child.kill();await Promise.allSettled([sent,closed]);throw error;}
+};
+
+async function nativeSpawn(input: unknown, ctx: ExtensionContext, toolCallId: string, task: unknown, write: Publish) {
   if (!input || typeof input !== "object" || !("id" in input) || "executor" in input) return input;
   if (!ctx.model || !process.argv[1]) throw new Error("Native spawn needs the current model and executable");
   const owner = ctx.sessionManager.getBranch().findLast(entry => entry.type === "message" &&
@@ -94,17 +110,39 @@ function nativeSpawn(input: unknown, ctx: ExtensionContext, toolCallId: string) 
     "--no-extensions", "--no-mcp", "--no-builtin-tools", "-e", fileURLToPath(import.meta.url)].map(text));
   if (process.env.ACYCLIC_PI_PROVIDER_EXTENSION) args.push(...["-e", process.env.ACYCLIC_PI_PROVIDER_EXTENSION].map(text));
   args.push(text("--"), { kind: "prompt" });
+  let selected: Record<string,unknown> | undefined;
+  if ("context" in input && input.context === "native_cut") {
+    if (typeof task !== "string") throw new Error("Native source has no admitted task");
+    const snapshot=()=>[ctx.sessionManager.getHeader(),...ctx.sessionManager.getEntries()].map(row=>JSON.stringify(row)).join("\n")+"\n";
+    const original=snapshot();
+    const head=ctx.sessionManager.getLeafId();
+    const source=Buffer.from(original);
+    const hash=createHash("sha256").update(source).digest();
+    const prefix=`workspace/native/${ctx.sessionManager.getSessionId()}/${hash.toString("hex")}`;
+    const path=`${prefix}/manifest.json`;
+    function* files() {
+      for(let offset=0;offset<source.length;offset+=8192) yield {
+        key:{Input:`${prefix}/chunk-${offset/8192}`},channel:null as null,bytes:Array.from(source.subarray(offset,offset+8192)),
+      };
+      yield {key:{Input:path},channel:null as null,bytes:Array.from(Buffer.from(JSON.stringify({chunks:Math.ceil(source.length/8192),length:source.length})))};
+    }
+    await write(task,path,files());
+    if(snapshot()!==original || ctx.sessionManager.getLeafId()!==head) throw new Error("Native source changed before admission");
+    selected={manifest:path,head,sha256:Array.from(hash)};
+  }
   return { ...input, executor: {
     session: { host: "pi", session_id: session.getSessionId(), caller: null },
     executable: process.execPath, arguments: args, session_bytes: JSON.stringify(header), timeout_ms: 300_000,
+    ...(selected ? {context:selected} : {}),
   } };
 }
 
 /** Tool definitions and execution both come from the harness registry. */
-export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
+export default function extension(pi: ExtensionAPI, send: Invoke = invoke, write: Publish = publish) {
   const registered = new Set<string>();
+  let task: unknown;
   pi.on("session_start", async (_event, ctx) => {
-    await send("session_start", identity(ctx));
+    task=(await send("session_start", identity(ctx))).task;
     const catalog = await send("catalog", {});
     if (!Array.isArray(catalog.tools)) throw new Error("Invalid harness tool catalog");
     for (const tool of catalog.tools) {
@@ -116,7 +154,7 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
         renderCall: args => new Text(tool.name + " " + JSON.stringify(args), 0, 0),
         renderResult: result => new Text(result.content.map(block => block.type === "text" ? block.text : "").join("\n"), 0, 0),
         async execute(toolCallId, input, signal, _onUpdate, context) {
-          if (tool.name === "acyclic_spawn") input = nativeSpawn(input, context, toolCallId);
+          if (tool.name === "acyclic_spawn") input = await nativeSpawn(input, context, toolCallId, task, write);
           const result = await send("tool_call", { toolCallId, toolName: tool.name, input, ...identity(context) }, signal);
           if (!Array.isArray(result.content) || result.isError !== false) throw new Error("Invalid harness tool result");
           return { content: result.content, details: result.details };

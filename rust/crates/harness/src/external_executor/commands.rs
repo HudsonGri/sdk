@@ -21,6 +21,7 @@ use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde_json::Value;
 
 mod children;
+mod context;
 mod launch;
 pub(crate) use children::ChildAdmission;
 

@@ -53,3 +53,16 @@ pub(crate) fn seed(bytes: &[u8], root: &std::path::Path) -> Result<Vec<u8>> {
     bytes.push(b'\n');
     Ok(bytes)
 }
+
+pub(crate) fn rebase(bytes: &[u8], session: &str, root: &std::path::Path) -> Result<Vec<u8>> {
+    let file = SessionFile::decode(bytes, bytes.len() as u64)?;
+    if file.header.id != session {
+        return Err(invalid());
+    }
+    let mut output = seed(file.header_bytes, root)?;
+    for row in &file.rows {
+        output.extend_from_slice(row.bytes);
+        output.push(b'\n');
+    }
+    Ok(output)
+}

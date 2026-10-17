@@ -194,15 +194,18 @@ where
                     .await?
                 {
                     let retained = self.runtime.task_host().observe_admission(admitted).await?;
-                    if retained.parent.is_some()
-                        && let Some(executor) = retained.input.get("executor")
-                    {
+                    if retained.parent.is_some() {
                         // Only the fenced parent can admit this input reference;
                         // native SessionStart retries retain that exact declaration.
-                        let _: crate::conversation::FileRef =
-                            serde::Deserialize::deserialize(executor)
-                                .map_err(|error| Error::Invalid(error.to_string()))?;
-                        input["executor"] = executor.clone();
+                        for name in ["executor", "native_context"] {
+                            let Some(file) = retained.input.get(name) else {
+                                continue;
+                            };
+                            let _: crate::conversation::FileRef =
+                                serde::Deserialize::deserialize(file)
+                                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                            input[name] = file.clone();
+                        }
                     }
                     if admitted != task_id
                         || retained.task.name != "acyclic.command_session"

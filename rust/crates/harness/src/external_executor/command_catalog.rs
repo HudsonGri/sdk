@@ -32,6 +32,7 @@ pub(super) fn definitions() -> Vec<ToolDefinition> {
         if name == "acyclic_spawn" {
             let native = json!({"type":"object","required":["id","prompt"],"properties":{
                 "id":{"type":"string","minLength":1},"prompt":{"type":"string","minLength":1},
+                "context":{"type":"string","enum":["scratch","native_cut"],"description":"Start fresh, or inherit the exact caller branch before this spawn invocation"},
                 "executor":{"type":"object","description":"Native host launch binding; supplied by the host adapter or an explicit caller"}
             },"additionalProperties":false});
             let mut all = input_schema["properties"].clone();

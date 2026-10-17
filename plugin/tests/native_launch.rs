@@ -134,7 +134,13 @@ async fn native_child(nested: bool) -> Result {
         .write(true)
         .create_new(true)
         .open(cwd.join("executed"))?;
-    let header: Value = serde_json::from_slice(&std::fs::read(cwd.join("session.jsonl"))?)?;
+    let bytes = std::fs::read(cwd.join("session.jsonl"))?;
+    let header: Value = serde_json::from_slice(
+        bytes
+            .split(|byte| *byte == b'\n')
+            .next()
+            .ok_or("missing session header")?,
+    )?;
     let session = header["id"]
         .as_str()
         .ok_or("missing native session identity")?;
@@ -184,6 +190,74 @@ async fn native_child_process() -> Result {
 #[ignore = "launched as the native descendant by the custody regression"]
 async fn native_leaf_process() -> Result {
     native_child(false).await
+}
+
+#[tokio::test]
+#[ignore = "launched with selected native context by the custody regression"]
+async fn selected_native_process() -> Result {
+    let bytes = std::fs::read("session.jsonl")?;
+    let rows = std::str::from_utf8(&bytes)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        rows.len(),
+        4,
+        "the invoking assistant or selected history was changed"
+    );
+    assert_eq!(rows[1]["id"], "source-user");
+    assert_eq!(rows[1]["message"]["content"], "CALLER_SELECTED_CONTEXT");
+    assert_eq!(rows[2]["id"], "completed-call");
+    assert_eq!(rows[3]["id"], "completed-result");
+    assert_eq!(rows[3]["parentId"], "completed-call");
+    native_child(false).await
+}
+
+#[tokio::test]
+async fn selected_task_files_seed_the_native_child_and_pin_provenance_without_parent_effects()
+-> Result {
+    use acyclic_harness::task_volume::{FileKey, FileValue, Query, TaskFile, TaskVolume};
+    use acyclic_stream::StreamPath;
+    use sha2::{Digest as _, Sha256};
+    let fixture = Fixture::new()?;
+    let owner = fixture.start_owner().await?;
+    let result=std::panic::AssertUnwindSafe(async {
+        let parent=Tools::open(fixture.path(),acyclic_harness::external_executor::ExternalHost::Pi,None).await?;
+        let rows=[json!({"type":"session","version":3,"id":parent.session,"cwd":fixture.path(),"timestamp":"2026-10-17T00:00:00Z"}),
+            json!({"type":"message","id":"source-user","parentId":null,"timestamp":"now","message":{"role":"user","content":"CALLER_SELECTED_CONTEXT","timestamp":1}}),
+            json!({"type":"message","id":"completed-call","parentId":"source-user","timestamp":"now","message":{"role":"assistant","content":[{"type":"toolCall","id":"read","name":"read","arguments":{}}],"timestamp":2}}),
+            json!({"type":"message","id":"completed-result","parentId":"completed-call","timestamp":"now","message":{"role":"toolResult","toolCallId":"read","toolName":"read","content":[{"type":"text","text":"retained result"}],"isError":false,"timestamp":3}}),
+            json!({"type":"message","id":"invoking","parentId":"completed-result","timestamp":"now","message":{"role":"assistant","content":[{"type":"toolCall","id":"selected-spawn","name":"acyclic_spawn","arguments":{}}],"timestamp":4}})];
+        let bytes=rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")+"\n";
+        let digest:[u8;32]=Sha256::digest(bytes.as_bytes()).into();
+        let prefix=format!("workspace/native/{}/{}",parent.session,hex::encode(digest));
+        let files=TaskVolume::open_existing(parent.provider.clone(),StreamPath::new(format!("external/requests/{}",parent.task))?).await?;
+        for (index,chunk) in bytes.as_bytes().chunks(8192).enumerate() {
+            files.append(files.head().await?,&FileValue::new(FileKey::parse(&format!("{prefix}/chunk-{index}"))?,chunk.to_vec())).await?;
+        }
+        let path=format!("{prefix}/manifest.json");
+        files.append(files.head().await?,&FileValue::new(FileKey::parse(&path)?,serde_json::to_vec(&json!({"chunks":bytes.len().div_ceil(8192),"length":bytes.len()}))?)).await?;
+        let mut args=native_spawn("selected-child","selected_native_process");
+        args["context"]=json!("native_cut");
+        args["executor"]["context"]=json!({"manifest":path,"head":"invoking","sha256":digest});
+        let child=parent.call("selected-spawn","acyclic_spawn",args).await?;
+        let outcome=parent.call("selected-wait","acyclic_wait",json!({"child":child})).await?;
+        assert_eq!(outcome["success"],true,"{outcome}");
+        assert!(!fixture.path().join("leaf.txt").exists());
+        let results=TaskVolume::open_existing(parent.provider.clone(),StreamPath::new(format!("external/results/{}",parent.task))?).await?;
+        let manifest=results.snapshot(&Query::Task(acyclic_harness::task_volume::Component::new(parent.task.to_string())?),128).await?.files.into_iter().find(|file|matches!(&file.key,FileKey::Task {file:TaskFile::Context(name),..} if name.as_str().starts_with("native-"))).ok_or("selected context manifest missing")?;
+        let manifest:Value=serde_json::from_slice(&manifest.bytes)?;
+        assert_eq!(manifest["cut"]["session"],parent.session);
+        assert_eq!(manifest["cut"]["through"],"completed-result");
+        assert_eq!(manifest["cut"]["workspace"],json!(fixture.path()));
+        Ok::<_,Box<dyn std::error::Error>>(())
+    }).catch_unwind().await;
+    let stopped = fixture.close_owner(owner).await;
+    match result {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    stopped
 }
 
 // Read the accepted task files on failure before closing their provider. This

@@ -142,12 +142,10 @@ impl Commands<'_> {
             let workspace = self.harness.workspace.as_ref().ok_or_else(|| {
                 Error::Unsupported("native process needs a local workspace".into())
             })?;
-            let root = crate::local::private_directory(
-                &workspace
-                    .mount_directory
-                    .join("native-processes")
-                    .join(task.to_string()),
-            )?;
+            let root = crate::local::private_directory(&launch::process_directory(
+                &workspace.mount_directory,
+                parent,
+            ))?;
             let binding = crate::external_executor::HookBinding::Local {
                 workspace: workspace.path.clone(),
                 task: Some(parent),
@@ -158,7 +156,28 @@ impl Commands<'_> {
                 &crate::external_executor::volume::encode(&binding).map_err(storage)?,
             )?;
             let session = root.join("session.jsonl");
-            cache(&session, &spawn.seed(&root)?)?;
+            let seed = match (
+                spawn.executor.context.as_ref(),
+                attached.input.get("native_context"),
+            ) {
+                (Some(_), Some(file)) => {
+                    let file: crate::conversation::FileRef =
+                        serde::Deserialize::deserialize(file).map_err(storage)?;
+                    let bytes = context.read_file(&file, None).await?;
+                    crate::external_executor::native_context::rebase(
+                        &bytes,
+                        &spawn.executor.session.session_id,
+                        &root,
+                    )?
+                }
+                (None, None) => spawn.seed(&root)?,
+                _ => {
+                    return Err(Error::Unauthorized(
+                        "native context differs from its preparation".into(),
+                    ));
+                }
+            };
+            cache(&session, &seed)?;
             let identity = acyclic_fs::capture_root_identity(&root).map_err(storage)?;
             let argv = spawn.arguments(&session)?;
             let invocation = crate::filesystem::native_process::Invocation {

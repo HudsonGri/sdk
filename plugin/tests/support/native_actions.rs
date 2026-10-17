@@ -12,7 +12,7 @@ use std::{path::Path, sync::Arc};
 pub struct Tools<'a> {
     cwd: &'a Path,
     pub host: ExternalHost,
-    session: String,
+    pub session: String,
     caller: Option<String>,
     pub task: TaskId,
     pub provider: Arc<Client>,
