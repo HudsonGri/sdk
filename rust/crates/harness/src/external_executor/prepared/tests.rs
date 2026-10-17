@@ -44,6 +44,67 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // The declared process identity, not its label or parent turn, selects the
+    // same attachment/completion/wait. Changed targets remain immutable retries.
+    #[test]
+    fn separate_native_sessions_keep_their_own_identity_through_start_and_stop(
+        parent in "[a-z]{1,16}", child in "[a-z]{1,16}", label in "[a-z]{1,16}",
+    ) {
+        let task = crate::task_volume::Component::new("task")?;
+        for host in [ExternalHost::Codex,ExternalHost::ClaudeCode,ExternalHost::Pi] {
+            for child_host in [ExternalHost::Codex,ExternalHost::ClaudeCode,ExternalHost::Pi] {
+                let target = crate::external_executor::ChildSession {
+                    host:child_host, session_id:format!("fresh-{child}"), caller:None,
+                };
+                let input = json!({"sessionId":format!("parent-{parent}"),"agentId":label,
+                    "parentAgentId":"parent-caller","childSession":target});
+                let start = request(host,if host == ExternalHost::Pi {"subagent_start"} else {"SubagentStart"},input.clone())?;
+                let stop = request(host,if host == ExternalHost::Pi {"subagent_stop"} else {"SubagentStop"},input.clone())?;
+                let attached = request(child_host,if child_host == ExternalHost::Pi {"session_start"} else {"SessionStart"},
+                    json!({"sessionId":target.session_id,"cwd":"/project"}))?;
+                let completed = request(child_host,if child_host == ExternalHost::Pi {"session_shutdown"} else {"SessionEnd"},
+                    json!({"sessionId":target.session_id}))?;
+                prop_assert_eq!(start.child_attachment("/project")?,attached.clone());
+                prop_assert_eq!(stop.child_attachment("/project")?,attached.clone());
+                prop_assert_eq!(stop.child_completion()?,completed);
+                let expected = serde_json::to_value(TaskJoinCommand {child:attached.task_id()})?;
+                prop_assert_eq!(stop.task_command()?,Some((TASK_JOIN_COMMAND_KIND,expected)));
+                let mut changed = input;
+                changed["childSession"]["session_id"] = json!(format!("other-{child}"));
+                let retry = request(host,if host == ExternalHost::Pi {"subagent_start"} else {"SubagentStart"},changed)?;
+                prop_assert_eq!(retry.operation_id,start.operation_id);
+                let original = start.to_file(task.clone())?;
+                let changed = retry.to_file(task.clone())?;
+                prop_assert_eq!(&original.key,&changed.key);
+                prop_assert_ne!(&original.bytes,&changed.bytes);
+                prop_assert_eq!(crate::external_executor::ExternalRequest::from_file(&task,&original)?,start);
+            }
+        }
+    }
+
+    // Invalid or ambiguous child identity never acquires a request identity;
+    // nested authority fields are not forwarded into the child's attachment.
+    #[test]
+    fn child_session_fields_are_typed_and_unambiguous(session in "[a-z]{1,24}") {
+        let target = json!({"host":"pi","session_id":session,"caller":null});
+        let mut input = json!({"sessionId":"parent","agentId":"label","childSession":target});
+        for invalid in [Value::Null,json!({"host":"pi","session_id":"","caller":null}),
+            json!({"host":"pi","session_id":format!("{session}\0"),"caller":null}),
+            json!({"host":"pi","session_id":session,"caller":""}),
+            json!({"host":"pi","session_id":session,"caller":null,"grants":["*"]}),
+        ] {
+            input["childSession"] = invalid;
+            prop_assert!(request(ExternalHost::Pi,"subagent_start",input.clone()).is_err());
+            prop_assert!(request(ExternalHost::Pi,"subagent_stop",input.clone()).is_err());
+        }
+        input["childSession"] = target.clone();
+        input["child_session"] = target;
+        prop_assert!(request(ExternalHost::Pi,"subagent_start",input).is_err());
+    }
+}
+
 #[test]
 fn every_exposed_command_has_a_typed_preparation() -> Result<()> {
     for definition in crate::external_executor::command_catalog::definitions() {

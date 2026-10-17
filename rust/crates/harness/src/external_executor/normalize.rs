@@ -1,5 +1,6 @@
-use super::{ExternalAction, ExternalHost, ExternalRequest, HookAction, hooks};
+use super::{ChildSession, ExternalAction, ExternalHost, ExternalRequest, HookAction, hooks};
 use crate::{Error, OperationId, Result};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// Converts a hook without retaining native host state or unrelated input fields.
@@ -61,13 +62,22 @@ pub fn request(host: ExternalHost, event: &str, input: Value) -> Result<External
                 result,
             }
         }
-        HookAction::Fork => ExternalAction::Fork {
-            child_id: text(&mut input, &["agent_id", "agentId"])?,
-            kind: optional_text(&mut input, &["agent_type", "agentType"])?,
-        },
-        HookAction::Join => ExternalAction::Join {
-            child_id: text(&mut input, &["agent_id", "agentId"])?,
-        },
+        HookAction::Fork | HookAction::Join => {
+            let child_id = text(&mut input, &["agent_id", "agentId"])?;
+            let child_session = child_session(&mut input, host, &session_id, &child_id)?;
+            if spec.action == HookAction::Fork {
+                ExternalAction::Fork {
+                    child_id,
+                    child_session,
+                    kind: optional_text(&mut input, &["agent_type", "agentType"])?,
+                }
+            } else {
+                ExternalAction::Join {
+                    child_id,
+                    child_session,
+                }
+            }
+        }
         HookAction::Detach => ExternalAction::Detach,
     };
     let operation_id = operation(host, &session_id, &caller, &action);
@@ -85,6 +95,28 @@ pub fn request(host: ExternalHost, event: &str, input: Value) -> Result<External
         caller,
         action,
     })
+}
+
+fn child_session(
+    input: &mut Map<String, Value>,
+    host: ExternalHost,
+    session: &str,
+    child: &str,
+) -> Result<ChildSession> {
+    let target = match value(input, &["child_session", "childSession"])? {
+        Some(value) => {
+            ChildSession::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))?
+        }
+        None => ChildSession {
+            host,
+            session_id: session.into(),
+            caller: Some(child.into()),
+        },
+    };
+    if !target.valid() {
+        return Err(Error::Invalid("invalid native child session".into()));
+    }
+    Ok(target)
 }
 
 fn value(input: &mut Map<String, Value>, fields: &[&str]) -> Result<Option<Value>> {
@@ -140,7 +172,7 @@ pub(super) fn operation(
         ExternalAction::CancelTool { call_id } => ("tool-cancel", call_id.as_str()),
         ExternalAction::ToolFinished { call_id, .. } => ("tool-finished", call_id.as_str()),
         ExternalAction::Fork { child_id, .. } => ("fork", child_id.as_str()),
-        ExternalAction::Join { child_id } => ("join", child_id.as_str()),
+        ExternalAction::Join { child_id, .. } => ("join", child_id.as_str()),
         ExternalAction::Detach => ("detach", ""),
     };
     let mut hash = blake3::Hasher::new();

@@ -6,6 +6,7 @@
   "description": "Exact external host inputs for Acyclic qualification",
   "scripts": {
     "test:pi-hooks": "bun test pi-hooks.test.ts pi-active-tools.test.ts pi-abort.test.ts pi-owner.test.ts pi-bootstrap.test.ts pi-installation.test.ts",
+    "test:pi-child-identity": "bun test pi-child-identity.test.ts",
     "test:pi-context": "bun test pi-context.test.ts",
     "test:pi-bootstrap": "bun test pi-bootstrap.test.ts",
     "test:pi-session": "bun test pi-session.test.ts",

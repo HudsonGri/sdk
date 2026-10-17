@@ -9,6 +9,9 @@ pub enum HookBinding {
     Local {
         /// Absolute original workspace, independent of the native process cwd.
         workspace: PathBuf,
+        /// Restricts a launched executor to its already admitted task. Omit for
+        /// workspace clients that serve results for several native sessions.
+        task: Option<crate::TaskId>,
     },
     /// Uses only the caller-supplied platform Streams credentials and paths.
     Platform {
@@ -38,7 +41,7 @@ impl HookBinding {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let binding: Self = volume::decode(bytes).map_err(storage)?;
         match &binding {
-            Self::Local { workspace }
+            Self::Local { workspace, .. }
                 if !workspace.is_absolute()
                     || workspace.as_os_str().as_encoded_bytes().contains(&0) =>
             {
@@ -54,6 +57,19 @@ impl HookBinding {
             _ => Ok(binding),
         }
     }
+}
+
+#[cfg(any(test, all(feature = "filesystem-local", feature = "native-execution")))]
+pub(super) fn require_task(
+    task: crate::TaskId,
+    bound: Option<crate::TaskId>,
+) -> Result<crate::TaskId> {
+    if bound.is_some_and(|bound| bound != task) {
+        return Err(Error::Unauthorized(
+            "native session differs from its admitted task binding".into(),
+        ));
+    }
+    Ok(task)
 }
 
 pub(super) fn configured() -> Result<Option<HookBinding>> {

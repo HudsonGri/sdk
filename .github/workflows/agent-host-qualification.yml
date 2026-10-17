@@ -200,6 +200,7 @@ jobs:
         run: |
           cd plugin/tests/hosts
           bun run test:pi-hooks
+          bun run test:pi-child-identity
 
       - name: Run Pi installed diagnostics and native context qualification
         shell: bash

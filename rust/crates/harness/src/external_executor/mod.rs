@@ -5,6 +5,7 @@ mod append;
 #[cfg(feature = "filesystem")]
 pub(crate) mod cancellation;
 mod catalog;
+mod child_session;
 mod client;
 #[cfg(feature = "filesystem")]
 mod command_catalog;
@@ -51,6 +52,7 @@ pub(crate) mod volume;
 pub use answer::hook_answer;
 pub(crate) use append::publish as publish_request;
 pub use catalog::{ExternalHost, HookAction, HookSpec, hooks};
+pub use child_session::ChildSession;
 #[cfg(feature = "filesystem")]
 pub(crate) use commands::ChildAdmission;
 #[cfg(feature = "filesystem")]

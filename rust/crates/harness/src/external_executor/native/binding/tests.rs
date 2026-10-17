@@ -5,6 +5,21 @@ use serde_json::json;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
+    // An explicit task is an exact constraint, never permission to fall back
+    // to another native session's root task. Workspace-wide readers omit it.
+    #[test]
+    fn task_constraints_never_fall_back_to_a_new_root(identity in any::<[u8;16]>()) {
+        let expected = crate::TaskId::from_bytes(identity);
+        prop_assert_eq!(require_task(expected,None)?,expected);
+        prop_assert_eq!(require_task(expected,Some(expected))?,expected);
+        let mut changed = identity;
+        changed[0] ^= 1;
+        prop_assert!(require_task(crate::TaskId::from_bytes(changed),Some(expected)).is_err());
+        let input = json!({"provider":"local","workspace":std::env::temp_dir(),"task":expected});
+        let binding = HookBinding::from_bytes(&serde_json::to_vec(&input)?)?;
+        prop_assert_eq!(HookBinding::from_bytes(&serde_json::to_vec(&binding)?)?,binding);
+    }
+
     // Provider choice survives encoding without accepting another provider's
     // authority fields, relative local workspaces, or embedded NUL paths.
     #[test]

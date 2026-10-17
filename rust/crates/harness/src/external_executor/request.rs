@@ -1,4 +1,4 @@
-use super::ExternalHost;
+use super::{ChildSession, ExternalHost};
 use crate::OperationId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,28 +44,27 @@ impl ExternalRequest {
     }
 
     pub(super) fn child_attachment(&self, workspace: &str) -> crate::Result<Self> {
-        let (ExternalAction::Fork { child_id, .. } | ExternalAction::Join { child_id }) =
-            &self.action
+        let (ExternalAction::Fork { child_session, .. }
+        | ExternalAction::Join { child_session, .. }) = &self.action
         else {
             return Err(crate::Error::Invalid(
                 "request does not select a native child".into(),
             ));
         };
-        let caller = Some(child_id.clone());
         let action = ExternalAction::Attach {
             workspace: workspace.into(),
         };
         Ok(Self {
             operation_id: super::normalize::operation(
-                self.host,
-                &self.session_id,
-                &caller,
+                child_session.host,
+                &child_session.session_id,
+                &child_session.caller,
                 &action,
             ),
-            host: self.host,
-            session_id: self.session_id.clone(),
+            host: child_session.host,
+            session_id: child_session.session_id.clone(),
             turn_id: None,
-            caller,
+            caller: child_session.caller.clone(),
             action,
         })
     }
@@ -92,10 +91,19 @@ impl ExternalRequest {
             }
             ExternalAction::ToolFinished { call_id, .. }
             | ExternalAction::CancelTool { call_id } => valid_text(call_id),
-            ExternalAction::Fork { child_id, kind } => {
-                valid_text(child_id) && kind.as_deref().is_none_or(valid_text)
+            ExternalAction::Fork {
+                child_id,
+                kind,
+                child_session,
+            } => {
+                valid_text(child_id)
+                    && kind.as_deref().is_none_or(valid_text)
+                    && child_session.valid()
             }
-            ExternalAction::Join { child_id } => valid_text(child_id),
+            ExternalAction::Join {
+                child_id,
+                child_session,
+            } => valid_text(child_id) && child_session.valid(),
             ExternalAction::Detach => true,
         };
         action
@@ -156,15 +164,19 @@ pub enum ExternalAction {
     },
     /// Fork and attach a native child executor.
     Fork {
-        /// Native child identity.
+        /// Parent's stable label for this child invocation.
         child_id: String,
         /// Native child kind, when supplied.
         kind: Option<String>,
+        /// Exact native identity admitted before its process or tools start.
+        child_session: ChildSession,
     },
     /// Join the previously attached child task.
     Join {
-        /// Original native child identity.
+        /// Original label within the parent invocation.
         child_id: String,
+        /// Exact identity declared by the corresponding start.
+        child_session: ChildSession,
     },
     /// Release this executor's attachment.
     Detach,

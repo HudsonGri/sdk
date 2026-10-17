@@ -59,8 +59,10 @@ pub(super) fn run_request<'a>(
 ) -> impl Future<Output = Result<(Value, Component, Option<String>)>> + 'a {
     Box::pin(async move {
         match binding::configured()? {
-            None => local_request(request, cwd).await,
-            Some(HookBinding::Local { workspace }) => local_request(request, &workspace).await,
+            None => local_request(request, cwd, None).await,
+            Some(HookBinding::Local { workspace, task }) => {
+                local_request(request, &workspace, task).await
+            }
             Some(HookBinding::Platform {
                 endpoint,
                 bearer_file,
@@ -89,9 +91,9 @@ pub(super) fn read_tool_result(
 ) -> impl Future<Output = Result<Value>> + '_ {
     Box::pin(async move {
         match binding::configured()? {
-            None => local_result(name, arguments, None).await,
-            Some(HookBinding::Local { workspace }) => {
-                local_result(name, arguments, Some(&workspace)).await
+            None => local_result(name, arguments, None, None).await,
+            Some(HookBinding::Local { workspace, task }) => {
+                local_result(name, arguments, Some(&workspace), task).await
             }
             Some(HookBinding::Platform {
                 endpoint,
@@ -120,7 +122,12 @@ pub(super) fn read_tool_result(
     })
 }
 
-async fn local_result(name: &str, arguments: Value, selected: Option<&Path>) -> Result<Value> {
+async fn local_result(
+    name: &str,
+    arguments: Value,
+    selected: Option<&Path>,
+    bound: Option<crate::TaskId>,
+) -> Result<Value> {
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     {
         let key = super::handoff::file_key(&arguments)?;
@@ -128,18 +135,17 @@ async fn local_result(name: &str, arguments: Value, selected: Option<&Path>) -> 
             return Err(Error::Invalid("native result is not a task file".into()));
         };
         let id = uuid::Uuid::parse_str(task.as_str()).map_err(storage)?;
+        let id = binding::require_task(crate::TaskId::from_bytes(id.into_bytes()), bound)?;
         let workspace = super::handoff::reference(&arguments)?.0.ok_or_else(|| {
             Error::Unauthorized("local MCP result has no workspace binding".into())
         })?;
         let (client, workspace) = super::local_owner::existing_binding(workspace, selected).await?;
-        let (requests, results) =
-            local_hook_volumes(Arc::new(client), crate::TaskId::from_bytes(id.into_bytes()))
-                .await?;
+        let (requests, results) = local_hook_volumes(Arc::new(client), id).await?;
         super::handoff::read_result(name, arguments, &requests, &results, Some(&workspace)).await
     }
     #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
     {
-        let _ = (name, arguments, selected);
+        let _ = (name, arguments, selected, bound);
         Err(Error::Unsupported(
             "local hooks require filesystem-local and native-execution".into(),
         ))
@@ -170,13 +176,15 @@ async fn platform_volumes(
 async fn local_request(
     request: &mut super::ExternalRequest,
     workspace: &Path,
+    bound: Option<crate::TaskId>,
 ) -> Result<(Value, Component, Option<String>)> {
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     {
+        let task_id = binding::require_task(request.task_id(), bound)?;
         let (client, workspace, canonical) = super::local_owner::binding(workspace).await?;
         binding::select_workspace(request, &canonical)?;
-        let (requests, results) = local_hook_volumes(Arc::new(client), request.task_id()).await?;
-        let task = Component::new(request.task_id().to_string()).map_err(storage)?;
+        let (requests, results) = local_hook_volumes(Arc::new(client), task_id).await?;
+        let task = Component::new(task_id.to_string()).map_err(storage)?;
         Ok((
             request
                 .send(&requests, &results, task.clone())
@@ -188,7 +196,7 @@ async fn local_request(
     }
     #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
     {
-        let _ = (request, workspace);
+        let _ = (request, workspace, bound);
         Err(Error::Unsupported(
             "local hooks require filesystem-local and native-execution".into(),
         ))
