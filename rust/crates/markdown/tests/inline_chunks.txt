@@ -16,3 +16,15 @@ cc 28f3ac9cb0aab382e3cff658cd6e5241a3f5a3947bf20c4a470fc42021c66c54 # shrinks to
 cc 90f72551e54032961d022d243f2e3887f7e3200c133827732c9d6bea690fca26 # shrinks to input = ["\u{b}\n", "[r]: /r\n[s]: /s\n\nprefix "], splits = []
 cc 89678f1ff86b42f6def44ae23d31a6b702fbcc4c1e1413dda30a77d4b88bebe5 # shrinks to input = ["¡", "[`x](u)", "`", "![`x](u)", "[`x](u)", "<", "`", "[`x](u)"], splits = []
 cc e1cdfaed60974e91fa4b6f8b5540656bd18f87dcd82abd9577cf392e13d2ec0d # shrinks to input = [" ", "**a**", "\0", "\\", "| `a` | b |\n| - | - |\n| x | y |\n", "a", "𐀀", "\0", "0", "<https://x>", "\0", "[`x](u)", "[r]: /r\n[s]: /s\n\nprefix ", "a", "𐀀", "A", "𐀀", "[r]", "𐀀", "[`x](u)", "![`x](u)", "𐀀", "𐀀", "| `a` | b |\n| - | - |\n| x | y |\n", "a", "[r]", "0", "0", "[]", "**a**", "[r]: /r\n[s]: /s\n\nprefix ", "a", "ࠀ", "[r]"], splits = [234, 14]
+
+cc 99f58e204474e2b4eba1fd2a5ea5250b465807992f11129770d0f5a6428c61da
+
+cc 0a8ab59e7ef3c9d76116e0ae71fc4559a6f07f03f25418f6e67dbe621062f0ae
+
+cc 736bf3de9e36aa4b6f93bbe4b40b0b6371a37ee5a43b64bb97454ddb5b59f454
+
+cc 1ab60646a42eb7a713290d104a3017b9c6b9154b8eda22dabf40273569520521
+
+cc e6253ef1b09e79b598652fac949db366c00d4c1393d37b7b76353267ca5ed113
+
+cc b19474609d40e3883f43a484b2976894d5d3720669d0c4ab5b9e3473801e4c54

@@ -9,7 +9,8 @@ enum Kind {
     Text,
     Escape,
     Code,
-    Atom(usize),
+    Atom,
+    Prefix,
     Break(bool),
     Entity,
     Emphasis,
@@ -33,16 +34,17 @@ struct Node {
     children: usize,
     stop: usize,
     kind: Kind,
-    output: Option<Rendered>,
+    output: Rendered,
 }
 
 pub(super) const PAGE: usize = 16;
 
 #[derive(Default)]
 pub(super) struct Forest {
-    nodes: Vec<Vec<Node>>,
+    nodes: Vec<Box<Vec<Node>>>,
     length: usize,
     root: usize,
+    structures: usize,
     #[cfg(test)]
     scan: bool,
     #[cfg(test)]
@@ -53,6 +55,11 @@ impl Forest {
     pub(super) fn reset(&mut self) {
         self.length = 0;
         self.root = 0;
+        self.structures = 0;
+    }
+
+    pub(super) fn structures(&self) -> usize {
+        self.structures
     }
 
     pub(super) fn snapshot(&self) -> usize {
@@ -87,9 +94,9 @@ impl Forest {
             if self.length / PAGE == self.nodes.len() {
                 #[cfg(test)]
                 if self.nodes.len() == self.nodes.capacity() {
-                    crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Node>>());
+                    crate::work::copy(self.nodes.len() * std::mem::size_of::<Box<Vec<Node>>>());
                 }
-                self.nodes.push(Vec::with_capacity(PAGE));
+                self.nodes.push(Box::new(Vec::with_capacity(PAGE)));
             } else {
                 self.nodes
                     .get_mut(self.length / PAGE)
@@ -106,11 +113,20 @@ impl Forest {
                 children,
                 stop,
                 kind,
-                output: None,
+                output: Rendered::default(),
             });
         self.length += 1;
+        self.structures += usize::from(kind != Kind::Text);
         self.root = self.length;
         self.snapshot()
+    }
+
+    pub(super) fn prefix(&mut self, range: Range<usize>, output: Rendered) {
+        // A folded prefix is compiled history, not a syntactic inline scope.
+        // Block classification may revisit the last physical row inside it.
+        self.append(range, 0, output.full, Kind::Prefix);
+        let index = self.root - 1;
+        self.nodes[index / PAGE][index % PAGE].output = output;
     }
 
     pub(super) fn text(&mut self, range: Range<usize>) -> usize {
@@ -126,7 +142,7 @@ impl Forest {
     }
 
     pub(super) fn atom(&mut self, range: Range<usize>, output: usize) -> usize {
-        self.append(range, 0, 0, Kind::Atom(output))
+        self.append(range, 0, output, Kind::Atom)
     }
 
     pub(super) fn leaf(&mut self, range: Range<usize>, token: super::tokens::Kind) -> usize {
@@ -228,8 +244,17 @@ impl Forest {
             if node.range.end <= position {
                 break;
             }
-            if node.kind != Kind::Text && node.range.start < position {
-                return Some(node.range.clone());
+            if node.range.start < position {
+                // Native formatting does not hide link/HTML syntax. Only
+                // opaque atoms and code require the classifier to resume at
+                // their opener; descend through formatting to find those.
+                if matches!(node.kind, Kind::Code | Kind::Atom) {
+                    return Some(node.range.clone());
+                }
+                if node.children != 0 {
+                    cursor = node.children;
+                    continue;
+                }
             }
             cursor = node.previous;
         }
@@ -245,11 +270,13 @@ impl Forest {
             if node.range.end <= start {
                 break;
             }
-            if node.kind != Kind::Text {
-                debug_assert!(
-                    matches!(node.kind, Kind::Escape | Kind::Code)
-                        || node.stop <= node.children && node.children < cursor
-                );
+            if !matches!(node.kind, Kind::Text | Kind::Prefix) {
+                debug_assert!(match node.kind {
+                    Kind::Escape | Kind::Code => true,
+                    // Atom payloads address the render arena, not this forest.
+                    Kind::Atom => node.children == 0,
+                    _ => node.stop <= node.children && node.children < cursor,
+                });
                 #[cfg(test)]
                 crate::work::copy(
                     std::mem::size_of::<Range<usize>>()
@@ -271,11 +298,13 @@ impl Forest {
 
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.nodes.capacity() * std::mem::size_of::<Vec<Node>>()
+        self.nodes.capacity() * std::mem::size_of::<Box<Vec<Node>>>()
             + self
                 .nodes
                 .iter()
-                .map(|page| page.capacity() * std::mem::size_of::<Node>())
+                .map(|page| {
+                    std::mem::size_of::<Vec<Node>>() + page.capacity() * std::mem::size_of::<Node>()
+                })
                 .sum::<usize>()
     }
 

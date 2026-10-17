@@ -4,64 +4,6 @@ use std::ops::Range;
 type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
 type Charges = Vec<(usize, usize)>;
 
-pub(crate) fn parse(
-    source: &str,
-    references: &crate::References,
-) -> Vec<(Event<'static>, Range<usize>)> {
-    parse_with(source, references, crate::options())
-}
-
-pub(crate) fn parse_with(
-    source: &str,
-    references: &crate::References,
-    options: pulldown_cmark::Options,
-) -> Vec<(Event<'static>, Range<usize>)> {
-    #[cfg(test)]
-    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
-    let mut callback = |link: BrokenLink<'_>| {
-        references
-            .get(&crate::normalize(&link.reference))
-            .map(|(destination, title, _)| (destination.as_ref().into(), title.as_ref().into()))
-    };
-    let events: Vec<_> =
-        Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
-            .into_offset_iter()
-            .map(|(mut event, range)| {
-                if let Event::Start(
-                    Tag::Link {
-                        id,
-                        dest_url,
-                        title,
-                        ..
-                    }
-                    | Tag::Image {
-                        id,
-                        dest_url,
-                        title,
-                        ..
-                    },
-                ) = &mut event
-                    && !id.is_empty()
-                    && references.get(&crate::normalize(id)).is_some()
-                {
-                    *dest_url = "".into();
-                    *title = "".into();
-                }
-                #[cfg(test)]
-                crate::work::event(&event);
-                (event.into_static(), range)
-            })
-            .collect();
-    if events
-        .iter()
-        .any(|(event, _)| matches!(event, Event::Start(Tag::Item)))
-    {
-        paragraphs(source, &events)
-    } else {
-        events
-    }
-}
-
 // Normalized leaf templates contain no definitions. Charge reference expansion
 // against the document allowance, rather than restarting it for each leaf.
 pub(crate) fn scoped<'a>(
@@ -73,15 +15,11 @@ pub(crate) fn scoped<'a>(
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut calls = Vec::new();
-    let mut exhausted = false;
     let mut callback = |link: BrokenLink<'_>| {
         if budget == 0 {
             // No allowance remains. Keep a sentinel for the deferred suffix;
             // a larger document budget will reopen only this leaf.
-            if !exhausted {
-                calls.push((link.span.end, usize::MAX));
-                exhausted = true;
-            }
+            calls.push((link.span.end, usize::MAX));
             return None;
         }
         let (destination, title, _) = references.get(&crate::normalize(&link.reference))?;
@@ -170,12 +108,33 @@ fn inline(event: &Event<'_>) -> bool {
 }
 
 impl crate::Markdown {
-    pub(super) fn parse_frontier(&mut self, source: &str) -> OwnedEvents {
+    pub(super) fn parse_frontier(&mut self, source: &str) -> (OwnedEvents, Charges) {
         #[cfg(test)]
         {
             crate::work::copy(source.len());
             self.parsed_bytes += source.len();
         }
-        parse(source, &self.references)
+        let (events, calls) = scoped(
+            source,
+            &self.references,
+            crate::options(),
+            self.source
+                .len()
+                .max(100_000)
+                .saturating_sub(self.reference_cost),
+        );
+        let events: OwnedEvents = events
+            .into_iter()
+            .map(|(event, range)| (event.into_static(), range))
+            .collect();
+        let events = if events
+            .iter()
+            .any(|(event, _)| matches!(event, Event::Start(Tag::Item)))
+        {
+            paragraphs(source, &events)
+        } else {
+            events
+        };
+        (events, calls)
     }
 }

@@ -1,4 +1,6 @@
-use std::{borrow::Cow, collections::HashSet, fmt, ops::Range, sync::Arc};
+#[cfg(any(test, feature = "fuzz-support"))]
+use std::collections::HashSet;
+use std::{borrow::Cow, fmt, ops::Range, sync::Arc};
 
 /// Immutable text snapshots with shared backing chunks.
 #[derive(Default)]
@@ -219,6 +221,7 @@ impl Text {
     }
 
     /// Count backing payload and metadata once per node address in `seen`.
+    #[cfg(any(test, feature = "fuzz-support"))]
     pub fn retained(&self, seen: &mut HashSet<usize>) -> (usize, usize) {
         let mut pending: Vec<_> = self.root.iter().collect();
         let (mut payload, mut metadata) = (0, 0);

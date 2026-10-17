@@ -44,12 +44,33 @@ proptest! {
         let mut retained = Scanner::default();
         let mut replay = Scanner { replay: true, ..Scanner::default() };
         let mut source = String::new();
+        let mut origin = None;
+        let mut normalized = crate::Markdown::default();
         let mut base = 0;
         let parts: Vec<String> = if character_chunks {
             parts.into_iter().flat_map(|part| part.chars().map(String::from).collect::<Vec<_>>()).collect()
         } else { parts };
         for part in parts {
-            source.push_str(&part);
+            normalized.push(&part);
+            prop_assert_eq!(normalized.lines(), crate::tests::full_parse(&normalized.source));
+            // The production dispatcher invokes the scanner only for its open
+            // paragraph. Code/HTML/list block transitions recreate that cache;
+            // do not interpret their literal source as an inline paragraph.
+            let leaf = pulldown_cmark::Parser::new_ext(&normalized.source, options())
+                .into_offset_iter().filter_map(|(event, range)| match event {
+                    Event::Start(tag) if crate::is_leaf(&tag) => Some((tag, range)),
+                    _ => None,
+                }).last();
+            let current = leaf.and_then(|(tag, range)| (tag == Tag::Paragraph).then_some(range));
+            if origin != current.as_ref().map(|range| range.start) {
+                retained = Scanner::default();
+                replay = Scanner { replay: true, ..Scanner::default() };
+                base = 0;
+                origin = current.as_ref().map(|range| range.start);
+            }
+            let Some(range) = current else { continue };
+            source.clear();
+            source.push_str(&normalized.source[range]);
             let frontier = advance(&mut retained, &source, base);
             prop_assert_eq!(frontier, advance(&mut replay, &source, base),
                 "source {:?}", source);
@@ -109,7 +130,12 @@ proptest! {
 
 #[test]
 fn scope_counter_detects_restoring_the_entire_paragraph() {
-    assert!(!scope_feed_is_bounded(&["[x](u)"; 16], true));
+    // Independent compiled labels bypass raw feeding even during replay.
+    assert!(scope_feed_is_bounded(&["[x](u)"; 16], true));
+    // An unmatched code opener keeps raw label state relevant to future input.
+    let parts: Vec<_> = std::iter::once("`").chain(["[x](u)"; 16]).collect();
+    assert!(scope_feed_is_bounded(&parts, false));
+    assert!(!scope_feed_is_bounded(&parts, true));
 }
 
 fn fed_bytes(count: usize, replay: bool) -> (usize, usize) {

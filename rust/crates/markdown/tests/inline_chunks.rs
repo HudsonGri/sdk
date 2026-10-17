@@ -194,3 +194,45 @@ fn work_property_detects_classifying_the_entire_unfinished_suffix() {
     eprintln!("whole-suffix classifier negative control: {small} -> {large}");
     assert!(10 * large > 22 * small + 40960, "{small} -> {large}");
 }
+
+#[test]
+fn provisional_list_siblings_preserve_lazy_continuations() {
+    for marker in ["*", "-", "+", "1.", "1)"] {
+        let source = format!("{marker} item\n{marker}word");
+        replay(&source, &[source.len() - 4]);
+        replay(&source, &(1..source.len()).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn reference_initialization_reuses_events_and_expansion_accounting() {
+    let mut markdown = Markdown::default();
+    let source = "[x][y][x][y]\n\n";
+    markdown.push(source);
+    let mut complete = source.to_owned();
+    for definition in ["[y]: /target\n\n", "[outer [x][y]]: /target\n\n"] {
+        let before = references::PARSED_BYTES.get();
+        markdown.push(definition);
+        let used = references::PARSED_BYTES.get() - before;
+        assert!(
+            used <= source.len() + definition.len() * 3,
+            "{used} parser bytes"
+        );
+        complete.push_str(definition);
+        assert_eq!(markdown.lines(), full_parse(&complete));
+    }
+}
+
+#[test]
+fn link_and_delimiter_chunks_stay_within_the_absolute_work_bound() {
+    let chunks = ["[x](u)".to_owned(), "*".to_owned()];
+    let retained = units(&chunks, 1024);
+    assert!(retained.0 <= 128 * retained.1 + 4096);
+}
+
+#[test]
+fn short_paragraphs_stay_within_the_total_work_bound() {
+    let chunks = ["\n".to_owned(), "[]".to_owned(), "\n".to_owned()];
+    let measured = units(&chunks, 128);
+    assert!(measured.0 <= 128 * measured.1 + 4096);
+}

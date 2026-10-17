@@ -1,5 +1,7 @@
 use crate::{Span, Style};
-use std::{collections::HashSet, fmt, sync::Arc};
+#[cfg(any(test, feature = "fuzz-support"))]
+use std::collections::HashSet;
+use std::{fmt, sync::Arc};
 
 #[path = "spans_view.rs"]
 mod view;
@@ -271,6 +273,7 @@ impl Spans {
     }
 
     /// Count shared run nodes, text backing and link targets once per address.
+    #[cfg(any(test, feature = "fuzz-support"))]
     pub fn retained(
         &self,
         nodes: &mut HashSet<usize>,
@@ -313,6 +316,7 @@ impl Spans {
     }
 }
 
+#[cfg(any(test, feature = "fuzz-support"))]
 fn retained_span(
     span: &Span,
     texts: &mut HashSet<usize>,

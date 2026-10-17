@@ -2,11 +2,12 @@ use super::State;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(super) struct Context {
+    pub(super) code: usize,
+    pub(super) links: usize,
     pub(super) floor: usize,
     pub(super) hint: bool,
     pub(super) opaque: Option<std::num::NonZeroUsize>,
-    pub(super) code: usize,
-    pub(super) links: usize,
+    pub(super) reference: Option<std::num::NonZeroUsize>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -20,6 +21,9 @@ pub(in crate::inline_scan) struct Anchor {
 
 impl State {
     pub(in crate::inline_scan) fn forget(&mut self, ordinal: usize) {
+        let Some(ordinal) = ordinal.checked_sub(self.anchor_origin) else {
+            return;
+        };
         #[cfg(test)]
         crate::work::scan(1);
         if let Some(slot) = self
@@ -35,20 +39,30 @@ impl State {
         debug_assert!(self.labels == [0, 0] || self.labels == [self.closed, 0]);
         let (delimiter, floor) = self.delimiter.snapshot().parts();
         let context = Context {
+            reference: self
+                .reference
+                .and_then(|position| std::num::NonZeroUsize::new(position + 1)),
+            code: self.codes.head(),
+            links: self.link_floor,
             floor,
             hint: self.labels != [0, 0],
             opaque: self
                 .opaque
                 .and_then(|position| std::num::NonZeroUsize::new(position + 1)),
-            code: self.codes.head(),
-            links: self.link_floor,
         };
         #[cfg(test)]
-        crate::work::scan(5);
+        crate::work::scan(6);
         if self.anchor_context.as_deref() != Some(&context) {
             #[cfg(test)]
-            crate::work::copy(std::mem::size_of::<Context>());
-            self.anchor_context = Some(std::sync::Arc::new(context));
+            crate::work::scan(6);
+            if self.anchor_context_other.as_deref() == Some(&context) {
+                std::mem::swap(&mut self.anchor_context, &mut self.anchor_context_other);
+            } else {
+                #[cfg(test)]
+                crate::work::copy(std::mem::size_of::<Context>());
+                self.anchor_context_other =
+                    self.anchor_context.replace(std::sync::Arc::new(context));
+            }
         }
         #[cfg(test)]
         crate::work::copy(std::mem::size_of::<Anchor>());
@@ -71,6 +85,9 @@ impl State {
     }
 
     pub(in crate::inline_scan) fn remember_resume(&mut self, ordinal: usize, anchor: Anchor) {
+        let ordinal = ordinal
+            .checked_sub(self.anchor_origin)
+            .expect("mutable opener");
         #[cfg(test)]
         crate::work::scan(1);
         while self.anchor_slots <= ordinal {
@@ -99,6 +116,7 @@ impl State {
     }
 
     pub(in crate::inline_scan) fn restore_at(&mut self, ordinal: usize) -> Option<()> {
+        let ordinal = ordinal.checked_sub(self.anchor_origin)?;
         let anchor = self
             .anchors
             .get(ordinal / super::forest::PAGE)?

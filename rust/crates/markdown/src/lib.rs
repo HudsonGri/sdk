@@ -352,7 +352,8 @@ impl Markdown {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
-        let events = self.parse_frontier(&source);
+        let (events, calls) = self.parse_frontier(&source);
+        let mut charges = calls.iter().peekable();
         self.seal_leading_definitions(base, &source, &events);
         let following_blocks = self.following_blocks(&source, &events);
         let mut out = self.state.checkpoint();
@@ -360,7 +361,6 @@ impl Markdown {
         let mut candidate = None;
         let mut leaf = None;
         let mut caches: Vec<(usize, Cached)> = Vec::new();
-        let mut cost = self.reference_cost;
         let mut synthetic_leaf = false;
         for (index, (event, range)) in events.iter().enumerate() {
             if matches!(event, Event::End(TagEnd::Item))
@@ -444,7 +444,20 @@ impl Markdown {
                         events.get(begin..=index).unwrap_or_default(),
                     )
                 {
-                    self.render_cache(&mut cache, &mut out, &mut cost);
+                    // These events already used the document's remaining
+                    // expansion budget. Retain their attempts instead of
+                    // reparsing and rendering the same leaf a second time.
+                    (cache.cost, cache.budget) = references::expansion(
+                        std::iter::from_fn(|| {
+                            #[cfg(test)]
+                            work::scan(1);
+                            charges
+                                .peek()
+                                .is_some_and(|(end, _)| *end <= range.end)
+                                .then(|| charges.next().expect("expansion charge"))
+                        })
+                        .filter(|(end, _)| *end > start),
+                    );
                     caches.push((range.end, cache));
                 }
                 if stack.is_empty() {
@@ -454,9 +467,10 @@ impl Markdown {
                     continue;
                 }
                 let sibling = *end == TagEnd::Item
-                    && events
-                        .get(index + 1)
-                        .is_some_and(|(event, _)| matches!(event, Event::Start(Tag::Item)));
+                    && events.get(index + 1).is_some_and(|(event, next)| {
+                        matches!(event, Event::Start(Tag::Item))
+                            && context::item_marker_complete(&source, next.start)
+                    });
                 if sibling
                     && let Some(item) = closing
                     && let Some(list) = stack.last_mut()
@@ -485,6 +499,25 @@ impl Markdown {
                 out.flush();
                 out.lines.push(Line::default());
             }
+            // Standalone block events have no closing tag. A completed rule
+            // line is just as final as a closed paragraph or heading.
+            if matches!(event, Event::Rule) {
+                let end = if source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n') {
+                    Some(range.end)
+                } else {
+                    (source.as_bytes().get(range.end) == Some(&b'\n')).then_some(range.end + 1)
+                };
+                #[cfg(test)]
+                let end = end.filter(|_| !SKIP_RULE_CHECKPOINT.get());
+                if let Some(end) = end.filter(|end| *end >= prefix.len()) {
+                    candidate = Some((
+                        base + end - prefix.len(),
+                        self.lines.len() + out.lines.len(),
+                        out.checkpoint(),
+                        stack.clone(),
+                    ));
+                }
+            }
         }
         out.flush();
         self.lines.extend(out.lines);
@@ -499,7 +532,7 @@ impl Markdown {
                 .bytes()
                 .find(|byte| matches!(byte, b'*' | b'-' | b'_'))
         });
-        self.begin_inline(&source, &events, base);
+        self.begin_inline(&source, &events, &calls, base);
         self.begin_table(&source, &events, base);
         false
     }
@@ -743,3 +776,6 @@ fn blocks<'a>(
 #[cfg(test)]
 #[path = "../tests/full_parse.rs"]
 mod tests;
+
+#[cfg(test)]
+thread_local! { static SKIP_RULE_CHECKPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

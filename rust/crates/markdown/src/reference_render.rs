@@ -5,7 +5,18 @@ impl Markdown {
         if self.source.len().max(100_000) == self.reference_limit {
             return self.visible_lines;
         }
-        let changed = self.resolve(&HashSet::new());
+        let limit = self.source.len().max(100_000);
+        // Growth can only reopen cached blocks after an exhausted expansion
+        // budget. Otherwise their output and its visibility stay unchanged.
+        let reopen = self.reference_cost > self.reference_limit.min(limit);
+        #[cfg(test)]
+        let reopen = reopen || RESCAN_BUDGET.get();
+        let changed = if reopen {
+            self.resolve(&HashSet::new())
+        } else {
+            self.reference_limit = limit;
+            self.visible_lines
+        };
         let remaining = self.reference_limit.saturating_sub(self.reference_cost);
         if self
             .inline
@@ -20,46 +31,10 @@ impl Markdown {
             self.table = None;
             self.plain = false;
         }
-        self.finish_visible();
+        if reopen {
+            self.finish_visible();
+        }
         changed
-    }
-
-    pub(super) fn render_cache(
-        &self,
-        cache: &mut Cached,
-        out: &mut render::Renderer,
-        cost: &mut usize,
-    ) {
-        if cache
-            .template
-            .keys
-            .iter()
-            .all(|key| self.references.get(key).is_none())
-        {
-            return;
-        }
-        let (events, used, interval) = cache.template.events(
-            &self.references,
-            self.source.len().max(100_000).saturating_sub(*cost),
-        );
-        cache.cost = used;
-        cache.budget = interval;
-        *cost = cost.saturating_add(used);
-        let mut replacement = cache.state.checkpoint();
-        if !cache.lines.is_empty()
-            && let Some(line) = out.lines.get_mut(cache.lines.start - self.lines.len())
-        {
-            #[cfg(test)]
-            work::copy(std::mem::size_of::<Line>());
-            replacement.reuse_line(std::mem::take(line));
-        }
-        for event in &events {
-            replacement.event_in(event, Some(&self.references));
-        }
-        replacement.flush();
-        out.lines.truncate(cache.lines.start - self.lines.len());
-        out.lines.extend(replacement.lines);
-        cache.lines.end = self.lines.len() + out.lines.len();
     }
 
     pub(super) fn resolve(&mut self, keys: &HashSet<Key>) -> usize {
@@ -347,3 +322,6 @@ impl Markdown {
 
 #[cfg(test)]
 thread_local! { pub(super) static COPY_SUFFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+thread_local! { pub(crate) static RESCAN_BUDGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

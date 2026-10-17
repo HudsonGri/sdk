@@ -74,7 +74,7 @@ impl Cache {
                     self.store(super::Output::default());
                 }
                 let window = events.get(scope.events.clone())?;
-                let body = match &window.first()?.0 {
+                let (body, independent) = match &window.first()?.0 {
                     Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. })
                         if !matches!(
                             link_type,
@@ -83,7 +83,7 @@ impl Cache {
                     {
                         self.label(source, index, scopes, events, tokens, references)?
                     }
-                    _ => {
+                    _ => (
                         self.reduce(
                             &Slice {
                                 boundary: source.sentinel,
@@ -94,27 +94,39 @@ impl Cache {
                             references,
                             0,
                         )?
-                        .0
-                    }
+                        .0,
+                        true,
+                    ),
                 };
                 #[cfg(test)]
                 crate::work::copy(
-                    std::mem::size_of::<((usize, usize), usize)>()
+                    std::mem::size_of::<((usize, usize), (usize, bool))>()
                         * (1 + if self.atoms.len() == self.atoms.capacity() {
                             self.atoms.len()
                         } else {
                             0
                         }),
                 );
-                self.atoms.insert(key, body);
+                self.atoms.insert(key, (body, independent));
             }
             self.atoms
                 .get(&key(source, scopes.get(scope)?, events)?)
-                .copied()
+                .map(|&(body, _)| body)
         })();
         #[cfg(test)]
         crate::work::rendering(rendering);
         result
+    }
+
+    pub(in crate::inline_scan) fn independent_label(
+        &self,
+        source: &Slice<'_>,
+        scope: &Scope,
+        events: &[(Event<'_>, Range<usize>)],
+    ) -> bool {
+        key(source, scope, events)
+            .and_then(|key| self.atoms.get(&key))
+            .is_some_and(|(_, independent)| *independent)
     }
 
     fn label(
@@ -125,7 +137,7 @@ impl Cache {
         events: &[(Event<'_>, Range<usize>)],
         tokens: &Tokens,
         references: &References,
-    ) -> Option<usize> {
+    ) -> Option<(usize, bool)> {
         let scope = scopes.get(index)?;
         let first = &events.get(scope.events.start)?.0;
         let (dest_url, id, image, link_type) = match first {
@@ -143,6 +155,7 @@ impl Cache {
             }) => (dest_url, id, true, link_type),
             _ => return None,
         };
+        let mut foreign_child = false;
         let mut atoms = Vec::new();
         let mut breaks = std::collections::HashSet::new();
         let mut child = index + 1;
@@ -152,7 +165,8 @@ impl Cache {
             crate::work::scan(1);
             if child < scope.next && scopes.get(child)?.events.start == event_index {
                 let child_scope = scopes.get(child)?;
-                let output = *self.atoms.get(&key(source, child_scope, events)?)?;
+                let (output, independent) = *self.atoms.get(&key(source, child_scope, events)?)?;
+                foreign_child |= !independent;
                 push(
                     &mut atoms,
                     Atom {
@@ -277,14 +291,18 @@ impl Cache {
         } else {
             self.target(&scope.range, dest_url, id, references)
         };
-        Some(self.mask(
-            output,
-            Style {
-                foreground: Some(crate::style::BLUE),
-                underline: true,
-                ..Style::default()
-            },
-            Some(target),
+        let independent = !foreign_child && state.foreign_neutral();
+        Some((
+            self.mask(
+                output,
+                Style {
+                    foreground: Some(crate::style::BLUE),
+                    underline: true,
+                    ..Style::default()
+                },
+                Some(target),
+            ),
+            independent,
         ))
     }
 }

@@ -293,6 +293,14 @@ impl Tokens {
             .find(|range| range.start < position && position < range.end)
     }
 
+    pub(super) fn anchors_before(&self, position: usize) -> Option<usize> {
+        if !self.indexed {
+            return Some(0);
+        }
+        self.openers
+            .before(self.starts.before(position.checked_sub(self.origin)?)?)
+    }
+
     pub(super) fn anchor_at(&self, position: usize) -> Option<usize> {
         let ordinal = self.ordinal_at(position)?;
         let index = ordinal.checked_sub(self.emitted - self.ready.len())?;

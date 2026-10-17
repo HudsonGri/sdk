@@ -1,5 +1,6 @@
 use crate::inline_scan::forest::PAGE;
 
+#[derive(Default)]
 struct Word {
     bits: u64,
     prefix: usize,
@@ -8,6 +9,7 @@ struct Word {
 
 #[derive(Default)]
 pub(in crate::inline_scan) struct Rank {
+    first: Word,
     pages: Vec<Box<[Word]>>,
     tail: Vec<Word>,
     length: usize,
@@ -19,6 +21,10 @@ impl Rank {
         if index >= self.length.div_ceil(64) {
             return None;
         }
+        if index == 0 {
+            return Some(&self.first);
+        }
+        let index = index - 1;
         self.pages
             .get(index / PAGE)
             .map_or(self.tail.as_slice(), AsRef::as_ref)
@@ -30,7 +36,7 @@ impl Rank {
         let index = self.length / 64;
         #[cfg(test)]
         crate::work::scan(1);
-        if bit == 0 {
+        if bit == 0 && index != 0 {
             let previous = index.checked_sub(1).and_then(|before| {
                 let word = self.word(before).expect("previous rank word");
                 if word.bits != 0 {
@@ -61,11 +67,16 @@ impl Rank {
             });
         }
         if value {
-            let page = self
-                .pages
-                .get_mut(index / PAGE)
-                .map_or(self.tail.as_mut_slice(), AsMut::as_mut);
-            page[index % PAGE].bits |= 1u64 << bit;
+            if index == 0 {
+                self.first.bits |= 1u64 << bit;
+            } else {
+                let index = index - 1;
+                let page = self
+                    .pages
+                    .get_mut(index / PAGE)
+                    .map_or(self.tail.as_mut_slice(), AsMut::as_mut);
+                page[index % PAGE].bits |= 1u64 << bit;
+            }
             self.ones += 1;
         }
         self.length += 1;

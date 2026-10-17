@@ -111,6 +111,7 @@ impl Definition {
 #[derive(Default)]
 pub(super) struct Rows {
     read: usize,
+    closed: bool,
     origin: usize,
     row: usize,
     previous: usize,
@@ -133,6 +134,7 @@ impl Rows {
     pub(super) fn at(origin: usize) -> Self {
         Self {
             read: origin,
+            closed: false,
             origin,
             row: origin,
             previous: origin,
@@ -152,6 +154,13 @@ impl Rows {
             definition: Definition::default(),
         }
     }
+    pub(super) fn permanent(&self) -> bool {
+        matches!(self.definition, Definition::Invalid)
+    }
+
+    pub(super) fn closed(&self) -> bool {
+        self.closed
+    }
     pub(super) fn inline_at(&self, position: usize) -> bool {
         self.first.is_some_and(|first| first < position)
             && matches!(
@@ -170,6 +179,7 @@ impl Rows {
             }
             if c == '\n' {
                 if self.after_break && !self.row_content {
+                    self.closed = true;
                     probe = Some(probe.map_or(self.previous, |p: usize| p.min(self.previous)));
                 }
                 self.columns = (self.pipes + 1).saturating_sub(

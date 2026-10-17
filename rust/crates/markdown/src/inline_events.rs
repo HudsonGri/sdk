@@ -26,20 +26,40 @@ enum Key {
     Suffix(usize, usize),
 }
 
-#[derive(Default)]
 pub(in crate::inline_scan) struct Cache {
     input: Input,
     destinations: labels::destinations::Index,
-    keys: HashMap<Key, usize>,
+    keys: HashMap<Key, (usize, usize)>,
+    first_key_end: Option<usize>,
     nodes: Vec<Box<[Output; super::super::PAGE]>>,
     length: usize,
     targets: HashMap<(usize, usize), Arc<str>>,
-    atoms: HashMap<(usize, usize), usize>,
+    atoms: HashMap<(usize, usize), (usize, bool)>,
     last: usize,
     rendered: bool,
     #[cfg(test)]
     committed: usize,
     epoch: usize,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            input: Input::default(),
+            destinations: labels::destinations::Index::default(),
+            keys: HashMap::new(),
+            first_key_end: None,
+            nodes: Vec::new(),
+            length: 0,
+            targets: HashMap::new(),
+            atoms: HashMap::new(),
+            last: 0,
+            rendered: false,
+            #[cfg(test)]
+            committed: 0,
+            epoch: 1,
+        }
+    }
 }
 
 struct Frame {
@@ -105,7 +125,9 @@ impl Cache {
 
     fn insert(&mut self, key: Key, output: Output) -> usize {
         let id = self.store(output);
-        self.keys.insert(key, id);
+        let end = self.input.origin.unwrap_or(0) + self.input.raw.len();
+        self.first_key_end = Some(self.first_key_end.map_or(end, |old| old.min(end)));
+        self.keys.insert(key, (id, end));
         id
     }
 
@@ -117,7 +139,7 @@ impl Cache {
             return left;
         }
         let key = Key::Join(left, right);
-        if let Some(&id) = self.keys.get(&key) {
+        if let Some(&(id, _)) = self.keys.get(&key) {
             return id;
         }
         let mut output = self.output(left).expect("prefix output").clone();
@@ -135,7 +157,7 @@ impl Cache {
             link.as_ref()
                 .map_or(0, |link| Arc::as_ptr(link).cast::<u8>() as usize),
         );
-        if let Some(&id) = self.keys.get(&key) {
+        if let Some(&(id, _)) = self.keys.get(&key) {
             return id;
         }
         let output = self
@@ -144,6 +166,35 @@ impl Cache {
             .clone()
             .masked(style, link);
         self.insert(key, output)
+    }
+
+    pub(in crate::inline_scan) fn freeze(&mut self, position: usize) {
+        #[cfg(test)]
+        if KEEP_KEYS.get() {
+            return;
+        }
+        let eligible = self.first_key_end.is_some_and(|end| end <= position);
+        if eligible && !self.keys.is_empty() {
+            #[cfg(test)]
+            crate::work::scan(self.keys.capacity());
+            // Forest nodes own compiled output handles. Keep operation keys
+            // created after this boundary, without moving the surviving tail.
+            self.first_key_end = None;
+            self.keys.retain(|_, (_, end)| {
+                if *end <= position {
+                    return false;
+                }
+                self.first_key_end = Some(self.first_key_end.map_or(*end, |old| old.min(*end)));
+                true
+            });
+            if self.keys.is_empty() {
+                self.keys = HashMap::new();
+            } else if self.keys.len() <= self.keys.capacity() / 4 {
+                #[cfg(test)]
+                crate::work::copy(self.keys.len() * std::mem::size_of::<(Key, (usize, usize))>());
+                self.keys.shrink_to_fit();
+            }
+        }
     }
 
     pub(in crate::inline_scan) fn seed_input(&mut self, source: &str, start: usize) {
@@ -212,7 +263,7 @@ impl Cache {
         style: Style,
     ) -> Option<usize> {
         let key = Key::Leaf(kind, range.start, range.end);
-        if let Some(&id) = self.keys.get(&key) {
+        if let Some(&(id, _)) = self.keys.get(&key) {
             return Some(id);
         }
         let begin = source.parsed.as_ptr() as usize;
@@ -421,7 +472,7 @@ impl Cache {
                 Event::SoftBreak => self.value(3, range, " ", source, Style::default())?,
                 Event::HardBreak => {
                     let key = Key::Leaf(4, range.start, range.end);
-                    if let Some(&id) = self.keys.get(&key) {
+                    if let Some(&(id, _)) = self.keys.get(&key) {
                         id
                     } else {
                         self.insert(key, Output::newline(false))
@@ -461,9 +512,9 @@ impl Cache {
         metadata += self.nodes.capacity()
             * std::mem::size_of::<Box<[Output; super::super::PAGE]>>()
             + self.nodes.len() * std::mem::size_of::<[Output; super::super::PAGE]>()
-            + self.keys.capacity() * std::mem::size_of::<(Key, usize)>()
+            + self.keys.capacity() * std::mem::size_of::<(Key, (usize, usize))>()
             + self.targets.capacity() * std::mem::size_of::<((usize, usize), Arc<str>)>()
-            + self.atoms.capacity() * std::mem::size_of::<((usize, usize), usize)>();
+            + self.atoms.capacity() * std::mem::size_of::<((usize, usize), (usize, bool))>();
         for target in self.targets.values() {
             if links.insert(Arc::as_ptr(target).cast::<u8>()) {
                 payload += target.len();
@@ -483,3 +534,6 @@ impl Cache {
         (payload + bytes, metadata + size)
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(crate) static KEEP_KEYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

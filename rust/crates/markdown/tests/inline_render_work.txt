@@ -10,3 +10,9 @@ cc 333a2cd3d8a57736260378787a7ff9eb17690f549d13059c19a756dcf9fb02c3 # shrinks to
 cc 061aa696cdb00ed2252ca4bb43a37f0c93ac990e8a9a7b71b3c43d4d41407ce7 # mixed autolink, escape and image: counted output copies exceed doubling bound
 cc 50a154be60f852578175929321c1bc730f007afdeff3a483467b54d70a5bcb9e # shrinks to parts = [" ", "*"], separator = "\n"
 cc 77ed8a048c11c076ffad7936b73ce4d5915fca3941361b6968ab031860c35e5c # shrinks to parts = ["[x](u)", "<https://x>", "&#0;"], separator = " "
+
+cc d9a6176cfa23f9cbc138f2e9318af71a9fe2bdab470fc718f91847b7c5ec69d1
+
+cc 409607205a8fa50787650a3141fd119536750d055e802e631012a97ff6aca276
+
+cc cd25aafa1a949cbccade3dae35585ecda831986c498e30942cb9806a3f765a99

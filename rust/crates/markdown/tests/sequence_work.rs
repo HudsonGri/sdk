@@ -104,6 +104,26 @@ fn measure(
     separators: &[u8],
     copies: usize,
 ) -> (usize, usize) {
+    measure_with(
+        actions,
+        count,
+        destination,
+        padding,
+        separators,
+        copies,
+        &mut |_, source| full_parse(source),
+    )
+}
+
+fn measure_with(
+    actions: &[u8],
+    count: usize,
+    destination: &str,
+    padding: usize,
+    separators: &[u8],
+    copies: usize,
+    oracle: &mut impl FnMut(&str, &str) -> Vec<Line>,
+) -> (usize, usize) {
     let mut markdown = Markdown::default();
     let mut total = 0;
     let mut source = String::new();
@@ -160,7 +180,7 @@ fn measure(
         source.push_str(delta);
         // Empty chunks have the same one-shot oracle as the preceding push.
         if !delta.is_empty() {
-            expected = full_parse(&source);
+            expected = oracle(delta, &source);
         }
         assert!(
             consumer == expected,
@@ -216,6 +236,52 @@ fn measure(
     (total, peak.max(bytes))
 }
 
+// Both repetitions share the same original prefix. Parse its oracle fixtures
+// once; work/storage measurement still uses independent production renderers.
+fn measure_pair(
+    actions: &[u8],
+    count: usize,
+    destination: &str,
+    padding: usize,
+    separators: &[u8],
+) -> ((usize, usize), (usize, usize)) {
+    let mut fixtures = Vec::new();
+    let small = measure_with(
+        actions,
+        count,
+        destination,
+        padding,
+        separators,
+        1,
+        &mut |delta, source| {
+            let expected = full_parse(source);
+            fixtures.push((delta.to_owned(), expected.clone()));
+            expected
+        },
+    );
+    let mut index = 0;
+    let mut same = true;
+    let large = measure_with(
+        actions,
+        count,
+        destination,
+        padding,
+        separators,
+        2,
+        &mut |delta, source| {
+            let fixture = fixtures.get(index);
+            index += 1;
+            same &= fixture.is_some_and(|(raw, _)| raw == delta);
+            if same {
+                fixture.expect("shared prefix fixture").1.clone()
+            } else {
+                full_parse(source)
+            }
+        },
+    );
+    (small, large)
+}
+
 fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&str)) {
     match action {
         0 => push("word"),
@@ -269,6 +335,10 @@ fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&s
         30 => push("&#42;"),
         31 => push("\\\\"),
         32 => push("&#10;"),
+        34 => {
+            push("***");
+            push("\n");
+        }
         _ => push("  \n"),
     }
 }
@@ -288,16 +358,15 @@ proptest! {
             prop::collection::vec(0u8..16, 1..5),
             prop::collection::vec(12u8..16, 1..5),
             prop::sample::select(vec![vec![12u8], vec![13], vec![14]]),
-            prop::collection::vec(0u8..34, 1..5),
-            prop::collection::vec(16u8..34, 1..5),
+            prop::collection::vec(0u8..35, 1..5),
+            prop::collection::vec(16u8..35, 1..5),
         ],
         count in 1usize..65,
         destination in "[a-z]{64,1024}",
         padding in 1usize..5,
         separators in prop::collection::vec(0u8..5, 1..5),
     ) {
-        let small = measure(&actions, count, &destination, padding, &separators, 1);
-        let large = measure(&actions, count, &destination, padding, &separators, 2);
+        let (small, large) = measure_pair(&actions, count, &destination, padding, &separators);
         prop_assert!(large.0 <= 2 * small.0 + 1024, "work {} -> {}", small.0, large.0);
         prop_assert!(large.1 <= 2 * small.1 + 1024, "storage {} -> {}", small.1, large.1);
     }
@@ -340,4 +409,39 @@ fn grammar_property_detects_reclassifying_the_entire_suffix() {
         replayed.0, replayed.1
     );
     assert!(replayed.1 > 2 * replayed.0 + 1024);
+}
+
+#[test]
+fn late_reference_definition_closes_the_open_paragraph_once() {
+    let input = include_bytes!("../fuzz/corpus/chunk_splits/late-reference-blank-row");
+    let size = u64::from_le_bytes(input[..8].try_into().unwrap()) as usize;
+    let source = std::str::from_utf8(&input[8 + size..]).unwrap();
+    let destination = source.split_once("[r]: /").unwrap().1.trim_end();
+    let small = measure(&[3], 42, destination, 4, &[0], 1);
+    let large = measure(&[3], 42, destination, 4, &[0], 2);
+    assert!(large.0 <= 2 * small.0 + 1024);
+    assert!(large.1 <= 2 * small.1 + 1024);
+}
+
+#[test]
+fn storage_property_detects_retaining_frozen_operation_keys() {
+    let pair = |keep| {
+        crate::inline_scan::KEEP_KEYS.set(keep);
+        let small = measure(&[17, 26], 50, "unused", 3, &[2, 1], 1).1;
+        let large = measure(&[17, 26], 50, "unused", 3, &[2, 1], 2).1;
+        crate::inline_scan::KEEP_KEYS.set(false);
+        (small, large)
+    };
+    let retained = pair(false);
+    assert!(retained.1 <= 2 * retained.0 + 1024);
+    let redundant = pair(true);
+    assert!(redundant.1 > 2 * redundant.0 + 1024);
+}
+
+#[test]
+fn mixed_styles_and_html_have_linear_total_work() {
+    let small = measure(&[17, 28], 57, "unused", 3, &[2, 1], 1);
+    let large = measure(&[17, 28], 57, "unused", 3, &[2, 1], 2);
+    assert!(large.0 <= 2 * small.0 + 1024);
+    assert!(large.1 <= 2 * small.1 + 1024);
 }

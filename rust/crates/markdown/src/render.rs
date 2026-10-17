@@ -210,7 +210,11 @@ impl Renderer {
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.flush();
-                self.block_line(Line::plain(&"─".repeat(40), MUTED));
+                static RULE: std::sync::OnceLock<Line> = std::sync::OnceLock::new();
+                self.block_line(
+                    RULE.get_or_init(|| Line::plain(&"─".repeat(40), MUTED))
+                        .clone(),
+                );
             }
             Event::TaskListMarker(done) => {
                 // Replace the bullet, retaining any nesting indentation.

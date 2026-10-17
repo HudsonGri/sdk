@@ -47,7 +47,7 @@ impl Markdown {
     pub(super) fn advance_inline(
         &mut self,
         previous: usize,
-        seed: Option<(usize, &[(Event<'_>, Range<usize>)])>,
+        seed: Option<(usize, &[(Event<'_>, Range<usize>)], &[(usize, usize)])>,
     ) -> Option<usize> {
         let mut inline = self.inline.take()?;
         let appended = self.source.get(inline.classified..)?;
@@ -68,6 +68,12 @@ impl Markdown {
             inline.classified
         };
         let row = inline.rows.push(&self.source);
+        // A blank row ends a paragraph even when an inline construct remains
+        // provisional. Hand it directly to the block parser; classifying it
+        // here would allocate events that the fallback immediately discards.
+        if inline.rows.closed() {
+            return None;
+        }
         let classify = foreign || row.is_some() || appended.contains('\n');
         #[cfg(test)]
         let classify = if REPLAY_CLASSIFIER.get() {
@@ -153,15 +159,13 @@ impl Markdown {
         };
         #[cfg(test)]
         work::copy(prefix.len());
-        let seed = seed.filter(|(seed_base, _)| {
-            *seed_base == base
-                && end == self.source.len()
-                && self.references.committed.is_empty()
-                && self.references.pending.is_empty()
-        });
+        let seed = seed.filter(|(seed_base, _, _)| *seed_base == base && end == self.source.len());
         let (events, calls) = if classify {
-            if let Some((_, events)) = seed {
-                (std::borrow::Cow::Borrowed(events), Vec::new())
+            if let Some((_, events, calls)) = seed {
+                (
+                    std::borrow::Cow::Borrowed(events),
+                    std::borrow::Cow::Borrowed(calls),
+                )
             } else {
                 let (events, calls) = events::scoped(
                     &source,
@@ -173,10 +177,16 @@ impl Markdown {
                         .saturating_sub(self.reference_cost)
                         .saturating_sub(cost),
                 );
-                (std::borrow::Cow::Owned(events), calls)
+                (
+                    std::borrow::Cow::Owned(events),
+                    std::borrow::Cow::Owned(calls),
+                )
             }
         } else {
-            (std::borrow::Cow::Borrowed(&[][..]), Vec::new())
+            (
+                std::borrow::Cow::Borrowed(&[][..]),
+                std::borrow::Cow::Borrowed(&[][..]),
+            )
         };
         if classify
             && (events
@@ -250,6 +260,7 @@ impl Markdown {
             self.stable_lines
         };
         let offset = inline.checkpoint.offset.max(boundary);
+        inline.scanner.permanent = inline.rows.permanent();
         inline.scanner.discard_before(offset);
         inline.checkpoint.offset = offset;
         inline.checkpoint.cost = cost;
@@ -263,6 +274,7 @@ impl Markdown {
         &mut self,
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
+        calls: &[(usize, usize)],
         base: usize,
     ) {
         let paragraph_start = events.first().map_or(0, |(_, range)| range.start);
@@ -286,7 +298,7 @@ impl Markdown {
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
-        let _ = self.advance_inline(self.source.len(), Some((base, events)));
+        let _ = self.advance_inline(self.source.len(), Some((base, events, calls)));
         self.plain = plain;
     }
 }

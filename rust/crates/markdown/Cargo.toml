@@ -24,6 +24,9 @@ harness = false
 name = "mixed"
 harness = false
 
+[features]
+fuzz-support = []
+
 [dependencies]
 pulldown-cmark = { version = "=0.13.4", default-features = false }
 syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }

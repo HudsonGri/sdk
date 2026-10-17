@@ -40,7 +40,7 @@ impl Cache {
 
     fn break_value(&mut self, source: &str, range: Range<usize>, escaped: bool) -> usize {
         let key = Key::Leaf(15, range.start, range.end);
-        if let Some(&id) = self.keys.get(&key) {
+        if let Some(&(id, _)) = self.keys.get(&key) {
             return id;
         }
         let horizontal = |index| {
@@ -69,10 +69,68 @@ impl Cache {
                 ..Rendered::default()
             });
         }
-        forest
-            .node(cursor)?
-            .output
-            .filter(|output| output.epoch == self.epoch)
+        let output = forest.node(cursor)?.output;
+        (output.epoch == self.epoch).then_some(output)
+    }
+
+    pub(in crate::inline_scan) fn freeze_prefix(
+        &mut self,
+        forest: &mut Forest,
+        root: usize,
+        projection: Projection<'_, '_>,
+    ) -> Option<Rendered> {
+        if !self.rendered {
+            return None;
+        }
+        #[cfg(test)]
+        let rendering = crate::work::rendering(true);
+        let result = (|| {
+            let old = self.resolve(forest, root, &projection)?;
+            let ids = [old.full, old.trimmed, old.whitespace, self.last];
+            let mut saved: [Option<Output>; 4] = std::array::from_fn(|_| None);
+            for i in 0..4 {
+                if ids[i] != 0 && !ids[..i].contains(&ids[i]) {
+                    let output = self.nodes.get_mut(ids[i] / PAGE)?.get_mut(ids[i] % PAGE)?;
+                    saved[i] = Some(std::mem::take(output));
+                    #[cfg(test)]
+                    crate::work::scan(1);
+                }
+            }
+            let input = std::mem::take(&mut self.input);
+            let destinations = std::mem::take(&mut self.destinations);
+            #[cfg(test)]
+            let committed = self.committed;
+            *self = Self::default();
+            self.input = input;
+            self.destinations = destinations;
+            #[cfg(test)]
+            {
+                self.committed = committed;
+            }
+            self.store(Output::default());
+            let mut compiled = [0; 4];
+            for i in 0..4 {
+                compiled[i] = if ids[i] == 0 {
+                    0
+                } else if let Some(previous) = ids[..i].iter().position(|id| *id == ids[i]) {
+                    compiled[previous]
+                } else {
+                    self.store(saved[i].take()?)
+                };
+            }
+            self.last = compiled[3];
+            self.rendered = true;
+            Some(Rendered {
+                epoch: self.epoch,
+                full: compiled[0],
+                trimmed: compiled[1],
+                whitespace: compiled[2],
+                escape: None,
+            })
+        })();
+        #[cfg(test)]
+        crate::work::rendering(rendering);
+        result
     }
 
     fn suffix(&mut self, body: usize, prefix: usize) -> Option<usize> {
@@ -80,7 +138,7 @@ impl Cache {
             return Some(body);
         }
         let key = Key::Suffix(body, prefix);
-        if let Some(&id) = self.keys.get(&key) {
+        if let Some(&(id, _)) = self.keys.get(&key) {
             return Some(id);
         }
         let output = self.output(body)?.suffix_after(self.output(prefix)?)?;
@@ -212,7 +270,7 @@ impl Cache {
                     };
                     let left = range.start + usize::from(kind == Kind::Escape);
                     let key = Key::Leaf(6, left, range.end);
-                    let full = if let Some(&id) = self.keys.get(&key) {
+                    let full = if let Some(&(id, _)) = self.keys.get(&key) {
                         id
                     } else {
                         let output = self.raw(source, left..range.end, Style::default())?;
@@ -230,7 +288,7 @@ impl Cache {
                     }
                     if left < right {
                         let key = Key::Leaf(6, left, right);
-                        let visible = if let Some(&id) = self.keys.get(&key) {
+                        let visible = if let Some(&(id, _)) = self.keys.get(&key) {
                             id
                         } else {
                             let output = self.raw(source, left..right, Style::default())?;
@@ -244,7 +302,7 @@ impl Cache {
                 }
                 Kind::Code => {
                     let key = Key::Leaf(1, range.start, range.end);
-                    if let Some(&id) = self.keys.get(&key) {
+                    if let Some(&(id, _)) = self.keys.get(&key) {
                         id
                     } else {
                         let output = text_output(
@@ -257,13 +315,13 @@ impl Cache {
                         self.insert(key, output)
                     }
                 }
-                Kind::Atom(id) => id,
+                Kind::Atom | Kind::Prefix => stop,
                 Kind::Entity => self.entity(source, range)?,
                 Kind::Break(escaped) => {
                     let body = self.break_value(source, range.clone(), escaped);
                     if escaped {
                         let key = Key::Leaf(6, range.start, range.start + 1);
-                        let slash = if let Some(&id) = self.keys.get(&key) {
+                        let slash = if let Some(&(id, _)) = self.keys.get(&key) {
                             id
                         } else {
                             let output =
@@ -308,13 +366,13 @@ impl Cache {
                 .nodes
                 .get_mut(index / PAGE)?
                 .get_mut(index % PAGE)?
-                .output = Some(Rendered {
+                .output = Rendered {
                 epoch: self.epoch,
                 full,
                 trimmed,
                 whitespace,
                 escape,
-            });
+            };
         }
         self.projected(forest, root)
     }

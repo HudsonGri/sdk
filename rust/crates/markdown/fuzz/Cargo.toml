@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-acyclic-markdown = { path = ".." }
+acyclic-markdown = { path = "..", features = ["fuzz-support"] }
 libfuzzer-sys = "0.4"
 unicode-width = "0.2"
 
@@ -36,3 +36,7 @@ path = "fuzz_targets/chunk_splits.rs"
 test = false
 doc = false
 bench = false
+
+# Match the parent workspace debug profile for corpus replay.
+[profile.dev]
+opt-level = 1

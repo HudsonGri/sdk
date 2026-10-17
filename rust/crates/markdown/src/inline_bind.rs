@@ -51,9 +51,20 @@ impl Scanner {
                 references,
             )?;
             let (labelled, hint, disables) = attributes(scope, events)?;
-            if !labelled {
+            if !labelled
+                || (!hint
+                    && self.state.foreign_neutral()
+                    && self.render.independent_label(source, scope, events))
+            {
+                if matches!(events.get(scope.events.start), Some((Event::Html(_), _))) {
+                    self.state.finish_block(scope.range.start);
+                    self.pending_break = None;
+                }
                 self.state.scope(scope, output, hint, disables);
-                token_index = self.tokens.after(scope.range.end)?;
+                token_index = self
+                    .tokens
+                    .after(scope.range.end)
+                    .unwrap_or(self.tokens.ready.len());
                 scope_index = scope.next;
             } else {
                 let before = self.state.resume();
@@ -102,7 +113,7 @@ impl Scanner {
                 if range.end == close {
                     let (_, _, _, before) = frame.take()?;
                     let (_, hint, disables) = attributes(scope, events)?;
-                    if hint || self.state.label_code_pending(scope.range.start) {
+                    if hint || self.state.code_pending() {
                         #[cfg(test)]
                         work::copy(std::mem::size_of::<state::anchors::Anchor>());
                         let anchor = self.tokens.anchor_at(scope.range.start)?;

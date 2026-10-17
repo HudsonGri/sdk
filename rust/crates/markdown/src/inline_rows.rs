@@ -626,12 +626,13 @@ impl Output {
         if end > lines.len() {
             #[cfg(test)]
             {
-                crate::work::copy((end - lines.len()) * std::mem::size_of::<Line>());
                 if lines.capacity() < end {
                     crate::work::copy(lines.len() * std::mem::size_of::<Line>());
                 }
             }
-            lines.resize_with(end, Line::default);
+            // New rows are appended from the changed iterator below; do not
+            // initialize empty rows only to overwrite them with rendered ones.
+            lines.reserve(end - lines.len());
         } else {
             lines.truncate(end);
         }
@@ -643,16 +644,29 @@ impl Output {
             let at = first + self.head_count() + index;
             #[cfg(test)]
             crate::work::copy(std::mem::size_of::<Line>());
-            lines[at] = row.owned();
+            if at == lines.len() {
+                lines.push(row.owned());
+            } else {
+                lines[at] = row.owned();
+            }
             changed = changed.min(at);
         }
         if let (Some(next), Some(old)) = (&self.tail, &previous.tail)
             && (self.len() != previous.len() || !next.same_snapshot(old))
         {
             let at = first + self.len() - 1;
-            lines[at].spans.clone_from(next);
+            if at == lines.len() {
+                #[cfg(test)]
+                crate::work::copy(std::mem::size_of::<Line>());
+                lines.push(Line {
+                    spans: next.clone(),
+                });
+            } else {
+                lines[at].spans.clone_from(next);
+            }
             changed = changed.min(at);
         }
+        debug_assert_eq!(lines.len(), end);
         changed
     }
 }

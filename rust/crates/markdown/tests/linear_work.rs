@@ -3,61 +3,69 @@ use super::*;
 #[path = "fixtures/mixed.rs"]
 mod mixed;
 
-fn work(bytes: usize, chunk: usize) -> usize {
-    let source = mixed::document(bytes);
+fn work(chunk: usize) -> (usize, usize) {
+    let source = mixed::document(2 * 1024 * 1024);
+    let (small, remainder) = source.split_at(1024 * 1024);
+    let mut totals = Vec::new();
     let before = work::current();
     let mut markdown = Markdown::default();
     let mut first = None;
-    for delta in source.as_bytes().chunks(chunk) {
-        let stable = markdown.stable_lines.min(markdown.lines().len());
-        let old = work::current()
-            + markdown.visible_work.get()
-            + markdown.reference_cache_visits
-            + markdown.reference_moved_lines
-            + markdown.boundary_work;
-        let growth = work::source_growth();
-        let open = markdown.source.len() - markdown.offset;
-        let delta = std::str::from_utf8(delta).expect("ASCII mixed fixture");
-        let changed = markdown.push(delta);
-        let used = work::current()
-            + markdown.visible_work.get()
-            + markdown.reference_cache_visits
-            + markdown.reference_moved_lines
-            + markdown.boundary_work
-            - old;
-        assert!(changed >= stable, "an append changed finalized output");
-        // Source buffer relocation is prepaid amortized work, as in the grammar property.
-        let amortized = used - (work::source_growth() - growth) + 2 * delta.len();
-        assert!(
-            amortized <= 128 * (open + delta.len() + 1) + 256,
-            "{amortized} units for {open} open + {} chunk bytes",
-            delta.len()
-        );
-        if markdown.stable_lines > 0 {
-            let pointer = markdown
-                .lines()
-                .first()
-                .and_then(|line| line.spans.first())
-                .and_then(|span| span.text.allocation());
-            if let Some(first) = first {
-                assert_eq!(pointer, Some(first), "a finalized line was replaced");
-            } else {
-                first = pointer;
+    // The 1 MiB run is exactly the prefix of the 2 MiB run. Retain its
+    // counter checkpoint instead of executing that identical fixture twice.
+    for part in [small, remainder] {
+        for delta in part.as_bytes().chunks(chunk) {
+            let stable = markdown.stable_lines.min(markdown.lines().len());
+            let old = work::current()
+                + markdown.visible_work.get()
+                + markdown.reference_cache_visits
+                + markdown.reference_moved_lines
+                + markdown.boundary_work;
+            let growth = work::source_growth();
+            let open = markdown.source.len() - markdown.offset;
+            let delta = std::str::from_utf8(delta).expect("ASCII mixed fixture");
+            let changed = markdown.push(delta);
+            let used = work::current()
+                + markdown.visible_work.get()
+                + markdown.reference_cache_visits
+                + markdown.reference_moved_lines
+                + markdown.boundary_work
+                - old;
+            assert!(changed >= stable, "an append changed finalized output");
+            // Source buffer relocation is prepaid amortized work, as in the grammar property.
+            let amortized = used - (work::source_growth() - growth) + 2 * delta.len();
+            assert!(
+                amortized <= 128 * (open + delta.len() + 1) + 256,
+                "{amortized} units for {open} open + {} chunk bytes",
+                delta.len()
+            );
+            if markdown.stable_lines > 0 {
+                let pointer = markdown
+                    .lines()
+                    .first()
+                    .and_then(|line| line.spans.first())
+                    .and_then(|span| span.text.allocation());
+                if let Some(first) = first {
+                    assert_eq!(pointer, Some(first), "a finalized line was replaced");
+                } else {
+                    first = pointer;
+                }
             }
         }
+        totals.push(
+            work::current() - before
+                + markdown.visible_work.get()
+                + markdown.reference_cache_visits
+                + markdown.reference_moved_lines
+                + markdown.boundary_work,
+        );
     }
-    work::current() - before
-        + markdown.visible_work.get()
-        + markdown.reference_cache_visits
-        + markdown.reference_moved_lines
-        + markdown.boundary_work
+    (totals[0], totals[1])
 }
 
 #[test]
 fn mixed_document_total_work_is_linear() {
     for chunk in [1, 7, 4096] {
-        let small = work(1024 * 1024, chunk);
-        let large = work(2 * 1024 * 1024, chunk);
+        let (small, large) = work(chunk);
         println!("chunk {chunk}: 1 MiB / 2 MiB use {small} / {large} units");
         assert!(
             large * 10 <= small * 22,

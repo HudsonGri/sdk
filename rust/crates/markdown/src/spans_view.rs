@@ -1,6 +1,8 @@
 use super::{Node, Part, Spans, overlay};
 use crate::{Span, Style, Text};
-use std::{borrow::Cow, collections::HashSet, fmt, sync::Arc};
+#[cfg(any(test, feature = "fuzz-support"))]
+use std::collections::HashSet;
+use std::{borrow::Cow, fmt, sync::Arc};
 
 /// Borrowed text of one canonical styled run.
 pub enum TextRef<'a> {
@@ -46,6 +48,7 @@ impl<'a> TextRef<'a> {
         }
     }
     /// Count shared backing text once per address.
+    #[cfg(any(test, feature = "fuzz-support"))]
     pub fn retained(&self, seen: &mut HashSet<usize>) -> (usize, usize) {
         let mut result = (0, 0);
         match self {
@@ -155,12 +158,7 @@ impl<'a> SpanRef<'a> {
 
 enum Task<'a> {
     Sequence(&'a Spans, Style, Option<&'a Arc<str>>),
-    Prefix(
-        Option<&'a Node>,
-        Option<&'a Node>,
-        Style,
-        Option<&'a Arc<str>>,
-    ),
+    Prefix(&'a Node, Option<&'a Node>, Style, Option<&'a Arc<str>>),
     Part(&'a Part, Style, Option<&'a Arc<str>>),
     Tail(&'a Span, bool, Style, Option<&'a Arc<str>>),
     Boundary,
@@ -198,21 +196,19 @@ impl<'a> Iter<'a> {
                     if let Some(tail) = &spans.tail {
                         self.push(Task::Tail(tail, spans.forced, style, link));
                     }
-                    self.push(Task::Prefix(
-                        spans.prefix.as_deref(),
-                        spans.stop.as_deref(),
-                        style,
-                        link,
-                    ));
+                    if let Some(prefix) = spans.prefix.as_deref() {
+                        self.push(Task::Prefix(prefix, spans.stop.as_deref(), style, link));
+                    }
                 }
-                Task::Prefix(Some(node), stop, style, link) => {
+                Task::Prefix(node, stop, style, link) => {
                     if stop.is_some_and(|stop| std::ptr::eq(node, stop)) {
                         continue;
                     }
                     self.push(Task::Part(&node.part, style, link));
-                    self.push(Task::Prefix(node.previous.as_deref(), stop, style, link));
+                    if let Some(previous) = node.previous.as_deref() {
+                        self.push(Task::Prefix(previous, stop, style, link));
+                    }
                 }
-                Task::Prefix(None, _, _, _) => {}
                 Task::Part(Part::Span(span, forced), style, link) => {
                     self.push(Task::Tail(span, *forced, style, link))
                 }

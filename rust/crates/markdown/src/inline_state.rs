@@ -29,11 +29,14 @@ pub(super) struct State {
     closed_labels: Vec<Vec<brackets::Closed>>,
     closed_count: usize,
     opaque: Option<usize>,
+    reference: Option<usize>,
     codes: codes::Codes,
     eof: Option<Box<eof::Projections>>,
     anchors: Vec<Vec<Option<Box<anchors::Anchor>>>>,
     anchor_slots: usize,
+    pub(super) anchor_origin: usize,
     anchor_context: Option<std::sync::Arc<anchors::Context>>,
+    anchor_context_other: Option<std::sync::Arc<anchors::Context>>,
     #[cfg(test)]
     stale: bool,
     #[cfg(test)]
@@ -69,7 +72,9 @@ impl State {
         crate::work::scan(self.anchors.len());
         self.anchors.clear();
         self.anchor_slots = 0;
+        self.anchor_origin = 0;
         self.anchor_context = None;
+        self.anchor_context_other = None;
         self.delimiter.reset();
         self.forest.reset();
         self.invalid = false;
@@ -82,10 +87,23 @@ impl State {
         self.closed_labels.clear();
         self.closed_count = 0;
         self.opaque = None;
+        self.reference = None;
         self.codes.reset();
         if let Some(eof) = &mut self.eof {
             eof.invalidate();
         }
+    }
+
+    pub(super) fn prefix(&mut self, range: Range<usize>, output: forest::Rendered, anchors: usize) {
+        let context = self.anchor_context.take();
+        let other = self.anchor_context_other.take();
+        let link_floor = self.link_floor;
+        self.reset();
+        self.anchor_context = context;
+        self.anchor_context_other = other;
+        self.anchor_origin = anchors;
+        self.link_floor = link_floor;
+        self.forest.prefix(range, output);
     }
 
     pub(super) fn finish_block(&mut self, end: usize) {
@@ -95,6 +113,7 @@ impl State {
         self.closed = 0;
         self.labels = [0, 0];
         self.opaque = None;
+        self.reference = None;
         self.link_floor = end;
         if let Some(eof) = &mut self.eof {
             eof.invalidate();
@@ -146,6 +165,7 @@ impl State {
             self.closed = closed;
         }
         self.opaque = before.context.opaque.map(|position| position.get() - 1);
+        self.reference = before.context.reference.map(|position| position.get() - 1);
         self.link_floor = links;
     }
 
@@ -156,6 +176,7 @@ impl State {
                 .is_none()
             && self.labels == [0, 0]
             && self.opaque.is_none()
+            && self.reference.is_none()
             && self.codes.head() == 0
     }
 
@@ -192,10 +213,12 @@ impl State {
         self.opaque.is_some()
     }
 
-    pub(super) fn label_code_pending(&self, start: usize) -> bool {
-        self.codes
-            .latest_start()
-            .is_some_and(|opening| opening >= start)
+    pub(super) fn foreign_neutral(&self) -> bool {
+        self.codes.head() == 0 && self.opaque.is_none() && self.reference.is_none()
+    }
+
+    pub(super) fn code_pending(&self) -> bool {
+        self.codes.latest_start().is_some()
     }
 
     pub(super) fn resume_bracket(&self) -> usize {
@@ -254,8 +277,8 @@ impl State {
             .iter()
             .find_map(|&id| self.label(id).map(|label| label.range.start))
             .unwrap_or(end);
-        if let Some(opaque) = self.opaque {
-            base = base.min(opaque);
+        for start in [self.opaque, self.reference].into_iter().flatten() {
+            base = base.min(start);
         }
         let mut cursor = self.bracket;
         for _ in 0..count {
@@ -290,6 +313,7 @@ impl State {
                 .iter()
                 .find_map(|&id| self.label(id).map(|label| label.range.start)),
             self.opaque,
+            self.reference,
             self.codes.classification_start(),
         ]
         .into_iter()
@@ -305,6 +329,7 @@ impl State {
                 .iter()
                 .find_map(|&id| self.label(id).map(|label| label.range.start)),
             self.opaque,
+            self.reference,
             self.codes.earliest(),
         ]
         .into_iter()
@@ -339,7 +364,12 @@ impl State {
                 .iter()
                 .find_map(|&id| self.label(id).map(|label| label.range.start))
         {
-            self.defer(start);
+            self.reference = Some(self.reference.map_or(start, |old| old.min(start)));
+        }
+        // An unescaped bracket either completes this escaped label or makes
+        // it invalid. It cannot affect any later reference suffix.
+        if matches!(kind, Kind::Close | Kind::Open { .. }) {
+            self.reference = None;
         }
         let opening = match kind {
             Kind::Open { image } => Some((image, range.start)),
@@ -491,6 +521,9 @@ impl State {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
         self.delimiter.retained()
+            + (usize::from(self.anchor_context.is_some())
+                + usize::from(self.anchor_context_other.is_some()))
+                * (std::mem::size_of::<anchors::Context>() + 2 * std::mem::size_of::<usize>())
             + self.anchors.capacity() * std::mem::size_of::<Vec<Option<Box<anchors::Anchor>>>>()
             + self
                 .anchors

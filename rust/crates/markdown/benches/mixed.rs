@@ -60,27 +60,30 @@ fn measure_pair(small: &str, large: &str, chunk: usize) -> (Timing, Timing) {
 }
 
 fn history(source: &str, chunk: usize) -> (Duration, Duration) {
-    let mut renderers = [Markdown::default(), Markdown::default()];
-    for (markdown, offset) in renderers.iter_mut().zip([1024, MIB]) {
-        markdown.push(source.get(..offset).expect("benchmark history"));
-    }
     let mut samples = [Vec::new(), Vec::new()];
-    for (index, bytes) in source
-        .as_bytes()
-        .get(MIB..MIB + SAMPLES * chunk)
-        .expect("benchmark sample window")
-        .chunks(chunk)
-        .enumerate()
-    {
-        let text = std::str::from_utf8(bytes).expect("ASCII benchmark fixture");
-        // Both histories receive identical chunks; alternate which runs first.
-        for which in [index % 2, 1 - index % 2] {
-            if let (Some(markdown), Some(samples)) =
-                (renderers.get_mut(which), samples.get_mut(which))
+    // Sample complete short windows in ABBA order. Interleaving individual
+    // pushes makes two provisional highlighters compete for the same allocator
+    // cache; it measures that interaction as well as finalized history.
+    for round in 0..4 {
+        let mut renderers = [Markdown::default(), Markdown::default()];
+        for (markdown, offset) in renderers.iter_mut().zip([1024, MIB]) {
+            markdown.push(source.get(..offset).expect("benchmark history"));
+        }
+        for which in [round % 2, 1 - round % 2] {
+            for bytes in source
+                .as_bytes()
+                .get(MIB..MIB + SAMPLES * chunk)
+                .expect("benchmark sample window")
+                .chunks(chunk)
             {
-                let start = Instant::now();
-                black_box(markdown.push(black_box(text)));
-                samples.push(start.elapsed());
+                let text = std::str::from_utf8(bytes).expect("ASCII benchmark fixture");
+                if let (Some(markdown), Some(samples)) =
+                    (renderers.get_mut(which), samples.get_mut(which))
+                {
+                    let start = Instant::now();
+                    black_box(markdown.push(black_box(text)));
+                    samples.push(start.elapsed());
+                }
             }
         }
     }

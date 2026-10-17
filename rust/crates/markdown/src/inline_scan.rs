@@ -1,6 +1,10 @@
 use super::*;
+#[cfg(test)]
+pub(crate) use forest::glyphs::events::KEEP_KEYS;
 #[path = "inline_bind.rs"]
 mod bind;
+#[path = "inline_compact.rs"]
+mod compact;
 #[path = "inline_delimiters.rs"]
 mod delimiters;
 #[path = "inline_forest.rs"]
@@ -32,6 +36,9 @@ pub(super) struct Scanner {
     state: State,
     render: forest::Cache,
     syntax: Syntax,
+    origin: usize,
+    pub(super) permanent: bool,
+    folded_structures: usize,
     processed: usize,
     projected: usize,
     fed: usize,
@@ -151,7 +158,7 @@ impl Syntax {
                 }
                 _ => {}
             }
-            if matches!(event, Event::InlineHtml(_)) {
+            if matches!(event, Event::InlineHtml(_) | Event::Html(_)) {
                 syntax.scope(Scope {
                     next: syntax.outer.len() + 1,
                     events: event_index..event_index + 1,
@@ -261,6 +268,7 @@ impl Scanner {
                     .get(..start)
                     .and_then(|text| text.chars().next_back()),
             ),
+            origin: start,
             processed: start,
             frozen: start,
             frontier: start,
@@ -356,6 +364,9 @@ impl Scanner {
     }
 
     pub(super) fn discard_before(&mut self, position: usize) {
+        if position > self.frozen {
+            self.render.freeze(position);
+        }
         self.frozen = self.frozen.max(position);
         let before = self.tokens.ready.len();
         self.tokens.discard_before(position);
@@ -595,6 +606,36 @@ impl Scanner {
             {
                 self.fed_bytes += end - start;
             }
+            if !matches!(kind, Kind::Escape('\n') | Kind::Break)
+                && self.pending_break.is_some()
+                && original.get(start..end).is_some_and(|raw| {
+                    raw.bytes().any(|byte| {
+                        #[cfg(test)]
+                        work::scan(1);
+                        let expanded = self.first_expansion.is_some_and(|first| {
+                            self.pending_break.is_some_and(|pending| first < pending)
+                        });
+                        !matches!(byte, b' ' | b'\t' | b'\n')
+                            && (!expanded
+                                || self.pending_after_break
+                                || !matches!(byte, 0x0b | 0x0c))
+                    })
+                })
+            {
+                if let Some(previous) = self.pending_break.take() {
+                    #[cfg(test)]
+                    work::copy(
+                        std::mem::size_of::<usize>()
+                            * (1 + if syntax.hard_breaks.len() == syntax.hard_breaks.capacity() {
+                                syntax.hard_breaks.len()
+                            } else {
+                                0
+                            }),
+                    );
+                    syntax.hard_breaks.insert(previous);
+                }
+            }
+            self.freeze_before(&source, start, &syntax.hard_breaks);
             while syntax
                 .outer
                 .get(scope)
@@ -631,49 +672,28 @@ impl Scanner {
             if kind == Kind::Break && !self.line_content {
                 self.state.finish_block(end);
             }
-            self.line_content = match kind {
-                Kind::Break | Kind::Escape('\n') => false,
-                Kind::Text if !self.line_content => original.get(start..end).is_some_and(|text| {
-                    text.bytes().any(|byte| {
-                        #[cfg(test)]
-                        work::scan(1);
-                        !matches!(byte, b' ' | b'\t')
-                    })
-                }),
-                _ => true,
+            self.line_content = if original.as_bytes().get(end.saturating_sub(1)) == Some(&b'\n') {
+                false
+            } else {
+                match kind {
+                    Kind::Break | Kind::Escape('\n') => false,
+                    Kind::Text if !self.line_content => {
+                        original.get(start..end).is_some_and(|text| {
+                            text.bytes().any(|byte| {
+                                #[cfg(test)]
+                                work::scan(1);
+                                !matches!(byte, b' ' | b'\t')
+                            })
+                        })
+                    }
+                    _ => true,
+                }
             };
             if kind == Kind::Escape('\n') {
                 self.pending_break = Some(start);
                 self.pending_after_break = false;
             } else if kind == Kind::Break && self.pending_break.is_some() {
                 self.pending_after_break = true;
-            } else if self.pending_break.is_some()
-                && original.get(start..end).is_some_and(|raw| {
-                    raw.bytes().any(|byte| {
-                        #[cfg(test)]
-                        work::scan(1);
-                        let expanded = self.first_expansion.is_some_and(|first| {
-                            self.pending_break.is_some_and(|pending| first < pending)
-                        });
-                        !matches!(byte, b' ' | b'\t' | b'\n')
-                            && (!expanded
-                                || self.pending_after_break
-                                || !matches!(byte, 0x0b | 0x0c))
-                    })
-                })
-            {
-                if let Some(previous) = self.pending_break.take() {
-                    #[cfg(test)]
-                    work::copy(
-                        std::mem::size_of::<usize>()
-                            * (1 + if syntax.hard_breaks.len() == syntax.hard_breaks.capacity() {
-                                syntax.hard_breaks.len()
-                            } else {
-                                0
-                            }),
-                    );
-                    syntax.hard_breaks.insert(previous);
-                }
             }
             if self.state.neutral()
                 && self.pending_break.is_none()
