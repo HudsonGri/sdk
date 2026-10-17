@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -39,6 +39,7 @@ try {
     if (process.platform === "win32" && !writable) {
       await assert.rejects(workspace.mount(destination, options),
         /ProjFS cannot prevent host mutations on read-only mounts/);
+      assert.deepEqual(await readdir(destination), []);
       assert.equal(await workspace.read("/content", 64n).then((bytes) =>
         new TextDecoder().decode(bytes)), "original");
       continue;
