@@ -291,6 +291,11 @@ proptest! {
         let read = read.unwrap();
         let old = old.unwrap();
         prop_assert_eq!(read.bytes.as_ref(), old.bytes.as_ref());
+        prop_assert_eq!(read.work.backend_read_operations, old.work.backend_read_operations);
+        prop_assert_eq!(read.work.object_bytes_read, old.work.object_bytes_read);
+        prop_assert_eq!(read.work.bytes_hashed, old.work.bytes_hashed);
+        prop_assert_eq!(read.work.page_reads, old.work.page_reads);
+        prop_assert_eq!(read.work.items_examined, old.work.items_examined);
         let mut content_bytes = 0;
         let mut content_spans = 0;
         for (offset, &(source, length)) in file.extent_offsets() {
@@ -429,7 +434,7 @@ fn measure_sparse_reads() -> Result<(), Box<dyn std::error::Error>> {
                 offset: 0,
                 length: file.logical.len() as u64,
             };
-            // Each implementation warms only its own decoder cache.
+            // Warm each implementation on its own store.
             std::hint::black_box(file.run(range, old)?);
             let rounds = 64;
             let started = std::time::Instant::now();
