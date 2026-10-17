@@ -241,10 +241,11 @@ where
             ))),
             None,
         )
-    } else if crate::inline_blocking_allowed() {
+    } else {
         // These closures may use Tokio blocking locks, so they need a real
-        // worker outside the driver's runtime. Reuse the native service instead
-        // of creating a private Tokio blocking pool for every replay driver.
+        // worker outside the driver's runtime. Owned bootstrap tasks may run on
+        // another executor thread without its caller's inline guard; both paths
+        // reuse the same native service.
         (
             None,
             Some(tokio::spawn(async move {
@@ -254,8 +255,6 @@ where
                 completion.await
             })),
         )
-    } else {
-        (Some(tokio::task::spawn_blocking(work)), None)
     };
     async move {
         match shared {

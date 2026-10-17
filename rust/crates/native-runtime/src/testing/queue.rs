@@ -166,6 +166,18 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
         schedule.drained().await;
         assert_eq!(boundaries, ["blocking:submitted", "blocking:completed"]);
     });
+    // Owned bootstrap work can leave the caller's inline guard behind. Its
+    // untracked child must still use the shared physical I/O service.
+    let child_worker = runtime.block_on(async {
+        tokio::spawn(async {
+            spawn_blocking(|| std::thread::current().name().map(String::from))
+                .await
+                .unwrap()
+        })
+        .await
+        .unwrap()
+    });
+    assert!(child_worker.unwrap().starts_with("acyclic-host-io-"));
     let check = || {
         assert_eq!(
             threads.load(Ordering::SeqCst),
