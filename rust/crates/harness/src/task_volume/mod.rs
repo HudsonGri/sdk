@@ -13,7 +13,7 @@ mod page;
 mod plan_name;
 mod publication;
 mod recent;
-pub(crate) use publication::publish;
+pub(crate) use publication::{DurableFile, publish, publish_durable};
 mod refresh;
 mod schema;
 mod segment;
@@ -375,43 +375,46 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             write,
             conditions,
             deadline_unix_millis,
-            false,
+            Mode::Append,
             work,
         )
         .await
+        .map(|(generation, _)| generation)
     }
 
     /// Creates one file only if absent at the exact query generation. Unlike an
     /// idempotent append, an existing identical file is still a failed creation.
     pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.publish(expected, write, Vec::new(), None, true, None)
+        self.publish(expected, write, Vec::new(), None, Mode::Create, None)
             .await
+            .map(|(generation, _)| generation)
     }
 
-    async fn publish(
+    pub(super) async fn publish(
         &self,
         expected: Generation,
         write: &Write,
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
-        create_only: bool,
+        mode: Mode,
         work: NativeWork<'_>,
-    ) -> Result<Generation> {
+    ) -> Result<(Generation, bool)> {
         self.refresh().await?;
         let index = self.index.lock().await;
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
         }
-        if create_only && index.files.contains_key(&write.key) {
+        if mode == Mode::Create && index.files.contains_key(&write.key) {
             return Err(Error::ImmutableConflict(write.key.clone()));
         }
         validate_file(&index, write)?;
-        if index
-            .files
-            .get(&write.key)
-            .is_some_and(|stored| &stored.file == write)
+        if mode != Mode::Acknowledged
+            && index
+                .files
+                .get(&write.key)
+                .is_some_and(|stored| &stored.file == write)
         {
-            return Ok(self.generation(&index));
+            return Ok((self.generation(&index), false));
         }
         let next = expected
             .position
@@ -472,12 +475,15 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     index.next = next;
                     index.commit = envelope.commit_id;
                 }
-                Ok(Generation {
-                    volume: expected.volume,
-                    epoch: expected.epoch,
-                    position: next,
-                    commit: *envelope.commit_id.as_bytes(),
-                })
+                Ok((
+                    Generation {
+                        volume: expected.volume,
+                        epoch: expected.epoch,
+                        position: next,
+                        commit: *envelope.commit_id.as_bytes(),
+                    },
+                    true,
+                ))
             }
             CommitOutcome::Conflict(_) => {
                 self.refresh().await?;
@@ -523,6 +529,18 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
         return Err(Error::SequenceConflict(file.key.clone()));
     }
     Ok(())
+}
+
+/// How a publication treats an identical accepted copy of its file.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Mode {
+    /// Succeed without a new record.
+    Append,
+    /// Fail: creation must be the first copy.
+    Create,
+    /// Commit this publisher's own copy, so success carries the provider's
+    /// acknowledgement of a commit that includes the exact file.
+    Acknowledged,
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {

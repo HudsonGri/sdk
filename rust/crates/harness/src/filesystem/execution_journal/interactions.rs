@@ -19,8 +19,11 @@ where
             owner.require_interaction_grant(&mut None)?;
             owner.verify(true, &mut None).await?;
         }
+        let approval = matches!(response, InteractionResponse::Approval { .. });
         host.resolve_latest(id, response, responder, owner).await?;
-        self.publish_approval_files(id, None).await?;
+        if approval {
+            self.published_decision(id, None).await?;
+        }
         if let Some(owner) = owner {
             owner.verify(true, &mut None).await?;
         }
@@ -65,7 +68,7 @@ where
                     owner.verify(false, &mut work).await?;
                 }
                 return if original == interaction {
-                    self.publish_approval_files(id, io).await
+                    self.publish_approval_request(id, io).await
                 } else {
                     Err(reject(
                         crate::wire::ErrorCode::Conflict,
@@ -100,7 +103,7 @@ where
             owner.verify(false, &mut work).await?;
         }
         let result = match publication {
-            Ok(_) => self.publish_approval_files(id, io).await,
+            Ok(_) => self.publish_approval_request(id, io).await,
             Err(error)
                 if matches!(
                     error.code(),
@@ -117,7 +120,7 @@ where
                 };
                 let result = match &original {
                     Some(original) if original == interaction => {
-                        self.publish_approval_files(id, io).await
+                        self.publish_approval_request(id, io).await
                     }
                     Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
@@ -157,14 +160,13 @@ where
                 "task execution has no conversation interaction owner",
             )
         })?;
-        let outcome = host.read_outcome(id, io).await?;
-        // A decision is visible to execution only after its file is published.
-        if matches!(
-            outcome,
-            Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {})
-        ) {
-            self.publish_approval_files(id, io).await?;
-        }
+        let outcome = match host.read_outcome(id, io).await? {
+            // A verdict reaches execution only as a published decision.
+            Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {}) => {
+                Some(self.published_decision(id, io).await?.outcome())
+            }
+            outcome => outcome,
+        };
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }

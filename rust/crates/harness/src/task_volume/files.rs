@@ -77,36 +77,25 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         self.inner.append(expected, file).await
     }
 
-    /// Publishes an owner-produced immutable file at the current head. An
-    /// identical existing file is success, so retries and racing publishers of
-    /// the same owner bytes converge, and a return means the file is visible.
+    /// Publishes an owner-produced immutable file through the shared
+    /// generation-retry path. An identical accepted copy is success.
     pub(crate) async fn publish_owned(
         &self,
         file: &FileValue,
         work: crate::NativeWork<'_>,
     ) -> super::Result<()> {
-        // A lost race returns the generation it lost to, so each retry is one
-        // fenced append at a cut that already includes the competing write.
-        let mut head = self.inner.head().await?;
-        loop {
-            match self
-                .inner
-                .append_if(head, file, Vec::new(), None, work)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                #[cfg(acyclic_harness_loom)]
-                Err(Error::Conflict(_))
-                    if super::model_checking::enabled(
-                        super::model_checking::Fault::AbandonConflictedPublication,
-                    ) =>
-                {
-                    return Ok(());
-                }
-                Err(Error::Conflict(current)) => head = current,
-                Err(error) => return Err(error),
-            }
-        }
+        let generation = self.inner.head().await?;
+        super::publication::publish_with_work(&self.inner, generation, file, work).await?;
+        Ok(())
+    }
+
+    /// Publishes an owner-produced immutable file and proves it is durable.
+    pub(crate) async fn publish_durable(
+        &self,
+        file: &FileValue,
+        work: crate::NativeWork<'_>,
+    ) -> super::Result<super::DurableFile> {
+        super::publish_durable(&self.inner, file, work).await
     }
 
     /// Reads the authorized private volume at one exact query cut.

@@ -112,11 +112,61 @@ where
         let version = prior
             .as_ref()
             .map_or(Ok(1), |prior| next_revision(prior.expected_version))?;
-        let digest = blake3::hash(format!("interaction:{id}:resolve-{version}").as_bytes());
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&digest.as_bytes()[..16]);
         self.resolve_response(
-            (OperationId::from_bytes(bytes), id, version),
+            (resolve_operation(id, version), id, version),
+            responder,
+            response,
+            owner,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Settles exactly the submitted decision: its version, request digest and
+    /// principal travel into one compare-and-set resolve, so a concurrent
+    /// resolution of any other version makes it conflict instead of being
+    /// re-bound to whatever version is current.
+    pub(in crate::filesystem) async fn resolve_decision(
+        &self,
+        id: InteractionId,
+        decision: ApprovalDecisionFile,
+        responder: &Scope,
+        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
+    ) -> Result<()> {
+        self.verify_responder_scope(id, responder, None)?;
+        let (ticket, prior) = self
+            .read(id, None)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
+        let version = decision.expected_version;
+        if ticket.kind != crate::interaction::InteractionKind::Approval
+            || decision.principal != responder.id()
+            || !decision.binds(ticket.request.descriptor().sha256(), version)
+        {
+            return Err(Error::Conflict("approval decision binding differs".into()));
+        }
+        if let Some(previous) = &prior
+            && previous.outcome.is_terminal()
+        {
+            let stored = match self.read_resolution_file(id, true, None).await? {
+                Some(bytes) if previous.detail.is_some() => Some(
+                    ApprovalDecisionFile::decode(&bytes, self.maximum_bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                ),
+                _ => None,
+            };
+            return if stored.as_ref() == Some(&decision) {
+                Ok(())
+            } else {
+                Err(Error::Conflict("interaction was already resolved".into()))
+            };
+        }
+        let response = InteractionResponse::Approval {
+            approved: decision.approved(),
+            reason: decision.reason,
+        };
+        self.resolve_response(
+            (resolve_operation(id, version), id, version),
             responder,
             response,
             owner,
@@ -298,4 +348,11 @@ where
         }
         Ok(())
     }
+}
+
+fn resolve_operation(id: InteractionId, version: u64) -> OperationId {
+    let digest = blake3::hash(format!("interaction:{id}:resolve-{version}").as_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
 }

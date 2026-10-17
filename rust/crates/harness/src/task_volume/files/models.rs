@@ -134,77 +134,10 @@ fn wake(broken: bool) {
     );
 }
 
-fn decision() -> FileValue {
-    FileValue::new(
-        FileKey::Task {
-            task: Component::new("task").unwrap(),
-            file: TaskFile::ApprovalDecision {
-                request: Component::new("request").unwrap(),
-                principal: Component::new("principal").unwrap(),
-            },
-        },
-        b"{}".to_vec(),
-    )
-}
-
-fn visible(files: &TaskFiles<MemoryStream>, file: &FileValue) -> usize {
-    let snapshot = loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Root, 8))).unwrap();
-    snapshot
-        .files
-        .iter()
-        .filter(|stored| stored.key == file.key && stored.bytes == file.bytes)
-        .count()
-}
-
-/// An owner copy races one unrelated fenced write for the head. Whichever
-/// order the provider admits, the owner returns only once its exact file is
-/// visible, and republishing the same owner bytes is idempotent.
-fn publication(broken: bool) {
-    let files = files();
-    let fence = loom::future::block_on(Box::pin(files.inner.head())).unwrap();
-    let publisher = files.clone();
-    let owner = loom::thread::spawn(move || {
-        if broken {
-            crate::task_volume::model_checking::set_fault(
-                crate::task_volume::model_checking::Fault::AbandonConflictedPublication,
-            );
-        }
-        loom::future::block_on(Box::pin(publisher.publish_owned(&decision(), None))).unwrap();
-    });
-    // The unrelated writer makes a single attempt at the shared starting cut,
-    // so the owner loses at most one race and the model stays exhaustive.
-    let competitor = loom::future::block_on(Box::pin(files.inner.append_if(
-        fence,
-        &request(),
-        Vec::new(),
-        None,
-        None,
-    )));
-    owner.join().unwrap();
-    assert_eq!(
-        visible(&files, &decision()),
-        1,
-        "published owner file is not visible"
-    );
-    assert_eq!(visible(&files, &request()), usize::from(competitor.is_ok()));
-    loom::future::block_on(Box::pin(files.publish_owned(&decision(), None))).unwrap();
-    assert_eq!(visible(&files, &decision()), 1);
-}
-
 fn check(scenario: fn(bool), diagnostic: &str) {
-    check_bounded(None, scenario, diagnostic);
-}
-
-/// Every schedule with at most `preemptions` forced switches; `None` is all.
-fn check_bounded(preemptions: Option<usize>, scenario: fn(bool), diagnostic: &str) {
-    let model = move |broken: bool| {
-        let mut builder = loom::model::Builder::new();
-        builder.preemption_bound = preemptions;
-        builder.check(move || scenario(broken));
-    };
-    model(false);
-    let error =
-        std::panic::catch_unwind(move || model(true)).expect_err("broken control was accepted");
+    loom::model(move || scenario(false));
+    let error = std::panic::catch_unwind(move || loom::model(move || scenario(true)))
+        .expect_err("broken control was accepted");
     let message = error
         .downcast_ref::<String>()
         .map(String::as_str)
@@ -223,15 +156,4 @@ fn a_request_accepted_during_the_snapshot_handoff_is_replayed() {
 #[test]
 fn a_request_accepted_after_registration_wakes_and_reaches_its_follower() {
     check(wake, "accepted request did not wake its follower");
-}
-#[test]
-fn an_owner_publication_that_loses_the_head_race_retries_until_visible() {
-    // Each attempt is the full production commit path (refresh, index lock,
-    // provider commit, index apply) on both threads, and the unbounded schedule
-    // space did not finish in 120 s even with the competitor limited to one
-    // attempt. The race needs one preemption (between the owner's head sample
-    // and its append), the competitor's commit inside it, and the retry; three
-    // forced switches cover that with one to spare, and the broken control is
-    // already caught at two.
-    check_bounded(Some(3), publication, "published owner file is not visible");
 }

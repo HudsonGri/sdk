@@ -557,6 +557,13 @@ where
             owner.verify(true, &mut work).await?;
         }
         host.verify_approval(id, operation, digest, io).await?;
+        if !self.published_decision(id, io).await?.approved() {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "tool installation lacks a resolved approval",
+            ));
+        }
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }
