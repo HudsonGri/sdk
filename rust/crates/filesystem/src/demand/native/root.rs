@@ -13,6 +13,8 @@ struct NativeDemandInner {
     root: HostRoot,
     /// Whether host I/O beneath the root may block a native callback
     inline: bool,
+    /// Readers for roots that are not local: shared by the whole process.
+    remote: Arc<remote::RemoteReaders<RemoteDemandRead>>,
     identity: [u8; 16],
     epoch: AtomicU64,
     profile: FilesystemProfile,
@@ -109,6 +111,7 @@ impl NativeDemandSource {
                                     path,
                                     root,
                                     inline,
+                                    remote: Arc::clone(&REMOTE_READERS),
                                     identity: reference.identity,
                                     epoch: AtomicU64::new(reference.epoch),
                                     profile,
@@ -146,11 +149,19 @@ impl NativeDemandSource {
         }
     }
 
+    /// Readers this source's reads under a root that is not local have started.
+    #[cfg(test)]
+    pub(crate) fn remote_readers_started(&self) -> usize {
+        self.inner.remote.started()
+    }
+
     /// This source as if its root were not local, so tests cover the
+    /// off-callback read path, with readers of its own to count.
     #[cfg(test)]
     pub(crate) fn remote(mut self) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
             inner.inline = false;
+            inner.remote = remote::RemoteReaders::new(MAXIMUM_BLOCKED_REMOTE_READS);
         }
         self
     }

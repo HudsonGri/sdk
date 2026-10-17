@@ -5,7 +5,6 @@ use windows::Win32::{
     Foundation::{
         ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_TIMEOUT,
     },
-    Storage::FileSystem::ReadFile,
     System::{
         IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED},
         Ioctl::{
@@ -177,14 +176,17 @@ impl YieldingFile {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         operation(held.as_ref().ok_or_else(|| io::Error::other(Yielded))?)
     }
-    pub(crate) fn read_at<W: SourceDemandReadWork>(
+    /// Appends at most `length` bytes read at `offset` to `data`'s
+    /// uninitialized capacity; zero means end of file.
+    pub(crate) fn read_spare_at<W: SourceDemandReadWork>(
         &self,
         offset: u64,
-        destination: &mut [u8],
+        data: &mut Vec<u8>,
+        length: usize,
         work: &mut W,
     ) -> Result<usize, DemandError> {
         work.check()?;
-        if destination.is_empty() {
+        if length == 0 {
             return Ok(0);
         }
         work.with_native_read_meter(|meter| {
@@ -194,8 +196,9 @@ impl YieldingFile {
             let mut operations =
                 NativeOperationReservation::new(meter, NativeOperationKind::Read, 2)
                     .map_err(crate::demand::native_demand_error)?;
-            let length = destination.len().min(u32::MAX as usize);
-            let destination = destination
+            let length = length.min(u32::MAX as usize);
+            let destination = data
+                .spare_capacity_mut()
                 .get_mut(..length)
                 .ok_or(DemandError::InvalidRequest)?;
             let mut bytes = NativeByteReservation::new(meter, NativeOperationKind::Read, length)
@@ -217,14 +220,23 @@ impl YieldingFile {
             };
             overlapped.Anonymous.Anonymous.Offset = (offset & 0xffff_ffff) as u32;
             overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
-            // SAFETY: storage remains live through terminal completion, including cancellation.
-            let (started, start_charge) = operations.attempt(|| unsafe {
-                ReadFile(
-                    handle,
-                    Some(&mut *destination),
-                    None,
-                    Some(&raw mut overlapped),
-                )
+            let (started, start_charge) = operations.attempt(|| {
+                // SAFETY: the spare storage remains live through terminal completion,
+                // including cancellation, and ReadFile writes at most `length` bytes.
+                let started = unsafe {
+                    windows_sys::Win32::Storage::FileSystem::ReadFile(
+                        handle.0,
+                        destination.as_mut_ptr().cast(),
+                        length as u32,
+                        std::ptr::null_mut(),
+                        (&raw mut overlapped).cast(),
+                    )
+                };
+                if started == 0 {
+                    Err(windows::core::Error::from_thread())
+                } else {
+                    Ok(())
+                }
             });
             let pending = started
                 .as_ref()
@@ -283,7 +295,15 @@ impl YieldingFile {
             }
             meter.check().map_err(crate::demand::native_demand_error)?;
             match read {
-                Ok(()) => Ok(transferred as usize),
+                Ok(()) => {
+                    let count = transferred as usize;
+                    if count > length {
+                        return Err(io::Error::from(io::ErrorKind::InvalidData).into());
+                    }
+                    // SAFETY: the completed read initialized `count` bytes at the start of the spare capacity.
+                    unsafe { data.set_len(data.len() + count) };
+                    Ok(count)
+                }
                 Err(error) if error.code() == ERROR_HANDLE_EOF.to_hresult() => Ok(0),
                 Err(_) if self.was_yielded() => Err(io::Error::other(Yielded).into()),
                 Err(error) => Err(io::Error::from_raw_os_error(error.code().0 & 0xffff).into()),

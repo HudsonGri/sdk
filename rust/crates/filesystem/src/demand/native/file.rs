@@ -22,8 +22,37 @@ type SourceFile = std::fs::File;
 const REMOTE_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
 /// Most reads of files under roots that are not local that may be
 const MAXIMUM_BLOCKED_REMOTE_READS: usize = 16;
-static BLOCKED_REMOTE_READS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static REMOTE_READERS: std::sync::LazyLock<Arc<remote::RemoteReaders<RemoteDemandRead>>> =
+    std::sync::LazyLock::new(|| remote::RemoteReaders::new(MAXIMUM_BLOCKED_REMOTE_READS));
+
+type RemoteAnswer = (
+    Result<crate::kernel::OwnedSourceChunk, DemandError>,
+    CallbackWork,
+);
+
+/// One held-file read for a remote reader, answered to its waiting callback.
+struct RemoteDemandRead {
+    file: NativeDemandFile,
+    offset: u64,
+    length: u64,
+    context: CallbackWork,
+    answer: std::sync::mpsc::SyncSender<RemoteAnswer>,
+}
+
+impl remote::RemoteRead for RemoteDemandRead {
+    type Delivery = (std::sync::mpsc::SyncSender<RemoteAnswer>, RemoteAnswer);
+    fn read(mut self) -> Self::Delivery {
+        let result = self.file.read(self.offset, self.length, &mut self.context);
+        (self.answer, (result, self.context))
+    }
+}
+
+impl remote::RemoteDelivery for (std::sync::mpsc::SyncSender<RemoteAnswer>, RemoteAnswer) {
+    fn deliver(self) {
+        // A caller past its deadline has gone; its answer drops here.
+        let _ = self.0.send(self.1);
+    }
+}
 
 impl NativeDemandFile {
     fn open(
@@ -147,97 +176,89 @@ impl NativeDemandFile {
         context.check()?;
         let capacity = usize::try_from(length.min(self.logical_bytes.saturating_sub(offset)))
             .map_err(|_| DemandError::InvalidRequest)?;
-        let copying = WorkCounters {
-            bytes_copied: capacity as u64,
-            ..WorkCounters::UNCHARGED
-        };
         context.admit(WorkCounters {
             output_bytes: capacity as u64,
-            ..copying
+            ..WorkCounters::UNCHARGED
         })?;
-        let original = context.native_source_work();
-        let (mut data, mut allocation, mut native_allocation) = if let Some(original) = &original {
-            let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, &mut &*original)
-                .map_err(crate::native_name::original_name_error)?;
-            (data, 0, Some(allocation))
-        } else {
-            let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, context)?;
-            (data, allocation, None)
-        };
-        let result = (|| {
-            let copying = WorkCounters {
-                bytes_copied: data.capacity() as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            context.admit(copying)?;
-            data.resize(data.capacity(), 0);
-            context.record(copying)?;
+        if let Some(original) = context.native_source_work() {
+            let meter = original.runtime_meter();
+            let native =
+                |error| crate::native_name::original_name_error(original.runtime_error(error));
+            let header = acyclic_stream::OwnedBytes::reserve_vec_guard::<
+                Option<crate::NativeAllocation>,
+            >(&meter)
+            .map_err(native)?;
+            let (mut data, allocation) =
+                crate::native_host::buffer::<u8, _>(capacity, &mut &original)
+                    .map_err(crate::native_name::original_name_error)?;
+            #[cfg(test)]
+            demand_read_work::storage(&mut data);
             let retained = data.capacity() as u64;
-            if let Some(original) = original {
-                let mut prepared = acyclic_stream::PreparedOwnedBytes::new(
-                    std::mem::take(&mut data),
-                    native_allocation.take(),
-                    &original.runtime_meter(),
-                )
-                .map_err(|failure| match failure.into_error() {
-                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                        crate::native_name::original_name_error(original.runtime_error(error))
-                    }
-                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                        DemandError::InvalidRequest
-                    }
-                })?;
-                let filled = self.fill(file, offset, prepared.writable(), context)?;
-                self.prove_current(file, context)?;
-                context.record(WorkCounters {
-                    output_bytes: filled as u64,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let bytes = prepared
-                    .freeze(filled)
-                    .map_err(|_| DemandError::InvalidRequest)?;
-                Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, retained))
-            } else {
-                let filled = self.fill(file, offset, &mut data, context)?;
-                self.prove_current(file, context)?;
-                context.record(WorkCounters {
-                    output_bytes: filled as u64,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                data.truncate(filled);
-                Ok(crate::kernel::OwnedSourceChunk::claimed(
-                    std::mem::take(&mut data).into(),
-                    std::mem::take(&mut allocation),
-                ))
-            }
-        })();
-        drop(data);
-        if allocation != 0 {
-            context.release(allocation)?;
+            self.fill(file, offset, &mut data, capacity, context)?;
+            self.prove_current(file, context)?;
+            context.record(WorkCounters {
+                output_bytes: data.len() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let bytes = acyclic_stream::OwnedBytes::from_vec_with_reserved_guard(
+                (data, Some(allocation)),
+                header,
+            )
+            .map_err(|failure| match failure.into_error() {
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => native(error),
+                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                    DemandError::InvalidRequest
+                }
+            })?;
+            return Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, retained));
         }
-        result
+        let (mut data, allocation) = crate::native_host::buffer::<u8, _>(capacity, context)?;
+        #[cfg(test)]
+        demand_read_work::storage(&mut data);
+        let result = self
+            .fill(file, offset, &mut data, capacity, context)
+            .and_then(|()| self.prove_current(file, context))
+            .and_then(|()| {
+                context.record(WorkCounters {
+                    output_bytes: data.len() as u64,
+                    ..WorkCounters::UNCHARGED
+                })
+            });
+        if let Err(error) = result {
+            drop(data);
+            context.release(allocation)?;
+            return Err(error);
+        }
+        Ok(crate::kernel::OwnedSourceChunk::claimed(
+            data.into(),
+            allocation,
+        ))
     }
 
+    /// Appends the file's bytes at `offset` to `data` until it holds
+    /// `capacity` or the file ends, reading into uninitialized capacity.
     fn fill(
         &self,
         file: &SourceFile,
         offset: u64,
-        bytes: &mut [u8],
+        data: &mut Vec<u8>,
+        capacity: usize,
         context: &mut CallbackWork,
-    ) -> Result<usize, DemandError> {
-        let mut filled = 0;
-        while filled < bytes.len() {
+    ) -> Result<(), DemandError> {
+        while data.len() < capacity {
             context.check()?;
-            let position = offset.checked_add(filled as u64).ok_or(crate::WorkError::Overflow)?;
-            let output = bytes.get_mut(filled..).ok_or(DemandError::InvalidRequest)?;
-            match read_at(file, position, output, context) {
+            let position = offset
+                .checked_add(data.len() as u64)
+                .ok_or(crate::WorkError::Overflow)?;
+            let remaining = capacity - data.len();
+            match read_spare_at(file, position, data, remaining, context) {
                 Ok(0) => break,
-                Ok(count) => filled = filled.checked_add(count).ok_or(crate::WorkError::Overflow)?,
+                Ok(_) => {}
                 Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }
         }
-        Ok(filled)
+        Ok(())
     }
     fn prove_current(
         &self,
@@ -274,21 +295,15 @@ impl DemandFile for NativeDemandFile {
             let result = self.read(offset, length, &mut context);
             return finish_context(result, context, accounting);
         }
-        if BLOCKED_REMOTE_READS.fetch_add(1, Ordering::AcqRel) >= MAXIMUM_BLOCKED_REMOTE_READS {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
-            return Err(DemandError::SourceUnavailable);
-        }
-        let file = self.clone();
         let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new()
-            .name("acyclic-remote-read".to_owned())
-            .spawn(move || {
-                let result = file.read(offset, length, &mut context);
-                BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
-                let _ = answer.send((result, context));
-            });
-        if spawned.is_err() {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
+        let read = RemoteDemandRead {
+            file: self.clone(),
+            offset,
+            length,
+            context,
+            answer,
+        };
+        if self.provider.inner.remote.submit(read).is_err() {
             return Err(DemandError::SourceUnavailable);
         }
         let (result, context) = answered
@@ -298,22 +313,26 @@ impl DemandFile for NativeDemandFile {
     }
 }
 
+/// One positional read appended to `data`'s uninitialized capacity.
 #[cfg(unix)]
-fn read_at(
+fn read_spare_at(
     file: &std::fs::File,
     offset: u64,
-    destination: &mut [u8],
+    data: &mut Vec<u8>,
+    length: usize,
     context: &mut CallbackWork,
 ) -> Result<usize, DemandError> {
+    #[cfg(test)]
+    demand_read_work::record("read", offset, length);
     context.admit(WorkCounters {
-        source_bytes_read: destination.len() as u64,
+        source_bytes_read: length as u64,
         ..WorkCounters::UNCHARGED
     })?;
     context.started_io(WorkCounters {
         backend_read_operations: 1,
         ..WorkCounters::UNCHARGED
     })?;
-    let count = std::os::unix::fs::FileExt::read_at(file, destination, offset)?;
+    let count = crate::native_host::read_spare_at(file, offset, data, length)?;
     context.record(WorkCounters {
         source_bytes_read: count as u64,
         ..WorkCounters::UNCHARGED
@@ -321,14 +340,18 @@ fn read_at(
     Ok(count)
 }
 
+/// One positional read appended to `data`'s uninitialized capacity.
 #[cfg(windows)]
-fn read_at(
+fn read_spare_at(
     file: &SourceFile,
     offset: u64,
-    destination: &mut [u8],
+    data: &mut Vec<u8>,
+    length: usize,
     context: &mut CallbackWork,
 ) -> Result<usize, DemandError> {
-    file.read_at(offset, destination, context)
+    #[cfg(test)]
+    demand_read_work::record("read", offset, length);
+    file.read_spare_at(offset, data, length, context)
 }
 
 fn stat_held(

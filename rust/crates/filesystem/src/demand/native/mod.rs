@@ -24,7 +24,11 @@ include!("provider.rs");
 include!("watch.rs");
 include!("metadata.rs");
 
+#[cfg(test)]
+#[path = "read_work.rs"]
+pub(crate) mod demand_read_work;
 mod queue;
+mod remote;
 
 #[cfg(unix)]
 type DemandPath = PathBuf;
