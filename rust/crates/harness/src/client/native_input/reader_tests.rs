@@ -149,7 +149,7 @@ mod model {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
-                "client::native_input::reader::tests::model::shutdown_child",
+                &format!("{}::shutdown_child", module_path!()),
                 "--test-threads=1",
             ])
             .env("ACYCLIC_READER_SHUTDOWN_CHILD", mode)

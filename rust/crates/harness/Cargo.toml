@@ -313,3 +313,8 @@ required-features = ["model-checking"]
 name = "query-model"
 path = "tests/query_model.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "stdin-reader-model"
+path = "tests/stdin_reader_model.rs"
+required-features = ["terminal"]
