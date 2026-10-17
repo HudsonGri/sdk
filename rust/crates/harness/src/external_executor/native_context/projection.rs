@@ -119,6 +119,15 @@ impl SessionFile<'_> {
         let mut seen = BTreeSet::new();
         for index in context {
             let row = self.rows.get(index).ok_or_else(invalid)?;
+            if edits
+                .get(&index)
+                .is_some_and(|replacement| replacement.get() == "null")
+            {
+                continue;
+            }
+            if row.meta.kind == "custom_message" && !pending.is_empty() {
+                return Err(invalid());
+            }
             if row.meta.kind != "message" {
                 continue;
             }
@@ -135,6 +144,11 @@ impl SessionFile<'_> {
                 ),
                 None => message.content,
             };
+            // The next conversational message cannot overtake unresolved calls.
+            // A later result does not repair an invalid intervening exchange.
+            if message.role != "toolResult" && !pending.is_empty() {
+                return Err(invalid());
+            }
             match message.role.as_ref() {
                 "assistant" => {
                     for part in calls(content)? {

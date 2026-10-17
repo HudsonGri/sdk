@@ -152,6 +152,41 @@ fn edits_cannot_hide_half_an_exchange_and_duplicate_invocations_reject() -> Resu
     Ok(())
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Every pending result must precede the next conversational message;
+    // completing the same IDs later cannot make an interleaved cut admissible.
+    #[test]
+    fn complete_exchanges_cannot_be_repaired_after_an_intervening_message(
+        calls in 1usize..5, completed in 0usize..5, text in ".{0,48}",
+        message_kind in 0u8..3,
+    ) {
+        let completed=completed.min(calls);
+        let ids=(0..calls).map(|i|format!("read-{i}")).collect::<Vec<_>>();
+        let names=ids.iter().map(|id|(id.as_str(),"read")).collect::<Vec<_>>();
+        let mut rows=vec![assistant("calls",None,&names)];
+        let mut parent="calls".to_owned();
+        for id in &ids[..completed] {
+            rows.push(result(id,Some(&parent),id,"read"));parent=id.clone();
+        }
+        rows.push(match message_kind {
+            0 => user("intervening",Some(&parent),&text),
+            1 => row("intervening",Some(&parent),"message",json!({"message":{
+                "role":"assistant","content":[{"type":"text","text":text}],"timestamp":1}})),
+            _ => row("intervening",Some(&parent),"custom_message",json!({
+                "customType":"selected-import","content":text,"display":true})),
+        });
+        parent="intervening".into();
+        for id in &ids[completed..] {
+            rows.push(result(id,Some(&parent),id,"read"));parent=id.clone();
+        }
+        rows.push(assistant("invocation",Some(&parent),&[("spawn","acyclic_spawn")]));
+        let original=bytes(&header(),&rows);
+        let source=SessionFile::decode(&original,original.len() as u64)?;
+        prop_assert_eq!(source.cut(Some("invocation"),"spawn").is_ok(),completed==calls);
+    }
+}
+
 #[test]
 fn missing_forward_and_cyclic_parent_references_are_unrepresentable() {
     for rows in [
@@ -251,6 +286,13 @@ fn checked_context_corpus_covers_compaction_edits_and_incomplete_exchanges() -> 
         (
             include_bytes!(
                 "../../../../harness-fuzz/corpus/external-hooks/native-context-missing-result.jsonl"
+            )
+            .as_slice(),
+            false,
+        ),
+        (
+            include_bytes!(
+                "../../../../harness-fuzz/corpus/external-hooks/native-context-interleaved.jsonl"
             )
             .as_slice(),
             false,
