@@ -13,6 +13,29 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
+    read_regular_body(
+        stager,
+        source_root,
+        host_path,
+        snapshot,
+        (maximum_extent_spans, true),
+        meter,
+        staged_file_bytes,
+    )
+    .await
+}
+
+/// Reads every byte of the observed node; `persist` false authenticates its
+/// content roots without writing objects, for comparison with a prior record.
+pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &Checkout<A, O>,
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    (maximum_extent_spans, persist): (u32, bool),
+    meter: &NativeMaterializationWork,
+    staged_file_bytes: &mut u64,
+) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     meter.cancellation().check()?;
     #[cfg(unix)]
     let file = source_root
@@ -81,14 +104,25 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
             range.length,
         );
         let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
-        let content = stager
-            .stage_content_with_accounting(
-                &mut bounded,
-                range.length,
-                &mut accounting,
-                meter.cancellation(),
-            )
-            .await;
+        let content = if persist {
+            stager
+                .stage_content_with_accounting(
+                    &mut bounded,
+                    range.length,
+                    &mut accounting,
+                    meter.cancellation(),
+                )
+                .await
+        } else {
+            stager
+                .content_root_with_accounting(
+                    &mut bounded,
+                    range.length,
+                    &mut accounting,
+                    meter.cancellation(),
+                )
+                .await
+        };
         drop(bounded);
 
         let content = content?;

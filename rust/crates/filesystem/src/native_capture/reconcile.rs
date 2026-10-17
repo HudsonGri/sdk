@@ -389,19 +389,52 @@ impl CaptureBatch<'_> {
         canonical_metadata: FileMetadata,
         existing: (Option<FileRecord>, bool),
     ) -> Result<bool, CaptureError> {
+        let logical_bytes = metadata.len();
+        // A prior record that may still hold these bytes is compared by content
+        // root first; its objects already exist, so nothing is written unless
+        // the bytes differ. Every byte is read either way: no host stamp
+        // reflects a write through a shared mapping.
+        let verify = logical_bytes != 0
+            && existing.1
+            && existing.0.is_some_and(|record| {
+                matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
+            });
+        #[cfg(test)]
+        let verify = match super::verified_reuse_tests::mode() {
+            super::verified_reuse_tests::Reuse::Verified => verify,
+            super::verified_reuse_tests::Reuse::PersistFirst => false,
+            super::verified_reuse_tests::Reuse::MetadataOnly => {
+                if verify {
+                    capture_drop_host_path(host_path, self.meter)?;
+                    capture_drop_path(path, self.meter)?;
+                    return Ok(false);
+                }
+                verify
+            }
+        };
+        let mut verified_bytes = 0;
         // Staging opens the file once and proves it is still the observed node before reading a byte.
-        let staged = stage_regular_body(
+        let staged = read_regular_body(
             checkout,
             self.source_root,
             &host_path,
             metadata,
-            self.maximum_extent_spans,
+            (self.maximum_extent_spans, !verify),
             self.meter,
-            &mut self.receipt.staged_file_bytes,
+            if verify {
+                &mut verified_bytes
+            } else {
+                &mut self.receipt.staged_file_bytes
+            },
         )
         .await?;
-        capture_drop_host_path(host_path, self.meter)?;
-        let logical_bytes = metadata.len();
+        // Only a verified body may need its path again, to stage changed bytes.
+        let retained_path = if verify {
+            Some(host_path)
+        } else {
+            capture_drop_host_path(host_path, self.meter)?;
+            None
+        };
         let ranges = staged;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
@@ -440,7 +473,12 @@ impl CaptureBatch<'_> {
                 Err(crate::FsError::FileRead(crate::kernel::FileRangeReadError::Extent(
                     crate::kernel::ExtentReadError::TooManySpans,
                 ))) => None,
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    if let Some(host_path) = retained_path {
+                        capture_drop_host_path(host_path, self.meter)?;
+                    }
+                    return Err(error.into());
+                }
             };
             let expected = crate::kernel::ExtentSlice {
                 offset: 0,
@@ -471,9 +509,41 @@ impl CaptureBatch<'_> {
                 .clone()
                 .release(ranges_bytes)
                 .map_err(capture_demand_error)?;
+            self.receipt.staged_file_bytes = self
+                .receipt
+                .staged_file_bytes
+                .checked_add(verified_bytes)
+                .ok_or(CaptureError::from(WorkError::Overflow))?;
+            if let Some(host_path) = retained_path {
+                capture_drop_host_path(host_path, self.meter)?;
+            }
             capture_drop_path(path, self.meter)?;
             return Ok(false);
         }
+        let (ranges, ranges_bytes) = if let Some(host_path) = retained_path {
+            // Verified roots were never written; stage the changed bytes.
+            drop(ranges);
+            self.meter
+                .clone()
+                .release(ranges_bytes)
+                .map_err(capture_demand_error)?;
+            let ranges = stage_regular_body(
+                checkout,
+                self.source_root,
+                &host_path,
+                metadata,
+                self.maximum_extent_spans,
+                self.meter,
+                &mut self.receipt.staged_file_bytes,
+            )
+            .await?;
+            capture_drop_host_path(host_path, self.meter)?;
+            let bytes = ranges.capacity() as u64
+                * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
+            (ranges, bytes)
+        } else {
+            (ranges, ranges_bytes)
+        };
         let count = ranges
             .len()
             .checked_add(2 + usize::from(logical_bytes != 0))
