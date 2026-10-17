@@ -412,7 +412,10 @@ impl WorkCounters {
     #[inline]
     pub(crate) fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
         #[cfg(test)]
-        VERIFICATION_PASSES.with(|count| count.set(count.get() + 1));
+        {
+            VERIFICATION_PASSES.with(|count| count.set(count.get() + 1));
+            VERIFICATION_BUDGET.with(|address| address.set(std::ptr::from_ref(budget) as usize));
+        }
         // Charged once per examined item on hot paths: compare every counter
         // without branching and name the exceeded one only on failure.
         if (self.authority_records_read <= budget.authority_records_read)
@@ -614,3 +617,6 @@ std::thread_local! { pub(crate) static VERIFICATION_PASSES: std::cell::Cell<usiz
 
 #[cfg(test)]
 std::thread_local! { pub(crate) static ADDITIVE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+std::thread_local! { pub(crate) static VERIFICATION_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

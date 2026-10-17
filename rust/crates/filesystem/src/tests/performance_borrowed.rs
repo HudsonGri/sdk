@@ -135,32 +135,50 @@ proptest! {
 }
 
 #[test]
-fn completed_kernel_work_borrows_the_budget_once_without_allocating() {
-    use crate::{kernel::allocation::KernelAccounting, performance::VERIFICATION_PASSES};
-    for redundant in [false, true] {
+fn completed_kernel_work_borrows_the_original_budget_without_allocating() {
+    use crate::{
+        kernel::allocation::KernelAccounting,
+        performance::{VERIFICATION_BUDGET, VERIFICATION_PASSES},
+    };
+    for by_value in [false, true] {
         let cancellation = crate::CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let KernelAccounting::Standalone { budget, .. } = &accounting else {
+            unreachable!()
+        };
+        let original = std::ptr::from_ref(budget) as usize;
         VERIFICATION_PASSES.with(|count| count.set(0));
+        VERIFICATION_BUDGET.with(|address| address.set(0));
         let allocations = acyclic_test_support::measure(|| {
-            accounting
-                .record_completed(WorkCounters {
-                    items_examined: 7,
-                    bytes_copied: 11,
-                    ..WorkCounters::UNCHARGED
-                })
-                .unwrap();
-            if redundant {
-                accounting
-                    .record_completed(WorkCounters::UNCHARGED)
-                    .unwrap();
+            let delta = WorkCounters {
+                items_examined: 7,
+                bytes_copied: 11,
+                ..WorkCounters::UNCHARGED
+            };
+            if by_value {
+                // The original production body: same work, verification count,
+                // output and allocations, but a copied 192-byte budget.
+                let KernelAccounting::Standalone {
+                    work,
+                    budget,
+                    cancellation,
+                    ..
+                } = &mut accounting
+                else {
+                    unreachable!()
+                };
+                work.try_add_assign(&delta).unwrap();
+                work.verify(*budget).unwrap();
+                cancellation.check().unwrap();
+            } else {
+                accounting.record_completed(delta).unwrap();
             }
         });
-        let passes = VERIFICATION_PASSES.with(std::cell::Cell::get);
-        assert_eq!(passes, 1 + usize::from(redundant));
+        assert_eq!(VERIFICATION_PASSES.with(std::cell::Cell::get), 1);
+        let borrowed = VERIFICATION_BUDGET.with(std::cell::Cell::get) == original;
         assert_eq!(
-            passes == 1,
-            !redundant,
-            "redundant verification escaped the exact work bound"
+            borrowed, !by_value,
+            "original by-value verification escaped the borrowing invariant"
         );
         assert_eq!(allocations.count_total, 0);
         assert_eq!(allocations.bytes_total, 0);

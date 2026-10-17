@@ -241,5 +241,6 @@ fn in_place_charges_equal_a_verified_sum_for_every_counter() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "performance_borrowed.rs"]
 mod borrowed;
