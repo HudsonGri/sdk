@@ -40,7 +40,8 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         self.reference
             .descriptor()
             .verify(&bytes, &mut Some(&mut io.history_io()))?;
-        self.disclose(bytes).await
+        require_current(&self.workspace, &self.view.0, self.io).await?;
+        Ok(bytes)
     }
 
     pub(in crate::filesystem) async fn read_range(
@@ -55,13 +56,6 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
             self.io,
         )
         .await?;
-        self.disclose(bytes).await
-    }
-
-    async fn disclose(
-        self,
-        bytes: acyclic_stream::OwnedBytes,
-    ) -> Result<acyclic_stream::OwnedBytes> {
         require_current(&self.workspace, &self.view.0, self.io).await?;
         Ok(bytes)
     }

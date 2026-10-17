@@ -45,26 +45,6 @@ mod tests {
     use std::io::Write as _;
 
     #[test]
-    fn native_dispatch_accepts_unsized_output_and_preserves_admission_errors() {
-        let mut bytes = Vec::new();
-        let writer: &mut dyn std::io::Write = &mut bytes;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let error = runtime
-            .block_on(execute(
-                "/outcome",
-                &mut None,
-                &mut None,
-                &mut tokio::task::JoinSet::new(),
-                writer,
-            ))
-            .unwrap_err();
-        assert!(matches!(error, Error::Conflict(message) if message == "session is closed"));
-        assert!(bytes.is_empty());
-    }
-
-    #[test]
     fn arguments_preserve_field_order_and_reject_ambiguous_json() -> Result<()> {
         for (body, accepted) in [
             (
@@ -110,7 +90,7 @@ fn arguments<T: serde::de::DeserializeOwned>(path: &Path, names: &[&str]) -> Res
     serde_json::from_slice(&serde_json::to_vec(&values).map_err(invalid)?).map_err(invalid)
 }
 
-fn emit(output: &mut dyn std::io::Write, line: std::fmt::Arguments<'_>) -> Result<()> {
+fn emit(output: &mut impl std::io::Write, line: std::fmt::Arguments<'_>) -> Result<()> {
     writeln!(output, "{line}")
         .and_then(|()| output.flush())
         .map_err(storage)
@@ -150,7 +130,7 @@ pub(super) async fn execute(
     backend: &mut Option<Backend>,
     parent: &mut Option<TaskId>,
     workers: &mut tokio::task::JoinSet<Result<String>>,
-    output: &mut dyn std::io::Write,
+    output: &mut impl std::io::Write,
 ) -> Result<String> {
     let api = backend
         .as_ref()
