@@ -138,6 +138,7 @@ async fn scenario(
                 content,
             }],
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(64),
         },
         Limits::default(),

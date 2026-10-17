@@ -14,7 +14,7 @@ proptest! {
     ) {
         let mut request = ModelRequest {
             model: Model::new("openai".into(), "fixture".into(), "1".into(), json!({})).unwrap(),
-            messages: Vec::new(), tools: Vec::new(), max_output_tokens: None,
+            messages: Vec::new(), tools: Vec::new(), history_tools: Vec::new(), max_output_tokens: None,
         };
         request.messages = vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }];
         let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();

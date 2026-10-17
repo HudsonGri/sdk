@@ -878,8 +878,17 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 json!({}),
                 None,
             )?;
-            let invocation_ref =
-                stage_json(&journal, operation, "invocation", &crate::tool::RecordedInvocation { invocation: &invocation, metadata: &Value::Null }, None).await?;
+            let invocation_ref = stage_json(
+                &journal,
+                operation,
+                "invocation",
+                &crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &Value::Null,
+                },
+                None,
+            )
+            .await?;
             let result = stage_json(
                 &journal,
                 operation,
@@ -920,7 +929,10 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 &journal,
                 &records,
                 0,
-                crate::tool::RecordedInvocation { invocation: &invocation, metadata: &Value::Null },
+                crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &Value::Null,
+                },
                 &definition,
                 Limits::default(),
                 None,

@@ -113,6 +113,7 @@ proptest::proptest! {
             model,
             messages: vec![crate::model::ModelMessage { role: ModelRole::User, content: ModelContent::Text(PROMPT.into()) }],
             tools: vec![],
+            history_tools: Vec::new(),
             max_output_tokens: None,
         };
         proptest::prop_assert!(check_prompt(&request).is_ok());

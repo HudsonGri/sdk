@@ -303,6 +303,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
                 output_schema: json!({}),
                 projection_schema: json!({}),
             }],
+            history_tools: Vec::new(),
             max_output_tokens: Some(64),
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;

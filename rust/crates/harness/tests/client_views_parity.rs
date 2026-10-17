@@ -350,6 +350,7 @@ fn request(name: &str) -> Vec<u8> {
             content: ModelContent::Text("work".into()),
         }],
         tools: vec![],
+        history_tools: Vec::new(),
         max_output_tokens: Some(32),
     })
     .unwrap()

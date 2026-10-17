@@ -16,6 +16,7 @@ proptest! {
                 content: ModelContent::Text(text.into_iter().collect()),
             }).collect(),
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(output),
         };
         let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();

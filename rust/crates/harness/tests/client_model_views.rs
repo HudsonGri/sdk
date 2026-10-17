@@ -58,6 +58,7 @@ fn request(provider: &str, name: &str, revision: &str, text: &str) -> Vec<u8> {
             content: ModelContent::Text(text.into()),
         }],
         tools: vec![],
+        history_tools: Vec::new(),
         max_output_tokens: Some(32),
     })
     .unwrap()

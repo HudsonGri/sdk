@@ -29,6 +29,7 @@ pub(super) async fn select(
                         content: ModelContent::Text("token accounting".into()),
                     }],
                     tools: tools.definitions(None)?,
+                    history_tools: Vec::new(),
                     max_output_tokens: Some(reserve),
                 },
                 limits,

@@ -7,9 +7,15 @@ use acyclic_harness::{
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     if let Ok(request) = serde_json::from_slice::<ModelRequest>(bytes) {
         let encoded = serde_json::to_vec(&request).unwrap();
-        assert_eq!(serde_json::from_slice::<ModelRequest>(&encoded).unwrap(), request);
-        if let Ok(prepared) = PreparedModelRequest::prepare(request.clone(), Limits::default(), None) {
-            let decoded = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ModelRequest>(&encoded).unwrap(),
+            request
+        );
+        if let Ok(prepared) =
+            PreparedModelRequest::prepare(request.clone(), Limits::default(), None)
+        {
+            let decoded =
+                PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
             assert_eq!(decoded.request(), &request);
             assert_eq!(decoded.request_digest(), prepared.request_digest());
         }

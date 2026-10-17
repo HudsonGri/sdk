@@ -81,6 +81,7 @@ proptest! {
             model: Model::new("test".into(), "summary".into(), "1".into(), json!({})).unwrap(),
             messages,
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(4096),
         };
         let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();

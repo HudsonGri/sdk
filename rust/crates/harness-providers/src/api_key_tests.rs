@@ -133,6 +133,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 output_schema: json!({"type":"object"}),
                 projection_schema: json!({"type":"object"}),
             }],
+            history_tools: Vec::new(),
             max_output_tokens: Some(64),
         };
         let operation_id = acyclic_harness::OperationId::new();

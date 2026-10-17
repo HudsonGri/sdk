@@ -17,7 +17,11 @@ impl ToolRegistry {
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| Error::Invalid("historical tool slot count overflow".into()))?;
-                if let crate::model::ModelContentPart::ToolCall(crate::model::ToolCall { name, .. }) = part {
+                if let crate::model::ModelContentPart::ToolCall(crate::model::ToolCall {
+                    name,
+                    ..
+                }) = part
+                {
                     crate::model::charge_items(io, name.len() as u64)?;
                     pinned |= name.contains('@');
                 }
@@ -44,7 +48,9 @@ impl ToolRegistry {
             crate::model::charge_items(io, 1)?;
             for part in message.content.parts() {
                 crate::model::charge_items(io, 1)?;
-                if let crate::model::ModelContentPart::ToolCall(crate::model::ToolCall { name, .. }) = part
+                if let crate::model::ModelContentPart::ToolCall(crate::model::ToolCall {
+                    name, ..
+                }) = part
                     && let Some((name, revision)) = name.rsplit_once('@')
                     && let std::collections::btree_map::Entry::Vacant(entry) =
                         bindings.entry((name, revision))

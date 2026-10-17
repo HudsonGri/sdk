@@ -233,10 +233,10 @@ impl StockExecution<'_> {
         } else {
             Vec::new()
         };
-        let history_tools =
-            self.stock
-                .tools
-                .history_definitions(&messages, &tools, self.io)?;
+        let history_tools = self
+            .stock
+            .tools
+            .history_definitions(&messages, &tools, self.io)?;
         Ok(ModelRequest {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages,

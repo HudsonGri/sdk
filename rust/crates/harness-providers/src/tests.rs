@@ -292,6 +292,7 @@ pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest,
                 },
             ],
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(64),
         },
         Limits::default(),
@@ -488,6 +489,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         };
         let request = ModelRequest {
             model: provider.model.clone(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(64),
             tools: vec![tool],
             messages: vec![

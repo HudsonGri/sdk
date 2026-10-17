@@ -151,7 +151,7 @@ mod tests {
             let request = PreparedModelRequest::prepare(ModelRequest {
                 model: Model::new("fixture".into(), "dense".into(), "1".into(), serde_json::json!({})).unwrap(),
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(text) }],
-                tools: Vec::new(), max_output_tokens: Some(1),
+                tools: Vec::new(), history_tools: Vec::new(), max_output_tokens: Some(1),
             }, crate::conversation::Limits::default(), None).unwrap();
             let count = ModelTokenCount { request_digest: request.request_digest(), input_tokens: actual,
                 fixed_tokens: fixed, message_tokens: vec![message] };

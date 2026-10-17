@@ -56,6 +56,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
                     content: ModelContent::Text(case.prompt.clone()),
                 }],
                 tools: vec![],
+                history_tools: Vec::new(),
                 max_output_tokens: Some(64),
             },
             Limits::default(),

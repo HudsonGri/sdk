@@ -125,6 +125,7 @@ impl LocalHarness {
                     model,
                     messages: context.messages,
                     tools: Vec::new(),
+                    history_tools: Vec::new(),
                     max_output_tokens: Some(ceiling),
                 },
                 self.limits,
