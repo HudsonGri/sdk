@@ -1,4 +1,4 @@
-use crate::{CompletionPopup, PromptBox, PromptInput, Viewport};
+use crate::{CompletionPopup, PromptBox, PromptInput, Viewport, widget::cells};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -122,11 +122,12 @@ impl Screen<'_> {
             prompt_height,
         );
         remaining.height -= prompt_height;
-        let notice_height = self
-            .notifications
-            .len()
-            .min(2)
-            .min(usize::from(remaining.height)) as u16;
+        let notice_height = cells(
+            self.notifications
+                .len()
+                .min(2)
+                .min(usize::from(remaining.height)),
+        );
         let notifications = Rect::new(
             area.x,
             remaining.bottom() - notice_height,
@@ -199,7 +200,7 @@ impl Screen<'_> {
         }
         let label = Rect::new(
             area.x,
-            area.y + (row - scroll) as u16,
+            area.y + cells(row - scroll),
             area.width.min(crate::Thinking::WIDTH),
             1,
         );
@@ -213,7 +214,7 @@ impl Screen<'_> {
         )
     }
 
-    /// Compose shared widgets without cloning ClientViews or their transcript.
+    /// Compose shared widgets without cloning client views or their transcript.
     /// Scroll and open panels are supplied from the user's followed layout file.
     pub fn render(
         &self,
@@ -244,20 +245,20 @@ impl Screen<'_> {
                 ROW_WORK.with(|work| work.set(work.get() + 1));
                 let area = Rect::new(
                     areas.transcript.x,
-                    areas.transcript.y + row as u16,
+                    areas.transcript.y + cells(row),
                     areas.transcript.width,
                     1,
                 );
-                if index < self.reasoning.len() {
-                    frame.render_widget(&self.reasoning[index], area);
+                if let Some(line) = self.reasoning.get(index) {
+                    frame.render_widget(line, area);
                 } else if index < self.reasoning.len() + self.transcript_len() {
                     let index = index - self.reasoning.len();
                     if let Some((projection, search)) = self.transcript_search {
                         frame.render_widget(search.row(projection, index), area);
-                    } else if index < self.transcript.len() {
-                        frame.render_widget(&self.transcript[index], area);
-                    } else {
-                        frame.render_widget(&self.tools[index - self.transcript.len()], area);
+                    } else if let Some(line) = self.transcript.get(index) {
+                        frame.render_widget(line, area);
+                    } else if let Some(line) = self.tools.get(index - self.transcript.len()) {
+                        frame.render_widget(line, area);
                     }
                 } else if let Some(line) = thinking.as_ref() {
                     frame.render_widget(line, area);
@@ -290,7 +291,7 @@ impl Screen<'_> {
             .filter(|(_, lines)| !lines.is_empty())
             .enumerate()
         {
-            let height = side.height / (count - index) as u16;
+            let height = side.height / cells(count - index);
             let panel = take_top(&mut side, height);
             let block = Block::default().borders(Borders::ALL).title(title);
             rows(frame, lines, block.inner(panel), 0);
@@ -316,7 +317,7 @@ fn rows(frame: &mut Frame<'_>, lines: &[Line<'_>], area: Rect, scroll: usize) {
         .take(usize::from(area.height))
         .enumerate()
     {
-        frame.render_widget(line, Rect::new(area.x, area.y + row as u16, area.width, 1));
+        frame.render_widget(line, Rect::new(area.x, area.y + cells(row), area.width, 1));
     }
 }
 

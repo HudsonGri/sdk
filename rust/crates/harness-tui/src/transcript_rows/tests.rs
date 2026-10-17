@@ -56,19 +56,35 @@ fn check<const OMIT_TOOLS: bool>(
         )
         .collect();
     for (index, matched) in expected.iter().enumerate() {
-        search.update(rows, query, index as i64, Style::default());
+        search.update(
+            rows,
+            query,
+            i64::try_from(index).expect("bounded match count"),
+            Style::default(),
+        );
         let expected_row = origins
             .partition_point(|range| range.start <= matched.start)
             .saturating_sub(1);
-        assert_eq!(search.selected_row(rows, index as i64), expected_row);
-        assert_eq!(search.position(index as i64), index + 1);
+        assert_eq!(
+            search.selected_row(rows, i64::try_from(index).expect("bounded match count")),
+            expected_row
+        );
+        assert_eq!(
+            search.position(i64::try_from(index).expect("bounded match count")),
+            index + 1
+        );
     }
     search.prepare(rows, 0, rows.len());
-    let area = Rect::new(0, 0, width, rows.len() as u16);
+    let area = Rect::new(
+        0,
+        0,
+        width,
+        u16::try_from(rows.len()).expect("bounded row count"),
+    );
     let mut actual = Buffer::empty(area);
     let mut plain = Buffer::empty(area);
     for (row, line) in left.rows().iter().chain(right.rows()).enumerate() {
-        let area = Rect::new(0, row as u16, width, 1);
+        let area = Rect::new(0, u16::try_from(row).expect("bounded row count"), width, 1);
         search.row(rows, row).render(area, &mut actual);
         line.render(area, &mut plain);
     }
