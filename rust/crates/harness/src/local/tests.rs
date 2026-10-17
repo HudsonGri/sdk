@@ -6,7 +6,7 @@ use crate::test_support::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
 };
 use crate::{
-    Admission, Error, LocalHarness, LocalHarnessConfig, OperationId, Result, TaskId,
+    Admission, Error, LocalHarness, LocalHarnessConfig, OperationId, Result,
     context::ModelContextCapacity,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,

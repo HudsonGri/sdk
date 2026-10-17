@@ -251,12 +251,13 @@ fn provider_requests_preserve_guard_results_across_every_tool_hook_cut() -> Resu
             prop_assert_eq!(hooks.post.load(Ordering::SeqCst), usize::from(!denied));
             let requests = provider.requests();
             let prefix = executor.completed_tool_prefix(hooks.journal.as_ref(), &input(), 0, None).await?;
-            prop_assert_eq!(&prefix.request().messages, &requests[1].request().messages);
-            prop_assert!(requests[1].request().messages.iter().any(|message|
+            prop_assert_eq!(&prefix.request().messages, &requests[1].messages);
+            prop_assert!(requests[1].messages.iter().any(|message|
                 message.role == ModelRole::System && message.content == ModelContent::Text(reason.clone())));
             if !denied {
-                prop_assert!(requests[1].request().messages.iter().any(|message|
-                    message.content == ModelContent::Text(format!("post:{reason}"))));
+                prop_assert!(requests[1].messages.iter().any(|message|
+                    message.content == ModelContent::Text(format!("post:{reason}"))),
+                    "post-tool feedback is missing");
                 let retained = {
                     let records = hooks.journal.0.lock().unwrap();
                     records.iter().find_map(|record| match &record.event {
