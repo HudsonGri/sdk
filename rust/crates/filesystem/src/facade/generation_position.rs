@@ -17,7 +17,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .authority_head
                 .ok_or(FsError::InvalidAuthorityHistory)?
                 .sequence;
-            if let Some((observed, position)) = self.observed_generation
+            if let super::checkout::ObservedGeneration::Head {
+                generation: observed,
+                position,
+            } = self.observed_generation
                 && generation == observed
             {
                 return Ok((position, head));

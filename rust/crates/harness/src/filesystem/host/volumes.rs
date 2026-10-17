@@ -101,7 +101,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 io,
             )
             .await?;
-        super::super::access::require_current(&workspace, &access.0, io)?.await?;
+        super::super::access::require_current(&workspace, &access.0, io).await?;
         drop(access);
         let name = crate::executor::with_history_io(Some(io), |work| child.storage_name(work))?;
         let operation = fork_preparer_io::operation_key(key, Some(io))?;
@@ -243,8 +243,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| map_error(failure.error))?;
-        super::super::access::require_current(&source_workspace, &source_access.0, &io)?.await?;
-        super::super::access::require_current(&destination_workspace, &destination_access.0, &io)?
+        super::super::access::require_current(&source_workspace, &source_access.0, &io).await?;
+        super::super::access::require_current(&destination_workspace, &destination_access.0, &io)
             .await?;
         Ok(plan)
     }

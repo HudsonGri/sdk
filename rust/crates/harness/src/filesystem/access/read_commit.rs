@@ -62,7 +62,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         self,
         bytes: acyclic_stream::OwnedBytes,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        require_current(&self.workspace, &self.view.0, self.io)?.await?;
+        require_current(&self.workspace, &self.view.0, self.io).await?;
         Ok(bytes)
     }
 }
@@ -70,32 +70,30 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
 /// Linearize disclosure after storage completes, against the current policy.
 /// Unrelated commits are accepted by generation-insensitive views. A policy
 /// change or expired capability refuses the result; a new request recompiles.
-pub(in crate::filesystem) fn require_current<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    workspace: &'a Workspace<A, O>,
-    view: &'a PathTrie,
-    io: &'a PreparationIo,
-) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-    crate::conversation::BoundedContentFuture::new(Some(io), || async move {
-        let mut head = io.sdk(
-            workspace
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode::read_only_pinned(),
-                    io,
-                    io.cancellation(),
-                )
-                .await,
-        )?;
-        let revision = io.sdk(head.access_policy_revision(io, io.cancellation()).await)?;
-        if !view.matches_policy_revision(head.generation_id(), revision)
-            || view.valid_until().is_some_and(|end| access_now() >= end)
-        {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unauthorized,
-                "filesystem policy changed before disclosure",
-            ));
-        }
-        Ok(())
-    })
+pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    view: &PathTrie,
+    io: &PreparationIo,
+) -> Result<()> {
+    let mut head = io.sdk(
+        workspace
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
+                io,
+                io.cancellation(),
+            )
+            .await,
+    )?;
+    let revision = io.sdk(head.access_policy_revision(io, io.cancellation()).await)?;
+    if !view.matches_policy_revision(head.generation_id(), revision)
+        || view.valid_until().is_some_and(|end| access_now() >= end)
+    {
+        return Err(stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Unauthorized,
+            "filesystem policy changed before disclosure",
+        ));
+    }
+    Ok(())
 }

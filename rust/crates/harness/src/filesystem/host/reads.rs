@@ -199,7 +199,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(hold) = bytes.1 {
             hold.into_retained()?;
         }
-        super::super::access::require_current(&workspace, &view.0, io)?.await?;
+        super::super::access::require_current(&workspace, &view.0, io).await?;
         Ok((reference.0, bytes.0, publication))
     }
 
@@ -278,7 +278,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(path_hold);
         drop(reference);
         drop(reference_hold);
-        super::super::access::require_current(&workspace, &view.0, io)?.await?;
+        super::super::access::require_current(&workspace, &view.0, io).await?;
         Ok(chunk.bytes)
     }
 
