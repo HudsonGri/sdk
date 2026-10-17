@@ -24,7 +24,7 @@ pub(super) struct Input {
     pub state: PathBuf,
     pub volume: VolumeRef,
     pub task: TaskId,
-    pub turn: ScriptedTurn,
+    pub turns: Vec<ScriptedTurn>,
     pub query: Query,
     pub cursor: Cursor,
     pub after: usize,
@@ -77,7 +77,7 @@ pub(super) async fn child(path: &Path) -> TestResult {
     let pending = Arc::new(tokio::sync::Notify::new());
     let signal = pending.clone();
     let provider = Arc::new(
-        ScriptedModelProvider::new([input.turn]).with_pending_observer(move || signal.notify_one()),
+        ScriptedModelProvider::new(input.turns).with_pending_observer(move || signal.notify_one()),
     );
     let model = Model::new(
         "scripted".into(),

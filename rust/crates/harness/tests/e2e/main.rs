@@ -100,6 +100,7 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
             "recoveries" => {
                 case.recoveries
                     .push(acyclic_harness::test_support::ScriptedReconciliation {
+                        failure: None,
                         orphan: false,
                         observed: vec![],
                         continuation: None,

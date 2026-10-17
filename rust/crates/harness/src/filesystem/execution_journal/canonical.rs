@@ -6,80 +6,88 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn verify_canonical_publication_with_io(
-        &self,
+    pub(super) fn verify_canonical_publication_with_io<'a>(
+        &'a self,
         operation_id: OperationId,
-        event: &ExecutionEvent,
+        event: &'a ExecutionEvent,
         limits: Limits,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        if let Some(io) = io {
-            io.check_cancellation()?;
-        }
-        let ExecutionEvent::ContextCompacted {
-            step,
-            projection,
-            compaction,
-            ..
-        } = event
-        else {
-            return Ok(());
-        };
-        crate::executor::with_history_io(io, |work| limits.validate_file(projection, work))?;
-        let projection =
-            crate::executor::load_json::<crate::executor::ResponseProjection>(self, projection, io)
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(io) = io {
+                io.check_cancellation()?;
+            }
+            let ExecutionEvent::ContextCompacted {
+                step,
+                projection,
+                compaction,
+                ..
+            } = event
+            else {
+                return Ok(());
+            };
+            crate::executor::with_history_io(io, |work| limits.validate_file(projection, work))?;
+            let projection = crate::executor::load_json::<crate::executor::ResponseProjection>(
+                self, projection, io,
+            )
+            .await?;
+            crate::context::validate_projected_context(&projection.0.context, limits, io)?;
+            let Some(reference) = &projection.0.checkpoint else {
+                if projection.0.canonical.is_some() {
+                    return Err(canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "canonical publication has no checkpoint",
+                    ));
+                }
+                return Ok(());
+            };
+            crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
+            let envelope =
+                crate::executor::load_json::<crate::context::CanonicalContextCheckpoint>(
+                    self, reference, io,
+                )
                 .await?;
-        crate::context::validate_projected_context(&projection.0.context, limits, io)?;
-        let Some(reference) = &projection.0.checkpoint else {
-            if projection.0.canonical.is_some() {
+            envelope.0.validate(limits, io)?;
+            if *step != 0
+                || envelope.0.operation_id != operation_id
+                || projection.0.canonical.as_ref() != Some(&envelope.0.source)
+                || &envelope.0.compaction != compaction
+            {
                 return Err(canonical_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
-                    "canonical publication has no checkpoint",
+                    "canonical publication differs from its envelope",
                 ));
             }
-            return Ok(());
-        };
-        crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
-        let envelope = crate::executor::load_json::<crate::context::CanonicalContextCheckpoint>(
-            self, reference, io,
-        )
-        .await?;
-        envelope.0.validate(limits, io)?;
-        if *step != 0
-            || envelope.0.operation_id != operation_id
-            || projection.0.canonical.as_ref() != Some(&envelope.0.source)
-            || &envelope.0.compaction != compaction
-        {
-            return Err(canonical_boundary(
+            let source =
+                crate::executor::load_json::<crate::context::Context>(self, &envelope.0.source, io)
+                    .await?;
+            let retained = crate::executor::load_json::<crate::context::Context>(
+                self,
+                &envelope.0.retained,
                 io,
-                crate::wire::ErrorCode::Invalid,
-                "canonical publication differs from its envelope",
-            ));
-        }
-        let source =
-            crate::executor::load_json::<crate::context::Context>(self, &envelope.0.source, io)
-                .await?;
-        let retained =
-            crate::executor::load_json::<crate::context::Context>(self, &envelope.0.retained, io)
-                .await?;
-        let proof =
-            crate::executor::load_json::<crate::context::CompactionReference>(self, compaction, io)
-                .await?;
-        envelope
-            .0
-            .validate_projection(&source.0, &retained.0, &proof.0, limits, io)?;
-        self.verify_canonical_source_with_io(&envelope.0, &source.0, limits, io)
+            )
             .await?;
-        self.verify_canonical_summary_with_io(
-            operation_id,
-            &envelope.0,
-            &source.0,
-            &proof.0,
-            limits,
-            io,
-        )
-        .await
+            let proof = crate::executor::load_json::<crate::context::CompactionReference>(
+                self, compaction, io,
+            )
+            .await?;
+            envelope
+                .0
+                .validate_projection(&source.0, &retained.0, &proof.0, limits, io)?;
+            self.verify_canonical_source_with_io(&envelope.0, &source.0, limits, io)
+                .await?;
+            self.verify_canonical_summary_with_io(
+                operation_id,
+                &envelope.0,
+                &source.0,
+                &proof.0,
+                limits,
+                io,
+            )
+            .await
+        })
     }
 
     pub(super) async fn verify_canonical_source_with_io(

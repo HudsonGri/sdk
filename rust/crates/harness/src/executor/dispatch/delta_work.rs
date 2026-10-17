@@ -211,23 +211,43 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
                             )
                             .await?;
                     }
-                    let file = loop {
-                        let change = follow
-                            .changes
-                            .next()
-                            .now_or_never()
-                            .ok_or_else(|| {
-                                Error::Storage(
-                                    "accepted delta was not immediately followable".into(),
-                                )
-                            })?
-                            .ok_or_else(|| Error::Storage("delta follow ended".into()))??;
-                        if let Some(file) = change.file {
-                            break file;
+                    let mut offset = 0usize;
+                    let mut part = 0u64;
+                    loop {
+                        let file = loop {
+                            let change = follow
+                                .changes
+                                .next()
+                                .now_or_never()
+                                .ok_or_else(|| {
+                                    Error::Storage(
+                                        "accepted delta was not immediately followable".into(),
+                                    )
+                                })?
+                                .ok_or_else(|| Error::Storage("delta follow ended".into()))??;
+                            if let Some(file) = change.file {
+                                break file;
+                            }
+                        };
+                        let end = offset
+                            .checked_add(file.bytes.len())
+                            .ok_or_else(|| Error::Invalid("delta part overflow".into()))?;
+                        if delta.as_bytes().get(offset..end) != Some(file.bytes.as_ref())
+                            || file.bytes.len() > crate::task_volume::MODEL_CHUNK_BYTES
+                            || !matches!(file.key, FileKey::Task {
+                                file: crate::task_volume::TaskFile::Chunk { sequence, .. }, ..
+                            } if sequence == index as u64 * crate::task_volume::MODEL_CHUNK_STRIDE + part)
+                        {
+                            return Err(Error::Invalid("delta file changed or reordered".into()));
                         }
-                    };
-                    if file.bytes.as_ref() != delta.as_bytes() {
-                        return Err(Error::Invalid("delta file changed".into()));
+                        if end == delta.len() {
+                            break;
+                        }
+                        if end == offset {
+                            return Err(Error::Invalid("empty intermediate delta part".into()));
+                        }
+                        offset = end;
+                        part += 1;
                     }
                     Ok::<_, Error>(())
                 },
@@ -254,6 +274,69 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
     }
     input.borrow_mut().done = true;
     futures::executor::block_on(tokio::task::unconstrained(recording.as_mut()))?;
+    // Reconciliation can fail twice without advancing the model-event count.
+    // Both diagnostics must remain immutable and immediately followable.
+    for (ordinal, message) in ["first", "second"].into_iter().enumerate() {
+        let error = Error::Storage(message.to_owned());
+        let before = work.receipt();
+        let mut result = None;
+        let allocations = acyclic_test_support::measure(|| {
+            result = Some(futures::executor::block_on(tokio::task::unconstrained(
+                async {
+                    journal
+                        .publish_model_outcome(
+                            operation,
+                            0,
+                            Err((deltas.len(), &error)),
+                            Some(&io),
+                        )?
+                        .await?;
+                    loop {
+                        let change = follow
+                            .changes
+                            .next()
+                            .now_or_never()
+                            .ok_or_else(|| {
+                                Error::Storage(
+                                    "accepted error was not immediately followable".into(),
+                                )
+                            })?
+                            .ok_or_else(|| Error::Storage("error follow ended".into()))??;
+                        if change.file.is_some() {
+                            break Ok::<_, Error>(change);
+                        }
+                    }
+                },
+            )));
+        });
+        let change = result.expect("measured the actual error publisher")?;
+        let file = change
+            .file
+            .ok_or_else(|| Error::Storage("error file missing".into()))?;
+        if !matches!(file.key, FileKey::Task { file: crate::task_volume::TaskFile::Error { sequence, .. }, .. }
+            if sequence == deltas.len() as u64 + ordinal as u64)
+            || serde_json::from_slice::<Value>(&file.bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                != json!({"error":format!("storage failure: {message}")})
+        {
+            return Err(Error::Invalid(
+                "error diagnostic was lost or overwritten".into(),
+            ));
+        }
+        let after = work.receipt();
+        if after.bytes_copied - before.bytes_copied > 4 * message.len() as u64 + 16_384
+            || allocations.bytes_total > 16 * message.len() as u64 + 262_144
+            || allocations.count_total > 2048
+            || (after.backend_read_operations - before.backend_read_operations)
+                + (after.backend_write_operations - before.backend_write_operations)
+                + (after.durability_operations - before.durability_operations)
+                > 128
+        {
+            return Err(Error::Invalid(
+                "error publication work grew with its prefix".into(),
+            ));
+        }
+    }
     Ok(true)
 }
 
@@ -272,4 +355,14 @@ proptest! {
         prop_assert!(runtime.block_on(run(&deltas, false)).map_err(|error| TestCaseError::fail(error.to_string()))?);
         prop_assert!(!runtime.block_on(run(&deltas, true)).map_err(|error| TestCaseError::fail(error.to_string()))?);
     }
+}
+
+#[tokio::test]
+async fn large_escaped_deltas_keep_raw_recovery_sources_and_bounded_work() -> Result<()> {
+    let deltas = vec![
+        "\0".repeat(crate::task_volume::MODEL_CHUNK_BYTES + 1),
+        "\\\n\"".repeat(crate::task_volume::MODEL_CHUNK_BYTES / 3 + 1),
+    ];
+    assert!(run(&deltas, false).await?);
+    Ok(())
 }

@@ -20,6 +20,7 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
             )])
             .with_reconciliations([
                 ScriptedReconciliation {
+                    failure: None,
                     orphan: false,
                     observed,
                     continuation: Some(vec![ModelEvent::Content {
@@ -27,6 +28,7 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                     }]),
                 },
                 ScriptedReconciliation {
+                    failure: None,
                     orphan: false,
                     observed: expanded,
                     continuation: Some(vec![
@@ -475,6 +477,7 @@ async fn automatic_summary_reconciles_from_captured_context_without_rereading_so
             ScriptedTurn::Text("answer".into()),
         ],
         [ScriptedReconciliation {
+            failure: None,
             orphan: false,
             observed: vec![ModelEvent::Content {
                 delta: "partial-".into(),

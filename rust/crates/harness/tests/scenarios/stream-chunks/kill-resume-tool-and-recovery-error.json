@@ -1,0 +1,164 @@
+{
+  "expect": {
+    "text": "done",
+    "results": {
+      "call": {
+        "name": "bash",
+        "content": {
+          "value": {
+            "success": true,
+            "stdout": "out",
+            "exit_code": 0,
+            "stderr": "",
+            "stop": null
+          },
+          "kind": "json"
+        }
+      }
+    },
+    "task_files": [
+      {
+        "model": {
+          "name": "local",
+          "provider": "scripted",
+          "revision": "1"
+        },
+        "path": "turns/0/request.json"
+      },
+      {
+        "path": "turns/0/tools/0/arguments/0",
+        "text": "{\"command\":\"printf out\"}",
+        "channel": null
+      },
+      {
+        "path": "turns/0/tools/0/request.json",
+        "text": "{\"operation_id\":\"<operation>\",\"call_id\":\"call\",\"name\":\"bash\",\"arguments\":{\"command\":\"printf out\"}}",
+        "channel": null
+      },
+      {
+        "path": "turns/0/tools/0/stdout/0",
+        "text": "out",
+        "channel": null
+      },
+      {
+        "path": "turns/0/tools/0/result.json",
+        "text": "{\"exit_code\":0,\"stderr\":\"\",\"stdout\":\"out\",\"stop\":null,\"success\":true}",
+        "channel": null
+      },
+      {
+        "path": "turns/0/completion.json",
+        "text": "{\"metadata\":null}",
+        "channel": null
+      },
+      {
+        "model": {
+          "name": "local",
+          "provider": "scripted",
+          "revision": "1"
+        },
+        "path": "turns/1/request.json"
+      },
+      {
+        "path": "turns/1/chunks/0",
+        "text": "do",
+        "channel": "Text"
+      },
+      {
+        "path": "turns/1/errors/1.json",
+        "text": "{\"error\":\"storage failure: recovery stopped\"}",
+        "channel": null
+      },
+      {
+        "path": "turns/1/chunks/4294967296",
+        "text": "ne",
+        "channel": "Text"
+      },
+      {
+        "path": "turns/1/completion.json",
+        "text": "{\"metadata\":null}",
+        "channel": null
+      }
+    ],
+    "statuses": [
+      {
+        "state": "pending",
+        "attention": false,
+        "parent": null
+      },
+      {
+        "state": "indeterminate",
+        "attention": true,
+        "parent": null
+      },
+      {
+        "state": "completed",
+        "attention": true,
+        "parent": null
+      }
+    ]
+  },
+  "turns": [
+    [
+      {
+        "kind": "tool_call",
+        "name": "bash",
+        "type": "event",
+        "arguments": {
+          "command": "printf out"
+        },
+        "call_id": "call"
+      },
+      {
+        "kind": "completed",
+        "type": "event",
+        "metadata": null
+      }
+    ],
+    [
+      {
+        "type": "event",
+        "kind": "content",
+        "delta": "do"
+      },
+      {
+        "type": "pending"
+      }
+    ]
+  ],
+  "kill_after": 1,
+  "interruptions": [
+    "indeterminate"
+  ],
+  "recoveries": [
+    {
+      "orphan": true,
+      "observed": [
+        {
+          "kind": "content",
+          "delta": "do"
+        }
+      ],
+      "continuation": null,
+      "failure": "recovery stopped"
+    },
+    {
+      "orphan": true,
+      "observed": [
+        {
+          "kind": "content",
+          "delta": "do"
+        }
+      ],
+      "continuation": [
+        {
+          "kind": "content",
+          "delta": "ne"
+        },
+        {
+          "kind": "completed",
+          "metadata": null
+        }
+      ]
+    }
+  ]
+}

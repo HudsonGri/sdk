@@ -230,6 +230,7 @@ fn interrupted_model(observed_events: usize) -> Arc<ScriptedModelProvider> {
             },
         ])])
         .with_reconciliations([ScriptedReconciliation {
+            failure: None,
             orphan: false,
             observed: if observed_events == 0 {
                 vec![]

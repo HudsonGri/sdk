@@ -221,6 +221,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
             ))
         })
         .with_reconciliations([ScriptedReconciliation {
+            failure: None,
             orphan: false,
             observed: vec![],
             continuation: Some(vec![

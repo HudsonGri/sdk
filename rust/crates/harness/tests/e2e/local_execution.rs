@@ -67,14 +67,22 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     let turns = super::local_case::bind_seed_files(case.turns, &references)?;
-    let interrupted_turn = case.kill_after.map(|_| turns[0].clone());
+    let interrupted_count = if case.kill_after.is_some() {
+        turns
+            .iter()
+            .position(|turn| {
+                matches!(turn, ScriptedTurn::Events(events)
+            if events.iter().any(|event| matches!(event, ScriptedEvent::Pending {})))
+            })
+            .ok_or("kill cases require an explicit pending barrier")?
+            + 1
+    } else {
+        0
+    };
+    let interrupted_turns = turns[..interrupted_count].to_vec();
     let provider = Arc::new(
-        ScriptedModelProvider::new(
-            turns
-                .into_iter()
-                .skip(usize::from(case.kill_after.is_some())),
-        )
-        .with_reconciliations(case.recoveries.clone()),
+        ScriptedModelProvider::new(turns.into_iter().skip(interrupted_count))
+            .with_reconciliations(case.recoveries.clone()),
     );
     let config = local_harness_config(&directory, (model, provider.clone()))?
         .state_directory(&state)
@@ -142,7 +150,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                 state: state.clone(),
                 volume: volume.clone(),
                 task: task_id,
-                turn: interrupted_turn.ok_or("missing interrupted turn")?,
+                turns: interrupted_turns,
                 query: task_query.clone(),
                 cursor: task_initial.cursor.clone(),
                 after,

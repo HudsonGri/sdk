@@ -85,12 +85,12 @@ pub enum TaskFile {
         /// Assistant channel represented by this head.
         channel: Channel,
     },
-    /// A recoverable model failure at this event position. Reconciliation may
+    /// A recoverable model failure. Reconciliation may
     /// append further chunks; only Completion seals the turn.
     Error {
         /// Turn/attempt identity.
         turn: u64,
-        /// Event position at which the failure was observed.
+        /// Monotonic failure identity, at least the observed model event count.
         sequence: u64,
     },
     /// Terminal turn outcome. Seals the turn against new chunks and tool files;

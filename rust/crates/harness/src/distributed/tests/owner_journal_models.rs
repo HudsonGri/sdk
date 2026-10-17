@@ -126,9 +126,20 @@ fn execution(
     owner: Box<crate::durable_host::TaskJournalOwner<PublicationCut>>,
 ) -> Arc<dyn ExecutionJournal> {
     Arc::new(
-        fixture
-            .execution(*owner, OperationId::from_bytes([2; 16]))
-            .unwrap(),
+        crate::filesystem::FilesystemExecutionJournal::for_task(
+            *owner,
+            OperationId::from_bytes([2; 16]),
+            OperationId::from_bytes([2; 16]),
+            fixture.files.clone(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &fixture.storage,
+                verifier: &fixture.issuer.verifier(&mut None).unwrap(),
+                scope: fixture.scope(),
+                maximum_bytes: 65_536,
+                io: None,
+            },
+        )
+        .unwrap(),
     )
 }
 
@@ -140,8 +151,17 @@ fn cancelled_candidate(accepted: bool, broken: bool) {
         omit_condition: false,
     });
     let (fixture, owner) = setup(provider.clone());
-    let operation = OperationId::from_bytes([2; 16]);
     let journal = execution(&fixture, owner);
+    check_cancellation(journal, phase, accepted, broken);
+}
+
+fn check_cancellation(
+    journal: Arc<dyn ExecutionJournal>,
+    phase: Arc<AtomicU8>,
+    accepted: bool,
+    broken: bool,
+) {
+    let operation = OperationId::from_bytes([2; 16]);
     let event = ExecutionEvent::Started {
         request_digest: [1; 32],
     };

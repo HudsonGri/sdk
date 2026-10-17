@@ -236,217 +236,168 @@ where
         .await
     }
 
-    pub(super) async fn append_validated(
-        &self,
+    pub(super) fn append_validated<'a>(
+        &'a self,
         operation_id: OperationId,
         expected_tail: Option<u64>,
-        claim_id: &str,
-        event: &ExecutionEvent,
-        io: Option<&PreparationIo>,
-    ) -> Result<bool> {
-        self.require_operation(operation_id, io)?;
-        if claim_id.is_empty() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "execution journal compare-and-append is invalid",
-            ));
-        }
-        let owner = self.owner.as_ref().map(|(owner, _)| owner);
-        let model = self.verify_event_refs_with_io(event, io).await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let _model_hold = io
-            .filter(|io| io.original_native_work().is_some())
-            .zip(model.as_ref())
-            .map(|(io, model)| io.guard_owned(model.logical_owned_bytes()?))
-            .transpose()?;
-        let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
-        self.verify_canonical_publication_with_io(operation_id, event, limits, io)
-            .await?;
-        let digest = super::content::operation_digest(operation_id, claim_id, io)?;
-        let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(64)?;
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: 64,
-                ..Default::default()
-            };
-            io.preflight(copying)?;
-            io.charge(copying)?;
-        }
-        let retry_digest = digest.to_hex().to_string();
-        let observation = BorrowedObservation {
-            version: OBSERVATION_VERSION,
-            operation_id,
-            turn_operation: self.turn_operation(operation_id),
-            retry_digest: &retry_digest,
-            event,
-        };
-        let body_hold;
-        let bytes = if let Some(io) = io {
-            let encoded =
-                io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-            body_hold = io.guard_bytes(&encoded)?;
-            encoded
-        } else {
-            body_hold = None;
-            let encoded = serde_json::to_vec(&observation)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
-                return Err(Error::Invalid(
-                    "execution journal observation exceeds Stream limit".into(),
+        claim_id: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.require_operation(operation_id, io)?;
+            if claim_id.is_empty() {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "execution journal compare-and-append is invalid",
                 ));
             }
-            encoded.into()
-        };
-        let key_hold = io.map(|io| io.reserve_decode(32)).transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(32)?;
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: 32,
-                ..Default::default()
-            };
-            io.preflight(copying)?;
-            io.charge(copying)?;
-        }
-        let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
+            let owner = self.owner.as_ref().map(|(owner, _)| owner);
+            let model = self.verify_event_refs_with_io(event, io).await?;
             #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() {
-                return Error::NativeStream {
-                    code: crate::wire::ErrorCode::Invalid,
-                    source: error,
-                    custody: None,
+            let _model_hold = io
+                .filter(|io| io.original_native_work().is_some())
+                .zip(model.as_ref())
+                .map(|(io, model)| io.guard_owned(model.logical_owned_bytes()?))
+                .transpose()?;
+            let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
+            self.verify_canonical_publication_with_io(operation_id, event, limits, io)?
+                .await?;
+            let digest = super::content::operation_digest(operation_id, claim_id, io)?;
+            let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
+            if let Some(io) = io {
+                io.allocation_attempt(64)?;
+                let copying = acyclic_fs::WorkCounters {
+                    bytes_copied: 64,
+                    ..Default::default()
                 };
+                io.preflight(copying)?;
+                io.charge(copying)?;
             }
-            Error::Invalid(error.to_string())
-        })?;
-        let retry_hashing = acyclic_fs::WorkCounters {
-            bytes_hashed: 64,
-            ..Default::default()
-        };
-        if let Some(io) = io {
-            io.preflight(retry_hashing)?;
-            io.charge(retry_hashing)?;
-        }
-        let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
-        let event_digest = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
+            let retry_digest = digest.to_hex().to_string();
+            let observation = BorrowedObservation {
+                version: OBSERVATION_VERSION,
+                operation_id,
+                turn_operation: self.turn_operation(operation_id),
+                retry_digest: &retry_digest,
                 event,
-                limits.file_bytes.min(if io.is_some() {
-                    acyclic_stream::MAX_RECORD_BYTES as u64
-                } else {
-                    u64::MAX
-                }),
-                work,
-            )
-        })?;
-        let mut shared = if self.can_cache_verified(io) {
-            Some(self.verified.lock().await)
-        } else {
-            None
-        };
-        let mut transient = ExecutionSummary::default();
-        let summary = shared.as_deref_mut().unwrap_or(&mut transient);
-        loop {
-            self.refresh_summary(operation_id, summary, io).await?;
-            if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .verify_execution(
-                        operation_id,
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
-                    .await?;
-            }
-            if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
-                if *previous != event_digest {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if io.is_some() {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Conflict,
-                            reason: "execution journal retry identity reused",
-                        });
-                    }
-                    return Err(Error::Conflict(
-                        "execution journal retry identity reused".into(),
-                    ));
-                }
-                return Ok(expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence)));
-            }
-            if expected_tail.is_some_and(|tail| tail != summary.tail) {
-                return Ok(false);
-            }
-            self.validate_model_file_position(operation_id, event, summary, io)
-                .await?;
-            summary.validate_next(event, model.as_ref(), limits, io)?;
-            self.publish_tool_event_file(operation_id, event, io)
-                .await?;
-            if let ExecutionEvent::ModelStarted {
-                step,
-                purpose: crate::executor::ModelPurpose::Response,
-                request,
-                ..
-            } = event
-            {
-                self.publish_model_request(operation_id, *step, request, io)
-                    .await?;
-            }
-            let tail = summary.tail;
-            // Admit and retain the candidate while this guard excludes readers.
-            // A successful append needs no historical replay on the next delta.
-            let next = tail.checked_add(1).ok_or_else(|| {
-                canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Storage,
-                    "execution journal sequence overflow",
-                )
-            })?;
-            summary.accept_fields(
-                (next, &retry_digest, event),
-                event_digest,
-                model.as_ref(),
-                limits,
-                io,
-            )?;
-            // Cancellation can drop this future at the provider await below.
-            // Its next reader must replay before trusting an unacknowledged candidate.
-            summary.pending = true;
-            let committed = if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .append_execution(
-                        operation_id,
-                        tail,
-                        &key,
-                        bytes.clone(),
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
-                    .await
-            } else {
-                self.append_local_with_io(&observation, tail, key.clone(), bytes.clone(), io)
-                    .await
             };
-            if matches!(committed, Ok(true)) {
-                summary.pending = false;
-                drop(key);
-                drop(key_hold);
-                drop(bytes);
-                drop(body_hold);
-                drop(retry_digest);
-                drop(retry_hold);
-                return Ok(true);
+            let bytes = observation_bytes(&observation, io)?;
+            let body_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            let key_hold = io.map(|io| io.reserve_decode(32)).transpose()?;
+            let key = observation_key(&digest, io)?;
+            let (retry_key, event_digest) = observation_digests(&retry_digest, event, limits, io)?;
+            let mut shared = if self.can_cache_verified(io) {
+                Some(self.verified.lock().await)
+            } else {
+                None
+            };
+            let mut transient = ExecutionSummary::default();
+            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            loop {
+                self.refresh_summary(operation_id, summary, io).await?;
+                if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    owner
+                        .verify_execution(
+                            operation_id,
+                            event,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        )
+                        .await?;
+                }
+                if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
+                    if *previous != event_digest {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if io.is_some() {
+                            return Err(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Conflict,
+                                reason: "execution journal retry identity reused",
+                            });
+                        }
+                        return Err(Error::Conflict(
+                            "execution journal retry identity reused".into(),
+                        ));
+                    }
+                    return Ok(
+                        expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence))
+                    );
+                }
+                if expected_tail.is_some_and(|tail| tail != summary.tail) {
+                    return Ok(false);
+                }
+                self.validate_model_file_position(operation_id, event, summary, io)
+                    .await?;
+                summary.validate_next(event, model.as_ref(), limits, io)?;
+                self.publish_tool_event_file(operation_id, event, io)
+                    .await?;
+                if let ExecutionEvent::ModelStarted {
+                    step,
+                    purpose: crate::executor::ModelPurpose::Response,
+                    request,
+                    ..
+                } = event
+                {
+                    self.publish_model_request(operation_id, *step, request, io)
+                        .await?;
+                }
+                let tail = summary.tail;
+                // Admit and retain the candidate while this guard excludes readers.
+                // A successful append needs no historical replay on the next delta.
+                let next = tail.checked_add(1).ok_or_else(|| {
+                    canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "execution journal sequence overflow",
+                    )
+                })?;
+                summary.accept_fields(
+                    (next, &retry_digest, event),
+                    event_digest,
+                    model.as_ref(),
+                    limits,
+                    io,
+                )?;
+                // Cancellation can drop this future at the provider await below.
+                // Its next reader must replay before trusting an unacknowledged candidate.
+                summary.pending = true;
+                let committed = if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    owner
+                        .append_execution(
+                            operation_id,
+                            tail,
+                            &key,
+                            bytes.clone(),
+                            event,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        )
+                        .await
+                } else {
+                    self.append_local_with_io(&observation, tail, key.clone(), bytes.clone(), io)
+                        .await
+                };
+                if matches!(committed, Ok(true)) {
+                    summary.pending = false;
+                    drop(key);
+                    drop(key_hold);
+                    drop(bytes);
+                    drop(body_hold);
+                    drop(retry_digest);
+                    drop(retry_hold);
+                    return Ok(true);
+                }
+                // A different execution writer or an indeterminate provider result
+                // invalidates the candidate. Replay the authoritative accepted cut.
+                *summary = ExecutionSummary::default();
+                committed?;
             }
-            // A different execution writer or an indeterminate provider result
-            // invalidates the candidate. Replay the authoritative accepted cut.
-            *summary = ExecutionSummary::default();
-            committed?;
-        }
+        })
     }
 
     async fn append_local_with_io(
@@ -545,3 +496,76 @@ where
 }
 
 use crate::executor::stock_boundary;
+
+#[inline(never)]
+fn observation_bytes(
+    observation: &BorrowedObservation<'_>,
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_stream::OwnedBytes> {
+    if let Some(io) = io {
+        io.encode(observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)
+    } else {
+        let encoded =
+            serde_json::to_vec(observation).map_err(|error| Error::Invalid(error.to_string()))?;
+        if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(Error::Invalid(
+                "execution journal observation exceeds Stream limit".into(),
+            ));
+        }
+        Ok(encoded.into())
+    }
+}
+
+#[inline(never)]
+fn observation_key(digest: &blake3::Hash, io: Option<&PreparationIo>) -> Result<StreamKey> {
+    if let Some(io) = io {
+        io.allocation_attempt(32)?;
+        let copying = acyclic_fs::WorkCounters {
+            bytes_copied: 32,
+            ..Default::default()
+        };
+        io.preflight(copying)?;
+        io.charge(copying)?;
+    }
+    StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
+        #[cfg(not(target_arch = "wasm32"))]
+        if io.is_some() {
+            return Error::NativeStream {
+                code: crate::wire::ErrorCode::Invalid,
+                source: error,
+                custody: None,
+            };
+        }
+        Error::Invalid(error.to_string())
+    })
+}
+
+#[inline(never)]
+fn observation_digests(
+    retry: &str,
+    event: &ExecutionEvent,
+    limits: Limits,
+    io: Option<&PreparationIo>,
+) -> Result<([u8; 32], [u8; 32])> {
+    let hashing = acyclic_fs::WorkCounters {
+        bytes_hashed: 64,
+        ..Default::default()
+    };
+    if let Some(io) = io {
+        io.preflight(hashing)?;
+        io.charge(hashing)?;
+    }
+    let retry_key = *blake3::hash(retry.as_bytes()).as_bytes();
+    let event_digest = crate::executor::with_history_io(io, |work| {
+        crate::executor::json::canonical_json_digest(
+            event,
+            limits.file_bytes.min(if io.is_some() {
+                acyclic_stream::MAX_RECORD_BYTES as u64
+            } else {
+                u64::MAX
+            }),
+            work,
+        )
+    })?;
+    Ok((retry_key, event_digest))
+}

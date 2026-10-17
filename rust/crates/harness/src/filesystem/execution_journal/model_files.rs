@@ -48,6 +48,9 @@ where
                 "model completion has no task owner",
             )
         })?;
+        let task = Component::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{}", owner.task_id()), work)
+        })?)?;
         let message = outcome
             .err()
             .map(|(_, error)| {
@@ -64,7 +67,12 @@ where
             Ok(_) => TaskFile::Completion(turn),
             Err((sequence, _)) => TaskFile::Error {
                 turn,
-                sequence: sequence as u64,
+                // A resumed stream can fail again before producing another event.
+                // Allocate a distinct immutable failure identity in that case.
+                sequence: files
+                    .inner
+                    .next_model_error(&task, turn, sequence as u64)
+                    .await?,
             },
         };
         let completion = match outcome {
@@ -84,9 +92,6 @@ where
             None => crate::contract::canonical_json_bytes(&completion)?.into(),
         };
         let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        let task = Component::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("{}", owner.task_id()), work)
-        })?)?;
         self.publish_model_file(&Write::new(FileKey::Task { task, file }, bytes), io)
             .await
     }
@@ -236,7 +241,26 @@ where
             let key = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("model:{step}:{sequence}"), work)
             })?;
-            Some(crate::executor::stage_event_json(self, operation, &key, event, io).await?)
+            let media = match channel {
+                Channel::Text => crate::executor::TEXT_DELTA,
+                Channel::Reasoning => crate::executor::REASONING_DELTA,
+            };
+            let source = self
+                .stage(operation, &key, delta.as_bytes(), media, io)?
+                .await?;
+            if source.volume().class() != VolumeClass::AgentPrivate
+                || source.descriptor().media_type() != media
+            {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "model delta source is not private text",
+                ));
+            }
+            crate::executor::with_history_io(io, |work| {
+                source.descriptor().verify(delta.as_bytes(), work)
+            })?;
+            Some(source)
         } else {
             None
         };
@@ -423,7 +447,7 @@ where
                 event: reference,
             },
             io,
-        )
+        )?
         .await?;
         Ok(())
     }
@@ -446,7 +470,8 @@ where
         if !matches!(
             reference.descriptor().media_type(),
             crate::executor::TEXT_DELTA | crate::executor::REASONING_DELTA
-        ) {
+        ) || !reference.path().starts_with(".tasks/")
+        {
             return Ok(());
         }
         let (Some(files), Some(_)) = (&self.task_files, &self.owner) else {
@@ -499,7 +524,8 @@ where
         if !matches!(
             reference.descriptor().media_type(),
             crate::executor::TEXT_DELTA | crate::executor::REASONING_DELTA
-        ) {
+        ) || !reference.path().starts_with(".tasks/")
+        {
             return Ok(None);
         }
         crate::executor::with_history_io(io, |work| reference.validate(work))?;

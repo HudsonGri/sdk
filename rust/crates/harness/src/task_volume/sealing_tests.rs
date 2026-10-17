@@ -78,4 +78,38 @@ proptest! {
         index.turn_publications.clear();
         prop_assert!(validate_file(&index, &next).is_ok());
     }
+
+    #[test]
+    fn failure_identities_advance_without_wrapping_or_reading_neighbor_turns(
+        stored in prop_oneof![Just(u64::MAX), any::<u64>()], observed in any::<u64>(),
+    ) {
+        futures::executor::block_on(async {
+            let volume = TaskVolume::open(Arc::new(acyclic_stream::MemoryStream::default()),
+                StreamPath::new("failure-identities").unwrap()).await.unwrap();
+            let task = Component::new("t").unwrap();
+            for (turn, sequence) in [(1, u64::MAX), (0, stored)] {
+                let write = Write::new(FileKey::Task { task: task.clone(),
+                    file: TaskFile::Error { turn, sequence } }, b"{}".to_vec());
+                volume.append(volume.head().await.unwrap(), &write).await.unwrap();
+            }
+            let next = volume.next_model_error(&task, 0, observed).await;
+            if stored == u64::MAX {
+                prop_assert!(matches!(next, Err(Error::LimitExceeded)));
+            } else {
+                let next = next.unwrap();
+                prop_assert!(next > stored && next >= observed);
+                let next = volume.next_model_error(&task, 0, 0).await.unwrap();
+                prop_assert!(next > stored);
+                // Losing the retained failure during index reconstruction must
+                // fail the same strict-advance oracle.
+                volume.index.lock().await.files.remove(&FileKey::Task {
+                    task: task.clone(), file: TaskFile::Error { turn: 0, sequence: stored },
+                });
+                let broken = volume.next_model_error(&task, 0, 0).await.unwrap();
+                prop_assert!(broken <= stored);
+            }
+            Ok(())
+        })?;
+    }
+
 }

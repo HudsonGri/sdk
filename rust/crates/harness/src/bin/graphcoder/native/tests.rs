@@ -194,6 +194,7 @@ async fn queued_manifest_survives_restart_with_a_different_binding() -> Result<(
         let recovered = Arc::new(
             ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_reconciliations([
                 ScriptedReconciliation {
+                    failure: None,
                     orphan: true,
                     observed: Vec::new(),
                     continuation: Some(vec![ModelEvent::Completed {

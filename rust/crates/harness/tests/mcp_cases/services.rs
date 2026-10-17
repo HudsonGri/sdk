@@ -593,6 +593,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let model = Arc::new(
         sampling_model([ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])])
             .with_reconciliations([ScriptedReconciliation {
+                failure: None,
                 orphan: false,
                 observed: vec![],
                 continuation: None,

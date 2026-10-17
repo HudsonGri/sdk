@@ -374,6 +374,7 @@ async fn reopen_recovers_inflight_model_with_the_original_reservation() -> Resul
                 }
             })
             .with_reconciliations([ScriptedReconciliation {
+                failure: None,
                 orphan: false,
                 observed: vec![],
                 continuation: Some(vec![

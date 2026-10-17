@@ -254,6 +254,31 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .copied())
     }
 
+    pub(crate) async fn next_model_error(
+        &self,
+        task: &Component,
+        turn: u64,
+        observed: u64,
+    ) -> Result<u64> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        let key = |sequence| FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::Error { turn, sequence },
+        };
+        match index.files.range(key(0)..=key(u64::MAX)).next_back() {
+            Some((
+                FileKey::Task {
+                    file: TaskFile::Error { sequence, .. },
+                    ..
+                },
+                _,
+            )) => Ok(observed.max(sequence.checked_add(1).ok_or(Error::LimitExceeded)?)),
+            None => Ok(observed),
+            _ => Err(Error::InvalidSegment),
+        }
+    }
+
     pub(crate) async fn latest_model_file(
         &self,
         task: &Component,

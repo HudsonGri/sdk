@@ -72,7 +72,7 @@ where
             .as_mut()
             .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
-        let mut journal = Self::new(
+        Self::construct(
             owner.stream(),
             host,
             &SchemaRegistry::new(),
@@ -83,10 +83,8 @@ where
                 maximum_bytes: maximum_payload_bytes,
                 io,
             },
-        )?;
-        journal.owner = Some((owner, operation_id));
-        journal.execution = Some((operation_id, turn_operation));
-        Ok(journal)
+            Some((owner, operation_id, turn_operation)),
+        )
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
@@ -168,6 +166,18 @@ where
         schemas: &SchemaRegistry,
         binding: super::super::FilesystemJournalBinding<'_>,
     ) -> Result<Self> {
+        Self::construct(stream, host, schemas, binding, None)
+    }
+
+    // Construct once, without a second journal-sized temporary in for_task.
+    #[inline(never)]
+    fn construct(
+        stream: Arc<P>,
+        host: Arc<FilesystemHost<A, O>>,
+        schemas: &SchemaRegistry,
+        binding: super::super::FilesystemJournalBinding<'_>,
+        task: Option<(TaskJournalOwner<P>, OperationId, OperationId)>,
+    ) -> Result<Self> {
         let super::super::FilesystemJournalBinding {
             volume,
             verifier,
@@ -243,6 +253,10 @@ where
             .filter(|io| io.original_native_work().is_some())
             .map(|io| io.take_native_custody(io.owned_since(before)?))
             .transpose()?;
+        let execution = task
+            .as_ref()
+            .map(|(_, operation, turn)| (*operation, *turn));
+        let owner = task.map(|(owner, operation, _)| (owner, operation));
         Ok(Self {
             stream,
             host,
@@ -253,8 +267,8 @@ where
             maximum_payload_bytes,
             input_verifier: None,
             interactions,
-            owner: None,
-            execution: None,
+            owner,
+            execution,
             task_files: None,
             verified: crate::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),

@@ -160,6 +160,7 @@ async fn pending_script_signals_recorded_dispatch_and_reconciles_after_drop() ->
         let weak = weak.clone();
         ScriptedModelProvider::new(turns)
             .with_reconciliations([ScriptedReconciliation {
+                failure: None,
                 orphan: false,
                 observed: vec![prefix.clone()],
                 continuation: Some(vec![ModelEvent::Completed {
@@ -248,6 +249,7 @@ async fn orphan_reconciliation_checks_prefix_and_records_dispatch_without_genera
         },
     ];
     let provider = ScriptedModelProvider::new([]).with_reconciliations([ScriptedReconciliation {
+        failure: None,
         orphan: true,
         observed: prefix.clone(),
         continuation: Some(continuation.clone()),
@@ -274,11 +276,13 @@ async fn reconciliation_preserves_unrecoverable_and_incomplete_replies() -> Resu
     let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
         .with_reconciliations([
             ScriptedReconciliation {
+                failure: None,
                 orphan: false,
                 observed: vec![],
                 continuation: None,
             },
             ScriptedReconciliation {
+                failure: None,
                 orphan: false,
                 observed: vec![],
                 continuation: Some(vec![]),
@@ -305,6 +309,7 @@ async fn reconciliation_rejects_unknown_operations_and_steps_without_consuming_r
 -> Result<()> {
     let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
         .with_reconciliations([ScriptedReconciliation {
+            failure: None,
             orphan: false,
             observed: vec![],
             continuation: None,
@@ -422,6 +427,7 @@ fn tagged_response_round_trips_without_a_wrapper_object() -> Result<()> {
 async fn reconciliation_keeps_the_original_request_binding() -> Result<()> {
     let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
         .with_reconciliations([ScriptedReconciliation {
+            failure: None,
             orphan: false,
             observed: vec![],
             continuation: None,
@@ -505,4 +511,22 @@ async fn unavailable_accounting_still_records_and_replays_generation() -> Result
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(provider.remaining(), 0);
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn reconciliation_failures_round_trip_without_accepting_a_continuation(
+        failure in proptest::option::of(".{0,64}"), orphan in proptest::bool::ANY,
+    ) {
+        let script = ScriptedReconciliation { failure, orphan, observed: vec![], continuation: None };
+        let encoded = serde_json::to_value(&script).unwrap();
+        let decoded: ScriptedReconciliation = serde_json::from_value(encoded.clone()).unwrap();
+        proptest::prop_assert_eq!(serde_json::to_value(decoded).unwrap(), encoded.clone());
+        if script.failure.is_some() {
+            let mut invalid = encoded;
+            invalid["continuation"] = json!([]);
+            proptest::prop_assert!(serde_json::from_value::<ScriptedReconciliation>(invalid).is_err());
+        }
+    }
 }

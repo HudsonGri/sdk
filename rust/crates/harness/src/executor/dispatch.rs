@@ -80,7 +80,23 @@ impl StockExecution<'_> {
         #[cfg(feature = "filesystem")]
         let _continuation_hold;
         let stream = if started {
-            let continuation = self.reconcile_model_events(dispatch, &replayed).await?;
+            let continuation = match self.reconcile_model_events(dispatch, &replayed).await {
+                Ok(continuation) => continuation,
+                Err(error) => {
+                    drop(replayed);
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    drop(replayed_hold);
+                    self.publish_model_error(
+                        journal,
+                        input.operation_id,
+                        (step, purpose),
+                        admission.count,
+                        &error,
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
             let continuation = continuation.ok_or(Error::Indeterminate(input.operation_id))?;
             #[cfg(feature = "filesystem")]
             {
@@ -121,16 +137,14 @@ impl StockExecution<'_> {
                 let generated = match generated {
                     Ok(generated) => generated,
                     Err(error) => {
-                        if purpose == ModelPurpose::Response {
-                            journal
-                                .publish_model_outcome(
-                                    input.operation_id,
-                                    step,
-                                    Err((admission.count, &error)),
-                                    io,
-                                )?
-                                .await?;
-                        }
+                        self.publish_model_error(
+                            journal,
+                            input.operation_id,
+                            (step, purpose),
+                            admission.count,
+                            &error,
+                        )
+                        .await?;
                         return Err(error);
                     }
                 };
@@ -370,27 +384,12 @@ impl StockExecution<'_> {
     ) -> Result<()> {
         let (step, purpose, purpose_key) = turn;
         let io = self.io;
-        {
+        let result = async {
             let mut stream = stream;
             while let Some(received) = stream.next().await {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 let event_hold;
-                let event = match received {
-                    Ok(event) => event,
-                    Err(error) => {
-                        if purpose == ModelPurpose::Response {
-                            journal
-                                .publish_model_outcome(
-                                    operation_id,
-                                    step,
-                                    Err((admission.count, &error)),
-                                    io,
-                                )?
-                                .await?;
-                        }
-                        return Err(error);
-                    }
-                };
+                let event = received?;
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 {
                     event_hold = io
@@ -465,6 +464,35 @@ impl StockExecution<'_> {
                     drop(event_hold);
                 }
             }
+            Ok::<_, Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            self.publish_model_error(
+                journal,
+                operation_id,
+                (step, purpose),
+                admission.count,
+                &error,
+            )
+            .await?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn publish_model_error(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        turn: (u32, ModelPurpose),
+        observed: usize,
+        error: &Error,
+    ) -> Result<()> {
+        if turn.1 == ModelPurpose::Response {
+            journal
+                .publish_model_outcome(operation, turn.0, Err((observed, error)), self.io)?
+                .await?;
         }
         Ok(())
     }

@@ -202,6 +202,7 @@ impl ModelProvider for ModelEffects {
             // The shared scripted provider validates the exact reconciliation prefix.
             ScriptedModelProvider::new([])
                 .with_reconciliations([ScriptedReconciliation {
+                    failure: None,
                     orphan: true,
                     observed: observed.to_vec(),
                     continuation: Some(events[observed.len()..].to_vec()),

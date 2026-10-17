@@ -73,15 +73,42 @@ pub enum ScriptedEvent {
 
 /// One reconciliation of a previously admitted model request.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, try_from = "RawReconciliation")]
 pub struct ScriptedReconciliation {
     /// Explicitly permits recovery on a fresh provider that never generated this dispatch.
     #[serde(default)]
     pub orphan: bool,
+    /// A provider failure instead of a continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
     /// Exact durable prefix that the executor must supply.
     pub observed: Vec<ModelEvent>,
     /// Remaining events, or `None` when the provider cannot recover the request.
     pub continuation: Option<Vec<ModelEvent>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReconciliation {
+    #[serde(default)]
+    orphan: bool,
+    observed: Vec<ModelEvent>,
+    continuation: Option<Vec<ModelEvent>>,
+    failure: Option<String>,
+}
+impl TryFrom<RawReconciliation> for ScriptedReconciliation {
+    type Error = &'static str;
+    fn try_from(raw: RawReconciliation) -> std::result::Result<Self, Self::Error> {
+        if raw.failure.is_some() && raw.continuation.is_some() {
+            return Err("reconciliation cannot fail and continue together");
+        }
+        Ok(Self {
+            orphan: raw.orphan,
+            observed: raw.observed,
+            continuation: raw.continuation,
+            failure: raw.failure,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -302,7 +329,10 @@ impl ModelProvider for ScriptedModelProvider {
                     "scripted reconciliation prefix mismatch".into(),
                 ));
             }
-            Ok(reply.continuation)
+            match reply.failure {
+                Some(message) => Err(Error::Storage(message)),
+                None => Ok(reply.continuation),
+            }
         })
     }
 }
