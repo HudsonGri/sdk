@@ -142,11 +142,14 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         Mutation::SetMetadata(value) => {
             let mut updated = metadata(value.metadata)?;
+            let path =
+                crate::workspace::customer_path(&value.path, transaction.checkout.volume_config())
+                    .map_err(|error| status(&error))?;
             let current = transaction
                 .checkout
-                .read_metadata(&value.path[..], WorkBudget::UNBOUNDED, &cancellation)
+                .read_metadata(&path, WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(|failure| status(&failure.error))?
+                .map_err(|failure| status(&WorkspaceError::from(failure.error)))?
                 .value;
             // Wire metadata has no authority to replace named attributes,
             // including the root's persisted policy.

@@ -192,7 +192,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         require(&compiled.0, Action::Read, reference.path(), io)?;
-        ReadObservation::new(workspace, generation, compiled, reference, io).await
+        let generation = io.sdk(
+            workspace
+                .generation(generation, io, io.cancellation())
+                .await,
+        )?;
+        fork_preparer_io::retain(&generation, Some(io)).await?;
+        Ok(ReadObservation::new(
+            workspace, generation, compiled, reference, io,
+        ))
     }
     pub(in crate::filesystem) async fn read_file_with_access(
         &self,

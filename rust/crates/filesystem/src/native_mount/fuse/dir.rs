@@ -151,14 +151,14 @@ impl DirectoryStreams {
             .insert((inode, stream.emitted), (stream, storage));
     }
 
-    pub(super) fn rename_prefix(
-        &mut self,
+    pub(super) fn prepare_rename_prefix(
+        &self,
         source: &MountPath,
         destination: &MountPath,
         parent_inode: u64,
         nodes: &HashMap<u64, InodeEntry>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<impl FnOnce(&mut Self) + use<>, NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
         for (key, (stream, _)) in &self.waiting {
             work.charge(Items.delta(1))?;
@@ -176,14 +176,16 @@ impl DirectoryStreams {
                 ));
             }
         }
-        for (key, path, parent_inode) in replacements.drain(..) {
-            let stream = &mut self.waiting.get_mut(&key).ok_or(libc::EIO)?.0;
-            stream.path = path;
-            if let Some(parent_inode) = parent_inode {
-                stream.parent_inode = parent_inode;
+        Ok(move |streams: &mut Self| {
+            for (key, path, parent_inode) in replacements.drain(..) {
+                if let Some((stream, _)) = streams.waiting.get_mut(&key) {
+                    stream.path = path;
+                    if let Some(parent_inode) = parent_inode {
+                        stream.parent_inode = parent_inode;
+                    }
+                }
             }
-        }
-        Ok(())
+        })
     }
 }
 

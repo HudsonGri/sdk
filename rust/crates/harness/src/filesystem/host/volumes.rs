@@ -102,6 +102,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
         super::super::access::require_current(&workspace, &access.0, io).await?;
+        drop(access);
         let name = crate::executor::with_history_io(Some(io), |work| child.storage_name(work))?;
         let operation = fork_preparer_io::operation_key(key, Some(io))?;
         let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);

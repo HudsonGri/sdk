@@ -11,26 +11,20 @@ pub(in crate::filesystem) struct ReadObservation<'a, A, O> {
 }
 
 impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> {
-    pub(super) async fn new(
+    pub(super) fn new(
         workspace: Workspace<A, O>,
-        generation: GenerationId,
+        generation: acyclic_fs::Generation<A, O>,
         view: CompiledAccess<'a>,
         reference: &'a FileRef,
         io: &'a PreparationIo,
-    ) -> Result<Self> {
-        let generation = io.sdk(
-            workspace
-                .generation(generation, io, io.cancellation())
-                .await,
-        )?;
-        fork_preparer_io::retain(&generation, Some(io)).await?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             workspace,
             generation,
             view,
             reference,
             io,
-        })
+        }
     }
 
     pub(in crate::filesystem) async fn read_file(

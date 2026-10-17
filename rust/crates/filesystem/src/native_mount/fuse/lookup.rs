@@ -353,16 +353,20 @@ impl FuseProjection {
             None
         };
         let mut detached = self.detach_name(&to.spelled, replaced.as_ref(), work)?;
+        let install_names = self.core.state()?.prepare_rename_prefix(
+            from.key(),
+            to.key(),
+            &to.spelled,
+            new_parent,
+            work,
+        )?;
         let renamed = self.source_write(work, || {
             Ok(source.rename(&from.spelled, &to.spelled, replace, work)?)
         });
         let mut state = self.core.state()?;
         renamed?;
         state.install_detached_handles(&mut detached);
-        if from.key() != to.key() {
-            state.invalidate_prefix(to.key(), work)?;
-        }
-        state.rename_prefix(from.key(), to.key(), &to.spelled, new_parent, work)?;
+        install_names(&mut state);
         Ok(())
     }
 

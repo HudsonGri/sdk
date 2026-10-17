@@ -1,5 +1,9 @@
 use super::*;
 
+fn preserved(source: &MemorySource, path: &MountPath) -> Result<bool, MountSourceError> {
+    Ok(source.lookup(path)?.is_some() && source.read_range(path, 0, 8)?.as_ref() == b"original")
+}
+
 // Exercise every allocation prefix up to the first successful operation. This
 // finds the exact post-effect allocation that a single guessed budget misses.
 #[test]
@@ -33,8 +37,17 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
                     ..crate::WorkBudget::UNBOUNDED
                 },
                 &crate::CancellationToken::new(),
-            )
-            .map_err(|(error, _)| error)?;
+            );
+            let work = match work {
+                Ok(work) => work,
+                Err(_) => {
+                    assert!(
+                        preserved(source.as_ref(), &path)?,
+                        "ledger admission changed the namespace"
+                    );
+                    continue;
+                }
+            };
             let result = if rename {
                 projection.rename_name(
                     ROOT_INODE,
@@ -49,12 +62,7 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
             };
             if result.is_err() {
                 assert!(
-                    source.lookup(&path)?.is_some(),
-                    "allowance {allowance}: {result:?}"
-                );
-                assert_eq!(
-                    source.read_range(&path, 0, 8)?.as_ref(),
-                    b"original",
+                    preserved(source.as_ref(), &path)?,
                     "allowance {allowance}: {result:?}"
                 );
             } else {
@@ -86,6 +94,7 @@ fn post_unlink_allocation_negative_control() -> Result<(), Box<dyn std::error::E
     let setup = fuse_fixture_work();
     let path = name("retained");
     source.create_file(&path, FileMetadata::default(), None, &setup)?;
+    source.write_range(&path, 0, Bytes::from_static(b"original"))?;
     let projection = super::super::FuseProjection {
         core: projection_core(
             source.clone(),
@@ -104,14 +113,12 @@ fn post_unlink_allocation_negative_control() -> Result<(), Box<dyn std::error::E
         &setup,
     )?);
     source.remove(&path, None, &setup)?;
-    let refused = crate::NativeMaterializationWork::new(
-        crate::WorkBudget {
-            allocation_operations: 0,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(error, _)| error)?;
+    let refused = fuse_fixture_work();
+    // The ledger itself is already funded. Admit no further allocations.
+    {
+        let mut state = refused.state.lock();
+        state.budget.allocation_operations = state.work.allocation_operations;
+    }
     assert!(
         projection
             .core
@@ -121,8 +128,62 @@ fn post_unlink_allocation_negative_control() -> Result<(), Box<dyn std::error::E
             .is_err()
     );
     assert!(
-        source.lookup(&path)?.is_none(),
+        !preserved(source.as_ref(), &path)?,
         "the old ordering must violate namespace preservation on refusal"
     );
     Ok(())
+}
+
+fn rename_and_forget(resurrect: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = shared_sources(posix_config())?;
+    let source = Arc::new(source);
+    let work = fuse_fixture_work();
+    source.create_file(&name("before"), FileMetadata::default(), None, &work)?;
+    let projection = super::super::FuseProjection {
+        core: projection_core(
+            source,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )?,
+    };
+    let inode = projection
+        .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("before"), &work)?
+        .attr
+        .ino
+        .0;
+    let mut state = projection.core.state().map_err(NativeMountError::from)?;
+    let install = state.prepare_rename_prefix(
+        &name("before"),
+        &name("after"),
+        &name("after"),
+        ROOT_INODE,
+        &work,
+    )?;
+    state.release_lookup_reference(inode, 1);
+    install(&mut state);
+    if resurrect {
+        state
+            .inode_by_path
+            .insert(super::super::fuse_clone_path(&name("after"), &work)?, inode);
+    }
+    assert!(
+        state
+            .inode_by_path
+            .values()
+            .all(|inode| state.by_inode.contains_key(inode)),
+        "retired inode was resurrected"
+    );
+    Ok(())
+}
+
+#[test]
+fn prepared_rename_cannot_resurrect_a_concurrent_forget() -> Result<(), Box<dyn std::error::Error>>
+{
+    rename_and_forget(false)
+}
+
+#[test]
+#[should_panic(expected = "retired inode was resurrected")]
+fn forgotten_inode_negative_control() {
+    rename_and_forget(true).unwrap();
 }

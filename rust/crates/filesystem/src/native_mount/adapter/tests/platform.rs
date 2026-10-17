@@ -445,10 +445,23 @@ fn native_name_encoding_and_capture_cases() -> Result<(), Box<dyn std::error::Er
         },
     );
     #[cfg(unix)]
-    let (profile, name, exact_metadata) =
-        (FilesystemProfile::Posix, vec![b'r', 0xff, b'w'], metadata());
+    let (profile, name, exact_metadata) = (
+        FilesystemProfile::Posix,
+        "exact-α-😀".as_bytes().to_vec(),
+        metadata(),
+    );
     let source = source(profile)?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    #[cfg(unix)]
+    assert!(matches!(
+        source.create_file(
+            &MountPath::root().child(vec![b'r', 0xff, b'w']),
+            metadata(),
+            None,
+            &work,
+        ),
+        Err(MountSourceError::AccessDenied)
+    ));
     let path = MountPath::root().child(name.clone());
     let created = source.create_file(&path, exact_metadata, None, &work)?;
     assert_eq!(source.lookup(&path)?, Some(created));
@@ -471,12 +484,19 @@ fn native_name_encoding_and_capture_cases() -> Result<(), Box<dyn std::error::Er
             .collect(),
     );
     #[cfg(target_os = "linux")]
-    let (host_name, captured_name) = {
+    {
         use std::os::unix::ffi::OsStringExt;
         let name = vec![b'c', 0xfe, b'p'];
-        (std::ffi::OsString::from_vec(name.clone()), name)
-    };
-    #[cfg(target_os = "macos")]
+        let host_path = host.path().join(std::ffi::OsString::from_vec(name.clone()));
+        std::fs::write(&host_path, b"captured")?;
+        assert!(matches!(
+            source.capture_host_path(host.path(), &MountPath::root().child(name)),
+            Err(MountSourceError::AccessDenied)
+        ));
+        assert_eq!(std::fs::read(&host_path)?, b"captured");
+        std::fs::remove_file(host_path)?;
+    }
+    #[cfg(unix)]
     let (host_name, captured_name) = (
         std::ffi::OsString::from("captured-β.bin"),
         "captured-β.bin".as_bytes().to_vec(),

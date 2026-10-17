@@ -7,7 +7,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Observations cannot be forged or have their selected data replaced:
     /// ```compile_fail
     /// use acyclic_harness::filesystem::access::ReadObservation;
-    /// let observed = ReadObservation { generation: (), view: (), reference: (), io: (), workspace: () };
+    /// fn replace<A, O>(observed: &mut ReadObservation<'_, A, O>, data: acyclic_fs::Generation<A, O>) {
+    ///     observed.generation = data;
+    /// }
     /// ```
     pub async fn read_content(
         &self,

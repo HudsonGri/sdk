@@ -250,7 +250,9 @@ impl TaskContext {
     /// Effective read grants have no public constructor or replacement field:
     /// ```compile_fail
     /// use acyclic_harness::runtime::content_read::ReadGrants;
-    /// let grants = ReadGrants { scope: (), grants: () };
+    /// fn replace<'a>(view: &mut ReadGrants<'a>, grants: &'a acyclic_harness::Capabilities) {
+    ///     view.grants = grants;
+    /// }
     /// ```
     pub async fn read_file(&self, file: &FileRef, io: Option<&ContentIo>) -> Result<OwnedBytes> {
         self.read_bound_file(

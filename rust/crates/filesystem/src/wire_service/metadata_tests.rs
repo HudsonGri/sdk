@@ -18,7 +18,8 @@ proptest! {
             apply_mutation(&mut transaction, wire::Mutation { mutation: Some(wire::mutation::Mutation::SetMetadata(wire::SetMetadata { path: "/".into(), metadata: Some(update) })) }).await?;
             let (policy, _) = transaction.checkout.read_access_policy(budget, &cancellation).await?.value;
             assert_eq!(policy.ok_or("policy was erased")?.bytes.as_ref(), crate::access::INITIAL_POLICY);
-            let changed = transaction.checkout.read_metadata("/", budget, &cancellation).await?.value;
+            let root = transaction.checkout.root().root_file_id;
+            let changed = transaction.checkout.read_metadata(root, budget, &cancellation).await?.value;
             assert_eq!(changed.posix_mode, MetadataField::Value(mode));
             assert_eq!(changed.modified_ns, MetadataField::Value(time));
             // The former translation overwrites the policy root. Run it through
