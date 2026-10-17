@@ -189,7 +189,7 @@ fn observe_listing(
     observe::<_, _, Event>(
         || (),
         |()| {
-            let run = || list(root).map_err(|error| error.to_string());
+            let run = || list(root).map_err(|error| format!("{error:?}"));
             if old {
                 reader_work::restoring_old_work(run)
             } else {
@@ -252,6 +252,33 @@ proptest! {
     ) {
         prop_assert!(check(&entries, false).map_err(|error| TestCaseError::fail(error.to_string()))?);
     }
+}
+
+#[test]
+fn missing_and_non_directory_roots_match_complete_old_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    for is_file in [false, true] {
+        let results = [true, false].map(|old| -> Result<_, Box<dyn std::error::Error>> {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("entry");
+            if is_file {
+                std::fs::write(&path, b"file")?;
+            }
+            let (result, trace) = observe::<_, _, Event>(
+                || (),
+                |()| {
+                    if old { old_list(&path) } else { list(&path) }
+                },
+            );
+            Ok((
+                format!("{:?}", result.err().ok_or("root must be rejected")?),
+                trace,
+            ))
+        });
+        let [old, current] = results;
+        assert_eq!(old?, current?);
+    }
+    Ok(())
 }
 
 /// Crosses several refills of the record buffer.

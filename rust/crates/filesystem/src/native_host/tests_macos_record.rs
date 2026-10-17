@@ -49,7 +49,10 @@ proptest! {
 fn truncated_records_and_names_are_rejected() {
     let bytes = encode(b"entry");
     for end in 0..bytes.len() {
-        assert!(record(&bytes[..end], 0).is_err());
+        let error = record(&bytes[..end], 0).expect_err("truncated record");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.raw_os_error(), None);
+        assert_eq!(error.to_string(), "malformed directory record");
     }
     let mut broken = bytes.clone();
     broken[FIXED + 5] = b'x';
