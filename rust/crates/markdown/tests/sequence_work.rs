@@ -1,16 +1,18 @@
 use super::*;
 use std::{collections::HashSet, sync::Arc};
 
-fn retained(markdown: &Markdown) -> (usize, usize) {
-    let mut targets = HashSet::new();
-    let mut texts = HashSet::new();
-    let mut nodes = HashSet::new();
+fn retained(
+    markdown: &Markdown,
+    nodes: &mut HashSet<usize>,
+    texts: &mut HashSet<usize>,
+    targets: &mut HashSet<*const u8>,
+) -> (usize, usize) {
+    nodes.clear();
+    texts.clear();
+    targets.clear();
     let mut text_metadata = 0;
     let mut bytes = markdown.source.capacity() + markdown.visibility.retained();
-    let (state_bytes, state_metadata) =
-        markdown
-            .state
-            .text_retained(&mut nodes, &mut texts, &mut targets);
+    let (state_bytes, state_metadata) = markdown.state.text_retained(nodes, texts, targets);
     bytes += state_bytes;
     text_metadata += state_metadata;
     bytes += markdown
@@ -19,14 +21,12 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
         .map(|container| container.opening.capacity() + container.continuation.capacity())
         .sum::<usize>();
     for line in markdown.lines.iter().chain(&markdown.spare.lines) {
-        let (payload, metadata) = line.spans.retained(&mut nodes, &mut texts, &mut targets);
+        let (payload, metadata) = line.spans.retained(nodes, texts, targets);
         bytes += payload;
         text_metadata += metadata;
     }
     for cache in &markdown.cached {
-        let (payload, metadata) = cache
-            .state
-            .text_retained(&mut nodes, &mut texts, &mut targets);
+        let (payload, metadata) = cache.state.text_retained(nodes, texts, targets);
         bytes += payload;
         text_metadata += metadata;
         bytes += cache.template.source.capacity();
@@ -50,13 +50,15 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
             }
         }
     }
-    let (table_payload, table_metadata) = markdown.table.as_ref().map_or((0, 0), |table| {
-        table.retained(&mut targets, &mut texts, &mut nodes)
-    });
+    let (table_payload, table_metadata) = markdown
+        .table
+        .as_ref()
+        .map_or((0, 0), |table| table.retained(targets, texts, nodes));
     bytes += table_payload;
-    let (inline_payload, inline_metadata) = markdown.inline.as_ref().map_or((0, 0), |inline| {
-        inline.retained(&mut nodes, &mut texts, &mut targets)
-    });
+    let (inline_payload, inline_metadata) = markdown
+        .inline
+        .as_ref()
+        .map_or((0, 0), |inline| inline.retained(nodes, texts, targets));
     bytes += inline_payload;
     let metadata = text_metadata
         + table_metadata
@@ -216,6 +218,9 @@ fn measure_with(
     copies: usize,
     oracle: &mut impl FnMut(&str, &str) -> Arc<Vec<Line>>,
 ) -> (usize, usize) {
+    let mut nodes = HashSet::new();
+    let mut texts = HashSet::new();
+    let mut targets = HashSet::new();
     let mut markdown = Markdown::default();
     let mut total = 0;
     let mut source = String::new();
@@ -264,7 +269,7 @@ fn measure_with(
             growth,
             used - production,
         );
-        let (payload, bytes) = retained(&markdown);
+        let (payload, bytes) = retained(&markdown, &mut nodes, &mut texts, &mut targets);
         assert!(payload <= markdown.source.len() * 8 + 1024);
         peak = peak.max(bytes);
         source.push_str(delta);
@@ -302,7 +307,7 @@ fn measure_with(
         copies,
         &mut push,
     );
-    let (payload, bytes) = retained(&markdown);
+    let (payload, bytes) = retained(&markdown, &mut nodes, &mut texts, &mut targets);
     assert!(
         payload <= source.len() * 8 + 1024,
         "{bytes} retained for {} source bytes",

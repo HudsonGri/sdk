@@ -1,10 +1,17 @@
 use super::State;
 use std::ops::Range;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Closure {
+    Reference,
+    Image,
+    Link(bool),
+}
+
 pub(super) struct Closed {
     pub(super) previous: usize,
     pub(super) range: Range<usize>,
-    pub(super) opening: usize,
+    pub(super) kind: Closure,
 }
 
 impl State {
@@ -34,14 +41,25 @@ impl State {
         let (page, offset) = super::forest::slot(index);
         let label = self.closed_labels.get(page)?.get(offset)?;
         debug_assert!(label.previous < cursor);
-        if label.opening != 0 {
-            let opening = self.opening(label.opening)?;
-            debug_assert_eq!(opening.start, label.range.start);
-        }
         Some(label)
     }
 
     pub(super) fn remember_closed(&mut self, range: Range<usize>, opening: usize) -> usize {
+        // Eligibility belongs to the label at its closing bracket. A link
+        // recognized later may be literal syntax inside this label's URL.
+        let kind = if opening == 0 {
+            Closure::Reference
+        } else {
+            let Some(bracket) = self.opening(opening) else {
+                self.invalid = true;
+                return self.closed;
+            };
+            if bracket.image {
+                Closure::Image
+            } else {
+                Closure::Link(bracket.start >= self.link_floor)
+            }
+        };
         #[cfg(test)]
         crate::work::copy(std::mem::size_of::<Closed>());
         if super::forest::slot(self.closed_count).1 == 0 {
@@ -61,7 +79,7 @@ impl State {
             Closed {
                 previous: self.closed,
                 range,
-                opening,
+                kind,
             },
         );
         self.closed_count += 1;
@@ -76,3 +94,6 @@ thread_local! { pub(super) static FORGET_RESTORE: std::cell::Cell<bool> = const 
 #[cfg(test)]
 #[path = "../tests/inline_brackets.rs"]
 mod tests;
+
+#[cfg(test)]
+thread_local! { pub(in crate::inline_scan) static CURRENT_LINK_FLOOR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

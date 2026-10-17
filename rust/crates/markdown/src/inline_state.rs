@@ -8,6 +8,8 @@ use std::ops::Range;
 pub(in crate::inline_scan) mod anchors;
 #[path = "inline_brackets.rs"]
 mod brackets;
+#[cfg(test)]
+pub(super) use brackets::CURRENT_LINK_FLOOR;
 #[path = "inline_codes.rs"]
 mod codes;
 #[path = "inline_eof.rs"]
@@ -271,11 +273,14 @@ impl State {
             #[cfg(test)]
             crate::work::scan(1);
             if label.range.end <= end {
-                return label.range.end == end
-                    && (label.opening == 0
-                        || self.opening(label.opening).is_some_and(|opening| {
-                            opening.image || opening.start >= self.link_floor
-                        }));
+                #[cfg(test)]
+                if brackets::CURRENT_LINK_FLOOR.get() {
+                    return label.range.end == end
+                        && (label.kind != brackets::Closure::Link(true)
+                            || label.range.start >= self.link_floor)
+                        && label.kind != brackets::Closure::Link(false);
+                }
+                return label.range.end == end && label.kind != brackets::Closure::Link(false);
             }
             cursor = label.previous;
         }

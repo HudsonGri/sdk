@@ -259,3 +259,25 @@ fn work_property_detects_replaying_settled_tokens() {
     assert!(small.0 > small.1);
     assert!(large.0 > 2 * small.0 + 4096);
 }
+
+#[test]
+fn nested_destination_replay() {
+    check_sequence(
+        false,
+        false,
+        ["[", "]", "(", "[x](u)", ")"].map(str::to_owned).to_vec(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn nested_destination_model_detects_current_link_floor() {
+    state::CURRENT_LINK_FLOOR.set(true);
+    let result = check_sequence(
+        false,
+        false,
+        ["[", "]", "(", "[x](u)", ")"].map(str::to_owned).to_vec(),
+    );
+    state::CURRENT_LINK_FLOOR.set(false);
+    assert!(result.is_err());
+}

@@ -21,3 +21,5 @@ cc 89731d796752b0622499e8aab82426e2a24057c50d3e0797e3580b88c124b2ce
 cc b3d013268158fb6cd7ed260406ba4023383bd483f04db9b85ef8329a8f95e977
 
 cc 65fe94c362f27881ef0eee2137d2ac06122f927b13963247bf7e72f74e3c8d04 # checkpoints = true, character_chunks = false, parts = ["¡", "`", "<i>", "`", "`"]
+
+cc b35fe8e8b448bfc107212c57dc8f4243f8e2c0eab604b00dd9f4d769457e7586 # checkpoints = false, character_chunks = false, parts = ["[", "]", "(", "[x](u)", ")"]

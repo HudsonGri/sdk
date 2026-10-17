@@ -8,11 +8,8 @@ fn actual(state: &State, pending: Option<&crate::inline_scan::tokens::Token>) ->
     let mut labels = Vec::new();
     let mut cursor = state.closed_at(pending);
     while let Some(label) = state.label(cursor) {
-        if label.opening != 0 {
-            labels.push((
-                label.range.clone(),
-                state.opening(label.opening).expect("raw opener").image,
-            ));
+        if label.kind != Closure::Reference {
+            labels.push((label.range.clone(), label.kind == Closure::Image));
         }
         cursor = label.previous;
     }
