@@ -189,10 +189,10 @@ pub(super) async fn in_native_heap<T, F>(
     create: impl FnOnce() -> F,
 ) -> Result<T, MountLifecycleError>
 where
-    F: Future<Output = Result<T, MountLifecycleError>> + Send,
+    F: Future<Output = Result<T, MountLifecycleError>>,
 {
     let mut custody = None;
-    let (future, _) = crate::heap_future::in_heap_admitted(
+    let (mut future, _) = crate::heap_future::in_heap_admitted(
         &mut custody,
         |custody, bytes| {
             **custody =
@@ -201,11 +201,6 @@ where
         },
         |_| create(),
     )?;
-    // Erase the already funded box: the caller's frame must not retain the
-    // concrete preparation future's layout through this native stack boundary.
-    let mut future: std::pin::Pin<
-        Box<dyn Future<Output = Result<T, MountLifecycleError>> + Send + '_>,
-    > = future;
     let result = future.as_mut().await;
     drop(future);
     drop(custody);
