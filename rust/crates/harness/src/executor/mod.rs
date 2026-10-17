@@ -250,6 +250,13 @@ pub enum ExecutionEvent {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
     },
+    /// The local model producer stopped after invocation cancellation.
+    ModelStopped {
+        /// Zero-based executor step.
+        step: u32,
+        /// Admitted response or summary attempt.
+        purpose: ModelPurpose,
+    },
     /// Tool dispatch is about to begin.
     ToolStarted {
         /// Zero-based executor step.
