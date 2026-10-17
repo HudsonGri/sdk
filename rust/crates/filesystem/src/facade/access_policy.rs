@@ -141,12 +141,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.validate_native_work(original)?;
             }
             if self.policy_editor.is_none() {
-                self.policy_editor = Some(
+                self.policy_editor = Some(Arc::new(
                     self.volume
                         .fs
                         .projection_policy_fence(self.volume.id)?
                         .enter(false)?,
-                );
+                ));
             }
             let name = policy_name(
                 self.volume.config.limits.maximum_component_bytes,

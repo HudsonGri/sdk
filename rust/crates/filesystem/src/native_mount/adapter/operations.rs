@@ -53,7 +53,7 @@ where
         &self,
         expected_epoch: Option<u64>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         self.binding_lease(expected_epoch, work)
     }
 
@@ -334,14 +334,14 @@ where
         self.path_is_unchanged(path, file_id, stamp, &mut NativeDemandCarrier::Native(work))
     }
 
-    fn acquire_view_lease(&self) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
         self.acquire_binding_lease(None)
     }
 
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         boundary(&self.cancellation, |work| {
             self.acquire_binding_lease_with_meter(expected_epoch, work)
         })

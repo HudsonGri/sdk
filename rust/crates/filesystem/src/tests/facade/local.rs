@@ -100,7 +100,6 @@ async fn local_root_lifecycle_outlives_provider_destruction()
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
         path_index: crate::path_index::MemoryGenerationPathIndex::default(),
-        projection_policies: Default::default(),
         generation_positions: super::super::generation_cache::GenerationPositions::default(),
         publication_proof: Mutex::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),

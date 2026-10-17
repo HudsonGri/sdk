@@ -278,6 +278,11 @@ where
         writable: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+        if !self.checkout.volume.fs.has_process_policy_owner() {
+            return Err(NativeMountError::Lifecycle(
+                "ProjFS requires a process-owned policy authority",
+            ));
+        }
         let fence = self
             .checkout
             .volume
@@ -295,7 +300,8 @@ where
             })?;
         let custody = work
             .claim(
-                std::mem::size_of_val(&lease) as u64,
+                std::mem::size_of::<(crate::access::projection::Lease, crate::NativeAllocation)>()
+                    as u64,
                 1,
                 crate::WorkCounters::UNCHARGED,
             )

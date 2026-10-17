@@ -2,10 +2,13 @@ use crate::sync::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+// Volume ids may conservatively share a process fence across independent
+// embedded stores. ProjFS admits only process-owned authorities; remote
+// authorities need a distributed publication lease and are refused.
 /// Lock order: registry -> fence. No fence operation takes the registry lock;
 /// guards retain state, never a lock, across I/O and physical driver lifetime.
 #[derive(Default)]
-pub(crate) struct ProjectionPolicies(Mutex<BTreeMap<crate::VolumeId, Arc<Fence>>>);
+struct ProjectionPolicies(Mutex<BTreeMap<crate::VolumeId, Arc<Fence>>>);
 impl ProjectionPolicies {
     pub(crate) fn get(&self, volume: crate::VolumeId) -> Result<Arc<Fence>, crate::FsError> {
         let mut entries = self
@@ -16,6 +19,19 @@ impl ProjectionPolicies {
         Ok(Arc::clone(entries.entry(volume).or_default()))
     }
 }
+#[cfg(not(acyclic_fs_loom))]
+static POLICIES: std::sync::OnceLock<ProjectionPolicies> = std::sync::OnceLock::new();
+#[cfg(acyclic_fs_loom)]
+loom::lazy_static! { static ref POLICIES: ProjectionPolicies = ProjectionPolicies::default(); }
+
+pub(crate) fn policy_fence(volume: crate::VolumeId) -> Result<Arc<Fence>, crate::FsError> {
+    #[cfg(not(acyclic_fs_loom))]
+    let policies = POLICIES.get_or_init(ProjectionPolicies::default);
+    #[cfg(acyclic_fs_loom)]
+    let policies = &*POLICIES;
+    policies.get(volume)
+}
+
 #[derive(Default)]
 pub(crate) struct Fence(Mutex<State>);
 #[derive(Default)]
@@ -74,12 +90,13 @@ mod model {
     use super::*;
     fn run(omit_editor_lease: bool) {
         loom::model(move || {
-            let fence = Arc::new(Fence::default());
+            let volume = crate::VolumeId::from_bytes([1; 16]);
+            let fence = policy_fence(volume).unwrap();
             let projecting = Arc::new(crate::sync::atomic::AtomicBool::new(false));
             let editor = loom::thread::spawn({
-                let fence = Arc::clone(&fence);
                 let projecting = Arc::clone(&projecting);
                 move || {
+                    let fence = policy_fence(volume).unwrap();
                     let lease = if omit_editor_lease {
                         None
                     } else {
@@ -113,5 +130,36 @@ mod model {
     #[should_panic(expected = "policy changed during projection")]
     fn missing_policy_lease_negative_control() {
         run(true);
+    }
+}
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn fresh_owner_handles_share_exclusion_until_the_last_lease_retires(steps in prop::collection::vec(0u8..4, 0..48)) {
+            let volume = crate::VolumeId::new();
+            let mut projections = Vec::new();
+            let mut editors = Vec::new();
+            for step in steps {
+                let fence = policy_fence(volume).map_err(|error| TestCaseError::fail(error.to_string()))?;
+                match step {
+                    0 | 1 => {
+                        let projection = step == 0;
+                        let allowed = if projection { editors.is_empty() } else { projections.is_empty() };
+                        let entered = fence.enter(projection);
+                        prop_assert_eq!(entered.is_ok(), allowed);
+                        if let Ok(lease) = entered { if projection { projections.push(lease); } else { editors.push(lease); } }
+                    }
+                    2 => { projections.pop(); }
+                    _ => { editors.pop(); }
+                }
+            }
+            drop(projections); drop(editors);
+            prop_assert!(policy_fence(volume).unwrap().enter(false).is_ok());
+        }
     }
 }

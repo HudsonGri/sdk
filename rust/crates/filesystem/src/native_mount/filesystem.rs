@@ -75,7 +75,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         &self,
         expected_epoch: Option<u64>,
         work: &NativeMaterializationWork,
-    ) -> Result<Box<dyn Send + Sync>, NativeMountError>;
+    ) -> Result<Box<dyn Send>, MountSourceError>;
     /// Captures exact paths through the existing original shared invocation.
     fn capture_host_paths_with_meter(
         &self,
@@ -398,7 +398,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     }
 
     /// Pins the current coherent projection view for one native callback.
-    fn acquire_view_lease(&self) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
         if !self.view_is_stable() {
             return Err(MountSourceError::Stale);
         }
@@ -409,7 +409,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         if !self.view_is_stable() || self.binding_epoch() != expected_epoch {
             return Err(MountSourceError::Stale);
         }

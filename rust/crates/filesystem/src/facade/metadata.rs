@@ -231,12 +231,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .read_metadata_with_accounting(file_id, accounting, cancellation)
                 .await?;
             if original.named_attributes != metadata.named_attributes {
-                self.policy_editor = Some(
+                self.policy_editor = Some(Arc::new(
                     self.volume
                         .fs
                         .projection_policy_fence(self.volume.id)?
                         .enter(false)?,
-                );
+                ));
             }
         }
         let metadata = self

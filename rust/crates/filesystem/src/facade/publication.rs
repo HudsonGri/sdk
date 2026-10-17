@@ -533,6 +533,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             );
             self.authority_head = Some(head);
             self.prepared_merge_parent = None;
+            self.policy_editor = None;
             self.dependencies.proof().clear();
             self.last_commit = Some(LastCommit {
                 operation_id,

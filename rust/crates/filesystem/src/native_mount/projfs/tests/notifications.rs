@@ -290,3 +290,59 @@ async fn native_access_cached_opens_recheck_read_in_every_mount_mode()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn native_access_projection_start_paths_admit_before_host_effects()
+-> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
+    let source = windows_checkout_source().await?;
+    let directory = tempfile::tempdir()?;
+    let destination = directory.path().join("must-not-be-opened");
+    for (writable, reason) in [
+        (
+            false,
+            "ProjFS cannot prevent host mutations on read-only mounts",
+        ),
+        (
+            true,
+            "ProjFS cannot enforce restrictive writable policies before host effects",
+        ),
+    ] {
+        if writable {
+            crate::native_mount::adapter::tests::access::publish_test_access(
+                &source,
+                vec![crate::native_mount::adapter::tests::access::deny(
+                    "revoked",
+                    &[crate::access::Action::Write],
+                    "**",
+                )],
+            )?;
+        }
+        for prepared in [false, true] {
+            let request = crate::NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: source.volume_id()?,
+                destination: destination.clone(),
+                writable,
+            };
+            let result = if prepared {
+                crate::prepare_native_mount_start(&work)?.start(
+                    request,
+                    source.clone(),
+                    &work,
+                    None,
+                )
+            } else {
+                crate::mount_native(request, source.clone())
+            };
+            let error = result.err().ok_or("unsafe projection started")?;
+            assert!(
+                error.to_string().contains(reason),
+                "wrong admission error: {error}"
+            );
+            // A host-root open would fail first on this deliberately absent path.
+            assert!(!destination.try_exists()?);
+        }
+    }
+    Ok(())
+}

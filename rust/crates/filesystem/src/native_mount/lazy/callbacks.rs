@@ -253,16 +253,16 @@ where
         Some(self.source_view.generation())
     }
 
-    fn acquire_view_lease(&self) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
         Ok(Box::new(self.view_lease(None, None)?))
     }
 
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         self.view_lease(expected_epoch, None)
-            .map(|lease| Box::new(lease) as Box<dyn Send + Sync>)
+            .map(|lease| Box::new(lease) as Box<dyn Send>)
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
@@ -709,7 +709,7 @@ where
         &self,
         expected: Option<u64>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+    ) -> Result<Box<dyn Send>, MountSourceError> {
         let lease = self.view_lease(expected, Some(work))?;
         let allocation = work
             .claim(

@@ -382,6 +382,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             root,
             authority_head: self.authority_head,
             authored_operation_id: self.authored_operation_id,
+            policy_editor: self.policy_editor.clone(),
             live_operation_id: self.live_operation_id,
             last_commit: self.last_commit,
             publication_closure: None,

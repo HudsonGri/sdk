@@ -740,7 +740,10 @@ fn projection_admission_holds_policy_publication_until_retirement()
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     assert!(source.projection_policy_lease(false, &work).is_err());
     let lease = source.projection_policy_lease(true, &work)?;
-    let denied = crate::access::fixtures::denied(Action::Write, "**");
+    let mut denied = crate::access::fixtures::denied(Action::Write, "**");
+    denied.layers[0][1].actions = [Action::Write, Action::Append, Action::Create]
+        .into_iter()
+        .collect();
     assert!(super::policy_refresh::publish(&source, &denied).is_err());
     assert!(
         source

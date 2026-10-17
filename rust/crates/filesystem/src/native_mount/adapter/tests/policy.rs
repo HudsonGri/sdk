@@ -1,6 +1,7 @@
 use super::*;
 use crate::access::POLICY_METADATA_KEY;
 use crate::kernel::{MetadataField, OwnedSourceChunk};
+use crate::{OperationFailure, OperationReceipt, PublicationPermit, WorkCounters};
 use proptest::prelude::*;
 
 fn policy_source(bytes: &[u8]) -> Result<MemorySource, Box<dyn std::error::Error>> {
@@ -15,7 +16,8 @@ fn policy_source(bytes: &[u8]) -> Result<MemorySource, Box<dyn std::error::Error
                     WorkBudget::UNBOUNDED,
                     source.cancellation(),
                 )
-                .await?;
+                .await
+                .map_err(|failure| failure.error)?;
             checkout
                 .commit(
                     OperationId::new(),
