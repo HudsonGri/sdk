@@ -240,7 +240,7 @@ where
         } else {
             None
         };
-        let mut offset = 0;
+        let mut offset = 0usize;
         let mut part = 0u64;
         loop {
             let mut end = offset.saturating_add(MODEL_CHUNK_BYTES).min(delta.len());

@@ -24,10 +24,11 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
-    let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
-    let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
+    let (mut host, volume, workspace, mut reader) =
+        local_workspace::seed(&directory, &case.seed).await?;
+    let mut source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
     let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
-    let initial = observation.snapshot.take().ok_or("missing diff snapshot")?;
+    let mut initial = observation.snapshot.take().ok_or("missing diff snapshot")?;
     let base = host.resolve(&workspace, None).await?.generation;
     let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
     let mut references = std::collections::BTreeMap::new();
@@ -103,11 +104,11 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut prefix = Vec::new();
     let mut requests = Vec::new();
     if let Some(after) = case.kill_after {
-        let initial = task_files
+        let mut task_initial = task_files
             .as_mut()
             .and_then(|files| files.snapshot.take())
             .ok_or("kill cases require exact task-file expectations")?;
-        let status_snapshot = status
+        let mut status_snapshot = status
             .snapshot
             .take()
             .ok_or("missing admission status snapshot")?;
@@ -119,10 +120,21 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                 .key
                 .clone(),
         );
+        // Checkpoint consumer state without retaining native provider owners
+        // across the process boundary.
+        for snapshot in [&mut initial, &mut task_initial, &mut status_snapshot] {
+            for file in &mut snapshot.files {
+                file.bytes = file.bytes.as_ref().to_vec().into();
+            }
+        }
         drop(task_files.take());
         drop(status);
         drop(stream);
         drop(harness);
+        drop(observation);
+        drop(source);
+        drop(reader);
+        drop(host);
         let checkpoint = super::local_crash::interrupt(
             temporary.path().join("crash.json"),
             super::local_crash::Input {
@@ -132,7 +144,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                 task: task_id,
                 turn: interrupted_turn.ok_or("missing interrupted turn")?,
                 query: task_query.clone(),
-                cursor: initial.cursor.clone(),
+                cursor: task_initial.cursor.clone(),
                 after,
             },
         )
@@ -145,6 +157,14 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             .clone();
         prefix = checkpoint.changes;
         requests = checkpoint.requests;
+        (host, reader) = local_workspace::reopen(&directory, &volume).await?;
+        source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
+        observation = source
+            .observe_files(Query::Plans, Some(initial.cursor.clone()), 16, 65_536)
+            .await?;
+        if observation.reset || observation.snapshot.is_some() {
+            return Err("kill reset the project follower".into());
+        }
         let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
         harness = LocalHarness::open(
             local_harness_config(&directory, (model, provider.clone()))?
@@ -170,12 +190,18 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         if resumed.reset || resumed.snapshot.is_some() {
             return Err("kill reset the task follower".into());
         }
-        resumed.snapshot = Some(initial);
+        resumed.snapshot = Some(task_initial);
         task_files = Some(resumed);
     }
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
+    for expected in &case.interruptions {
+        match (expected.as_str(), harness.resume(task_id).await) {
+            ("indeterminate", Err(acyclic_harness::Error::Indeterminate(_))) => {}
+            (_, actual) => return Err(format!("interrupted resume differs: {actual:?}").into()),
+        }
+    }
     let output = harness.resume(task_id).await;
     match (&output, &case.expect.error) {
         (Ok(output), None) if output.text == case.expect.text => {}

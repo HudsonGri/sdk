@@ -74,7 +74,11 @@ pub(super) async fn interrupt(path: PathBuf, input: Input) -> TestResult<Checkpo
 
 pub(super) async fn child(path: &Path) -> TestResult {
     let input: Input = serde_json::from_slice(&std::fs::read(path)?)?;
-    let provider = Arc::new(ScriptedModelProvider::new([input.turn]));
+    let pending = Arc::new(tokio::sync::Notify::new());
+    let signal = pending.clone();
+    let provider = Arc::new(
+        ScriptedModelProvider::new([input.turn]).with_pending_observer(move || signal.notify_one()),
+    );
     let model = Model::new(
         "scripted".into(),
         "local".into(),
@@ -98,11 +102,13 @@ pub(super) async fn child(path: &Path) -> TestResult {
     }
     let mut changes = Vec::new();
     let mut seen = 0;
+    let mut reached_pending = false;
     let mut execution = std::pin::pin!(harness.resume(input.task));
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
             tokio::select! {
                 output = &mut execution => return Err(format!("execution ended before kill: {output:?}").into()),
+                _ = pending.notified(), if !reached_pending => reached_pending = true,
                 change = observation.changes.next() => {
                     let change = change.ok_or("child file follower ended")??;
                     if change.file.as_ref().is_some_and(|file| matches!(file.key,
@@ -110,16 +116,16 @@ pub(super) async fn child(path: &Path) -> TestResult {
                         seen += 1;
                     }
                     changes.push(change);
-                    if seen == input.after {
-                        let checkpoint = Checkpoint { changes, requests: provider.requests() };
-                        let mut stdout = std::io::stdout().lock();
-                        writeln!(stdout, "{MARKER}{}", serde_json::to_string(&checkpoint)?)?;
-                        stdout.flush()?;
-                        // Keep the exact execution future alive, without polling
-                        // it again. The parent kills this process at this cut.
-                        return std::future::pending::<TestResult>().await;
-                    }
                 }
+            }
+            if seen == input.after && reached_pending {
+                let checkpoint = Checkpoint { changes, requests: provider.requests() };
+                let mut stdout = std::io::stdout().lock();
+                writeln!(stdout, "{MARKER}{}", serde_json::to_string(&checkpoint)?)?;
+                stdout.flush()?;
+                // The source barrier follows the executor's awaited publications.
+                // Keep that exact future alive until the parent kills this process.
+                return std::future::pending::<TestResult>().await;
             }
         }
     }).await?

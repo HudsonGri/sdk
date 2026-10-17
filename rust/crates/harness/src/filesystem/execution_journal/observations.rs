@@ -248,6 +248,12 @@ where
         }
         let owner = self.owner.as_ref().map(|(owner, _)| owner);
         let model = self.verify_event_refs_with_io(event, io).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let _model_hold = io
+            .filter(|io| io.original_native_work().is_some())
+            .zip(model.as_ref())
+            .map(|(io, model)| io.guard_owned(model.logical_owned_bytes()?))
+            .transpose()?;
         let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)
             .await?;

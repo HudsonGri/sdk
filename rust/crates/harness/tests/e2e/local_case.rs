@@ -13,6 +13,8 @@ pub(super) struct LocalCase {
     pub kill_after: Option<usize>,
     #[serde(default)]
     pub recoveries: Vec<ScriptedReconciliation>,
+    #[serde(default)]
+    pub interruptions: Vec<String>,
     pub expect: Expectations,
 }
 

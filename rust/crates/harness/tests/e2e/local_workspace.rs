@@ -54,6 +54,24 @@ pub(super) async fn seed(
     }));
     host.apply(&workspace, None, &writes, &IdempotencyKey::new("seed")?)
         .await?;
+    let reader = reader(host.clone(), &volume)?;
+    Ok((host, volume, workspace, reader))
+}
+
+pub(super) async fn reopen(
+    directory: &Path,
+    volume: &VolumeRef,
+) -> TestResult<(Arc<Host>, Arc<Reader>)> {
+    let host = FilesystemHost::new(
+        Fs::local(LocalOptions::new(directory)).await?,
+        volume.provider(),
+        None,
+    )?;
+    let reader = reader(host.clone(), volume)?;
+    Ok((host, reader))
+}
+
+fn reader(host: Arc<Host>, volume: &VolumeRef) -> TestResult<Arc<Reader>> {
     let issuer = AuthorityIssuer::new(
         "diff-reader",
         [9; 32],
@@ -79,5 +97,5 @@ pub(super) async fn seed(
         65_536,
         None,
     )?;
-    Ok((host, volume, workspace, reader))
+    Ok(reader)
 }

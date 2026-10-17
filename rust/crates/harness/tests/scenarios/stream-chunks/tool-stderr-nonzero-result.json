@@ -1,0 +1,92 @@
+{
+  "expect": {
+    "text": "done",
+    "results": {
+      "call": {
+        "name": "bash",
+        "content": {
+          "value": {
+            "exit_code": 7,
+            "stderr": "err",
+            "success": false,
+            "stdout": "",
+            "stop": null
+          },
+          "kind": "json"
+        }
+      }
+    },
+    "task_files": [
+      {
+        "model": {
+          "name": "local",
+          "provider": "scripted",
+          "revision": "1"
+        },
+        "path": "turns/0/request.json"
+      },
+      {
+        "path": "turns/0/tools/0/arguments/0",
+        "text": "{\"command\":\"printf err >&2; exit 7\"}",
+        "channel": null
+      },
+      {
+        "path": "turns/0/tools/0/request.json",
+        "text": "{\"operation_id\":\"<operation>\",\"call_id\":\"call\",\"name\":\"bash\",\"arguments\":{\"command\":\"printf err >&2; exit 7\"}}",
+        "channel": null
+      },
+      {
+        "path": "turns/0/tools/0/stderr/0",
+        "text": "err",
+        "channel": null
+      },
+      {
+        "path": "turns/0/tools/0/result.json",
+        "text": "{\"exit_code\":7,\"stderr\":\"err\",\"stdout\":\"\",\"stop\":null,\"success\":false}",
+        "channel": null
+      },
+      {
+        "path": "turns/0/completion.json",
+        "text": "{\"metadata\":null}",
+        "channel": null
+      },
+      {
+        "model": {
+          "name": "local",
+          "provider": "scripted",
+          "revision": "1"
+        },
+        "path": "turns/1/request.json"
+      },
+      {
+        "path": "turns/1/chunks/0",
+        "text": "done",
+        "channel": "Text"
+      },
+      {
+        "path": "turns/1/completion.json",
+        "text": "{\"metadata\":null}",
+        "channel": null
+      }
+    ]
+  },
+  "turns": [
+    [
+      {
+        "kind": "tool_call",
+        "name": "bash",
+        "type": "event",
+        "arguments": {
+          "command": "printf err >&2; exit 7"
+        },
+        "call_id": "call"
+      },
+      {
+        "kind": "completed",
+        "type": "event",
+        "metadata": null
+      }
+    ],
+    "done"
+  ]
+}

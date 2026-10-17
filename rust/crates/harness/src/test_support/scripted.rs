@@ -102,6 +102,7 @@ pub struct ScriptedModelProvider {
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
     dispatch_observer: Option<Arc<dyn Fn(ModelDispatch) + Send + Sync>>,
+    pending_observer: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl ScriptedModelProvider {
@@ -119,6 +120,7 @@ impl ScriptedModelProvider {
             }),
             token_counter: Some(Arc::new(serialized_tokens)),
             dispatch_observer: None,
+            pending_observer: None,
         }
     }
 
@@ -155,6 +157,14 @@ impl ScriptedModelProvider {
         observer: impl Fn(ModelDispatch) + Send + Sync + 'static,
     ) -> Self {
         self.dispatch_observer = Some(Arc::new(observer));
+        self
+    }
+
+    /// Signals when a scripted Pending item is polled, after preceding events
+    /// have been consumed. Process-interruption cases use this explicit barrier.
+    #[must_use]
+    pub fn with_pending_observer(mut self, observer: impl Fn() + Send + Sync + 'static) -> Self {
+        self.pending_observer = Some(Arc::new(observer));
         self
     }
 
@@ -252,7 +262,8 @@ impl ModelProvider for ScriptedModelProvider {
             observer(dispatch);
         }
         match turn {
-            Ok(turn) => turn.stream(),
+            Ok(turn) if self.pending_observer.is_none() => turn.stream(),
+            Ok(turn) => turn.stream_with_pending_observer(self.pending_observer.clone()),
             Err(error) => Box::pin(futures::stream::iter([Err(error)])),
         }
     }
@@ -306,6 +317,13 @@ mod tests;
 
 impl ScriptedTurn {
     pub(crate) fn stream(self) -> BoxProviderStream<'static, Result<ModelEvent>> {
+        self.stream_with_pending_observer(None)
+    }
+
+    fn stream_with_pending_observer(
+        self,
+        observer: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> BoxProviderStream<'static, Result<ModelEvent>> {
         match self {
             Self::Text(delta) => Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content { delta }),
@@ -313,15 +331,21 @@ impl ScriptedTurn {
                     metadata: serde_json::Value::Null,
                 }),
             ])),
-            Self::Events(events) => {
-                Box::pin(futures::stream::iter(events).then(|event| async move {
+            Self::Events(events) => Box::pin(futures::stream::iter(events).then(move |event| {
+                let observer = observer.clone();
+                async move {
                     match event {
                         ScriptedEvent::Event(event) => Ok(event),
                         ScriptedEvent::Error { error } => Err(Error::Storage(error)),
-                        ScriptedEvent::Pending {} => std::future::pending().await,
+                        ScriptedEvent::Pending {} => {
+                            if let Some(observer) = observer {
+                                observer();
+                            }
+                            std::future::pending().await
+                        }
                     }
-                }))
-            }
+                }
+            })),
         }
     }
 }
