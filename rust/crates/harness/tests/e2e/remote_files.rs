@@ -1,11 +1,12 @@
 //! The existing executor scenarios with both file backends on public services.
 use super::{TestResult, execution, scenario::Scenario, scenario_data};
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
+use acyclic_harness::{AgentId, filesystem::MemoryHarnessStorage};
 use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider, grpc::GrpcObjects, wire};
 use acyclic_stream::{MemoryStream, StreamProvider, grpc::Client};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 type ServiceFs<P, O> = Fs<StreamAuthorityStore<P>, LogicalObjectStore<O>>;
 
@@ -123,17 +124,15 @@ proptest::proptest! {
             let stream = Arc::new(MemoryStream::default());
             let objects = Arc::new(MemoryObjects::new(MemoryOptions::default())?);
             let files = filesystem(stream.clone(), objects, false).await?;
-            let (_, mut value) = cases()?.into_iter()
-                .find(|(path, _)| path.ends_with("preserve-seed.json"))
-                .ok_or("missing file oracle scenario")?;
-            value["seed"]["src/lib.rs"] = Value::String(text.clone());
-            value["expect"]["files"]["src/lib.rs"] = Value::String(text.clone());
-            execution::run_with_filesystem(
-                Scenario::from_value(value.clone())?, files.clone(), stream.clone(),
+            let storage = MemoryHarnessStorage::from_providers(
+                AgentId::new(), 1_048_576, files, stream,
             ).await?;
-            value["expect"]["files"]["src/lib.rs"] = Value::String(format!("{text}\0"));
-            assert!(execution::run_with_filesystem(
-                Scenario::from_value(value)?, files, stream,
+            execution::publish(&storage, &BTreeMap::from([("src/lib.rs".into(), text.clone())])).await?;
+            execution::check_files(
+                &BTreeMap::from([("src/lib.rs".into(), Some(text.clone()))]), &storage,
+            ).await?;
+            assert!(execution::check_files(
+                &BTreeMap::from([("src/lib.rs".into(), Some(format!("{text}\0")))]), &storage,
             ).await.is_err_and(|error| error.downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::InvalidData)));
             TestResult::Ok(())
