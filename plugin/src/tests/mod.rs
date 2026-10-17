@@ -1,6 +1,7 @@
 use super::*;
 mod installation;
 mod manifests;
+mod runtime;
 struct Fixture {
     data: PathBuf,
     _directory: tempfile::TempDir,

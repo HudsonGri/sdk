@@ -34,7 +34,7 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let arguments: Vec<String> = env::args().skip(1).collect();
     match arguments.as_slice() {
         [command, ..] if command == "__service" => {
-            runtime()?.block_on(acyclic_harness::external_executor::run_local_owner())?;
+            owner_runtime()?.block_on(acyclic_harness::external_executor::run_local_owner())?;
         }
         [command] if command == "__owner-stop" => {
             runtime()?.block_on(acyclic_harness::external_executor::stop_local_owner())?;
@@ -71,6 +71,11 @@ fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+fn owner_runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
 }
