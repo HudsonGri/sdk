@@ -77,48 +77,78 @@ async fn mailbox(fixture: &Fixture, tools: &Tools<'_>) -> Result<TaskId> {
         assert_eq!(item["sequence"], after + 1);
         assert_eq!(item["payload"], *file);
     }
-    let denied = child
-        .reject(
-            "parent-source-denied",
-            "acyclic_send",
-            json!({"recipient":tools.task,"payload":file}),
-        )
-        .await?;
-    assert_eq!(
-        child
-            .reject(
-                "parent-source-denied",
-                "acyclic_send",
-                json!({"recipient":tools.task,"payload":file})
+    let next = format!("{}-after-rejection.txt", host.name());
+    let (reply_file, ()) = tokio::try_join!(
+        async {
+            let denied = child
+                .reject(
+                    "parent-source-denied",
+                    "acyclic_send",
+                    json!({"recipient":tools.task,"payload":file}),
+                )
+                .await?;
+            assert_eq!(
+                child
+                    .reject(
+                        "parent-source-denied",
+                        "acyclic_send",
+                        json!({"recipient":tools.task,"payload":file})
+                    )
+                    .await?,
+                denied
+            );
+            let mut written = child
+                .call(
+                    "reply-source",
+                    "write",
+                    json!({
+                        "path":format!("{}-reply.txt",host.name()),"text":"mail payload",
+                        "media_type":"text/plain","display_name":filename,
+                    }),
+                )
+                .await?;
+            let reply_file = written
+                .get_mut("file")
+                .ok_or("child reply has no pinned file")?
+                .take();
+            assert_ne!(
+                &reply_file, file,
+                "a child reply must retain its isolated content binding"
+            );
+            assert_eq!(reply_file["descriptor"], file["descriptor"]);
+            child
+                .call(
+                    "reply",
+                    "acyclic_send",
+                    json!({"recipient":tools.task,"payload":reply_file}),
+                )
+                .await?;
+            Ok::<_, Box<dyn std::error::Error>>(reply_file)
+        },
+        async {
+            let inspected = tools
+                .call("inspect", "acyclic_inspect", json!({"task":tools.task}))
+                .await?;
+            assert_eq!(inspected["task"], tools.task.to_string());
+            assert!(inspected["admission"]["parent"].is_null());
+            let unknown = json!({"task":TaskId::from_bytes([253;16])});
+            let failed = tools
+                .reject("unknown", "acyclic_inspect", unknown.clone())
+                .await?;
+            assert_eq!(
+                tools.reject("unknown", "acyclic_inspect", unknown).await?,
+                failed
+            );
+            tools
+            .call(
+                "after-rejection",
+                "write",
+                json!({"path":next,"text":"session usable","media_type":"text/plain","display_name":next}),
             )
-            .await?,
-        denied
-    );
-    let reply_file = child
-        .call(
-            "reply-source",
-            "write",
-            json!({
-                "path":format!("{}-reply.txt",host.name()),"text":"mail payload",
-                "media_type":"text/plain","display_name":filename,
-            }),
-        )
-        .await?;
-    let reply_file = reply_file
-        .get("file")
-        .ok_or("child reply has no pinned file")?;
-    assert_ne!(
-        reply_file, file,
-        "a child reply must retain its isolated content binding"
-    );
-    assert_eq!(reply_file["descriptor"], file["descriptor"]);
-    child
-        .call(
-            "reply",
-            "acyclic_send",
-            json!({"recipient":tools.task,"payload":reply_file}),
-        )
-        .await?;
+            .await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+    )?;
     let reply = tools
         .call("reply", "acyclic_receive", json!({"after":0}))
         .await?;
@@ -126,28 +156,7 @@ async fn mailbox(fixture: &Fixture, tools: &Tools<'_>) -> Result<TaskId> {
         reply["sequence"], 1,
         "rejected mail must not reach the parent"
     );
-    assert_eq!(reply["payload"], *reply_file);
-    let inspected = tools
-        .call("inspect", "acyclic_inspect", json!({"task":tools.task}))
-        .await?;
-    assert_eq!(inspected["task"], tools.task.to_string());
-    assert!(inspected["admission"]["parent"].is_null());
-    let unknown = json!({"task":TaskId::from_bytes([253;16])});
-    let failed = tools
-        .reject("unknown", "acyclic_inspect", unknown.clone())
-        .await?;
-    assert_eq!(
-        tools.reject("unknown", "acyclic_inspect", unknown).await?,
-        failed
-    );
-    let next = format!("{}-after-rejection.txt", host.name());
-    tools
-            .call(
-                "after-rejection",
-                "write",
-                json!({"path":next,"text":"session usable","media_type":"text/plain","display_name":next}),
-            )
-            .await?;
+    assert_eq!(reply["payload"], reply_file);
     assert_eq!(
         std::fs::read_to_string(fixture.path().join(filename))?,
         "mail payload"
