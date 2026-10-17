@@ -532,10 +532,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .expect("publication prepared its owned root copies"),
             );
             self.authority_head = Some(head);
-            self.observed_generation = super::checkout::ObservedGeneration::Head {
-                digest: self.generation_id().digest().into_bytes(),
-                position: head.sequence,
-            };
+            self.observed_generation =
+                super::checkout::ObservedGeneration::head(self.generation_id(), head.sequence);
             self.prepared_merge_parent = None;
             self.dependencies.proof().clear();
             self.last_commit = Some(LastCommit {

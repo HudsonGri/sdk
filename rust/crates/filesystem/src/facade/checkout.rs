@@ -1,12 +1,29 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(super) enum ObservedGeneration {
-    Unknown,
-    Head {
-        digest: [u8; 32],
-        position: Sequence,
-    },
+pub(super) struct ObservedGeneration {
+    digest: [u8; 32],
+    // Genesis has no generation root; zero denotes an absent observation.
+    position: u64,
+}
+
+impl ObservedGeneration {
+    pub(super) const UNKNOWN: Self = Self {
+        digest: [0; 32],
+        position: 0,
+    };
+
+    pub(super) fn head(generation: GenerationId, position: Sequence) -> Self {
+        Self {
+            digest: generation.digest().into_bytes(),
+            position: position.get(),
+        }
+    }
+
+    pub(super) fn position(self, generation: GenerationId) -> Option<Sequence> {
+        (self.position != 0 && self.digest == generation.digest().into_bytes())
+            .then(|| Sequence::new(self.position))
+    }
 }
 
 /// Immutable generation-fenced checkout admitted by the embedded facade.
@@ -170,11 +187,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 root,
                 authority_head,
                 observed_generation: match (selector, authority_head) {
-                    (GenerationSelector::Head, Some(head)) => ObservedGeneration::Head {
-                        digest: generation_root.digest.into_bytes(),
-                        position: head.sequence,
-                    },
-                    _ => ObservedGeneration::Unknown,
+                    (GenerationSelector::Head, Some(head)) => ObservedGeneration::head(
+                        GenerationId::new(generation_root.digest),
+                        head.sequence,
+                    ),
+                    _ => ObservedGeneration::UNKNOWN,
                 },
                 authored_operation_id: None,
                 live_operation_id: None,
