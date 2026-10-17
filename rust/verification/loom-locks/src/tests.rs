@@ -311,7 +311,7 @@ fn inferred_types_are_resolved_or_indeterminate() {
 #[test]
 fn unseen_item_bodies_are_indeterminate_at_every_nesting_level() {
     for source in [
-        "mod hidden; fn check() { loom::model(|| {}); }",
+        "mod hidden; fn check() {}",
         "mod visible { mod hidden; }",
         "#[cfg(any())] #[path = \"elsewhere.rs\"] mod hidden;",
         "unsafe extern \"C\" { fn unknown(); }",
