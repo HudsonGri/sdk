@@ -110,6 +110,15 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
             .await
     }
 
+    /// Reads the authorized private volume at one exact query cut.
+    pub async fn snapshot(
+        &self,
+        query: &Query,
+        maximum_files: usize,
+    ) -> super::Result<super::Snapshot> {
+        self.inner.snapshot(query, maximum_files).await
+    }
+
     /// Captures an atomic snapshot and push follow, or resumes a durable cursor.
     pub async fn observe(
         &self,
@@ -136,6 +145,17 @@ impl<P: StreamProvider + ?Sized> super::FileQuerySource for TaskFiles<P> {
             maximum_files,
             maximum_bytes,
         )
+    }
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl<P: StreamProvider + 'static> TaskFiles<P> {
+    pub(crate) async fn reopen_erased(&self) -> super::Result<TaskFiles<dyn StreamProvider>> {
+        Ok(TaskFiles {
+            inner: self.inner.reopen_erased().await?,
+            volume: self.volume.clone(),
+            maximum_bytes: self.maximum_bytes,
+        })
     }
 }
 

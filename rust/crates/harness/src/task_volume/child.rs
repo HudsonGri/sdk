@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 /// Results remain in the named task's ordinary completion and chunk files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ChildStatus {
     /// Current or most recently settled turn.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub task: crate::TaskId,
     /// Lifecycle state reached by the worker.
     pub state: ChildState,
@@ -165,6 +167,7 @@ impl ChildRequest {
 
 /// Files owned by a parent below `agents/<ref>/`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ChildFile {
     /// Immutable spawn prompt with optional model and tool frontmatter.
     Request,
@@ -253,6 +256,7 @@ impl Control {
 
 /// Desired execution state, folded from accepted control-file publications.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ChildState {
     /// Child may start or continue work.
     #[default]
@@ -471,5 +475,12 @@ mod tests {
                 prop_assert!(!other.matches(&key));
             }
         }
+    }
+}
+
+impl ChildStatus {
+    /// Terminal quiescence removes the child from active lists, retaining its files.
+    pub fn active(self) -> bool {
+        !self.settled || !matches!(self.state, ChildState::Archived | ChildState::Cancelled)
     }
 }

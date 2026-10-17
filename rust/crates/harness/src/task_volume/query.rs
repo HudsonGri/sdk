@@ -21,6 +21,13 @@ pub enum Query {
     UiDirectory(Component),
     /// One UI session's requests and immutable execution records.
     Session(Component),
+    /// One admitted task and its caller session, without unrelated history.
+    TaskSession {
+        /// Admitted task identity.
+        task: Component,
+        /// Caller session identity.
+        session: Component,
+    },
     /// One request/execution folder in a UI session.
     SessionFiles {
         /// UI session identity.
@@ -95,6 +102,8 @@ pub enum Query {
     Approvals(Component),
     /// Notifications for one task.
     Notifications(Component),
+    /// Active child execution acknowledgements; archive history is retained.
+    ActiveAgents,
     /// Child mount declarations.
     Agents,
     /// All child requests, inbox files and lifecycle intents.
@@ -119,6 +128,15 @@ impl Query {
         };
         let minimum = Component(Arc::from(""));
         let maximum = Component(Arc::from("\u{10ffff}"));
+        if let Self::TaskSession { task, session } = self {
+            let mut ranges = Self::Session(session.clone()).ranges();
+            ranges.push(range(
+                task,
+                TaskFile::Request(minimum),
+                TaskFile::Context(maximum),
+            ));
+            return ranges;
+        }
         let chunks = |task: &Component, turn: u64| {
             range(
                 task,
@@ -220,6 +238,16 @@ impl Query {
                     file: ChildFile::Result(u64::MAX),
                 }),
             ),
+            Self::ActiveAgents => (
+                Included(FileKey::Child {
+                    reference: minimum,
+                    file: super::super::ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: maximum,
+                    file: super::super::ChildFile::Result(u64::MAX),
+                }),
+            ),
             Self::Agents => (
                 Included(FileKey::Agent(minimum)),
                 Included(FileKey::Agent(maximum)),
@@ -290,6 +318,15 @@ impl Query {
     /// Matches typed keys without rendering paths or decoding payload bytes.
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
+            (Self::TaskSession { task: selected, .. }, FileKey::Task { task, .. }) => {
+                selected == task && super::super::recent::kind(key).is_some()
+            }
+            (
+                Self::TaskSession {
+                    session: selected, ..
+                },
+                FileKey::Session { session, .. },
+            ) => selected == session,
             (Self::UiDirectory(selected), FileKey::Ui { directory, .. }) => selected == directory,
             (Self::CommandSession { session, .. }, key) => {
                 super::super::command_query::matches(session, key)
@@ -312,6 +349,13 @@ impl Query {
                     }
             }
             (Self::Session(selected), FileKey::Session { session, .. }) => selected == session,
+            (
+                Self::ActiveAgents,
+                FileKey::Child {
+                    file: super::super::ChildFile::Status,
+                    ..
+                },
+            ) => true,
             (Self::Root, _)
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
@@ -504,3 +548,12 @@ impl Query {
 #[cfg(test)]
 #[path = "../../tests/task_volume/ranges.rs"]
 mod tests;
+
+impl Query {
+    pub(crate) fn snapshot_matches_file(&self, file: &super::super::FileValue) -> bool {
+        self.matches_file(file)
+            && (*self != Self::ActiveAgents
+                || super::super::ChildStatus::parse(&file.bytes)
+                    .is_ok_and(|status| status.active()))
+    }
+}

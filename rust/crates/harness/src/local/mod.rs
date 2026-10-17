@@ -36,6 +36,7 @@ mod compaction;
 mod config;
 mod context;
 pub(crate) mod external;
+mod files;
 mod inheritance;
 mod owner;
 #[cfg(feature = "native-execution")]
@@ -229,8 +230,9 @@ impl LocalHarness {
             // Retain the existing owned WAL instead of reopening/checkpointing it
             // for every transaction. Embedded bind() retains shared-store semantics.
             #[cfg(feature = "native-execution")]
-            let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
-                .map_err(storage)?;
+            let store =
+                acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+                    .map_err(storage)?;
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
@@ -321,7 +323,7 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            Ok(Self {
+            let mut local = Self {
                 files,
                 runtime,
                 task_files,
@@ -348,7 +350,14 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
-            })
+            };
+            if let Some(provider) = local
+                .provider
+                .bind_content(local.context_reader()?, local.limits.file_bytes)
+            {
+                local.provider = provider;
+            }
+            Ok(local)
         })
     }
 
