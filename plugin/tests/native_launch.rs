@@ -123,6 +123,9 @@ async fn native_process_runs_nested_hooks_in_isolated_children_and_replays_witho
     })
     .catch_unwind()
     .await;
+    if matches!(&result, Ok(Err(_))) {
+        let _ = retained_diagnostics(fixture.path()).await;
+    }
     let stopped = if let Some(owner) = owner {
         fixture.close_owner(owner).await
     } else {
@@ -199,4 +202,39 @@ async fn native_child_process() -> Result {
 #[ignore = "launched as the native descendant by the custody regression"]
 async fn native_leaf_process() -> Result {
     native_child(false).await
+}
+
+// Read the accepted task files on failure before closing their provider. This
+// distinguishes an unlaunched child, a running effect and a stranded result.
+async fn retained_diagnostics(cwd: &Path) -> Result {
+    use acyclic_harness::task_volume::{Query, TaskVolume};
+    use acyclic_stream::{ChildrenPageRequest, StreamPath, StreamProvider as _};
+    let client = std::sync::Arc::new(client(cwd).await?);
+    for parent in ["external/requests", "external/results"] {
+        let page = client
+            .children_page(ChildrenPageRequest {
+                parent: Some(StreamPath::new(parent)?),
+                after: None,
+                hierarchy_version: None,
+                limit: 64,
+            })
+            .await?;
+        assert!(
+            page.next_after.is_none(),
+            "native regression exceeded its task bound"
+        );
+        for child in page.children {
+            let files = TaskVolume::open_existing(client.clone(), child.path.clone()).await?;
+            for file in files.snapshot(&Query::Root, 128).await?.files {
+                let preview = &file.bytes[..file.bytes.len().min(2048)];
+                eprintln!(
+                    "{} {}: {}",
+                    child.path.as_str(),
+                    file.key.path(),
+                    String::from_utf8_lossy(preview)
+                );
+            }
+        }
+    }
+    Ok(())
 }
