@@ -49,6 +49,18 @@ pub(crate) fn accounted<R>(
 
 thread_local! {
     static CHUNK_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CHUNK_METER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn with_chunk_meter<R>(run: impl FnOnce() -> R) -> R {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CHUNK_METER.set(self.0);
+        }
+    }
+    let _reset = Reset(CHUNK_METER.replace(true));
+    run()
 }
 
 pub(crate) fn chunk_scan_enabled() -> bool {
@@ -63,7 +75,7 @@ pub(crate) fn with_chunk_scan<R>(enabled: bool, run: impl FnOnce() -> R) -> R {
         }
     }
     let _reset = Reset(CHUNK_SCAN.replace(enabled));
-    run()
+    with_chunk_meter(run)
 }
 
 // Measure the real projection future, including every poll's SDK work. The
@@ -72,7 +84,9 @@ pub(crate) async fn observe_chunk<F: std::future::Future>(
     future: F,
     io: Option<&PreparationIo>,
 ) -> F::Output {
-    if acyclic_test_support::differential::reserve::<(&'static str, u64)>(0).is_none() {
+    if !CHUNK_METER.get()
+        || acyclic_test_support::differential::reserve::<(&'static str, u64)>(0).is_none()
+    {
         return future.await;
     }
     let before = io.map(PreparationIo::receipt).unwrap_or_default();
@@ -84,7 +98,9 @@ pub(crate) async fn observe_chunk<F: std::future::Future>(
 }
 
 pub(crate) fn observe_chunk_sync<R>(run: impl FnOnce() -> R, io: Option<&PreparationIo>) -> R {
-    if acyclic_test_support::differential::reserve::<(&'static str, u64)>(0).is_none() {
+    if !CHUNK_METER.get()
+        || acyclic_test_support::differential::reserve::<(&'static str, u64)>(0).is_none()
+    {
         return run();
     }
     let before = io.map(PreparationIo::receipt).unwrap_or_default();
@@ -146,5 +162,5 @@ pub(crate) fn with_chunk_copy<R>(enabled: bool, run: impl FnOnce() -> R) -> R {
         }
     }
     let _reset = Reset(CHUNK_COPY.replace(enabled));
-    run()
+    with_chunk_meter(run)
 }
