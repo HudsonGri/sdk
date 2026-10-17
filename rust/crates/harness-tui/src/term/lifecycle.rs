@@ -16,6 +16,14 @@ pub(crate) struct State<W: Write> {
     /// The input stream parked on suspension or awaiting fd readiness. Close
     /// and resume take it under this lock, so neither transition is missed.
     input: Option<Waker>,
+    #[cfg(any(unix, acyclic_harness_tui_loom))]
+    input_resumed: bool,
+}
+
+#[cfg(any(unix, acyclic_harness_tui_loom))]
+pub(crate) enum Input<T> {
+    Resumed,
+    Value(T),
 }
 
 #[cfg(any(unix, acyclic_harness_tui_loom))]
@@ -80,6 +88,8 @@ impl<W: Write> State<W> {
             closed: false,
             restored: false,
             input: None,
+            #[cfg(any(unix, acyclic_harness_tui_loom))]
+            input_resumed: false,
         }
     }
 }
@@ -109,7 +119,7 @@ pub(crate) fn poll_input<W: Write, T>(
     state: &Mutex<State<W>>,
     waker: &Waker,
     action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<T>,
-) -> Poll<io::Result<T>> {
+) -> Poll<io::Result<Input<T>>> {
     let mut state = match state.lock() {
         Ok(state) => state,
         Err(_) => return Poll::Ready(Err(io::ErrorKind::Other.into())),
@@ -124,7 +134,12 @@ pub(crate) fn poll_input<W: Write, T>(
     if !state.active {
         return Poll::Pending;
     }
-    Poll::Ready(action(&mut state.guard))
+    // Resume invalidates input observations even when no OS input signal
+    // reached this process while it was suspended. Deliver it before a read.
+    if std::mem::take(&mut state.input_resumed) {
+        return Poll::Ready(Ok(Input::Resumed));
+    }
+    Poll::Ready(action(&mut state.guard).map(Input::Value))
 }
 
 pub(crate) fn restore<W: Write>(
@@ -168,6 +183,7 @@ pub(crate) fn resume<W: Write>(
         state.guard.reapply()?;
         state.active = true;
         state.restored = false;
+        state.input_resumed = true;
         let input = state.input.take();
         drop(state);
         if let Some(input) = input {
@@ -525,7 +541,7 @@ mod terminal_lifecycle_model {
                     Poll::Pending => true,
                     // Waiting on readiness: only close must wake it.
                     Poll::Ready(Err(error)) => close && error.kind() == io::ErrorKind::WouldBlock,
-                    Poll::Ready(Ok(())) => false,
+                    Poll::Ready(Ok(_)) => false,
                 }
             };
             transition.join().unwrap();
@@ -551,5 +567,47 @@ mod terminal_lifecycle_model {
     #[test]
     fn negative_control_detects_resume_lost_between_check_and_registration() {
         assert!(std::panic::catch_unwind(|| input_wake_model(false, true)).is_err());
+    }
+
+    fn resume_refresh_model(broken: bool) {
+        loom::model(move || {
+            let state = Arc::new(Mutex::new(State::new(Vec::<u8>::new())));
+            restore(&state, false, |_| Ok(())).unwrap();
+            let other = Arc::clone(&state);
+            let transition = loom::thread::spawn(move || {
+                resume(&other, |_| Ok(())).unwrap();
+                if broken {
+                    other.lock().unwrap().input_resumed = false;
+                }
+            });
+            let flag = std::sync::Arc::new(Flag(loom::sync::atomic::AtomicBool::new(false)));
+            let waker = Waker::from(std::sync::Arc::clone(&flag));
+            let next = poll_input(&state, &waker, |_| Ok(()));
+            transition.join().unwrap();
+            let next = if next.is_pending() {
+                assert!(flag.0.load(loom::sync::atomic::Ordering::SeqCst));
+                poll_input(&state, &waker, |_| Ok(()))
+            } else {
+                next
+            };
+            assert!(
+                matches!(next, Poll::Ready(Ok(Input::Resumed))),
+                "resume was not observed before input"
+            );
+            assert!(matches!(
+                poll_input(&state, &waker, |_| Ok(())),
+                Poll::Ready(Ok(Input::Value(())))
+            ));
+        });
+    }
+
+    #[test]
+    fn resume_is_observed_once_before_read_admission() {
+        resume_refresh_model(false);
+    }
+
+    #[test]
+    fn negative_control_detects_resume_without_input_invalidation() {
+        assert!(std::panic::catch_unwind(|| resume_refresh_model(true)).is_err());
     }
 }

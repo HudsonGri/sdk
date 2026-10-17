@@ -53,7 +53,7 @@ impl Source {
             match lifecycle::poll_input(&self.tty.state, cx.waker(), |_| Ok(())) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Ready(Ok(())) => {
+                Poll::Ready(Ok(_)) => {
                     self.resize_pending = false;
                     return Poll::Ready(Ok(Chunk::Resized));
                 }
@@ -66,6 +66,7 @@ impl Source {
                 // the close fence, so dropping the output ends this stream.
                 return match lifecycle::poll_input(&self.tty.state, cx.waker(), |_| Ok(())) {
                     Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                    Poll::Ready(Ok(lifecycle::Input::Resumed)) => Poll::Ready(Ok(Chunk::Resized)),
                     _ => Poll::Pending,
                 };
             };
@@ -81,7 +82,10 @@ impl Source {
                 }
                 Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {}
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Ready(Ok(count)) => {
+                Poll::Ready(Ok(lifecycle::Input::Resumed)) => {
+                    return Poll::Ready(Ok(Chunk::Resized));
+                }
+                Poll::Ready(Ok(lifecycle::Input::Value(count))) => {
                     return Poll::Ready(
                         bytes
                             .get(..count)
