@@ -91,11 +91,11 @@ pub async fn local_ui(
 /// Follow the active local agent's goal/plans through its authorized file binding.
 pub async fn local_documents(
     local: &LocalHarness,
-    authority: &wire::Authority,
-) -> Result<acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>> {
+    views: &mut super::ClientViews,
+) -> Result<crate::task_volume::ChangeStream> {
     // TODO(#495): obtain document count/content/work bounds from followed settings.
     let files = local
         .scratch_files(acyclic_fs::performance::BOUNDARY_BUDGET)
         .await?;
-    super::document_files(&files, authority, 4096, 65_536).await
+    super::document_files(&files, views, 4096, 65_536).await
 }
