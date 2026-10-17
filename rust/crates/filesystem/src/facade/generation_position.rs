@@ -20,7 +20,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if generation == self.generation_id() {
                 return Ok((head, head));
             }
-            let positions = &self.volume.fs.inner.generation_positions;
+            let positions = &self.volume.fs.inner.caches.generation_positions;
             let key = (self.volume.id, generation);
             accounting.charge(WorkCounters {
                 items_examined: super::generation_cache::CAPACITY as u64,

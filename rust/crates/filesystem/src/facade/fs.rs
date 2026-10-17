@@ -17,17 +17,22 @@ pub(super) struct Stores<A, O> {
     pub(super) objects: O,
     pub(super) capabilities: EmbeddedCapabilities,
     pub(super) workspace_namespace: [u8; 16],
-    pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
-    pub(super) generation_positions: super::generation_cache::GenerationPositions,
-    pub(super) publication_proof: Mutex<crate::kernel::closure::CachedProofs>,
     // Last: provider handles must retire before the local root ownership fence.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(super) _local_root_lifecycle: Option<OwnershipAnchor>,
 }
 
+#[derive(Default)]
+pub(super) struct Caches {
+    pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
+    pub(super) generation_positions: super::generation_cache::GenerationPositions,
+    pub(super) publication_proof: Mutex<crate::kernel::closure::CachedProofs>,
+}
+
 pub(super) struct FsInner<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) audit: Option<Arc<crate::access::audit::writer::Recorder>>,
+    pub(super) caches: Arc<Caches>,
     pub(super) stores: Arc<Stores<A, O>>,
 }
 impl<A, O> std::ops::Deref for FsInner<A, O> {
@@ -180,7 +185,7 @@ impl<A, O> Fs<A, O> {
     }
 
     pub(crate) fn path_index(&self) -> &crate::path_index::MemoryGenerationPathIndex {
-        &self.inner.path_index
+        &self.inner.caches.path_index
     }
 
     pub(crate) fn authority(&self) -> &A {
@@ -218,14 +223,12 @@ impl<A, O> Fs<A, O> {
             inner: Arc::new(FsInner {
                 #[cfg(not(target_arch = "wasm32"))]
                 audit: None,
+                caches: Arc::default(),
                 stores: Arc::new(Stores {
                     authority,
                     objects,
                     capabilities,
                     workspace_namespace,
-                    path_index: crate::path_index::MemoryGenerationPathIndex::default(),
-                    generation_positions: super::generation_cache::GenerationPositions::default(),
-                    publication_proof: Mutex::default(),
                     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                     _local_root_lifecycle: None,
                 }),
@@ -265,14 +268,26 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
         if self.inner.audit.is_some() {
             return self;
         }
+        self.with_audit_caches(Arc::default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_shared_audit_caches(self) -> Self {
+        let caches = Arc::clone(&self.inner.caches);
+        self.with_audit_caches(caches)
+    }
+
+    fn with_audit_caches(self, caches: Arc<Caches>) -> Self {
         let raw = Self {
             inner: Arc::new(FsInner {
                 audit: None,
+                caches,
                 stores: Arc::clone(&self.inner.stores),
             }),
         };
         Self {
             inner: Arc::new(FsInner {
+                caches: Arc::clone(&self.inner.caches),
                 stores: Arc::clone(&self.inner.stores),
                 audit: Some(Arc::new(crate::access::audit::writer::Recorder::new(raw))),
             }),

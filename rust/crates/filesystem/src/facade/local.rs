@@ -244,6 +244,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         Ok(Self {
             inner: Arc::new(FsInner {
                 audit: None,
+                caches: Arc::default(),
                 stores: Arc::new(Stores {
                     authority: crate::distributed::StreamAuthorityStore::new(stream),
                     objects,
@@ -251,9 +252,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                         durable: cfg!(any(unix, windows)),
                     },
                     workspace_namespace: [0; 16],
-                    path_index: crate::path_index::MemoryGenerationPathIndex::default(),
-                    generation_positions: super::generation_cache::GenerationPositions::default(),
-                    publication_proof: Mutex::default(),
                     _local_root_lifecycle: lifecycle,
                 }),
             }),

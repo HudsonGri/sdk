@@ -38,6 +38,7 @@ async fn historical_positions_reuse_verified_replay_without_io_or_allocation() -
     volume
         .fs
         .inner
+        .caches
         .generation_positions
         .record((volume.id, current.generation_id()), Sequence::new(5));
     assert!(matches!(
@@ -53,6 +54,7 @@ async fn historical_positions_reuse_verified_replay_without_io_or_allocation() -
     volume
         .fs
         .inner
+        .caches
         .generation_positions
         .record((volume.id, current.generation_id()), Sequence::new(2));
     assert_eq!(

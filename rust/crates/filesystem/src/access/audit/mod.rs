@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::sync::Arc;
 #[cfg(all(feature = "fuzzing", not(acyclic_fs_loom)))]
 pub mod fuzzing;
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+mod isolation;
 #[cfg(all(test, acyclic_fs_loom))]
 mod model;
 mod queue;
