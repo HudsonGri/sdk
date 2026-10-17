@@ -71,12 +71,70 @@ impl<'a> DisplayMetadata<'a> {
 #[cfg(test)]
 mod tests {
     use super::DisplayMetadata;
+    use proptest::prelude::*;
+    use serde_json::{Value, json};
 
     fn display(ok: &str) -> Option<String> {
         let metadata: DisplayMetadata<'_> = serde_json::from_str(ok).unwrap();
         let text = metadata.display().map(|text| text.into_owned());
         assert_eq!(metadata.has_text(), text.is_some(), "{ok}");
         text
+    }
+
+    /// The checked property: a process result shows every nonempty stream and,
+    /// when it failed, its exit status.
+    fn assert_shows_process(
+        display: impl Fn(&str) -> Option<String>,
+        stdout: &str,
+        stderr: &str,
+        code: i64,
+    ) {
+        let ok = json!({
+            "success": code == 0,
+            "exit_code": code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stop": null,
+        });
+        let shown = display(&ok.to_string()).unwrap_or_default();
+        for stream in [stdout, stderr] {
+            assert!(
+                shown.contains(stream),
+                "process output missing from the transcript: {shown:?}"
+            );
+        }
+        if code != 0 {
+            assert!(
+                shown.contains(&format!("exit {code}")),
+                "exit status missing from the transcript: {shown:?}"
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn every_process_stream_and_failure_is_displayed(
+            stdout in "[a-z]{0,12}\n?",
+            stderr in "[A-Z]{0,12}\n?",
+            code in -3i64..4,
+        ) {
+            assert_shows_process(display, &stdout, &stderr, code);
+        }
+    }
+
+    /// The mapping before this change showed only an explicit `text` field.
+    #[test]
+    #[should_panic(expected = "process output missing from the transcript")]
+    fn a_text_only_mapping_is_detected_negative_control() {
+        assert_shows_process(
+            |ok| {
+                let ok: Value = serde_json::from_str(ok).unwrap();
+                ok.get("text").and_then(Value::as_str).map(str::to_owned)
+            },
+            "LPSHELL\n",
+            "",
+            0,
+        );
     }
 
     #[test]
