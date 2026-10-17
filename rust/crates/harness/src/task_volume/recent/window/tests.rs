@@ -206,8 +206,7 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
             return goal;
         }
     };
-    let key = FileKey::Task { task, file };
-    let mut value = FileValue::new(key, vec![index; size]);
+    let mut value = FileValue::new(FileKey::Task { task, file }, vec![index; size]);
     value.channel = channel;
     value
 }
