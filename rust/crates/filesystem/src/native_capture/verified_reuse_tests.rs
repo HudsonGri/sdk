@@ -313,24 +313,41 @@ fn candidate(fixture: &Fixture) -> crate::facade::MemoryCheckout {
 fn set_prior_access_time(runtime: &tokio::runtime::Runtime, fixture: &mut Fixture, nanos: i64) {
     let work = &fixture.setup;
     let cancellation = work.cancellation();
-    let path = fixture.paths[2].clone();
+    let host = HostRoot::open(
+        fixture.source.path(),
+        &mut crate::native_host::ordinary_work(),
+    )
+    .unwrap();
+    let accessed = FILES.map(|(name, _)| {
+        let stat = test_host_stat(&host, Path::new(name.trim_start_matches('/'))).unwrap();
+        capture_metadata(&stat).accessed_ns
+    });
     runtime.block_on(async {
-        let (lookup, _custody) = fixture
-            .checkout
-            .lookup_batch_no_follow(std::slice::from_ref(&path), work, cancellation)
-            .await
-            .unwrap();
-        let mut metadata = fixture
-            .checkout
-            .read_metadata(
-                lookup.entries[0].record.unwrap().file_id,
-                work,
-                cancellation,
-            )
-            .await
-            .unwrap();
-        metadata.accessed_ns = MetadataField::Value(nanos);
-        let changes = vec![AuthoredMutation::SetMetadata { path, metadata }];
+        let mut changes = Vec::new();
+        for (index, path) in fixture.paths.iter().cloned().enumerate() {
+            let (lookup, _custody) = fixture
+                .checkout
+                .lookup_batch_no_follow(std::slice::from_ref(&path), work, cancellation)
+                .await
+                .unwrap();
+            let mut metadata = fixture
+                .checkout
+                .read_metadata(
+                    lookup.entries[0].record.unwrap().file_id,
+                    work,
+                    cancellation,
+                )
+                .await
+                .unwrap();
+            // Other files start from their current access time, so this property
+            // isolates one metadata edit even when capture itself moves atime.
+            metadata.accessed_ns = if index == 2 {
+                MetadataField::Value(nanos)
+            } else {
+                accessed[index]
+            };
+            changes.push(AuthoredMutation::SetMetadata { path, metadata });
+        }
         let slots = work
             .claim(
                 (changes.capacity() * std::mem::size_of::<AuthoredMutation>()) as u64,
@@ -354,10 +371,11 @@ fn set_prior_access_time(runtime: &tokio::runtime::Runtime, fixture: &mut Fixtur
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(8))]
     #[test]
-    fn metadata_changes_reuse_the_authenticated_body(accessed in 1_i64..32, cancelled in proptest::bool::ANY) {
+    fn metadata_changes_reuse_the_authenticated_body(accessed in 1_i64..32) {
         let _subscriber = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
         let _inline = acyclic_native_runtime::InlineBlocking::enter();
         let runtime = setup();
+        for cancelled in [false, true] {
         let [((old, old_work, old_heap, _), old_trace), ((new, work, heap, _), trace)] =
             differential::pair::<_, _, &'static str>(|| {
                 let mut state = fixture(&runtime);
@@ -375,12 +393,17 @@ proptest::proptest! {
         proptest::prop_assert_eq!((&old.result, &old.bytes), (&new.result, &new.bytes));
         proptest::prop_assert_eq!(new.result.is_ok(), !cancelled);
         proptest::prop_assert_eq!(old_trace, trace);
-        proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), work["sourceBytesRead"].as_u64());
+        proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(if cancelled { 0 } else { 70_117 }));
+        // The old metadata update cloned the six-byte namespace path for
+        // resize-to-zero, resize-to-length and write. Both still read all bytes.
+        proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64().unwrap(),
+            work["sourceBytesRead"].as_u64().unwrap() + if cancelled { 0 } else { 18 });
         if !cancelled {
             proptest::prop_assert!(!new.unchanged_root && !old.unchanged_root);
             proptest::prop_assert_eq!(new.bytes, FILES.map(|(_, length)| body(length, 7)).to_vec());
             proptest::prop_assert!(work["objectBytesWritten"].as_u64() < old_work["objectBytesWritten"].as_u64());
             eprintln!("METADATA_REUSE heap={} old_heap={} work={work} old_work={old_work}", heap.count_total, old_heap.count_total);
+        }
         }
     }
 }
@@ -472,6 +495,23 @@ fn exact_rescan(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), St
 }
 
 #[cfg(any(target_os = "linux", windows))]
+fn exact_capture(
+    heap: AllocationInfo,
+    work: &serde_json::Value,
+    trace: &[&str],
+    baseline: &[&str],
+) -> Result<(), String> {
+    exact_rescan(heap, work)?;
+    if !baseline.is_empty() && trace == baseline {
+        Ok(())
+    } else {
+        Err(format!(
+            "native trace {trace:?} differs from baseline {baseline:?}"
+        ))
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
     let _subscriber =
@@ -530,9 +570,9 @@ fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
         );
         let receipt = after.result.as_ref().unwrap();
         assert_eq!((receipt.examined_paths, receipt.changed_paths), (5, 0));
-        exact_rescan(after_heap, &after_work).unwrap();
+        exact_capture(after_heap, &after_work, &trace, &before_trace).unwrap();
         // Negative control: the restored staging work fails the same oracle.
-        assert!(exact_rescan(before_heap, &before_work).is_err());
+        assert!(exact_capture(before_heap, &before_work, &before_trace, &before_trace).is_err());
         assert!(before_work["objectBytesWritten"].as_u64().unwrap() > 0);
         // Every source byte is still read in both.
         assert_eq!(
@@ -553,9 +593,12 @@ fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
                 (&broken.result, &broken.bytes),
                 (&after.result, &after.bytes)
             );
-            // Neither bug changes the six-counter oracle. The same ordered
-            // trace comparison with the frozen baseline detects both.
-            exact_rescan(heap, &work).unwrap();
+            // The extra stat escapes the six-counter oracle. Both controls
+            // fail the same combined heap/work/ordered-trace oracle.
+            if fault == Reuse::RedundantLargeStat {
+                exact_rescan(heap, &work).unwrap();
+            }
+            assert!(exact_capture(heap, &work, &broken_trace, &before_trace).is_err());
             assert_ne!(broken_trace, before_trace, "{fault:?}");
         }
     }

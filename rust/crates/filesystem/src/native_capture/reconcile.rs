@@ -542,7 +542,15 @@ impl CaptureBatch<'_> {
             if let Some(host_path) = retained_path {
                 capture_drop_host_path(host_path, self.meter)?;
             }
-            if existing.1 {
+            #[cfg(test)]
+            // The old negative control trusts the entire prior node, including metadata.
+            let metadata_unchanged = existing.1
+                || self
+                    .baseline
+                    .is_some_and(|baseline| baseline.reuse_override == Some(true));
+            #[cfg(not(test))]
+            let metadata_unchanged = existing.1;
+            if metadata_unchanged {
                 capture_drop_path(path, self.meter)?;
                 return Ok(false);
             }
