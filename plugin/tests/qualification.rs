@@ -119,8 +119,8 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     assert_host_sentinel("installed Codex", &workspace, &output, &installed_debug);
     let child_ran = assert_semantic_provider_exchange(&provider);
     service.assert_hook_service_live();
+    assert_native_hook_lifecycle(&service.assert_requests_settled(&workspace));
     assert_overlay_workflow_stayed_in_child(&workspace, "codex-child-isolation.txt");
-    service.assert_requests_settled(&workspace);
 
     service.drain();
     assert_codex_timeout_cleanup(&codex, temporary.path(), &workspace);
@@ -200,6 +200,7 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
         debug
     );
     service.assert_hook_service_live();
+    assert_native_hook_lifecycle(&service.assert_requests_settled(&workspace));
     assert_overlay_workflow_stayed_in_child(&workspace, "claude-child-isolation.txt");
     let requests = provider.wait_for_requests(0, Duration::ZERO);
     let fingerprints = provider.semantic_fingerprints(0, Duration::ZERO);
@@ -235,6 +236,24 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
             "routing.root-cwd",
         ],
     );
+}
+
+fn assert_native_hook_lifecycle(requests: &[acyclic_harness::external_executor::ExternalRequest]) {
+    use acyclic_harness::external_executor::ExternalAction;
+    let mut seen = [false; 5];
+    for request in requests {
+        seen[match request.action {
+            ExternalAction::Attach { .. } => 0,
+            ExternalAction::RunTool { .. } | ExternalAction::HostTool { .. } => 1,
+            ExternalAction::ToolFinished { .. } => 2,
+            ExternalAction::Fork { .. } => 3,
+            ExternalAction::Join { .. } => 4,
+            _ => continue,
+        }] = true;
+    }
+    for (index, name) in ["attach", "tool call", "tool result", "fork", "join"].into_iter().enumerate() {
+        assert!(seen[index], "native host did not publish its {name} request: {requests:?}");
+    }
 }
 
 fn assert_claude_isolation_denial(fingerprints: &[RequestFingerprint], transcript: &str) {

@@ -2,7 +2,7 @@
 #[path = "sdk_client.rs"]
 mod sdk_client;
 use super::{ACYCLIC, command, isolated_state};
-use acyclic_harness::task_volume::{Component, FileKey, Query, TaskFile, TaskVolume};
+use acyclic_harness::{external_executor::ExternalRequest, task_volume::{Component, FileKey, Query, TaskFile, TaskVolume}};
 use acyclic_native_runtime::ProcessTree;
 use acyclic_stream::{StreamPath, StreamProvider as _};
 use fs2::FileExt as _;
@@ -106,12 +106,12 @@ impl ServiceGuard {
             .expect("authenticated SDK owner query")
     }
 
-    pub fn assert_requests_settled(&self, workspace: &Path) {
+    pub fn assert_requests_settled(&self, workspace: &Path) -> Vec<ExternalRequest> {
         self.runtime
             .block_on(async {
                 tokio::time::timeout(Duration::from_secs(3), settled(&self.home, workspace)).await?
             })
-            .expect("all accepted hook requests must have settled result files");
+            .expect("all accepted hook requests must have settled result files")
     }
 
     pub fn drain(mut self) {
@@ -193,7 +193,7 @@ pub fn assert_service_absent(home: &Path) -> Result<(), String> {
     lock.try_lock_exclusive().map_err(|error| error.to_string())
 }
 
-async fn settled(home: &Path, workspace: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn settled(home: &Path, workspace: &Path) -> Result<Vec<ExternalRequest>, Box<dyn std::error::Error>> {
     let client = Arc::new(sdk_client::workspace(&home.join("owner"), workspace).await?);
     let page = client
         .children_page(acyclic_stream::ChildrenPageRequest {
@@ -207,6 +207,7 @@ async fn settled(home: &Path, workspace: &Path) -> Result<(), Box<dyn std::error
         page.next_after.is_none(),
         "qualification task discovery must be complete"
     );
+    let mut accepted = Vec::new();
     for child in page.children {
         let task = Component::new(
             child
@@ -233,11 +234,12 @@ async fn settled(home: &Path, workspace: &Path) -> Result<(), Box<dyn std::error
             if let FileKey::Task {
                 file: TaskFile::Request(operation),
                 ..
-            } = file.key
+            } = &file.key
             {
+                accepted.push(ExternalRequest::from_file(&task, &file)?);
                 let key = FileKey::Task {
                     task: task.clone(),
-                    file: TaskFile::RequestResult(operation),
+                    file: TaskFile::RequestResult(operation.clone()),
                 };
                 let mut observed = results.observe(Query::File(key.clone()), None, 1).await?;
                 if observed
@@ -259,5 +261,6 @@ async fn settled(home: &Path, workspace: &Path) -> Result<(), Box<dyn std::error
             }
         }
     }
-    Ok(())
+    assert!(!accepted.is_empty(), "installed hooks must publish requests; an idle owner is insufficient");
+    Ok(accepted)
 }
