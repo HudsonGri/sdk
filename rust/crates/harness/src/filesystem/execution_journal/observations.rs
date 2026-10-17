@@ -535,26 +535,43 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append(
-                    (&stream, &self.stream),
-                    [bytes],
-                    0,
-                    Some(tail),
-                    key,
-                    operation_id,
-                    &mut Some(&mut borrowed),
+                let stream_ref = &stream;
+                let mut history = Some(&mut borrowed as &mut dyn crate::store::history::HistoryIo);
+                let work = &mut history;
+                journal_future!(
+                    move || crate::distributed::append(
+                        (stream_ref, &self.stream),
+                        [bytes],
+                        0,
+                        Some(tail),
+                        key,
+                        operation_id,
+                        work,
+                    ),
+                    crate::distributed::append(
+                        (stream_ref, &self.stream),
+                        [bytes],
+                        0,
+                        Some(tail),
+                        key,
+                        operation_id,
+                        work,
+                    )
                 )
-                .await
             }
-            None => stream
-                .append_batch(vec![bytes], Some(tail), Some(key))
-                .await
+            None => {
+                let stream_ref = &stream;
+                journal_future!(
+                    move || stream_ref.append_batch(vec![bytes], Some(tail), Some(key)),
+                    stream_ref.append_batch(vec![bytes], Some(tail), Some(key))
+                )
                 .map_err(|error| match error {
                     StreamError::IdempotencyMismatch => {
                         Error::Conflict("execution journal retry identity reused".into())
                     }
                     _ => Error::Indeterminate(operation_id),
-                }),
+                })
+            }
         };
         drop(stream);
         drop(path_hold);
@@ -592,7 +609,10 @@ where
                     }) => error,
                     error => return Err(error),
                 };
-                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
+                let records = journal_future!(
+                    move || self.replay_page(operation_id, tail, 1, true, io),
+                    self.replay_page(operation_id, tail, 1, true, io)
+                )?;
                 if records.iter().any(|(record, _)| {
                     record.idempotency_key == retry_digest && &record.event == event
                 }) {
