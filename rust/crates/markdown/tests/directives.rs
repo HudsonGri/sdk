@@ -233,3 +233,48 @@ fn colon_runs_keep_the_block_prefix() {
     assert_eq!(stream.nodes()[0].range, 2..14);
     assert_eq!(stream.nodes()[0].directive.kind(), Kind::Block);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn invalid_bodies_recover_at_every_chunk_boundary(
+        invalid in prop::sample::select(vec![
+            ":file[unfinished\n", "::file[unfinished\r", ":file[unfinished:file[",
+        ]),
+        path in "[a-z]{1,20}",
+        cuts in prop::collection::vec(0usize..128, 0..20),
+    ) {
+        let valid = format!(":file[{path}]");
+        let source = format!("{invalid}{valid}");
+        let mut cuts = cuts;
+        cuts.sort_unstable();
+        let streamed = parsed(&source, &cuts);
+        prop_assert_eq!(streamed.source(), source.as_str());
+        prop_assert!(streamed.nodes().iter().any(|node|
+            node.directive.target().is_some_and(|target| target.path == path)
+                && node.directive.raw() == valid));
+        let whole = parsed(&source, &[]);
+        prop_assert_eq!(streamed.nodes(), whole.nodes());
+        prop_assert!(streamed.work <= 2 * source.len());
+    }
+}
+
+#[test]
+fn recovery_property_detects_swallowing_an_invalid_body() {
+    let source = ":file[unfinished\n:file[ok]";
+    let retained = parsed(source, &(1..source.len()).collect::<Vec<_>>());
+    assert_eq!(retained.nodes().len(), 1);
+    assert_eq!(retained.nodes()[0].directive.target().unwrap().path, "ok");
+    let mut broken = Stream {
+        swallow_invalid: true,
+        ..Stream::default()
+    };
+    broken.push(source);
+    broken.finish();
+    assert!(
+        !broken
+            .nodes()
+            .iter()
+            .any(|node| node.directive.target().is_some())
+    );
+}

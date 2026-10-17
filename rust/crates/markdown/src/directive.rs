@@ -165,22 +165,17 @@ pub struct Located {
 }
 
 #[derive(Clone, Debug)]
+struct Prefix {
+    start: usize,
+    matched: usize,
+    block: bool,
+}
+
+#[derive(Clone, Debug)]
 enum Pending {
-    Prefix {
-        start: usize,
-        matched: usize,
-        block: bool,
-    },
-    Body {
-        start: usize,
-        kind: Kind,
-    },
-    Closed {
-        start: usize,
-    },
-    Attributes {
-        start: usize,
-    },
+    Body { start: usize, kind: Kind },
+    Closed { start: usize },
+    Attributes { start: usize },
 }
 
 /// Append-only syntax recognition. Pending bytes are visited once as they arrive;
@@ -190,6 +185,9 @@ pub struct Stream {
     source: String,
     nodes: Vec<Located>,
     pending: Option<Pending>,
+    prefix: Option<Prefix>,
+    #[cfg(test)]
+    swallow_invalid: bool,
     escaped: bool,
     #[cfg(test)]
     work: usize,
@@ -207,44 +205,21 @@ impl Stream {
             {
                 self.work += 1;
             }
+            let escaped = self.escaped;
+            self.escaped = byte == b'\\' && !escaped;
+            let opened = self.recognize(position, byte, escaped);
             let pending = self.pending.take();
             match pending {
-                Some(Pending::Prefix {
-                    start,
-                    matched,
-                    block,
-                }) => {
-                    if matched == 1 && block && byte == b':' {
-                        self.pending = Some(Pending::Prefix {
-                            start: position - 1,
-                            matched,
-                            block,
-                        });
-                    } else if matched == 1 && !block && byte == b':' {
-                        self.pending = Some(Pending::Prefix {
-                            start,
-                            matched,
-                            block: true,
-                        });
-                    } else if b"file[".get(matched - 1) == Some(&byte) {
-                        self.pending = Some(if matched == 5 {
-                            Pending::Body {
-                                start,
-                                kind: if block { Kind::Block } else { Kind::Inline },
-                            }
-                        } else {
-                            Pending::Prefix {
-                                start,
-                                matched: matched + 1,
-                                block,
-                            }
-                        });
-                    } else {
-                        self.start(position, byte);
-                    }
-                }
                 Some(Pending::Body { start, kind }) => {
-                    if byte == b']' {
+                    let invalid = matches!(byte, b'[' | b'\n' | b'\r');
+                    #[cfg(test)]
+                    let invalid = invalid && !self.swallow_invalid;
+                    if invalid {
+                        // The source retains every abandoned byte. A nested
+                        // prefix is already recognized when its '[' invalidates
+                        // this body, so it becomes the next candidate directly.
+                        self.pending = opened;
+                    } else if byte == b']' {
                         if kind == Kind::Block {
                             self.pending = Some(Pending::Closed { start });
                         } else {
@@ -259,7 +234,7 @@ impl Stream {
                         self.pending = Some(Pending::Attributes { start });
                     } else {
                         self.complete(start, position, Kind::Block);
-                        self.start(position, byte);
+                        self.pending = opened;
                     }
                 }
                 Some(Pending::Attributes { start }) => {
@@ -269,23 +244,51 @@ impl Stream {
                         self.pending = Some(Pending::Attributes { start });
                     }
                 }
-                None => self.start(position, byte),
+                None => self.pending = opened,
             }
         }
     }
 
-    fn start(&mut self, position: usize, byte: u8) {
-        if self.escaped {
-            self.escaped = false;
-        } else if byte == b'\\' {
-            self.escaped = true;
-        } else if byte == b':' {
-            self.pending = Some(Pending::Prefix {
+    // Prefix recognition runs beside an active body. A second `:file[` makes
+    // that body invalid, but its opening colon must not be lost on recovery.
+    fn recognize(&mut self, position: usize, byte: u8, escaped: bool) -> Option<Pending> {
+        if let Some(Prefix {
+            start,
+            matched,
+            block,
+        }) = self.prefix.take()
+        {
+            if matched == 1 && byte == b':' {
+                self.prefix = Some(Prefix {
+                    start: if block { position - 1 } else { start },
+                    matched,
+                    block: true,
+                });
+                return None;
+            }
+            if b"file[".get(matched - 1) == Some(&byte) {
+                if matched == 5 {
+                    return Some(Pending::Body {
+                        start,
+                        kind: if block { Kind::Block } else { Kind::Inline },
+                    });
+                }
+                self.prefix = Some(Prefix {
+                    start,
+                    matched: matched + 1,
+                    block,
+                });
+                return None;
+            }
+        }
+        if byte == b':' && !escaped {
+            self.prefix = Some(Prefix {
                 start: position,
                 matched: 1,
                 block: false,
             });
         }
+        None
     }
 
     fn complete(&mut self, start: usize, end: usize, kind: Kind) {
@@ -313,6 +316,7 @@ impl Stream {
     /// Finalize the message. An optional attribute list can no longer follow `]`.
     /// Incomplete prefixes, brackets and attributes remain ordinary raw text.
     pub fn finish(&mut self) {
+        self.prefix = None;
         if let Some(Pending::Closed { start }) = self.pending.take() {
             self.complete(start, self.source.len(), Kind::Block);
         }

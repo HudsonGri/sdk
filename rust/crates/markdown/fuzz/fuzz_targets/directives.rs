@@ -23,6 +23,22 @@ fuzz_target!(|data: &[u8]| {
     streamed.push(&source[start..]);
     streamed.finish();
     assert_eq!(whole.nodes(), streamed.nodes());
+    for prefix in [
+        ":file[unfinished\n",
+        "::file[unfinished\r",
+        ":file[unfinished[",
+    ] {
+        let mut recovered = Stream::default();
+        recovered.push(prefix);
+        recovered.push(source);
+        recovered.finish();
+        assert_eq!(recovered.nodes().len(), whole.nodes().len());
+        for (actual, expected) in recovered.nodes().iter().zip(whole.nodes()) {
+            assert_eq!(actual.directive, expected.directive);
+            assert_eq!(actual.range.start, expected.range.start + prefix.len());
+            assert_eq!(actual.range.end, expected.range.end + prefix.len());
+        }
+    }
     for node in streamed.nodes() {
         assert_eq!(&source[node.range.clone()], node.directive.raw());
         assert_eq!(
