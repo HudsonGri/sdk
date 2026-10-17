@@ -1,4 +1,4 @@
-use super::{BLOCKING_WORKERS, MAX_ASYNC_WORKERS, TestResult, scenario_builder};
+use super::{BLOCKING_WORKERS, TestResult, scenario_builder};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -10,7 +10,9 @@ fn blocking_pool_queues_work_instead_of_creating_another_thread() -> TestResult 
     for broken in [false, true] {
         let created = Arc::new(AtomicUsize::new(0));
         let names = created.clone();
-        let mut builder = scenario_builder(MAX_ASYNC_WORKERS);
+        const ASYNC_WORKERS: usize = 2;
+        let mut builder = scenario_builder();
+        builder.worker_threads(ASYNC_WORKERS);
         if broken {
             builder.max_blocking_threads(BLOCKING_WORKERS + 1);
         }
@@ -48,7 +50,7 @@ fn blocking_pool_queues_work_instead_of_creating_another_thread() -> TestResult 
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(queued.await?)
         })?;
         assert_eq!(answer, 42, "queued work was discarded");
-        let bound = MAX_ASYNC_WORKERS + BLOCKING_WORKERS;
+        let bound = ASYNC_WORKERS + BLOCKING_WORKERS;
         assert_eq!(threads, bound + usize::from(broken));
         assert_eq!(threads <= bound, !broken, "blocking-pool control escaped");
     }

@@ -239,26 +239,16 @@ fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
         return Err("scenario services must start before the async runtime".into());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
-    let available = std::thread::available_parallelism().map_or(1, usize::from);
-    let workers = scenario_workers(available);
-    Ok(scenario_builder(workers).build()?)
+    Ok(scenario_builder().build()?)
 }
 
-const MAX_ASYNC_WORKERS: usize = 8;
 const BLOCKING_WORKERS: usize = 16;
 
-fn scenario_workers(available: usize) -> usize {
-    available.clamp(2, MAX_ASYNC_WORKERS)
-}
-
-fn scenario_builder(workers: usize) -> tokio::runtime::Builder {
+fn scenario_builder() -> tokio::runtime::Builder {
     // All scenarios share one I/O pool. Waiting for a journal/device must not
     // consume an async worker, or shrink I/O concurrency on a small CPU set.
     let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder
-        .worker_threads(workers)
-        .max_blocking_threads(BLOCKING_WORKERS)
-        .enable_all();
+    builder.max_blocking_threads(BLOCKING_WORKERS).enable_all();
     builder
 }
 
