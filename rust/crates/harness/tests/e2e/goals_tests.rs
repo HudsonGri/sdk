@@ -104,7 +104,11 @@ fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestRe
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
         let baseline =
             crate::scenario::load_value(&root, &root.join("goals/continuations/cap-two.json"))?;
-        crate::drivers::run(baseline.clone()).await?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::drivers::run(baseline.clone()),
+        )
+        .await??;
         futures::future::try_join_all(
             [
                 "file",
@@ -149,9 +153,14 @@ fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestRe
                         "max_steps" => value["max_steps"] = json!(0),
                         _ => unreachable!(),
                     }
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        crate::drivers::run(value),
+                    )
+                    .await;
                     assert!(
-                        crate::drivers::run(value).await.is_err(),
-                        "accepted changed {mutation}"
+                        matches!(result, Ok(Err(_))),
+                        "changed {mutation} must reach its assertion, got {result:?}"
                     );
                     Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
                 }

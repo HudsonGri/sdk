@@ -110,6 +110,8 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let (operation, task_id, status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
+    // The seed reader owns a filesystem host. Release it before cold reopen.
+    drop(reader);
     let mut followed = stream.follow(path.clone(), 0).await?;
     let mut frames = Vec::new();
     let result = {
