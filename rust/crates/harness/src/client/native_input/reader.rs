@@ -130,6 +130,25 @@ impl Channel {
         Poll::Pending
     }
 
+    /// Negative control: checking and registering separately loses a send.
+    #[cfg(all(test, acyclic_harness_loom))]
+    pub(super) fn poll_recv_split(&self, cx: &mut Context<'_>) -> Poll<Option<Batch>> {
+        {
+            let mut state = self.lock();
+            if let Some(batch) = state.ready.pop_front() {
+                drop(state);
+                self.space.notify_one();
+                return Poll::Ready(Some(batch));
+            }
+            if state.finished {
+                return Poll::Ready(None);
+            }
+        }
+        loom::thread::yield_now();
+        self.lock().waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+
     /// Stream: return spent storage for reuse.
     pub(super) fn recycle(&self, batch: Vec<u8>) {
         let mut state = self.lock();

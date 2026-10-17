@@ -134,11 +134,50 @@ mod model {
         shutdown(3, true, true);
     }
 
+    fn wake_model(broken: bool) {
+        loom::model(move || {
+            let channel = Arc::new(Channel::new(1));
+            let mut input = Input {
+                reads: 1,
+                cancel: Arc::new(Cancel {
+                    set: Mutex::new(true),
+                    changed: Condvar::new(),
+                    level: true,
+                }),
+            };
+            let reader = Arc::clone(&channel);
+            let producer = loom::thread::spawn(move || pump(&mut input, &reader));
+            let bytes = loom::future::block_on(Box::pin(async {
+                let mut bytes = Vec::new();
+                while let Some(batch) = std::future::poll_fn(|cx| {
+                    if broken {
+                        channel.poll_recv_split(cx)
+                    } else {
+                        channel.poll_recv(cx)
+                    }
+                })
+                .await
+                {
+                    bytes.extend(batch.unwrap());
+                }
+                bytes
+            }));
+            assert_eq!(bytes, [1]);
+            producer.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn publication_and_finish_never_lose_the_consumers_wakeup() {
+        wake_model(false);
+    }
+
     #[test]
     fn shutdown_child() {
         match std::env::var("ACYCLIC_READER_SHUTDOWN_CHILD").as_deref() {
             Ok("unnotified") => shutdown(3, false, true),
             Ok("edge") => shutdown(0, true, false),
+            Ok("waker") => wake_model(true),
             _ => {}
         }
     }
@@ -163,6 +202,12 @@ mod model {
     #[test]
     fn negative_control_detects_a_close_that_never_releases_a_full_queue() -> io::Result<()> {
         assert!(child_deadlocks("unnotified")?);
+        Ok(())
+    }
+
+    #[test]
+    fn negative_control_detects_split_waker_registration() -> io::Result<()> {
+        assert!(child_deadlocks("waker")?);
         Ok(())
     }
 
