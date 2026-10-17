@@ -515,7 +515,13 @@ proptest! {
                 let value = $value;
                 let mut encoded = serde_json::to_value(&value).unwrap();
                 prop_assert_eq!(serde_json::from_value::<$ty>(encoded.clone()).unwrap(), value);
+                let name = if stringify!($ty) == "SpawnInput" { "spawn" } else if stringify!($ty) == "SendInput" { "send" } else if stringify!($ty) == "WaitInput" { "wait" } else { "archive" };
+                let spec = crate::tools::catalog().find(|spec| spec.name == name).unwrap();
+                let contract = spec.definition().unwrap().input_schema;
+                let validator = jsonschema::validator_for(&contract).unwrap();
+                prop_assert!(validator.is_valid(&encoded));
                 encoded.as_object_mut().unwrap().insert("command".into(), json!("spawn"));
+                prop_assert!(!validator.is_valid(&encoded));
                 prop_assert!(serde_json::from_value::<$ty>(encoded).is_err());
             }};
         }

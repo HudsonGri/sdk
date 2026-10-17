@@ -35,7 +35,9 @@ struct Case {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Expected {
-    text: String,
+    text: Option<String>,
+    #[serde(default)]
+    indeterminate: bool,
     requests: BTreeMap<String, usize>,
     task_files: BTreeMap<String, Value>,
     #[serde(default)]
@@ -190,6 +192,9 @@ async fn control(harness: &LocalHarness, action: &Action) -> Result<()> {
 
 pub(super) async fn run(value: Value) -> TestResult {
     let case: Case = serde_json::from_value(value)?;
+    if case.expect.indeterminate != case.expect.text.is_none() {
+        return Err("scenario must select either an answer or an indeterminate outcome".into());
+    }
     if case.models.keys().ne(case.expect.requests.keys()) {
         return Err("every scripted model needs an exact request count".into());
     }
@@ -261,7 +266,8 @@ pub(super) async fn run(value: Value) -> TestResult {
         } => result,
     };
     let output = match outcome {
-        Ok(output) => output,
+        Ok(output) => Some(output),
+        Err(Error::Indeterminate(_)) if case.expect.indeterminate => None,
         Err(error) => {
             let requests: BTreeMap<_, _> = provider
                 .scripts
@@ -337,8 +343,9 @@ pub(super) async fn run(value: Value) -> TestResult {
             return Err(format!("active children: expected {expected:?}, got {actual:?}").into());
         }
     }
-    if output.text != case.expect.text {
-        return Err(format!("unexpected parent output: {:?}", output.text).into());
+    let text = output.map(|output| output.text);
+    if text != case.expect.text {
+        return Err(format!("unexpected parent output: {text:?}").into());
     }
     for (name, expected) in case.expect.requests {
         let model = provider.get(&name)?;
@@ -373,6 +380,12 @@ pub(super) async fn run(value: Value) -> TestResult {
             .await?
             .snapshot
             .ok_or("missing file snapshot")?;
+        if expected.is_null() {
+            if !snapshot.files.is_empty() {
+                return Err(format!("unexpected file {path}").into());
+            }
+            continue;
+        }
         let file = snapshot
             .files
             .first()

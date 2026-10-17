@@ -173,7 +173,14 @@ static SPAWN: ToolSpec = ToolSpec {
     description: "Create a child in a lazy fork and return its reference",
     hook_names: &[],
     binding: ToolBinding::Volume,
-    input: schema::input::<super::SpawnInput>,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["task"],"additionalProperties":false,
+        "properties":{"task":{"type":"string"},"name":{"type":["string","null"]},
+        "grants":{"type":["array","null"],"items":{"type":"string"},
+        "description":"Capability subset; keep model:generate and mail:read"}}}),
+        )
+    },
     output: object,
     projection_schema: command_projection,
     executor: |name| Arc::new(super::children::Executor(name)),
@@ -186,7 +193,12 @@ static SEND: ToolSpec = ToolSpec {
     description: "Queue a message to a child",
     hook_names: &[],
     binding: ToolBinding::Volume,
-    input: schema::input::<super::SendInput>,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["agent","message"],"additionalProperties":false,
+        "properties":{"agent":{"type":"string"},"message":{"type":"string"}}}),
+        )
+    },
     output: object,
     projection_schema: command_projection,
     executor: |name| Arc::new(super::children::Executor(name)),
@@ -196,10 +208,16 @@ static SEND: ToolSpec = ToolSpec {
 static WAIT: ToolSpec = ToolSpec {
     name: "wait",
     revision: "1",
-    description: "Wait for child answers or failures and return bounded immutable result references",
+    description: "Wait for all children (mode:any for the first) and return bounded answer or failure references",
     hook_names: &[],
     binding: ToolBinding::Volume,
-    input: schema::input::<super::WaitInput>,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["agents"],"additionalProperties":false,
+        "properties":{"agents":{"type":"array","items":{"type":"string"}},
+        "mode":{"enum":["any","all",null]}}}),
+        )
+    },
     output: object,
     projection_schema: command_projection,
     executor: |name| Arc::new(super::children::Executor(name)),
@@ -212,7 +230,12 @@ static ARCHIVE: ToolSpec = ToolSpec {
     description: "Cancel and drain a child and its descendants, then archive its readable history",
     hook_names: &[],
     binding: ToolBinding::Volume,
-    input: schema::input::<super::ArchiveInput>,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["agent"],"additionalProperties":false,
+        "properties":{"agent":{"type":"string"}}}),
+        )
+    },
     output: object,
     projection_schema: command_projection,
     executor: |name| Arc::new(super::children::Executor(name)),
