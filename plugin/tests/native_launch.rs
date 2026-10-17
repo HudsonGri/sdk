@@ -246,7 +246,7 @@ async fn selected_task_files_seed_the_native_child_and_pin_provenance_without_pa
         assert!(refused["Failed"]["message"].as_str().unwrap().contains("native context"));
         let operation=acyclic_harness::external_executor::request(acyclic_harness::external_executor::ExternalHost::Pi,"tool_call",
             json!({"sessionId":parent.session,"toolCallId":"selected-spawn","toolName":"acyclic_spawn","input":args.clone()}))?.operation_id;
-        let child=parent.call("selected-spawn","acyclic_spawn",args).await?;
+        let child=parent.call("selected-spawn","acyclic_spawn",args.clone()).await?;
         let outcome=parent.call("selected-wait","acyclic_wait",json!({"child":child})).await?;
         assert_eq!(outcome["success"],true,"{outcome}");
         assert!(!fixture.path().join("leaf.txt").exists());
@@ -259,6 +259,17 @@ async fn selected_task_files_seed_the_native_child_and_pin_provenance_without_pa
         assert_eq!(manifest["cut"]["session"],parent.session);
         assert_eq!(manifest["cut"]["through"],"completed-result");
         assert_eq!(manifest["cut"]["workspace"],json!(fixture.path()));
+        // Acceptance pins the seed. A later host-file edit cannot reseed a
+        // retry, change its provenance, or launch the original child again.
+        let changed=FileValue::new(FileKey::parse(&format!("{prefix}/chunk-0"))?,b"later source mutation".to_vec());
+        files.append(files.head().await?,&changed).await?;
+        assert_eq!(parent.call("selected-spawn","acyclic_spawn",args).await?,child);
+        let retained=results.snapshot(&Query::File(FileKey::Task {
+            task:acyclic_harness::task_volume::Component::new(parent.task.to_string())?,
+            file:TaskFile::Context(acyclic_harness::task_volume::Component::new(format!("native-{operation}"))?),
+        }),1).await?;
+        assert_eq!(retained.files.len(),1);
+        assert_eq!(serde_json::from_slice::<Value>(&retained.files[0].bytes)?,manifest);
         Ok::<_,Box<dyn std::error::Error>>(())
     }).catch_unwind().await;
     let stopped = fixture.close_owner(owner).await;
