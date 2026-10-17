@@ -189,8 +189,9 @@ where
 {
     fn clone_source(
         &self,
+        _checkout: &(dyn std::any::Any + Send + Sync),
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(VolumeId, FileId), MountSourceError> {
+    ) -> Result<FileId, MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED)?;
         Err(MountSourceError::NativeUnsupported)
     }

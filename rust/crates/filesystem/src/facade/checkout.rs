@@ -8,6 +8,7 @@ pub struct Checkout<A, O> {
     /// The base generation and the working tree, which a running collection
     pub(super) root: crate::collection::CheckoutRoots,
     pub(super) authority_head: Option<Head>,
+    pub(super) observed_generation: Option<(GenerationId, Sequence)>,
     pub(super) authored_operation_id: Option<OperationId>,
     pub(super) live_operation_id: Option<OperationId>,
     pub(super) last_commit: Option<LastCommit>,
@@ -159,6 +160,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 base_root,
                 root,
                 authority_head,
+                observed_generation: (selector == GenerationSelector::Head)
+                    .then(|| {
+                        authority_head
+                            .map(|head| (GenerationId::new(generation_root.digest), head.sequence))
+                    })
+                    .flatten(),
                 authored_operation_id: None,
                 live_operation_id: None,
                 last_commit: None,
@@ -269,6 +276,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.reset_root(root, &mut accounting, cancellation).await?;
             }
             self.authority_head = Some(head);
+            self.observed_generation = Some((self.generation_id(), head.sequence));
             Ok(self.generation_id())
         }
         .await;

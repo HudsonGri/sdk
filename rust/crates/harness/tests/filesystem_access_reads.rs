@@ -15,6 +15,8 @@ use std::{error::Error, sync::Arc};
 #[path = "support/access_policy.rs"]
 mod policy_support;
 
+#[path = "filesystem_access_copies.rs"]
+mod copies;
 #[path = "filesystem_access_ranges.rs"]
 mod ranges;
 

@@ -165,11 +165,12 @@ pub enum MountOpenAccess {
 
 /// Path-independent regular-file handle used for every native open operation.
 pub trait MountOpenFile: std::any::Any + Send + Sync + 'static {
-    /// Returns a readable same-volume clone source without disclosing metadata.
+    /// Returns a readable source only for the exact destination checkout owner.
     fn clone_source(
         &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
         work: &NativeMaterializationWork,
-    ) -> Result<(crate::VolumeId, FileId), MountSourceError>;
+    ) -> Result<FileId, MountSourceError>;
     /// Clones immutable extents through both open handles' authority.
     fn clone_range_from(
         &self,

@@ -265,7 +265,7 @@ impl FuseProjection {
         path: &MountPath,
         lookup: Option<&MountLookup>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Option<(u64, FuseOpenFile)>, NativeMountError> {
+    ) -> Result<FuseOwned<Vec<(u64, FuseOpenFile)>>, NativeMountError> {
         // The caller holds the names lock exclusively.
         let state = self.core.state()?;
         let inode = lookup
@@ -280,11 +280,14 @@ impl FuseProjection {
                 .get(inode)
                 .is_some_and(|entry| entry.open_handles != 0)
         }) else {
-            return Ok(None);
+            return fuse_vec(0, work);
         };
         drop(state);
         let detached = self.core.source.detach_file_with_meter(path, work)?;
-        Ok(Some((inode, FuseOpenFile(fuse_open_file(detached, work)?))))
+        let detached = FuseOpenFile(fuse_open_file(detached, work)?);
+        self.core
+            .state()?
+            .prepare_detached_handles(inode, &detached, work)
     }
 
     pub(super) fn remove_name(
@@ -302,7 +305,7 @@ impl FuseProjection {
             ChildName::new(source, state.child_path(parent, name, work)?, work)?
         };
         let current = source.lookup_with_meter(&child.spelled, work)?;
-        let detached = self.detach_name(&child.spelled, current.as_ref(), work)?;
+        let mut detached = self.detach_name(&child.spelled, current.as_ref(), work)?;
         let removed = self.source_write(work, || {
             Ok(source.remove(
                 &child.spelled,
@@ -311,10 +314,8 @@ impl FuseProjection {
             )?)
         });
         let mut state = self.core.state()?;
-        if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached, work)?;
-        }
         removed?;
+        state.install_detached_handles(&mut detached);
         work.charge(Items.delta(1))?;
         if let Some(inode) = state.inode_by_path.get(child.key()).copied() {
             state.remove_binding(inode, child.key(), work)?;
@@ -351,15 +352,13 @@ impl FuseProjection {
         } else {
             None
         };
-        let detached = self.detach_name(&to.spelled, replaced.as_ref(), work)?;
+        let mut detached = self.detach_name(&to.spelled, replaced.as_ref(), work)?;
         let renamed = self.source_write(work, || {
             Ok(source.rename(&from.spelled, &to.spelled, replace, work)?)
         });
         let mut state = self.core.state()?;
-        if let Some((inode, detached)) = detached {
-            state.retain_detached_handles(inode, &detached, work)?;
-        }
         renamed?;
+        state.install_detached_handles(&mut detached);
         if from.key() != to.key() {
             state.invalidate_prefix(to.key(), work)?;
         }

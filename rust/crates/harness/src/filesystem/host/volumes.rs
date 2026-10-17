@@ -14,6 +14,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<WorkspaceObservation> {
         source_grant.require(source, VolumeOperation::Read, None)?;
         destination_grant.require(destination, VolumeOperation::Write, None)?;
+        if crate::core::filesystem_scope_label(
+            destination_grant.policy_scope().capabilities(),
+            &mut None,
+        )?
+        .is_some()
+        {
+            return Err(Error::FilesystemAccessConfiguration(
+                "structured fork destination requires an existing policy view",
+            ));
+        }
         self.fork_volume_pinned(
             source,
             source_grant,
@@ -77,6 +87,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = host.open(&reference, Some(io)).await?;
         let pinned = host.generation(&workspace, selected, Some(io)).await?;
         fork_preparer_io::retain(&pinned, Some(io)).await?;
+        let access = self
+            .volume_copy_access(
+                &workspace,
+                grant,
+                Some(pinned.id()),
+                VolumeOperation::Read,
+                &[
+                    acyclic_fs::access::Action::Read,
+                    acyclic_fs::access::Action::List,
+                    acyclic_fs::access::Action::Fork,
+                ],
+                io,
+            )
+            .await?;
+        super::super::access::require_current(&workspace, &access.0, io).await?;
         let name = crate::executor::with_history_io(Some(io), |work| child.storage_name(work))?;
         let operation = fork_preparer_io::operation_key(key, Some(io))?;
         let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
@@ -182,7 +207,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| map_error(failure.error))?;
-        source_workspace
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let source_access = self
+            .volume_copy_access(
+                &source_workspace,
+                source_grant,
+                Some(source_generation.id()),
+                VolumeOperation::Read,
+                &[
+                    acyclic_fs::access::Action::Read,
+                    acyclic_fs::access::Action::List,
+                ],
+                &io,
+            )
+            .await?;
+        let destination_access = self
+            .volume_copy_access(
+                &destination_workspace,
+                destination_grant,
+                None,
+                VolumeOperation::Write,
+                &[acyclic_fs::access::Action::MergeInto],
+                &io,
+            )
+            .await?;
+        let plan = source_workspace
             .join_into(&destination_workspace)
             .plan_at(
                 &source_generation,
@@ -192,7 +241,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| map_error(failure.error))
+            .map_err(|failure| map_error(failure.error))?;
+        super::super::access::require_current(&source_workspace, &source_access.0, &io).await?;
+        super::super::access::require_current(&destination_workspace, &destination_access.0, &io)
+            .await?;
+        Ok(plan)
     }
 
     /// Creates the unique physical workspace for a logical volume.

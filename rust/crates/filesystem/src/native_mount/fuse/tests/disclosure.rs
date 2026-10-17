@@ -9,6 +9,7 @@ fn cached_disclosure(
     hidden: &[bool],
     deny_parent: bool,
     skip: usize,
+    advance: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = shared_sources(posix_config())?;
     let source = Arc::new(source);
@@ -37,6 +38,8 @@ fn cached_disclosure(
         fuser::FopenFlags::empty()
     );
     projection.position_directory_stream(&mut stream, 0, &work)?;
+    stream.page = Some(source.read_directory_with_meter(&MountPath::root(), None, 1, &work)?);
+    stream.entry_position = 0;
     let stamp = source.view_stamp_with_meter(&work)?;
     let mut rules = hidden
         .iter()
@@ -69,9 +72,15 @@ fn cached_disclosure(
     let skip = skip.min(hidden.iter().filter(|hidden| !**hidden).count());
     projection.position_directory_stream(&mut stream, 2 + skip as u64, &work)?;
     let mut actual = Vec::new();
-    while let Some(child) =
-        crate::native_mount::fuse::dir::next_visible_child(source.as_ref(), &mut stream, &work)?
-    {
+    loop {
+        let next = if advance {
+            projection.next_directory_child(&mut stream, &work)?
+        } else {
+            crate::native_mount::fuse::dir::next_visible_child(source.as_ref(), &mut stream, &work)?
+        };
+        let Some(child) = next else {
+            break;
+        };
         actual.push(
             std::str::from_utf8(child.spelled.components().last().ok_or("missing child")?)?
                 .to_owned(),
@@ -86,16 +95,25 @@ fn cached_disclosure(
         .skip(skip)
         .map(|(index, _)| format!("file{index:02}"))
         .collect::<Vec<_>>();
-    assert_eq!(actual, expected);
+    assert_eq!(
+        actual, expected,
+        "directory disclosure stopped before an allowed page"
+    );
     Ok(())
 }
 
 #[test]
 fn native_access_fuse_parked_rows_obey_disclosure_revocation()
 -> Result<(), Box<dyn std::error::Error>> {
-    cached_disclosure(&[true, false, true], false, 0)?;
-    cached_disclosure(&[true, false, false], false, 1)?;
-    cached_disclosure(&[false, false], true, 0)
+    cached_disclosure(&[true, false, true], false, 0, true)?;
+    cached_disclosure(&[true, false, false], false, 1, true)?;
+    cached_disclosure(&[false, false], true, 0, true)
+}
+
+#[test]
+#[should_panic(expected = "directory disclosure stopped before an allowed page")]
+fn missing_page_advance_negative_control() {
+    cached_disclosure(&[true, false], false, 0, false).unwrap();
 }
 
 proptest! {
@@ -106,6 +124,6 @@ proptest! {
         deny_parent in any::<bool>(),
         skip in 0..12usize,
     ) {
-        cached_disclosure(&hidden, deny_parent, skip).map_err(|error| TestCaseError::fail(error.to_string()))?;
+        cached_disclosure(&hidden, deny_parent, skip, true).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }

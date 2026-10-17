@@ -62,6 +62,14 @@ pub(super) struct DirectoryStream {
     pub(super) parked: u64,
 }
 
+impl DirectoryStream {
+    fn needs_page(&self) -> bool {
+        self.page.as_ref().is_none_or(|page| {
+            self.entry_position == page.entries().len() && page.next_cursor().is_some()
+        })
+    }
+}
+
 // Cached rows retain namespace facts, not permission to disclose them. Return
 // the already-funded child used by emission, without copying its path twice.
 pub(super) fn next_visible_child(
@@ -226,6 +234,7 @@ impl ProjectionState {
         inode: u64,
         stream: &mut DirectoryStream,
         listing: &mut Option<DirectoryReply>,
+        mut first: Option<ChildName>,
         work: &crate::NativeMaterializationWork,
     ) -> (Result<(), NativeMountError>, bool) {
         let mut listed = false;
@@ -263,7 +272,11 @@ impl ProjectionState {
             }
             self.admit_listing(source, inode, stream.entries_stamp, work)?;
             loop {
-                let Some(child) = next_visible_child(source, stream, work)? else {
+                let child = match first.take() {
+                    Some(child) => Some(child),
+                    None => next_visible_child(source, stream, work)?,
+                };
+                let Some(child) = child else {
                     return Ok(());
                 };
                 let next = stream.emitted.saturating_add(1);
@@ -434,6 +447,22 @@ impl FuseProjection {
         Ok(FopenFlags::empty())
     }
 
+    pub(super) fn next_directory_child(
+        &self,
+        stream: &mut DirectoryStream,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<ChildName>, NativeMountError> {
+        loop {
+            if let Some(child) = next_visible_child(self.core.source.as_ref(), stream, work)? {
+                return Ok(Some(child));
+            }
+            if !stream.needs_page() {
+                return Ok(None);
+            }
+            self.position_directory_stream(stream, stream.emitted, work)?;
+        }
+    }
+
     pub(super) fn list_directory(
         &self,
         inode: u64,
@@ -448,8 +477,9 @@ impl FuseProjection {
             .state()?
             .directory_stream(source, inode, offset, work)?;
         self.position_directory_stream(&mut stream, offset, work)?;
+        let mut first = self.next_directory_child(&mut stream, work)?;
         let expected = stream.binding_epoch;
-        let _lease = source.acquire_binding_lease_with_meter(expected, work)?;
+        let mut lease = Some(source.acquire_binding_lease_with_meter(expected, work)?);
         if !source.view_is_stable_with_meter(work)?
             || source.binding_epoch_with_meter(work)? != expected
         {
@@ -457,7 +487,26 @@ impl FuseProjection {
         }
         let mut state = self.core.state()?;
         let parking = state.streams.prepare_park(work)?;
-        let (result, partial) = state.list_directory(source, inode, &mut stream, listing, work);
+        let started = stream.emitted;
+        let (result, partial) = loop {
+            let (result, partial) =
+                state.list_directory(source, inode, &mut stream, listing, first.take(), work);
+            let more = result.is_ok() && stream.needs_page();
+            if !more {
+                break (result, partial || stream.emitted > started);
+            }
+            drop(state);
+            drop(lease.take());
+            first = match self.next_directory_child(&mut stream, work) {
+                Ok(next) => next,
+                Err(error) => {
+                    state = self.core.state()?;
+                    break (Err(error), stream.emitted > started);
+                }
+            };
+            lease = Some(source.acquire_binding_lease_with_meter(expected, work)?);
+            state = self.core.state()?;
+        };
         state.streams.park(inode, stream, parking);
         drop(state);
         if result.is_ok() || partial {

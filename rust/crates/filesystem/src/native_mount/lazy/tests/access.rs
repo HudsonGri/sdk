@@ -77,6 +77,19 @@ async fn native_access_lazy_pins_handles_and_refreshes_new_opens()
         Err(MountSourceError::AccessDenied)
     ));
     assert!(fresh.write_range(0, Bytes::from_static(b"denied")).is_err());
+    let detached = view.detach_file(&path)?;
+    assert!(
+        matches!(
+            detached.read_range(0, 6),
+            Err(MountSourceError::AccessDenied)
+        ),
+        "detachment cannot itself acquire the revoked Read right"
+    );
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    view.remove(&path, None, &work)?;
+    assert_eq!(old.read_range(0, 6)?.as_ref(), b"pinned");
     Ok(())
 }
 

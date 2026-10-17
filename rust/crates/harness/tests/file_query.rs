@@ -29,6 +29,8 @@ use objects::CountingObjects;
 mod access;
 #[path = "support/access_policy.rs"]
 mod policy_support;
+#[path = "file_query/read_commit.rs"]
+mod read_commit;
 
 async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Change {
     tokio::time::timeout(std::time::Duration::from_secs(5), changes.next())

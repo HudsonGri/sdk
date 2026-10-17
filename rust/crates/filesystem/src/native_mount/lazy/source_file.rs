@@ -142,11 +142,12 @@ where
 {
     fn clone_source(
         &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(crate::VolumeId, FileId), MountSourceError> {
+    ) -> Result<FileId, MountSourceError> {
         self.observe(work, |file, _, _| {
             file.ok_or(MountSourceError::NativeUnsupported)?
-                .clone_source(work)
+                .clone_source(checkout, work)
         })
     }
 

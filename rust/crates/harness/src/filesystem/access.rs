@@ -12,6 +12,11 @@ use std::marker::PhantomData;
 pub use acyclic_fs::access::INITIAL_POLICY;
 const LEGACY_READ: &[u8] = include_bytes!("access/legacy-read.json");
 const LEGACY_WRITE: &[u8] = include_bytes!("access/legacy-write.json");
+mod read_commit;
+pub(in crate::filesystem) use read_commit::ReadObservation;
+pub(in crate::filesystem) use read_commit::require_current;
+pub(in crate::filesystem) type CompiledAccess<'a> =
+    (PathTrie, [Option<DecodeReservation<'a>>; 2], GenerationId);
 
 pub(crate) fn capability_payload<'a>(
     label: Option<&'a str>,
@@ -125,15 +130,15 @@ mod verification;
 pub use verification::check_access_record;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    pub(in crate::filesystem) async fn read_selection_with_access(
+    pub(in crate::filesystem) async fn read_selection_with_access<'a>(
         &self,
         scope: &Scope,
-        reference: &FileRef,
+        reference: &'a FileRef,
         maximum_bytes: u64,
         inherited_reference: bool,
         ceiling: Option<&crate::Capabilities>,
-        io: &PreparationIo,
-    ) -> Result<(Workspace<A, O>, GenerationId)> {
+        io: &'a PreparationIo,
+    ) -> Result<ReadObservation<'a, A, O>> {
         reference.validate(&mut Some(&mut io.history_io()))?;
         if reference.volume().provider() != &self.provider
             || maximum_bytes == 0
@@ -187,8 +192,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         require(&compiled.0, Action::Read, reference.path(), io)?;
-        drop(compiled);
-        Ok((workspace, generation))
+        ReadObservation::new(workspace, generation, compiled, reference, io).await
     }
     pub(in crate::filesystem) async fn read_file_with_access(
         &self,
@@ -199,32 +203,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         ceiling: Option<&crate::Capabilities>,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let (workspace, generation) = self
-            .read_selection_with_access(
-                scope,
-                reference,
-                maximum_bytes,
-                inherited_reference,
-                ceiling,
-                io,
-            )
-            .await?;
-        let pinned = io.sdk(
-            workspace
-                .generation(generation, io, io.cancellation())
-                .await,
-        )?;
-        fork_preparer_io::retain(&pinned, Some(io)).await?;
-        let path = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
-        })?;
-        let path_hold = io.guard_owned(path.capacity() as u64)?;
-        let path = (path, path_hold);
-        let bytes = read_generation(&pinned, &path.0, maximum_bytes, Some(io)).await?;
-        reference
-            .descriptor()
-            .verify(&bytes, &mut Some(&mut io.history_io()))?;
-        Ok(bytes)
+        self.read_selection_with_access(
+            scope,
+            reference,
+            maximum_bytes,
+            inherited_reference,
+            ceiling,
+            io,
+        )
+        .await?
+        .read_file(maximum_bytes)
+        .await
     }
 }
 
@@ -237,7 +226,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
     payload: &[u8],
     ceiling: Option<&crate::Capabilities>,
     io: &'a PreparationIo,
-) -> Result<(PathTrie, [Option<DecodeReservation<'a>>; 2], GenerationId)> {
+) -> Result<CompiledAccess<'a>> {
     crate::conversation::BoundedContentFuture::new(Some(io), || async move {
         let (capability, hold) =
             record::<Capability>(io, payload, crate::wire::ErrorCode::Unauthorized)?;

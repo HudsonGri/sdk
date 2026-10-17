@@ -142,14 +142,16 @@ impl FuseProjection {
                 .file()
                 .write_range_with_meter(offset, bytes, work)?)
         })?;
-        let refreshed = match open_file.file().lookup_with_meter(work) {
-            Ok(lookup) => lookup,
+        let (stamp, refreshed) = match super::super::observation::observe_facts(
+            || self.core.source.view_stamp_with_meter(work),
+            || open_file.file().lookup_with_meter(work),
+        ) {
+            Ok(observation) => observation,
             // A create-only handle can save its own bytes without disclosing
             // metadata. Its successful write must not become a failed lookup.
             Err(MountSourceError::AccessDenied) => return Ok(length),
             Err(error) => return Err(error.into()),
         };
-        let stamp = self.core.source.view_stamp_with_meter(work)?;
         let mut state = self.core.state()?;
         if state.files.get(&handle).is_some_and(|file| {
             file.inode == inode

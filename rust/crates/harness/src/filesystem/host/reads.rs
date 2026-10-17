@@ -3,6 +3,12 @@ mod media_type;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
+    ///
+    /// Observations cannot be forged or have their selected data replaced:
+    /// ```compile_fail
+    /// use acyclic_harness::filesystem::access::ReadObservation;
+    /// let observed = ReadObservation { generation: (), view: (), reference: (), io: (), workspace: () };
+    /// ```
     pub async fn read_content(
         &self,
         reference: &FileRef,
@@ -113,7 +119,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        drop(view);
         fork_preparer_io::retain(&generation, Some(io)).await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
@@ -192,6 +197,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(hold) = bytes.1 {
             hold.into_retained()?;
         }
+        super::super::access::require_current(&workspace, &view.0, io).await?;
         Ok((reference.0, bytes.0, publication))
     }
 
@@ -243,7 +249,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
-        drop(view);
         fork_preparer_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
@@ -271,6 +276,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(path_hold);
         drop(reference);
         drop(reference_hold);
+        super::super::access::require_current(&workspace, &view.0, io).await?;
         Ok(chunk.bytes)
     }
 

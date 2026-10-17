@@ -141,13 +141,20 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .await
         }
         Mutation::SetMetadata(value) => {
+            let mut updated = metadata(value.metadata)?;
+            let current = transaction
+                .checkout
+                .read_metadata(&value.path[..], WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(|failure| status(&failure.error))?
+                .value;
+            // Wire metadata has no authority to replace named attributes,
+            // including the root's persisted policy.
+            updated.named_attributes = current.named_attributes;
+            updated.acl = current.acl;
+            updated.security_descriptor = current.security_descriptor;
             transaction
-                .set_metadata(
-                    &value.path,
-                    metadata(value.metadata)?,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .set_metadata(&value.path, updated, WorkBudget::UNBOUNDED, &cancellation)
                 .await
         }
         Mutation::CreateDirectories(value) => {

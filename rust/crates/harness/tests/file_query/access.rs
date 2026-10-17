@@ -3,8 +3,8 @@ use acyclic_fs::access::{Action, Effect, Policy};
 use acyclic_harness::task_volume;
 use proptest::prelude::*;
 
-async fn publish_policy(
-    fixture: &Fixture,
+pub(super) async fn publish_policy<O: AsyncObjectStore + 'static>(
+    fixture: &Fixture<O>,
     read: bool,
     list: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -32,6 +32,74 @@ async fn publish_policy(
         .await?
         .value;
     policy_support::publish(&workspace, &policy).await
+}
+
+#[tokio::test]
+async fn pending_query_snapshots_and_follow_recheck_policy_before_disclosure()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for follow in [false, true] {
+        for revoke in [false, true] {
+            let objects = CountingObjects::default();
+            let filesystem = Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+                objects.clone(),
+                acyclic_fs::EmbeddedCapabilities::MEMORY,
+            );
+            let fixture = Fixture::with_filesystem(filesystem, objects.reads.clone()).await?;
+            fixture
+                .write(&[("plans/a.md", Some("- [ ] private"))])
+                .await?;
+            let mut observation = fixture
+                .source
+                .observe_files(Query::Plans, None, 2, 64)
+                .await?;
+            if follow {
+                fixture
+                    .write(&[("plans/a.md", Some("- [x] private"))])
+                    .await?;
+            }
+            let (entered, release) = objects.pause(acyclic_fs::ObjectKind::BlobChunk);
+            let read = async {
+                if follow {
+                    observation
+                        .changes
+                        .next()
+                        .await
+                        .ok_or(task_volume::Error::ResetRequired)?
+                        .map(|_| ())
+                } else {
+                    fixture
+                        .source
+                        .observe_files(Query::Plans, None, 2, 64)
+                        .await
+                        .map(|_| ())
+                }
+            };
+            let publish = async {
+                entered.await?;
+                if revoke {
+                    publish_policy(&fixture, true, false).await?;
+                }
+                release.send(()).map_err(|_| "read was abandoned")?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            };
+            let (result, published) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    futures::join!(read, publish)
+                })
+                .await?;
+            published?;
+            if revoke {
+                assert!(
+                    matches!(&result, Err(task_volume::Error::FileRead(error)) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized),
+                    "{result:?}"
+                );
+            } else {
+                result?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]

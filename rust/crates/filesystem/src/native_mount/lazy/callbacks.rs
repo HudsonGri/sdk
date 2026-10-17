@@ -375,7 +375,6 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.require_path(path, crate::access::Action::Read, work)?;
         let lease = self.mutation_lease(None, Some(work))?;
         self.promote_locked(path, Some(work))?;
         self.authored.detached_handle(path, work, |file| {

@@ -124,8 +124,7 @@ pub(super) fn with_lazy_mount<T>(
 ) -> (Result<T, Failure>, Result<f64, Failure>) {
     use acyclic_fs::demand::native::NativeDemandSource;
     use acyclic_fs::model::VolumeLimits;
-    use acyclic_fs::native_mount::MountOptions;
-    use acyclic_fs::{LazyWorkspace, LocalCoreStateStore, MountPublication};
+    use acyclic_fs::{LazyWorkspace, LocalCoreStateStore};
     use std::sync::Arc;
 
     let mount_dir = work.join("mnt");
@@ -158,7 +157,7 @@ pub(super) fn with_lazy_mount<T>(
                 state,
                 acyclic_fs::VolumeInitialization {
                     config: VolumeConfig::native(Lifecycle::Durable),
-                    access_policy: None,
+                    access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
                 },
                 acyclic_fs::OperationId::new(),
                 &mut acyclic_fs::kernel::KernelAccounting::Standalone {
@@ -174,7 +173,7 @@ pub(super) fn with_lazy_mount<T>(
             workspace
                 .mount(
                     &mount_dir,
-                    MountOptions::read_write().publication(MountPublication::Manual),
+                    super::benchmark_access::options(workspace.workspace()).await?,
                 )
                 .await
                 .map_err(engine_err("mount"))
@@ -203,9 +202,6 @@ pub(super) fn with_workspace_mount<T>(
     work: &Path,
     measure: impl FnOnce(&Path, &dyn Fn() -> Result<(), Failure>) -> Result<T, Failure>,
 ) -> (Result<T, Failure>, Result<f64, Failure>) {
-    use acyclic_fs::MountPublication;
-    use acyclic_fs::native_mount::MountOptions;
-
     let mount_dir = work.join("mnt");
     let mounted = (|| -> Result<_, Failure> {
         fs::create_dir_all(&mount_dir)?;
@@ -215,20 +211,25 @@ pub(super) fn with_workspace_mount<T>(
                 .await
                 .map_err(engine_err("open store"))?;
             let workspace = engine
-                .create_workspace_with_config(
+                .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     "par-bench",
-                    VolumeConfig::native(Lifecycle::Durable),
+                    acyclic_fs::VolumeInitialization {
+                        config: VolumeConfig::native(Lifecycle::Durable),
+                        access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+                    },
+                    acyclic_fs::OperationId::new(),
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
+                    None,
                 )
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.workspace())
                 .map_err(|failure| failure.error)
                 .map_err(engine_err("create workspace"))?;
             workspace
                 .mount(
                     &mount_dir,
-                    MountOptions::read_write().publication(MountPublication::Manual),
+                    super::benchmark_access::options(&workspace).await?,
                 )
                 .await
                 .map_err(engine_err("mount"))

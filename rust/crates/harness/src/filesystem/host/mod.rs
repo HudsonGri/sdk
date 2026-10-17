@@ -103,6 +103,7 @@ mod keys;
 mod ranges;
 mod reads;
 pub(in crate::filesystem) use directory::DirectoryListing;
+mod volume_access;
 mod volumes;
 mod workspaces;
 pub(crate) use keys::map_error;

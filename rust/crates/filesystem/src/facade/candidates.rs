@@ -381,6 +381,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             base_root,
             root,
             authority_head: self.authority_head,
+            observed_generation: self.observed_generation,
             authored_operation_id: self.authored_operation_id,
             live_operation_id: self.live_operation_id,
             last_commit: self.last_commit,

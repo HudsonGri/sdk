@@ -105,10 +105,20 @@ where
 {
     fn clone_source(
         &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(VolumeId, FileId), MountSourceError> {
+    ) -> Result<FileId, MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED)?;
-        Ok((self.checkout.volume_id, self.file_id))
+        let checkout = checkout
+            .downcast_ref::<Arc<SharedCheckout<A, O>>>()
+            .ok_or(MountSourceError::NativeUnsupported)?;
+        if checkout.volume_id != self.checkout.volume_id {
+            return Err(MountSourceError::AccessDenied);
+        }
+        if !Arc::ptr_eq(checkout, &self.checkout) {
+            return Err(MountSourceError::NativeUnsupported);
+        }
+        Ok(self.file_id)
     }
 
     fn clone_range_from(
@@ -119,10 +129,7 @@ where
         length: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let (volume, source) = source.clone_source(work)?;
-        if volume != self.checkout.volume_id {
-            return Err(MountSourceError::AccessDenied);
-        }
+        let source = source.clone_source(&self.checkout, work)?;
         self.change_content(
             ContentChange::CloneFrom {
                 source,

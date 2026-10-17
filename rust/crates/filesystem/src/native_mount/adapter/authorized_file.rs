@@ -103,10 +103,11 @@ macro_rules! written {
 impl MountOpenFile for AuthorizedFile {
     fn clone_source(
         &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(VolumeId, FileId), MountSourceError> {
+    ) -> Result<FileId, MountSourceError> {
         self.require(Action::Read)?;
-        self.file.clone_source(work)
+        self.file.clone_source(checkout, work)
     }
 
     fn clone_range_from(

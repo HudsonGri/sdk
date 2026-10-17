@@ -756,7 +756,10 @@ fn native_access_fuse_detaching_preserves_each_open_handle_policy()
         let entry = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("retained"), &work)?;
         let inode = entry.attr.ino.0;
         let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
-        publish_test_access(&source, vec![])?;
+        publish_test_access(
+            &source,
+            vec![deny("revoked-read", &[Action::Read], "retained")],
+        )?;
         if rename {
             projection.rename_name(
                 ROOT_INODE,

@@ -159,8 +159,7 @@ where
                 owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
                 &owned
             };
-            let (workspace, generation) = self
-                .host
+            self.host
                 .read_selection_with_access(
                     &self.scope,
                     reference,
@@ -169,21 +168,9 @@ where
                     ceiling,
                     authority_io,
                 )
-                .await?;
-            let selected = authority_io.sdk(
-                workspace
-                    .generation(generation, authority_io, authority_io.cancellation())
-                    .await,
-            )?;
-            fork_preparer_io::retain(&selected, Some(authority_io)).await?;
-            FilesystemHost::read_selected_range(
-                &workspace,
-                &selected,
-                reference,
-                range,
-                authority_io,
-            )
-            .await
+                .await?
+                .read_range(range)
+                .await
         })
     }
 

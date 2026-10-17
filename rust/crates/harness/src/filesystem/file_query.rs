@@ -220,6 +220,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
                     acyclic_stream::CommitId::from_bytes(cursor.commit),
                 )
                 .await?;
+            super::access::require_current(&workspace, &permissions, &io).await?;
             let changes = self.changes(
                 query,
                 current,
@@ -293,6 +294,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                         removed,
                         cursor: cursor.clone(),
                     };
+                    super::access::require_current(&current.workspace(), &permissions, &io).await?;
                     Ok(Some((change, (records, source, next, cursor, selection))))
                 }
             },

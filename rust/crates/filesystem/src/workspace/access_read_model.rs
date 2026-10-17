@@ -120,3 +120,42 @@ fn access_read_model_binds_committed_bytes_to_their_policy_snapshot() {
 fn access_read_model_detects_a_missing_snapshot_fence() {
     model(false);
 }
+
+fn disclosure_model(fence: bool) {
+    loom::model(move || {
+        let store = Arc::new(MemoryAuthorityStore::default());
+        let cancel = CancellationToken::new();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        ready(|| store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>))
+            .unwrap();
+        assert!(publish(&store, head(&store), 1));
+        let initial = head(&store);
+        let permissions = view(initial, true);
+        let writer = loom::thread::spawn({
+            let store = store.clone();
+            move || assert!(publish(&store, initial, 2))
+        });
+        // Storage has returned the selected immutable bytes. The disclosure
+        // fence observes authority after that read, through the real backend.
+        let current = head(&store);
+        let served = (!fence
+            || permissions
+                .matches_policy_revision(GenerationId::new(current.digest), revision(current)))
+            && permissions.decide(Action::Read, "", 0).allowed;
+        writer.join().unwrap();
+        if served {
+            assert_eq!(current.sequence.get(), 1, "revoked disclosure");
+        }
+    });
+}
+
+#[test]
+fn completed_reads_check_current_policy_at_disclosure() {
+    disclosure_model(true);
+}
+
+#[test]
+#[should_panic(expected = "revoked disclosure")]
+fn missing_disclosure_fence_negative_control() {
+    disclosure_model(false);
+}

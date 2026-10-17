@@ -23,7 +23,9 @@ pub(super) async fn current(
     )?)
 }
 
-pub(super) async fn recorded(checkout: &mut MemoryCheckout) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+pub(super) async fn recorded(
+    checkout: &mut MemoryCheckout,
+) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
     Ok(unbounded!(checkout, read_access_policy())?
         .0
         .map(|chunk| chunk.bytes.to_vec()))
@@ -206,6 +208,24 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
             (position.0.get(), position.1.get()),
             (sequence, head_sequence)
         );
+        let exact = unbounded!(
+            workspace,
+            checkout(
+                GenerationSelector::Exact(snapshot.generation_id()),
+                CheckoutMode::tracking_transaction()
+            )
+        )?;
+        let exact_position = unbounded!(exact, generation_position(snapshot.generation_id()))?;
+        assert_eq!(
+            (exact_position.0.get(), exact_position.1.get()),
+            (sequence, head_sequence)
+        );
+        if sequence < head_sequence {
+            assert_ne!(
+                exact_position.0, exact_position.1,
+                "negative control: the former own-generation shortcut reports an old root as head"
+            );
+        }
         if snapshot.generation_id() != latest.generation_id() {
             assert!(unbounded!(snapshot, generation_position(latest.generation_id())).is_err());
         }

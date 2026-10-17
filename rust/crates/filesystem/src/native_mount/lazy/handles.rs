@@ -118,9 +118,10 @@ where
 {
     fn clone_source(
         &self,
+        checkout: &(dyn std::any::Any + Send + Sync),
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(crate::VolumeId, FileId), MountSourceError> {
-        self.with_view(Some(work), |file| file.clone_source(work))
+    ) -> Result<FileId, MountSourceError> {
+        self.with_view(Some(work), |file| file.clone_source(checkout, work))
     }
 
     fn clone_range_from(

@@ -5,6 +5,41 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 use acyclic_stream::OwnedBytes;
 
+// An admitted reader's grants can only be retained or narrowed. In particular,
+// range and full reads cannot pass an arbitrary replacement to authorization.
+pub(super) struct ReadGrants<'a> {
+    scope: &'a RuntimeScope,
+    grants: &'a crate::Capabilities,
+}
+
+impl<'a> ReadGrants<'a> {
+    fn bound(scope: &'a RuntimeScope) -> Self {
+        Self {
+            scope,
+            grants: scope.grants(),
+        }
+    }
+
+    fn intersect(
+        self,
+        request: Option<&'a crate::Capabilities>,
+        io: Option<&ContentIo>,
+    ) -> Result<Self> {
+        let grants = request.unwrap_or(self.grants);
+        if !grants.is_subset_of(self.grants) {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "content caller cannot widen the bound task scope",
+            ));
+        }
+        Ok(Self {
+            scope: self.scope,
+            grants,
+        })
+    }
+}
+
 // Journals fence the entire command and authenticate each referenced input against
 // its admission. Reuse the issued context for content reads, including its grants,
 // immutable descriptor verification and original native accounting.
@@ -211,6 +246,12 @@ impl TaskContext {
     }
 
     /// Reads an immutable file under this task's scope and caller IO limits.
+    ///
+    /// Effective read grants have no public constructor or replacement field:
+    /// ```compile_fail
+    /// use acyclic_harness::runtime::content_read::ReadGrants;
+    /// let grants = ReadGrants { scope: (), grants: () };
+    /// ```
     pub async fn read_file(&self, file: &FileRef, io: Option<&ContentIo>) -> Result<OwnedBytes> {
         self.read_bound_file(
             self.content_binding(Some(file.volume())),
@@ -238,7 +279,7 @@ impl TaskContext {
         };
         #[cfg(feature = "filesystem")]
         let io = io.or(original.as_ref());
-        self.authorize_file_read(file, scope, grants, io)?;
+        let grants = self.authorize_file_read(file, scope, grants, io)?;
         if range
             .offset
             .checked_add(range.length)
@@ -263,7 +304,9 @@ impl TaskContext {
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let bytes = reader.read_range(file, range, Some(grants), io)?.await?;
+        let bytes = reader
+            .read_range(file, range, Some(grants.grants), io)?
+            .await?;
         if bytes.len() as u64 != range.length {
             return Err(content_error(
                 io,
@@ -274,16 +317,17 @@ impl TaskContext {
         Ok(bytes)
     }
 
-    pub(super) fn authorize_file_read(
+    pub(super) fn authorize_file_read<'a>(
         &self,
         file: &FileRef,
-        scope: &RuntimeScope,
-        grants: &crate::Capabilities,
+        scope: &'a RuntimeScope,
+        request: &'a crate::Capabilities,
         io: Option<&ContentIo>,
-    ) -> Result<()> {
+    ) -> Result<ReadGrants<'a>> {
+        let grants = ReadGrants::bound(scope).intersect(Some(request), io)?;
         crate::executor::with_history_io(io, |work| {
-            scope.limits.validate_file(file, work)?;
-            if !read_granted_with_work(grants, file, work)? {
+            grants.scope.limits.validate_file(file, work)?;
+            if !read_granted_with_work(grants.grants, file, work)? {
                 return Err(content_error(
                     io,
                     ErrorCode::Unauthorized,
@@ -291,7 +335,8 @@ impl TaskContext {
                 ));
             }
             Ok(())
-        })
+        })?;
+        Ok(grants)
     }
 
     /// Lists one authenticated private directory page.
@@ -430,15 +475,8 @@ impl TaskContext {
         };
         #[cfg(feature = "filesystem")]
         let io = io.or(original.as_ref());
-        let grants = ceiling.unwrap_or(&scope.grants);
-        if ceiling.is_some() && !grants.is_subset_of(&scope.grants) {
-            return Err(content_error(
-                io,
-                ErrorCode::Unauthorized,
-                "content caller cannot widen the bound task scope",
-            ));
-        }
-        self.authorize_file_read(file, scope, grants, io)?;
+        let grants =
+            self.authorize_file_read(file, scope, ceiling.unwrap_or(scope.grants()), io)?;
         #[cfg(feature = "filesystem")]
         let created = self.scope.created_reference(file);
         #[cfg(not(feature = "filesystem"))]
@@ -453,7 +491,7 @@ impl TaskContext {
             reader,
             file,
             file.descriptor().byte_length(),
-            Some(grants),
+            Some(grants.grants),
             io,
         )
         .await?;

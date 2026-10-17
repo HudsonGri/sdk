@@ -465,31 +465,40 @@ impl DarwinMountContext {
                 .map_err(|_| driver_errno(libc::EIO))?
                 .values()
                 .any(|entry| entry.file_id == lookup.node.file_id);
-        let detached = self.mutate(
-            || {
-                let detached = if has_open {
-                    Some(self.source.detach_file_with_meter(path, work)?)
-                } else {
-                    None
-                };
-                unlink()?;
-                Ok(detached)
-            },
-            work,
-        )?;
+        self.admit_write(work)?;
+        let detached = if has_open {
+            Some(retained_file(
+                work,
+                self.source.detach_file_with_meter(path, work)?,
+            )?)
+        } else {
+            None
+        };
+        let files = self.files.read().map_err(|_| driver_errno(libc::EIO))?;
+        let count = files
+            .values()
+            .filter(|entry| entry.file_id == lookup.node.file_id)
+            .count();
+        let mut replacements = vector(work, count)?;
         if let Some(detached) = detached {
-            let detached = retained_file(work, detached)?;
-            let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
-            for entry in files
-                .values_mut()
-                .filter(|entry| entry.file_id == lookup.node.file_id)
+            for (handle, entry) in files
+                .iter()
+                .filter(|(_, entry)| entry.file_id == lookup.node.file_id)
             {
                 let replacement = super::super::adapter::retarget_file(
                     entry.file.0.as_ref(),
                     detached.0.as_ref(),
                     work,
                 )?;
-                entry.file = retained_file(work, replacement)?;
+                replacements.push((*handle, retained_file(work, replacement)?));
+            }
+        }
+        drop(files);
+        self.mutate(unlink, work)?;
+        let mut files = self.files.write().map_err(|_| driver_errno(libc::EIO))?;
+        for (handle, replacement) in replacements.drain(..) {
+            if let Some(entry) = files.get_mut(&handle) {
+                entry.file = replacement;
             }
         }
         Ok(())

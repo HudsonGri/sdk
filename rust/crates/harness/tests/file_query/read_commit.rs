@@ -1,0 +1,164 @@
+use super::*;
+use acyclic_fs::WorkBudget;
+use acyclic_harness::conversation::{
+    ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef,
+};
+
+#[tokio::test]
+async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for kind in 0..5 {
+        for revoke in [false, true] {
+            let objects = CountingObjects::default();
+            let filesystem = Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+                objects.clone(),
+                acyclic_fs::EmbeddedCapabilities::MEMORY,
+            );
+            let fixture = Fixture::with_filesystem(filesystem, objects.reads.clone()).await?;
+            fixture
+                .write(&[("plans/a.md", Some("- [ ] private"))])
+                .await?;
+            let scope = fixture.issuer.issue(
+                "read-race",
+                &Capabilities::new([fixture
+                    .volume
+                    .capability(VolumeOperation::Read, &mut None)?]),
+                Some(fixture.agent),
+                None,
+                &mut None,
+            )?;
+            let reader = FilesystemContentVerifier::new(
+                fixture.host.clone(),
+                &fixture.issuer.verifier(&mut None)?,
+                &scope,
+                65536,
+                None,
+            )?;
+            let workspace = fixture
+                .filesystem
+                .open_workspace(
+                    fixture.volume.storage_name(&mut None)?,
+                    WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await?
+                .value;
+            let head = workspace
+                .head(WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await?
+                .value;
+            let version = hex::encode(head.id().digest().into_bytes());
+            let file = FileRef::new(
+                fixture.volume.clone(),
+                "plans/a.md".into(),
+                version,
+                FileDescriptor::from_bytes(b"- [ ] private", "text/plain", &mut None)?,
+                "a.md".into(),
+                &mut None,
+            )?;
+            let generation = acyclic_harness::resources::GenerationRef::new(
+                fixture.volume.provider(),
+                &head.id().digest().into_bytes(),
+                None,
+                None,
+            )?
+            .0;
+            let grant = ContentGrant::verify(
+                &fixture.issuer.verifier(&mut None)?,
+                &scope,
+                &fixture.volume,
+                VolumeOperation::Read,
+                65536,
+                &mut None,
+            )?;
+            let (entered, release) = objects.pause(if kind == 4 {
+                acyclic_fs::ObjectKind::TreePage
+            } else {
+                acyclic_fs::ObjectKind::BlobChunk
+            });
+            let read = async {
+                match kind {
+                    0 => reader.read(&file, 65536, None, None)?.await.map(|_| ()),
+                    1 => reader
+                        .read_range(
+                            &file,
+                            acyclic_fs::ByteRange {
+                                offset: 0,
+                                length: 4,
+                            },
+                            None,
+                            None,
+                        )?
+                        .await
+                        .map(|_| ()),
+                    2 => fixture
+                        .host
+                        .read_private_path(
+                            &fixture.volume,
+                            &grant,
+                            "plans/a.md",
+                            Some(&generation),
+                            65536,
+                            None,
+                            None,
+                        )
+                        .await
+                        .map(|_| ()),
+                    3 => fixture
+                        .host
+                        .read_private_prefix(
+                            &fixture.volume,
+                            &grant,
+                            "plans/a.md",
+                            &generation,
+                            4,
+                            None,
+                            None,
+                        )
+                        .await
+                        .map(|_| ()),
+                    _ => fixture
+                        .host
+                        .list_private_directory(
+                            &fixture.volume,
+                            &grant,
+                            "plans",
+                            Some(&generation),
+                            None,
+                            8,
+                            None,
+                        )
+                        .await
+                        .map(|_| ()),
+                }
+            };
+            let publish = async {
+                entered.await?;
+                if revoke {
+                    access::publish_policy(&fixture, kind != 4, kind == 4).await?;
+                }
+                release
+                    .send(())
+                    .map_err(|_| "reader abandoned the pending payload")?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            };
+            let (result, published) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    futures::join!(read, publish)
+                })
+                .await?;
+            published?;
+            if revoke {
+                assert_eq!(
+                    result.unwrap_err().code(),
+                    acyclic_harness::wire::ErrorCode::Unauthorized,
+                    "reader {kind}"
+                );
+            } else {
+                result?;
+            }
+        }
+    }
+    Ok(())
+}

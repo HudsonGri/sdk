@@ -211,18 +211,29 @@ impl ProjectionState {
         }
     }
 
-    pub(super) fn retain_detached_handles(
-        &mut self,
+    pub(super) fn prepare_detached_handles(
+        &self,
         inode: u64,
         detached: &FuseOpenFile,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        for file in self.files.values_mut().filter(|file| file.inode == inode) {
+    ) -> Result<FuseOwned<Vec<(u64, FuseOpenFile)>>, NativeMountError> {
+        let mut replacements = fuse_vec(0, work)?;
+        for (handle, file) in self.files.iter().filter(|(_, file)| file.inode == inode) {
             let replacement =
                 super::super::adapter::retarget_file(file.open_file.file(), detached.file(), work)?;
-            file.open_file = FuseOpenFile(fuse_open_file(replacement, work)?);
+            let replacement = FuseOpenFile(fuse_open_file(replacement, work)?);
+            fuse_reserve(&mut replacements, 1, work)?;
+            replacements.push((*handle, replacement));
         }
-        Ok(())
+        Ok(replacements)
+    }
+
+    pub(super) fn install_detached_handles(&mut self, replacements: &mut [(u64, FuseOpenFile)]) {
+        for (handle, replacement) in replacements {
+            if let Some(file) = self.files.get_mut(handle) {
+                file.open_file = replacement.clone();
+            }
+        }
     }
 }
 

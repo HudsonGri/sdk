@@ -143,7 +143,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 io,
             )?;
         }
-        drop(view);
         let canonical = io.encode(&(&recorded.0.0, &recorded.0.1), RECORD_BYTES, true)?;
         let hold = io.guard_bytes(&canonical)?;
         let canonical = (canonical, hold);
@@ -204,6 +203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             None
         };
+        super::super::access::require_current(&workspace, &view.0, io).await?;
         Ok(Some((recorded.0.0, payload)))
     }
 }

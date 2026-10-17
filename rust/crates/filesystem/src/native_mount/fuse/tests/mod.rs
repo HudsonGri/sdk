@@ -54,6 +54,7 @@ fn projection_core(
 pub(super) mod model_checking;
 
 mod cache;
+mod detach;
 mod disclosure;
 mod folded;
 mod folded_property;

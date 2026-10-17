@@ -410,12 +410,14 @@ impl ToolContext {
         file: &FileRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        self.task().authorize_file_read(
-            file,
-            self.effective_scope(),
-            self.effective_scope().grants(),
-            Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-        )
+        self.task()
+            .authorize_file_read(
+                file,
+                self.effective_scope(),
+                self.effective_scope().grants(),
+                Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+            )
+            .map(|_| ())
     }
 
     /// Checks effective WRITE through the original bound destination.
