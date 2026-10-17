@@ -140,47 +140,45 @@ impl AsRawHandle for ConsoleWake {
     }
 }
 
-/// Read VT bytes without consuming beyond the caller's capacity. Without a
-/// deadline the wait ends only on input or `wake`; with one, an empty result
-/// reports the deadline.
+/// Read VT bytes into `bytes` without consuming beyond its length. Without a
+/// deadline the wait ends only on input or `wake`; with one, zero reports the
+/// deadline. When input and `wake` are both signalled, `wake` wins.
 pub fn console_read(
     input: usize,
-    capacity: usize,
+    bytes: &mut [u8],
     deadline: Option<Instant>,
     wake: Option<&ConsoleWake>,
-) -> io::Result<Vec<u8>> {
-    let mut bytes = vec![0; capacity.min(1024)];
+) -> io::Result<usize> {
     if bytes.is_empty() {
-        return Ok(bytes);
+        return Ok(0);
     }
-    let handles = [
-        input as HANDLE,
-        wake.map_or(std::ptr::null_mut(), |wake| {
-            wake.0.as_raw_handle() as HANDLE
-        }),
-    ];
-    let count = 1 + u32::from(wake.is_some());
+    let (handles, waits, first_input) = match wake {
+        Some(wake) => (
+            [wake.0.as_raw_handle() as HANDLE, input as HANDLE],
+            2,
+            WAIT_OBJECT_0 + 1,
+        ),
+        None => ([input as HANDLE, std::ptr::null_mut()], 1, WAIT_OBJECT_0),
+    };
     loop {
         let timeout = match deadline {
             None => INFINITE,
             Some(deadline) => {
                 let now = Instant::now();
                 if now >= deadline {
-                    return Ok(Vec::new());
+                    return Ok(0);
                 }
                 u32::try_from((deadline - now).as_millis()).unwrap_or(INFINITE - 1)
             }
         };
-        // SAFETY: the OS checks the handles; the first `count` entries are live
+        // SAFETY: the OS checks the handles; the first `waits` entries are live
         // for this call. Event and count are writable stack storage, and
-        // ReadFile receives the exact allocated slice capacity.
+        // ReadFile receives the caller's exact slice length.
         unsafe {
-            match WaitForMultipleObjects(count, handles.as_ptr(), 0, timeout) {
-                WAIT_TIMEOUT => return Ok(Vec::new()),
-                WAIT_OBJECT_0 => {}
-                result if result == WAIT_OBJECT_0 + 1 => {
-                    return Err(io::ErrorKind::NotConnected.into());
-                }
+            match WaitForMultipleObjects(waits, handles.as_ptr(), 0, timeout) {
+                WAIT_TIMEOUT => return Ok(0),
+                result if result == first_input => {}
+                WAIT_OBJECT_0 => return Err(io::ErrorKind::NotConnected.into()),
                 _ => return Err(io::Error::last_os_error()),
             }
             let mut event: INPUT_RECORD = zeroed();
@@ -201,15 +199,14 @@ pub fn console_read(
                 if ReadFile(
                     input as HANDLE,
                     bytes.as_mut_ptr(),
-                    bytes.len() as u32,
+                    u32::try_from(bytes.len()).unwrap_or(u32::MAX),
                     &mut count,
                     std::ptr::null_mut(),
                 ) == 0
                 {
                     return Err(io::Error::last_os_error());
                 }
-                bytes.truncate(count as usize);
-                return Ok(bytes);
+                return Ok(count as usize);
             }
             if ReadConsoleInputW(input as HANDLE, &mut event, 1, &mut count) == 0 {
                 return Err(io::Error::last_os_error());

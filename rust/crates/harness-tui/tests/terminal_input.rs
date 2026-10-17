@@ -271,3 +271,96 @@ fn idle_input_has_zero_wakeups_and_reports_latency() -> io::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_completed_escape_sequence_leaves_no_timer_wakeup() -> io::Result<()> {
+    let _serial = serial();
+    let (mut master, user) = pty()?;
+    let runtime = runtime("tui-input-escape")?;
+    let mut events = runtime.block_on(async { Tty::from_file(user)?.events() })?;
+    // Split sequence: the Escape arms the timer, the rest completes it.
+    master.write_all(b"\x1b")?;
+    let early = runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(10),
+            std::future::poll_fn(|cx| Pin::new(&mut events).poll_next(cx)),
+        )
+        .await
+    });
+    assert!(
+        early.is_err(),
+        "the lone Escape resolved before its timeout"
+    );
+    master.write_all(b"[A")?;
+    assert_eq!(
+        next(&runtime, &mut events)?,
+        key(KeyCode::Up, KeyModifiers::NONE)
+    );
+    assert_eq!(idle_wakeups(&runtime, &mut events, false)?, 0);
+    // Negative control: an Escape left pending does take its timer wakeup.
+    master.write_all(b"\x1b")?;
+    assert!(idle_wakeups(&runtime, &mut events, false)? > 0);
+    assert_eq!(
+        next(&runtime, &mut events)?,
+        key(KeyCode::Esc, KeyModifiers::NONE)
+    );
+    Ok(())
+}
+
+/// Opens the controlling terminal with every standard stream redirected and
+/// registers its input with the reactor; run by the test below.
+#[cfg(target_os = "macos")]
+#[test]
+fn redirected_child() -> io::Result<()> {
+    let Ok(report) = std::env::var("ACYCLIC_TERMINAL_REDIRECTED_REPORT") else {
+        return Ok(());
+    };
+    let runtime = runtime("tui-input-redirected")?;
+    let outcome = if std::env::var_os("ACYCLIC_TERMINAL_REDIRECTED_ALIAS").is_some() {
+        // The removed fallback: the /dev/tty alias, which kqueue rejects.
+        let alias = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")?;
+        match runtime.block_on(async { tokio::io::unix::AsyncFd::new(alias) }) {
+            Ok(_) => "registered".to_owned(),
+            Err(error) => format!("rejected {error}"),
+        }
+    } else {
+        match runtime.block_on(async { Tty::open()?.events() }) {
+            Ok(_) => "registered".to_owned(),
+            Err(error) => format!("failed {error}"),
+        }
+    };
+    std::fs::write(report, outcome)
+}
+
+#[cfg(target_os = "macos")]
+fn redirected(alias: bool) -> io::Result<String> {
+    let directory = tempfile::tempdir()?;
+    let report = directory.path().join("report");
+    // script(1) gives the child a new session whose controlling terminal is
+    // a fresh PTY; the shell then redirects all three standard streams.
+    let mut command = std::process::Command::new("/usr/bin/script");
+    command
+        .args(["-q", "/dev/null", "/bin/sh", "-c"])
+        .arg(r#"exec "$0" --exact redirected_child --nocapture </dev/null >/dev/null 2>&1"#)
+        .arg(std::env::current_exe()?)
+        .env("ACYCLIC_TERMINAL_REDIRECTED_REPORT", &report)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if alias {
+        command.env("ACYCLIC_TERMINAL_REDIRECTED_ALIAS", "1");
+    }
+    command.status()?;
+    std::fs::read_to_string(report)
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn controlling_terminal_input_survives_redirecting_every_standard_stream() -> io::Result<()> {
+    assert_eq!(redirected(false)?, "registered");
+    assert!(redirected(true)?.starts_with("rejected"));
+    Ok(())
+}

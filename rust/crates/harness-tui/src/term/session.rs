@@ -108,7 +108,9 @@ fn controlling_terminal() -> io::Result<File> {
 }
 
 // Darwin kqueue rejects the /dev/tty alias (EINVAL), so input readiness needs
-// the device itself: the standard stream that is this session's terminal.
+// the device itself: the standard stream that is this session's terminal, or,
+// with every stream redirected, the device the kernel records as this
+// process's controlling terminal.
 #[cfg(target_os = "macos")]
 fn controlling_terminal() -> io::Result<File> {
     use std::os::unix::ffi::OsStrExt;
@@ -126,10 +128,8 @@ fn controlling_terminal() -> io::Result<File> {
                 .open(std::ffi::OsStr::from_bytes(path.as_bytes()));
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no standard stream is the controlling terminal",
-    ))
+    let path = acyclic_native_runtime::terminal::controlling_device()?;
+    OpenOptions::new().read(true).write(true).open(path)
 }
 
 impl ProbeIo for Tty {

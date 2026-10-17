@@ -16,6 +16,7 @@ pub(super) struct Source {
     // Declared first: deregistration precedes the terminal's restoration.
     readiness: AsyncFd<File>,
     tty: Tty,
+    bytes: [u8; 1024],
 }
 
 impl Tty {
@@ -31,6 +32,7 @@ impl Tty {
             Source {
                 readiness,
                 tty: self,
+                bytes: [0; 1024],
             },
             decoder,
         ))
@@ -38,11 +40,9 @@ impl Tty {
 }
 
 impl Source {
-    pub(super) fn poll_read(
-        &mut self,
-        cx: &mut Context<'_>,
-        bytes: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+    /// The next chunk in this source's storage; empty is end of input.
+    pub(super) fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+        let bytes = &mut self.bytes;
         loop {
             let Poll::Ready(ready) = self.readiness.poll_read_ready(cx) else {
                 // Not readable: still register for close/resume and observe
@@ -63,7 +63,14 @@ impl Source {
                     ready.clear_ready();
                 }
                 Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {}
-                Poll::Ready(result) => return Poll::Ready(result),
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Ready(Ok(count)) => {
+                    return Poll::Ready(
+                        bytes
+                            .get(..count)
+                            .ok_or_else(|| io::ErrorKind::InvalidData.into()),
+                    );
+                }
             }
         }
     }
