@@ -283,7 +283,7 @@ fn fill_then_borrow(
         prop_assert!(matches!(&first.value, PageValue::Owned(_)));
         prop_assert!(store.1.get().is_none());
         prop_assert_eq!(cold.count_total, 1);
-        prop_assert_eq!(cold.bytes_total, count * size_of::<FileRecord>());
+        prop_assert_eq!(cold.bytes_total, (count * size_of::<FileRecord>()) as u64);
         drop(first);
         prop_assert_eq!(original.live_allocation_bytes(), initial_live);
         return Ok(());
@@ -301,7 +301,10 @@ fn fill_then_borrow(
     prop_assert_eq!(warm.count_total, 0);
     prop_assert_eq!(warm.bytes_total, 0);
     prop_assert_eq!(cold.count_total, if native { 3 } else { 2 });
-    prop_assert_eq!(cold.bytes_total, count * size_of::<FileRecord>() + controls);
+    prop_assert_eq!(
+        cold.bytes_total,
+        (count * size_of::<FileRecord>() + controls) as u64
+    );
     prop_assert!(store.1.get().is_some());
     drop(store);
     let Page::Leaf(actual) = second.page() else {
