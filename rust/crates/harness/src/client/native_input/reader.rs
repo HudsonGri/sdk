@@ -5,7 +5,7 @@
 //! Shutdown never depends on a lock someone else holds. Dropping the stream
 //! closes the channel, which releases a thread waiting for queue space, and
 //! signals a level-triggered cancel object the thread's every wait includes:
-//! a pipe hung up on Unix, an event on Windows. A read admitted before the
+//! an explicit byte on a private pipe on Unix, an event on Windows. A read admitted before the
 //! cancel is released by `CancelSynchronousIo` on Windows; on Unix a read
 //! starts only once poll reports input, and the thread is detached, holding
 //! nothing that could delay process exit.
@@ -251,17 +251,54 @@ impl Drop for Reader {
 #[cfg(unix)]
 mod unix {
     use std::fs::File;
-    use std::io::{self, Read};
+    use std::io::{self, Read, Write};
 
     use super::{Reader, Source, Stop};
 
-    /// Stops the detached thread by hanging up the cancel pipe it polls.
+    /// Explicit cancellation is independent of duplicated or inherited writers.
     pub(in super::super) struct Stopper {
-        _cancel: io::PipeWriter,
+        cancel: io::PipeWriter,
     }
 
     impl Stopper {
-        pub(super) fn stop(&mut self) {}
+        pub(super) fn stop(&mut self) {
+            // The private pipe receives exactly this one byte. Hangup alone
+            // can be delayed by a writer inherited across a concurrent spawn.
+            let _ = self.cancel.write_all(&[0]);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn cancel_with_a_retained_writer(hangup_only: bool) -> io::Result<Option<usize>> {
+            let (input, mut write) = io::pipe()?;
+            let mut input = File::from(std::os::fd::OwnedFd::from(input));
+            let (cancelled, cancel) = io::pipe()?;
+            let _inherited_writer = cancel.try_clone()?;
+            let mut stop = Stopper { cancel };
+            if !hangup_only {
+                stop.stop();
+            }
+            drop(stop);
+            write.write_all(b"x")?;
+            // Both input and cancellation may be ready before admission.
+            // A retained writer prevents HUP but cannot hide the cancel byte.
+            read_until_cancelled(&mut input, &cancelled, &mut [0; 1])
+        }
+
+        #[test]
+        fn explicit_cancel_survives_an_inherited_pipe_writer() -> io::Result<()> {
+            assert_eq!(cancel_with_a_retained_writer(false)?, None);
+            Ok(())
+        }
+
+        #[test]
+        fn negative_control_detects_hangup_delayed_by_an_inherited_writer() -> io::Result<()> {
+            assert_eq!(cancel_with_a_retained_writer(true)?, Some(1));
+            Ok(())
+        }
     }
 
     struct Polled {
@@ -278,9 +315,9 @@ mod unix {
     impl Reader {
         pub(in super::super) fn spawn(file: File) -> io::Result<Self> {
             let (cancelled, cancel) = io::pipe()?;
-            // Detached: the dropped writer ends its wait.
+            // Detached: an explicit cancel byte ends its wait.
             Reader::start(Polled { file, cancelled }, |_detached| {
-                Stop(Stopper { _cancel: cancel })
+                Stop(Stopper { cancel })
             })
         }
     }
