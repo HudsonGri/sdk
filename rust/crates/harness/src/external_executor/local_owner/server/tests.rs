@@ -133,7 +133,7 @@ proptest! {
             let address = listener.local_addr().unwrap();
             let mut connections = Box::pin(incoming(listener));
             for option in peer_options {
-                let (peer, accepted) = tokio::join!(tokio::net::TcpStream::connect(address), connections.next());
+                let (peer, accepted) = tokio::join!(tokio::net::TcpStream::connect(address), futures::StreamExt::next(&mut connections));
                 let peer = peer.unwrap();
                 peer.set_nodelay(option).unwrap();
                 assert!(accepted.unwrap().unwrap().nodelay().unwrap());
