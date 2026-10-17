@@ -150,13 +150,21 @@ fn copy_owned_text(
                 let _ = accounting;
                 Ok(KernelOwnedAllocation::NativeOriginal(allocation))
             },
-            |bytes| {
+            |bytes, accounting| {
                 #[cfg(all(test, not(acyclic_fs_loom)))]
                 if tests::charge_before_allocating() {
                     fill(bytes);
                     return Ok(());
                 }
-                work.charge(copied)?;
+                #[cfg(all(test, acyclic_fs_loom))]
+                model::before_fill();
+                #[cfg(all(test, acyclic_fs_loom))]
+                if model::unchecked_fill_charge() {
+                    work.charge(copied)?;
+                    fill(bytes);
+                    return Ok(());
+                }
+                accounting.charge(copied)?;
                 fill(bytes);
                 Ok(())
             },

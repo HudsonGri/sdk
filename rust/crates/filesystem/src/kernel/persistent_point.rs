@@ -55,7 +55,7 @@ impl<T> Owned<Vec<T>> {
             count,
             accounting,
             |accounting, requested, operations| accounting.claim_owned(requested, operations),
-            |_| Ok(()),
+            |_, _| Ok(()),
         )
     }
 
@@ -72,7 +72,7 @@ impl<T> Owned<Vec<T>> {
             u64,
             u64,
         ) -> Result<KernelOwnedAllocation, crate::FsError>,
-        fill: impl FnOnce(&mut Vec<T>) -> Result<(), crate::FsError>,
+        fill: impl FnOnce(&mut Vec<T>, &mut KernelAccounting<'a>) -> Result<(), crate::FsError>,
     ) -> Result<Self, crate::FsError> {
         let requested = crate::foundation::usize_to_u64(
             count
@@ -100,7 +100,7 @@ impl<T> Owned<Vec<T>> {
             }
             return Err(super::CanonicalDecodeError::AllocationFailed.into());
         }
-        let filled = fill(&mut values);
+        let filled = fill(&mut values, accounting);
         let actual = crate::foundation::usize_to_u64(values.capacity() * std::mem::size_of::<T>());
         let checked = filled.and(accounting.reconcile_owned(&mut allocation, requested, actual));
         let owned = Self::new(values, allocation, actual);

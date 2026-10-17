@@ -94,7 +94,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .bytes
             .checked_add(operation.bytes)
             .ok_or(crate::WorkError::Overflow)?;
-        accounting.charge(copy_work(std::mem::size_of::<T>() as u64))?;
+        let copied = copy_work(std::mem::size_of::<T>() as u64);
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        differential::before_charge(accounting, copied)?;
+        accounting.charge(copied)?;
         #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
         if model::skip_funding_transfer() {
             operations.value.push(operation.value);
@@ -103,6 +106,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         operations.allocation.absorb(&mut operation.allocation)?;
         operations.bytes = bytes;
         operations.value.push(operation.value);
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        differential::observed_copy(copied.bytes_copied);
         Ok(())
     }
 
@@ -173,3 +178,7 @@ mod model;
 #[cfg(all(test, not(acyclic_fs_loom)))]
 #[path = "transaction_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "mutation_differential.rs"]
+mod differential;

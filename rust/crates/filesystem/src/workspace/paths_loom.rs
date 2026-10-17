@@ -7,6 +7,23 @@ const COPIED: u64 = 2;
 loom::thread_local! {
     static ACTUAL: RefCell<Option<Arc<AtomicU64>>> = RefCell::new(None);
     static CHECK_ONLY: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static UNCHECKED_FILL: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static FILL_CUT: RefCell<Option<(CancellationToken, Option<loom::sync::mpsc::Sender<()>>)>> = RefCell::new(None);
+}
+
+pub(super) fn unchecked_fill_charge() -> bool {
+    UNCHECKED_FILL.with(std::cell::Cell::get)
+}
+
+pub(super) fn before_fill() {
+    let cut = FILL_CUT.with(|slot| slot.borrow_mut().take());
+    if let Some((caller, ready)) = cut {
+        if let Some(ready) = ready {
+            ready.send(()).unwrap();
+        }
+        caller.cancel();
+        loom::thread::yield_now();
+    }
 }
 
 // Restores main's check, copy, record sequence on native ledgers.
@@ -207,4 +224,87 @@ fn an_omitted_child_debit_fails_the_per_scope_assertion() {
         "{}",
         message(&*panic)
     );
+}
+
+fn fill_cut<const UNCHECKED: bool>(depth: u8, exhaust: bool) {
+    loom::model(move || {
+        let caller = CancellationToken::new();
+        let root = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                bytes_copied: COPIED,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let mut work = root.clone();
+        for level in 0..depth {
+            work = work
+                .native_volume_work(crate::WorkBudget {
+                    bytes_copied: COPIED * u64::from(depth - level),
+                    ..crate::WorkBudget::UNBOUNDED
+                })
+                .unwrap();
+        }
+        let setup = root.live_allocation_bytes();
+        let actual = Arc::new(AtomicU64::new(0));
+        let (ready, receiver) = loom::sync::mpsc::channel();
+        let competing = root.clone();
+        let worker = exhaust.then(|| {
+            loom::thread::spawn(move || {
+                receiver.recv().unwrap();
+                competing.charge(copy_work(COPIED))
+            })
+        });
+        FILL_CUT.with(|slot| *slot.borrow_mut() = Some((caller.clone(), exhaust.then_some(ready))));
+        UNCHECKED_FILL.with(|flag| flag.set(UNCHECKED));
+        ACTUAL.with(|slot| *slot.borrow_mut() = Some(actual.clone()));
+        let mut accounting = KernelAccounting::native(&work, &caller);
+        let result = restore_absolute_path("x", &mut accounting, &caller);
+        ACTUAL.with(|slot| *slot.borrow_mut() = None);
+        UNCHECKED_FILL.with(|flag| flag.set(false));
+        let competing = worker.map(|worker| worker.join().unwrap());
+        assert!(
+            matches!(&result, Err(WorkspaceError::Cancelled(_))),
+            "caller cancellation at fill precedes competing credit exhaustion: {:?}",
+            result.as_ref().err()
+        );
+        assert_eq!(
+            actual.load(Ordering::Relaxed),
+            0,
+            "caller cancellation at fill prevents copies"
+        );
+        assert_eq!(root.live_allocation_bytes(), setup);
+        assert_eq!(
+            root.receipt().bytes_copied,
+            if exhaust { COPIED } else { 0 }
+        );
+        assert!(competing.is_none_or(|result| result.is_ok()));
+        for (local, pending) in work.resource_chain() {
+            assert_eq!(local.bytes_copied, 0);
+            assert_eq!(pending, crate::WorkCounters::UNCHARGED);
+        }
+    });
+}
+
+#[test]
+fn cancellation_after_storage_admission_precedes_fill_and_racing_credit_exhaustion() {
+    for depth in [0, 2] {
+        for exhaust in [false, true] {
+            fill_cut::<false>(depth, exhaust);
+        }
+    }
+}
+
+#[test]
+fn ignoring_the_caller_at_fill_fails_the_cancellation_cut_assertions() {
+    for exhaust in [false, true] {
+        let panic = std::panic::catch_unwind(|| fill_cut::<true>(0, exhaust))
+            .expect_err("caller-blind charge must fail the exact fill cut");
+        assert!(
+            message(&*panic).contains("caller cancellation at fill"),
+            "{}",
+            message(&*panic)
+        );
+    }
 }
