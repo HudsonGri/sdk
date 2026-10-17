@@ -65,15 +65,6 @@ pub(in crate::native_mount) fn compiled<
     rules: Vec<Rule>,
     capability: Option<Capability>,
 ) -> Result<PathTrie, Box<dyn std::error::Error>> {
-    let caller = Principal {
-        kind: PrincipalKind::Service,
-        id: "mount-test".into(),
-        lineage: vec![],
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
-    };
     let mut layer = vec![Rule {
         id: "fixture".into(),
         effect: Effect::Allow,
@@ -88,14 +79,6 @@ pub(in crate::native_mount) fn compiled<
         version: revision,
         layers: vec![layer],
     };
-    let cap = capability.unwrap_or_else(|| Capability {
-        layers: vec![vec![Grant {
-            actions: Action::ALL.into_iter().collect(),
-            resource: pattern("**"),
-        }]],
-        expires_at: None,
-    });
-    let volume = uuid::Uuid::from_bytes(source.volume_id()?.into_bytes()).to_string();
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let (head, revision) = invoke(&source.runtime, &work, || async {
         let mut checkout = source
@@ -115,8 +98,39 @@ pub(in crate::native_mount) fn compiled<
                 .await?,
         ))
     })?;
+    compile_policy(source, &policy, capability, head, revision).map_err(Into::into)
+}
+
+pub(super) fn compile_policy<A, O>(
+    source: &CheckoutMountSource<A, O>,
+    policy: &Policy,
+    capability: Option<Capability>,
+    head: crate::GenerationId,
+    revision: crate::kernel::MetadataField<crate::ObjectId>,
+) -> Result<PathTrie, MountSourceError>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let caller = Principal {
+        kind: PrincipalKind::Service,
+        id: "mount-test".into(),
+        lineage: vec![],
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let cap = capability.unwrap_or_else(|| Capability {
+        layers: vec![vec![Grant {
+            actions: Action::ALL.into_iter().collect(),
+            resource: pattern("**"),
+        }]],
+        expires_at: None,
+    });
+    let volume = uuid::Uuid::from_bytes(source.volume_id()?.into_bytes()).to_string();
     Ok(PathTrie::compile(
-        &policy,
+        policy,
         &caller,
         Resource {
             config: source.config,
@@ -131,7 +145,8 @@ pub(in crate::native_mount) fn compiled<
             approvals: 0,
         },
         &cap,
-    )?
+    )
+    .map_err(|_| MountSourceError::AccessDenied)?
     .with_policy_revision(head, revision))
 }
 
@@ -716,4 +731,63 @@ proptest::proptest! {
         denial_without_probe(Action::ALL[action], &path)
             .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
     }
+}
+
+#[test]
+fn projection_admission_holds_policy_publication_until_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Portable)?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    assert!(source.projection_policy_lease(false, &work).is_err());
+    let lease = source.projection_policy_lease(true, &work)?;
+    let denied = crate::access::fixtures::denied(Action::Write, "**");
+    assert!(super::policy_refresh::publish(&source, &denied).is_err());
+    assert!(
+        source
+            .access_view
+            .as_ref()
+            .unwrap()
+            .current()?
+            .decide(
+                Action::Write,
+                "file",
+                crate::native_mount::adapter::access::access_time()?
+            )
+            .allowed
+    );
+    drop(lease);
+    super::policy_refresh::publish(&source, &denied)?;
+    assert!(source.projection_policy_lease(true, &work).is_err());
+    Ok(())
+}
+
+#[test]
+fn staged_policy_editor_prevents_projection_admission() -> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Portable)?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let editor = invoke(&source.runtime, &work, || async {
+        let mut editor = source
+            .checkout
+            .volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                &work,
+                work.cancellation(),
+            )
+            .await?;
+        editor
+            .write_access_policy(
+                crate::access::INITIAL_POLICY,
+                NamedAttributeWriteMode::Create,
+                &work,
+                work.cancellation(),
+            )
+            .await?;
+        Ok::<_, MountSourceError>(editor)
+    })?;
+    assert!(source.projection_policy_lease(true, &work).is_err());
+    drop(editor);
+    assert!(source.projection_policy_lease(true, &work).is_ok());
+    Ok(())
 }

@@ -15,6 +15,16 @@ pub(in crate::native_mount) fn can_disclose(
 
 /// Synchronous callback surface implemented by an embedded checkout adapter.
 pub trait MountFilesystem: Send + Sync + 'static {
+    /// Retain policy publication exclusion for a physical projection. Sources
+    /// without an authenticated policy owner cannot start ProjFS.
+    fn projection_policy_lease(
+        &self,
+        _writable: bool,
+        _work: &NativeMaterializationWork,
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+        Err(MountSourceError::AccessDenied.into())
+    }
+
     /// Authorize every requested operation against one current policy/capability view.
     fn authorize_with_meter(
         &self,
@@ -65,7 +75,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         &self,
         expected_epoch: Option<u64>,
         work: &NativeMaterializationWork,
-    ) -> Result<Box<dyn Send>, MountSourceError>;
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError>;
     /// Captures exact paths through the existing original shared invocation.
     fn capture_host_paths_with_meter(
         &self,
@@ -388,7 +398,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     }
 
     /// Pins the current coherent projection view for one native callback.
-    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send + Sync>, NativeMountError> {
         if !self.view_is_stable() {
             return Err(MountSourceError::Stale);
         }
@@ -399,7 +409,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn Send>, MountSourceError> {
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
         if !self.view_is_stable() || self.binding_epoch() != expected_epoch {
             return Err(MountSourceError::Stale);
         }

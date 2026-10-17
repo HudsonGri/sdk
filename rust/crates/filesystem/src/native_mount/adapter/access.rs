@@ -266,3 +266,40 @@ where
         })
     }
 }
+
+#[cfg(any(windows, test))]
+impl<A, O> CheckoutMountSource<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    pub(in crate::native_mount) fn projection_lease(
+        &self,
+        writable: bool,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+        let fence = self
+            .checkout
+            .volume
+            .fs
+            .projection_policy_fence(self.checkout.volume.id)
+            .map_err(MountSourceError::from)?;
+        let lease = fence.enter(true).map_err(MountSourceError::from)?;
+        let view = self.access_snapshot_with_meter(work)?;
+        crate::native_mount::actions::require_projfs_mode(&view, writable, access_time()?)
+            .map_err(|error| match error {
+                super::super::MountLifecycleError::NativePolicy(reason) => {
+                    NativeMountError::Lifecycle(reason)
+                }
+                _ => NativeMountError::Lifecycle("ProjFS policy admission failed"),
+            })?;
+        let custody = work
+            .claim(
+                std::mem::size_of_val(&lease) as u64,
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )
+            .map_err(MountSourceError::NativeWork)?;
+        Ok(Box::new((lease, custody)))
+    }
+}

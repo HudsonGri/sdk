@@ -13,6 +13,7 @@ pub(crate) mod fixtures;
 mod glob;
 mod mount;
 mod names;
+pub(crate) mod projection;
 mod view;
 pub use view::AccessView;
 mod trie;

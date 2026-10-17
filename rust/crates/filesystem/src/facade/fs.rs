@@ -18,6 +18,7 @@ pub(super) struct FsInner<A, O> {
     pub(super) capabilities: EmbeddedCapabilities,
     pub(super) workspace_namespace: [u8; 16],
     pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
+    pub(super) projection_policies: crate::access::projection::ProjectionPolicies,
     pub(super) generation_positions: super::generation_cache::GenerationPositions,
     pub(super) publication_proof: Mutex<crate::kernel::closure::CachedProofs>,
     // This field must remain last: Rust drops fields in declaration order, so every durable
@@ -39,6 +40,13 @@ impl<A, O> Clone for Fs<A, O> {
 }
 
 impl<A, O> Fs<A, O> {
+    pub(crate) fn projection_policy_fence(
+        &self,
+        volume: crate::VolumeId,
+    ) -> Result<Arc<crate::access::projection::Fence>, FsError> {
+        self.inner.projection_policies.get(volume)
+    }
+
     /// Deployment guarantees supplied when this engine was composed.
     #[must_use]
     pub fn capabilities(&self) -> EmbeddedCapabilities {
@@ -176,6 +184,7 @@ impl<A, O> Fs<A, O> {
                 capabilities,
                 workspace_namespace,
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+                projection_policies: Default::default(),
                 generation_positions: super::generation_cache::GenerationPositions::default(),
                 publication_proof: Mutex::default(),
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]

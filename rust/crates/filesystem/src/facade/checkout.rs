@@ -17,6 +17,7 @@ pub struct Checkout<A, O> {
     /// Exact newly owned proof payload admitted when this handle was constructed.
     pub(super) proof_owned_bytes: u64,
     pub(super) mode: CheckoutMode,
+    pub(super) policy_editor: Option<crate::access::projection::Lease>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
@@ -160,6 +161,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 root,
                 authority_head,
                 authored_operation_id: None,
+                policy_editor: None,
                 live_operation_id: None,
                 last_commit: None,
                 publication_closure: None,

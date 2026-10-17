@@ -80,6 +80,7 @@ impl ProjFsSession {
         if out.is_some() {
             return Err(NativeMountError::ControlPending);
         }
+        let policy_lease = source.projection_policy_lease(request.writable, work)?;
         let original_work = source.native_original_work()?;
         let callback_guard = source.native_callback_guard();
         if callback_guard.is_some() && original_work.is_none()
@@ -113,6 +114,7 @@ impl ProjFsSession {
             return Err(NativeMountError::InvalidDestination);
         }
         let runtime = Arc::new(Runtime {
+            _policy_lease: policy_lease,
             source,
             work: Mutex::new(work.clone()),
             active_work: Mutex::new(Default::default()),

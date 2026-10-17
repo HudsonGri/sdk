@@ -7,6 +7,15 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    #[cfg(any(windows, test))]
+    fn projection_policy_lease(
+        &self,
+        writable: bool,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+        self.authored.projection_lease(writable, work)
+    }
+
     fn authorize_with_meter(
         &self,
         requests: &[(crate::access::Action, &MountPath)],
@@ -244,16 +253,16 @@ where
         Some(self.source_view.generation())
     }
 
-    fn acquire_view_lease(&self) -> Result<Box<dyn Send>, MountSourceError> {
+    fn acquire_view_lease(&self) -> Result<Box<dyn Send + Sync>, NativeMountError> {
         Ok(Box::new(self.view_lease(None, None)?))
     }
 
     fn acquire_binding_lease(
         &self,
         expected_epoch: Option<u64>,
-    ) -> Result<Box<dyn Send>, MountSourceError> {
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
         self.view_lease(expected_epoch, None)
-            .map(|lease| Box::new(lease) as Box<dyn Send>)
+            .map(|lease| Box::new(lease) as Box<dyn Send + Sync>)
     }
 
     fn lookup(&self, path: &MountPath) -> Result<Option<MountLookup>, MountSourceError> {
@@ -700,7 +709,7 @@ where
         &self,
         expected: Option<u64>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Box<dyn Send>, MountSourceError> {
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
         let lease = self.view_lease(expected, Some(work))?;
         let allocation = work
             .claim(

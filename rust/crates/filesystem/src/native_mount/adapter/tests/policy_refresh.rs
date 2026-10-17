@@ -1,10 +1,7 @@
 use super::access::{compiled, deny, seed};
 use super::*;
 use crate::access::AccessView;
-use crate::access::{
-    Action, Capability, Context, Generations, Grant, PathTrie, Policy, Principal, PrincipalKind,
-    Resource, ResourcePattern,
-};
+use crate::access::{Action, Policy};
 
 struct Reload {
     source: std::sync::Weak<MemorySource>,
@@ -35,47 +32,13 @@ impl crate::native_mount::NativeMountCallbackGuard for Reload {
             let policy: Policy =
                 serde_json::from_slice(&bytes.ok_or(MountSourceError::AccessDenied)?.bytes)
                     .map_err(|_| MountSourceError::AccessDenied)?;
-            let volume = uuid::Uuid::from_bytes(source.volume_id()?.into_bytes()).to_string();
-            let principal = Principal {
-                kind: PrincipalKind::Service,
-                id: "mount-test".into(),
-                lineage: vec![],
-                groups: Default::default(),
-                roles: Default::default(),
-                tags: Default::default(),
-                attributes: Default::default(),
-            };
-            let capability = Capability {
-                layers: vec![vec![Grant {
-                    actions: Action::ALL.into_iter().collect(),
-                    resource: ResourcePattern {
-                        lineage_root: None,
-                        volume: None,
-                        generations: Generations::All,
-                        path: "**".into(),
-                    },
-                }]],
-                expires_at: None,
-            };
-            let view = PathTrie::compile(
+            let view = super::access::compile_policy(
+                &source,
                 &policy,
-                &principal,
-                Resource {
-                    config: source.config,
-                    lineage: &[],
-                    volume: &volume,
-                    generation: 1,
-                    head: 1,
-                    path: "",
-                },
-                Context {
-                    now: crate::native_mount::adapter::access::access_time()?,
-                    approvals: 0,
-                },
-                &capability,
-            )
-            .map_err(|_| MountSourceError::AccessDenied)?
-            .with_policy_revision(checkout.generation_id(), revision)
+                None,
+                checkout.generation_id(),
+                revision,
+            )?
             .with_data_generation(source.checkout.lock().await.generation_id());
             source
                 .access_view

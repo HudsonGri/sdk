@@ -7,21 +7,38 @@ fn policy_source(bytes: &[u8]) -> Result<MemorySource, Box<dyn std::error::Error
     let source = source(FilesystemProfile::Posix)?;
     source.runtime.block_on(
         || async {
-            source
-                .checkout
-                .lock()
-                .await
+            let mut checkout = source.checkout.lock().await;
+            checkout
                 .write_access_policy(
                     bytes,
                     NamedAttributeWriteMode::Create,
                     WorkBudget::UNBOUNDED,
                     source.cancellation(),
                 )
+                .await?;
+            checkout
+                .commit(
+                    OperationId::new(),
+                    None,
+                    None,
+                    None,
+                    PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    source.cancellation(),
+                    |_| async {
+                        Ok::<_, OperationFailure<FsError>>(OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        })
+                    },
+                )
                 .await
+                .map_err(|failure| failure.error)?;
+            Ok::<_, FsError>(())
         },
         None,
     )??;
-    Ok(source)
+    access::bind_test_access(source, vec![], None)
 }
 
 fn native_policy_metadata(bytes: &[u8], timestamp: i64) -> Result<(), Box<dyn std::error::Error>> {

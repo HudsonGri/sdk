@@ -101,24 +101,6 @@ impl MountOptions {
             ))
     }
 
-    pub(super) fn require_projection(&self) -> Result<(), MountLifecycleError> {
-        let view = self.require_access_view()?;
-        #[cfg(windows)]
-        {
-            let current = view
-                .current()
-                .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
-            crate::native_mount::actions::require_projfs_mode(
-                current.as_ref(),
-                self.writable,
-                super::super::adapter::access::access_time()?,
-            )?;
-        }
-        #[cfg(not(windows))]
-        let _ = view;
-        Ok(())
-    }
-
     pub(super) fn work(
         &self,
         budget: crate::WorkBudget,
