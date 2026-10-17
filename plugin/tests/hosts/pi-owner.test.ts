@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "bun:test";
 import { installedNativeFixture } from "./pi-native-fixture.ts";
@@ -22,7 +22,9 @@ test("the installed Pi fixture reconnects through task files and awaits owner sh
   let phase="install";
   let crashed: unknown;
   try {
-    fixture=await installedNativeFixture(directory,"export default function () {}",{});
+    const bash=Bun.which("bash");
+    assert.ok(bash,"the native projection probe requires bash");
+    fixture=await installedNativeFixture(directory,"export default function () {}",{PATH:dirname(bash)});
     phase="initial attach";
     await fixture.start();
     const original=fixture.environment.ACYCLIC_NATIVE_TASK;
