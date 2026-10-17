@@ -188,6 +188,8 @@ test("coordinator qualification instruments real Stream locks and rejects skippe
     ["local::children::preparation::models::", 1],
     ["external_executor::local_owner::response::model::tests::", 2],
     ["external_executor::local_owner::request_feed::model::tests::", 4],
+    ["external_executor::native_context::source::models::", 1],
+    ["task_volume::publication::models::", 2],
   ];
   for (const broken of [-1, ...suites.keys()]) {
     const calls = [];
