@@ -13,6 +13,8 @@ pub(super) enum Reuse {
     PersistFirst,
     /// Unsound control: trust matching metadata without reading a byte.
     MetadataOnly,
+    /// Restores the rejected verify-then-stage path for sparse layouts.
+    VerifySparse,
 }
 
 thread_local! {
@@ -21,6 +23,10 @@ thread_local! {
 
 pub(super) fn mode() -> Reuse {
     MODE.with(Cell::get)
+}
+
+pub(super) fn force_sparse_verification() -> bool {
+    mode() == Reuse::VerifySparse
 }
 
 struct Mode;
@@ -55,6 +61,13 @@ struct Fixture {
 }
 
 fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
+    fixture_with_sparse(runtime, None)
+}
+
+fn fixture_with_sparse(
+    runtime: &tokio::runtime::Runtime,
+    sparse: Option<(u64, usize, bool)>,
+) -> Fixture {
     let source = tempfile::tempdir().unwrap();
     std::fs::create_dir(source.path().join("d")).unwrap();
     for (name, length) in FILES {
@@ -63,6 +76,20 @@ fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
             body(length, 7),
         )
         .unwrap();
+    }
+    if let Some((offset, length, split)) = sparse {
+        use std::io::{Seek, SeekFrom, Write};
+        // Isolate sparse admission: the other paths have empty bodies.
+        std::fs::write(source.path().join("d/body"), []).unwrap();
+        let mut file = std::fs::File::create(source.path().join("d/large")).unwrap();
+        file.set_len(FILES[2].1 as u64).unwrap();
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.write_all(&body(length, 7)).unwrap();
+        if split {
+            file.seek(SeekFrom::Start(offset + length as u64 + 4096))
+                .unwrap();
+            file.write_all(&body(length, 9)).unwrap();
+        }
     }
     let setup =
         NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
@@ -411,5 +438,61 @@ fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
             before_work["sourceBytesRead"],
             after_work["sourceBytesRead"]
         );
+    }
+}
+
+#[cfg(target_os = "linux")]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    #[test]
+    fn sparse_rescan_reads_each_allocated_byte_once(
+        offset_blocks in 1_u64..8,
+        data_blocks in 1_usize..4,
+        split in proptest::bool::ANY,
+    ) {
+        let _subscriber = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        let runtime = setup();
+        let length = data_blocks * 4096;
+        let mut observed = Vec::new();
+        for mode in [Reuse::PersistFirst, Reuse::Verified, Reuse::VerifySparse] {
+            // Each run builds its own sparse host file and authenticated store.
+            let mut fixture = fixture_with_sparse(&runtime, Some((offset_blocks * 4096, length, split)));
+            let pair = differential::observe::<_, _, &'static str>(|| (), |()| {
+                let probe = crate::native_host::stat_probe::Probe::rescan(false);
+                let result = rescan(&runtime, &mut fixture, mode, false);
+                probe.publish();
+                result
+            });
+            observed.push(pair);
+        }
+        let [((old, old_work, old_heap, _), old_trace), ((new, work, heap, _), trace), ((broken, broken_work, broken_heap, _), _)] =
+            observed.try_into().unwrap();
+        proptest::prop_assert_eq!((&old.result, &old.bytes), (&new.result, &new.bytes));
+        proptest::prop_assert_eq!((&broken.result, &broken.bytes), (&new.result, &new.bytes));
+        proptest::prop_assert_eq!(old_trace, trace);
+        let ranges = 1 + u64::from(split);
+        let data = length as u64 * ranges;
+        // Path collection contributes 21 bytes; sparse mutations clone a
+        // six-byte path for two resizes and each write. No hole is read.
+        let expected = data + 21 + 6 * (2 + ranges);
+        eprintln!("SPARSE_REUSE ranges={ranges} heap={} broken_heap={} work={work}", heap.count_total, broken_heap.count_total);
+        proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(expected));
+        proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), Some(expected));
+        proptest::prop_assert_eq!(heap.count_total, old_heap.count_total);
+        // Restoring speculative verification reads the sparse data a second time.
+        proptest::prop_assert_eq!(broken_work["sourceBytesRead"].as_u64(), Some(expected + data));
+        proptest::prop_assert_ne!(
+            (broken_work["sourceBytesRead"].as_u64(), broken_heap.count_total),
+            (Some(expected), old_heap.count_total)
+        );
+        let mut expected_bytes = vec![0; FILES[2].1];
+        expected_bytes[offset_blocks as usize * 4096..offset_blocks as usize * 4096 + length]
+            .copy_from_slice(&body(length, 7));
+        if split {
+            let offset = offset_blocks as usize * 4096 + length + 4096;
+            expected_bytes[offset..offset + length].copy_from_slice(&body(length, 9));
+        }
+        proptest::prop_assert_eq!(&new.bytes[2], &expected_bytes);
     }
 }

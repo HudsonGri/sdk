@@ -401,7 +401,8 @@ impl CaptureBatch<'_> {
             });
         #[cfg(test)]
         let verify = match super::verified_reuse_tests::mode() {
-            super::verified_reuse_tests::Reuse::Verified => verify,
+            super::verified_reuse_tests::Reuse::Verified
+            | super::verified_reuse_tests::Reuse::VerifySparse => verify,
             super::verified_reuse_tests::Reuse::PersistFirst => false,
             super::verified_reuse_tests::Reuse::MetadataOnly => {
                 if verify {
@@ -413,23 +414,28 @@ impl CaptureBatch<'_> {
             }
         };
         let mut verified_bytes = 0;
+        let mut persist = !verify;
         // Staging opens the file once and proves it is still the observed node before reading a byte.
         let staged = read_regular_body(
             checkout,
             self.source_root,
             &host_path,
             metadata,
-            (self.maximum_extent_spans, !verify),
+            (self.maximum_extent_spans, &mut persist),
             self.meter,
-            if verify {
-                &mut verified_bytes
-            } else {
-                &mut self.receipt.staged_file_bytes
-            },
+            &mut verified_bytes,
         )
         .await?;
+        if persist {
+            self.receipt.staged_file_bytes = self
+                .receipt
+                .staged_file_bytes
+                .checked_add(verified_bytes)
+                .ok_or(CaptureError::from(WorkError::Overflow))?;
+            verified_bytes = 0;
+        }
         // Only a verified body may need its path again, to stage changed bytes.
-        let retained_path = if verify {
+        let retained_path = if !persist {
             Some(host_path)
         } else {
             capture_drop_host_path(host_path, self.meter)?;
