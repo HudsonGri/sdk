@@ -87,6 +87,7 @@ if [[ " $* " == *' --message-format=json '* ]]; then
   [[ " $* " != *' --test guest_loom '* ]] || model=guest_loom
   [[ " $* " != *' --test native_binding_model '* ]] || model=native_binding_model
   [[ " $* " != *' --test memory-accounting-model '* ]] || model=memory-accounting-model
+  [[ " $* " != *' -p acyclic-harness --lib '* ]] || model=acyclic_harness
   [[ " $* " != *' -p acyclic-fs --lib '* ]] || model=acyclic_fs
   printf '{"reason":"compiler-artifact","target":{"name":"%s"},"profile":{"test":true},"executable":"%s"}\n' "$model" "$FAKE_MCP_LOOM_BINARY"
 elif [[ "$1" == test ]]; then
