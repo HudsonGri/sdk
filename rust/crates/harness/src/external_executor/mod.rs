@@ -23,6 +23,8 @@ mod handoff;
 #[cfg(feature = "filesystem")]
 mod intake;
 #[cfg(feature = "filesystem")]
+pub(crate) mod launch;
+#[cfg(feature = "filesystem")]
 pub(crate) use intake::LIFECYCLE;
 #[cfg(all(
     feature = "filesystem-local",
@@ -47,7 +49,7 @@ mod rejection;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 pub(crate) use prepared::fuzz_command;
 #[cfg(feature = "filesystem")]
-mod publication;
+pub(crate) mod publication;
 mod request;
 mod result;
 mod session;

@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 // Installation substitutes one JSON string; no shell interprets it.
 const executable = "__ACYCLIC_EXECUTABLE__";
@@ -66,6 +68,25 @@ function identity(ctx: ExtensionContext) {
   return { sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
 }
 
+function nativeSpawn(input: unknown, ctx: ExtensionContext) {
+  if (!input || typeof input !== "object" || !("id" in input) || "executor" in input) return input;
+  if (!ctx.model || !process.argv[1]) throw new Error("Native spawn needs the current model and executable");
+  const session = SessionManager.inMemory(ctx.cwd);
+  const header = session.getHeader();
+  if (!header) throw new Error("Native SDK omitted the child session header");
+  const text = (value: string) => ({ kind: "text", value });
+  const args: Array<Record<string, string>> = [process.argv[1], "--print", "--mode", "json", "--session"].map(text);
+  args.push({ kind: "session_file" });
+  args.push(...["--provider", ctx.model.provider, "--model", ctx.model.id,
+    "--no-extensions", "--no-mcp", "--no-builtin-tools", "-e", fileURLToPath(import.meta.url)].map(text));
+  if (process.env.ACYCLIC_PI_PROVIDER_EXTENSION) args.push(...["-e", process.env.ACYCLIC_PI_PROVIDER_EXTENSION].map(text));
+  args.push(text("--"), { kind: "prompt" });
+  return { ...input, executor: {
+    session: { host: "pi", session_id: session.getSessionId(), caller: null },
+    executable: process.execPath, arguments: args, session_bytes: JSON.stringify(header), timeout_ms: 300_000,
+  } };
+}
+
 /** Tool definitions and execution both come from the harness registry. */
 export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
   const registered = new Set<string>();
@@ -82,6 +103,7 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke) {
         renderCall: args => new Text(tool.name + " " + JSON.stringify(args), 0, 0),
         renderResult: result => new Text(result.content.map(block => block.type === "text" ? block.text : "").join("\n"), 0, 0),
         async execute(toolCallId, input, signal, _onUpdate, context) {
+          if (tool.name === "acyclic_spawn") input = nativeSpawn(input, context);
           const result = await send("tool_call", { toolCallId, toolName: tool.name, input, ...identity(context) }, signal);
           if (!Array.isArray(result.content) || result.isError !== false) throw new Error("Invalid harness tool result");
           return { content: result.content, details: result.details };

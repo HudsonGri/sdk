@@ -183,7 +183,7 @@ async fn fixture_creation_future_is_boxed_at_the_runtime_boundary() -> Result<()
     let fixture = Fixture::new(VolumeBinding::Separate).await?;
     let definition = fixture
         .tasks
-        .get::<Value, ()>("acyclic.command_session@1")?;
+        .get::<Value, Value>("acyclic.command_session@1")?;
     {
         let future = fixture.runtime.harness().admit(
             OperationId::from_bytes([80; 16]),

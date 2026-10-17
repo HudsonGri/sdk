@@ -68,6 +68,34 @@ fn native_child_binding_is_published_under_its_parent_fence() {
 }
 
 #[test]
+fn native_process_chunks_and_result_retain_the_custody_fence() {
+    for file in [
+        acyclic_harness::task_volume::ToolFile::Stdout(0),
+        acyclic_harness::task_volume::ToolFile::Result,
+    ] {
+        native_process_model(false, file);
+    }
+}
+
+#[test]
+#[should_panic(expected = "stale task owner published a result")]
+fn negative_control_detects_unfenced_native_process_output() {
+    native_process_model(true, acyclic_harness::task_volume::ToolFile::Stdout(0));
+}
+
+fn native_process_model(broken: bool, file: acyclic_harness::task_volume::ToolFile) {
+    model_file(
+        broken,
+        true,
+        TaskFile::Tool {
+            call: Component::new("native-process").unwrap(),
+            turn: 0,
+            file,
+        },
+    );
+}
+
+#[test]
 #[should_panic(expected = "stale task owner published a result")]
 fn negative_control_detects_an_unfenced_native_child_binding() {
     binding_model(true);

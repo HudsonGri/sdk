@@ -146,12 +146,47 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    // Only an idle session accepts its owned native outcome. No command is
+    // emitted by completion; an outstanding hook must settle first.
+    #[test]
+    fn native_completion_waits_for_hooks_and_preserves_the_outcome(
+        id in any::<[u8;16]>(), failed in any::<bool>(), text in ".{0,128}",
+    ) {
+        let machine=CommandSessionMachine::new();
+        let command=tool_command(id)?;
+        let ready=machine.initialize(&json!({"command":command,"terminal":false}))?;
+        let waiting=machine.transition(&ready,&Value::Null)?;
+        let outcome=if failed {json!({"Failed":{"message":text}})} else {json!({"Succeeded":{"native":text}})};
+        let finished=json!({"native_exit":outcome});
+        prop_assert!(machine.transition(&waiting.state,&finished).is_err());
+        let idle=machine.transition(&waiting.state,&result(command.operation_id,Value::Null))?;
+        let completed=machine.transition(&idle.state,&finished)?;
+        prop_assert!(completed.commands.is_empty());
+        let expected=if failed {MachineStatus::Failed {message:text}} else {MachineStatus::Completed {value:json!({"native":text})}};
+        prop_assert_eq!(completed.status,expected);
+        prop_assert!(machine.transition(&completed.state,&finished).is_err());
+        for invalid in [json!({"native_exit":outcome,"extra":true}),json!({"native_exit":"Cancelled"}),
+            json!({"native_exit":{"Failed":{"message":42}}})] {
+            prop_assert!(machine.transition(&idle.state,&invalid).is_err());
+        }
+        let mut command=command;
+        command.kind=acyclic_harness::filesystem::NATIVE_PROCESS_EFFECT_KIND.into();
+        let ready=machine.initialize(&json!({"command":command,"terminal":true}))?;
+        let waiting=machine.transition(&ready,&Value::Null)?;
+        let value=json!({"success":true,"exit_code":0});
+        let settled=machine.transition(&waiting.state,&result(command.operation_id,value.clone()))?;
+        prop_assert_eq!(settled.status,MachineStatus::Completed{value});
+    }
+}
+
 #[tokio::test]
 async fn command_session_reopens_the_existing_outbox_without_reemitting_effects() -> Result<()> {
     let machine = Arc::new(CommandSessionMachine::new());
     let mut tasks = acyclic_harness::runtime::TaskRegistry::default();
     tasks.register(machine.definition()?)?;
-    tasks.get::<Value, ()>("acyclic.command_session@1")?;
+    tasks.get::<Value, Value>("acyclic.command_session@1")?;
     let mut registry = MachineRegistry::default();
     registry.register(machine.clone(), &mut None)?;
     let command = tool_command([9; 16])?;

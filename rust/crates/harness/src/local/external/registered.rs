@@ -31,6 +31,23 @@ impl LocalHarness {
         // owner's existing children follow discovers it, including after reopen.
         // No parent task gate is held while acquiring this child's binding.
         self.external_volumes(child).await?;
+        #[cfg(feature = "native-execution")]
+        if crate::external_executor::launch::requested(request) {
+            let spawn = crate::external_executor::launch::Spawn::from_request(request)?;
+            let workspace = self
+                .workspace_path()
+                .and_then(Path::to_str)
+                .ok_or_else(|| {
+                    Error::Unsupported("native child has no workspace binding".into())
+                })?;
+            let attach = spawn.attachment(request, workspace)?;
+            if attach.task_id() != child {
+                return Err(Error::Unauthorized(
+                    "native admission selected another session".into(),
+                ));
+            }
+            self.external_request(&attach).await?;
+        }
         Ok(())
     }
 
@@ -55,10 +72,26 @@ impl LocalHarness {
             {
                 return Ok(false);
             }
+            #[cfg(all(feature = "native-execution", feature = "hooks"))]
+            let native_parent = if admission
+                .input
+                .pointer("/command/kind")
+                .and_then(Value::as_str)
+                == Some(crate::filesystem::NATIVE_PROCESS_EFFECT_KIND)
+            {
+                Some(self.native_parent(&admission).await?)
+            } else {
+                None
+            };
+            #[cfg(not(all(feature = "native-execution", feature = "hooks")))]
+            let native_parent: Option<TaskId> = None;
             drop(admission);
-            crate::external_executor::progress::follow(
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let progress = crate::external_executor::progress::follow(
                 None,
-                |revision| self.registered_step(task, revision),
+                |revision| {
+                    self.registered_step(task, revision, native_parent.map(|_| &cancellation))
+                },
                 async {
                     Ok(self
                         .runtime
@@ -67,21 +100,41 @@ impl LocalHarness {
                         .await?
                         .map(|record| record.map(|_| ()).map_err(storage)))
                 },
-                stopped,
-            )
+                async {
+                    cancellation.cancelled().await;
+                    Ok(())
+                },
+            );
+            let stopped = async {
+                let result = stopped.await;
+                if let Some(parent) = native_parent {
+                    // The custody child and any outstanding hook tools belong
+                    // to this same subtree. Drain them before provider closure.
+                    self.runtime.task_host().cancel(parent).await?;
+                }
+                result
+            };
+            crate::external_executor::cancellation::settle(progress, stopped, || {
+                cancellation.cancel();
+            })
             .await?;
+            #[cfg(all(feature = "native-execution", feature = "hooks"))]
+            if let Some(parent) = native_parent {
+                self.finish_native_process(task, parent).await?;
+            }
             Ok(true)
         })
     }
 
-    fn registered_step(
-        &self,
+    fn registered_step<'a>(
+        &'a self,
         task: TaskId,
         previous: Option<u64>,
-    ) -> impl Future<Output = Result<(Option<u64>, Option<()>)>> + '_ {
+        cancellation: Option<&'a acyclic_fs::CancellationToken>,
+    ) -> impl Future<Output = Result<(Option<u64>, Option<()>)>> + 'a {
         Box::pin(async move {
             let (revision, terminal) = {
-                let (_binding, _) = self.binding(task).await?;
+                let (_binding, volumes) = self.binding(task).await?;
                 let revision = self
                     .runtime
                     .task_host()
@@ -92,6 +145,12 @@ impl LocalHarness {
                 }
                 let (cursor, terminal) =
                     crate::external_executor::progress::at_revision(previous, revision, || async {
+                        #[cfg(all(feature = "native-execution", feature = "hooks"))]
+                        if let Some(cancellation) = cancellation {
+                            self.advance_process(task, volumes, cancellation).await?;
+                            return self.runtime.task_host().outcome(task).await;
+                        }
+                        let _ = (&volumes, &cancellation);
                         if self.model.is_some() {
                             let commands = self.commands()?;
                             self.advance(task, &commands).await?;

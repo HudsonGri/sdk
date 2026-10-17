@@ -7,6 +7,8 @@ use crate::{
 };
 use serde_json::Value;
 
+#[cfg(all(feature = "native-execution", feature = "hooks"))]
+mod process;
 mod recovery;
 mod registered;
 #[cfg(all(test, not(acyclic_harness_loom)))]

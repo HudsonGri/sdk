@@ -21,6 +21,8 @@ pub struct CommandSessionMachine {
 struct Input {
     command: WorkflowCommand,
     terminal: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executor: Option<crate::conversation::FileRef>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -32,6 +34,8 @@ enum State {
     Waiting {
         operation_id: OperationId,
         terminal: bool,
+        #[serde(default)]
+        native_process: bool,
     },
     Idle,
     Closed,
@@ -54,7 +58,7 @@ impl CommandSessionMachine {
                 },"additionalProperties":false},
                 {"type":"object","required":["stage","operation_id","terminal"],"properties":{
                     "stage":{"const":"waiting"},"operation_id":{"type":"string"},
-                    "terminal":{"type":"boolean"}
+                    "terminal":{"type":"boolean"},"native_process":{"type":"boolean"}
                 },"additionalProperties":false},
                 {"type":"object","required":["stage"],"properties":{
                     "stage":{"enum":["idle","closed"]}
@@ -64,8 +68,8 @@ impl CommandSessionMachine {
     }
 
     /// Registers a session without a model provider or a separate executor.
-    pub fn definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, ()>> {
-        TaskDefinition::resumable(self.clone(), input_schema(), json!({"type":"null"}))
+    pub fn definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, Value>> {
+        TaskDefinition::resumable(self.clone(), input_schema(), json!({}))
     }
 }
 
@@ -92,13 +96,24 @@ impl ResumableMachine for CommandSessionMachine {
 
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
         let mut commands = Vec::new();
+        let mut completion = None;
         let state = match decode(state)? {
             State::Ready { input: command } if input.is_null() => dispatch(command, &mut commands)?,
             State::Idle if input.is_null() => State::Idle,
+            State::Idle if input.get("native_exit").is_some() => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Finished {
+                    native_exit: crate::Outcome<Value>,
+                }
+                completion = Some(decode::<Finished>(input)?.native_exit);
+                State::Closed
+            }
             State::Idle => dispatch(decode(input)?, &mut commands)?,
             State::Waiting {
                 operation_id,
                 terminal,
+                native_process,
             } => {
                 let result = require_result(input, operation_id)?;
                 let rejected = if result.get("Failed").is_some() {
@@ -111,7 +126,14 @@ impl ResumableMachine for CommandSessionMachine {
                 };
                 // Rejection settles this request, including a rejected stop;
                 // it cannot turn untrusted terminal intent into task closure.
-                if terminal && !rejected {
+                if !rejected && (terminal || result.get("native_exit").is_some()) {
+                    completion = Some(if let Some(exit) = result.get("native_exit") {
+                        decode::<crate::Outcome<Value>>(exit)?
+                    } else if !native_process {
+                        crate::Outcome::Succeeded(Value::Null)
+                    } else {
+                        crate::Outcome::Succeeded(result.clone())
+                    });
                     State::Closed
                 } else {
                     State::Idle
@@ -123,7 +145,12 @@ impl ResumableMachine for CommandSessionMachine {
             State::Closed => return Err(invalid("session is closed")),
         };
         let status = if matches!(state, State::Closed) {
-            MachineStatus::Completed { value: Value::Null }
+            match completion {
+                Some(crate::Outcome::Succeeded(value)) => MachineStatus::Completed { value },
+                Some(crate::Outcome::Failed { message }) => MachineStatus::Failed { message },
+                Some(_) => return Err(invalid("native execution has no settled outcome")),
+                None => MachineStatus::Completed { value: Value::Null },
+            }
         } else {
             MachineStatus::Suspended
         };
@@ -140,6 +167,7 @@ fn dispatch(input: Input, commands: &mut Vec<WorkflowCommand>) -> Result<State> 
     let state = State::Waiting {
         operation_id: input.command.operation_id,
         terminal: input.terminal,
+        native_process: input.command.kind == crate::filesystem::NATIVE_PROCESS_EFFECT_KIND,
     };
     commands.push(input.command);
     Ok(state)
@@ -174,6 +202,7 @@ fn require_result(input: &Value, operation_id: OperationId) -> Result<&Value> {
 
 fn input_schema() -> Value {
     json!({"type":"object","required":["command","terminal"],"properties":{
+        "executor":{"type":"object"},
         "command":{"type":"object","required":["operation_id","kind","payload"],"properties":{
             "operation_id":{"type":"string"},"kind":{"type":"string"},"payload":{"type":"object"}
         },"additionalProperties":false},"terminal":{"type":"boolean"}

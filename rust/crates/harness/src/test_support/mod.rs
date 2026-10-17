@@ -52,6 +52,14 @@ pub fn fuzz_native_hook_request(
 #[cfg(feature = "filesystem")]
 pub fn fuzz_external_command(request: &crate::external_executor::ExternalRequest) {
     crate::external_executor::fuzz_command(request);
+    if crate::external_executor::launch::requested(request)
+        && let Ok(bytes) = serde_json::to_vec(&crate::external_executor::launch::Launch {
+            parent: request.task_id(),
+            request,
+        })
+    {
+        crate::external_executor::launch::fuzz(&bytes);
+    }
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
@@ -64,6 +72,12 @@ pub fn fuzz_external_command(request: &crate::external_executor::ExternalRequest
 #[cfg(feature = "filesystem")]
 pub fn fuzz_native_child_binding(bytes: &[u8]) {
     crate::external_executor::fuzz_child_binding(bytes);
+}
+
+/// Exercises retained native executor declarations without launching a process.
+#[cfg(feature = "filesystem")]
+pub fn fuzz_native_launch(bytes: &[u8]) {
+    crate::external_executor::launch::fuzz(bytes);
 }
 #[cfg(feature = "test-support")]
 pub(crate) use task_volume_work::{

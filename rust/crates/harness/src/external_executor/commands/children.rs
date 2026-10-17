@@ -29,6 +29,7 @@ where
         owner: &'a TaskJournalOwner<P>,
         request: &'a ExternalRequest,
         workspace: &'a str,
+        executor: Option<crate::conversation::FileRef>,
         reconcile: bool,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
@@ -74,8 +75,14 @@ where
                 kind: LIFECYCLE.into(),
                 payload: payload.clone(),
             };
-            let input = serde_json::json!({"command":command,"terminal":false});
-            let mut admission = self
+            let mut input = serde_json::json!({"command":command,"terminal":false});
+            let mut inputs = vec![payload];
+            if let Some(executor) = executor {
+                input["executor"] = serde_json::to_value(&executor)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                inputs.push(executor);
+            }
+            let admission = self
                 .runtime
                 .harness()
                 .registered_admission(
@@ -88,18 +95,35 @@ where
                     None,
                 )?
                 .0;
+            self.admit_child(context, fence, owner, admission, inputs, reconcile)
+                .await
+        })
+    }
+
+    pub(super) fn admit_child<'a>(
+        &'a self,
+        context: &'a TaskContext,
+        fence: &'a LeaseFence,
+        owner: &'a TaskJournalOwner<P>,
+        mut admission: crate::runtime::TaskAdmissionRecord,
+        inputs: Vec<crate::conversation::FileRef>,
+        reconcile: bool,
+    ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
+        Box::pin(async move {
+            if admission.parent != Some(owner.task_id())
+                || context.durable_task_id() != Some(owner.task_id())
+            {
+                return Err(Error::Unauthorized(
+                    "child declaration differs from its execution owner".into(),
+                ));
+            }
+            let task = admission.task_id();
+            let operation = admission.operation_id;
             if let Some(children) = self.children {
                 admission.resource_proofs.clear();
                 let reference = Component::new(task.to_string()).map_err(storage)?;
                 let admitted = match children
-                    .admit(
-                        context,
-                        fence,
-                        &reference,
-                        admission,
-                        vec![payload],
-                        reconcile,
-                    )
+                    .admit(context, fence, &reference, admission, inputs, reconcile)
                     .await
                 {
                     Ok(task) => task,
@@ -118,7 +142,7 @@ where
                 match self
                     .runtime
                     .task_host()
-                    .reconcile_admission(child.operation_id)
+                    .reconcile_admission(operation)
                     .await?
                 {
                     Some((retained_task, retained))

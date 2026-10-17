@@ -6,7 +6,7 @@ use acyclic_stream::{CommitCondition, StreamProvider};
 
 // The owner condition and the volume head must be checked by the same provider
 // transaction. Retries retain the exact owner condition and immutable bytes.
-pub(super) async fn publish<P: StreamProvider + ?Sized>(
+pub(crate) async fn publish<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
     file: &FileValue,
     condition: CommitCondition,

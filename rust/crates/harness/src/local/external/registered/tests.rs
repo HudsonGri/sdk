@@ -18,7 +18,27 @@ async fn unrelated_task_changes_do_not_repeat_worker_or_view_work() -> Result<()
     };
     let tracked = attach("tracked")?;
     harness.external_request(&tracked).await?;
-    let (first, reads) = measure(harness.registered_step(tracked.task_id(), None)).await;
+    #[cfg(all(feature = "native-execution", feature = "hooks"))]
+    {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let volumes = harness.external_volumes(tracked.task_id()).await?;
+        let future = harness.advance_process(tracked.task_id(), volumes, &cancellation);
+        let size = std::mem::size_of_val(&future);
+        eprintln!("native custody advance future: {size} bytes");
+        assert!(
+            size < 16 * 1024,
+            "native custody advance future grew to {size} bytes"
+        );
+        drop(future);
+        let future = harness.finish_native_process(tracked.task_id(), tracked.task_id());
+        let size = std::mem::size_of_val(&future);
+        eprintln!("native completion future: {size} bytes");
+        assert!(
+            size < 16 * 1024,
+            "native completion future grew to {size} bytes"
+        );
+    }
+    let (first, reads) = measure(harness.registered_step(tracked.task_id(), None, None)).await;
     let (cursor, terminal) = first?;
     assert!(
         reads > 0,
@@ -26,7 +46,8 @@ async fn unrelated_task_changes_do_not_repeat_worker_or_view_work() -> Result<()
     );
     assert_eq!(terminal, None);
     harness.external_request(&attach("unrelated")?).await?;
-    let (unchanged, reads) = measure(harness.registered_step(tracked.task_id(), cursor)).await;
+    let (unchanged, reads) =
+        measure(harness.registered_step(tracked.task_id(), cursor, None)).await;
     assert_eq!(unchanged?, (cursor, None));
     assert_eq!(
         reads, 0,
@@ -38,7 +59,7 @@ async fn unrelated_task_changes_do_not_repeat_worker_or_view_work() -> Result<()
         json!({"sessionId":"tracked","cwd":project}),
     )?;
     harness.external_request(&end).await?;
-    let (changed, reads) = measure(harness.registered_step(tracked.task_id(), cursor)).await;
+    let (changed, reads) = measure(harness.registered_step(tracked.task_id(), cursor, None)).await;
     let (updated, terminal) = changed?;
     assert_ne!(updated, cursor);
     // Root disconnects retain their resumable task; the changed input still

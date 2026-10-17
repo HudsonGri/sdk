@@ -182,11 +182,11 @@ where
                     ));
                 }
                 let command = self.command(&request).await?;
-                let input = serde_json::json!({"command":command,"terminal":false});
+                let mut input = serde_json::json!({"command":command,"terminal":false});
                 let definition = self
                     .runtime
                     .harness()
-                    .task::<serde_json::Value, ()>("acyclic.command_session@1")?;
+                    .task::<serde_json::Value, serde_json::Value>("acyclic.command_session@1")?;
                 if let Some((admitted, _)) = self
                     .runtime
                     .harness()
@@ -194,6 +194,16 @@ where
                     .await?
                 {
                     let retained = self.runtime.task_host().observe_admission(admitted).await?;
+                    if retained.parent.is_some()
+                        && let Some(executor) = retained.input.get("executor")
+                    {
+                        // Only the fenced parent can admit this input reference;
+                        // native SessionStart retries retain that exact declaration.
+                        let _: crate::conversation::FileRef =
+                            serde::Deserialize::deserialize(executor)
+                                .map_err(|error| Error::Invalid(error.to_string()))?;
+                        input["executor"] = executor.clone();
+                    }
                     if admitted != task_id
                         || retained.task.name != "acyclic.command_session"
                         || retained.input != input
@@ -230,8 +240,9 @@ where
             }
             let command = self.command(&request).await?;
             // Detach closes a native connection, not its resumable task.
-            let terminal =
-                admission.parent.is_some() && matches!(request.action, ExternalAction::Detach);
+            let terminal = admission.parent.is_some()
+                && admission.input.get("executor").is_none()
+                && matches!(request.action, ExternalAction::Detach);
             let input = serde_json::json!({"command":command,"terminal":terminal});
             let (phase, slot) = self
                 .runtime

@@ -21,6 +21,7 @@ use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde_json::Value;
 
 mod children;
+mod launch;
 pub(crate) use children::ChildAdmission;
 
 /// Executes prepared request commands through the runtime's existing executors.
@@ -198,6 +199,23 @@ where
                     serde_json::to_value(rejected.outcome())
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 )
+            } else if super::launch::requested(&request) {
+                let Ok(ExternalRequest {
+                    action: ExternalAction::Attach { workspace },
+                    ..
+                }) = attachment
+                else {
+                    return Err(Error::Conflict(
+                        "authenticated attachment is missing".into(),
+                    ));
+                };
+                self.native_spawn(&context, &fence, &owner, &request, &workspace, reconcile)
+                    .await?
+            } else if command.kind == LIFECYCLE
+                && matches!(request.action, ExternalAction::Attach { .. })
+            {
+                self.native_process(&context, &fence, &owner, &request, reconcile)
+                    .await?
             } else if command.kind == LIFECYCLE
                 && matches!(request.action, ExternalAction::Fork { .. })
             {
@@ -210,8 +228,10 @@ where
                         "authenticated attachment is missing".into(),
                     ));
                 };
-                self.fork(&context, &fence, &owner, &request, &workspace, reconcile)
-                    .await?
+                self.fork(
+                    &context, &fence, &owner, &request, &workspace, None, reconcile,
+                )
+                .await?
             } else if command.kind == LIFECYCLE {
                 if let ExternalAction::ToolFinished { call_id, .. } = &request.action {
                     let result_key = request
