@@ -210,12 +210,14 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let idempotency_key = work.key(
-            b"operation\0",
-            &[
-                &authority_id.into_bytes(),
-                &commit.operation_id.into_bytes(),
-            ],
+        let idempotency_key = append_key(
+            authority_id,
+            commit.operation_id,
+            durable.digest,
+            snapshot.epoch_tail,
+            gate_tail,
+            lease_path.as_ref(),
+            work,
         )?;
         let result = self
             .commit(
@@ -336,3 +338,39 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
     }
 }
+
+fn append_key(
+    authority: AuthorityId,
+    operation: OperationId,
+    record: Digest,
+    epoch_tail: u64,
+    gate_tail: u64,
+    lease: Option<&StreamPath>,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+    if super::tests::append_retry::reuse_operation_key() {
+        return work.key(
+            b"operation\0",
+            &[&authority.into_bytes(), &operation.into_bytes()],
+        );
+    }
+    // Streams retains failed CAS outcomes too. Rebase changes the record's
+    // previous digest; a new epoch, reservation or lease changes its fence.
+    // Keep logical operation deduplication in the authority's operation record,
+    // while one immutable provider attempt retains its own stable retry key.
+    work.key(
+        b"append\0",
+        &[
+            &authority.into_bytes(),
+            &operation.into_bytes(),
+            record.as_bytes(),
+            &epoch_tail.to_le_bytes(),
+            &gate_tail.to_le_bytes(),
+            lease.map_or(&[], |path| path.as_str().as_bytes()),
+        ],
+    )
+}
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod key_tests;
