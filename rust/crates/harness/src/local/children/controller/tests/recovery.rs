@@ -99,13 +99,33 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             .map_err(storage)?;
         // This is the actual durable crash cut: effects and results have settled,
         // cancellation is accepted, but the terminal status has not been written.
+        assert!(
+            host.workflow_suspension(before.task, &mut None)
+                .await?
+                .is_some()
+        );
+        assert!(
+            host.cancelled_workflow_suspension(before.task, &mut None)
+                .await?
+                .is_none()
+        );
         host.cancel(before.task).await?;
         assert!(matches!(
             host.outcome(before.task).await?,
             Some(crate::Outcome::Cancelled)
         ));
-        let checkpoint = host.cancelled_workflow_suspension(before.task, &mut None).await?;
-        assert!(checkpoint.is_some(), "cancellation must retain its receive cut");
+        assert!(
+            host.workflow_suspension(before.task, &mut None)
+                .await?
+                .is_none()
+        );
+        let checkpoint = host
+            .cancelled_workflow_suspension(before.task, &mut None)
+            .await?;
+        assert!(
+            checkpoint.is_some(),
+            "cancellation must retain its receive cut"
+        );
         drop(context);
         drop(files);
         harness.close().await?;
