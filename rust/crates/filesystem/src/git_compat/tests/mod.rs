@@ -23,7 +23,7 @@ impl TestExecutor {
         }
     }
 
-    fn failing() -> Self {
+    pub(super) fn failing() -> Self {
         Self {
             result: Err(TestExecutorError),
             operations: Mutex::new(Vec::new()),
