@@ -411,7 +411,7 @@ impl LocalHarness {
                     continue;
                 }
                 if state == ChildState::Running {
-                    self.deliver_child_inputs(files.as_ref(), &reference, child, &request, &values)
+                    self.deliver_child_inputs(files.as_ref(), &reference, child, &request, inputs)
                         .await?;
                 }
                 let status = ChildStatus {
@@ -481,7 +481,7 @@ impl LocalHarness {
                                             let status = ChildStatus { task: child, state, settled: false,
                                                 inputs: files.inner.child_input_count(&reference).await.map_err(storage)? };
                                             if inputs::publish(files.as_ref(), &reference, status, &mut values, &mut generation).await? {
-                                                self.deliver_child_inputs(files.as_ref(), &reference, child, &request, &values).await?;
+                                                self.deliver_child_inputs(files.as_ref(), &reference, child, &request, status.inputs).await?;
                                                 break;
                                             }
                                             let change = observation.changes.next().await

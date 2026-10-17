@@ -80,7 +80,7 @@ async fn sequential<const RETAIN: bool>(n: u64) -> (usize, Vec<FileKey>) {
             )
             .await;
         }
-        suffix::<RETAIN, _, _, _>(&files, &reference, child, |file| {
+        suffix::<RETAIN, _, _, _>(&files, &reference, child, sequence + 1, |file| {
             calls.borrow_mut().push(file.key);
             futures::future::ready(Ok(()))
         })
@@ -116,6 +116,42 @@ fn linear_property(actual: usize, n: u64, assert_property: bool) {
 }
 
 #[tokio::test]
+async fn delivery_stops_at_the_acknowledged_cut_when_a_new_input_arrives_during_staging() {
+    let files = files(Arc::new(MemoryStream::default())).await;
+    let reference = Component::new("worker").unwrap();
+    let child = TaskId::from_bytes([3; 16]);
+    append(&files, &reference, ChildFile::Request).await;
+    let calls = RefCell::new(Vec::new());
+    suffix::<true, _, _, _>(&files, &reference, child, 1, |file| {
+        let files = &files;
+        let reference = &reference;
+        let calls = &calls;
+        async move {
+            calls.borrow_mut().push(file.key);
+            append(
+                files,
+                reference,
+                ChildFile::Inbox(Component::new("later").unwrap()),
+            )
+            .await;
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(calls.borrow().len(), 1);
+    assert_eq!(frontier(&files, &reference, child).await.unwrap(), 1);
+    assert_eq!(files.inner.child_input_count(&reference).await.unwrap(), 2);
+    suffix::<true, _, _, _>(&files, &reference, child, 2, |file| {
+        calls.borrow_mut().push(file.key);
+        futures::future::ready(Ok(()))
+    })
+    .await
+    .unwrap();
+    assert_eq!(calls.borrow().len(), 2);
+}
+
+#[tokio::test]
 async fn sequential_messages_stage_exactly_one_suffix_item_each_across_reopen() {
     for n in [1, 4, 16] {
         let (count, keys) = sequential::<true>(n).await;
@@ -147,7 +183,7 @@ async fn a_send_before_frontier_crash_retries_only_the_unacknowledged_input() {
     let child = TaskId::from_bytes([3; 16]);
     append(&first, &reference, ChildFile::Request).await;
     let received = RefCell::new(BTreeSet::new());
-    let result = suffix::<true, _, _, _>(&first, &reference, child, |file| {
+    let result = suffix::<true, _, _, _>(&first, &reference, child, 1, |file| {
         received.borrow_mut().insert(file.key);
         futures::future::ready(Err(Error::Indeterminate(OperationId::from_bytes(
             child.into_bytes(),
@@ -158,7 +194,7 @@ async fn a_send_before_frontier_crash_retries_only_the_unacknowledged_input() {
     drop(first);
     let reopened = files(provider).await;
     let retries = RefCell::new(0);
-    suffix::<true, _, _, _>(&reopened, &reference, child, |file| {
+    suffix::<true, _, _, _>(&reopened, &reference, child, 1, |file| {
         *retries.borrow_mut() += 1;
         received.borrow_mut().insert(file.key);
         futures::future::ready(Ok(()))

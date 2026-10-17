@@ -58,6 +58,7 @@ pub(super) async fn suffix<const RETAIN: bool, P: StreamProvider + ?Sized, F, Fu
     files: &TaskFiles<P>,
     reference: &Component,
     child: TaskId,
+    through: u64,
     mut deliver: F,
 ) -> Result<()>
 where
@@ -65,12 +66,18 @@ where
     Fut: std::future::Future<Output = Result<()>>,
 {
     let mut delivered = frontier(files, reference, child).await?;
-    while let Some(file) = files
-        .inner
-        .child_input(reference, delivered)
-        .await
-        .map_err(storage)?
-    {
+    if delivered > through {
+        return Err(Error::Conflict(
+            "delivery frontier exceeds acknowledged inputs".into(),
+        ));
+    }
+    while delivered < through {
+        let file = files
+            .inner
+            .child_input(reference, delivered)
+            .await
+            .map_err(storage)?
+            .ok_or_else(|| Error::Conflict("acknowledged child input is absent".into()))?;
         deliver(file).await?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
         super::super::cuts::stop("input-sent", OperationId::from_bytes(child.into_bytes()))?;
@@ -89,13 +96,13 @@ impl LocalHarness {
         reference: &Component,
         child: TaskId,
         request: &FileValue,
-        _values: &BTreeMap<FileKey, FileValue>,
+        through: u64,
     ) -> Result<()> {
         let sender = request
             .requester
             .ok_or_else(|| Error::Unauthorized("child request has no sender".into()))?;
         let publisher = self.input_publisher_with_limit(self.limits.file_bytes)?;
-        suffix::<true, _, _, _>(files, reference, child, |file| {
+        suffix::<true, _, _, _>(files, reference, child, through, |file| {
             let publisher = &publisher;
             async move {
                 let operation =
