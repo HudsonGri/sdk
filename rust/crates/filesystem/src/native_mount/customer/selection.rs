@@ -1,0 +1,346 @@
+use super::*;
+use crate::access::{PathTrie, projection};
+
+// Only this module can construct a selection. The lease is acquired BEFORE
+// calling its verified owner, and retained through import, copying and binding.
+// It uses the publication CAS's existing terminal registry, never another lock.
+pub(super) struct AdmittedSelection<'a> {
+    options: &'a MountOptions,
+    binding: MountOptions,
+    view: Arc<PathTrie>,
+    volume: VolumeId,
+    config: crate::VolumeConfig,
+    generation: GenerationId,
+    _policy: projection::Lease,
+}
+
+impl<'a> AdmittedSelection<'a> {
+    pub(super) async fn admit<A, O>(
+        options: &'a MountOptions,
+        workspace: &Workspace<A, O>,
+        generation: GenerationId,
+        work: &NativeMaterializationWork,
+    ) -> Result<Self, MountLifecycleError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        let previous = options
+            .require_access_view()?
+            .current()
+            .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+        require_volume(
+            &previous,
+            workspace.id().volume_id(),
+            workspace.volume_config(),
+        )?;
+        options::require_selection(options, generation)?;
+        if !workspace.volume.fs.has_process_policy_owner() {
+            return Err(MountLifecycleError::NativePolicy(
+                "materialization requires a process-owned policy authority",
+            ));
+        }
+        let policy =
+            projection::enter(workspace.id().volume_id()).map_err(MountSourceError::from)?;
+        let (binding, view) = fresh(options, workspace, generation, work).await?;
+        Ok(Self {
+            options,
+            binding,
+            view,
+            volume: workspace.id().volume_id(),
+            config: workspace.volume_config(),
+            generation,
+            _policy: policy,
+        })
+    }
+
+    pub(super) fn options(&self) -> &'a MountOptions {
+        self.options
+    }
+
+    pub(super) async fn exactify<A, O, D, S>(
+        &mut self,
+        lazy: &LazyWorkspace<A, O, D, S>,
+        permit: PublicationPermit,
+        work: &NativeMaterializationWork,
+    ) -> Result<crate::Generation<A, O>, MountLifecycleError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+        D: DemandSource + 'static,
+        S: LazyWorkspaceStore,
+    {
+        require_volume(
+            &self.view,
+            lazy.workspace().id().volume_id(),
+            lazy.workspace().volume_config(),
+        )?;
+        let exact = lazy
+            .exactify(
+                &self.options.subdirectory,
+                permit,
+                &mut KernelAccounting::native(work, work.cancellation()),
+            )
+            .await?;
+        // Import may advance data while the lease forbids policy changes. Check
+        // the new data generation with the SAME verified capability ceiling.
+        let (binding, view) = fresh(self.options, lazy.workspace(), exact.id(), work).await?;
+        self.binding = binding;
+        self.view = view;
+        self.generation = exact.id();
+        Ok(exact)
+    }
+
+    pub(super) fn checkout_source<A, O>(
+        &self,
+        checkout: crate::Checkout<A, O>,
+        root: (
+            crate::kernel::NamespacePath,
+            crate::kernel::KernelOwnedAllocation,
+        ),
+        work: &NativeMaterializationWork,
+    ) -> Result<Arc<CheckoutMountSource<A, O>>, MountLifecycleError>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        self.require_checkout(&checkout)?;
+        options::checkout_source(checkout, root, self.options, work, &self.binding)
+    }
+
+    fn require_checkout<A, O>(
+        &self,
+        checkout: &crate::Checkout<A, O>,
+    ) -> Result<(), MountLifecycleError> {
+        if checkout.volume_id() != self.volume
+            || checkout.volume_config() != self.config
+            || checkout.generation_id() != self.generation
+        {
+            return Err(MountLifecycleError::NativePolicy(
+                "checkout differs from its admitted selection",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn prepare_root<A, O>(
+        &self,
+        checkout: &mut crate::Checkout<A, O>,
+        options: &crate::MaterializeOptions,
+        materialize: bool,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<
+        (
+            crate::kernel::NamespacePath,
+            crate::kernel::KernelOwnedAllocation,
+        ),
+        MountLifecycleError,
+    >
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        self.require_checkout(checkout)?;
+        let KernelAccounting::NativeOriginal { work, cancellation } = &*accounting else {
+            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
+        };
+        let (work, cancellation) = (*work, *cancellation);
+        let (root, custody) = crate::workspace::customer_path_with_accounting(
+            &self.options.subdirectory,
+            self.config,
+            accounting,
+            cancellation,
+        )?;
+        if checkout
+            .lookup_no_follow(&root, work, cancellation)
+            .await
+            .map_err(WorkspaceError::from)?
+            .record
+            .is_none_or(|record| record.kind != FileKind::Directory)
+        {
+            return Err(WorkspaceError::NotDirectory.into());
+        }
+        if materialize {
+            let candidate = checkout
+                .private_candidate(accounting, cancellation)
+                .map_err(WorkspaceError::from)?;
+            let reader = candidate
+                .into_pinned_reader_with_native_work(work, cancellation)
+                .map_err(WorkspaceError::from)?;
+            super::super::materialize_reader_paths(
+                &reader,
+                std::slice::from_ref(&root),
+                options,
+                super::super::MaterializeMode::ReconstructibleView,
+                work,
+            )
+            .await?;
+        }
+        Ok((root, custody))
+    }
+}
+
+fn require_volume(
+    view: &PathTrie,
+    volume: VolumeId,
+    config: crate::VolumeConfig,
+) -> Result<(), MountLifecycleError> {
+    if view.config() != config
+        || uuid::Uuid::parse_str(view.volume())
+            .map(|id| id.into_bytes())
+            .ok()
+            != Some(volume.into_bytes())
+    {
+        return Err(MountLifecycleError::NativePolicy(
+            "selection differs from its authenticated volume or configuration",
+        ));
+    }
+    Ok(())
+}
+
+async fn fresh<A, O>(
+    options: &MountOptions,
+    workspace: &Workspace<A, O>,
+    generation: GenerationId,
+    work: &NativeMaterializationWork,
+) -> Result<(MountOptions, Arc<PathTrie>), MountLifecycleError>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let owner = options
+        .access_refresh
+        .as_ref()
+        .ok_or(MountLifecycleError::NativePolicy(
+            "materialization requires the authenticated selection owner",
+        ))?;
+    let binding = owner.select(generation, work)?.await?;
+    let view = binding
+        .require_access_view()?
+        .current()
+        .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+    let previous = options
+        .require_access_view()?
+        .current()
+        .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
+    require_volume(&view, workspace.id().volume_id(), workspace.volume_config())?;
+    if !previous.same_authority(&view) {
+        return Err(MountLifecycleError::NativePolicy(
+            "selection changed its authenticated authority",
+        ));
+    }
+    options::require_selection(&binding, generation)?;
+    options::require_disclosure(&view)?;
+    if view.valid_until().is_some() {
+        return Err(MountLifecycleError::NativePolicy(
+            "materialization cannot fence expiring disclosure",
+        ));
+    }
+    let revision = workspace
+        .current_access_policy_revision(work, work.cancellation())
+        .await
+        .map_err(MountSourceError::from)?;
+    if !revision.is_some_and(|(head, revision)| view.matches_policy_revision(head, revision)) {
+        return Err(MountLifecycleError::NativePolicy(
+            "selection differs from current persisted policy",
+        ));
+    }
+    Ok((binding, view))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn publication(omit_lease: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let cancel = crate::CancellationToken::new();
+        let work = super::super::tests::test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
+        let fs = crate::Fs::memory();
+        let workspace = fs
+            .create_workspace(
+                "selection-publication",
+                crate::WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+            .await?
+            .value;
+        let mount =
+            super::super::tests::fixture_options(&workspace, MountOptions::read_only()).await?;
+        let generation = workspace.head(&work, &cancel).await?;
+        let selection =
+            AdmittedSelection::admit(&mount, &workspace, generation.id(), &work).await?;
+        let selection = if omit_lease {
+            drop(selection);
+            None
+        } else {
+            Some(selection)
+        };
+        let mut edit = workspace
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                &work,
+                &cancel,
+            )
+            .await?;
+        edit.write_access_policy(
+            crate::access::INITIAL_POLICY,
+            crate::NamedAttributeWriteMode::Upsert,
+            &work,
+            &cancel,
+        )
+        .await?;
+        let commit = edit.commit(
+            crate::OperationId::new(),
+            None,
+            None,
+            None,
+            PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &cancel,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
+        );
+        // Compare actual public publication outcomes, not a second evaluator.
+        let refused = commit.await.is_err();
+        assert!(
+            refused,
+            "policy publication escaped materialization admission"
+        );
+        drop(selection);
+        edit.commit(
+            crate::OperationId::new(),
+            None,
+            None,
+            None,
+            PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &cancel,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn admitted_materialization_fences_policy_until_retirement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        publication(false).await
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "policy publication escaped materialization admission")]
+    async fn early_materialization_retirement_negative_control() {
+        publication(true).await.unwrap();
+    }
+}

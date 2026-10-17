@@ -250,11 +250,7 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
         .access_view(view.clone())
         .publication(MountPublication::Manual)
         .subdirectory("/hot");
-    let expected = if ceiling == ReadCeiling::Path {
-        "materialized working sets require unrestricted disclosure"
-    } else {
-        "exactification requires the authenticated selection owner"
-    };
+    let expected = "materialization requires the authenticated selection owner";
     assert!(matches!(
         lazy.prepare_native_working_set(
             plain,
@@ -373,6 +369,147 @@ proptest! {
 #[should_panic(expected = "refused preparation imported an unresolved tree")]
 async fn late_preparation_admission_is_detected() {
     readonly_import(b"late", Preparation::LateCheck, ReadCeiling::Path)
+        .await
+        .unwrap();
+}
+
+async fn deny_materialization<A, O>(workspace: &acyclic_fs::Workspace<A, O>) -> TestResult
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let cancel = CancellationToken::new();
+    let mut checkout = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await?
+        .value;
+    let policy = acyclic_fs::access::Policy {
+        schema_version: acyclic_fs::access::POLICY_SCHEMA_VERSION,
+        version: 2,
+        layers: vec![vec![]],
+    };
+    checkout
+        .write_access_policy(
+            &serde_json::to_vec(&policy)?,
+            acyclic_fs::NamedAttributeWriteMode::Upsert,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    checkout
+        .commit(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
+            },
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    Ok(())
+}
+
+async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> TestResult {
+    initialize()?;
+    let fs = acyclic_fs::Fs::memory();
+    let first = local_owner_workspace(&fs, "first").await?;
+    first.write_text("/secret", "first secret").await?;
+    let target = if foreign {
+        local_owner_workspace(&fs, "second").await?
+    } else {
+        first.clone()
+    };
+    target
+        .write("/secret", bytes::Bytes::copy_from_slice(bytes))
+        .await?;
+    let cancel = CancellationToken::new();
+    let generation = target.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
+    let options = local_owner_mount_options(&first, "preparation", foreign)
+        .await?
+        .publication(acyclic_fs::MountPublication::Manual);
+    deny_materialization(&target).await?;
+    let destination = tempfile::tempdir()?;
+    let materialize = acyclic_fs::MaterializeOptions::native(destination.path());
+    let succeeded = if bypass {
+        // Former preparation order: raw copying happened before any admission.
+        let mut checkout = target
+            .checkout(
+                acyclic_fs::model::GenerationSelector::Exact(generation.id()),
+                acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+            .await?
+            .value;
+        acyclic_fs::native_mount::materialize_checkout(
+            &mut checkout,
+            &materialize,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+        true
+    } else {
+        generation
+            .prepare_native_working_set(&options, &materialize, WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .is_ok()
+    };
+    assert!(
+        !succeeded && std::fs::read_dir(destination.path())?.count() == 0,
+        "working-set admission disclosed bytes"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_policy_rejects_previously_bound_generation_before_copy() -> TestResult {
+    preparation_disclosure(b"revoked secret", false, false).await
+}
+
+#[tokio::test]
+async fn foreign_volume_rejects_before_copy() -> TestResult {
+    preparation_disclosure(b"foreign secret", true, false).await
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+    #[test]
+    fn denied_preparation_never_discloses(bytes in prop::collection::vec(any::<u8>(), 1..32), foreign in any::<bool>()) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(preparation_disclosure(&bytes, foreign, false))
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+    }
+}
+
+#[tokio::test]
+#[should_panic(expected = "working-set admission disclosed bytes")]
+async fn cached_policy_copy_negative_control() {
+    preparation_disclosure(b"revoked secret", false, true)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[should_panic(expected = "working-set admission disclosed bytes")]
+async fn late_foreign_volume_check_negative_control() {
+    preparation_disclosure(b"foreign secret", true, true)
         .await
         .unwrap();
 }

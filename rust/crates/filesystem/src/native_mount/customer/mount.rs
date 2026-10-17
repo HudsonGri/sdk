@@ -164,7 +164,8 @@ where
         if selected.kind != FileKind::Directory {
             return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
         }
-        let source = options::checkout_source(checkout, (root, root_custody), &options, &work)?;
+        let source =
+            options::checkout_source(checkout, (root, root_custody), &options, &work, &options)?;
         let session_destination = work.path(&destination, None)?;
         let prepared =
             super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;

@@ -10,7 +10,7 @@ where
     /// Exactifies only the selected subtree and prepares its authenticated view.
     pub async fn prepare_native_working_set(
         &self,
-        mut mount: MountOptions,
+        mount: MountOptions,
         options: &crate::MaterializeOptions,
         capture_budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
@@ -32,50 +32,13 @@ where
         if let Some(guard) = &mount.callback_guard {
             guard.check(work)?.await?;
         }
-        let previous = mount
-            .require_access_view()?
-            .current()
-            .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
-        let selected = previous.data_generation();
-        options::require_disclosure(&previous)?;
-        if !mount.writable && mount.access_refresh.is_none() {
-            return Err(MountLifecycleError::NativePolicy(
-                "exactification requires the authenticated selection owner",
-            ));
-        }
-        mount.work = Some(work.clone());
+        let generation = self.workspace().head(work, cancellation).await?.id();
+        let mut selection =
+            AdmittedSelection::admit(&mount, self.workspace(), generation, work).await?;
         options::in_native_heap(work, || async move {
-            let exact = self
-                .exactify(
-                    &mount.subdirectory,
-                    permit,
-                    &mut KernelAccounting::native(work, work.cancellation()),
-                )
-                .await?;
-            if !mount.writable && selected != Some(exact.id()) {
-                let owner =
-                    mount
-                        .access_refresh
-                        .as_ref()
-                        .ok_or(MountLifecycleError::NativePolicy(
-                            "exactification lost its selection owner",
-                        ))?;
-                let rebound = owner.select(exact.id(), work)?.await?;
-                let current = rebound.require_access_view()?.current().map_err(|_| {
-                    MountLifecycleError::NativePolicy("rebound access view is unavailable")
-                })?;
-                if current.data_generation() != Some(exact.id())
-                    || !previous.same_authority(&current)
-                {
-                    return Err(MountLifecycleError::NativePolicy(
-                        "exactification changed its authenticated authority or selection",
-                    ));
-                }
-                mount.access_view = rebound.access_view;
-                mount.access_refresh = rebound.access_refresh;
-            }
+            let exact = selection.exactify(self, permit, work).await?;
             exact
-                .prepare_native_working_set(&mount, options, capture_budget, cancellation)
+                .prepare_working_set(selection, options, capture_budget, cancellation, None, work)
                 .await
         })
         .await
@@ -160,7 +123,7 @@ where
             .workspace()
             .checkout(GenerationSelector::Head, mode, work, cancellation)
             .await?;
-        let source = options::checkout_source(checkout, root, options, work)?;
+        let source = options::checkout_source(checkout, root, options, work, options)?;
         Ok((source, self.workspace().id().volume_id(), root_text))
     }
 

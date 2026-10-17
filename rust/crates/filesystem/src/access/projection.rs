@@ -109,7 +109,7 @@ impl Drop for Lease {
 #[cfg(all(test, acyclic_fs_loom))]
 mod model {
     use super::*;
-    fn run(omit_publication_lease: bool) {
+    fn run(omit_publication_lease: bool, late_admission: bool) {
         // The reporter only aggregates completed schedules. Every value affecting
         // the protocol, including the CAS and admission lock, is instrumented.
         let violated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -140,8 +140,11 @@ mod model {
                 }
             });
             let mut overlap = false;
+            let before_admission =
+                late_admission.then(|| revision.load(crate::sync::atomic::Ordering::SeqCst));
             if let Ok(lease) = enter(volume) {
-                let pinned = revision.load(crate::sync::atomic::Ordering::SeqCst);
+                let pinned = before_admission
+                    .unwrap_or_else(|| revision.load(crate::sync::atomic::Ordering::SeqCst));
                 loom::thread::yield_now();
                 overlap = pinned != revision.load(crate::sync::atomic::Ordering::SeqCst);
                 drop(lease);
@@ -154,17 +157,26 @@ mod model {
         });
         assert!(
             !violated.load(std::sync::atomic::Ordering::Relaxed),
-            "policy changed during projection"
+            "policy changed during projection or materialization"
         );
     }
     #[test]
     fn policy_publication_cas_racing_projection_start_is_fenced() {
-        run(false);
+        run(false, false);
     }
     #[test]
     #[should_panic(expected = "policy changed during projection")]
     fn missing_publication_fence_negative_control() {
-        run(true);
+        run(true, false);
+    }
+    #[test]
+    fn materialization_admits_policy_under_the_publication_lease() {
+        run(false, false);
+    }
+    #[test]
+    #[should_panic(expected = "policy changed during projection or materialization")]
+    fn admission_before_the_lease_negative_control() {
+        run(false, true);
     }
 }
 
