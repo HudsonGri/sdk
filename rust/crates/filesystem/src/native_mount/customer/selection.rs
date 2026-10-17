@@ -306,7 +306,15 @@ mod tests {
             },
         );
         // Compare actual public publication outcomes, not a second evaluator.
-        let refused = commit.await.is_err();
+        let refused = matches!(
+            commit.await,
+            Err(crate::OperationFailure {
+                error: crate::FsError::Publication(
+                    crate::kernel::PublicationError::ActiveProjection
+                ),
+                ..
+            })
+        );
         assert!(
             refused,
             "policy publication escaped materialization admission"

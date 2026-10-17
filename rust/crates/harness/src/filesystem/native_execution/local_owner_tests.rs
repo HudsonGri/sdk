@@ -446,7 +446,7 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
     deny_materialization(&target).await?;
     let destination = tempfile::tempdir()?;
     let materialize = acyclic_fs::MaterializeOptions::native(destination.path());
-    let succeeded = if bypass {
+    let result = if bypass {
         // Former preparation order: raw copying happened before any admission.
         let mut checkout = target
             .checkout(
@@ -465,15 +465,21 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
         )
         .await
         .map_err(|failure| failure.error)?;
-        true
+        Ok(())
     } else {
         generation
             .prepare_native_working_set(&options, &materialize, WorkBudget::UNBOUNDED, &cancel)
             .await
-            .is_ok()
+            .map(|_| ())
+    };
+    let expected = if foreign {
+        "selection differs from its authenticated volume or configuration"
+    } else {
+        "materialized working sets require unrestricted disclosure"
     };
     assert!(
-        !succeeded && std::fs::read_dir(destination.path())?.count() == 0,
+        matches!(result, Err(acyclic_fs::MountLifecycleError::NativePolicy(reason)) if reason == expected)
+            && std::fs::read_dir(destination.path())?.count() == 0,
         "working-set admission disclosed bytes"
     );
     Ok(())
