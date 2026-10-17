@@ -259,11 +259,12 @@ fn run(
     let caller = CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &root_cancel).unwrap();
     let mut work = root.clone();
-    for _ in 0..mode.min(2) {
-        work = work.native_volume_work(limit).unwrap();
-    }
+    // Fund invocation setup before applying the operation's resource limits.
     if mode == 3 {
         work = work.invocation_view().unwrap().0;
+    }
+    for _ in 0..mode.min(2) {
+        work = work.native_volume_work(limit).unwrap();
     }
     if mode == 0 {
         // Only work fields are bounded; standing ledger metadata remains funded.
@@ -274,7 +275,6 @@ fn run(
     }
     let inputs = fixture();
     let before = root.receipt();
-    let live = root.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&work, &caller);
     accounting.check().unwrap();
     match failure {
@@ -283,6 +283,10 @@ fn run(
         3 => root.state(|state| state.poison_native_original_work()),
         _ => (),
     }
+    // Cancellation may synchronously retire standing invocation metadata.
+    // Reconcile that fixture transition before observing this allocation-free span.
+    let _ = root.receipt();
+    let live = root.live_allocation_bytes();
     EVENTS.with_borrow_mut(|events| *events = Vec::with_capacity(2));
     REDUNDANT.with(|flag| flag.set(redundant));
     let mut captured = None;
