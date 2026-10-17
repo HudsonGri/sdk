@@ -240,6 +240,10 @@ async fn selected_task_files_seed_the_native_child_and_pin_provenance_without_pa
         let mut args=native_spawn("selected-child","selected_native_process");
         args["context"]=json!("native_cut");
         args["executor"]["context"]=json!({"manifest":path,"head":"invoking","sha256":digest});
+        let mut rejected=args.clone();
+        rejected["executor"]["context"]["sha256"]=json!([0;32]);
+        let refused=parent.reject("invalid-native-source","acyclic_spawn",rejected).await?;
+        assert!(refused["Failed"]["message"].as_str().unwrap().contains("native context"));
         let operation=acyclic_harness::external_executor::request(acyclic_harness::external_executor::ExternalHost::Pi,"tool_call",
             json!({"sessionId":parent.session,"toolCallId":"selected-spawn","toolName":"acyclic_spawn","input":args.clone()}))?.operation_id;
         let child=parent.call("selected-spawn","acyclic_spawn",args).await?;

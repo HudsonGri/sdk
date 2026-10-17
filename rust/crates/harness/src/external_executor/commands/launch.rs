@@ -28,9 +28,14 @@ where
             {
                 return failed("native process execution is not bound to this task".into());
             }
-            let selected = self
+            let selected = match self
                 .native_context(context, &owner, request, &spawn, workspace, reconcile)
-                .await?;
+                .await
+            {
+                Ok(selected) => selected,
+                Err(Error::Invalid(message)) => return failed(message),
+                Err(error) => return Err(error),
+            };
             let child = spawn.fork(request);
             drop(spawn);
             let bytes = match super::super::launch::encode(&super::super::launch::Launch {
