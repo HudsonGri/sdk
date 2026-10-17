@@ -8,8 +8,10 @@ impl CheckoutTools {
         ceiling: &Capabilities,
         facade: bool,
     ) -> Result<()> {
-        self.require_access(
+        require_mount_access(
             workspace,
+            &self.workspace.mounts,
+            &self.signed,
             ceiling,
             if facade {
                 "local fs facade"
@@ -23,22 +25,6 @@ impl CheckoutTools {
                 .await?;
         }
         Ok(())
-    }
-
-    pub(super) async fn require_access(
-        &self,
-        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
-        ceiling: &Capabilities,
-        surface: &'static str,
-    ) -> Result<()> {
-        require_mount_access(
-            workspace,
-            &self.workspace.mounts,
-            &self.signed,
-            ceiling,
-            surface,
-        )
-        .await
     }
 
     pub(super) async fn require_repository_access(
@@ -77,8 +63,14 @@ impl CheckoutTools {
             if id == root.id() {
                 // Task roots are authenticated lazy bindings, not registrations
                 // in the separate branch-lineage catalog.
-                self.require_access(root, ceiling, "local fs facade")
-                    .await?;
+                require_mount_access(
+                    root,
+                    &self.workspace.mounts,
+                    &self.signed,
+                    ceiling,
+                    "local fs facade",
+                )
+                .await?;
                 continue;
             }
             let workspace = acyclic_fs::WorkspaceResolver::resolve(
@@ -90,8 +82,14 @@ impl CheckoutTools {
             )
             .await
             .map_err(storage)?;
-            self.require_access(&workspace, ceiling, "local fs facade")
-                .await?;
+            require_mount_access(
+                &workspace,
+                &self.workspace.mounts,
+                &self.signed,
+                ceiling,
+                "local fs facade",
+            )
+            .await?;
         }
         Ok(())
     }

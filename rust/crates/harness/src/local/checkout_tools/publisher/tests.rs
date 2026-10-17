@@ -633,9 +633,14 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             .iter()
             .chain(["tool:call:bash", "tool:call:fs"]),
     );
-    tools
-        .require_access(tools.workspace.view().workspace(), &all, "local bash")
-        .await?;
+    super::super::access::require_mount_access(
+        tools.workspace.view().workspace(),
+        &tools.workspace.mounts,
+        &tools.signed,
+        &all,
+        "local bash",
+    )
+    .await?;
     let restricted = Capability {
         layers: vec![vec![Grant {
             actions: Action::ALL.into_iter().collect(),
