@@ -1,8 +1,6 @@
 //! Verification and cached admission costs for short capability chains.
 #[path = "../tests/common/admission.rs"]
 mod admission;
-#[path = "../tests/common/mod.rs"]
-mod common;
 #[path = "../tests/common/limits.rs"]
 mod limits;
 #[path = "../tests/common/signed.rs"]

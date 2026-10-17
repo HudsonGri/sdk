@@ -1,5 +1,4 @@
 //! Properties over authenticated chains and current trust snapshots.
-mod common;
 #[path = "common/limits.rs"]
 mod limits;
 use limits::limits;
