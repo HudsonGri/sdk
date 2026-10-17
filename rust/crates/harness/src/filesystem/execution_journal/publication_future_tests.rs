@@ -418,6 +418,142 @@ fn journal_unmetered_task_files_match_main() {
     }
 }
 
+fn journal_wrapper_observations(
+    mut digest: [u8; 32],
+    mut observe: impl FnMut(
+        usize,
+        acyclic_test_support::AllocationInfo,
+        acyclic_test_support::AllocationInfo,
+        u64,
+    ) -> proptest::test_runner::TestCaseResult,
+) -> proptest::test_runner::TestCaseResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let operation = OperationId::from_bytes([4; 16]);
+    digest[0] |= 1;
+    let event = ExecutionEvent::Started {
+        request_digest: digest,
+    };
+    let oversized = vec![0; 4097];
+    let initializations = std::cell::Cell::new(0);
+    let [before, after] = [true, false].map(|old| {
+        initializations.set(initializations.get() + 1);
+        let mut journal = runtime.block_on(fixture()).unwrap();
+        let file = runtime
+            .block_on(prepare(&journal, operation, &event, b"payload"))
+            .unwrap();
+        journal.execution = Some((OperationId::from_bytes([5; 16]), operation));
+        journal.volume = VolumeRef::new(
+            journal.volume.provider().clone(),
+            "foreign".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )
+        .unwrap();
+        let state = runtime
+            .block_on(fixture_state(&journal, operation, file.volume()))
+            .unwrap();
+        [0u8, 1, 2, 3, 4].map(|mode| {
+            let observed = differential::observe::<_, _, (&'static str, u64)>(
+                || (),
+                |()| {
+                    let mut outcome = None;
+                    let allocation = acyclic_test_support::measure(|| {
+                        outcome = Some(
+                            runtime
+                                .block_on(
+                                    run(
+                                        &Choice(&journal, old),
+                                        mode,
+                                        0,
+                                        (operation, "key", &event),
+                                        &file,
+                                        &oversized,
+                                    )
+                                    .unwrap(),
+                                )
+                                .map_err(|e| e.to_string()),
+                        );
+                    });
+                    (outcome.unwrap(), allocation)
+                },
+            );
+            assert_eq!(
+                &state,
+                &runtime
+                    .block_on(fixture_state(&journal, operation, file.volume()))
+                    .unwrap()
+            );
+            assert!(observed.1.is_empty(), "factory error reached storage work");
+            let frames = if old {
+                legacy::frame_bytes()
+            } else {
+                let frame = acyclic_test_support::measure(|| {
+                    let selected = Choice(&journal, false);
+                    match mode {
+                        0 => drop(selected.append(operation, "key", &event, None).unwrap()),
+                        1 => drop(
+                            selected
+                                .append_if_tail(operation, 0, "key", &event, None)
+                                .unwrap(),
+                        ),
+                        2 => drop(selected.replay(operation, 0, 64, None).unwrap()),
+                        3 => drop(selected.load(&file, None).unwrap()),
+                        _ => drop(
+                            selected
+                                .stage(
+                                    operation,
+                                    "key",
+                                    &oversized,
+                                    "application/octet-stream",
+                                    None,
+                                )
+                                .unwrap(),
+                        ),
+                    }
+                });
+                assert_eq!(frame.count_total, 1);
+                assert_eq!(frame.count_current, 0);
+                frame.bytes_total
+            };
+            (observed, frames)
+        })
+    });
+    prop_assert_eq!(initializations.get(), 2);
+    for (mode, ((before, original_frames), (after, candidate_frame))) in
+        before.into_iter().zip(after).enumerate()
+    {
+        prop_assert!(after.0.0.is_err());
+        prop_assert_eq!(&before.0.0, &after.0.0);
+        prop_assert_eq!(before.1, after.1);
+        let (before, after) = (before.0.1, after.0.1);
+        prop_assert_eq!(after.count_total, before.count_total - 1);
+        observe(mode, before, after, original_frames - candidate_frame)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn journal_wrapper_frame_measurements() {
+    journal_wrapper_observations([1; 32], |mode, before, after, predicted| {
+        eprintln!(
+            "JOURNAL_FRAME {}",
+            serde_json::json!({
+                "mode": mode,
+                "before": differential::allocation_counts(before),
+                "after": differential::allocation_counts(after),
+                "saved": before.bytes_total - after.bytes_total,
+                "predicted": predicted,
+            })
+        );
+        Ok(())
+    })
+    .unwrap();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     // No warm-up or stores are shared across the two implementations. New
@@ -477,70 +613,17 @@ proptest! {
     // Fail through each real entrypoint before storage work: isolate the
     // wrapper's exact one-box saving from the full operation above.
     #[test]
-    fn journal_wrapper_removes_exactly_one_allocation(mut digest in any::<[u8;32]>()) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let operation = OperationId::from_bytes([4;16]);
-        digest[0] |= 1;
-        let event = ExecutionEvent::Started { request_digest: digest };
-        let oversized = vec![0;4097];
-        let initializations = std::cell::Cell::new(0);
-        let [before, after] = [true, false].map(|old| {
-            initializations.set(initializations.get() + 1);
-            let mut journal = runtime.block_on(fixture()).unwrap();
-            let file = runtime.block_on(prepare(&journal, operation, &event, b"payload")).unwrap();
-            journal.execution = Some((OperationId::from_bytes([5;16]), operation));
-            journal.volume = VolumeRef::new(journal.volume.provider().clone(), "foreign".into(),
-                VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([1;16])), &mut None).unwrap();
-            let state = runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap();
-            [0u8,1,2,3,4].map(|mode| {
-                let observed = differential::observe::<_, _, (&'static str, u64)>(|| (), |()| {
-                    let mut outcome = None;
-                    let allocation = acyclic_test_support::measure(|| {
-                        outcome = Some(runtime.block_on(run(&Choice(&journal, old), mode, 0,
-                            (operation, "key", &event), &file, &oversized).unwrap()).map_err(|e| e.to_string()));
-                    });
-                    (outcome.unwrap(), allocation)
-                });
-                assert_eq!(&state, &runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap());
-                assert!(observed.1.is_empty(), "factory error reached storage work");
-                let frames = if old {
-                    legacy::frame_bytes()
-                } else {
-                    // Construct and drop the candidate without polling: this is
-                    // exactly its trait-erasure frame, with no operation work.
-                    let frame = acyclic_test_support::measure(|| {
-                        let selected = Choice(&journal, false);
-                        match mode {
-                            0 => drop(selected.append(operation, "key", &event, None).unwrap()),
-                            1 => drop(selected.append_if_tail(operation, 0, "key", &event, None).unwrap()),
-                            2 => drop(selected.replay(operation, 0, 64, None).unwrap()),
-                            3 => drop(selected.load(&file, None).unwrap()),
-                            _ => drop(selected.stage(operation, "key", &oversized, "application/octet-stream", None).unwrap()),
-                        }
-                    });
-                    assert_eq!(frame.count_total, 1);
-                    assert_eq!(frame.count_current, 0);
-                    frame.bytes_total
-                };
-                (observed, frames)
-            })
-        });
-        prop_assert_eq!(initializations.get(), 2);
-        for ((before, original_frames), (after, candidate_frame)) in before.into_iter().zip(after) {
-            prop_assert!(after.0.0.is_err());
-            prop_assert_eq!(&before.0.0, &after.0.0);
-            prop_assert_eq!(before.1, after.1);
-            let (before, after) = (before.0.1, after.0.1);
-            let saved = original_frames - candidate_frame;
+    fn journal_wrapper_removes_exactly_one_allocation(digest in any::<[u8;32]>()) {
+        journal_wrapper_observations(digest, |_mode, before, after, saved| {
             let savings = |baseline: acyclic_test_support::AllocationInfo, candidate: acyclic_test_support::AllocationInfo| {
                 (baseline.count_total as i128 - candidate.count_total as i128,
                  baseline.bytes_total as i128 - candidate.bytes_total as i128)
             };
             prop_assert_eq!(savings(before, after), (1, saved as i128));
-            // The independently initialized old production path adds the nested
-            // box back, and must fail the very same count AND byte assertion.
+            // Reintroducing the original nested box must fail both exact checks.
             prop_assert_ne!(savings(before, before), (1, saved as i128), "old nested box passed");
-        }
+            Ok(())
+        })?;
     }
 
     // Every old/new factory is compared at its exact admission boundary, after
