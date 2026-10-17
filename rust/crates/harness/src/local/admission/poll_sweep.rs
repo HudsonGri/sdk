@@ -517,35 +517,51 @@ fn unavailable_shared_memory_falls_back_to_the_system_temporary_directory() {
     assert!(tempfile::tempdir_in(&missing).is_err());
 }
 
-fn sweep(scenarios: &[Scenario]) -> Result<()> {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    let started = std::time::Instant::now();
-    // Cuts are named push barriers, independent of task polling and I/O latency.
-    let io_threads = Arc::new(AtomicUsize::new(0));
-    let started_io = io_threads.clone();
+const IO_WORKERS: usize = 2;
+
+fn replay_runtime() -> Result<(tokio::runtime::Runtime, Arc<std::sync::atomic::AtomicUsize>)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let threads = Arc::new(AtomicUsize::new(0));
+    let started = threads.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(IO_WORKERS)
         .max_blocking_threads(1)
         .on_thread_start(move || {
-            started_io.fetch_add(1, Ordering::Relaxed);
+            started.fetch_add(1, Ordering::Relaxed);
         })
         .enable_all()
         .build()
         .map_err(storage)?;
+    Ok((runtime, threads))
+}
+
+fn replay_case(
+    runtime: &tokio::runtime::Runtime,
+    local: &tokio::task::LocalSet,
+    scenario: Scenario,
+    cut: Option<usize>,
+    baseline: &[&'static str],
+    seed: Option<&Seed>,
+) -> Result<Coverage> {
+    runtime.handle().block_on(
+        local.run_until(acyclic_native_runtime::testing::with_local_tasks(Box::pin(
+            case(scenario, cut, baseline, seed),
+        ))),
+    )
+}
+
+fn sweep(scenarios: &[Scenario]) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let started = std::time::Instant::now();
+    // Cuts are named push barriers, independent of task polling and I/O latency.
+    let (runtime, io_threads) = replay_runtime()?;
     let setup = tokio::task::LocalSet::new();
     let mut schedules = Vec::new();
     for &scenario in scenarios {
         let seed = runtime.block_on(setup.run_until(
             acyclic_native_runtime::testing::with_local_tasks(Seed::new(scenario)),
         ))?;
-        let observed = runtime.block_on(setup.run_until(
-            acyclic_native_runtime::testing::with_local_tasks(Box::pin(case(
-                scenario,
-                None,
-                &[],
-                Some(&seed),
-            ))),
-        ))?;
+        let observed = replay_case(&runtime, &setup, scenario, None, &[], Some(&seed))?;
         let baseline = observed.points;
         coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
         assert!(!baseline.is_empty());
@@ -595,23 +611,23 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                         let Some(&(scenario, baseline, seed, cut)) = cuts.get(index) else {
                             return Ok(());
                         };
-                        let coverage =
-                            runtime
-                                .handle()
-                                .block_on(local.run_until(
-                                    acyclic_native_runtime::testing::with_local_tasks(Box::pin(
-                                        case(scenario, Some(cut), baseline, Some(&seed)),
-                                    )),
-                                ))
-                                .map_err(|error| {
-                                    let error = Error::Storage(format!(
-                                        "{scenario:?} cut {cut}/{}: {error:?}",
-                                        baseline.len()
-                                    ));
-                                    eprintln!("{error:?}");
-                                    failed.store(true, Ordering::Relaxed);
-                                    error
-                                })?;
+                        let coverage = replay_case(
+                            &runtime,
+                            &local,
+                            scenario,
+                            Some(cut),
+                            baseline,
+                            Some(seed),
+                        )
+                        .map_err(|error| {
+                            let error = Error::Storage(format!(
+                                "{scenario:?} cut {cut}/{}: {error:?}",
+                                baseline.len()
+                            ));
+                            eprintln!("{error:?}");
+                            failed.store(true, Ordering::Relaxed);
+                            error
+                        })?;
                         unadmitted.fetch_add(usize::from(coverage.unadmitted), Ordering::Relaxed);
                         completed.fetch_add(1, Ordering::Relaxed);
                     }
@@ -625,7 +641,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     })?;
     assert_eq!(
         io_threads.load(Ordering::Relaxed),
-        2,
+        IO_WORKERS,
         "replay opened a private Tokio I/O pool"
     );
     assert_eq!(
@@ -652,12 +668,12 @@ fn run_cancellation_at_every_poll_recovers_head_and_admission() -> Result<()> {
 
 #[test]
 fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
-    let seed = runtime.block_on(Seed::new(Scenario::Text))?;
-    let observed = runtime.block_on(case(Scenario::Text, None, &[], Some(&seed)))?;
+    let (runtime, _) = replay_runtime()?;
+    let local = tokio::task::LocalSet::new();
+    let seed = runtime.block_on(local.run_until(
+        acyclic_native_runtime::testing::with_local_tasks(Seed::new(Scenario::Text)),
+    ))?;
+    let observed = replay_case(&runtime, &local, Scenario::Text, None, &[], Some(&seed))?;
     let baseline = observed.points;
     coverage::check_boundaries(Scenario::Text, &baseline, observed.ready_reads)?;
     let cut: usize =
@@ -673,7 +689,14 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         "task:submitted",
         "named admission cut moved"
     );
-    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
+    let recovered = replay_case(
+        &runtime,
+        &local,
+        Scenario::Text,
+        Some(cut),
+        &baseline,
+        Some(&seed),
+    )?;
     assert_eq!(recovered.points.len(), cut);
     assert!(
         recovered.admission_committed,
@@ -689,11 +712,9 @@ fn compaction_summary_is_readable_before_any_cancellation() -> Result<()> {
         .with_test_writer()
         .finish();
     let _tracing = tracing::subscriber::set_default(subscriber);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
-    let observed = runtime.block_on(case(Scenario::Compaction, None, &[], None))?;
+    let (runtime, _) = replay_runtime()?;
+    let local = tokio::task::LocalSet::new();
+    let observed = replay_case(&runtime, &local, Scenario::Compaction, None, &[], None)?;
     coverage::check_boundaries(Scenario::Compaction, &observed.points, observed.ready_reads)?;
     Ok(())
 }

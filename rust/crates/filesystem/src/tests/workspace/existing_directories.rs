@@ -51,7 +51,7 @@ async fn measured(
 
 fn check_linear_reads(work: WorkCounters, depth: usize) {
     assert!(
-        work.page_reads <= 8 * depth as u64 + 16
+        work.page_reads == 2 * depth as u64 + 1
             && work.backend_write_operations == 0
             && work.authority_records_appended == 0,
         "directory check exceeded linear read-only work: depth {depth}: {work:?}"
