@@ -9,7 +9,7 @@ where
     O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
 {
     Ok(
-        acyclic_harness::filesystem::native_execution::local_owner_mount_options(
+        acyclic_harness::filesystem::local_owner_mount_options(
             workspace,
             "mount-benchmark",
             true,
