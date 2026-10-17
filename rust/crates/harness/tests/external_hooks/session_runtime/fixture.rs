@@ -6,6 +6,7 @@ type Host = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 type Runtime = FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 
 pub(crate) struct Fixture {
+    pub stream: Arc<MemoryStream>,
     pub runtime: Runtime,
     pub files: Arc<Host>,
     pub volume: VolumeRef,
@@ -109,7 +110,7 @@ impl Fixture {
         .await
         .map_err(storage)?;
         let runtime = Box::pin(FilesystemTaskRuntime::open(
-            stream,
+            stream.clone(),
             files.clone(),
             &volume,
             &verifier,
@@ -152,6 +153,7 @@ impl Fixture {
             None,
         )?;
         Ok(Self {
+            stream,
             runtime,
             files,
             volume,

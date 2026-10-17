@@ -87,7 +87,7 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
     // still exercise dispatch, independently of this authenticated bootstrap.
     let actual_results = if matches!(binding, VolumeBinding::Shared | VolumeBinding::Foreign) {
         let bootstrap = TaskVolume::open(
-            fixture.runtime.task_host().workflow_stream(),
+            fixture.stream.clone(),
             StreamPath::new("bootstrap-results").map_err(storage)?,
         )
         .await
@@ -106,6 +106,7 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
         fixture.results = results;
     }
     let Fixture {
+        stream,
         runtime,
         files,
         volume,
@@ -174,10 +175,18 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
         None,
     )?
     .await?;
-    let (_, slot) = runtime
-        .task_host()
-        .workflow_slot(task, None, &mut None)
-        .await?
+    let reader = FilesystemContentVerifier::new(files.clone(), &verifier, &signed, 65_536, None)?;
+    let projection = acyclic_harness::distributed::DistributedCoordinator::open(
+        &stream,
+        reader,
+        Some(publisher.clone()),
+        &mut None,
+    )
+    .await?;
+    let slot = projection
+        .scheduler()
+        .operation(operation)
+        .and_then(|state| state.workflow.as_ref())
         .ok_or_else(|| Error::Conflict("attached session has no input slot".into()))?;
     runtime
         .task_host()
