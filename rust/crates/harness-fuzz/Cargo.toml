@@ -7,8 +7,15 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[[bin]]
+name = "effect_certificate"
+path = "fuzz_targets/effect_certificate.rs"
+test = false
+doc = false
+bench = false
+
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "cfg(fuzzing)"] }
 
 [features]
 default = ["runtime"]
@@ -47,22 +54,6 @@ bench = false
 [[bin]]
 name = "search_request"
 path = "fuzz_targets/search_request.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_recovery"
-path = "fuzz_targets/client_recovery.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_files"
-path = "fuzz_targets/client_files.rs"
 required-features = ["runtime"]
 test = false
 doc = false
@@ -175,6 +166,14 @@ bench = false
 [[bin]]
 name = "plan_markdown"
 path = "fuzz_targets/plan_markdown.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "child_control"
+path = "fuzz_targets/child_control.rs"
 required-features = ["runtime"]
 test = false
 doc = false
