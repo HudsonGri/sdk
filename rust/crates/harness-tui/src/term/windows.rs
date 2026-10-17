@@ -256,6 +256,9 @@ impl ProbeIo for Tty {
                     None,
                 )
             })?;
+            let ffi::ConsoleRead::Bytes(count) = count else {
+                continue;
+            };
             if count != 0 || bytes.is_empty() {
                 return Ok(count);
             }
@@ -426,6 +429,37 @@ mod tests {
                     || matches!(result, Err(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::NotConnected))
             );
             assert!(start.elapsed() < Duration::from_millis(50));
+        }
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("resize") {
+            use crate::key_event::InputEvent;
+            use futures_core::Stream;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()?;
+            let mut events = std::pin::pin!(tty.events()?);
+            std::fs::write(path.with_extension("ready"), b"ready")?;
+            let dimensions = runtime.block_on(std::future::poll_fn(|cx| {
+                loop {
+                    match events.as_mut().poll_next(cx) {
+                        std::task::Poll::Ready(Some(Ok(InputEvent::Resize(cols, rows)))) => {
+                            return std::task::Poll::Ready(Ok((cols, rows)));
+                        }
+                        std::task::Poll::Ready(Some(Ok(_))) => {}
+                        std::task::Poll::Ready(Some(Err(error))) => {
+                            return std::task::Poll::Ready(Err(error));
+                        }
+                        std::task::Poll::Ready(None) => {
+                            return std::task::Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
+                        }
+                        std::task::Poll::Pending => return std::task::Poll::Pending,
+                    }
+                }
+            }))?;
+            std::fs::write(
+                path.with_extension("resize"),
+                format!("{} {}", dimensions.0, dimensions.1),
+            )?;
+            return Ok(());
         }
         if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("latency") {
             return measure_latency(tty, &path);

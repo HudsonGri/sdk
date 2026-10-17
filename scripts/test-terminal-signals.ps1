@@ -23,6 +23,7 @@ public static class TerminalSignalConPty {
     [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr process,thread; public uint pid,tid; }
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool CreatePipe(out IntPtr read,out IntPtr write,IntPtr security,uint size);
     [DllImport("kernel32.dll")] static extern int CreatePseudoConsole(Coord size,IntPtr input,IntPtr output,uint flags,out IntPtr console);
+    [DllImport("kernel32.dll")] static extern int ResizePseudoConsole(IntPtr console,Coord size);
     [DllImport("kernel32.dll")] static extern void ClosePseudoConsole(IntPtr console);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,uint flags,ref IntPtr size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,IntPtr attribute,IntPtr value,IntPtr size,IntPtr previous,IntPtr returned);
@@ -120,6 +121,13 @@ public static class TerminalSignalConPty {
                 throw new Exception("terminal setup deadline: "+log.Substring(Math.Max(0,log.Length-1400)));
             }
             if(scenario=="latency") { MeasureLatency(iw,process.process,report); return; }
+            if(scenario=="resize") {
+                Require(ResizePseudoConsole(console,new Coord { x=101,y=37 })==0,"resize pseudo console");
+                Require(WaitForSingleObject(process.process,1500)==0,"resize child exit deadline");
+                Require(File.ReadAllText(Path.ChangeExtension(report,"resize"))=="101 37","window dimensions reach stream");
+                Console.WriteLine("ConPTY resize: stream received 101 x 37 without a key");
+                return;
+            }
             if(scenario=="blocked") {
                 draining.Set();
                 File.WriteAllText(Path.ChangeExtension(report,"draining"),"draining");
@@ -152,7 +160,7 @@ public static class TerminalSignalConPty {
 $previousReport = $env:ACYCLIC_TERMINAL_WINDOWS_REPORT
 $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
 try {
-    foreach ($scenario in @('break','close','blocked','latency')) {
+    foreach ($scenario in @('break','close','blocked','latency','resize')) {
         $report = Join-Path $artifactRoot ($scenario + '.txt')
         if ($scenario -eq 'latency') { Set-Content -LiteralPath ([IO.Path]::ChangeExtension($report,'latency-count')) -Value '200' }
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report

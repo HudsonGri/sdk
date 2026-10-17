@@ -13,8 +13,8 @@ use std::thread::{self, JoinHandle};
 use acyclic_native_runtime::terminal as ffi;
 
 use super::super::Tty;
-use super::super::handoff::Handoff;
-use super::Events;
+use super::super::handoff::{Handoff, Message};
+use super::{Chunk, Events};
 use crate::key_event::InputEvent;
 
 const BATCH: usize = 1024;
@@ -30,7 +30,7 @@ impl Waiter {
     /// `read` fills the slice and must return once the wake it waits on is
     /// signalled; a failed read ends the waiter after delivering its error.
     fn spawn(
-        mut read: impl FnMut(&mut [u8]) -> io::Result<usize> + Send + 'static,
+        mut read: impl FnMut(&mut [u8]) -> io::Result<ffi::ConsoleRead> + Send + 'static,
     ) -> io::Result<Self> {
         let handoff = Arc::new(Handoff::new(BATCH));
         let reader = Arc::clone(&handoff);
@@ -44,15 +44,16 @@ impl Waiter {
         })
     }
 
-    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+    fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<Chunk<'_>>> {
         match ready!(self.handoff.poll_recv(cx)) {
-            Some(Ok(batch)) => {
+            Some(Message::Batch(Ok(batch))) => {
                 let spent = std::mem::replace(&mut self.current, batch);
                 self.handoff.recycle(spent);
-                Poll::Ready(Ok(&self.current))
+                Poll::Ready(Ok(Chunk::Bytes(&self.current)))
             }
-            Some(Err(error)) => Poll::Ready(Err(error)),
-            None => Poll::Ready(Ok(&[])),
+            Some(Message::Batch(Err(error))) => Poll::Ready(Err(error)),
+            Some(Message::Resized) => Poll::Ready(Ok(Chunk::Resized)),
+            None => Poll::Ready(Ok(Chunk::Bytes(&[]))),
         }
     }
 
@@ -74,13 +75,21 @@ impl Drop for Waiter {
 
 /// Fill circulating storage and hand it over until a read fails or the
 /// stream is gone.
-fn pump(read: &mut impl FnMut(&mut [u8]) -> io::Result<usize>, handoff: &Handoff) {
+fn pump(read: &mut impl FnMut(&mut [u8]) -> io::Result<ffi::ConsoleRead>, handoff: &Handoff) {
     while let Some(mut batch) = handoff.storage() {
         batch.resize(BATCH, 0);
-        let batch = read(&mut batch).map(|count| {
-            batch.truncate(count);
-            batch
-        });
+        let batch = match read(&mut batch) {
+            Ok(ffi::ConsoleRead::Resized) => {
+                handoff.recycle(batch);
+                handoff.signal_resize();
+                continue;
+            }
+            Ok(ffi::ConsoleRead::Bytes(count)) => {
+                batch.truncate(count);
+                Ok(batch)
+            }
+            Err(error) => Err(error),
+        };
         let failed = batch.is_err();
         if !handoff.send(batch) || failed {
             break;
@@ -111,13 +120,17 @@ impl Tty {
             })
         })?;
         let decoder = std::mem::take(&mut self.decoder);
-        Ok(Events::new(Source { waiter, tty: self }, decoder))
+        Events::new(Source { waiter, tty: self }, decoder)
     }
 }
 
 impl Source {
-    pub(super) fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+    pub(super) fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<Chunk<'_>>> {
         self.waiter.poll_read(cx)
+    }
+
+    pub(super) fn size(&self) -> io::Result<(u16, u16)> {
+        crossterm::terminal::size()
     }
 
     pub(super) fn intercept(&mut self, _event: &InputEvent) -> io::Result<bool> {
@@ -159,7 +172,10 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         runtime.block_on(async {
             pending(std::future::poll_fn(|cx| {
-                waiter.poll_read(cx).map_ok(<[u8]>::len)
+                waiter.poll_read(cx).map_ok(|chunk| match chunk {
+                    Chunk::Bytes(bytes) => bytes.len(),
+                    Chunk::Resized => 0,
+                })
             }));
         });
         close.signal()?;
@@ -213,7 +229,7 @@ mod tests {
             let typed = typed.lock().map_err(|_| io::ErrorKind::Other)?;
             let key = typed.recv().map_err(|_| io::ErrorKind::NotConnected)?;
             bytes[..key.len()].copy_from_slice(&key);
-            Ok(key.len())
+            Ok(ffi::ConsoleRead::Bytes(key.len()))
         })?;
         // Rebound after the waiter: on unwind the sender drops first, so the
         // waiter's read ends and its join cannot hang.
@@ -235,7 +251,10 @@ mod tests {
             keys.send(b"x".to_vec())
                 .map_err(|_| io::ErrorKind::BrokenPipe)?;
             let count = runtime.block_on(std::future::poll_fn(|cx| {
-                waiter.poll_read(cx).map_ok(<[u8]>::len)
+                waiter.poll_read(cx).map_ok(|chunk| match chunk {
+                    Chunk::Bytes(bytes) => bytes.len(),
+                    Chunk::Resized => 0,
+                })
             }))?;
             assert_eq!(count, 1);
             samples.push(start.elapsed());
@@ -265,7 +284,8 @@ mod tests {
                 let mut cx = Context::from_waker(Waker::noop());
                 let mut next = |expected: u8| loop {
                     match waiter.poll_read(&mut cx) {
-                        Poll::Ready(Ok(bytes)) => {
+                        Poll::Ready(Ok(Chunk::Resized)) => panic!("unexpected resize"),
+                        Poll::Ready(Ok(Chunk::Bytes(bytes))) => {
                             assert_eq!(bytes, [expected]);
                             if !recycle {
                                 drop(std::mem::take(&mut waiter.current));
@@ -284,7 +304,7 @@ mod tests {
             let mut read = |bytes: &mut [u8]| match keys.next() {
                 Some(key) => {
                     bytes[0] = key;
-                    Ok(1)
+                    Ok(ffi::ConsoleRead::Bytes(1))
                 }
                 None => Err(io::ErrorKind::Other.into()),
             };

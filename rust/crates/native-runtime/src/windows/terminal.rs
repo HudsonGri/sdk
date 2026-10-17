@@ -12,6 +12,7 @@ use windows_sys::Win32::{
             CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetConsoleCP, GetConsoleMode,
             GetConsoleOutputCP, INPUT_RECORD, KEY_EVENT, PeekConsoleInputW, ReadConsoleInputW,
             SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
+            WINDOW_BUFFER_SIZE_EVENT,
         },
         IO::CancelSynchronousIo,
         Threading::{INFINITE, SetEvent, WaitForMultipleObjects},
@@ -141,6 +142,14 @@ impl AsRawHandle for ConsoleWake {
     }
 }
 
+/// A native input record is either VT bytes or a window-size notification.
+pub enum ConsoleRead {
+    /// Bytes written to the supplied buffer; zero at a deadline.
+    Bytes(usize),
+    /// The console window dimensions may have changed.
+    Resized,
+}
+
 /// Read VT bytes into `bytes` without consuming beyond its length. Without a
 /// deadline the wait ends only on input or `wake`; with one, zero reports the
 /// deadline. When input and `wake` are both signalled, `wake` wins.
@@ -149,9 +158,9 @@ pub fn console_read(
     bytes: &mut [u8],
     deadline: Option<Instant>,
     wake: Option<&ConsoleWake>,
-) -> io::Result<usize> {
+) -> io::Result<ConsoleRead> {
     if bytes.is_empty() {
-        return Ok(0);
+        return Ok(ConsoleRead::Bytes(0));
     }
     let (handles, waits, first_input) = match wake {
         Some(wake) => (
@@ -167,7 +176,7 @@ pub fn console_read(
             Some(deadline) => {
                 let now = Instant::now();
                 if now >= deadline {
-                    return Ok(0);
+                    return Ok(ConsoleRead::Bytes(0));
                 }
                 u32::try_from((deadline - now).as_millis()).unwrap_or(INFINITE - 1)
             }
@@ -177,7 +186,7 @@ pub fn console_read(
         // ReadFile receives the caller's exact slice length.
         unsafe {
             match WaitForMultipleObjects(waits, handles.as_ptr(), 0, timeout) {
-                WAIT_TIMEOUT => return Ok(0),
+                WAIT_TIMEOUT => return Ok(ConsoleRead::Bytes(0)),
                 result if result == first_input => {}
                 WAIT_OBJECT_0 => return Err(io::ErrorKind::NotConnected.into()),
                 _ => return Err(io::Error::last_os_error()),
@@ -207,10 +216,13 @@ pub fn console_read(
                 {
                     return Err(io::Error::last_os_error());
                 }
-                return Ok(count as usize);
+                return Ok(ConsoleRead::Bytes(count as usize));
             }
             if ReadConsoleInputW(input as HANDLE, &mut event, 1, &mut count) == 0 {
                 return Err(io::Error::last_os_error());
+            }
+            if count != 0 && u32::from(event.EventType) == WINDOW_BUFFER_SIZE_EVENT {
+                return Ok(ConsoleRead::Resized);
             }
         }
     }

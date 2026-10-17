@@ -364,3 +364,43 @@ fn controlling_terminal_input_survives_redirecting_every_standard_stream() -> io
     assert!(redirected(true)?.starts_with("rejected"));
     Ok(())
 }
+
+#[test]
+fn window_changes_arrive_without_a_key_or_polling_timer() -> io::Result<()> {
+    let _serial = serial();
+    let (master, user) = pty()?;
+    let runtime = runtime("tui-resize")?;
+    let mut events = runtime.block_on(async { Tty::from_file(user)?.events() })?;
+    poll_pending(&runtime, &mut NextEvent(&mut events));
+    let old = events.size();
+    let changed = (old.0.saturating_add(7), old.1.saturating_add(5));
+    rustix::termios::tcsetwinsize(
+        &master,
+        rustix::termios::Winsize {
+            ws_col: changed.0,
+            ws_row: changed.1,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        },
+    )?;
+    // This PTY is not the process's controlling terminal: changing its size
+    // alone supplies no signal, so the production stream stays parked.
+    poll_pending(&runtime, &mut NextEvent(&mut events));
+    rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::WINCH)?;
+    let event = runtime
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), NextEvent(&mut events)).await
+        })
+        .map_err(|_| io::ErrorKind::TimedOut)?
+        .ok_or(io::ErrorKind::UnexpectedEof)??;
+    assert_eq!(event, InputEvent::Resize(changed.0, changed.1));
+    assert_eq!(events.size(), changed);
+    // A duplicate native signal must not create a second dimension change.
+    rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::WINCH)?;
+    master.try_clone()?.write_all(b"x")?;
+    assert_eq!(
+        next(&runtime, &mut events)?,
+        key(KeyCode::Char('x'), KeyModifiers::NONE)
+    );
+    Ok(())
+}

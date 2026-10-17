@@ -19,6 +19,11 @@ pub(crate) const BUFFERS: usize = QUEUED + 3;
 
 pub(crate) type Batch = io::Result<Vec<u8>>;
 
+pub(crate) enum Message {
+    Batch(Batch),
+    Resized,
+}
+
 struct State {
     ready: ArrayVec<Batch, QUEUED>,
     spare: ArrayVec<Vec<u8>, BUFFERS>,
@@ -27,6 +32,7 @@ struct State {
     closed: bool,
     /// The reader is gone: the stream ends once `ready` drains.
     finished: bool,
+    resized: bool,
 }
 
 /// Lock order: this lock is a leaf. Wakers are woken after it is released.
@@ -46,6 +52,7 @@ impl Handoff {
                 waker: None,
                 closed: false,
                 finished: false,
+                resized: false,
             }),
             space: Condvar::new(),
         }
@@ -88,6 +95,17 @@ impl Handoff {
         true
     }
 
+    /// Reader: coalesce window changes without allocating or waiting for queue space.
+    pub(crate) fn signal_resize(&self) {
+        let mut state = self.lock();
+        state.resized = true;
+        let waker = state.waker.take();
+        drop(state);
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
     /// Reader: no further batches.
     pub(crate) fn finish(&self) {
         let mut state = self.lock();
@@ -101,12 +119,15 @@ impl Handoff {
 
     /// Stream: the next batch; `None` once the reader finished and the queue
     /// drained. The waker is registered under the same lock as the check.
-    pub(crate) fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Batch>> {
+    pub(crate) fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
         let mut state = self.lock();
         if let Some(batch) = state.ready.pop_at(0) {
             drop(state);
             self.space.notify_one();
-            return Poll::Ready(Some(batch));
+            return Poll::Ready(Some(Message::Batch(batch)));
+        }
+        if std::mem::take(&mut state.resized) {
+            return Poll::Ready(Some(Message::Resized));
         }
         if state.finished {
             return Poll::Ready(None);
@@ -138,17 +159,15 @@ impl Handoff {
     }
 
     #[cfg(acyclic_harness_tui_loom)]
-    fn register_split(&self, cx: &mut Context<'_>) -> Poll<Option<Batch>> {
+    fn register_split(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
         // Negative control: the empty check and the registration in separate
         // critical sections lose a send between them.
         let (empty, finished) = {
             let state = self.lock();
-            (state.ready.is_empty(), state.finished)
+            (state.ready.is_empty() && !state.resized, state.finished)
         };
         if !empty {
-            let batch = self.lock().ready.pop_at(0);
-            self.space.notify_one();
-            return Poll::Ready(batch);
+            return self.poll_recv(cx);
         }
         if finished {
             return Poll::Ready(None);
@@ -194,12 +213,14 @@ mod tests {
                     batch[0] = key;
                     assert!(reader.send(Ok(batch)));
                 }
+                reader.signal_resize();
                 reader.finish();
             }));
             let flag = std::sync::Arc::new(Flag(AtomicBool::new(false)));
             let waker = Waker::from(std::sync::Arc::clone(&flag));
             let mut cx = Context::from_waker(&waker);
             let mut received = Vec::new();
+            let mut resizes = 0;
             loop {
                 let next = if broken {
                     handoff.register_split(&mut cx)
@@ -207,11 +228,12 @@ mod tests {
                     handoff.poll_recv(&mut cx)
                 };
                 match next {
-                    Poll::Ready(Some(batch)) => {
+                    Poll::Ready(Some(Message::Batch(batch))) => {
                         let batch = batch.unwrap();
                         received.push(batch[0]);
                         handoff.recycle(batch);
                     }
+                    Poll::Ready(Some(Message::Resized)) => resizes += 1,
                     Poll::Ready(None) => break,
                     Poll::Pending => {
                         let reader = thread.take().expect("parked after the reader finished");
@@ -224,6 +246,7 @@ mod tests {
                 reader.join().unwrap();
             }
             assert_eq!(received, [0, 1]);
+            assert_eq!(resizes, 1);
         });
     }
 
@@ -235,6 +258,47 @@ mod tests {
     #[test]
     fn negative_control_detects_a_registration_split_from_its_check() {
         assert!(std::panic::catch_unwind(|| wake_model(true)).is_err());
+    }
+
+    fn resize_model(broken: bool) {
+        loom::model(move || {
+            let handoff = Arc::new(Handoff::new(1));
+            let reader = Arc::clone(&handoff);
+            let producer = loom::thread::spawn(move || {
+                reader.signal_resize();
+                reader.finish();
+            });
+            let flag = std::sync::Arc::new(Flag(AtomicBool::new(false)));
+            let waker = Waker::from(std::sync::Arc::clone(&flag));
+            let mut cx = Context::from_waker(&waker);
+            let next = if broken {
+                handoff.register_split(&mut cx)
+            } else {
+                handoff.poll_recv(&mut cx)
+            };
+            let pending = next.is_pending();
+            producer.join().unwrap();
+            if pending {
+                assert!(flag.0.load(Ordering::SeqCst), "resize lost its wake");
+                assert!(matches!(
+                    handoff.poll_recv(&mut cx),
+                    Poll::Ready(Some(Message::Resized))
+                ));
+            } else {
+                assert!(matches!(next, Poll::Ready(Some(Message::Resized))));
+            }
+            assert!(matches!(handoff.poll_recv(&mut cx), Poll::Ready(None)));
+        });
+    }
+
+    #[test]
+    fn resize_and_finish_cannot_lose_the_waiting_stream() {
+        resize_model(false);
+    }
+
+    #[test]
+    fn negative_control_detects_resize_registration_split() {
+        assert!(std::panic::catch_unwind(|| resize_model(true)).is_err());
     }
 
     // The queue is full before the producer starts, so its send waits for
@@ -316,10 +380,11 @@ mod tests {
             let mut cx = Context::from_waker(&waker);
             loop {
                 match handoff.poll_recv(&mut cx) {
-                    Poll::Ready(Some(batch)) => {
+                    Poll::Ready(Some(Message::Batch(batch))) => {
                         assert_eq!(batch.unwrap()[0], 0);
                         break;
                     }
+                    Poll::Ready(Some(Message::Resized)) => panic!("unexpected resize"),
                     Poll::Ready(None) => panic!("reader finished early"),
                     Poll::Pending => loom::thread::park(),
                 }

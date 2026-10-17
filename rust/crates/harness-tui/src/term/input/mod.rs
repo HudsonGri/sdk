@@ -22,10 +22,16 @@ mod windows;
 #[cfg(windows)]
 use windows::Source;
 
+pub(super) enum Chunk<'a> {
+    Bytes(&'a [u8]),
+    Resized,
+}
+
 /// Classified terminal input. Dropping the stream releases the terminal
 /// immediately: no thread is left waiting for another key.
 pub struct Events {
     source: Source,
+    size: (u16, u16),
     decoder: Decoder,
     ready: VecDeque<InputEvent>,
     escape: Option<Pin<Box<Sleep>>>,
@@ -36,8 +42,10 @@ pub struct Events {
 }
 
 impl Events {
-    fn new(source: Source, decoder: Decoder) -> Self {
-        Self {
+    fn new(source: Source, decoder: Decoder) -> io::Result<Self> {
+        let size = source.size()?;
+        Ok(Self {
+            size,
             source,
             decoder,
             ready: VecDeque::new(),
@@ -45,7 +53,12 @@ impl Events {
             escape: None,
             escape_armed: false,
             ended: false,
-        }
+        })
+    }
+
+    /// Last observed terminal dimensions; resize notifications update this cache.
+    pub fn size(&self) -> (u16, u16) {
+        self.size
     }
 
     /// Wait out a pending lone Escape. The timer is allocated once per stream
@@ -103,12 +116,22 @@ impl Stream for Events {
                 Ok(())
             } else {
                 match this.source.poll_read(cx) {
-                    Poll::Ready(Ok([])) => {
+                    Poll::Ready(Ok(Chunk::Resized)) => {
+                        let size = match this.source.size() {
+                            Ok(size) => size,
+                            Err(error) => return Poll::Ready(Some(Err(error))),
+                        };
+                        if let Some(event) = resize_event(&mut this.size, size) {
+                            return Poll::Ready(Some(Ok(event)));
+                        }
+                        continue;
+                    }
+                    Poll::Ready(Ok(Chunk::Bytes([]))) => {
                         this.ended = true;
                         this.decoder.finish_input()
                     }
                     // The source's own storage, decoded in place.
-                    Poll::Ready(Ok(bytes)) => this.decoder.feed(bytes),
+                    Poll::Ready(Ok(Chunk::Bytes(bytes))) => this.decoder.feed(bytes),
                     Poll::Ready(Err(error)) => return Poll::Ready(Some(Err(error))),
                     Poll::Pending if this.decoder.escape_pending() => {
                         ready!(this.poll_escape(cx));
@@ -130,6 +153,37 @@ impl Stream for Events {
             }
             if let Err(error) = decoded.and(intercepted) {
                 return Poll::Ready(Some(Err(error)));
+            }
+        }
+    }
+}
+
+fn resize_event(current: &mut (u16, u16), next: (u16, u16)) -> Option<InputEvent> {
+    if std::mem::replace(current, next) == next {
+        None
+    } else {
+        Some(InputEvent::Resize(next.0, next.1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn resize_cache_emits_exactly_dimension_changes(
+            initial in any::<(u16, u16)>(),
+            sizes in prop::collection::vec(any::<(u16, u16)>(), 0..64),
+        ) {
+            let mut cache = initial;
+            let mut expected = initial;
+            for size in sizes {
+                let event = resize_event(&mut cache, size);
+                prop_assert_eq!(event, (size != expected).then_some(InputEvent::Resize(size.0, size.1)));
+                prop_assert_eq!(cache, size);
+                expected = size;
             }
         }
     }
