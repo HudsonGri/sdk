@@ -49,9 +49,6 @@ use client_files::Fixture;
 
 #[path = "client_mention_attachments.rs"]
 mod attachments;
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "client_mention_provider.rs"]
-mod mention_provider;
 #[cfg(all(
     not(target_arch = "wasm32"),
     feature = "filesystem-local",
@@ -59,6 +56,9 @@ mod mention_provider;
 ))]
 #[path = "support/client_local.rs"]
 mod client_local;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "client_mention_provider.rs"]
+mod mention_provider;
 
 impl Fixture {
     async fn catalog(
@@ -544,7 +544,7 @@ async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revisio
             assert_eq!(file.path(), path);
             assert_eq!(policy, &FileProjectionPolicy::BoundedFull);
             assert_eq!(
-                fixture.reader.read(file, 1024, None)?.await?.as_ref(),
+                fixture.reader.read(file, 1024, None, None)?.await?.as_ref(),
                 body.as_bytes()
             );
         }

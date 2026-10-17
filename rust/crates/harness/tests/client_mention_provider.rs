@@ -11,7 +11,7 @@ use acyclic_harness::{
 };
 use acyclic_harness_providers::{
     Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
-    ModelSpec, ProviderSpec, Registry, TokenCounterSpec, TokenCountField,
+    ModelSpec, ProviderSpec, Registry, TokenCountField, TokenCounterSpec,
 };
 use acyclic_stream::BoxProviderFuture;
 use futures::TryStreamExt as _;
@@ -55,7 +55,7 @@ async fn scenario(
     }
     let page = fixture
         .reader
-        .list_private_directory(&fixture.root.volume, "", "", None, None, 16, None)?
+        .list_private_directory(&fixture.root.volume, "", "", None, None, 16, None, None)?
         .await?;
     let resolved = CommandCatalog::builtins()?
         .resolve_input(
@@ -121,8 +121,10 @@ async fn scenario(
                 },
             )]),
             token_counter: Some(TokenCounterSpec {
-                path: "count_tokens".into(), adapter: Adapter::Responses,
-                response_field: TokenCountField::InputTokens, framing_tokens: 0,
+                path: "count_tokens".into(),
+                adapter: Adapter::Responses,
+                response_field: TokenCountField::InputTokens,
+                framing_tokens: 0,
             }),
             max_event_bytes: 4096,
         },

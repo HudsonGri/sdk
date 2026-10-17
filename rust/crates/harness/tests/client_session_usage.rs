@@ -165,7 +165,7 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
             {
                 let reference = &message.extensions["acyclic.model.metadata"];
                 let metadata = Files(storage.clone())
-                    .read(reference, 65_536, None)?
+                    .read(reference, 65_536, None, None)?
                     .await?;
                 assert_eq!(
                     serde_json::from_slice::<Value>(&metadata).expect("canonical writer metadata"),
