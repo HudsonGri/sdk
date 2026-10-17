@@ -1,5 +1,6 @@
 //! Prepared commit races exercise the production retry-slot lookup and provider locks.
 use super::*;
+use futures::FutureExt as _;
 use std::{cell::Cell, future::Future};
 
 const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
@@ -10,6 +11,14 @@ pub(in crate::distributed) fn reuse_operation_key() -> bool {
 }
 
 fn ready<F: Future>(future: F) -> F::Output {
+    // No other writer exists during preparation or after its join. Assert an
+    // immediate completion without adding executor wakeups to those cuts.
+    Box::pin(future)
+        .now_or_never()
+        .expect("uncontended memory-provider call suspended")
+}
+
+fn concurrent<F: Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
 }
 
@@ -66,8 +75,8 @@ fn scenario(broken: bool, same_operation: bool) {
     // Preparation is deterministic and precedes the only concurrent mutation.
     // Use the production constructor without unrelated reopen/head reads.
     let mut creation = CommitRequest {
-        conditions: Vec::new(),
-        mutations: Vec::new(),
+        conditions: work.vec(4).unwrap(),
+        mutations: work.vec(4).unwrap(),
         idempotency_key: stream_key(b"fixture", b"authority").unwrap(),
     };
     store
@@ -110,8 +119,8 @@ fn scenario(broken: bool, same_operation: bool) {
         super::super::replay::operation_key(authority, peer.operation_id, 0, &mut work).unwrap(),
     );
     let writer = Arc::clone(&stream);
-    let writer = loom::thread::spawn(move || ready(writer.commit(peer_request)));
-    let first = ready(stream.commit(own_request));
+    let writer = loom::thread::spawn(move || concurrent(writer.commit(peer_request)));
+    let first = concurrent(stream.commit(own_request));
     let other = writer.join().unwrap();
     assert!(matches!(
         first,
