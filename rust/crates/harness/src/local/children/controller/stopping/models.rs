@@ -41,8 +41,9 @@ fn stopping(broken: bool, assert_property: bool) {
     // Publication/follow registration races are explored independently by the
     // task-files models. Start this controller model at their accepted cut.
     loom::future::block_on(Box::pin(writer.append(cut, &control))).unwrap();
-    let signal = cancellation.clone();
-    let writer = thread::spawn(move || signal.cancel());
+    let signal = acyclic_fs::CancellationToken::new();
+    let inherited = signal.clone();
+    let writer = thread::spawn(move || inherited.cancel());
     let effect = async {
         cancellation.cancelled().await;
         let cut = volume.head().await.map_err(storage)?;
@@ -79,7 +80,7 @@ fn stopping(broken: bool, assert_property: bool) {
         Ok(())
     };
     let controls = async {
-        cancellation.cancelled().await;
+        signal.cancelled().await;
         // Retire the signaler before serial publication and reopen. Only the
         // real cancel/register/wake interleavings belong to this model.
         writer.join().unwrap();
