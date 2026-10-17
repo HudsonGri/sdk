@@ -78,7 +78,7 @@ impl LocalHarness {
                 })
                 .await?;
                 if let Some(crate::Outcome::Indeterminate { operation_id }) =
-                    self.runtime.task_host().outcome(task).await?
+                    self.runtime.task_host().terminal_status(task).await?
                 {
                     return Err(Error::Indeterminate(operation_id));
                 }

@@ -101,7 +101,7 @@ impl LocalHarness {
                     .map_err(storage)?;
                 let cancelled = matches!(state, ChildState::Cancelled | ChildState::Archived)
                     && matches!(
-                        self.runtime.task_host().outcome(child).await?,
+                        self.runtime.task_host().terminal_status(child).await?,
                         Some(crate::Outcome::Cancelled)
                     );
                 let suspension = if cancelled
@@ -177,7 +177,7 @@ impl LocalHarness {
                         {
                             self.runtime.task_host().cancel(child).await?;
                             if !matches!(
-                                self.runtime.task_host().outcome(child).await?,
+                                self.runtime.task_host().terminal_status(child).await?,
                                 Some(crate::Outcome::Cancelled)
                             ) {
                                 return Err(Error::Indeterminate(OperationId::from_bytes(
@@ -329,7 +329,7 @@ impl LocalHarness {
                 if matches!(state, ChildState::Cancelled | ChildState::Archived) {
                     self.runtime.task_host().cancel(child).await?;
                     if !matches!(
-                        self.runtime.task_host().outcome(child).await?,
+                        self.runtime.task_host().terminal_status(child).await?,
                         Some(crate::Outcome::Cancelled)
                     ) {
                         return Err(Error::Indeterminate(OperationId::from_bytes(

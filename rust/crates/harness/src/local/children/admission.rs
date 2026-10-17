@@ -451,7 +451,7 @@ impl LocalHarness {
         )
         .await?;
         if !matches!(
-            host.outcome(TaskId::from_bytes(preparation_operation.into_bytes()))
+            host.terminal_status(TaskId::from_bytes(preparation_operation.into_bytes()))
                 .await?,
             Some(crate::Outcome::Succeeded(_))
         ) {
