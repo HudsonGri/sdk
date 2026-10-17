@@ -105,23 +105,57 @@ fn first_projection_and_logical_publication_share_custody() {
     checked(logical_write, "projection missed a write");
 }
 
-#[test]
-fn failed_initialization_leaves_no_published_projection() {
-    loom::model(|| {
-        let slot = StateArc::new(AsyncMutex::new(None::<u8>));
+fn failure(broken: bool) {
+    let slot = StateArc::new(AsyncMutex::new(None::<u8>));
+    let mut first_poll = true;
+    let mut creation = Box::pin(async {
+        if broken {
+            let mut guard = lock_owned(slot.clone()).await;
+            *guard = Some(0);
+        }
+        initialize(&slot, async || {
+            std::future::poll_fn(|_| {
+                if std::mem::take(&mut first_poll) {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
+            Err(Error::Invalid("creation failed".into()))
+        })
+        .await
+        .map(|_| ())
+    });
+    if broken {
+        // The deliberate partial install skips creation and exposes its value.
+        assert!(complete(creation.as_mut()).is_ok());
+    } else {
         assert!(
-            complete(initialize(&slot, async || {
-                thread::yield_now();
-                Err(Error::Invalid("creation failed".into()))
-            }))
-            .is_err()
+            creation
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
         );
-        assert_eq!(*complete(lock_owned(slot.clone())), None);
+    }
+    let reader_slot = slot.clone();
+    let reader = thread::spawn(move || {
         assert_eq!(
-            *complete(initialize(&slot, async || Ok(7))).unwrap(),
-            Some(7)
+            *complete(initialize(&reader_slot, async || Ok(7))).unwrap(),
+            Some(7),
+            "failed initialization published partial state"
         );
     });
+    thread::yield_now();
+    if !broken {
+        assert!(complete(creation.as_mut()).is_err());
+    }
+    reader.join().unwrap();
+}
+
+#[test]
+fn failed_initialization_leaves_no_published_projection() {
+    checked(failure, "failed initialization published partial state");
 }
 
 fn cancellation(broken: bool) {

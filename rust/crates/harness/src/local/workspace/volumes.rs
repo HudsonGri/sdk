@@ -67,6 +67,12 @@ pub(super) async fn attach(
             .map_err(|failure| Error::from(failure.error))?
             .value;
         let destination = root.join(relative);
+        // Bind the namespace before the initial source/watch cut. Creating its
+        // parent during the first shell command would author a project change
+        // even when that command only reads. The projection itself stays absent.
+        if let Some(parent) = Path::new(relative).parent() {
+            create_mount_directory(root, parent)?;
+        }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
             .await?;
