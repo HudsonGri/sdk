@@ -136,6 +136,7 @@ fn nested_baseline(
     work: &crate::NativeMaterializationWork,
     original: bool,
     unwind: bool,
+    recheck_items: bool,
 ) -> (Seen, Seen) {
     let inside = std::cell::RefCell::new(None);
     let result = catch_unwind(AssertUnwindSafe(|| {
@@ -158,7 +159,7 @@ fn nested_baseline(
                                 |state| {
                                     state.scope(
                                         |state| &mut state.recheck_items,
-                                        work.recheck_items,
+                                        recheck_items,
                                         |state| {
                                             *inside.borrow_mut() = Some(seen(state));
                                             if unwind {
@@ -218,10 +219,16 @@ fn one_view_scope_equals_the_nested_field_scopes() {
     let captured = invoked.with_capture_custody(&custody).unwrap();
     let rechecked = captured.recheck_admitted();
     let idle = root.state.with_original_leaf(|state| seen(state));
-    for work in [&root, &resource, &invoked, &captured, &rechecked] {
+    for (work, recheck_items) in [
+        (&root, false),
+        (&resource, false),
+        (&invoked, false),
+        (&captured, false),
+        (&rechecked, true),
+    ] {
         for original in [false, true] {
             for unwind in [false, true] {
-                let expected = nested_baseline(work, original, unwind);
+                let expected = nested_baseline(work, original, unwind, recheck_items);
                 assert_eq!(expected.1, idle);
                 assert_eq!(view_scope(work, original, unwind), expected);
             }
