@@ -585,37 +585,7 @@ where
             native_custody: None,
         }));
         context.bind_ordinary_created_owner(owner)?;
-        if context.scope().resource_proofs().is_empty()
-            && context.scope().grants().contains(
-                &self
-                    .volume
-                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
-            )
-        {
-            let context = context
-                .into_shared()?
-                .with_output_bindings(ContentBindings {
-                    reader: FilesystemContentVerifier::new(
-                        self.filesystem.clone(),
-                        &self.verifier,
-                        &self.signed,
-                        self.maximum_payload_bytes,
-                        None,
-                    )?,
-                    writer: Some(FilesystemContentPublisher::new(
-                        self.filesystem.clone(),
-                        &self.volume,
-                        &self.verifier,
-                        &self.signed,
-                        self.maximum_payload_bytes,
-                        None,
-                    )?),
-                })
-                .await?;
-            return Ok(Arc::try_unwrap(context)
-                .unwrap_or_else(|_| unreachable!("fresh context is unshared")));
-        }
-        Ok(context)
+        self.bind_default_output(context).await
     }
 
     pub(in crate::filesystem) async fn bind_task_owner(
@@ -656,7 +626,7 @@ where
         });
         mailbox.validate_scope(context.scope(), None)?;
         context.owned_mailbox = Some(mailbox);
-        Ok(context)
+        self.bind_default_output(context).await
     }
 
     /// Issues the stock runtime's genuine current-owner native task context.
