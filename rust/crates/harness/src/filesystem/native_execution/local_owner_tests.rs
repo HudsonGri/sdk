@@ -465,6 +465,7 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
         )
         .await
         .map_err(|failure| failure.error)?;
+        assert_eq!(std::fs::read(destination.path().join("secret"))?, bytes);
         Ok(())
     } else {
         generation
