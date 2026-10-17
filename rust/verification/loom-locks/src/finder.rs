@@ -575,9 +575,10 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
             Expr::Path(path) => {
                 match self.constructor(path) {
                     Some(found) => self.found |= found,
-                    None if !self.inferred(path) || !self.callees.contains(&key(expr)) => {
-                        self.judge(expr)
+                    None if self.names.path(&path.path).is_none() || !self.inferred(path) => {
+                        self.unresolved.push(expr.to_token_stream().to_string());
                     }
+                    None if !self.callees.contains(&key(expr)) => self.judge(expr),
                     None => {}
                 }
                 if path

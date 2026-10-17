@@ -112,6 +112,18 @@ fn source_corpus_survives_parse_print_and_keeps_the_expected_verdict() {
     }
 }
 
+#[test]
+fn unknown_explicit_owners_cannot_adopt_an_unrelated_expected_type() {
+    for source in [
+        "fn plain() { production::Component::new() }",
+        "type A = <() as Factory>::Lock; fn plain() { A::default() }",
+        "type A = Missing; fn plain() -> u8 { A::default() }",
+        "use B as A; use A as B; fn plain() -> u8 { A::default() }",
+    ] {
+        assert!(indeterminate(source), "{source}: {:?}", verdict(source));
+    }
+}
+
 fn verdict(source: &str) -> Result<bool, String> {
     scan(source).map_err(|error| error.to_string())
 }
