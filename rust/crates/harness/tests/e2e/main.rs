@@ -232,8 +232,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 #[test]
 fn scenarios() -> TestResult {
     let started = Instant::now();
-    let runtime = scenario_runtime()?;
-    runtime.block_on(run_scenarios(started))
+    scenario_runtime()?.block_on(run_scenarios(started))
 }
 
 fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
@@ -245,12 +244,14 @@ fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
 }
 
 const BLOCKING_WORKERS: usize = 16;
-
+const MAX_ASYNC_WORKERS: usize = 32;
 fn scenario_builder() -> tokio::runtime::Builder {
-    // All scenarios share one I/O pool. Waiting for a journal/device must not
-    // consume an async worker, or shrink I/O concurrency on a small CPU set.
     let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder.max_blocking_threads(BLOCKING_WORKERS).enable_all();
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    builder
+        .worker_threads(available.clamp(2, MAX_ASYNC_WORKERS))
+        .max_blocking_threads(BLOCKING_WORKERS)
+        .enable_all();
     builder
 }
 

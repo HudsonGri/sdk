@@ -56,3 +56,28 @@ fn blocking_pool_queues_work_instead_of_creating_another_thread() -> TestResult 
     }
     Ok(())
 }
+
+#[test]
+fn async_pool_matches_the_bounded_workload_and_detects_one_extra_worker() -> TestResult {
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    let expected = available.clamp(2, super::MAX_ASYNC_WORKERS);
+    for broken in [false, true] {
+        let created = Arc::new(AtomicUsize::new(0));
+        let names = created.clone();
+        let mut builder = scenario_builder();
+        if broken {
+            builder.worker_threads(expected + 1);
+        }
+        let runtime = builder
+            .thread_name_fn(move || {
+                names.fetch_add(1, Ordering::SeqCst);
+                "e2e-async-budget".into()
+            })
+            .build()?;
+        let actual = created.load(Ordering::SeqCst);
+        drop(runtime);
+        assert_eq!(actual, expected + usize::from(broken));
+        assert_eq!(actual == expected, !broken);
+    }
+    Ok(())
+}
