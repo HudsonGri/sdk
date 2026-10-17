@@ -215,9 +215,14 @@ async fn run_write_session_at(binding: VolumeBinding, selected_revision: &str) -
             assert!(matches!(
                 attempt,
                 Some(TaskWorkerAttempt::Progress(
-                    TaskWorkerOutcome::Completed { .. }
+                    TaskWorkerOutcome::Suspended { .. }
                 ))
             ));
+            assert_eq!(
+                runtime.task_host().outcome(task).await?,
+                None,
+                "a rejected terminal command cannot close the attached session"
+            );
             let result = results
                 .snapshot(
                     &Query::File(original.result_key(task_folder.clone()).map_err(storage)?),

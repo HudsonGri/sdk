@@ -99,6 +99,14 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Ok(next) = machine.transition(&state, &input) {
             assert!(next.commands.len() <= 1);
+            if state["stage"] == "waiting" && input["commands"][0]["value"].get("Failed").is_some()
+            {
+                assert!(matches!(
+                    next.status,
+                    acyclic_harness::workflow::MachineStatus::Suspended
+                ));
+                assert_eq!(next.state["stage"], "idle");
+            }
             assert_eq!(machine.transition(&state, &input)?, next);
             let bytes = serde_json::to_vec(&next.state)?;
             let decoded: serde_json::Value = serde_json::from_slice(&bytes)?;

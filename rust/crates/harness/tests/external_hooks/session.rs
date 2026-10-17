@@ -101,7 +101,7 @@ proptest! {
     // foreign results and malformed envelopes cannot advance the session.
     #[test]
     fn session_slot_retains_identity_and_round_trips(
-        id in any::<[u8; 16]>(), terminal in any::<bool>(), text in ".{0,128}",
+        id in any::<[u8; 16]>(), terminal in any::<bool>(), rejected in any::<bool>(), text in ".{0,128}",
     ) {
         let machine = CommandSessionMachine::new();
         let command = tool_command(id)?;
@@ -115,18 +115,21 @@ proptest! {
         let waiting = serde_json::from_slice::<Value>(&encoded).map_err(|e| invalid(&e))?;
         prop_assert_eq!(&waiting, &emitted.state);
         let foreign = OperationId::from_bytes(id.map(|byte| byte ^ 1));
-        let valid = result(command.operation_id, json!({"answer":text}));
+        let value = if rejected {json!({"Failed":{"message":text}})} else {json!({"answer":text})};
+        let valid = result(command.operation_id, value);
         for invalid in [Value::Null, input, result(foreign, Value::Null),
             json!({"commands":[]}), json!({"commands":valid["commands"],"extra":true}),
             json!({"commands":[valid["commands"][0],valid["commands"][0]]}),
             json!({"commands":[{"operation_id":command.operation_id}]}),
             json!({"commands":[{"operation_id":command.operation_id,"value":null,"extra":true}]}),
+            result(command.operation_id,json!({"Failed":{"message":42}})),
+            result(command.operation_id,json!({"Failed":{"message":"rejected"},"Succeeded":null})),
         ] {
             prop_assert!(machine.transition(&waiting, &invalid).is_err());
         }
         let settled = machine.transition(&waiting, &valid)?;
         prop_assert!(settled.commands.is_empty());
-        if terminal {
+        if terminal && !rejected {
             prop_assert_eq!(&settled.status, &MachineStatus::Completed {value:Value::Null});
             prop_assert!(machine.transition(&settled.state, &Value::Null).is_err());
         } else {
@@ -135,8 +138,10 @@ proptest! {
             prop_assert!(idle.commands.is_empty());
             prop_assert_eq!(&idle.state, &settled.state);
             let next = tool_command(foreign.into_bytes())?;
-            prop_assert_eq!(machine.transition(&settled.state,
-                &json!({"command":next,"terminal":true}))?.commands, vec![next]);
+            let next = machine.transition(&settled.state,&json!({"command":next,"terminal":true}))?;
+            prop_assert_eq!(next.commands, vec![tool_command(foreign.into_bytes())?]);
+            let closed = machine.transition(&next.state,&result(foreign,Value::Null))?;
+            prop_assert_eq!(closed.status,MachineStatus::Completed{value:Value::Null});
         }
     }
 }

@@ -100,8 +100,22 @@ impl ResumableMachine for CommandSessionMachine {
                 operation_id,
                 terminal,
             } => {
-                require_result(input, operation_id)?;
-                if terminal { State::Closed } else { State::Idle }
+                let result = require_result(input, operation_id)?;
+                let rejected = if result.get("Failed").is_some() {
+                    matches!(
+                        decode::<crate::Outcome<serde::de::IgnoredAny>>(result)?,
+                        crate::Outcome::Failed { .. }
+                    )
+                } else {
+                    false
+                };
+                // Rejection settles this request, including a rejected stop;
+                // it cannot turn untrusted terminal intent into task closure.
+                if terminal && !rejected {
+                    State::Closed
+                } else {
+                    State::Idle
+                }
             }
             State::Ready { .. } => {
                 return Err(invalid("session must start before receiving input"));
@@ -131,7 +145,7 @@ fn dispatch(input: Input, commands: &mut Vec<WorkflowCommand>) -> Result<State> 
     Ok(state)
 }
 
-fn require_result(input: &Value, operation_id: OperationId) -> Result<()> {
+fn require_result(input: &Value, operation_id: OperationId) -> Result<&Value> {
     let envelope = input
         .as_object()
         .filter(|value| value.len() == 1)
@@ -150,10 +164,12 @@ fn require_result(input: &Value, operation_id: OperationId) -> Result<()> {
             .get("operation_id")
             .ok_or_else(|| invalid("session result identity is missing"))?,
     )?;
-    if id != operation_id || !result.contains_key("value") {
+    if id != operation_id {
         return Err(invalid("session result differs from the pending command"));
     }
-    Ok(())
+    result
+        .get("value")
+        .ok_or_else(|| invalid("session result value is missing"))
 }
 
 fn input_schema() -> Value {
