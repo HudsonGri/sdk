@@ -37,6 +37,7 @@ mod config;
 mod context;
 mod files;
 mod inheritance;
+mod interactions;
 mod owner;
 mod owner_record;
 mod runtime;
@@ -277,6 +278,14 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
+            let interactions = AuthorityIssuer::new(
+                "acyclic.local",
+                owner.key,
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: owner.task.to_string(),
+                },
+            );
             let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
                 files: files.clone(),
                 #[cfg(feature = "native-execution")]
@@ -284,6 +293,8 @@ impl LocalHarness {
                 stream,
                 task_volume: &task_volume,
                 issuer: &issuer,
+                interactions: &interactions,
+                tool_policy: config.tool_policy,
                 verifier: &verifier,
                 agent: owner.agent,
                 project: &owner.project,

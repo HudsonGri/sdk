@@ -22,6 +22,11 @@ impl LocalHarness {
         checkout: Option<&Path>,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
+        if config.tool_policy.is_some() {
+            return Err(Error::Invalid(
+                "an existing runtime owns its admitted tool policy".into(),
+            ));
+        }
         let (verifier, signed) = authority;
         let LocalProject::Volume { volume, .. } = &config.project else {
             return Err(Error::Invalid(

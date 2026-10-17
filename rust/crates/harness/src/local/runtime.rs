@@ -7,6 +7,8 @@ pub(super) struct Configuration<'a> {
     pub stream: Arc<LocalStream>,
     pub task_volume: &'a VolumeRef,
     pub issuer: &'a AuthorityIssuer,
+    pub interactions: &'a AuthorityIssuer,
+    pub tool_policy: Option<Arc<dyn crate::runtime::ToolPolicy>>,
     pub verifier: &'a AuthorityVerifier,
     pub agent: AgentId,
     pub project: &'a VolumeRef,
@@ -39,6 +41,7 @@ pub(super) async fn open(
         "task:spawn:acyclic.direct_tool@1".to_owned(),
         "model:generate".to_owned(),
         "operation:declare".to_owned(),
+        crate::contract::capability::INTERACTION_ROUTE.to_owned(),
         "conversation:bind".to_owned(),
         "conversation:append".to_owned(),
         "conversation:select_context".to_owned(),
@@ -144,7 +147,7 @@ pub(super) async fn open(
         config.concurrency,
         config.limits.file_bytes,
         config.clock.clone(),
-        None,
+        config.tool_policy,
         &[creation],
         &crate::durable_tool::ResumableToolRegistry::default(),
         None,
@@ -152,6 +155,19 @@ pub(super) async fn open(
     .await?
     .with_output_volume(config.project, None)?
     .with_task_files(task_files.clone())?;
+    let (verifier, scope) = super::interactions::open(
+        &runtime.task_host().workflow_stream(),
+        config.interactions,
+        config.agent,
+        config.journal,
+    )
+    .await?;
+    runtime = runtime.with_interaction_owner(
+        verifier,
+        crate::core::SchemaRegistry::new(),
+        scope,
+        config.journal.clone(),
+    )?;
     runtime.bind_task_files(Some(projection_files.clone()));
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {

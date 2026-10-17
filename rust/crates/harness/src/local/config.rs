@@ -22,6 +22,7 @@ pub struct LocalHarnessConfig {
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
+    pub(super) tool_policy: Option<Arc<dyn crate::runtime::ToolPolicy>>,
     pub(super) limits: Limits,
     pub(super) run_limits: TaskRunLimits,
     pub(super) session_limits: SessionLimits,
@@ -56,6 +57,7 @@ impl LocalHarnessConfig {
             context_manifest: None,
             tools: Vec::new(),
             default_tools: true,
+            tool_policy: None,
             limits: Limits::default(),
             run_limits: TaskRunLimits::default(),
             session_limits: SessionLimits {
@@ -111,6 +113,12 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn tools(mut self, tools: impl IntoIterator<Item = Tool>) -> Self {
         self.tools.extend(tools);
+        self
+    }
+    /// Selects the host's immutable policy for admission and replay.
+    #[must_use]
+    pub fn tool_policy(mut self, policy: Arc<dyn crate::runtime::ToolPolicy>) -> Self {
+        self.tool_policy = Some(policy);
         self
     }
     /// Selects content, projection and model-loop bounds.

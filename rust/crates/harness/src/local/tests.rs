@@ -25,6 +25,7 @@ mod goals;
 mod hook_configuration;
 #[cfg(all(feature = "native-execution", unix))]
 mod hook_lifecycle;
+mod interactions;
 use std::{
     path::Path,
     sync::{Arc, Mutex},

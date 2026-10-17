@@ -184,6 +184,14 @@ impl Fixture {
                 None,
             )?;
         }
+        let interactions = AuthorityIssuer::new(
+            "test.interactions",
+            [2; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "poll-sweep".into(),
+            },
+        );
         let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
             files: files.clone(),
             #[cfg(feature = "native-execution")]
@@ -191,6 +199,8 @@ impl Fixture {
             stream: stream.clone(),
             task_volume: &self.volumes[3],
             issuer: &self.issuer,
+            interactions: &interactions,
+            tool_policy: None,
             verifier: &verifier,
             agent: AgentId::from_bytes([1; 16]),
             project: if matches!(self.scenario, Scenario::EffectAndContinuation) {
