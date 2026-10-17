@@ -1,5 +1,6 @@
 //! Held-file demand reads: an independent baseline, exact work, reader reuse
-//! under roots that are not local, and a source gate against zero-fill.
+//! under roots that are not local, native error cleanup that frees storage
+//! before refunding its ledger, and a source gate against zero-fill.
 use super::native::{NativeDemandSource, demand_read_work};
 use super::*;
 use crate::model::{FilesystemProfile, VolumeLimits};
@@ -223,6 +224,102 @@ fn remote_reads_reuse_one_reader() -> Result<(), Box<dyn Error>> {
         assert_eq!(bytes, Ok(contents[start..start + 4].to_vec()));
     }
     assert_eq!(source.remote_readers_started(), 1);
+    Ok(())
+}
+
+/// One read charged to an original native ledger: its outcome, the ledger's
+/// live bytes before it, and its trace. The ledger never ends below that
+/// baseline, and outside Windows it returns to it exactly. On Windows an edit
+/// breaks the held file's oplock and the read reopens it; the reopened
+/// handle's storage stays claimed on the read's ledger (a pre-existing claim
+/// with no release, outside this change).
+fn native_read(
+    file: Box<dyn DemandFile>,
+    offset: u64,
+    length: u64,
+) -> Result<(Outcome, u64, Vec<Work>), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let (result, trace) = differential::observe::<_, _, Work>(
+        || (),
+        |()| {
+            let mut accounting = crate::kernel::KernelAccounting::native(&original, &cancellation);
+            outcome(
+                file.read_range(offset, length, &mut accounting)
+                    .map(|chunk| chunk.bytes),
+            )
+        },
+    );
+    drop(file);
+    let live = original.live_allocation_bytes();
+    #[cfg(windows)]
+    assert!(live >= baseline, "the read refunded more than it charged");
+    #[cfg(not(windows))]
+    assert_eq!(live, baseline, "the read leaked capacity");
+    Ok((result, baseline, trace))
+}
+
+/// Frees of charged storage at which the ledger held less than the baseline
+/// plus the storage still live.
+fn refunded_while_live(baseline: u64, trace: &[Work]) -> Vec<Work> {
+    trace
+        .iter()
+        .copied()
+        .filter(|&(operation, live, charged)| operation == "free" && live < baseline + charged)
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    /// Native reads that fail after their storage is charged, here because
+    /// the file changed, free that storage before the ledger refunds it.
+    #[test]
+    fn native_read_errors_free_storage_before_refunding(
+        size in 1_usize..5_000,
+        offset in 0_u64..6_000,
+        length in 1_u64..6_000,
+        edited in any::<bool>(),
+    ) {
+        let runtime = runtime();
+        let contents: Vec<u8> = (0..size).map(|byte| (byte * 7 + 3) as u8).collect();
+        let (directory, _source, file) = held(&runtime, &contents, false).unwrap();
+        let current = if edited {
+            let edit: Vec<u8> = contents.iter().map(|byte| byte ^ 0x33).chain([2]).collect();
+            std::fs::write(directory.path().join("file"), &edit).unwrap();
+            edit
+        } else {
+            contents.clone()
+        };
+        let (actual, baseline, trace) = native_read(file, offset, length).unwrap();
+        prop_assert_eq!(actual, baseline_read(&contents, &current, offset, length));
+        prop_assert_eq!(refunded_while_live(baseline, &trace), Vec::<Work>::new());
+        let charged = (size as u64).saturating_sub(offset).min(length);
+        if edited && charged > 0 {
+            prop_assert!(
+                trace.iter().any(|&(operation, ..)| operation == "free"),
+                "the failed read freed no charged storage"
+            );
+        }
+    }
+}
+
+/// Refunding before freeing, as separate bindings did, is detected.
+#[test]
+fn refunding_before_freeing_is_detected() -> Result<(), Box<dyn Error>> {
+    let runtime = runtime();
+    let contents = vec![7_u8; 4096];
+    let (directory, _source, file) = held(&runtime, &contents, false)?;
+    std::fs::write(directory.path().join("file"), [8_u8; 4097])?;
+    let (actual, baseline, trace) =
+        crate::native_host::charged::refunding_first(|| native_read(file, 0, 4096))?;
+    assert_eq!(actual, Err("StaleVersion".to_owned()));
+    assert_ne!(
+        refunded_while_live(baseline, &trace),
+        Vec::<Work>::new(),
+        "an early refund was not detected"
+    );
     Ok(())
 }
 

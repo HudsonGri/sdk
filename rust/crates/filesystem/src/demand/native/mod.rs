@@ -29,6 +29,7 @@ include!("metadata.rs");
 pub(crate) mod demand_read_work;
 mod queue;
 mod remote;
+use crate::native_host::charged::Charged;
 
 #[cfg(unix)]
 type DemandPath = PathBuf;

@@ -188,9 +188,7 @@ impl NativeDemandFile {
                 Option<crate::NativeAllocation>,
             >(&meter)
             .map_err(native)?;
-            let (mut data, allocation) =
-                crate::native_host::buffer::<u8, _>(capacity, &mut &original)
-                    .map_err(crate::native_name::original_name_error)?;
+            let mut data = Charged::<Vec<u8>>::buffer(capacity, &original)?;
             #[cfg(test)]
             demand_read_work::storage(&mut data);
             let retained = data.capacity() as u64;
@@ -200,11 +198,7 @@ impl NativeDemandFile {
                 output_bytes: data.len() as u64,
                 ..WorkCounters::UNCHARGED
             })?;
-            let bytes = acyclic_stream::OwnedBytes::from_vec_with_reserved_guard(
-                (data, Some(allocation)),
-                header,
-            )
-            .map_err(|failure| match failure.into_error() {
+            let bytes = data.into_owned_bytes(header).map_err(|error| match error {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => native(error),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
                     DemandError::InvalidRequest
