@@ -109,17 +109,6 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
 
         let reopened = LocalHarness::open(config()?).await?;
         let files = Arc::clone(&reopened.task_files);
-        let (child, view) = reopened
-            .admit_child_request(files.as_ref(), &request)
-            .await?;
-        assert_eq!(child, expected);
-        let (same, replay) = reopened
-            .admit_child_request(files.as_ref(), &request)
-            .await?;
-        assert_eq!(
-            (same, replay.workspace().id()),
-            (child, view.workspace().id())
-        );
         let parent_context = reopened.runtime.task_context(parent, fence.clone()).await?;
         parent_context
             .stage_file(
@@ -131,6 +120,18 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
                 "source.txt",
             )
             .await?;
+        drop(parent_context);
+        let (child, view) = reopened
+            .admit_child_request(files.as_ref(), &request)
+            .await?;
+        assert_eq!(child, expected);
+        let (same, replay) = reopened
+            .admit_child_request(files.as_ref(), &request)
+            .await?;
+        assert_eq!(
+            (same, replay.workspace().id()),
+            (child, view.workspace().id())
+        );
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
         let mut accounting = budget.accounting(&cancellation);
@@ -143,7 +144,6 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
             b"original"
         );
         drop(accounting);
-        drop(parent_context);
         let host = reopened.runtime.task_host();
         let WorkPull::Claimed(lease) = host
             .pull_work(
