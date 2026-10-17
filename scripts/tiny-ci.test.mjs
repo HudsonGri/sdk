@@ -163,7 +163,7 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
 });
 
-test('the required job checks Cargo lock consistency and committed lane artifacts without builds or installs',()=>{
+test('the required job checks Cargo lock consistency, committed lane artifacts and Loom model classification without builds or installs',()=>{
  const job=YAML.parse(read(STATIC)).jobs.static;
  assert.equal(job.name,'SDK Static');
  assert.equal(job.env.RUSTUP_TOOLCHAIN,'stable');
@@ -173,6 +173,7 @@ test('the required job checks Cargo lock consistency and committed lane artifact
    +'fi\n'
    +'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"\n',
   'node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs',
+  'node --test scripts/check-loom-models.test.mjs',
   'cargo update --workspace --locked',
  ]);
  assert.equal(job.steps.filter(step=>step.uses).length,1);

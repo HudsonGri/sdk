@@ -10,8 +10,6 @@ use crate::{
 use crate::goal::request_head as record;
 use record::Turn;
 mod goal;
-#[cfg(all(test, acyclic_harness_loom))]
-mod model;
 #[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
 mod poll_sweep;
 #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -21,7 +19,9 @@ mod tests;
 
 const HEAD: &str = "inputs/current.json";
 
-// The same serialization boundary and predicate are exercised by the Loom model.
+// Every admission entry point holds this gate across its head read, request
+// publication and admission. The admission race tests drive the real entry
+// points against a holder parked at each cut, with a separate-gate mutant.
 pub(super) async fn serialized<T>(
     gate: &StateArc<Mutex<()>>,
     action: impl AsyncFnOnce() -> T,
