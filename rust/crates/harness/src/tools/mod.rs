@@ -9,9 +9,10 @@ pub use defaults::defaults;
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
 mod command;
+mod fs_command;
 mod workspace_executor;
 pub use command::parse_command;
-pub(crate) use command::{FsCommand, parse_fs_command};
+pub(crate) use fs_command::{FsCommand, parse_fs_command};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
