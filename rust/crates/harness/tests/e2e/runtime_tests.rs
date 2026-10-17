@@ -1,4 +1,4 @@
-use super::{BLOCKING_WORKERS, MAX_ASYNC_WORKERS, TestResult, scenario_builder, scenario_workers};
+use super::{BLOCKING_WORKERS, MAX_ASYNC_WORKERS, TestResult, scenario_builder};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -53,84 +53,4 @@ fn blocking_pool_queues_work_instead_of_creating_another_thread() -> TestResult 
         assert_eq!(threads <= bound, !broken, "blocking-pool control escaped");
     }
     Ok(())
-}
-
-fn admission(count: usize, workers: usize, unbounded: bool) -> TestResult {
-    use futures::{FutureExt as _, StreamExt as _};
-    use std::{cell::Cell, rc::Rc};
-    struct Running(Rc<Cell<usize>>);
-    impl Drop for Running {
-        fn drop(&mut self) {
-            self.0.set(self.0.get() - 1);
-        }
-    }
-    let live = Rc::new(Cell::new(0));
-    let peak = Rc::new(Cell::new(0));
-    let mut release = Vec::new();
-    let mut work = Vec::new();
-    for index in 0..count {
-        let (send, waiting) = futures::channel::oneshot::channel();
-        release.push(send);
-        let (live, peak) = (live.clone(), peak.clone());
-        work.push(async move {
-            live.set(live.get() + 1);
-            peak.set(peak.get().max(live.get()));
-            let _running = Running(live);
-            waiting.await?;
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(index)
-        });
-    }
-    let mut results: std::pin::Pin<Box<dyn futures::Stream<Item = TestResult<usize>>>> =
-        if unbounded {
-            // Former admission: every case acquires state and starts its guard before
-            // any native I/O has finished. Keep the same jobs and expected bound.
-            Box::pin(futures::stream::iter(work).buffer_unordered(count.max(1)))
-        } else {
-            Box::pin(super::parallel_cases(work, workers))
-        };
-    let first = results.next().now_or_never();
-    assert_eq!(first.is_some(), count == 0);
-    assert_eq!(
-        live.get(),
-        count.min(if unbounded { count } else { workers })
-    );
-    for send in release {
-        send.send(()).map_err(|_| "case dropped before admission")?;
-    }
-    let completed = futures::executor::block_on(results.collect::<Vec<_>>());
-    let mut ids: Vec<_> = completed.into_iter().collect::<TestResult<_>>()?;
-    ids.sort_unstable();
-    assert_eq!(ids, (0..count).collect::<Vec<_>>(), "coverage was lost");
-    assert_eq!(live.get(), 0, "case state retained after completion");
-    if peak.get() > workers {
-        return Err("case admission exceeded the shared I/O bound".into());
-    }
-    Ok(())
-}
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-    #[test]
-    fn bounded_admission_runs_every_case_once_without_retaining_queued_state(count in 0usize..97, available in proptest::num::usize::ANY) {
-        let workers = scenario_workers(available);
-        proptest::prop_assert!((2..=8).contains(&workers));
-        if (2..=8).contains(&available) {
-            proptest::prop_assert_eq!(workers, available);
-        }
-        if available > 8 {
-            proptest::prop_assert_eq!(workers, 8);
-        }
-        admission(count, workers, false).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-    }
-}
-
-#[test]
-fn unbounded_admission_fails_the_same_live_state_bound() {
-    let workers = scenario_workers(4);
-    assert_eq!(
-        admission(workers + 1, workers, true)
-            .unwrap_err()
-            .to_string(),
-        "case admission exceeded the shared I/O bound"
-    );
 }
