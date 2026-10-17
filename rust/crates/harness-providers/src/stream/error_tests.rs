@@ -107,7 +107,7 @@ fn recognized_stream_errors_match_http_classes_across_providers() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     // Property: untrusted messages and unknown discriminants cannot change a
-    // recognized error class or appear in its sanitized diagnostic.
+    // recognized error class; the diagnostic retains their exact message.
     #[test]
     fn messages_are_irrelevant_to_classification_and_chunking(message in ".{0,128}") {
         for (tag, adapter, event) in [
@@ -117,7 +117,9 @@ proptest! {
             (3u8, Adapter::Gemini, json!({"error":{"code":429,"message":message}})),
         ] {
             let expected = if adapter == Adapter::Anthropic {529} else if adapter == Adapter::Responses {500} else {429};
-            prop_assert_eq!(classify(adapter, &event).to_string(), crate::http_error(expected).to_string());
+            let error = classify(adapter, &event);
+            prop_assert!(error.to_string().contains(&message));
+            prop_assert_eq!(code(error), code(crate::http_error(expected)));
             let mut seed = vec![tag];
             seed.extend_from_slice(format!("data: {event}\n\n").as_bytes());
             crate::fuzzing::assert_stream_invariants(&seed);

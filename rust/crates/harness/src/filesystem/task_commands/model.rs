@@ -204,7 +204,10 @@ where
                 if reconciliation_only {
                     return Self::reconcile_model(result.map(drop), journal, Some(io)).await;
                 }
-                let (progress, custody) = result?;
+                let (progress, custody) = match result {
+                    Ok(result) => result,
+                    Err(error) => return Self::model_error(error, Some(io)),
+                };
                 io.absorb_native_custody(custody)?;
                 Self::model_progress(progress, Some(io))
             })?
@@ -234,7 +237,10 @@ where
                 let result = execution.reconcile_progress(input).await;
                 return Self::reconcile_model(result.map(drop), require_journal()?, io).await;
             }
-            Self::model_progress(execution.execute_progress(input).await?, io)
+            match execution.execute_progress(input).await {
+                Ok(progress) => Self::model_progress(progress, io),
+                Err(error) => Self::model_error(error, io),
+            }
         })?
         .await
     }
@@ -248,6 +254,15 @@ where
             ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             ExecutionProgress::Rejected(reason) => rejected(reason, io),
         }
+    }
+
+    fn model_error(error: Error, io: Option<&PreparationIo>) -> Result<TaskCommandProgress> {
+        let Error::ModelFailed { message, #[cfg(not(target_arch = "wasm32"))] custody } = error else { return Err(error); };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            io.absorb_native_custody(custody.ok_or_else(|| boundary(Some(io), ErrorCode::Invalid, "model failure lost native custody"))?)?;
+        }
+        ready(Outcome::<Value>::Failed { message }, io)
     }
 
     async fn reconcile_model(

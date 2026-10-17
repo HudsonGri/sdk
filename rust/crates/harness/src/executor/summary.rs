@@ -136,6 +136,7 @@ impl StockExecution<'_> {
                         self.io,
                     )?;
                 }
+                ModelEvent::Failed { message } => return Err(self.model_failure(&message)?),
                 ModelEvent::ToolCall(_) => {
                     return Err(stock_boundary(
                         self.io,

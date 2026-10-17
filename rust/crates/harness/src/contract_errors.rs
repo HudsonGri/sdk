@@ -66,6 +66,15 @@ pub enum Error {
     /// Durable provider operation failed.
     #[error("storage failure: {0}")]
     Storage(String),
+    /// A known model failure whose terminal observation has been journaled.
+    #[error("{message}")]
+    ModelFailed {
+        /// Provider or transport diagnostic.
+        message: String,
+        /// Original custody for a native diagnostic.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        custody: Option<acyclic_fs::NativeAllocation>,
+    },
     /// Native process creation, capture, or hook configuration IO failed.
     #[error("process {kind}: {message}")]
     Process {
@@ -384,7 +393,7 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
+            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } | Self::ModelFailed { .. } => ErrorCode::Storage,
             Self::Process { .. } => ErrorCode::Invalid,
             Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

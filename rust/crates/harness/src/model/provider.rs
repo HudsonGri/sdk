@@ -23,6 +23,11 @@ pub enum ModelEvent {
     },
     /// Complete registered tool invocation.
     ToolCall(ToolCall),
+    /// A known terminal provider failure, retained for deterministic replay.
+    Failed {
+        /// Provider status and diagnostic, or the transport failure message.
+        message: String,
+    },
     /// Completed model step.
     Completed {
         /// Usage and finish metadata.
@@ -98,6 +103,7 @@ impl ModelEvent {
     pub fn logical_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
+            Self::Failed { message } => message.capacity() as u64,
             Self::ReasoningBlock { block } => block.payload_bytes()?,
             Self::ToolCall(call) => call.payload_bytes()?,
             Self::Completed { metadata } => {

@@ -23,7 +23,16 @@ impl StockExecution<'_> {
                     crate::InteractionRejection::Cancelled,
                 ))
             }
-            Either::Right((result, _)) => result,
+            Either::Right((result, _)) => {
+                let events = result?;
+                if let Some(message) = events.iter().find_map(|event| match event {
+                    ModelEvent::Failed { message } => Some(message.as_str()),
+                    _ => None,
+                }) {
+                    return Err(self.model_failure(message)?);
+                }
+                Ok(events)
+            }
         }
     }
 
@@ -108,13 +117,12 @@ impl StockExecution<'_> {
             .await?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
-                Either::Right(
-                    self.stock
-                        .provider
-                        .generate_with_native_work(&request, dispatch, work)?
-                        .await?
-                        .map(|result| self.admit_model_event(result)),
-                )
+                let result = async { self.stock.provider.generate_with_native_work(&request, dispatch, work)?.await }.await;
+                let stream = match result {
+                    Ok(stream) => stream,
+                    Err(error) => crate::model::NativeModelStream::new(work, || futures::stream::once(async move { Err(error) }))?,
+                };
+                Either::Right(stream.map(|result| self.admit_model_event(result)))
             } else {
                 Either::Left(self.stock.provider.generate(request, dispatch))
             };
@@ -328,7 +336,11 @@ impl StockExecution<'_> {
         {
             let mut stream = stream;
             while let Some(event) = stream.next().await {
-                let event = event?;
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => self.failed_event(error)?,
+                };
+                let failed = matches!(event, ModelEvent::Failed { .. });
                 let index = observed.len();
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
@@ -355,9 +367,44 @@ impl StockExecution<'_> {
                         io,
                     )?
                     .await?;
+                if failed { break; }
             }
         }
         Ok(observed)
+    }
+
+    fn failed_event(&self, error: Error) -> Result<ModelEvent> {
+        if error.code() == crate::wire::ErrorCode::Indeterminate
+            || matches!(error, Error::InteractionRejected(_)) {
+            return Err(error);
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if error.is_native_failure() && !matches!(error, Error::NativeBoundary { .. } | Error::NativeDiagnostic { .. }) {
+            return Err(error);
+        }
+        let message = 'message: {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(work) = self.native_work() {
+                let (message, custody) = work.display(&error)?;
+                self.io.ok_or_else(|| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "model failure lost its observer"))?.absorb_native_custody(custody)?;
+                break 'message message;
+            }
+            break 'message error.to_string();
+        };
+        Ok(ModelEvent::Failed { message })
+    }
+
+    pub(super) fn model_failure(&self, message: &str) -> Result<Error> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = self.native_work() {
+            let (message, custody) = work.display(format_args!("{message}"))?;
+            return Ok(Error::ModelFailed { message, custody: Some(custody) });
+        }
+        Ok(Error::ModelFailed {
+            message: message.to_owned(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            custody: None,
+        })
     }
 
     async fn require_model_producer(&self) -> Result<()> {

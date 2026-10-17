@@ -2,7 +2,7 @@ use super::{Adapter, Value, invalid};
 use acyclic_harness::Error;
 
 // Only recognized protocol discriminants affect classification. Remote messages,
-// headers and unknown codes never enter the returned diagnostic.
+// headers and unknown codes never determine the error class.
 pub(super) fn classify(adapter: Adapter, event: &Value) -> Error {
     let error = event
         .get("error")
@@ -38,9 +38,11 @@ pub(super) fn classify(adapter: Adapter, event: &Value) -> Error {
                 })
         }
     });
+    let message = error["message"].as_str().unwrap_or("");
     match status {
-        Some(status) => crate::http_error(status),
-        None => invalid("model provider reported a stream error"),
+        Some(status) => crate::http_error_with_message(status, message),
+        None if message.is_empty() => invalid("model provider reported a stream error"),
+        None => invalid(format!("model provider reported a stream error: {message}")),
     }
 }
 

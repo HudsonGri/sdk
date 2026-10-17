@@ -247,6 +247,7 @@ pub fn admit_model_event(
         ModelEvent::Reasoning { .. }
         | ModelEvent::ReasoningBlock { .. }
         | ModelEvent::ToolCall(_)
+        | ModelEvent::Failed { .. }
         | ModelEvent::Completed { .. } => prior_text_bytes,
     };
     if text_bytes > limits.file_bytes {

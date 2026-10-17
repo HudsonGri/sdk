@@ -118,6 +118,7 @@ impl StockExecution<'_> {
                     stock_vec_push(&mut calls, (invocation, index), self.io)?;
                 }
                 ModelEvent::Completed { metadata } => completed = metadata,
+                ModelEvent::Failed { message } => return Err(self.model_failure(&message)?),
                 ModelEvent::ReasoningBlock { block } => {
                     self.append_assistant_part(
                         prior_messages,

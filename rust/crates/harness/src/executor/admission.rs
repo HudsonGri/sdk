@@ -48,6 +48,11 @@ impl ModelEventAdmission {
                 "model emitted an event after completion",
             ));
         }
+        if let ModelEvent::Failed { .. } = event {
+            with_history_io(io, |work| {
+                crate::executor::json::json_byte_length(event, limits.render_bytes.min(limits.file_bytes), work).map(|_| ())
+            })?;
+        }
         if let ModelEvent::ReasoningBlock { block } = event {
             with_history_io(io, |work| {
                 block.validate_limits(limits, work)?;
@@ -152,7 +157,7 @@ impl ModelEventAdmission {
                     Ok::<_, Error>(())
                 })?;
             }
-            ModelEvent::Completed { .. } => self.completed = true,
+            ModelEvent::Completed { .. } | ModelEvent::Failed { .. } => self.completed = true,
             ModelEvent::Content { .. }
             | ModelEvent::Reasoning { .. }
             | ModelEvent::ReasoningBlock { .. } => {}

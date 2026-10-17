@@ -4,6 +4,8 @@ use bytes::Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt as _;
 use std::collections::BTreeMap;
+mod error;
+pub(crate) use error::response_error;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
@@ -110,10 +112,10 @@ impl ReqwestTransport {
             .body(request.body)
             .send()
             .await
-            .map_err(|_| transport_error(native, "model HTTP exchange failed"))?;
+            .map_err(|error| transport_error(native, if error.is_timeout() { "model HTTP idle-read timeout" } else { "model HTTP exchange failed" }))?;
         let status = response.status().as_u16();
         let body = response.bytes_stream().map(move |chunk| {
-            chunk.map_err(|_| transport_error(native, "model HTTP body interrupted"))
+            chunk.map_err(|error| transport_error(native, if error.is_timeout() { "model HTTP idle-read timeout" } else { "model HTTP body interrupted" }))
         });
         #[cfg(not(target_arch = "wasm32"))]
         let body = native::body(body, work)?;
@@ -123,10 +125,18 @@ impl ReqwestTransport {
     }
     /// Creates the platform transport. Credentials are never forwarded across redirects.
     pub fn new() -> Result<Self> {
+        Self::with_read_timeout(std::time::Duration::from_secs(30))
+    }
+
+    /// Creates the transport with a bounded idle read, including response headers.
+    /// A partial model stream is never retried by this transport.
+    pub fn with_read_timeout(timeout: std::time::Duration) -> Result<Self> {
+        if timeout.is_zero() { return Err(super::invalid("model HTTP idle-read timeout must be positive")); }
         let builder = reqwest::Client::builder();
         #[cfg(not(target_arch = "wasm32"))]
         let builder = builder
             .redirect(reqwest::redirect::Policy::none())
+            .read_timeout(timeout)
             .retry(reqwest::retry::never());
         Ok(Self(builder.build().map_err(|_| {
             super::invalid("HTTP client initialization failed")

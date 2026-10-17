@@ -225,10 +225,7 @@ pub(crate) fn generate<'a>(
                     let mut recovery = dispatch::Recovery::default();
                     loop {
                         let failure = if !(200..300).contains(&response.status) {
-                            let status = response.status;
-                            drop(response);
-                            let mut hold = work.claim(64, 1, WorkCounters::UNCHARGED)?;
-                            diagnostic::<()>(Err(crate::http_error(status)), &mut hold).err()
+                            Some(crate::http::response_error(response, provider.config.max_event_bytes, Some(work)).await?)
                         } else {
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                             let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;

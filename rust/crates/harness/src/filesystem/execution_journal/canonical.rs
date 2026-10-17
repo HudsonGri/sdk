@@ -351,6 +351,7 @@ where
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }
                             ModelEvent::Completed { .. }
+                            | ModelEvent::Failed { .. }
                             | ModelEvent::Reasoning { .. }
                             | ModelEvent::ReasoningBlock { .. } => {}
                             ModelEvent::ToolCall(_) => {

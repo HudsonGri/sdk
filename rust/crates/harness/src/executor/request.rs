@@ -245,7 +245,7 @@ fn completed_model_events(
     events: Vec<ModelEvent>,
     operation_id: OperationId,
 ) -> Result<Vec<ModelEvent>> {
-    if !matches!(events.last(), Some(ModelEvent::Completed { .. })) {
+    if !matches!(events.last(), Some(ModelEvent::Completed { .. } | ModelEvent::Failed { .. })) {
         return Err(Error::Indeterminate(operation_id));
     }
     Ok(events)

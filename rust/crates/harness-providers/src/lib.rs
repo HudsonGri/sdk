@@ -81,10 +81,28 @@ fn invalid(reason: impl Into<String>) -> Error {
 }
 
 fn http_error(status: u16) -> Error {
-    let message = format!("model HTTP status {status}");
+    http_error_with_message(status, "")
+}
+
+fn http_error_with_message(status: u16, detail: &str) -> Error {
+    let message = if detail.is_empty() { format!("model HTTP status {status}") }
+        else { format!("model HTTP status {status}: {detail}") };
+    http_error_from_message(status, message)
+}
+
+fn http_error_code(status: u16) -> acyclic_harness::wire::ErrorCode {
+    use acyclic_harness::wire::ErrorCode;
     match status {
-        401 | 403 => Error::Unauthorized(message),
-        408 | 429 | 500..=599 => Error::Storage(message),
+        401 | 403 => ErrorCode::Unauthorized,
+        408 | 429 | 500..=599 => ErrorCode::Storage,
+        _ => ErrorCode::Invalid,
+    }
+}
+
+fn http_error_from_message(status: u16, message: String) -> Error {
+    match http_error_code(status) {
+        acyclic_harness::wire::ErrorCode::Unauthorized => Error::Unauthorized(message),
+        acyclic_harness::wire::ErrorCode::Storage => Error::Storage(message),
         _ => Error::Invalid(message),
     }
 }

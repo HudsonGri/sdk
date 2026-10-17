@@ -45,7 +45,7 @@ pub(crate) fn generate_encoded<'a>(
             let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
             let failure = if !(200..300).contains(&response.status) {
-                Some(crate::http_error(response.status))
+                Some(crate::http::response_error(response, provider.config.max_event_bytes, #[cfg(not(target_arch = "wasm32"))] None).await?)
             } else {
                 let mut events = crate::stream::events_named(provider.config.adapter, response.body,
                     provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
