@@ -29,7 +29,13 @@ impl LocalHarness {
         reference: &Component,
         values: &BTreeMap<FileKey, FileValue>,
     ) -> Result<(u64, Vec<FileValue>)> {
-        if self.runtime.task_host().outcome(child).await?.is_some() {
+        if self
+            .runtime
+            .task_host()
+            .terminal_status(child)
+            .await?
+            .is_some()
+        {
             return Err(Error::Indeterminate(OperationId::from_bytes(
                 child.into_bytes(),
             )));

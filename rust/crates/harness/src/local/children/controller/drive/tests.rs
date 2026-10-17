@@ -57,10 +57,10 @@ async fn outcome_after_ready_child_io(broken: bool) -> Result<bool> {
     // cooperative budget yields so Pending identifies the held gate, not a
     // scheduler slice. A broken driver fails this probe instead of hanging.
     let output = if broken {
-        tokio::task::unconstrained(host.outcome(task)).now_or_never()
+        tokio::task::unconstrained(host.terminal_status(task)).now_or_never()
     } else {
         tokio::task::unconstrained(during(
-            host.outcome(task),
+            host.terminal_status(task),
             parent.as_mut(),
             &mut parent_done,
             &mut jobs,

@@ -76,7 +76,7 @@ fn replay_admission_preserves_results_and_errors_with_zero_workspace_work() {
         .enable_all()
         .build()
         .unwrap();
-    let pair = differential::pair(
+    let pair = differential::pair::<_, _, (&'static str, u64)>(
         || runtime.block_on(fixture()),
         |(_directory, harness, request), old| {
             runtime.block_on(async {
@@ -161,4 +161,72 @@ fn replay_admission_preserves_results_and_errors_with_zero_workspace_work() {
     std::panic::catch_unwind(|| no_view_work(&pair[0].1, true))
         .expect_err("redundant view work was not detected");
     no_view_work(&pair[0].1, false);
+}
+
+fn no_result_body(trace: &[(&str, u64)], check: bool) {
+    if check {
+        assert!(
+            trace.is_empty(),
+            "terminal status loaded its result body: {trace:?}"
+        );
+    }
+}
+
+#[test]
+fn preparation_status_preserves_bytes_and_errors_without_loading_its_report() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let pair = differential::pair::<_, _, (&'static str, u64)>(
+        || runtime.block_on(fixture()),
+        |(_directory, harness, _request), old| {
+            runtime.block_on(async {
+                let host = harness.runtime.task_host();
+                let task = TaskId::from_bytes(
+                    child_operation(harness.task_files.volume(), "delegate", b"preparation")
+                        .unwrap()
+                        .into_bytes(),
+                );
+                let mut report_bytes = 0;
+                let status = if old {
+                    let Some(crate::Outcome::Succeeded(value)) = host.outcome(task).await.unwrap()
+                    else {
+                        panic!("fixture preparation did not complete");
+                    };
+                    report_bytes =
+                        crate::contract::canonical_json_bytes(&value).unwrap().len() as u64;
+                    Some(crate::Outcome::Succeeded(()))
+                } else {
+                    host.terminal_status(task).await.unwrap()
+                };
+                assert_eq!(status, Some(crate::Outcome::Succeeded(())));
+                let absent = TaskId::from_bytes([0xfd; 16]);
+                let error = if old {
+                    host.outcome(absent).await.unwrap_err().to_string()
+                } else {
+                    host.terminal_status(absent).await.unwrap_err().to_string()
+                };
+                let output = (serde_json::to_vec(&status).unwrap(), error, report_bytes);
+                harness.disconnect().await.unwrap();
+                output
+            })
+        },
+    );
+    assert_eq!((&pair[0].0.0, &pair[0].0.1), (&pair[1].0.0, &pair[1].0.1));
+    let bytes = pair[0].0.2;
+    assert!(bytes > 4096, "fixture omitted the large fork report");
+    assert_eq!(
+        pair[0].1,
+        vec![
+            ("read", bytes),
+            ("verify", bytes),
+            ("retain", 0),
+            ("verify", bytes)
+        ]
+    );
+    no_result_body(&pair[1].1, true);
+    std::panic::catch_unwind(|| no_result_body(&pair[0].1, true))
+        .expect_err("redundant result loading escaped the work assertion");
+    no_result_body(&pair[0].1, false);
 }

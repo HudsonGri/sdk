@@ -11,7 +11,7 @@ impl LocalHarness {
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
-            let mut cursor = snapshot.cursor;
+            let mut cursor = follow::Follow::new(snapshot.cursor);
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
                 .files
@@ -78,7 +78,7 @@ impl LocalHarness {
                 })
                 .await?;
                 if let Some(crate::Outcome::Indeterminate { operation_id }) =
-                    self.runtime.task_host().outcome(task).await?
+                    self.runtime.task_host().terminal_status(task).await?
                 {
                     return Err(Error::Indeterminate(operation_id));
                 }

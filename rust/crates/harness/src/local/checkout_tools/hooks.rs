@@ -172,7 +172,7 @@ impl CheckoutTools {
                 context.operation_id(),
                 1,
                 PublicationPermit::Unrestricted,
-                Some((Arc::clone(&publication_owner), false)),
+                Some((Arc::clone(&publication_owner), true)),
             )
             .await?;
             owner.verify_owner(None)?.await?;

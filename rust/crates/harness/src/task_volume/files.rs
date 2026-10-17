@@ -64,7 +64,6 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         })
     }
 
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) const fn maximum_bytes(&self) -> u64 {
         self.maximum_bytes
     }

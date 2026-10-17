@@ -1,5 +1,5 @@
 use super::*;
-use crate::task_volume::{Component, Cursor, Query};
+use crate::task_volume::{Component, Query};
 use futures::{FutureExt as _, StreamExt as _};
 use std::cell::RefCell;
 use tokio::sync::{mpsc, oneshot};
@@ -14,7 +14,7 @@ thread_local! { static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None
 pub(in crate::local::children) async fn probe(
     files: &crate::task_volume::TaskFiles<acyclic_stream::LocalStream>,
     reference: &Component,
-    cursor: &mut Cursor,
+    cursor: &mut super::super::controller::follow::Follow,
 ) -> Result<()> {
     let Some(mut probe) = PROBE.with(|slot| slot.borrow_mut().take()) else {
         return Ok(());
@@ -24,7 +24,7 @@ pub(in crate::local::children) async fn probe(
         Some(
             files
                 .inner
-                .follow(query.clone(), cursor.clone())
+                .follow(query.clone(), cursor.cursor.clone())
                 .await
                 .map_err(storage)?,
         )
@@ -35,7 +35,7 @@ pub(in crate::local::children) async fn probe(
     probe.proceed.recv().await.unwrap();
     if let Some(changes) = &mut retained {
         while let Some(next) = changes.next().now_or_never() {
-            *cursor = next.unwrap().map_err(storage)?.cursor;
+            cursor.cursor = next.unwrap().map_err(storage)?.cursor;
         }
     } else {
         while let Some(next) =

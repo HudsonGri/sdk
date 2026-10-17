@@ -528,7 +528,7 @@ impl LocalHarness {
         )
         .await?;
         if !matches!(
-            host.outcome(TaskId::from_bytes(preparation_operation.into_bytes()))
+            host.terminal_status(TaskId::from_bytes(preparation_operation.into_bytes()))
                 .await?,
             Some(crate::Outcome::Succeeded(_))
         ) {
@@ -597,7 +597,10 @@ impl LocalHarness {
         let view = io.sdk(io_ref.finish(opened, &accounting))?;
         let work = io.receipt();
         acyclic_test_support::differential::record(("view-items", work.items_examined));
-        acyclic_test_support::differential::record(("view-allocations", work.allocation_operations));
+        acyclic_test_support::differential::record((
+            "view-allocations",
+            work.allocation_operations,
+        ));
         Ok(view)
     }
 }
