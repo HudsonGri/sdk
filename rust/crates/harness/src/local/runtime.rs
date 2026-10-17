@@ -34,6 +34,7 @@ pub(super) async fn open(
     let definition = stock.definition()?;
     let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
     let mut grants = vec![
+        "task:spawn:acyclic.direct_tool@1".to_owned(),
         "model:generate".to_owned(),
         "operation:declare".to_owned(),
         "conversation:bind".to_owned(),
@@ -115,6 +116,7 @@ pub(super) async fn open(
     tasks.register(definition)?;
     tasks.register(fork)?;
     let mut machines = MachineRegistry::default();
+    LocalHarness::register_commands(&mut tasks, &mut machines)?;
     machines.register(stock, &mut None)?;
     machines.register(preparation, &mut None)?;
     let runtime = LocalTaskRuntime::open(
@@ -137,7 +139,8 @@ pub(super) async fn open(
         None,
     )
     .await?
-    .with_output_volume(config.project, None)?;
+    .with_output_volume(config.project, None)?
+    .with_private_volume(config.scratch, None)?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
         Some(workspace) => {

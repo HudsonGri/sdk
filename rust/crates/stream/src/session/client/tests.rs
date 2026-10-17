@@ -1,20 +1,26 @@
 use super::*;
+use crate::grpc;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
+use tonic::Request;
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 mod admissions;
 mod allocations;
 mod checked;
+mod checked_recovery;
+mod connections;
 mod context;
 mod credentials;
+mod data;
 mod isolation;
 mod latest;
 mod lifecycle;
 mod outbound;
+mod recovery;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 mod fixture {
@@ -239,16 +245,23 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
     let mut samples = Vec::new();
     for sequence in 1..=144 {
         let started = std::time::Instant::now();
-        provider
-            .append(AppendRequest {
-                path: path.clone(),
-                records: vec![OwnedBytes::from_static(b"delta")],
-                if_tail: None,
-                idempotency_key: None,
-            })
-            .await?;
-        let record = next(&mut follow).await?;
-        let elapsed = started.elapsed().as_nanos();
+        let (_, record, elapsed) = crate::test_latency::sample(
+            async {
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+                    provider
+                        .append(AppendRequest {
+                            path: path.clone(),
+                            records: vec![OwnedBytes::from_static(b"delta")],
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await?,
+                )
+            },
+            next(&mut follow),
+            || started.elapsed().as_nanos(),
+        )
+        .await?;
         assert_eq!(record.sequence, sequence);
         assert_eq!(record.value.as_slice(), b"delta");
         if sequence > 16 {

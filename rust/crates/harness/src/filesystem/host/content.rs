@@ -61,7 +61,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         internal_class: Option<InternalContentClass>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<FileRef>> {
+    ) -> Result<Option<(FileRef, acyclic_stream::OwnedBytes)>> {
         crate::executor::with_history_io(io, |work| volume.validate(work))?;
         if volume.provider() != &self.provider {
             return Err(stock_boundary(
@@ -80,8 +80,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let Some(original) = (self).operation_generation(&workspace, key, io).await? else {
             return Ok(None);
         };
+        let receipt_identity = match internal_class {
+            Some(_) => expected_path.ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "internal upload recovery requires its original path",
+                )
+            })?,
+            None => key.as_str(),
+        };
         let receipt_path =
-            content_identity_path_io(key.as_str(), true, ".system/harness-uploads/", io)?;
+            content_identity_path_io(receipt_identity, true, ".system/harness-uploads/", io)?;
         const RECORD_BYTES: u64 = 6
             * (crate::conversation::MAX_PATH_BYTES as u64
                 + 32 * crate::conversation::MAX_LABEL_BYTES as u64
@@ -151,8 +161,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 work,
             )
         })?;
-        self.read_pinned_io(&reference, maximum_bytes, io).await?;
-        Ok(Some(reference))
+        let bytes = self.read_pinned_io(&reference, maximum_bytes, io).await?;
+        Ok(Some((reference, bytes)))
     }
 
     /// Stages journal payloads under the assigned internal subtree.

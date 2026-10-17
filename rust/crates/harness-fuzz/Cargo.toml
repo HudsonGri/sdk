@@ -173,6 +173,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_commands"
+path = "fuzz_targets/client_commands.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "e2e_expectations"
 path = "fuzz_targets/e2e_expectations.rs"
 required-features = ["runtime"]
@@ -205,6 +213,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_offline"
+path = "fuzz_targets/client_offline.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recorded_invocation"
 path = "fuzz_targets/recorded_invocation.rs"
 required-features = ["runtime"]
@@ -213,7 +229,7 @@ doc = false
 bench = false
 
 [dev-dependencies]
-allocation-counter = "0.8.1"
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -268,6 +284,14 @@ bench = false
 [[bin]]
 name = "goal_scenario"
 path = "fuzz_targets/goal_scenario.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model_request"
+path = "fuzz_targets/model_request.rs"
 required-features = ["runtime"]
 test = false
 doc = false

@@ -24,16 +24,21 @@ use std::{
 };
 
 mod admission;
+mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
+mod command_machine;
+mod command_views;
+mod commands;
 mod compaction;
 mod config;
 mod context;
-#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-mod mcp;
+mod inheritance;
 mod owner;
 mod owner_record;
 mod runtime;
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+mod settings;
 #[cfg(test)]
 mod tests;
 mod turn;
@@ -47,7 +52,7 @@ pub use workspace::LocalWorkspace;
 /// Local durable filesystem host.
 pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 /// Local durable task host and its execution journals.
-pub(crate) type LocalTaskRuntime =
+pub type LocalTaskRuntime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// A checkout or volume, durable authority, journals and stock executor.
@@ -63,6 +68,8 @@ pub struct LocalHarness {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
+    #[cfg(feature = "hooks")]
+    hooks: crate::hooks::Hooks,
     #[cfg(test)]
     context_read_observer: Option<
         for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
@@ -128,14 +135,16 @@ impl LocalHarness {
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            let settings = settings::load(&config.project, config.settings).await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = mcp::install(
-                &config.project,
-                |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
-                tools,
-                config.mcp_limits,
-            )
-            .await?;
+            let mcp_workspace =
+                std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation = settings
+                .mcp
+                .install(tools, &mcp_workspace, config.mcp_limits)
+                .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = compaction::select(
@@ -204,6 +213,12 @@ impl LocalHarness {
             files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            // This standalone composition owns its private companion namespace.
+            // Retain the existing owned WAL instead of reopening/checkpointing it
+            // for every transaction. Embedded bind() retains shared-store semantics.
+            #[cfg(feature = "native-execution")]
+            let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+                .map_err(storage)?;
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
@@ -217,6 +232,7 @@ impl LocalHarness {
                         workspace::attach_operation(owner.task),
                         false,
                         native_mounts,
+                        store,
                     )
                     .await?,
                 ),
@@ -228,6 +244,7 @@ impl LocalHarness {
                         &directory,
                         workspace::attach_operation(owner.task),
                         native_mounts,
+                        store,
                     )
                     .await?,
                 ),
@@ -304,6 +321,8 @@ impl LocalHarness {
                 context_read_observer: None,
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
+                #[cfg(feature = "hooks")]
+                hooks: settings.hooks,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

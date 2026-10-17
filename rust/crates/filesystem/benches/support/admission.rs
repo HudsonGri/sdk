@@ -96,3 +96,89 @@ fn admission_charge_local(bencher: Bencher) {
             }
         });
 }
+
+#[divan::bench(args = [0, 1], threads = [1, 4])]
+fn allocation_release_zero(bencher: Bencher, context: u8) {
+    let operation = || {
+        let work = fixture(context, false);
+        let allocation = work
+            .claim(0, 0, WorkCounters::UNCHARGED)
+            .unwrap_or_else(fail);
+        (work, allocation)
+    };
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some()
+        || std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some()
+    {
+        let (work, mut allocation) = operation();
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        marker(&work, context, false, true);
+        for _ in 0..CHARGES_PER_BATCH {
+            allocation
+                .release(std::hint::black_box(0))
+                .unwrap_or_else(fail);
+        }
+        marker(&work, context, false, false);
+        assert_eq!(work.receipt(), before);
+        assert_eq!(work.live_allocation_bytes(), live);
+        eprintln!(
+            "empty_release context={context} count={CHARGES_PER_BATCH} live={live} work={before:?}"
+        );
+    }
+    bencher
+        .counter(divan::counter::ItemsCount::new(CHARGES_PER_BATCH))
+        .with_inputs(operation)
+        .bench_refs(|(_, allocation)| {
+            for _ in 0..CHARGES_PER_BATCH {
+                allocation
+                    .release(std::hint::black_box(0))
+                    .unwrap_or_else(fail);
+            }
+        });
+}
+
+#[divan::bench(args = [(0, false), (0, true), (1, false), (1, true), (2, false), (2, true)], threads = [1, 4])]
+fn copy_preflight(bencher: Bencher, (context, recheck): (u8, bool)) {
+    let cancellation = CancellationToken::new();
+    let delta = WorkCounters {
+        bytes_copied: 8,
+        ..WorkCounters::UNCHARGED
+    };
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some()
+        || std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some()
+    {
+        let work = fixture(context, recheck);
+        let accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        let before = work.receipt();
+        let live = work.live_allocation_bytes();
+        marker(&work, context, recheck, true);
+        for _ in 0..CHARGES_PER_BATCH {
+            accounting
+                .admit(std::hint::black_box(delta))
+                .unwrap_or_else(fail);
+        }
+        marker(&work, context, recheck, false);
+        assert_eq!(work.receipt(), before);
+        assert_eq!(work.live_allocation_bytes(), live);
+        eprintln!(
+            "copy_preflight context={context} recheck={recheck} count={CHARGES_PER_BATCH} live={live} work={before:?}"
+        );
+    }
+    bencher
+        .counter(divan::counter::ItemsCount::new(CHARGES_PER_BATCH))
+        .with_inputs(|| fixture(context, recheck))
+        .bench_refs(|work| {
+            let accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: &cancellation,
+            };
+            for _ in 0..CHARGES_PER_BATCH {
+                accounting
+                    .admit(std::hint::black_box(delta))
+                    .unwrap_or_else(fail);
+            }
+        });
+}

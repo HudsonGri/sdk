@@ -5,6 +5,8 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 mod bootstrap;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod performance_tests;
 
 mod mounts;
 pub(super) mod volumes;
@@ -41,7 +43,18 @@ pub(super) type View = LazyWorkspace<
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
     pub(super) fresh: bool,
-    view: View,
+    pub(super) view: View,
+    pub(super) mount_directory: PathBuf,
+    pub(super) mounted: Option<
+        Arc<
+            acyclic_fs::native_mount::LazyMount<
+                LocalAuthorityBackend,
+                LocalObjectBackend,
+                NativeDemandSource,
+                LocalCoreStateStore,
+            >,
+        >,
+    >,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
@@ -51,9 +64,11 @@ pub struct LocalWorkspace {
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
-    context_line: String,
+    pub(super) context_line: String,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -66,6 +81,29 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
+        let primary = self.mounts.named(None)?.1;
+        let mut mounts = mounts::owner(
+            path,
+            &primary.view.volume,
+            None,
+            self.mounts
+                .mounts()
+                .filter(|(relative, _)| !relative.is_empty())
+                .map(|(_, mount)| {
+                    (
+                        mount.view.name.clone(),
+                        mount.view.volume.clone(),
+                        mount.view.source.clone(),
+                    )
+                }),
+        )?;
+        #[cfg(target_os = "linux")]
+        volumes::link(path, &mut mounts)?;
+        #[cfg(not(target_os = "linux"))]
+        volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
+        Ok(Arc::new(mounts))
+    }
     #[cfg(test)]
     pub(super) async fn current(
         &self,
@@ -165,6 +203,7 @@ pub(super) async fn open(
     operation: acyclic_fs::OperationId,
     existing: bool,
     native_mounts: bool,
+    store: LocalCoreStateStore,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -176,7 +215,6 @@ pub(super) async fn open(
     };
     let name = volume.storage_name(&mut None)?;
     let id = filesystem.workspace_id(&name).map_err(storage)?;
-    let store = LocalCoreStateStore::new(directory.join("workspace"));
     let original = store
         .load_lazy_workspace(id, &mut accounting)
         .await
@@ -260,23 +298,26 @@ pub(super) async fn open(
     }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
+    let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
+        view.workspace().id(),
+        Arc::clone(&mounts),
+    )));
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,
         view,
+        mount_directory: directory.join("task-views"),
+        mounted: None,
         filesystem: filesystem.clone(),
         store,
         identity: acyclic_fs::NativeRootIdentity::from_bytes(
             identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
         ),
-        state: StateArc::new(AsyncMutex::new(super::checkout_tools::State {
-            active: None,
-            watcher: None,
-            mounts: Arc::clone(&mounts),
-            initialized: false,
-        })),
+        state,
         context_line,
         mounts,
     })
@@ -292,6 +333,7 @@ pub(super) async fn open_volume(
     directory: &Path,
     operation: acyclic_fs::OperationId,
     native_mounts: bool,
+    store: LocalCoreStateStore,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -346,6 +388,7 @@ pub(super) async fn open_volume(
         operation,
         true,
         native_mounts,
+        store,
     )
     .await
 }

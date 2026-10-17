@@ -60,8 +60,58 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let Some((&kind, input)) = input.split_first() else {
         return;
     };
+    if kind == b'F' {
+        if let Ok(file) = serde_json::from_slice::<acyclic_harness::conversation::FileRef>(input) {
+            let marker = crate::files::FileText::default()
+                .project(
+                    &file,
+                    &acyclic_harness::model::FileProjectionPolicy::Reference,
+                )
+                .unwrap();
+            let restored: acyclic_harness::conversation::FileRef = serde_json::from_str(
+                marker
+                    .strip_prefix("[file: ")
+                    .unwrap()
+                    .strip_suffix(']')
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(file, restored);
+        }
+        return;
+    }
+    if kind == b'T' {
+        if let Ok(fragments) = serde_json::from_slice::<Vec<String>>(input) {
+            crate::projection::text::assert_normalization(&fragments);
+        }
+        return;
+    }
+    if kind == b'V' {
+        let Some((&kind, input)) = input.split_first() else {
+            return;
+        };
+        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(input) {
+            let adapter = [
+                Adapter::Anthropic,
+                Adapter::Responses,
+                Adapter::Chat,
+                Adapter::Gemini,
+            ][usize::from(kind) % 4];
+            let before = crate::validate_input(adapter, &body);
+            let encoded = serde_json::to_vec(&body).unwrap();
+            let replay = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(before, crate::validate_input(adapter, &replay));
+        }
+        return;
+    }
     if kind == b'L' {
         assert_alloy_invariants(input);
+        return;
+    }
+    if kind == b'P' {
+        if let Ok(value) = crate::projection::arguments::literal(input) {
+            crate::projection::arguments::assert_normalization(&value);
+        }
         return;
     }
     if kind == b'K' {
@@ -101,6 +151,17 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 if let Some(raw) =
                     crate::projection::native_reasoning::validated(adapter, &block.continuity)
                 {
+                    // Independent bounded literal decoder: native admission must
+                    // reject invalid strings, including inside skipped fields.
+                    let bounds = acyclic_harness::JsonBounds {
+                        maximum_bytes: block.continuity.len() as u64,
+                        maximum_items: block.continuity.len() as u64,
+                        maximum_depth: 128,
+                    };
+                    assert!(
+                        acyclic_harness::json_value_bounded(raw, bounds, None, &mut |_| Ok(()),)
+                            .is_ok()
+                    );
                     assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
                 }
             }
@@ -216,6 +277,10 @@ fn catalog_round_trip(input: &[u8]) -> bool {
     let canonical = serde_json::to_vec(&spec).unwrap();
     let restored: crate::ProviderSpec = serde_json::from_slice(&canonical).unwrap();
     assert_eq!(serde_json::to_vec(&restored).unwrap(), canonical);
+    assert_eq!(
+        crate::registry::validate_spec("fixture", &spec).is_ok(),
+        crate::registry::validate_spec("fixture", &restored).is_ok()
+    );
     true
 }
 
@@ -272,6 +337,24 @@ mod properties {
     }
 
     #[test]
+    fn checked_in_shape_regressions_obey_the_parser_oracles() {
+        for seed in [
+            include_bytes!("../fuzz/corpus/provider_stream/native-summary-surrogate.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-output-missing-text.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-output-wrong-position.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-numeric-call-content.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-file-without-source.json")
+                .as_slice(),
+        ] {
+            assert_stream_invariants(seed);
+        }
+    }
+
+    #[test]
     fn checked_in_stream_error_corpus_obeys_the_properties() {
         for seed in [
             include_bytes!("../fuzz/corpus/provider_stream/anthropic-error.sse").as_slice(),
@@ -310,4 +393,53 @@ mod properties {
             );
         }
     }
+}
+
+/// Typed model/tool JSON must preserve literal maps, including reserved serde keys.
+pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
+    use acyclic_harness::model::{
+        Model, ModelContentPart, ModelEvent, ToolCall, ToolResultContent,
+    };
+    fn round_trip<
+        T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq,
+    >(
+        value: T,
+    ) {
+        let encoded = serde_json::to_value(&value).unwrap();
+        let replay: T = serde_json::from_value(encoded).unwrap();
+        assert_eq!(replay, value);
+    }
+    let call =
+        ToolCall::new("call".into(), "echo".into(), value.clone()).with_metadata(value.clone());
+    round_trip(ModelEvent::ToolCall(call.clone()));
+    round_trip(ModelContentPart::ToolCall(call));
+    round_trip(ModelEvent::Completed {
+        metadata: value.clone(),
+    });
+    round_trip(ToolResultContent::Json {
+        value: value.clone(),
+    });
+    round_trip(Model {
+        provider: "fixture".into(),
+        name: "model".into(),
+        revision: "1".into(),
+        options: value.clone(),
+    });
+    round_trip(acyclic_harness::tool::ToolInvocation {
+        operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+        call_id: "call".into(),
+        name: "echo".into(),
+        arguments: value.clone(),
+    });
+    round_trip(acyclic_harness::tool::ToolResult {
+        value: value.clone(),
+    });
+    round_trip(acyclic_harness::tool::ToolDefinition {
+        name: "echo".into(),
+        revision: "1".into(),
+        description: "Echo".into(),
+        input_schema: value.clone(),
+        output_schema: value.clone(),
+        projection_schema: value.clone(),
+    });
 }

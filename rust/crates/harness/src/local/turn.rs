@@ -1,12 +1,14 @@
 use super::*;
 use crate::{executor::TurnOutput, runtime::TaskStateProvider};
+use acyclic_stream::BoxProviderFuture;
 
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
-    /// Stock command bindings for a service-owned fenced worker.
-    pub(crate) fn commands(
+    /// Stock command bindings using retained task inheritance.
+    pub(super) async fn stock_commands(
         &self,
+        task: Option<TaskId>,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
             '_,
@@ -15,19 +17,95 @@ impl LocalHarness {
             LocalObjectBackend,
         >,
     > {
-        self.runtime.commands().with_model(
-            &self.model,
-            self.provider.clone(),
-            &self.compaction,
-            None,
+        let mut model = self.model.clone();
+        let settings = self
+            .task_files
+            .inner
+            .snapshot(
+                &crate::task_volume::Query::File(
+                    crate::task_volume::FileKey::parse(".ui/config/settings.json")
+                        .map_err(storage)?,
+                ),
+                1,
+            )
+            .await
+            .map_err(storage)?;
+        if let Some(file) = settings.files.first() {
+            if file.bytes.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid("settings exceed file bound".into()));
+            }
+            let settings: serde_json::Value =
+                serde_json::from_slice(&file.bytes).map_err(storage)?;
+            if !settings.is_object() {
+                return Err(Error::Invalid("settings must be an object".into()));
+            }
+            if let Some(name) = settings.get("model") {
+                model.name = name
+                    .as_str()
+                    .ok_or_else(|| Error::Invalid("model must be text".into()))?
+                    .into();
+            }
+        }
+        if let Some(task) = task {
+            if let Some(name) = self.resolved_value(task, "model").await? {
+                model.name = name;
+            }
+        }
+        model.validate()?;
+        self.runtime
+            .commands()
+            .with_model(&model, self.provider.clone(), &self.compaction, None)
+    }
+    /// Owner-gated stock commands for this same runtime.
+    pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
+        Ok(commands::CommandOwner(self))
+    }
+    pub(super) async fn submit_to(
+        &self,
+        operation: OperationId,
+        parent: Option<TaskId>,
+        prompt: &str,
+    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
+        let Some(parent) = parent else {
+            return self.submit(operation, prompt).await;
+        };
+        if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
+            return Err(Error::Invalid(
+                "local prompt is empty or exceeds the file limit".into(),
+            ));
+        }
+        let task = crate::runtime::task_id_for_admission(operation);
+        inheritance::admit_prepared(
+            &self.admission,
+            Box::pin(self.prepare_inheritance(task, Some(parent))),
+            Box::pin(async {
+                let prompt = self.prompt_context(Some(task), prompt).await?;
+                let (receive, model) = self.stage_turn(operation, &prompt).await?;
+                let definition = self
+                    .runtime
+                    .harness()
+                    .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+                let record = self.runtime.task_host().observe_admission(parent).await?;
+                self.runtime
+                    .harness()
+                    .durable_context(parent, record.operation_id, None)
+                    .await?
+                    .admit(
+                        operation,
+                        &definition,
+                        serde_json::json!({"receive":receive,"model":model}),
+                    )
+                    .await
+            }),
         )
+        .await
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
     pub fn submit<'a>(
         &'a self,
         operation: OperationId,
         prompt: &'a str,
-    ) -> impl Future<Output = Result<Admission<RuntimeTask<TurnOutput>>>> + 'a {
+    ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
         Box::pin(async move {
             if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
                 return Err(Error::Invalid(
@@ -119,7 +197,7 @@ impl LocalHarness {
             .map(Some)
     }
 
-    async fn finish_turn_inputs(
+    pub(super) async fn finish_turn_inputs(
         &self,
         operation: OperationId,
         payload: crate::conversation::FileRef,
@@ -131,17 +209,48 @@ impl LocalHarness {
             payload,
         };
         let receive_operation = receive_operation(operation);
-        let payload = publisher
-            .stage_once(
-                receive_operation,
-                &format!("inputs/{operation}.receive.json"),
-                b"{\"after\":0}",
-                "application/json",
-                "mailbox receive",
-                None,
-            )?
-            .await?
-            .0;
+        // Older admissions retained one identical payload per turn. Keep their
+        // exact reference on retry; new commands share one immutable journal file.
+        let (retained, _) = publisher
+            .observe_staged_once(receive_operation, self.limits.file_bytes, None)?
+            .await?;
+        let payload = match retained {
+            Some(payload) => {
+                let descriptor = crate::conversation::FileDescriptor::from_bytes(
+                    b"{\"after\":0}",
+                    "application/json",
+                    &mut None,
+                )?;
+                if payload.path() != format!("inputs/{operation}.receive.json")
+                    || payload.descriptor() != &descriptor
+                    || payload.display_name() != "mailbox receive"
+                {
+                    return Err(Error::Conflict(
+                        "retained receive input has another identity".into(),
+                    ));
+                }
+                payload
+            }
+            None => {
+                let mut hash = blake3::Hasher::new();
+                hash.update(b"acyclic.local.mail-receive-input/v1\0");
+                hash.update(publisher.volume().storage_name(&mut None)?.as_bytes());
+                let identity = hash.finalize();
+                let mut bytes = [0; 16];
+                bytes.copy_from_slice(&identity.as_bytes()[..16]);
+                publisher
+                    .stage_once(
+                        OperationId::from_bytes(bytes),
+                        "inputs/mailbox-receive.json",
+                        b"{\"after\":0}",
+                        "application/json",
+                        "mailbox receive",
+                        None,
+                    )?
+                    .await?
+                    .0
+            }
+        };
         let receive = WorkflowCommand {
             operation_id: receive_operation,
             kind: crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
@@ -219,11 +328,12 @@ impl LocalHarness {
                 _ => break,
             }
         }
+        self.refresh_command_task(task).await?;
         Ok(())
     }
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
-    pub fn resume(&self, task: TaskId) -> impl Future<Output = Result<TurnOutput>> {
+    pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
         Box::pin(async move {
             let root = self.loop_root(task).await?;
             let mut current = task;
@@ -265,6 +375,9 @@ impl LocalHarness {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
+        } else {
+            // Advance already refreshes projections; terminal recovery must repair them.
+            self.refresh_command_task(task).await?;
         }
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),
@@ -279,7 +392,7 @@ impl LocalHarness {
     }
 }
 
-fn receive_operation(operation: OperationId) -> OperationId {
+pub(super) fn receive_operation(operation: OperationId) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.local.mail-receive/v1\0");
     hash.update(&operation.into_bytes());

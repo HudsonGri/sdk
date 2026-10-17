@@ -93,6 +93,12 @@ impl LocalHarness {
                 "context manifest path exceeds path bound".into(),
             ));
         }
+        #[cfg(feature = "hooks")]
+        let hook_configuration = if self.hooks.is_empty() {
+            None
+        } else {
+            Some(settings::capture_hooks(&self.hooks, publisher, self.limits).await?)
+        };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
@@ -104,6 +110,8 @@ impl LocalHarness {
         if let Some(workspace) = &self.workspace {
             manifest.conventions.push(workspace.context_line().to_owned());
         }
+        #[cfg(feature = "hooks")]
+        manifest.sources.extend(hook_configuration);
         let bytes = manifest.encode(self.limits)?;
         Ok(publisher
             .stage_once(

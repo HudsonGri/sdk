@@ -181,9 +181,11 @@ pinned_pi() {
 case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
+    node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
+    node scripts/qualify-mcp-loom.mjs --memory-accounting
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
@@ -394,6 +396,9 @@ case "$lane" in
         --test client_public_consumer identical_public_harness_trace
     harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
     harness_tests --features wasm --target wasm32-unknown-unknown --test client-goal-views
+    CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
+      cargo test -p acyclic-harness-providers --features browser \
+      --target wasm32-unknown-unknown --lib --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
