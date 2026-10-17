@@ -80,8 +80,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         mut operation: crate::kernel::Owned<T>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), WorkspaceError> {
-        // Charge before the move: one leaf pass checks and records the copy,
-        // and the funding transfer below cannot strand reserved credit.
+        // Every way the move can fail is checked before the one-pass charge,
+        // so a recorded copy is always followed by the funded push.
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        let checked = !tests::skip_precheck();
+        #[cfg(not(all(test, not(acyclic_fs_loom))))]
+        let checked = true;
+        if checked {
+            operations.allocation.check_absorb(&operation.allocation)?;
+        }
+        let bytes = operations
+            .bytes
+            .checked_add(operation.bytes)
+            .ok_or(crate::WorkError::Overflow)?;
         accounting.charge(copy_work(std::mem::size_of::<T>() as u64))?;
         #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
         if model::skip_funding_transfer() {
@@ -89,10 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             return Ok(());
         }
         operations.allocation.absorb(&mut operation.allocation)?;
-        operations.bytes = operations
-            .bytes
-            .checked_add(operation.bytes)
-            .ok_or(crate::WorkError::Overflow)?;
+        operations.bytes = bytes;
         operations.value.push(operation.value);
         Ok(())
     }
@@ -158,3 +166,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "transaction_loom.rs"]
 mod model;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "transaction_tests.rs"]
+mod tests;
