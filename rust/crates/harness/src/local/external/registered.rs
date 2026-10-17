@@ -47,6 +47,7 @@ impl LocalHarness {
                 ));
             }
             self.external_request(&attach).await?;
+            self.discover_external_children(child).await?;
         }
         Ok(())
     }
@@ -164,21 +165,7 @@ impl LocalHarness {
             };
             // A registered child can admit its own children. Discover these
             // from the durable hierarchy after releasing its task gate.
-            let mut after = None;
-            loop {
-                let children = self
-                    .runtime
-                    .harness()
-                    .children(task, None, after, 64)
-                    .await?;
-                for child in children.entries {
-                    self.external_volumes(child.task_id).await?;
-                }
-                after = children.next_after;
-                if after.is_none() {
-                    break;
-                }
-            }
+            self.discover_external_children(task).await?;
             Ok((
                 revision,
                 match terminal {
@@ -191,6 +178,24 @@ impl LocalHarness {
                 },
             ))
         })
+    }
+
+    async fn discover_external_children(&self, task: TaskId) -> Result<()> {
+        let mut after = None;
+        loop {
+            let children = self
+                .runtime
+                .harness()
+                .children(task, None, after, 64)
+                .await?;
+            for child in children.entries {
+                self.external_volumes(child.task_id).await?;
+            }
+            after = children.next_after;
+            if after.is_none() {
+                return Ok(());
+            }
+        }
     }
 }
 

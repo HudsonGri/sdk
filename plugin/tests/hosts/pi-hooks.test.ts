@@ -11,7 +11,8 @@ const require = createRequire(import.meta.url);
 const { createJiti } = require("jiti");
 const extension: typeof import("../../pi/index.ts").default = await createJiti(import.meta.url, {
   tryNative: false,
-  alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui") },
+  alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui"),
+    "@earendil-works/pi-coding-agent": require.resolve("@earendil-works/pi-coding-agent") },
 }).import("../../pi/index.ts", { default: true });
 
 type Handler = (event: Record<string, unknown>, context: ExtensionContext) => Promise<unknown>;

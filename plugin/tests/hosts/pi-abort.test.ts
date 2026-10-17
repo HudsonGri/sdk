@@ -23,7 +23,8 @@ test("Pi abort waits for native process cleanup, records cancellation, and leave
   const module = join(root,"shim.ts");
   writeFileSync(module,source.replace(JSON.stringify("__ACYCLIC_EXECUTABLE__"),JSON.stringify(executable)));
   const extension = await createJiti(import.meta.url, {
-    tryNative:false, alias:{"@earendil-works/pi-tui":require.resolve("@earendil-works/pi-tui")},
+    tryNative:false, alias:{"@earendil-works/pi-tui":require.resolve("@earendil-works/pi-tui"),
+      "@earendil-works/pi-coding-agent":require.resolve("@earendil-works/pi-coding-agent")},
   }).import(module,{default:true}) as typeof import("../../pi/index.ts").default;
   const handlers = new Map<string,(event:unknown,ctx:ExtensionContext)=>Promise<unknown>>();
   const tools = new Map<string,ToolDefinition>();
