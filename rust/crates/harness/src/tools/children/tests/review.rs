@@ -1,5 +1,17 @@
 use super::*;
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn child_frontier_and_wait_selection_paths_round_trip(reference in "[a-z]{1,24}", operation in any::<[u8;16]>()) {
+        let component = Component::new(reference).unwrap();
+        for key in [FileKey::Child { reference: component.clone(),file: ChildFile::Delivered },
+            FileKey::Task { task: component,file: crate::task_volume::TaskFile::ChildWait(Component::new(OperationId::from_bytes(operation).to_string()).unwrap()) }] {
+            prop_assert_eq!(FileKey::parse(&key.path()).unwrap(),key);
+        }
+    }
+}
+
 #[tokio::test]
 async fn retained_bodies_cannot_block_wait_control_or_archive() {
     let files = files().await;

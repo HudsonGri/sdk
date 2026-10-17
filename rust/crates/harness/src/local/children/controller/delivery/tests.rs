@@ -103,6 +103,26 @@ proptest::proptest! {
             linear_property(count, n, true);
         });
     }
+
+    #[test]
+    fn frontier_cannot_regress_exceed_inputs_or_change_an_established_task(
+        count in 1u64..16, prior in 0u64..16, candidate in 0u64..18, same_task in proptest::prelude::any::<bool>(),
+    ) {
+        futures::executor::block_on(async {
+            let files = files(Arc::new(MemoryStream::default())).await;
+            let reference = Component::new("worker").unwrap();
+            let child = TaskId::from_bytes([3;16]);
+            append(&files,&reference,ChildFile::Request).await;
+            for n in 1..count { append(&files,&reference,ChildFile::Inbox(Component::new(format!("input-{n}")).unwrap())).await; }
+            let prior = prior.min(count);
+            if prior > 0 { acknowledge(&files,&reference,child,prior).await.unwrap(); }
+            let task = if same_task { child } else { TaskId::from_bytes([4;16]) };
+            let file = FileValue::new(FileKey::Child { reference,file: ChildFile::Delivered },serde_json::to_vec(&(task,candidate)).unwrap());
+            let generation = files.inner.head().await.unwrap();
+            let accepted = files.inner.append(generation,&file).await.is_ok();
+            assert_eq!(accepted,candidate>0 && candidate<=count && (prior==0 || same_task && candidate>=prior));
+        });
+    }
 }
 
 fn linear_property(actual: usize, n: u64, assert_property: bool) {
