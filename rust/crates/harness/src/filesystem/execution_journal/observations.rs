@@ -21,7 +21,13 @@ where
         summary: &mut ExecutionSummary,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if summary.operation != Some(operation) {
+        let pending = summary.pending;
+        #[cfg(acyclic_harness_loom)]
+        let pending = pending
+            && !crate::task_volume::model_checking::enabled(
+                crate::task_volume::model_checking::Fault::RetainPendingExecutionCache,
+            );
+        if summary.operation != Some(operation) || pending {
             *summary = ExecutionSummary {
                 operation: Some(operation),
                 ..ExecutionSummary::default()
@@ -399,6 +405,9 @@ where
                 )
             })?;
             summary.accept_fields((next, &retry_digest, event), model.as_ref(), limits, io)?;
+            // Cancellation can drop this future at the provider await below.
+            // Its next reader must replay before trusting an unacknowledged candidate.
+            summary.pending = true;
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
@@ -418,6 +427,7 @@ where
                     .await
             };
             if matches!(committed, Ok(true)) {
+                summary.pending = false;
                 drop(key);
                 drop(key_hold);
                 drop(bytes);

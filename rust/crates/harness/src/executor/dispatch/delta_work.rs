@@ -6,6 +6,7 @@ use crate::{
 };
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_stream::MemoryStream;
+use futures::FutureExt as _;
 use proptest::prelude::*;
 use serde_json::json;
 use std::future::Future as _;
@@ -180,12 +181,10 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
         let before = work.receipt();
         let mut result = None;
         let allocations = acyclic_test_support::measure(|| {
-            result =
-                Some(futures::executor::block_on(async {
+            result = Some(futures::executor::block_on(tokio::task::unconstrained(
+                async {
                     futures::future::poll_fn(|cx| {
-                        let polled =
-                            std::pin::Pin::new(&mut tokio::task::unconstrained(recording.as_mut()))
-                                .poll(cx);
+                        let polled = recording.as_mut().poll(cx);
                         if let Poll::Ready(result) = polled {
                             return Poll::Ready(result.and_then(|_| {
                                 Err(Error::Invalid("model stream ended early".into()))
@@ -216,7 +215,12 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
                         let change = follow
                             .changes
                             .next()
-                            .await
+                            .now_or_never()
+                            .ok_or_else(|| {
+                                Error::Storage(
+                                    "accepted delta was not immediately followable".into(),
+                                )
+                            })?
                             .ok_or_else(|| Error::Storage("delta follow ended".into()))??;
                         if let Some(file) = change.file {
                             break file;
@@ -226,7 +230,8 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
                         return Err(Error::Invalid("delta file changed".into()));
                     }
                     Ok::<_, Error>(())
-                }));
+                },
+            )));
         });
         result.expect("measured the actual stock loop")?;
         let after = work.receipt();
@@ -248,7 +253,7 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
         }
     }
     input.borrow_mut().done = true;
-    futures::executor::block_on(recording.as_mut())?;
+    futures::executor::block_on(tokio::task::unconstrained(recording.as_mut()))?;
     Ok(true)
 }
 

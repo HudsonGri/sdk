@@ -23,6 +23,8 @@ pub enum Fault {
     StopAfterGenerationConflict,
     /// Stop an execution append on an unrelated coordinator generation advance.
     StopExecutionFenceRetry,
+    /// Trust a preaccepted execution cache entry after its writer was dropped.
+    RetainPendingExecutionCache,
 }
 
 loom::thread_local! {

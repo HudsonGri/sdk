@@ -1,8 +1,8 @@
-use super::model_provider::{PublicationCut, block_on, pause_before_publish};
+use super::model_provider::{PublicationCut, block_on, pause_before_publish, publish_until_cut};
 use super::*;
 use crate::{
     durable_host::tests::fixture::Fixture,
-    executor::ExecutionEvent,
+    executor::{ExecutionEvent, ExecutionJournal},
     task_volume::model_checking::{Fault, set_fault},
 };
 use acyclic_stream::{IdempotencyKey as StreamKey, ReadRequest, StreamPath};
@@ -84,6 +84,64 @@ fn unrelated_coordinator_publication_keeps_the_execution_with_negative_control()
         .unwrap_or("");
     assert!(
         message.contains("execution stopped on unrelated coordinator generation"),
+        "{message}"
+    );
+}
+
+fn cancelled_candidate(accepted: bool, broken: bool) {
+    let phase = Arc::new(AtomicU8::new(0));
+    let provider = Arc::new(PublicationCut {
+        inner: MemoryStream::default(),
+        phase: phase.clone(),
+        omit_condition: false,
+    });
+    let fixture = block_on(Fixture::new(
+        provider,
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        None,
+        &[],
+    ))
+    .unwrap();
+    let operation = OperationId::from_bytes([2; 16]);
+    let owner = block_on(fixture.running(1)).unwrap();
+    let journal = fixture.execution(owner, operation).unwrap();
+    let event = ExecutionEvent::Started {
+        request_digest: [1; 32],
+    };
+    let future = Box::pin(journal.append(operation, "entry", &event, None).unwrap());
+    let future = if accepted {
+        publish_until_cut(future, phase)
+    } else {
+        pause_before_publish(future, &phase)
+    };
+    drop(future);
+    if broken {
+        set_fault(Fault::RetainPendingExecutionCache);
+    }
+    let resumed = block_on(journal.append(operation, "entry", &event, None).unwrap());
+    assert!(
+        resumed.is_ok(),
+        "cancelled execution candidate survived: {resumed:?}"
+    );
+    let records = block_on(journal.replay(operation, 0, 2, None).unwrap()).unwrap();
+    assert_eq!(records.len(), 1, "cancelled execution candidate survived");
+    assert_eq!(records[0].sequence, 1);
+}
+
+#[test]
+fn cancellation_replays_the_accepted_cut_with_negative_control() {
+    loom::model(|| cancelled_candidate(false, false));
+    loom::model(|| cancelled_candidate(true, false));
+    let error = std::panic::catch_unwind(|| loom::model(|| cancelled_candidate(false, true)))
+        .expect_err("cancelled execution cache was trusted");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("cancelled execution candidate survived"),
         "{message}"
     );
 }
