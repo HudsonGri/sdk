@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Trace = (&'static str, u64);
 
-/// The pre-window implementation, kept verbatim apart from trace records.
+/// Independent pre-window selection algorithm; snapshot output follows its
+/// retained arrival ordinals, as required by the publication-order contract.
 mod old {
     use super::*;
     type Window = BTreeMap<FileKey, (u64, FileValue)>;
@@ -88,7 +89,11 @@ mod old {
             .map(|(order, file)| (file.key.clone(), (order as u64, file)))
             .collect();
         trim(&mut window, maximum, bytes, recent);
-        *files = window.values().map(|(_, file)| file.clone()).collect();
+        // Independent selection oracle: retain the durable arrival ordinal,
+        // rather than the map's identity order.
+        let mut retained: Vec<_> = window.values().collect();
+        retained.sort_by_key(|(order, _)| *order);
+        *files = retained.into_iter().map(|(_, file)| file.clone()).collect();
         Old(window, maximum, bytes, recent)
     }
     pub(super) fn apply(Old(window, maximum, bytes, recent): &mut Old, change: &mut Change) {

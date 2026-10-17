@@ -358,6 +358,14 @@ where
         } else {
             None
         };
+        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+        let _append_scope = {
+            // Negative control shortens the actual production guard lifetime.
+            if self.append_probe.release_early {
+                drop(shared.take());
+            }
+            self.append_probe.enter()
+        };
         let mut transient = VerifiedSummary::default();
         let cache = shared.as_deref_mut().unwrap_or(&mut transient);
         cache.bind(operation_id, io)?;

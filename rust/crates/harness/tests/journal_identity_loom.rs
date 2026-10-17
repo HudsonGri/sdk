@@ -31,7 +31,7 @@ fn cached_execution_summary_keeps_cursor_and_fence_atomic_with_negative_control(
         .or_else(|| failure.downcast_ref::<&str>().copied())
         .unwrap_or("");
     assert!(
-        text.contains("cached execution cursor was published without its fence"),
+        text.contains("production journal append/refresh guard was released early"),
         "{text}"
     );
 }

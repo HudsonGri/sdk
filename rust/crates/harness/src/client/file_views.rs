@@ -1,7 +1,7 @@
 //! Disposable file views at a query cursor. Bytes retain segment ownership.
 
 use crate::task_volume::{
-    Change, Channel, Cursor, Error, FileKey, HeadFile, HeadSnapshot, Result, TaskFile,
+    Change, Channel, Component, Cursor, Error, FileKey, HeadFile, HeadSnapshot, Result, TaskFile,
 };
 use std::collections::btree_map::Entry;
 #[cfg(feature = "test-support")]
@@ -29,6 +29,8 @@ pub struct FileViews {
     pub(super) cursor: Cursor,
     pub(super) files: Files,
     stream_order: Vec<FileKey>,
+    stream_positions: std::collections::BTreeMap<FileKey, (u64, usize)>,
+    task_streams: std::collections::BTreeMap<(Component, u64, usize), FileKey>,
     limits: QueryViewLimits,
     segments: usize,
     pub(super) bytes: u64,
@@ -71,12 +73,14 @@ impl FileViews {
             cursor: snapshot.cursor,
             files: Files::default(),
             stream_order: Vec::new(),
+            stream_positions: Default::default(),
+            task_streams: Default::default(),
             limits,
             segments: 0,
             bytes: 0,
             window: false,
         };
-        for file in snapshot.files {
+        for (ordinal, file) in snapshot.files.into_iter().enumerate() {
             let text = matches!(
                 file.key,
                 FileKey::Task {
@@ -118,9 +122,7 @@ impl FileViews {
                 segments,
                 bytes,
             )?;
-            if stream_key(&file.key) {
-                view.stream_order.push(file.key.clone());
-            }
+            view.index_stream(&file.key, (view.cursor.position, ordinal));
             if view.files.insert(file.key.clone(), file).is_some() {
                 return Err(Error::InvalidSegment);
             }
@@ -157,6 +159,52 @@ impl FileViews {
             )
     }
 
+    // Cursor cut plus ordinal preserves the authoritative vector order without
+    // inventing a second durable clock. Both indexes are bounded by retained files.
+    fn index_stream(&mut self, key: &FileKey, position: (u64, usize)) {
+        if !stream_key(key) || self.stream_positions.contains_key(key) {
+            return;
+        }
+        let FileKey::Task { task, .. } = key else {
+            unreachable!()
+        };
+        self.stream_order.push(key.clone());
+        self.stream_positions.insert(key.clone(), position);
+        self.task_streams
+            .insert((task.clone(), position.0, position.1), key.clone());
+    }
+    fn remove_stream(&mut self, key: &FileKey) {
+        if let Some(position) = self.stream_positions.remove(key) {
+            let FileKey::Task { task, .. } = key else {
+                unreachable!()
+            };
+            self.task_streams
+                .remove(&(task.clone(), position.0, position.1));
+            self.stream_order.retain(|old| old != key);
+        }
+    }
+    pub(super) fn text_files<'a>(
+        &'a self,
+        task: &Component,
+        from: Option<&FileKey>,
+    ) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
+        #[cfg(feature = "test-support")]
+        if from.is_some() {
+            crate::test_support::task_volume_item_examined();
+        }
+        let position = from
+            .and_then(|key| self.stream_positions.get(key))
+            .copied()
+            .unwrap_or((0, 0));
+        self.task_streams
+            .range((task.clone(), position.0, position.1)..=(task.clone(), u64::MAX, usize::MAX))
+            .inspect(|_| {
+                #[cfg(feature = "test-support")]
+                crate::test_support::task_volume_item_examined();
+            })
+            .filter_map(|(_, key)| self.files.get(key))
+    }
+
     pub(super) fn replace(
         &mut self,
         change: &Change,
@@ -168,22 +216,18 @@ impl FileViews {
             .chain(change.file.iter().chain(&change.files).map(|f| &f.key))
         {
             if let Some(old) = self.files.remove(key) {
-                if stream_key(key) {
-                    self.stream_order.retain(|old| old != key);
-                }
+                self.remove_stream(key);
                 self.bytes -= old.length;
                 self.segments -= old.segments.len();
             }
         }
-        for file in change.file.iter().chain(&change.files) {
+        for (ordinal, file) in change.file.iter().chain(&change.files).enumerate() {
             if rejected.contains(&file.key) {
                 continue;
             }
             self.bytes += file.bytes.len() as u64;
             self.segments += 1;
-            if stream_key(&file.key) {
-                self.stream_order.push(file.key.clone());
-            }
+            self.index_stream(&file.key, (change.cursor.position, ordinal));
             self.files.insert(
                 file.key.clone(),
                 HeadFile {
@@ -361,6 +405,7 @@ impl FileViews {
             }
             admit(view.limits, next_count, segments, bytes)?;
             if let (Some(file), Some((key, sequence))) = (&change.file, logical) {
+                view.index_stream(&key, (next.position, 0));
                 match view.files.entry(key.clone()) {
                     Entry::Occupied(mut entry) if sequence.is_some() => {
                         let head = entry.get_mut();
@@ -378,9 +423,6 @@ impl FileViews {
                         head.channel = file.channel;
                     }
                     Entry::Vacant(entry) => {
-                        if stream_key(&key) {
-                            view.stream_order.push(key.clone());
-                        }
                         entry.insert(HeadFile {
                             key,
                             publication: file.publication,
@@ -404,8 +446,9 @@ impl FileViews {
                     .sum::<u64>();
                 head.length -= removed;
                 if head.segments.is_empty() {
-                    view.stream_order.retain(|key| key != entry.key());
+                    let key = entry.key().clone();
                     entry.remove();
+                    view.remove_stream(&key);
                 }
             }
             view.bytes = bytes;

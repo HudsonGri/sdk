@@ -75,6 +75,8 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,
     verified: crate::sync::Mutex<VerifiedSummary>,
+    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+    append_probe: cache::AppendProbe,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,

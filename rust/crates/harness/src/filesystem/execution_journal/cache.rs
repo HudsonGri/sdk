@@ -54,56 +54,11 @@ pub(super) fn matches_anchor(
 }
 
 #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
-/// Exhaustive model entry point for the production cache lock and reducer.
-pub fn verify_cached_summary_publication(split: bool) {
-    use loom::{sync::Arc, thread};
-    const _: fn(
-        crate::sync::Mutex<VerifiedSummary>,
-    ) -> acyclic_stream::query_sync::Mutex<VerifiedSummary> = |lock| lock;
-    let cache = Arc::new(crate::sync::Mutex::new(VerifiedSummary::default()));
-    let writer = cache.clone();
-    let commit = acyclic_stream::CommitId::from_bytes([9; 32]);
-    let record = ExecutionRecord {
-        operation_id: OperationId::from_bytes([1; 16]),
-        sequence: 1,
-        idempotency_key: "retry".into(),
-        event: ExecutionEvent::Started {
-            request_digest: [1; 32],
-        },
-    };
-    let producer = thread::spawn(move || {
-        loom::future::block_on(async {
-            let mut cache = writer.lock().await;
-            cache.bind(record.operation_id, None).unwrap();
-            if split {
-                cache
-                    .summary
-                    .accept(&record, None, Limits::default(), None)
-                    .unwrap();
-                drop(cache);
-                thread::yield_now();
-                writer.lock().await.summary.fence = Some(commit);
-            } else {
-                cache
-                    .summary
-                    .accept_page(vec![(record, None)], Some(commit), Limits::default(), None)
-                    .unwrap();
-            }
-        })
-    });
-    let reader = thread::spawn(move || {
-        loom::future::block_on(async {
-            let cache = cache.lock().await;
-            assert!(
-                (cache.summary.tail == 0 && cache.summary.fence.is_none())
-                    || (cache.summary.tail == 1 && cache.summary.fence == Some(commit)),
-                "cached execution cursor was published without its fence"
-            );
-        })
-    });
-    producer.join().unwrap();
-    reader.join().unwrap();
-}
+mod model;
+#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+pub(super) use model::AppendProbe;
+#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+pub use model::verify_cached_summary_publication;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
