@@ -187,8 +187,12 @@ chmod +x "$gate/bin/cargo-nextest"
 cat >"$gate/bin/mcp_loom" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  distributed::tests::model_checking::origin_publication_fences_competing_writers|distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity)
+  distributed::tests::model_checking::origin_publication_fences_competing_writers|distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity|local::command_views::models::)
     printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out;\n' ;;
+  external_executor::task_bindings::model::tests::)
+    printf 'test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out;\n' ;;
+  external_executor::local_owner::registry::model::tests::)
+    printf 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out;\n' ;;
   local::compact::checkpoints::model::)
     printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out;\n' ;;
   *) printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n' ;;

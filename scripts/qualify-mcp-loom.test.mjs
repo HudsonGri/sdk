@@ -131,21 +131,32 @@ test("memory accounting instruments dependency cancellation and the real ledger 
 });
 
 test("coordinator qualification instruments real Stream locks and rejects skipped models", () => {
-  for (const passed of [0, 1]) {
+  const suites = [
+    ["distributed::tests::model_checking::origin_publication_fences_competing_writers", 1],
+    ["external_executor::task_bindings::model::tests::", 3],
+    ["external_executor::local_owner::registry::model::tests::", 2],
+    ["local::command_views::models::", 1],
+  ];
+  for (const broken of [-1, 0, 1, 2, 3]) {
     const calls = [];
     const run = (command, args, options) => {
       calls.push([command, args]);
       if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom(?: |$)/);
         assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
         assert.ok(args.includes("--lib"));
+        assert.ok(args.includes("filesystem-local,native-execution,terminal,mcp-http,grpc,test-support"));
       }
+      const suite = calls.length - 2;
       return { status: 0, stderr: "", stdout: command === "cargo"
         ? JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } })
-        : summary(passed, 0, 100) };
+        : summary(suite === broken ? 0 : suites[suite][1], 0, 100) };
     };
-    if (passed) qualifyCoordinatorOriginsLoom(undefined, run);
+    if (broken === -1) qualifyCoordinatorOriginsLoom(undefined, run);
     else assert.throws(() => qualifyCoordinatorOriginsLoom(undefined, run), /requires a nonzero/);
-    assert.deepEqual(calls[1][1], ["distributed::tests::model_checking::origin_publication_fences_competing_writers", "--exact"]);
+    assert.equal(calls.filter(([command]) => command === "cargo").length, 1);
+    assert.deepEqual(calls.slice(1), suites.slice(0, broken === -1 ? 4 : broken + 1)
+      .map(([filter], index) => ["model-binary", [filter, ...(index === 0 ? ["--exact"] : [])]]));
   }
 });
 

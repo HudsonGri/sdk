@@ -8,9 +8,14 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
   });
 }
 
-export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
+export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,grpc,test-support"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filter: "distributed::tests::model_checking::origin_publication_fences_competing_writers",
+    suites: [
+      { filter: "external_executor::task_bindings::model::tests::", exact: false, expected: 3, timeout: 9500 },
+      { filter: "external_executor::local_owner::registry::model::tests::", exact: false, expected: 2, timeout: 9500 },
+      { filter: "local::command_views::models::", exact: false, expected: 1, timeout: 9500 },
+    ],
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
   });
 }
@@ -83,18 +88,19 @@ function qualifyLoom(crate, target, features, run, options = {}) {
       && record.profile.test && record.executable) binaries.push(record.executable);
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
-  const result = run(binaries[0], options.filter ? [options.filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
-  if (result.error) throw result.error;
-  process.stdout.write(result.stdout ?? "");
-  process.stderr.write(result.stderr ?? "");
-  if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
-  const complete = options.exact === false
-    ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
-    : options.filter
-    ? /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
-    : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
-  if (!complete.test(result.stdout)) {
-    throw new Error("MCP Loom qualification requires a nonzero, complete test suite");
+  for (const suite of [options, ...(options.suites ?? [])]) {
+    const result = run(binaries[0], suite.filter ? [suite.filter, ...(suite.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(suite.timeout ? { timeout: suite.timeout } : {}) });
+    if (result.error) throw result.error;
+    process.stdout.write(result.stdout ?? "");
+    process.stderr.write(result.stderr ?? "");
+    if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
+    const expected = suite.expected ?? (suite.exact === false ? 4 : 1);
+    const complete = suite.filter
+      ? new RegExp(`^test result: ok\\. ${expected} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;`, "m")
+      : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
+    if (!complete.test(result.stdout)) {
+      throw new Error("MCP Loom qualification requires a nonzero, complete test suite");
+    }
   }
 }
 
