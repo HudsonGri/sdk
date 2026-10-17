@@ -80,19 +80,24 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         }
     }
 
-    pub(super) async fn finish<E: GitFilesystemExecutor>(
-        &self,
+    // Construct the large settlement state outside the caller's poll frame.
+    #[inline(never)]
+    pub(super) fn finish<'a, E: GitFilesystemExecutor>(
+        &'a self,
         transition: GitTransitionId,
-        action: &GitFilesystemAction,
-        executor: &E,
-    ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let result = self
-            .perform(transition.operation_id(), action, executor)
-            .await?;
-        match self.complete_transition_result(transition, &result).await? {
-            GitCommandOutput::NoOp => Ok(GitCommandOutput::Filesystem(result)),
-            output => Ok(output),
-        }
+        action: &'a GitFilesystemAction,
+        executor: &'a E,
+    ) -> impl Future<Output = Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>>> + 'a
+    {
+        Box::pin(async move {
+            let result = self
+                .perform(transition.operation_id(), action, executor)
+                .await?;
+            match self.complete_transition_result(transition, &result).await? {
+                GitCommandOutput::NoOp => Ok(GitCommandOutput::Filesystem(result)),
+                output => Ok(output),
+            }
+        })
     }
 
     async fn perform<E: GitFilesystemExecutor>(
@@ -205,43 +210,48 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         .await
     }
 
-    pub(super) async fn prepare_validated(
-        &self,
-        plan: impl Fn(&mut GitCompatState) -> Result<GitCommandOutput, GitCompatError<S::Error>>,
-    ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut state = self.load().await?;
-            if let Some(pending) = state
-                .pending
-                .as_ref()
-                .filter(|pending| !inspected_join(pending))
-            {
-                return Err(GitCompatError::TransitionPending(pending.id));
-            }
-            let before = state.clone();
-            let output = plan(&mut state)?;
-            if let Some(pending) = &before.pending {
-                if state != before
-                    || matches!(
-                        &output,
-                        GitCommandOutput::Action(_) | GitCommandOutput::Prepared { .. }
-                    )
+    // Boxing at construction also keeps poll-time temporary copies in this
+    // factory, rather than in every command that awaits preparation.
+    #[inline(never)]
+    pub(super) fn prepare_validated<'a>(
+        &'a self,
+        plan: impl Fn(&mut GitCompatState) -> Result<GitCommandOutput, GitCompatError<S::Error>> + 'a,
+    ) -> impl Future<Output = Result<GitCommandOutput, GitCompatError<S::Error>>> + 'a {
+        Box::pin(async move {
+            for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+                let mut state = self.load().await?;
+                if let Some(pending) = state
+                    .pending
+                    .as_ref()
+                    .filter(|pending| !inspected_join(pending))
                 {
                     return Err(GitCompatError::TransitionPending(pending.id));
                 }
-                return Ok(output);
-            }
-            let output = match output {
-                GitCommandOutput::Action(action) => {
-                    prepare_transition(&mut state, action, GitPendingMutation::NoOp)
+                let before = state.clone();
+                let output = plan(&mut state)?;
+                if let Some(pending) = &before.pending {
+                    if state != before
+                        || matches!(
+                            &output,
+                            GitCommandOutput::Action(_) | GitCommandOutput::Prepared { .. }
+                        )
+                    {
+                        return Err(GitCompatError::TransitionPending(pending.id));
+                    }
+                    return Ok(output);
                 }
-                output => output,
-            };
-            if state == before || self.publish(state).await? {
-                return Ok(output);
+                let output = match output {
+                    GitCommandOutput::Action(action) => {
+                        prepare_transition(&mut state, action, GitPendingMutation::NoOp)
+                    }
+                    output => output,
+                };
+                if state == before || self.publish(state).await? {
+                    return Ok(output);
+                }
             }
-        }
-        Err(GitCompatError::Contended)
+            Err(GitCompatError::Contended)
+        })
     }
 
     pub(super) async fn validate_workspace_tree(

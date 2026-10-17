@@ -28,15 +28,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
-        let output = Box::pin(self.prepare_validated(|_| {
-            Ok(GitCommandOutput::Action(
-                GitFilesystemAction::RestorePaths {
-                    tree: source,
-                    paths: paths.clone(),
-                },
-            ))
-        }))
-        .await?;
+        let output = self
+            .prepare_validated(|_| {
+                Ok(GitCommandOutput::Action(
+                    GitFilesystemAction::RestorePaths {
+                        tree: source,
+                        paths: paths.clone(),
+                    },
+                ))
+            })
+            .await?;
         executor
             .validate()
             .await
@@ -44,7 +45,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let GitCommandOutput::Prepared { transition, action } = output else {
             return Err(GitCompatError::InvalidState.into());
         };
-        Box::pin(self.finish(transition, &action, executor)).await
+        self.finish(transition, &action, executor).await
     }
 }
 
@@ -66,7 +67,8 @@ mod tests {
             tree: tree(2),
             paths: vec!["/selected".into()],
         };
-        let settlement = repository.finish(GitTransitionId::from_bytes([1; 16]), &action, &executor);
+        let settlement =
+            repository.finish(GitTransitionId::from_bytes([1; 16]), &action, &executor);
         eprintln!(
             "published restore futures: boundary {}, body {}, validation {}, preparation {}, settlement {} bytes",
             std::mem::size_of_val(&boundary),
@@ -77,5 +79,7 @@ mod tests {
         );
         assert!(std::mem::size_of_val(&boundary) < 1024);
         assert!(std::mem::size_of_val(&body) < 4096);
+        assert!(std::mem::size_of_val(&preparation) < 128);
+        assert!(std::mem::size_of_val(&settlement) < 128);
     }
 }
