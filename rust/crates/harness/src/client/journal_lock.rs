@@ -26,7 +26,7 @@ fn validate(file: &File) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(acyclic_harness_loom, test))]
+#[cfg(acyclic_harness_loom)]
 pub(super) use modeled::disable_exclusion;
 #[cfg(acyclic_harness_loom)]
 pub(super) use modeled::{WriterLock, acquire};
@@ -35,10 +35,11 @@ pub(super) use modeled::{WriterLock, acquire};
 mod modeled {
     use super::*;
     use loom::sync::Mutex;
-    use std::{collections::BTreeMap, os::unix::fs::MetadataExt};
+    use same_file::Handle;
+    use std::{collections::HashMap, sync::Arc};
 
     struct Registry {
-        held: BTreeMap<(u64, u64), bool>,
+        held: HashMap<Arc<Handle>, bool>,
         enforce: bool,
     }
 
@@ -47,20 +48,23 @@ mod modeled {
         // Never nested or held across filesystem I/O. Plain values can unwind
         // without leaving Loom-owned references in a static registry.
         static ref LOCKS: Mutex<Registry> = Mutex::new(Registry {
-            held: BTreeMap::new(), enforce: true,
+            held: HashMap::new(), enforce: true,
         });
     }
 
     pub(crate) struct WriterLock {
         _file: File,
-        identity: (u64, u64),
+        identity: Arc<Handle>,
     }
 
     pub(crate) fn acquire(file: File) -> Result<WriterLock> {
-        let metadata = file
-            .metadata()
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        let identity = (metadata.dev(), metadata.ino());
+        let identity = Arc::new(
+            Handle::from_file(
+                file.try_clone()
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            )
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        );
         {
             let mut locks = LOCKS
                 .lock()
@@ -68,7 +72,7 @@ mod modeled {
             if locks.enforce && locks.held.get(&identity) == Some(&true) {
                 return Err(Error::Conflict("client journal is locked".into()));
             }
-            locks.held.insert(identity, true);
+            locks.held.insert(identity.clone(), true);
         }
         let lock = WriterLock {
             _file: file,
@@ -81,13 +85,12 @@ mod modeled {
     impl Drop for WriterLock {
         fn drop(&mut self) {
             if let Ok(mut locks) = LOCKS.lock() {
-                locks.held.insert(self.identity, false);
+                locks.held.insert(self.identity.clone(), false);
             }
         }
     }
 
     // Negative control, absent from normal builds: bypass the actual acquisition path.
-    #[cfg(test)]
     pub(crate) fn disable_exclusion() {
         if let Ok(mut locks) = LOCKS.lock() {
             locks.enforce = false;

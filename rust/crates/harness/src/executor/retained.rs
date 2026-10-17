@@ -4,12 +4,16 @@ pub(crate) async fn completed_tool_projection(
     journal: &dyn ExecutionJournal,
     records: &[ExecutionRecord],
     step: u32,
-    expected: &ToolInvocation,
+    expected: crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
     definition: &crate::tool::ToolDefinition,
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
     validate_journal(journal, io)?;
+    let crate::tool::RecordedInvocation {
+        invocation: expected,
+        metadata,
+    } = expected;
     let matches = match expected.name.rsplit_once('@') {
         Some((name, revision)) => definition.name == name && definition.revision == revision,
         None => definition.name == expected.name,
@@ -32,11 +36,8 @@ pub(crate) async fn completed_tool_projection(
             _ => None,
         })
         .ok_or(Error::Indeterminate(expected.operation_id))?;
-    if load_json::<ToolInvocation>(journal, invocation, io)
-        .await?
-        .0
-        != *expected
-    {
+    let recorded = load_json::<crate::tool::RecordedInvocation>(journal, invocation, io).await?;
+    if recorded.0.invocation != *expected || recorded.0.metadata != *metadata {
         return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Conflict,

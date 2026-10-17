@@ -50,9 +50,14 @@ mod records;
 mod request;
 mod response;
 mod summary;
+mod summary_file;
+#[cfg(any(test, feature = "filesystem"))]
+pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_resolution;
-use content::*;
+pub(crate) use content::verify_model_contents_scoped;
+#[cfg(test)]
+pub(crate) use content::verify_model_contents_with_summary_authorization;
 mod retained;
 mod turn;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
@@ -423,6 +428,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    summary_source: Option<Box<FileRef>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

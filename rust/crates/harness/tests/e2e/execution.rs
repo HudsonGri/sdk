@@ -1,5 +1,7 @@
 use super::{
-    TestResult, matchers,
+    TestResult,
+    expectations::Expectations,
+    matchers,
     scenario::{self, Scenario},
 };
 use acyclic_harness::{
@@ -14,12 +16,45 @@ use acyclic_harness::{
     test_support::ScriptedModelProvider,
     tool::ToolRegistry,
 };
+use acyclic_stream::{MemoryStream, StreamProvider};
 use serde_json::Value;
 use std::sync::Arc;
 
-pub(super) async fn run(mut case: Scenario) -> TestResult {
+pub(super) async fn run(case: Scenario) -> TestResult {
+    run_on(case, Arc::new(MemoryStream::default()))
+        .await
+        .map(drop)
+}
+
+/// A checked scenario's journal, kept for cross-provider comparison.
+pub(super) struct Outcome<P> {
+    storage: MemoryHarnessStorage<P>,
+    operation: OperationId,
+}
+
+impl<P: StreamProvider> Outcome<P> {
+    /// Event kinds and loaded model events: identical scenario data must
+    /// replay the same observations on every Stream provider.
+    pub(super) async fn trace(&self) -> TestResult<Vec<Value>> {
+        let journal = self.storage.journal();
+        Ok(replay(journal.as_ref(), self.operation)
+            .await?
+            .into_iter()
+            .map(|event| match event["kind"].as_str() {
+                Some("model") => serde_json::json!({"kind": "model", "event": event["event"]}),
+                _ => serde_json::json!({"kind": event["kind"]}),
+            })
+            .collect())
+    }
+}
+
+/// Runs one executor scenario with its journal on `stream`.
+pub(super) async fn run_on<P: StreamProvider>(
+    mut case: Scenario,
+    stream: Arc<P>,
+) -> TestResult<Outcome<P>> {
     let limits = case.execution_limits()?;
-    let storage = workspace(&case.seed).await?;
+    let storage = workspace_on(&case.seed, stream).await?;
     case.seed.clear();
     let (executor, provider, source) = configure(&mut case, limits)?;
     let input = TurnInput {
@@ -60,19 +95,27 @@ pub(super) async fn run(mut case: Scenario) -> TestResult {
     }
     check_provider(&case.expect, &provider, journal.as_ref()).await?;
     check_events(&case.expect, journal.as_ref(), operation).await?;
-    check_files(&case.expect.files, &storage).await
+    check_files(&case.expect.files, &storage).await?;
+    Ok(Outcome { storage, operation })
 }
 
 pub(super) async fn workspace(
     seed: &std::collections::BTreeMap<String, String>,
 ) -> TestResult<MemoryHarnessStorage> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?;
+    workspace_on(seed, Arc::new(MemoryStream::default())).await
+}
+
+async fn workspace_on<P: StreamProvider>(
+    seed: &std::collections::BTreeMap<String, String>,
+    stream: Arc<P>,
+) -> TestResult<MemoryHarnessStorage<P>> {
+    let storage = MemoryHarnessStorage::with_stream(AgentId::new(), 1_048_576, stream).await?;
     publish(&storage, seed).await?;
     Ok(storage)
 }
 
-pub(super) async fn publish(
-    storage: &MemoryHarnessStorage,
+pub(super) async fn publish<P: StreamProvider>(
+    storage: &MemoryHarnessStorage<P>,
     files: &std::collections::BTreeMap<String, String>,
 ) -> acyclic_harness::Result<()> {
     for (path, contents) in files {
@@ -100,11 +143,11 @@ fn configure(
     }
     if let Some(tokens) = case.message_tokens {
         provider = provider.with_token_counter(move |request| {
-            Ok(ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: 0,
-                message_tokens: vec![tokens; request.request().messages.len()],
-            })
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                0,
+                vec![tokens; request.request().messages.len()],
+            ))
         });
     }
     let provider = Arc::new(provider);
@@ -239,7 +282,7 @@ async fn run_turn(
 }
 
 async fn check_provider(
-    expected: &scenario::Expectations,
+    expected: &Expectations,
     provider: &ScriptedModelProvider,
     journal: &dyn acyclic_harness::executor::ExecutionJournal,
 ) -> TestResult {
@@ -312,30 +355,24 @@ async fn check_provider(
 }
 
 async fn check_events(
-    expected: &scenario::Expectations,
+    expected: &Expectations,
     journal: &dyn acyclic_harness::executor::ExecutionJournal,
     operation: OperationId,
 ) -> TestResult {
-    if expected.events.is_some() || !expected.not_events.is_empty() {
-        let mut events = Vec::new();
-        let mut after = 0;
-        loop {
-            let records = journal.replay(operation, after, 64, None)?.await?;
-            if records.is_empty() {
-                break;
-            }
-            for record in records {
-                after = record.sequence;
-                let mut value = serde_json::to_value(&record.event)?;
-                if let ExecutionEvent::Model { event, .. } = &record.event {
-                    *value.get_mut("event").ok_or("missing model event")? =
-                        serde_json::from_slice(&journal.load(event, None)?.await?)?;
-                }
-                events.push(value);
-            }
-        }
+    if expected.events.is_some()
+        || expected.model_events.is_some()
+        || !expected.not_events.is_empty()
+    {
+        let events = replay(journal, operation).await?;
         if let Some(expected) = &expected.events {
             matchers::ordered(expected, &events, "events")?;
+        }
+        if !expected.matches_model_events(&events) {
+            return Err(format!(
+                "model events differ: expected {:?}, got {events:?}",
+                expected.model_events
+            )
+            .into());
         }
         for forbidden in &expected.not_events {
             if events
@@ -349,9 +386,33 @@ async fn check_events(
     Ok(())
 }
 
-pub(super) async fn check_files(
+/// Every journal observation of `operation`, with model events loaded.
+async fn replay(
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    operation: OperationId,
+) -> TestResult<Vec<Value>> {
+    let mut events = Vec::new();
+    let mut after = 0;
+    loop {
+        let records = journal.replay(operation, after, 64, None)?.await?;
+        if records.is_empty() {
+            return Ok(events);
+        }
+        for record in records {
+            after = record.sequence;
+            let mut value = serde_json::to_value(&record.event)?;
+            if let ExecutionEvent::Model { event, .. } = &record.event {
+                *value.get_mut("event").ok_or("missing model event")? =
+                    serde_json::from_slice(&journal.load(event, None)?.await?)?;
+            }
+            events.push(value);
+        }
+    }
+}
+
+pub(super) async fn check_files<P: StreamProvider>(
     expected: &std::collections::BTreeMap<String, Option<String>>,
-    storage: &MemoryHarnessStorage,
+    storage: &MemoryHarnessStorage<P>,
 ) -> TestResult {
     for (path, expected) in expected {
         let actual = storage
@@ -379,7 +440,7 @@ fn check_interruption<T: std::fmt::Debug>(
 }
 
 fn check_result<T: serde::Serialize + std::fmt::Debug>(
-    expected: &scenario::Expectations,
+    expected: &Expectations,
     result: acyclic_harness::Result<T>,
 ) -> TestResult<Option<T>> {
     match (&expected.error, result) {
@@ -396,7 +457,7 @@ fn check_result<T: serde::Serialize + std::fmt::Debug>(
     }
 }
 
-fn check_text(expected: &scenario::Expectations, actual: &[u8]) -> TestResult {
+fn check_text(expected: &Expectations, actual: &[u8]) -> TestResult {
     if expected.text.as_deref().map(str::as_bytes) != Some(actual) {
         return Err(format!(
             "text: expected {:?}, got {:?}",

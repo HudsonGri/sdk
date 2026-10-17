@@ -49,7 +49,7 @@ impl ModelPrefix {
         let mut history_tools = std::collections::BTreeMap::new();
         for message in messages {
             for part in message.content.parts() {
-                if let ModelContentPart::ToolCall { name, .. } = part
+                if let ModelContentPart::ToolCall(crate::model::ToolCall { name, .. }) = part
                     && name.contains('@')
                 {
                     let tool = request

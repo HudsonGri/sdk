@@ -22,21 +22,47 @@ pub enum InteractionRejection {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Logical task-file storage or publication failure.
+    #[error(transparent)]
+    TaskFiles(Box<crate::task_volume::Error>),
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A task reached a terminal failed outcome.
+    #[error("task {task} failed: {message}")]
+    TaskFailed {
+        /// The failed durable task.
+        task: crate::TaskId,
+        /// The task's retained failure diagnostic.
+        message: String,
+    },
+    /// Automatic admission stopped with a file-driven blocked goal.
+    #[error("goal blocked: {0}")]
+    GoalBlocked(crate::goal::GoalBlockedReason),
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
+    /// A tool requires a native view whose host device or driver is missing.
+    #[error("native mount unavailable: {device}")]
+    MountUnavailable {
+        /// Missing host mount device or driver.
+        device: &'static str,
+    },
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// A definitive tool rejection; safe to journal without allocating a diagnostic.
+    #[error("tool rejected: {0}")]
+    ToolRejected(&'static str),
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// The invocation's cancellation token fired before the operation finished.
+    #[error("operation cancelled")]
+    Cancelled,
     /// A bound approval resolved without permission to execute.
     #[error("interaction {0}")]
     InteractionRejected(InteractionRejection),
@@ -44,19 +70,21 @@ pub enum Error {
     #[error("storage failure: {0}")]
     Storage(String),
     /// Native process creation, capture, or hook configuration IO failed.
-    #[error("process {kind}: {message}")]
-    Process {
-        /// Platform-neutral operation failure classification.
-        kind: &'static str,
-        /// Diagnostic returned by the process or IO runtime.
-        message: String,
-    },
+    #[error("process: {0}")]
+    Process(#[from] crate::ProcessError),
     /// An actual SDK buffer reservation failure, without allocating a diagnostic.
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
     /// Durable admission may have committed and must be reconciled.
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
+    /// Search publication is retryable; its completed response remains in ready.json.
+    #[error("search publication deferred; resume from ready.json")]
+    SearchPublicationDeferred,
+    /// A Machines provider failure with no operation receipt, keeping its exact cause.
+    #[cfg(feature = "machines")]
+    #[error("Machines {0}")]
+    Machines(#[source] acyclic_machines::ProviderError),
     /// An owned native failure, preserving its cause and existing allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -96,6 +124,15 @@ pub enum Error {
         message: String,
         /// Existing custody, released after the diagnostic is dropped.
         custody: acyclic_fs::NativeAllocation,
+    },
+    /// A fixed JSON input failure without an allocated diagnostic.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{kind}")]
+    NativeJsonAdmission {
+        /// The original boundary classification.
+        code: crate::wire::ErrorCode,
+        /// The parser's typed source rejection.
+        kind: crate::executor::json::JsonInputError,
     },
     /// A JSON failure preserving its original cause and classification.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -249,6 +286,18 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An SDK git operation failure retaining the complete typed cause.
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    #[error("{source}")]
+    NativeGit {
+        /// Original capture, coordination, patch, lineage or durable-state cause.
+        #[source]
+        source: Box<crate::tools::git::Failure>,
+    },
     /// An actual native process timeout, without a new boxed IO error.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -274,13 +323,30 @@ pub(crate) fn native_work_error_code(
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
         Native::UnsupportedRename => ErrorCode::Unsupported,
+        Native::Cancelled => ErrorCode::Cancelled,
         Native::Io(_)
-        | Native::Cancelled
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
-        | Native::AllocationFailed(_)
-        | Native::IndeterminatePreparation => ErrorCode::Storage,
+        | Native::AllocationFailed(_) => ErrorCode::Storage,
+    }
+}
+
+/// Wire classification of a retained Machines cause.
+#[cfg(feature = "machines")]
+const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
+    use crate::wire::ErrorCode;
+    use acyclic_machines::ProviderError as Machines;
+    match cause {
+        Machines::NotFound(_) => ErrorCode::NotFound,
+        Machines::Conflict(_) => ErrorCode::Conflict,
+        Machines::Unsupported(_) => ErrorCode::Unsupported,
+        Machines::Invalid(_) | Machines::Rejected(_) => ErrorCode::Invalid,
+        Machines::Indeterminate(_)
+        | Machines::OperationIndeterminate(_)
+        | Machines::CommandIndeterminate(_) => ErrorCode::Indeterminate,
+        Machines::Cancelled => ErrorCode::Cancelled,
+        Machines::Unavailable | Machines::Failed => ErrorCode::Storage,
     }
 }
 
@@ -290,16 +356,19 @@ impl Error {
         any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]
     pub(crate) fn process_io(error: std::io::Error) -> Self {
-        let kind = match error.kind() {
-            std::io::ErrorKind::TimedOut => "timeout",
-            std::io::ErrorKind::NotFound => "not_found",
-            std::io::ErrorKind::PermissionDenied => "permission_denied",
-            _ => "io",
-        };
-        Self::Process {
-            kind,
-            message: error.to_string(),
-        }
+        let message = error.to_string();
+        let exit_code = None;
+        Self::Process(match error.kind() {
+            std::io::ErrorKind::TimedOut => crate::ProcessError::Timeout { exit_code, message },
+            std::io::ErrorKind::NotFound => crate::ProcessError::NotFound { exit_code, message },
+            std::io::ErrorKind::PermissionDenied => {
+                crate::ProcessError::PermissionDenied { exit_code, message }
+            }
+            std::io::ErrorKind::FileTooLarge => {
+                crate::ProcessError::OutputLimit { exit_code, message }
+            }
+            _ => crate::ProcessError::Io { exit_code, message },
+        })
     }
 
     /// Stable wire classification from which every adapter derives its status.
@@ -307,11 +376,28 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
+            Self::TaskFiles(error) => match error.as_ref() {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error.code(),
+                crate::task_volume::Error::FenceConflict
+                | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,
+                crate::task_volume::Error::Conflict(_)
+                | crate::task_volume::Error::ImmutableConflict(_)
+                | crate::task_volume::Error::SequenceConflict(_)
+                | crate::task_volume::Error::ResetRequired => ErrorCode::Conflict,
+                crate::task_volume::Error::InvalidPath
+                | crate::task_volume::Error::InvalidSegment
+                | crate::task_volume::Error::LimitExceeded => ErrorCode::Invalid,
+                crate::task_volume::Error::Storage(_) => ErrorCode::Storage,
+            },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) => ErrorCode::Unsupported,
-            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
+                ErrorCode::Unsupported
+            }
+            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
             }
@@ -322,11 +408,14 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
-            Self::Process { .. } => ErrorCode::Invalid,
-            Self::Indeterminate(_) => ErrorCode::Indeterminate,
+            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
+            Self::Process(_) => ErrorCode::Invalid,
+            Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
+            #[cfg(feature = "machines")]
+            Self::Machines(cause) => machines_error_code(cause),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
+            | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
             | Self::NativeProstDecode { code, .. }
@@ -350,7 +439,7 @@ impl Error {
                 feature = "native-execution",
                 not(target_arch = "wasm32")
             ))]
-            Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
+            Self::NativeWorkspacePublication { .. } | Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }
@@ -362,19 +451,50 @@ impl Error {
         self.code().as_str_name()
     }
 
+    /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
+    pub(crate) const fn leaves_effect_uncertain(&self) -> bool {
+        matches!(
+            self,
+            Self::Indeterminate(_) | Self::Storage(_) | Self::Cancelled
+        )
+    }
+
     /// Native failures must propagate before additional provider or deadline work.
     pub(crate) fn is_native_failure(&self) -> bool {
+        #[cfg(feature = "machines")]
+        if matches!(self, Self::Machines(_)) {
+            return false;
+        }
         !matches!(
             self,
-            Self::NotFound(_)
+            Self::TaskFiles(_)
+                | Self::NotFound(_)
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
+                | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
+                | Self::Cancelled
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::SearchPublicationDeferred
+                | Self::TaskFailed { .. }
+                | Self::GoalBlocked(_)
         )
+    }
+}
+
+/// The only conversion of a fired cancellation token into a harness error.
+impl From<acyclic_fs::CancellationError> for Error {
+    fn from(_: acyclic_fs::CancellationError) -> Self {
+        Self::Cancelled
+    }
+}
+
+impl From<crate::task_volume::Error> for Error {
+    fn from(error: crate::task_volume::Error) -> Self {
+        Self::TaskFiles(Box::new(error))
     }
 }
 
@@ -385,6 +505,23 @@ impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
         Self::NativeWork {
             cause,
             custody: None,
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
+    fn from(source: acyclic_fs::NativeWorkspacePublicationError) -> Self {
+        match source {
+            acyclic_fs::NativeWorkspacePublicationError::Native(cause) => cause.into(),
+            source => Self::NativeWorkspacePublication {
+                source: Box::new(source),
+                custody: None,
+            },
         }
     }
 }
@@ -491,6 +628,15 @@ impl From<acyclic_fs::native_mount::NativeMountError> for Error {
 impl From<acyclic_stream::StreamError> for Error {
     fn from(error: acyclic_stream::StreamError) -> Self {
         Self::Storage(error.to_string())
+    }
+}
+
+impl From<acyclic_actors::timers::TimerError> for Error {
+    fn from(error: acyclic_actors::timers::TimerError) -> Self {
+        match error {
+            acyclic_actors::timers::TimerError::Stream(error) => error.into(),
+            other => Self::Invalid(other.to_string()),
+        }
     }
 }
 

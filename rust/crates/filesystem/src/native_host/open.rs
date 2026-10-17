@@ -2,10 +2,13 @@ use super::*;
 
 pub(crate) enum NativeOpenOptions {
     Read,
+    #[cfg(any(test, feature = "local", feature = "native-mount"))]
     ReadWrite,
+    #[cfg(any(test, feature = "native-mount"))]
     CreateNew,
     #[cfg(feature = "local")]
     ReadWriteCreateNew,
+    #[cfg(any(test, feature = "local", feature = "native-mount"))]
     ReadWriteCreate,
 }
 
@@ -85,11 +88,20 @@ pub(crate) fn directory_path<W: NativeHostWork>(
     create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
+    #[cfg(unix)]
     let mut current = clone_directory(parent, work)?;
     #[cfg(unix)]
     let components = path.components();
     #[cfg(windows)]
-    let components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    let mut components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    #[cfg(windows)]
+    let mut current = {
+        let Some(name) = components.next() else {
+            return clone_directory(parent, work);
+        };
+        work.started_io(ITEM)?;
+        open_windows_directory(parent, name, create, work)?.0
+    };
     for component in components {
         work.started_io(ITEM)?;
         #[cfg(unix)]
@@ -120,8 +132,12 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     #[cfg(windows)]
     return with_wide_path(name, work, |name, work| {
         let disposition = match options {
-            NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
+            NativeOpenOptions::Read => nt::FILE_OPEN,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
+            NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             _ => nt::FILE_CREATE,
         };
         let access = if matches!(options, NativeOpenOptions::Read) {
@@ -149,10 +165,13 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     unix_name(name.as_os_str(), work, |name, work| {
         let mode = match options {
             NativeOpenOptions::Read => libc::O_RDONLY,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             NativeOpenOptions::ReadWrite => libc::O_RDWR,
+            #[cfg(any(test, feature = "native-mount"))]
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
             #[cfg(feature = "local")]
             NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
         };
         let file = open_unix(
@@ -256,6 +275,7 @@ pub(super) fn remove_unix_named_leaf<W: NativeHostWork>(
     })
 }
 
+#[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn prepare_ascii_leaf<const N: usize>(
     bytes: [u8; N],
     work: &NativeMaterializationWork,
@@ -293,6 +313,7 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     Ok(name)
 }
 
+#[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn remove_ascii_leaf<W: NativeHostWork, const N: usize>(
     parent: &Dir,
     name: &[NativeUnit; N],
@@ -322,9 +343,18 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     );
     #[cfg(windows)]
     let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-    let parent = directory_path(root, parent, false, work)?;
     #[cfg(unix)]
-    return unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work));
+    let empty = parent.as_os_str().is_empty();
     #[cfg(windows)]
-    operation(&parent, leaf, work)
+    let empty = parent.is_empty();
+    let held = if empty {
+        None
+    } else {
+        Some(directory_path(root, parent, false, work)?)
+    };
+    let parent = held.as_ref().unwrap_or(root);
+    #[cfg(unix)]
+    return unix_name(leaf, work, |leaf, work| operation(parent, leaf, work));
+    #[cfg(windows)]
+    operation(parent, leaf, work)
 }

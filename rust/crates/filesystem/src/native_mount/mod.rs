@@ -61,6 +61,8 @@ pub use crate::{
 
 mod materialize;
 pub use materialize::materialize_checkout_with_work;
+#[cfg(fuzzing)]
+pub use materialize::verify_native_staging_selection;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
     MaterializeOptions, materialize_checkout, materialize_checkout_paths,
@@ -266,13 +268,18 @@ mod filesystem;
 pub use filesystem::*;
 mod error;
 pub use error::*;
+mod fence_io;
 mod recovery;
 pub use recovery::*;
 mod startup;
 pub use startup::*;
 mod session;
 pub use session::*;
+#[cfg(target_os = "linux")]
+mod disconnected;
 mod lifecycle;
+#[cfg(target_os = "linux")]
+pub use disconnected::recover_disconnected_native_mount_destination;
 pub use lifecycle::*;
 mod fence;
 use fence::*;

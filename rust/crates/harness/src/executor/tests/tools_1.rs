@@ -16,6 +16,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     assert_ne!(original.id(), replacement.id());
     let tool = Arc::new(ContextOnlyTool {
         admission: original.id(),
+        lost_response: || Error::Storage("response lost after effect".into()),
         calls: AtomicUsize::new(0),
         reconciles: AtomicUsize::new(0),
     });
@@ -25,7 +26,21 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         json!({"type":"object"}),
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
-    let model = Arc::new(scripted_model());
+    let continuation = json!({"gemini_thought_signature":"signed"});
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            tool_turn([ModelEvent::ToolCall(
+                crate::model::ToolCall::new(
+                    "call-1".into(),
+                    "example.echo".into(),
+                    json!({"value":"hello"}),
+                )
+                .with_metadata(continuation.clone()),
+            )]),
+            done_turn(),
+        ])
+        .with_token_counter(fixture_token_count),
+    );
     let base = StockExecutor::new(
         Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
         model.clone(),
@@ -88,9 +103,17 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     let result = executor.execute(input.clone(), &journal).await?;
     assert_eq!(result.text, "done");
     let reads = journal.3.load(Ordering::SeqCst);
-    executor
+    let prefix = executor
         .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
         .await?;
+    assert!(prefix.request().messages.iter().any(|message| matches!(
+        &message.content,
+        ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { metadata, .. })) if metadata == &continuation
+    )));
+    assert!(model.requests()[1].messages.iter().any(|message| matches!(
+        &message.content,
+        ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { metadata, .. })) if metadata == &continuation
+    )));
     assert!(journal.3.load(Ordering::SeqCst) > reads);
     assert_eq!(executor.execute(input, &journal).await?, result);
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
@@ -220,7 +243,10 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
                 &journal,
                 input.operation_id,
                 "tool-start",
-                &invocation,
+                &crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &Value::Null,
+                },
                 None,
             )
             .await?;
@@ -297,9 +323,23 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         .await?;
     assert_eq!(first.request().messages.len(), 3);
     assert_eq!(batch.request().messages.len(), 5);
+    assert_eq!(first.request().messages[0], batch.request().messages[0]);
+    assert_eq!(first.request().messages[1], batch.request().messages[1]);
+    assert_eq!(first.request().messages[2], batch.request().messages[3]);
     assert_eq!(
-        batch.request().messages.get(..3),
-        Some(first.request().messages.as_slice())
+        batch
+            .request()
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        [
+            ModelRole::User,
+            ModelRole::Assistant,
+            ModelRole::Assistant,
+            ModelRole::Tool,
+            ModelRole::Tool
+        ]
     );
     let dispatched = model
         .requests()
@@ -315,9 +355,10 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         .messages
         .iter()
         .filter_map(|message| match &message.content {
-            ModelContent::Part(ModelContentPart::ToolCall { call_id, .. }) => {
-                Some(call_id.as_str())
-            }
+            ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall {
+                call_id,
+                ..
+            })) => Some(call_id.as_str()),
             _ => None,
         })
         .collect();
@@ -329,6 +370,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         Mutex::new(records.clone()),
         Mutex::new(artifacts.clone()),
         Mutex::new(interactions.clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -354,6 +396,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
             Mutex::new(partial),
             Mutex::new(artifacts.clone()),
             Mutex::new(interactions.clone()),
+            AtomicUsize::new(0),
             AtomicUsize::new(0),
             AtomicUsize::new(0),
         );
@@ -389,6 +432,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         Mutex::new(records.clone()),
         Mutex::new(missing),
         Mutex::new(interactions),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -468,7 +512,6 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         Err(Error::Indeterminate(_))
     ));
 
-    let mut replay_context = Vec::new();
     let changed_call = ToolInvocation::for_model_call(
         input.operation_id,
         0,
@@ -477,6 +520,8 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         json!({"value": "changed"}),
         None,
     )?;
+    let mut replay_context = vec![call_message(&changed_call)];
+    let before = replay_context.clone();
     assert!(matches!(
         StockExecution::ordinary(&executor)
             .resolve_tool_call(
@@ -484,12 +529,13 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
                 input.operation_id,
                 0,
                 changed_call,
+                0,
                 &mut replay_context,
             )
             .await,
         Err(Error::Conflict(_))
     ));
-    assert!(replay_context.is_empty());
+    assert_eq!(replay_context, before);
     let replayed = executor.execute(input.clone(), &journal).await?;
     assert_eq!(first, replayed);
     assert_eq!(model.requests().len(), 2);
@@ -498,6 +544,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         Mutex::new(journal.0.lock().unwrap().clone()),
         Mutex::new(journal.1.lock().unwrap().clone()),
         Mutex::new(journal.2.lock().unwrap().clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -515,6 +562,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         ),
         Mutex::new(reopened.1.lock().unwrap().clone()),
         Mutex::new(reopened.2.lock().unwrap().clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -537,6 +585,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         ),
         Mutex::new(incomplete.1.lock().unwrap().clone()),
         Mutex::new(incomplete.2.lock().unwrap().clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -830,7 +879,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 None,
             )?;
             let invocation_ref =
-                stage_json(&journal, operation, "invocation", &invocation, None).await?;
+                stage_json(&journal, operation, "invocation", &crate::tool::RecordedInvocation { invocation: &invocation, metadata: &Value::Null }, None).await?;
             let result = stage_json(
                 &journal,
                 operation,
@@ -871,7 +920,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 &journal,
                 &records,
                 0,
-                &invocation,
+                crate::tool::RecordedInvocation { invocation: &invocation, metadata: &Value::Null },
                 &definition,
                 Limits::default(),
                 None,
@@ -954,5 +1003,74 @@ async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() 
             Err(Error::Invalid(message)) if message == expected.message()));
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not() -> Result<()> {
+    let outcome =
+        async |lost_response: fn() -> Error| -> Result<(Result<_>, Result<_>, usize, usize)> {
+            let scope = RuntimeScope::new(
+                crate::Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                Limits::default(),
+            )?;
+            let original = capture_admitted_context(scope.clone()).await?;
+            let tool = Arc::new(ContextOnlyTool {
+                admission: original.id(),
+                lost_response,
+                calls: AtomicUsize::new(0),
+                reconciles: AtomicUsize::new(0),
+            });
+            let tools = echo_tools(
+                tool.clone(),
+                json!({"type":"object"}),
+                json!({"type":"object"}),
+                crate::tool::json_projection_schema(json!({"type":"object"})),
+            )?;
+            let model = Arc::new(
+                ScriptedModelProvider::new([
+                    tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
+                        "call-1".into(),
+                        "example.echo".into(),
+                        json!({"value":"hello"}),
+                    ))]),
+                    done_turn(),
+                ])
+                .with_token_counter(fixture_token_count),
+            );
+            let operation = OperationId::new();
+            let executor = StockExecutor::new(
+                Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
+                model,
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(scope, None)?
+            .with_task_context(&original, operation)?;
+            let input = TurnInput {
+                operation_id: operation,
+                input: ModelContent::Text("input".into()),
+                selected_context: None,
+                max_steps: 2,
+            };
+            let journal = Journal::default();
+            let first = executor.execute(input.clone(), &journal).await;
+            let replay = executor.execute(input, &journal).await;
+            Ok((
+                first,
+                replay,
+                tool.calls.load(Ordering::SeqCst),
+                tool.reconciles.load(Ordering::SeqCst),
+            ))
+        };
+    let (cancelled, replay, calls, reconciles) = outcome(|| Error::Cancelled).await?;
+    assert!(matches!(cancelled, Err(Error::Indeterminate(_))));
+    assert!(replay.is_ok());
+    assert_eq!((calls, reconciles), (1, 1));
+    let (rejected, replay, calls, reconciles) =
+        outcome(|| Error::Invalid("tool refused".into())).await?;
+    assert!(matches!(rejected, Err(Error::Invalid(_))));
+    assert!(matches!(replay, Err(Error::Invalid(_))));
+    assert_eq!((calls, reconciles), (1, 0));
     Ok(())
 }

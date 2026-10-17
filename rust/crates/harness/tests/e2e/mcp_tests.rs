@@ -162,7 +162,7 @@ fn mcp_scripts_round_trip_without_changing_arguments_or_results() -> TestResult 
 
 #[test]
 fn mcp_fuzz_corpus_replays_the_case_codec() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/mcp_scenario");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/mcp_scenario");
     let mut accepted = 0;
     let mut rejected = 0;
     for entry in std::fs::read_dir(root)? {

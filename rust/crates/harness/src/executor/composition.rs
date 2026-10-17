@@ -13,7 +13,7 @@ mod tests {
             prop_oneof!["tool:call:[a-z]{0,16}", "other:[a-z]{0,16}", Just("model:generate".into()), Just("tool:callback".into())], 0..16,
         )) {
             let mut tools = ToolRegistry::default();
-            tools.register((crate::tool::plan::update_plan()?, None), &mut None, None)?;
+            tools.register((crate::tool::files::write()?, None), &mut None, None)?;
             let before = tools.definitions(None)?;
             let expected = crate::Capabilities::new(grants.iter().filter(|grant| !grant.starts_with("tool:call:")).cloned());
             let executor = StockExecutor::new(
@@ -40,6 +40,7 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            summary_source: None,
             max_output_tokens: None,
             provider,
             context,
@@ -63,6 +64,15 @@ impl StockExecutor {
         }
         self.max_output_tokens = Some(maximum);
         Ok(self)
+    }
+
+    #[cfg(any(test, feature = "filesystem"))]
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        if source.is_some() {
+            self.compaction = crate::context::CompactionPolicy::Disabled;
+        }
+        self.summary_source = source;
+        self
     }
 
     /// Replaces or disables the ordinary threshold policy without starting effects.

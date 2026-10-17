@@ -5,6 +5,8 @@ use std::sync::{Arc, Weak};
 
 /// Accounting for one bounded source operation.
 pub struct DemandWork {
+    #[cfg(test)]
+    pub(crate) write_probe: Option<super::WriteProbe>,
     pub(crate) work: WorkCounters,
     pub(crate) budget: WorkBudget,
     initial_budget: WorkBudget,
@@ -23,6 +25,8 @@ impl DemandWork {
         #[cfg(test)]
         crate::initialize_test_native_io();
         Self {
+            #[cfg(test)]
+            write_probe: None,
             work: WorkCounters::UNCHARGED,
             budget,
             initial_budget: budget,
@@ -36,20 +40,28 @@ impl DemandWork {
             roots: Admissions::default(),
         }
     }
+    #[inline]
     pub(crate) fn scope<T, R>(
         &mut self,
-        field: fn(&mut Self) -> &mut T,
+        field: impl Fn(&mut Self) -> &mut T,
         value: T,
         operation: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let saved = std::mem::replace(field(self), value);
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        *field(self) = saved;
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        let restore = !super::scope_tests::omit_restore();
+        #[cfg(not(all(test, not(acyclic_fs_loom))))]
+        let restore = true;
+        if restore {
+            *field(self) = saved;
+        }
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
     pub(crate) fn original_budget(&self) -> WorkBudget {
         self.initial_budget
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
@@ -94,6 +106,7 @@ impl DemandWork {
         let shell = Self::new(WorkBudget::default(), &self.cancellation);
         std::mem::replace(self, shell)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn allocation_parts(
         &mut self,
     ) -> (
@@ -166,6 +179,8 @@ impl DemandWork {
         self.charge_reconciled(delta)
     }
     pub(super) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        #[cfg(test)]
+        self.probe_write(delta);
         let delta = self.item_charge(delta);
         self.check()?;
         self.admission(delta, 0, |state| {
@@ -173,6 +188,8 @@ impl DemandWork {
         })
     }
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        #[cfg(test)]
+        self.probe_write(delta);
         let delta = self.item_charge(delta);
         let resource = self
             .resource()
@@ -335,6 +352,7 @@ impl DemandWork {
         }
         delta
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn merge(&mut self, delta: WorkCounters, live: u64) -> Result<(), DemandError> {
         let delta = self.item_charge(delta);
         self.work = self.work.with_backend(delta, live)?;

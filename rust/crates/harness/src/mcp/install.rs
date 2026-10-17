@@ -139,7 +139,7 @@ impl McpConfig {
         for (server, required, result) in results {
             match result {
                 Ok((additional, grants)) => {
-                    tools = tools.extend(additional)?;
+                    tools.extend(additional)?;
                     capabilities.0.extend(grants.0);
                 }
                 Err(error) if required => return Err(error),
@@ -158,10 +158,10 @@ impl McpConfig {
 }
 
 fn startup_timeout() -> Error {
-    Error::Process {
-        kind: "timeout",
+    Error::Process(crate::ProcessError::Timeout {
+        exit_code: None,
         message: "MCP startup deadline elapsed".into(),
-    }
+    })
 }
 
 async fn register_before<T: Send + 'static>(

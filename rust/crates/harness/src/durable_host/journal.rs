@@ -9,6 +9,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         TaskId::from_bytes(self.admission.operation_id.into_bytes())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn matches_task_binding(
         &self,
         task: TaskId,
@@ -19,6 +20,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) fn admission(&self) -> &TaskAdmissionRecord {
         &self.admission
+    }
+
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    pub(crate) fn deadline_epoch_ms(&self) -> Option<u64> {
+        self.admission.run_limits.deadline_epoch_ms
     }
 
     pub(crate) fn input_limits(&self) -> crate::conversation::Limits {
@@ -496,10 +506,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             acyclic_stream::CommitOutcome::Committed(envelope) => publication
                 .verify(envelope, received.work())
                 .map(|()| true)
-                .map_err(|error| {
+                .map_err(|_native_error| {
                     #[cfg(not(target_arch = "wasm32"))]
-                    if error.is_native_failure() {
-                        return error;
+                    if _native_error.is_native_failure() {
+                        return _native_error;
                     }
                     Error::Indeterminate(publication.operation_id)
                 }),
@@ -526,7 +536,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.append(
             path,
             expected_tail,
-            key,
+            Some(key),
             bytes,
             Self::execution_write(operation, event)?,
             quota.work(),
@@ -558,7 +568,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.append(
             path,
             expected_tail,
-            key,
+            Some(key),
             bytes,
             crate::distributed::JournalWrite::Fresh,
             quota.work(),
@@ -570,7 +580,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
-        key: &StreamKey,
+        key: Option<&StreamKey>,
         bytes: OwnedBytes,
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
@@ -599,26 +609,35 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() {
             io.hashed_bytes(bytes.len() as u64)?;
         }
+        let payload = blake3::hash(&bytes);
+        // Native journals use the payload digest itself as the caller key.
+        // Reuse this hash rather than hashing the same immutable buffer twice.
+        let key = key.map_or(payload.as_bytes().as_slice(), StreamKey::as_bytes);
         let digest = crate::executor::json::canonical_json_digest(
             &(
                 "harness/v2/owned-journal",
-                key.as_bytes(),
+                key,
                 self.task_id(),
                 &self.fence,
                 expected,
                 path.as_str(),
                 expected_tail,
                 matches!(target, CommitCondition::Absent { .. }),
-                blake3::hash(&bytes).as_bytes(),
+                payload.as_bytes(),
             ),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
         )?;
         let (key, held) = crate::distributed::digest_key(&digest, work)?;
-        let mut request = crate::distributed::commit_request(key, held, work);
-        crate::distributed::add_condition(&mut request, owner)?;
-        crate::distributed::add_condition(&mut request, target)?;
-        crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
+        let request = crate::distributed::journal_request::<true>(
+            key,
+            held,
+            owner,
+            target,
+            path.clone(),
+            bytes.clone(),
+            work,
+        )?;
         let (outcome, retained) =
             crate::distributed::commit(request, &self.host.stream, Some(self.operation_id()), None)
                 .await?;
@@ -671,6 +690,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         self.verify(false, &mut work).await?;
+        #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let workflow = tool.workflow_admission(context, invocation, io)?;
         let output_schema = crate::executor::with_history_io(io, |work| {

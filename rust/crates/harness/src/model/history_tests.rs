@@ -5,7 +5,7 @@ fn pinned(mut request: ModelRequest, revision: &str) -> ModelRequest {
     exchange(&mut request);
     for message in &mut request.messages {
         if let ModelContent::Part(
-            ModelContentPart::ToolCall { name, .. } | ModelContentPart::ToolResult { name, .. },
+            ModelContentPart::ToolCall(crate::model::ToolCall { name, .. }) | ModelContentPart::ToolResult { name, .. },
         ) = &mut message.content
         {
             *name = format!("echo@{revision}");
@@ -49,7 +49,7 @@ proptest! {
         } else {
             input.history_tools.push(definition.clone());
         }
-        let ModelContent::Part(ModelContentPart::ToolCall { arguments: slot, .. }) = &mut input.messages[1].content else { unreachable!() };
+        let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { arguments: slot, .. })) = &mut input.messages[1].content else { unreachable!() };
         *slot = arguments;
         let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) = &mut input.messages[2].content else { unreachable!() };
         *content = ToolResultContent::Json { value: result };
@@ -106,7 +106,7 @@ fn retained_schemas_never_bind_unqualified_hidden_calls() -> Result<()> {
 
 #[test]
 fn history_request_corpus_replays_canonical_admission() -> Result<()> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/model_request");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/model_request");
     let (mut admitted, mut rejected, mut prefixes) = (0, 0, 0);
     for entry in std::fs::read_dir(root).unwrap() {
         let bytes = std::fs::read(entry.unwrap().path()).unwrap();

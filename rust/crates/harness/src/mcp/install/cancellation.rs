@@ -23,10 +23,10 @@ impl Drop for CancelOnDrop {
 
 pub(super) fn check_cancelled(flag: &AtomicBool) -> Result<()> {
     if flag.load(Ordering::Acquire) {
-        Err(Error::Process {
-            kind: "cancelled",
+        Err(Error::Process(crate::ProcessError::Cancelled {
+            exit_code: None,
             message: "MCP registration cancelled".into(),
-        })
+        }))
     } else {
         Ok(())
     }
@@ -52,7 +52,7 @@ fn run_checked<T, const CHECK_COMPLETION: bool>(
     result
 }
 
-#[cfg(all(test, loom))]
+#[cfg(all(test, acyclic_harness_loom))]
 mod tests {
     use super::*;
     use loom::sync::{atomic::AtomicUsize, mpsc};
@@ -116,10 +116,7 @@ mod tests {
                 assert!(
                     matches!(
                         result,
-                        Err(Error::Process {
-                            kind: "cancelled",
-                            ..
-                        })
+                        Err(Error::Process(crate::ProcessError::Cancelled { .. }))
                     ),
                     "cancelled registration must not succeed"
                 );

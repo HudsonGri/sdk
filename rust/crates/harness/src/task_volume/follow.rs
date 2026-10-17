@@ -6,10 +6,13 @@ use uuid::Uuid;
 
 /// Serializable next-record cursor. Never infer continuity from a native watch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Cursor {
     /// Volume identity bound to its provider path.
     pub volume: [u8; 32],
     /// History incarnation, persisted in the volume header.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub epoch: Uuid,
     /// Namespace and segment format.
     pub schema: u32,
@@ -45,6 +48,7 @@ impl Cursor {
 }
 
 /// One atomic-cut snapshot; file payloads remain shared segment slices.
+#[derive(Serialize, Deserialize)]
 pub struct Snapshot {
     /// Current matching files in typed identity order (chunk sequences are numeric).
     pub files: Vec<FileValue>,
@@ -55,10 +59,14 @@ pub struct Snapshot {
 }
 
 /// One matching change, or a checkpoint after a nonmatching publication.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Change {
     /// Logical file value; `None` advances a filtered query past unrelated records.
     pub file: Option<FileValue>,
+    /// Additional file replacements in the same atomic publication.
+    pub files: Vec<FileValue>,
+    /// File removals in that publication.
+    pub removed: Vec<super::FileKey>,
     /// Resume immediately after this observation, at its accepted commit position.
     pub cursor: Cursor,
 }
@@ -76,12 +84,12 @@ pub struct Observation {
     pub changes: ChangeStream,
 }
 
-fn query_id(query: &Query) -> Result<[u8; 32]> {
+pub(crate) fn query_id(query: &Query) -> Result<[u8; 32]> {
     Ok(*blake3::hash(&serde_json::to_vec(query).map_err(|_| Error::InvalidSegment)?).as_bytes())
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
-    fn cursor(
+    pub(super) fn cursor(
         &self,
         query: &Query,
         generation: Generation,
@@ -102,31 +110,65 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         })
     }
 
-    /// Captures a finite snapshot and cursor under one publication cut.
-    pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
-        let mut index = self.index.lock().await;
-        self.refresh(&mut index).await?;
-        let mut files = Vec::new();
-        for range in query.ranges() {
-            for (_, file) in index
-                .files
-                .range(range)
-                .filter(|(_, file)| query.matches_file(file))
-            {
-                if files.len() == maximum_files {
-                    return Err(Error::LimitExceeded);
-                }
-                files.push(file.clone());
-            }
-        }
+    // Exact files and a follow cursor share one index observation. The index is
+    // a leaf lock; provider IO is always outside it.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) async fn snapshot_files(
+        &self,
+        keys: &[super::FileKey],
+        query: &Query,
+    ) -> Result<Snapshot> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        let files = keys
+            .iter()
+            .filter_map(|key| index.files.get(key))
+            .map(|stored| stored.file.clone())
+            .collect();
+        let generation = self.generation(&index);
+        drop(index);
+        let watermarks = self.provider.watermarks(self.path.clone()).await?;
         Ok(Snapshot {
             files,
-            cursor: self.cursor(
-                query,
-                self.generation(&index),
-                self.provider.watermarks(self.path.clone()).await?,
-            )?,
-            generation: self.generation(&index),
+            cursor: self.cursor(query, generation, watermarks)?,
+            generation,
+        })
+    }
+
+    /// Captures a finite snapshot and cursor under one publication cut.
+    pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        let files = if matches!(
+            query,
+            Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
+        ) {
+            super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::CommandSession { session, recent } = query {
+            super::command_query::snapshot(&index, session, *recent, maximum_files)?
+        } else {
+            let mut files = Vec::new();
+            for range in query.ranges() {
+                for (_, file) in index
+                    .files
+                    .range(range)
+                    .filter(|(_, file)| query.snapshot_matches_file(&file.file))
+                {
+                    if files.len() == maximum_files {
+                        return Err(Error::LimitExceeded);
+                    }
+                    files.push(file.file.clone());
+                }
+            }
+            files
+        };
+        let generation = self.generation(&index);
+        drop(index);
+        let watermarks = self.provider.watermarks(self.path.clone()).await?;
+        Ok(Snapshot {
+            files,
+            cursor: self.cursor(query, generation.clone(), watermarks)?,
+            generation,
         })
     }
 
@@ -145,21 +187,22 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         {
             return Err(Error::ResetRequired);
         }
-        {
-            let mut records = self
-                .provider
-                .read(ReadRequest {
-                    path: self.path.clone(),
-                    from: cursor.position - 1,
-                    limit: 1,
-                })
-                .await?;
-            let record = records.next().await.ok_or(Error::ResetRequired)??;
-            if record.sequence != cursor.position - 1
-                || record.commit_id.as_bytes() != &cursor.commit
-            {
-                return Err(Error::ResetRequired);
-            }
+        self.validate_anchor(cursor.position, &cursor.commit).await
+    }
+
+    pub(super) async fn validate_anchor(&self, position: u64, commit: &[u8; 32]) -> Result<()> {
+        let sequence = position.checked_sub(1).ok_or(Error::ResetRequired)?;
+        let mut records = self
+            .provider
+            .read(ReadRequest {
+                path: self.path.clone(),
+                from: sequence,
+                limit: 1,
+            })
+            .await?;
+        let record = records.next().await.ok_or(Error::ResetRequired)??;
+        if record.sequence != sequence || record.commit_id.as_bytes() != commit {
+            return Err(Error::ResetRequired);
         }
         Ok(())
     }
@@ -175,29 +218,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 acyclic_stream::CommitId::from_bytes(cursor.commit),
             )
             .await?;
-        let stream = futures::stream::try_unfold(
-            (records, query, cursor),
-            |(mut records, query, mut cursor)| async move {
-                let Some(record) = records.next().await else {
-                    return Err(Error::ResetRequired);
-                };
-                let record = record?;
-                if record.sequence != cursor.position {
-                    return Err(Error::ResetRequired);
-                }
-                let file = segment::decode(&record.value)?;
-                cursor.position += 1;
-                cursor.accepted = cursor.accepted.max(cursor.position);
-                cursor.commit = *record.commit_id.as_bytes();
-                let file = query.matches_file(&file).then_some(file);
-                let change = Change {
-                    file,
-                    cursor: cursor.clone(),
-                };
-                Ok(Some((change, (records, query, cursor))))
-            },
-        );
-        Ok(Box::pin(stream))
+        Ok(record_changes(query, cursor, records))
     }
 
     /// Starts or resumes one query, returning an explicit reset with replacement snapshot.
@@ -234,7 +255,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Rebuild outside the shared lock. The reconstructed index is still a
         // fenced immutable cut; a second loss returns ResetRequired to the caller.
         let fresh = Self::open(self.provider.clone(), self.path.clone()).await?;
-        *self.index.lock().await = fresh.index.into_inner();
+        #[cfg(acyclic_harness_loom)]
+        let replace =
+            !super::model_checking::enabled(super::model_checking::Fault::RetainObsoleteIndex);
+        #[cfg(not(acyclic_harness_loom))]
+        let replace = true;
+        if replace {
+            *self.index.lock().await = fresh.index.into_inner();
+        }
         self.snapshot_follow(query, maximum_files, true).await
     }
 
@@ -245,11 +273,64 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         reset: bool,
     ) -> Result<Observation> {
         let snapshot = self.snapshot(&query, maximum_files).await?;
-        let changes = self.follow(query, snapshot.cursor.clone()).await?;
+        let cursor = snapshot.cursor.clone();
+        #[cfg(acyclic_harness_loom)]
+        let cursor = if super::model_checking::enabled(super::model_checking::Fault::ResampleFollow)
+        {
+            self.snapshot(&query, maximum_files).await?.cursor
+        } else {
+            cursor
+        };
+        let changes = self.follow(query, cursor).await?;
         Ok(Observation {
             snapshot: Some(snapshot),
             reset,
             changes,
         })
     }
+}
+
+// One fold for provider follows and multiplexed client follows. Callers open a
+// checked record stream at this cursor; no file decoding or membership policy
+// is duplicated by the client transport.
+pub(crate) fn record_changes(
+    query: Query,
+    cursor: Cursor,
+    records: acyclic_stream::RecordStream,
+) -> ChangeStream {
+    let stream = futures::stream::try_unfold(
+        (records, query, cursor),
+        |(mut records, query, mut cursor)| async move {
+            let Some(record) = records.next().await else {
+                return Err(Error::ResetRequired);
+            };
+            let record = record?;
+            if record.sequence != cursor.position {
+                return Err(Error::ResetRequired);
+            }
+            let file = segment::decode(&record.value)?;
+            cursor.position += 1;
+            cursor.accepted = cursor.accepted.max(cursor.position);
+            cursor.commit = *record.commit_id.as_bytes();
+            let file = query.matches_file(&file).then_some(file);
+            let (file, removed) = if query == Query::ActiveAgents {
+                match file {
+                    Some(file) if !super::ChildStatus::parse(&file.bytes)?.active() => {
+                        (None, vec![file.key])
+                    }
+                    file => (file, Vec::new()),
+                }
+            } else {
+                (file, Vec::new())
+            };
+            let change = Change {
+                file,
+                files: Vec::new(),
+                removed,
+                cursor: cursor.clone(),
+            };
+            Ok(Some((change, (records, query, cursor))))
+        },
+    );
+    Box::pin(stream)
 }

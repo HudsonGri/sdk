@@ -101,10 +101,8 @@ impl StockExecution<'_> {
                 crate::wire::ErrorCode::Invalid,
                 reason.message(),
             )),
-            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                Err(Error::Indeterminate(operation_id))
-            }
-            Err(error) => Err(error),
+            Err(error) if !error.leaves_effect_uncertain() => Err(error),
+            Ok(false) | Err(_) => Err(Error::Indeterminate(operation_id)),
         }
     }
 
@@ -123,9 +121,7 @@ impl StockExecution<'_> {
         match stage_json(journal, operation, &key, value, self.io).await {
             Ok(reference) => Ok(reference),
             Err(error) if error.is_native_failure() => Err(error),
-            Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                Err(Error::Indeterminate(operation))
-            }
+            Err(error) if error.leaves_effect_uncertain() => Err(Error::Indeterminate(operation)),
             Err(error) => {
                 self.reject_tool_call(
                     journal,
@@ -146,10 +142,18 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
         invocation: ToolInvocation,
+        invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
-        let call = self.settle_tool_call(journal, operation_id, step, invocation, prior_messages);
+        let call = self.settle_tool_call(
+            journal,
+            operation_id,
+            step,
+            invocation,
+            invocation_index,
+            prior_messages,
+        );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_work().is_some() {
             return span.scope(call).await;

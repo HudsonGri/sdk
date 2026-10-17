@@ -375,6 +375,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 + workflow.initial.machine.version.capacity() as u64;
             custody.absorb(&mut io.take_native_custody(retained)?)?;
         }
+        #[cfg(not(target_arch = "wasm32"))]
         let before_scope = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let (scope, _scope_bytes) = self.authenticated_scope(&admission, &mut work).await?;
         let created = scope.created_access();
@@ -433,42 +434,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation_id: OperationId,
         bytes: &[u8],
     ) -> Result<()> {
-        if self
-            .publish_control_at(stream, kind, task_id, operation_id, bytes, None)
-            .await?
-        {
-            Ok(())
-        } else {
-            Err(Error::Conflict(
-                "unconditional control append conflicted".into(),
-            ))
-        }
-    }
-
-    pub(super) async fn publish_control_at(
-        &self,
-        stream: &acyclic_stream::Stream<P>,
-        kind: &str,
-        task_id: TaskId,
-        operation_id: OperationId,
-        bytes: &[u8],
-        expected_tail: Option<u64>,
-    ) -> Result<bool> {
         let key = Self::event_key(kind, task_id, operation_id, &mut None)?.0;
-        let key = if let Some(tail) = expected_tail {
-            let mut digest = blake3::Hasher::new();
-            digest.update(b"harness/v2/control-tail\0");
-            digest.update(key.as_bytes());
-            digest.update(&tail.to_le_bytes());
-            StreamKey::new(OwnedBytes::copy_from_slice(digest.finalize().as_bytes()))?
-        } else {
-            key
-        };
         let outcome = crate::distributed::append(
             (stream, &self.stream),
             [OwnedBytes::copy_from_slice(bytes)],
             0,
-            expected_tail,
+            None,
             key,
             operation_id,
             &mut None,
@@ -494,12 +465,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         "control publication differs from its committed record".into(),
                     ));
                 }
-                Ok(true)
+                Ok(())
             }
             AppendOutcome::Committed(_) => {
                 Err(Error::Storage("invalid control append receipt".into()))
             }
-            AppendOutcome::TailConflict { .. } => Ok(false),
+            AppendOutcome::TailConflict { .. } => Err(Error::Conflict(
+                "unconditional control append conflicted".into(),
+            )),
         }
     }
 }

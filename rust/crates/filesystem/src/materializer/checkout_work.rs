@@ -26,6 +26,7 @@ impl NativeMaterializationWork {
         self.state
             .register_native_checkout_control(self, producer, header)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn transfer_capture_allocation(
         &self,
         bytes: u64,
@@ -40,6 +41,7 @@ impl NativeMaterializationWork {
             bytes,
         })
     }
+    #[cfg(test)]
     pub(crate) fn allocations<T, E: From<NativeTreeMaterializationError>>(
         &self,
         operation: impl FnOnce(

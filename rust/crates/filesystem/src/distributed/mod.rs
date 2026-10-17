@@ -8,7 +8,7 @@ use crate::foundation::{
 };
 use crate::kernel::volume_authority_id;
 use crate::performance::{WorkBudget, WorkCounters};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 use crate::storage::ObjectId;
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, FenceOutcome,
@@ -71,6 +71,11 @@ use native::*;
 mod append;
 mod authority;
 mod bindings;
+mod head_payload;
+#[cfg(all(test, acyclic_fs_loom, not(acyclic_loom)))]
+compile_error!("head-payload models require RUSTFLAGS='--cfg acyclic_fs_loom --cfg acyclic_loom'");
+#[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+mod head_payload_loom_tests;
 mod lineage;
 mod replay;
 use append::seal;
@@ -78,9 +83,16 @@ mod records;
 mod reservations;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) use records::object_id_from_key;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 pub(crate) use records::object_key;
 use records::*;
+pub(crate) fn authority_records_path(
+    volume: crate::VolumeId,
+) -> Result<StreamPath, AuthorityStoreError> {
+    stream_path(volume_authority_id(volume), "/records")
+}
 mod accounting;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod head_record_tests;
 #[cfg(test)]
 mod tests;

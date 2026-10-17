@@ -83,7 +83,7 @@ impl HostStat {
     pub fn nlink(&self) -> u64 {
         #[cfg(target_os = "linux")]
         {
-            self.raw.st_nlink
+            lossless(self.raw.st_nlink)
         }
         #[cfg(target_os = "macos")]
         {
@@ -111,14 +111,18 @@ impl HostStat {
         }
     }
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
+        self.birth_time()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "birth time unavailable"))
+    }
+    /// The host's birth time, or `None` when the observation does not expose it.
+    pub fn birth_time(&self) -> Option<cap_std::time::SystemTime> {
         #[cfg(unix)]
         {
             self.created
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "birth time unavailable"))
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.CreationTime.cast_unsigned()))
+            Some(windows_time(self.raw.CreationTime.cast_unsigned()))
         }
     }
     pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
@@ -162,7 +166,7 @@ impl HostStat {
         raw.st_size = stat.stx_size.cast_signed();
         raw.st_dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor);
         raw.st_ino = stat.stx_ino;
-        raw.st_nlink = u64::from(stat.stx_nlink);
+        raw.st_nlink = lossless(stat.stx_nlink);
         raw.st_uid = stat.stx_uid;
         raw.st_gid = stat.stx_gid;
         raw.st_rdev = rustix::fs::makedev(stat.stx_rdev_major, stat.stx_rdev_minor);
@@ -216,6 +220,13 @@ impl HostStat {
         })
     }
 }
+/// Converts between integer widths that differ by Linux architecture (`nlink_t` is
+/// u64 on x86_64 and u32 on aarch64) without a same-type conversion on either.
+#[cfg(target_os = "linux")]
+fn lossless<T, U: From<T>>(value: T) -> U {
+    U::from(value)
+}
+
 #[cfg(unix)]
 pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::SystemTime> {
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);

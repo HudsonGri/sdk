@@ -4,6 +4,8 @@ use super::{
     FilesystemTaskRuntime, ForkPreparationLimits, ForkToolArguments, MODEL_TASK_COMMAND_KIND,
     ParentProjectController, RetainedSourceBinding, fork_preparation_request,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::workflow::{MachineStatus, MachineTransition};
 use crate::{
     Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ConversationMessage, FileRef, VolumeOperation, VolumeRef},
@@ -15,7 +17,7 @@ use crate::{
     runtime::{RuntimeScope, TaskAdmissionRecord, ToolContext, task_id_for_admission},
     store::{StreamAggregate, history::HistoryIo as _},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
-    workflow::{MachineStatus, MachineTransition, WorkflowCommand},
+    workflow::WorkflowCommand,
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictSide, JoinOutcome,
@@ -131,8 +133,8 @@ pub(in crate::filesystem) struct RecursiveMergeToolPlan {
     pub notice: ConversationMessage,
 }
 
-/// Registers shared file tools and the configured durable fork/merge operations.
-pub fn recursive_default_tools<
+/// Registers the configured durable fork and merge operations.
+pub fn recursive_tools<
     P: StreamProvider + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -146,13 +148,6 @@ pub fn recursive_default_tools<
         ));
     }
     let mut tools = ToolRegistry::default();
-    for tool in [
-        crate::tool::files::read_file()?,
-        crate::tool::files::write_file()?,
-        crate::tool::files::edit_file()?,
-    ] {
-        tools.register((tool, None), &mut None, None)?;
-    }
     for (name, source) in [("acyclic.fork", source.clone()), ("acyclic.merge", source)] {
         let definition = definition(name, maximum_request_bytes);
         tools.register(

@@ -26,18 +26,26 @@ pub(crate) fn with_wide_path<W: NativeHostWork, T>(
     work: &mut W,
     operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
-    let length = wide_units(path.as_os_str(), work)?;
+    with_wide_units(path.as_os_str().encode_wide(), work, operation)
+}
+
+pub(crate) fn with_wide_units<W: NativeHostWork, T>(
+    units: impl Iterator<Item = u16> + Clone,
+    work: &mut W,
+    operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    let mut length = 0usize;
+    for _ in units.clone() {
+        work.started_io(ITEM)?;
+        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
     let encoded = WorkCounters {
         bytes_encoded: length.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     };
     work.admit(encoded)?;
     let (mut name, allocation) = buffer(length, work)?;
-    name.extend(
-        path.as_os_str()
-            .encode_wide()
-            .map(|u| if u == 47 { 92 } else { u }),
-    );
+    name.extend(units.map(|u| if u == 47 { 92 } else { u }));
     let result = work.record(encoded).and_then(|()| operation(&name, work));
     drop(name);
     work.release(allocation)?;
@@ -71,15 +79,11 @@ pub(super) fn windows_leaf_name<W: NativeHostWork>(
     })
 }
 
-pub(crate) fn open_windows_at<W: NativeHostWork>(
-    parent: &Dir,
+pub(super) fn windows_open_name<W: NativeHostWork>(
     path: &[u16],
-    access: fs::FILE_ACCESS_RIGHTS,
-    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
-    options: nt::NTCREATEFILE_CREATE_OPTIONS,
     work: &mut W,
-) -> Result<File, W::Error> {
-    let name = if path == [46] {
+) -> Result<win::UNICODE_STRING, W::Error> {
+    Ok(if path == [46] {
         work.check()?;
         // NT names the held directory with an empty string, never ".".
         win::UNICODE_STRING {
@@ -88,14 +92,36 @@ pub(crate) fn open_windows_at<W: NativeHostWork>(
         }
     } else {
         windows_leaf_name(path, work)?
-    };
+    })
+}
+
+pub(crate) fn open_windows_at<W: NativeHostWork>(
+    parent: &Dir,
+    path: &[u16],
+    access: fs::FILE_ACCESS_RIGHTS,
+    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
+    work: &mut W,
+) -> Result<File, W::Error> {
+    let name = windows_open_name(path, work)?;
+    open_windows_named(parent, &name, access, disposition, options, work)
+}
+
+pub(super) fn open_windows_named<W: NativeHostWork>(
+    parent: &Dir,
+    name: &win::UNICODE_STRING,
+    access: fs::FILE_ACCESS_RIGHTS,
+    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
+    work: &mut W,
+) -> Result<File, W::Error> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
         Length: u32::try_from(std::mem::size_of::<
             windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
         >())
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
         RootDirectory: win::HANDLE(parent.as_raw_handle()),
-        ObjectName: &name,
+        ObjectName: name,
         Attributes: win::OBJ_CASE_INSENSITIVE,
         ..Default::default()
     };
@@ -109,6 +135,8 @@ pub(crate) fn open_windows_at<W: NativeHostWork>(
             let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
             let mut handle = win::HANDLE::default();
             // SAFETY: the held parent, validated leaf, and outputs remain live for this call.
+            #[cfg(test)]
+            super::stat_probe::event("NtCreateFile");
             let status = unsafe {
                 nt::NtCreateFile(
                     &mut handle,
@@ -141,6 +169,8 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
         let mut information = nt::FILE_STAT_INFORMATION::default();
         // SAFETY: the held handle and fixed-size output remain live for the query.
+        #[cfg(test)]
+        super::stat_probe::event("NtQueryInformationFile");
         let status = unsafe {
             nt::NtQueryInformationFile(
                 win::HANDLE(file.as_handle().as_raw_handle()),
@@ -188,6 +218,8 @@ pub(crate) fn stat_windows_name(
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
     let mut information = nt::FILE_STAT_INFORMATION::default();
     // SAFETY: the held directory, name, and fixed-size output outlive the query.
+    #[cfg(test)]
+    super::stat_probe::event("NtQueryInformationByName");
     let status = unsafe {
         nt::NtQueryInformationByName(
             &attributes,
@@ -208,6 +240,22 @@ pub(crate) fn stat_windows_name(
         return Ok(None);
     }
     Ok(Some(HostStat::from_stat_information(&information, volume)?))
+}
+
+#[cfg(any(feature = "native-watch", feature = "native-mount", test))]
+pub(crate) fn query_windows_stat<W: NativeHostWork>(
+    work: &mut W,
+    charge: WorkCounters,
+    query: impl FnOnce() -> io::Result<Option<HostStat>>,
+    fallback: impl FnOnce(&mut W) -> Result<HostStat, W::Error>,
+) -> Result<HostStat, W::Error> {
+    match work.attempt_io(charge, || match query() {
+        Err(error) if matches!(error.raw_os_error(), Some(1 | 50 | 87 | 124)) => Ok(None),
+        result => result,
+    })? {
+        Some(stat) => Ok(stat),
+        None => fallback(work),
+    }
 }
 
 pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
@@ -349,3 +397,7 @@ pub(crate) fn set_windows_name<W: NativeHostWork>(
     work.release(allocation)?;
     result
 }
+
+#[cfg(all(test, feature = "native-watch"))]
+#[path = "tests_windows_stat.rs"]
+mod stat_tests;

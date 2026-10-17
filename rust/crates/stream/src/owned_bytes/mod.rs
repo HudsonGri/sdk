@@ -1,6 +1,6 @@
 //! Immutable bytes with bounded native ownership.
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
+use acyclic_native_runtime::{NativeReadMeter, ReadAllocation, ReadAllocationReservation};
 use bytes::Bytes;
 use std::{
     borrow::Borrow,
@@ -35,20 +35,30 @@ impl<G: Send + Sync + 'static> GuardBundle<G> {
         guard: G,
         meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<Arc<Self>, PreparedOwnedBytesFailure<G>> {
-        let metadata = match ReadAllocation::new(meter, std::mem::size_of::<GuardBundle<G>>()) {
+        Self::with_allocation(
+            (data, guard),
+            ReadAllocation::new(meter, std::mem::size_of::<Self>()),
+        )
+    }
+
+    fn with_allocation(
+        storage: (Vec<u8>, G),
+        allocation: io::Result<ReadAllocation>,
+    ) -> Result<Arc<Self>, PreparedOwnedBytesFailure<G>> {
+        let metadata = match allocation {
             Ok(metadata) => metadata,
             Err(error) => {
                 return Err(PreparedOwnedBytesFailure {
-                    data,
-                    original_guard: guard,
+                    data: storage.0,
+                    original_guard: storage.1,
                     error: PreparedOwnedBytesError::Admission(error),
                 });
             }
         };
         Ok(Arc::new(Self {
-            data,
+            data: storage.0,
             metadata,
-            _original_guard: guard,
+            _original_guard: storage.1,
         }))
     }
 }
@@ -95,6 +105,32 @@ impl OwnedBytes {
         drop(meter);
         result
     }
+
+    /// Reserves the ownership header before a native producer starts I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn reserve_vec_guard<G: Send + Sync + 'static>(
+        meter: &Arc<dyn NativeReadMeter>,
+    ) -> io::Result<ReadAllocationReservation> {
+        ReadAllocationReservation::new(meter, std::mem::size_of::<GuardBundle<G>>() as u64)
+    }
+
+    /// Publishes initialized vector bytes using the header reserved before I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_vec_with_reserved_guard<G: Send + Sync + 'static>(
+        storage: (Vec<u8>, G),
+        reservation: ReadAllocationReservation,
+    ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
+        let (length, capacity) = (storage.0.len(), storage.0.capacity());
+        GuardBundle::with_allocation(
+            storage,
+            reservation.allocate_exact(std::mem::size_of::<GuardBundle<G>>()),
+        )
+        .map(|guard| Self {
+            data: Data::Native(guard),
+            range: 0..length,
+            retained_capacity: Some(capacity),
+        })
+    }
     /// Leaves the vector and its owner untouched if admission fails.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_vec_with_guard_in_place<G: Send + Sync + 'static>(
@@ -121,16 +157,17 @@ impl OwnedBytes {
     }
     /// Borrows the visible bytes.
     #[must_use]
+    #[inline]
     pub fn as_slice(&self) -> &[u8] {
         let bytes = match &self.data {
+            // Ordinary Bytes views already carry their checked start and length.
+            // Only retained-capacity owners use the outer range projection.
+            Data::Plain(bytes) if self.retained_capacity.is_none() => return bytes.as_ref(),
             Data::Plain(bytes) => bytes.as_ref(),
             #[cfg(not(target_arch = "wasm32"))]
             Data::Native(guard) => guard.data.as_slice(),
         };
-        let Some(bytes) = bytes.get(self.range.clone()) else {
-            unreachable!("visible range is checked when bytes are sliced")
-        };
-        bytes
+        checked_range(bytes, self.range.clone())
     }
     /// Number of visible bytes.
     #[must_use]
@@ -288,8 +325,18 @@ impl Borrow<[u8]> for OwnedBytes {
     }
 }
 impl PartialEq for OwnedBytes {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice()
+        let (left, right) = (self.as_slice(), other.as_slice());
+        if std::ptr::eq(left, right) {
+            return true;
+        }
+        if left.len() != right.len() {
+            return false;
+        }
+        #[cfg(test)]
+        BYTE_COMPARISONS.with(|count| count.set(count.get() + 1));
+        left == right
     }
 }
 impl Eq for OwnedBytes {}
@@ -299,8 +346,13 @@ impl PartialOrd for OwnedBytes {
     }
 }
 impl Ord for OwnedBytes {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        self.as_slice().cmp(other.as_slice())
+        let (left, right) = (self.as_slice(), other.as_slice());
+        if std::ptr::eq(left, right) {
+            return Ordering::Equal;
+        }
+        compare_bytes(left, right)
     }
 }
 impl Hash for OwnedBytes {
@@ -327,3 +379,27 @@ impl<'de> serde::Deserialize<'de> for OwnedBytes {
 }
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+
+fn compare_bytes(left: &[u8], right: &[u8]) -> Ordering {
+    #[cfg(test)]
+    BYTE_COMPARISONS.with(|count| count.set(count.get() + 1));
+    left.cmp(right)
+}
+#[cfg(test)]
+std::thread_local! { static BYTE_COMPARISONS: Cell<usize> = const { Cell::new(0) }; }
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod comparison_work;
+
+#[inline]
+fn checked_range(bytes: &[u8], range: Range<usize>) -> &[u8] {
+    #[cfg(test)]
+    RANGE_CHECKS.with(|count| count.set(count.get() + 1));
+    let Some(bytes) = bytes.get(range) else {
+        unreachable!("visible range is checked when bytes are sliced")
+    };
+    bytes
+}
+#[cfg(test)]
+std::thread_local! { static RANGE_CHECKS: Cell<usize> = const { Cell::new(0) }; }

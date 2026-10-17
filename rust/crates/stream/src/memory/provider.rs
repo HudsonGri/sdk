@@ -106,7 +106,7 @@ impl StreamProvider for MemoryStream {
         let mut cursor = HistoryCursor::new(path, end, request.from);
         Ok(stream::iter(
             std::iter::from_fn(move || cursor.next_record())
-                .take(request.limit as usize)
+                .take((end - request.from) as usize)
                 .map(Ok),
         )
         .boxed())
@@ -126,15 +126,36 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let page = self
-            .children_page(ChildrenPageRequest {
-                parent: request.parent,
-                limit: request.limit,
-                after: None,
-                hierarchy_version: None,
-            })
-            .await?;
-        Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
+        validate_limit(request.limit)?;
+        let changed = self.child_changes(request.parent.as_ref()).await;
+        Ok(stream::try_unfold(
+            (self.clone(), request.parent, changed, None),
+            |(provider, parent, mut changed, mut previous)| async move {
+                loop {
+                    let next = {
+                        let state = provider.state.read().await;
+                        // Switch from the creation wakeup to this parent's own index.
+                        if let Some(index) = state.child_index(parent.as_ref()) {
+                            changed = index.changed.subscribe();
+                        }
+                        changed.borrow_and_update();
+                        state.next_child(parent.as_ref(), previous.as_ref())?
+                    };
+                    if let Some(path) = next {
+                        previous = Some(path.clone());
+                        return Ok(Some((
+                            Child { path },
+                            (provider, parent, changed, previous),
+                        )));
+                    }
+                    changed
+                        .changed()
+                        .await
+                        .map_err(|_| StreamError::Unavailable)?;
+                }
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(
@@ -274,15 +295,13 @@ impl StreamProvider for MemoryStream {
             }
             windows.reverse();
             let cursor_meter = Arc::clone(&meter);
-            let cursor = HistoryCursor {
-                root: None,
-                windows: windows.into(),
-                next: request.from,
-            };
+            // A bounded native read never refreshes a history root. Keep only
+            // its already-admitted windows, rather than a live follow cursor.
+            let cursor: VecDeque<HistoryWindow> = windows.into();
             let cursor = stream::try_unfold(cursor, move |mut cursor| {
                 let meter = Arc::clone(&cursor_meter);
                 async move {
-                    let Some(window) = cursor.windows.front() else {
+                    let Some(window) = cursor.front() else {
                         return Ok(None);
                     };
                     let length = window
@@ -300,10 +319,28 @@ impl StreamProvider for MemoryStream {
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let record = cursor
-                        .next_record()
+                    let window = cursor.front_mut().ok_or(std::io::ErrorKind::InvalidData)?;
+                    let record = window
+                        .records
+                        .records
+                        .get(window.start)
+                        .cloned()
                         .ok_or(std::io::ErrorKind::InvalidData)?;
+                    window.start += 1;
+                    record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(std::io::ErrorKind::InvalidData)?;
+                    if window.start == window.end {
+                        cursor.pop_front();
+                    }
+                    #[cfg(test)]
+                    let read = crate::test_meter::trace::recordings_reordered()
+                        .then(|| bytes.record(length));
                     let examined = meter.record_examination(1, copied);
+                    #[cfg(test)]
+                    let read = read.unwrap_or_else(|| bytes.record(length));
+                    #[cfg(not(test))]
                     let read = bytes.record(length);
                     examined?;
                     read?;

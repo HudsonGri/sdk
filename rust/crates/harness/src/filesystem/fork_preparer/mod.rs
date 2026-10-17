@@ -16,7 +16,9 @@ use crate::{
     source_authorization::ProjectSourceReadHandle,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::{BoxProviderFuture as BoxFuture, StreamProvider};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::StreamProvider;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;
@@ -27,6 +29,7 @@ mod authorization;
 mod capture;
 mod created_access;
 mod journal;
+pub(in crate::filesystem) use journal::journal_absent;
 mod preparation;
 mod references;
 pub(crate) use allocations::AllocationClaim;

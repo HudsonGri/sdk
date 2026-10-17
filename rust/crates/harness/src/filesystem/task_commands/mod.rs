@@ -24,7 +24,10 @@ use std::sync::Arc;
 
 mod dispatch;
 mod effects;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+mod hooks;
 mod mail;
+mod manifest;
 mod model;
 mod preparation;
 #[cfg(test)]
@@ -138,6 +141,11 @@ pub struct TaskObserveCommand {
 pub struct ModelTaskCommand {
     /// Provider-neutral user input, subject to retained task file grants.
     pub input: ModelContent,
+    /// Exact immutable manifest file retained with this admitted command.
+    pub context_manifest: FileRef,
+    /// Pinned context JSON to summarize through the tool-free stock summary engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_source: Option<Box<FileRef>>,
     /// An exact recorded history selection, when available.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,
@@ -192,7 +200,6 @@ pub struct PreparedTaskAdmitCommand {
 struct ModelBinding {
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context: ContextPipeline,
     compaction: crate::context::CompactionPolicy,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
@@ -219,9 +226,9 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         mut self,
         model: &Model,
         provider: Arc<dyn ModelProvider>,
-        context: &ContextPipeline,
         compaction: &crate::context::CompactionPolicy,
-        io: Option<&super::PreparationIo>,
+        #[cfg(not(target_arch = "wasm32"))] io: Option<&super::PreparationIo>,
+        #[cfg(target_arch = "wasm32")] _: Option<&super::PreparationIo>,
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
@@ -245,7 +252,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         }
         let model = crate::model::clone_model(model, io)?;
-        let context = context.copy(io)?;
         let compaction = compaction.copy(io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = io
@@ -264,7 +270,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         self.model = Some(ModelBinding {
             model,
             provider,
-            context,
             compaction,
             #[cfg(not(target_arch = "wasm32"))]
             native_custody,
@@ -433,13 +438,13 @@ fn tool_invocation(
     Ok(invocation)
 }
 fn ready(value: impl Serialize, io: Option<&super::PreparationIo>) -> Result<TaskCommandProgress> {
-    let Some(io) = io else {
+    let Some(_native_io) = io else {
         return serde_json::to_value(value)
             .map(TaskCommandProgress::Ready)
             .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")));
     };
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(native) = io.original_native_work() {
+    if let Some(native) = _native_io.original_native_work() {
         let output = super::PreparationIo::from_native_work(native)?;
         let value = output.value_json(&value, acyclic_stream::MAX_RECORD_BYTES as u64)?;
         let retained = output.owned_bytes()?;

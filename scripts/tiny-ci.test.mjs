@@ -54,12 +54,14 @@ test('Linux host qualification uses the smallest registered runner and retains e
   assert.throws(()=>verify(altered),new RegExp(name+': '+change));
  }
 });
-test('PRs and main have one static job, and tags/releases cannot start heavy work',()=>{
+test('PRs and main retain the static lock check, and tags/releases cannot start heavy work',()=>{
  const automatic=workflows.filter(name=>/^  (?:push|pull_request):/m.test(triggers(read(name))));
  assert.deepEqual(automatic,[STATIC]);
  const workflow=read(STATIC);
- assert.equal((workflow.split('jobs:')[1].match(/^  [\w-]+:/gm)??[]).length,1);
- assert.match(workflow,/timeout-minutes: 1/);
+ assert.deepEqual(Object.keys(YAML.parse(workflow).jobs),['static','aarch64']);
+ const job=YAML.parse(workflow).jobs.static;
+ assert.equal(job['timeout-minutes'],1);
+ assert.equal(job['runs-on'],'ubuntu-24.04');
  assert.match(workflow,/cancel-in-progress: true/);
  assert.doesNotMatch(triggers(workflow),/paths(?:-ignore)?:|tags:/);
  for(const name of workflows)assert.doesNotMatch(triggers(read(name)),/^  (?:release|workflow_run):/m,name);
@@ -161,13 +163,20 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
 });
 
-test('the required job only checks Cargo lock consistency',()=>{
- const workflow=read(STATIC);
- assert.match(workflow,/name: SDK Static/);
- assert.match(workflow,/RUSTUP_TOOLCHAIN: stable/);
- assert.deepEqual([...workflow.matchAll(/^        run: (.+)$/gm)].map(match=>match[1]),['cargo update --workspace --locked']);
- assert.equal((workflow.match(/^\s+- uses:/gm)??[]).length,1);
- assert.doesNotMatch(workflow,/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)/);
+test('the required job checks Cargo lock consistency and committed lane artifacts without builds or installs',()=>{
+ const job=YAML.parse(read(STATIC)).jobs.static;
+ assert.equal(job.name,'SDK Static');
+ assert.equal(job.env.RUSTUP_TOOLCHAIN,'stable');
+ assert.deepEqual(job.steps.filter(step=>step.run).map(step=>step.run),[
+  'if [[ -n "$ARTIFACT_BASE" && ! "$ARTIFACT_BASE" =~ ^0+$ ]]; then\n'
+   +'  git fetch --no-tags --depth=1 origin "$ARTIFACT_BASE"\n'
+   +'fi\n'
+   +'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"\n',
+  'node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs',
+  'cargo update --workspace --locked',
+ ]);
+ assert.equal(job.steps.filter(step=>step.uses).length,1);
+ assert.doesNotMatch(JSON.stringify(job),/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)|(?:npm|bun|yarn|pnpm) (?:install|add)|cargo install/);
 });
 test('README approval guard runs on pull requests without manual dispatch',()=>{
  const guard=triggers(read('readme-guard.yml'));
