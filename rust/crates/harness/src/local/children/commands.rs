@@ -7,7 +7,7 @@ use crate::{
         ChildFile, ChildState, Component, Control, FileKey, FileQuerySource, Query, TaskFiles,
     },
 };
-use acyclic_stream::{BoxProviderFuture, StreamProvider};
+use acyclic_stream::BoxProviderFuture;
 use serde_json::Value;
 
 type Files = TaskFiles<acyclic_stream::LocalStream>;
