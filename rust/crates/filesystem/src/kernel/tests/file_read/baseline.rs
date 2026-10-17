@@ -78,7 +78,7 @@ pub(super) async fn read<S: AsyncObjectStore>(
                 else {
                     continue;
                 };
-                let nested = crate::kernel::blob::read_blob_range_with_accounting(
+                let nested = crate::kernel::blob::baseline_range::read_blob_range_with_accounting(
                     store,
                     object,
                     ByteRange {

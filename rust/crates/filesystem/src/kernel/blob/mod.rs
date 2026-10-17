@@ -162,3 +162,6 @@ pub use error::{BlobBuildError, BlobBuildFailure, BlobReadError, BlobReadFailure
 #[cfg(all(test, feature = "memory"))]
 #[path = "../tests/blob/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod baseline_range;
