@@ -41,10 +41,12 @@ async fn unrelated_task_changes_do_not_repeat_worker_or_view_work() -> Result<()
     let (changed, reads) = measure(harness.registered_step(tracked.task_id(), cursor)).await;
     let (updated, terminal) = changed?;
     assert_ne!(updated, cursor);
-    assert_eq!(terminal, Some(()));
+    // Root disconnects retain their resumable task; the changed input still
+    // invalidates its idle cursor and runs the canonical worker/view path.
+    assert_eq!(terminal, None);
     assert!(
         reads > 0,
-        "own terminal change must refresh canonical views"
+        "own input change must refresh canonical views"
     );
     harness.close().await
 }
