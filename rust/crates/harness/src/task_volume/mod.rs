@@ -682,11 +682,11 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {
-    if !index.files.contains_key(&file.key)
-        && let FileKey::Child {
-            reference,
-            file: ChildFile::Request | ChildFile::Inbox(_),
-        } = &file.key
+    if let FileKey::Child {
+        reference,
+        file: ChildFile::Request | ChildFile::Inbox(_),
+    } = &file.key
+        && !index.files.contains_key(&file.key)
     {
         index
             .child_inputs
