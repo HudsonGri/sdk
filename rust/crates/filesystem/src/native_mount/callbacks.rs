@@ -2,11 +2,14 @@ use super::*;
 
 /// Verified policy owner that can authorize a newly exactified data selection.
 pub trait NativeAccessOwner: Send + Sync {
+    /// Refresh policy for this owner's existing immutable data selection.
     fn check<'a>(
         &'a self,
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeMountCallbackFuture<'a>, NativeMountError>;
 
+    /// Bind another generation with the same verified identity and ceiling,
+    /// retaining the permissions and selection of previously issued views.
     fn select<'a>(
         &'a self,
         generation: crate::GenerationId,
