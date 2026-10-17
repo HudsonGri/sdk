@@ -346,6 +346,13 @@ async fn deltas(
         };
         bytes.push(journal.load(&event, None)?.await?.as_ref().to_vec());
     }
+    use futures::TryStreamExt as _;
+    let mut canonical = journal.path(OP)?.read(0, 64).await?;
+    while let Some(record) = canonical.try_next().await? {
+        let mut authenticated = record.commit_id.as_bytes().to_vec();
+        authenticated.extend_from_slice(&record.value);
+        bytes.push(authenticated);
+    }
     let snapshot = files.inner.snapshot(&Query::Root, 64).await?;
     assert_eq!(snapshot.files.len(), count + 2);
     for file in &snapshot.files {
@@ -605,9 +612,9 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
             [49, 160, 21054, 6824119, 0, 0, 0, 0, 0],
         ],
         [
-            [25, 80, 14064, 6214883, 12787, 407874, 305002, 290950, 7075],
+            [25, 80, 14064, 6214883, 12787, 407874, 305002, 290950, 7079],
             [
-                49, 160, 24296, 11489989, 22334, 728460, 540802, 523560, 13547,
+                49, 160, 24296, 11489989, 22334, 728460, 540802, 523560, 13519,
             ],
         ],
     ];
