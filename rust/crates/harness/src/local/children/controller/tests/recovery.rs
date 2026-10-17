@@ -158,7 +158,7 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
         );
         drop(context);
         drop(files);
-        harness.close().await?;
+        harness.disconnect().await?;
 
         let reopened = LocalHarness::open(config()?).await?;
         let files = Arc::clone(&reopened.task_files);
@@ -191,7 +191,7 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             checkpoint
         );
         assert_eq!(provider.requests().len(), usize::from(started));
-        reopened.close().await?;
+        reopened.disconnect().await?;
     }
     Ok(())
 }

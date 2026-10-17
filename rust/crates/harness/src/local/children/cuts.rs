@@ -117,7 +117,7 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
         assert!(provider.requests().is_empty());
         drop(context);
         drop(files);
-        harness.close().await?;
+        harness.disconnect().await?;
 
         let reopened = LocalHarness::open(config()?).await?;
         let files = Arc::clone(&reopened.task_files);
@@ -260,7 +260,7 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
                 .as_ref(),
             b"retained change"
         );
-        reopened.close().await?;
+        reopened.disconnect().await?;
     }
     Ok(())
 }

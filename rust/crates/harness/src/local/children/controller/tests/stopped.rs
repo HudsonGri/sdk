@@ -115,7 +115,7 @@ async fn reopen_finishes_a_retained_model_stop_before_running_the_next_message()
     assert_eq!(provider.requests().len(), 1);
     drop(context);
     drop(files);
-    harness.close().await?;
+    harness.disconnect().await?;
     let reopened = LocalHarness::open(config()?).await?;
     let files = reopened.task_files.clone();
     let cut = files.inner.head().await.map_err(storage)?;
