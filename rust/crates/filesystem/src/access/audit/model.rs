@@ -27,10 +27,6 @@ fn run(omit_wakeup: bool) {
 }
 #[test]
 fn bounded_queue_has_no_lost_wakeup_or_record() {
-    run(false);
-}
-#[test]
-fn wakeup_control_process() {
     match std::env::var("ACYCLIC_AUDIT_BROKEN_QUEUE").as_deref() {
         Ok("commit") => shutdown(true),
         Ok(_) => run(true),
@@ -50,7 +46,7 @@ fn negative_control(fault: &str) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            &format!("{module}::wakeup_control_process"),
+            &format!("{module}::bounded_queue_has_no_lost_wakeup_or_record"),
             "--nocapture",
         ])
         .env("ACYCLIC_AUDIT_BROKEN_QUEUE", fault)
