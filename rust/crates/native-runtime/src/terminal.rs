@@ -1,8 +1,4 @@
 //! Controlling-terminal lookup for Darwin, where kqueue rejects `/dev/tty`.
-#![allow(
-    unsafe_code,
-    reason = "proc_pidinfo and devname_r write only into owned, sized buffers"
-)]
 use std::io;
 
 /// The device the kernel records as this process's controlling terminal,

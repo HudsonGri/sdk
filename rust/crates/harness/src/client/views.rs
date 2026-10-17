@@ -129,6 +129,10 @@ pub enum SwarmChange {
 pub struct ClientViewHandle(Rc<RefCell<ClientViews>>);
 
 impl ClientViewHandle {
+    #[cfg(any(
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn new(views: ClientViews) -> Self {
         Self(Rc::new(RefCell::new(views)))
     }
@@ -140,6 +144,10 @@ impl ClientViewHandle {
             .map_err(|error| Error::Conflict(error.to_string()))?;
         Ok(render(&views))
     }
+    #[cfg(any(
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn apply(&self, update: SwarmUpdate) -> Result<SwarmChange> {
         self.0
             .try_borrow_mut()
@@ -242,6 +250,24 @@ impl ClientViews {
     pub fn selection(&self, identity: &([u8; 32], [u8; 32])) -> Option<&FileQueryView> {
         self.selections()
             .find_map(|(key, files)| (key == identity).then_some(files))
+    }
+    /// Retires a query's files and derived projections together.
+    pub fn remove_selection(&mut self, identity: &([u8; 32], [u8; 32])) {
+        if let Some(path) = std::iter::once(self.layout.root())
+            .chain(self.layout.full_fidelity())
+            .find(|path| {
+                self.agents
+                    .get(*path)
+                    .is_some_and(|agent| agent.files.contains_key(identity))
+            })
+            .cloned()
+        {
+            if let Some(agent) = self.agents.get_mut(&path) {
+                agent.files.remove(identity);
+            }
+            self.goal_sources
+                .retain(|goal, request| goal != identity && request != identity);
+        }
     }
     pub(super) fn selection_mut(
         &mut self,
