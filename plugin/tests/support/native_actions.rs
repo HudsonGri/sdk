@@ -18,6 +18,7 @@ pub struct Tools<'a> {
     pub provider: Arc<Client>,
     requests: TaskVolume<Client>,
     results: TaskVolume<Client>,
+    timings: bool,
 }
 
 impl<'a> Tools<'a> {
@@ -39,6 +40,8 @@ impl<'a> Tools<'a> {
         host: ExternalHost,
         provider: Option<Arc<Client>>,
     ) -> Result<Self> {
+        let started = std::time::Instant::now();
+        let timings = std::env::var_os("ACYCLIC_NATIVE_TIMINGS").is_some();
         let session = uuid::Uuid::new_v4().to_string();
         let event = if host == ExternalHost::Pi {
             "session_start"
@@ -53,6 +56,13 @@ impl<'a> Tools<'a> {
             None => Arc::new(native_hooks::client(cwd).await?),
         };
         let (requests, results) = local_hook_volumes(Arc::clone(&provider), task).await?;
+        if timings {
+            eprintln!(
+                "native attach {}: {:.3} s",
+                host.name(),
+                started.elapsed().as_secs_f64()
+            );
+        }
         Ok(Self {
             cwd,
             host,
@@ -62,6 +72,7 @@ impl<'a> Tools<'a> {
             provider,
             requests,
             results,
+            timings,
         })
     }
 
@@ -108,6 +119,7 @@ impl<'a> Tools<'a> {
             provider: Arc::clone(&self.provider),
             requests,
             results,
+            timings: self.timings,
         })
     }
 
@@ -123,6 +135,7 @@ impl<'a> Tools<'a> {
         if self.host != ExternalHost::Pi {
             input["tool_name"] = json!(format!("mcp__acyclic__{name}"));
         }
+        let started = std::time::Instant::now();
         let output = handle_hook(
             self.host,
             event,
@@ -132,12 +145,21 @@ impl<'a> Tools<'a> {
             Component::new(self.task.to_string())?,
         )
         .await;
+        let handled = started.elapsed();
         let key = call.result_key(Component::new(self.task.to_string())?)?;
         let snapshot = self
             .results
             .snapshot(&Query::File(key), 1)
             .await
             .map_err(|error| format!("{} {name} {id} result query: {error}", self.host.name()))?;
+        if self.timings {
+            eprintln!(
+                "native call {} {name} {id}: {:.3} s handler, {:.3} s result query",
+                self.host.name(),
+                handled.as_secs_f64(),
+                (started.elapsed() - handled).as_secs_f64()
+            );
+        }
         assert_eq!(
             snapshot.files.len(),
             1,
