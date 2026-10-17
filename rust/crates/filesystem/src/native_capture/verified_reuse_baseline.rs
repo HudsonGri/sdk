@@ -82,7 +82,7 @@ pub(super) async fn regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         false
     };
     #[cfg(test)]
-    let unchanged = self
+    let unchanged = batch
         .baseline
         .and_then(|baseline| baseline.reuse_override)
         .unwrap_or(unchanged);
