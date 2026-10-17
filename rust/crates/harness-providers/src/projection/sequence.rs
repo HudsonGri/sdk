@@ -1,6 +1,9 @@
 //! Portable role boundaries and stateless reasoning-item adjacency.
 use super::wire::{Item, Message};
-use crate::{Adapter, protocol::sequence::ResponseItem};
+use crate::{
+    Adapter,
+    protocol::sequence::{self, ResponseItem},
+};
 use acyclic_harness::Result;
 use serde_json::json;
 
@@ -19,12 +22,6 @@ pub(super) fn push_with_successor<'a>(
     mut next: Message<'a>,
     allows: impl Fn(ResponseItem, ResponseItem) -> bool,
 ) -> Result<()> {
-    if matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
-        && messages.is_empty()
-        && role(&next) != "user"
-    {
-        messages.push(continuation(adapter));
-    }
     if adapter == Adapter::Responses
         && messages
             .last()
@@ -70,7 +67,24 @@ pub(super) fn push_with_successor<'a>(
     }
     Ok(())
 }
+/// The shared protocol rules `finish` applies; negative controls substitute one.
+#[derive(Clone, Copy)]
+pub(super) struct Rules {
+    pub boundary: fn(Option<&str>) -> bool,
+    pub order: fn(&mut [Message<'_>]),
+    pub normalize: fn(Adapter, &mut Vec<Item<'_>>),
+}
+pub(super) const RULES: Rules = Rules {
+    boundary: sequence::user_boundary,
+    order,
+    normalize: super::text::normalize,
+};
+
 pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
+    finish_with(adapter, messages, RULES)
+}
+
+pub(super) fn finish_with(adapter: Adapter, messages: &mut Vec<Message<'_>>, rules: Rules) {
     match adapter {
         Adapter::Anthropic | Adapter::Gemini => {
             // N-01: role merging establishes the whole text run. Native parts
@@ -105,13 +119,22 @@ pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
                 }
                 _ => false,
             });
-            if messages.first().is_some_and(|first| role(first) != "user") {
+            if !(rules.boundary)(messages.first().map(role)) {
                 messages.insert(0, continuation(adapter));
             }
-            if adapter == Adapter::Gemini {
-                super::gemini_results::order(messages);
+            (rules.order)(messages);
+            // Joining turns around a removed empty one, or moving results
+            // ahead of text, can leave a blank fragment beside text: normalize
+            // the final runs once so a single pass is the fixed point. Both
+            // only join or permute non-empty contents, so none empties here.
+            for message in messages.iter_mut() {
+                if let Message::Anthropic { content, .. } | Message::Gemini { parts: content, .. } =
+                    message
+                {
+                    (rules.normalize)(adapter, content);
+                }
             }
-            if messages.is_empty() || messages.last().is_some_and(|last| role(last) != "user") {
+            if !(rules.boundary)(messages.last().map(role)) {
                 messages.push(continuation(adapter));
             }
         }
@@ -124,6 +147,22 @@ pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
         }
         _ => {}
     }
+}
+/// ANT-TOOL-05 and GEM-TOOL-05/06: results answer their calls ahead of any
+/// other content in the turn. Anthropic results move to the front, keeping
+/// the relative order of both groups; Gemini results also follow call order.
+fn order(messages: &mut [Message<'_>]) {
+    for message in messages.iter_mut() {
+        if let Message::Anthropic { content, .. } = message
+            && !sequence::results_lead(content.iter().map(tool_result))
+        {
+            content.sort_by_key(|item| !tool_result(item));
+        }
+    }
+    super::gemini_results::order(messages);
+}
+fn tool_result(item: &Item<'_>) -> bool {
+    matches!(item, Item::Json(value) if sequence::tool_result(value))
 }
 fn role(message: &Message<'_>) -> &'static str {
     match message {
