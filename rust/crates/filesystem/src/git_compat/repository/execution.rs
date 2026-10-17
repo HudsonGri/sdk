@@ -80,7 +80,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         }
     }
 
-    async fn finish<E: GitFilesystemExecutor>(
+    pub(super) async fn finish<E: GitFilesystemExecutor>(
         &self,
         transition: GitTransitionId,
         action: &GitFilesystemAction,
@@ -199,6 +199,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         command: GitCommand,
         workspace_tree: GitTreeRef,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
+        self.prepare_validated(|state| {
+            execute_command::<S::Error>(state, command.clone(), workspace_tree)
+        })
+        .await
+    }
+
+    pub(super) async fn prepare_validated(
+        &self,
+        plan: impl Fn(&mut GitCompatState) -> Result<GitCommandOutput, GitCompatError<S::Error>>,
+    ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
             if let Some(pending) = state
@@ -209,7 +219,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 return Err(GitCompatError::TransitionPending(pending.id));
             }
             let before = state.clone();
-            let output = execute_command::<S::Error>(&mut state, command.clone(), workspace_tree)?;
+            let output = plan(&mut state)?;
             if let Some(pending) = &before.pending {
                 if state != before
                     || matches!(
@@ -234,7 +244,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         Err(GitCompatError::Contended)
     }
 
-    async fn validate_workspace_tree(
+    pub(super) async fn validate_workspace_tree(
         &self,
         workspace_tree: GitTreeRef,
     ) -> Result<(), GitCompatError<S::Error>> {

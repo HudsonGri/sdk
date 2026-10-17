@@ -11,6 +11,30 @@ where
         branch: &str,
         current: GitTreeRef,
     ) -> crate::Result<super::Output> {
+        let (target_tree, tracked_paths) = self.agent_tree(branch, current).await?;
+        self.validate().await?;
+        let result = self
+            .execute(
+                OperationId::new(),
+                &GitFilesystemAction::Diff {
+                    from: Some(current),
+                    to: target_tree,
+                    tracked_paths,
+                },
+            )
+            .await?;
+        self.validate().await?;
+        Ok(super::Output {
+            command: Some(GitCommandOutput::Filesystem(result)),
+            switched: None,
+        })
+    }
+
+    pub(super) async fn agent_tree(
+        &self,
+        branch: &str,
+        current: GitTreeRef,
+    ) -> crate::Result<(GitTreeRef, BTreeSet<String>)> {
         let repository = GitCompatRepository::new(self.repository_id, self.store.clone());
         // The normal repository entry point validates both the current view
         // identity and the operation lease before exposing its branch catalog.
@@ -77,20 +101,6 @@ where
             .cloned()
             .collect();
         self.validate().await?;
-        let result = self
-            .execute(
-                OperationId::new(),
-                &GitFilesystemAction::Diff {
-                    from: Some(current),
-                    to: target_tree,
-                    tracked_paths,
-                },
-            )
-            .await?;
-        self.validate().await?;
-        Ok(super::Output {
-            command: Some(GitCommandOutput::Filesystem(result)),
-            switched: None,
-        })
+        Ok((target_tree, tracked_paths))
     }
 }

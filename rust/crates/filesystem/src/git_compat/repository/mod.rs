@@ -2,6 +2,7 @@ use super::*;
 
 mod execution;
 mod publication;
+mod restore;
 mod transitions;
 
 /// Repository façade over one SDK workspace and private compatibility state.

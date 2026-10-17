@@ -3,6 +3,32 @@ use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
+    // A failed working-head restore retains its exact source and selection;
+    // competing restores cannot replace it, and recovery keeps its operation.
+    #[test]
+    fn published_restore_recovery_keeps_its_source_and_selected_paths(
+        source in any::<[u8; 32]>(), paths in prop::collection::vec("/[a-z]{1,12}", 1..5),
+    ) {
+        futures::executor::block_on(async {
+            let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+            let source = GitTreeRef::exact(WorkspaceId::from_bytes([2; 16]), GenerationId::new(Digest::from_bytes(source)));
+            let failed = TestExecutor::failing();
+            prop_assert!(matches!(repository.restore_paths_from(source, paths.clone(), tree(1), &failed).await,
+                Err(GitCompatRunError::Executor(_))));
+            let pending = repository.pending_transition().await.unwrap().unwrap();
+            prop_assert_eq!(&pending.action, &GitFilesystemAction::RestorePaths { tree: source, paths: paths.clone() });
+            let restored: GitPendingTransition = serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+            prop_assert_eq!(&restored, &pending);
+            let other = repository.restore_paths_from(tree(3), vec!["/other".into()], tree(1), &failed).await;
+            prop_assert!(matches!(other, Err(GitCompatRunError::Compat(GitCompatError::TransitionPending(_)))));
+            prop_assert_eq!(repository.pending_transition().await.unwrap().as_ref(), Some(&pending));
+            let resumed = TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(2)), tracked_paths: None });
+            prop_assert!(repository.resume(&resumed).await.unwrap().is_some());
+            prop_assert_eq!(resumed.operations.lock().unwrap().as_slice(), &[pending.id.operation_id()]);
+            prop_assert!(repository.pending_transition().await.unwrap().is_none());
+            Ok(())
+        })?;
+    }
     #[test]
     fn conflict_paths_belong_to_one_pending_transition(path in "[a-z]{1,16}", stale in any::<bool>()) {
         futures::executor::block_on(async {
