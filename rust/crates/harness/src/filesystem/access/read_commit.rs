@@ -69,18 +69,19 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
     view: &PathTrie,
     io: &PreparationIo,
 ) -> Result<()> {
-    let mut head = io.sdk(
+    let observed = io.sdk(
         workspace
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(),
-                io,
-                io.cancellation(),
-            )
+            .current_access_policy_revision(io, io.cancellation())
             .await,
     )?;
-    let revision = io.sdk(head.access_policy_revision(io, io.cancellation()).await)?;
-    if !view.matches_policy_revision(head.generation_id(), revision)
+    let Some((generation, revision)) = observed else {
+        return Err(stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Unauthorized,
+            "filesystem policy changed during disclosure fence",
+        ));
+    };
+    if !view.matches_policy_revision(generation, revision)
         || view.valid_until().is_some_and(|end| access_now() >= end)
     {
         return Err(stock_boundary(

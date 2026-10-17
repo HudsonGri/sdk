@@ -159,3 +159,39 @@ fn completed_reads_check_current_policy_at_disclosure() {
 fn missing_disclosure_fence_negative_control() {
     disclosure_model(false);
 }
+
+fn policy_observation_model(confirm: bool) {
+    loom::model(move || {
+        let store = Arc::new(MemoryAuthorityStore::default());
+        let cancel = CancellationToken::new();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        ready(|| store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>))
+            .unwrap();
+        assert!(publish(&store, head(&store), 1));
+        let initial = head(&store);
+        let writer = loom::thread::spawn({
+            let store = store.clone();
+            move || assert!(publish(&store, initial, 2))
+        });
+        let observed = head(&store);
+        // Metadata IO belongs to observed. A later head check is the return cut.
+        loom::thread::yield_now();
+        let current = head(&store);
+        let returned = !confirm || crate::facade::policy_head_is_current(observed, current);
+        writer.join().unwrap();
+        if returned {
+            assert_eq!(observed, current, "stale policy observation returned");
+        }
+    });
+}
+
+#[test]
+fn policy_metadata_io_cannot_outlive_its_authority_observation() {
+    policy_observation_model(true);
+}
+
+#[test]
+#[should_panic(expected = "stale policy observation returned")]
+fn missing_policy_head_confirmation_negative_control() {
+    policy_observation_model(false);
+}

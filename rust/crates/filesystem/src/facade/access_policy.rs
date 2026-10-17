@@ -176,3 +176,73 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         work.finish(result, &accounting)
     }
 }
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
+    /// Reads the current policy revision without constructing a checkout.
+    /// Returns None if publication overtakes the metadata read.
+    pub async fn current_access_policy_revision<W: FsWork>(
+        &self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<(GenerationId, MetadataField<ObjectId>)>, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let before = readonly_standalone_live(&accounting);
+        let result = async {
+            let volume = &self.volume;
+            let (generation, observed) = volume
+                .resolve_head_generation(&mut accounting, cancellation)
+                .await?;
+            let metadata = {
+                let (root, _root_allocation) = read_generation_root_with_accounting(
+                    &volume.fs.inner.objects,
+                    generation,
+                    volume.config,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+                if root.volume_id != volume.id {
+                    return Err(FsError::VolumeMismatch);
+                }
+                let (record, _record_allocation) = lookup_file_record_async_with_accounting(
+                    &volume.fs.inner.objects,
+                    root.file_table,
+                    root.root_file_id,
+                    DecodeLimits::for_volume(volume.config),
+                    &mut accounting,
+                    cancellation,
+                    None,
+                )
+                .await?;
+                read_record_metadata_to_file_root_with_accounting(
+                    volume,
+                    record.ok_or(FsError::NotFound)?,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?
+            };
+            let mut authority = authority_work(&accounting, cancellation)?;
+            let current = volume
+                .fs
+                .inner
+                .authority
+                .head(volume_authority_id(volume.id), &mut authority)
+                .await;
+            record_authority_work(&mut accounting, &authority)?;
+            Ok(
+                crate::facade::policy_head_is_current(observed, current?).then_some((
+                    GenerationId::new(generation.digest),
+                    metadata.named_attributes,
+                )),
+            )
+        }
+        .await;
+        let result = readonly_cleanup_standalone(&mut accounting, before, 0).and(result);
+        work.finish(result, &accounting)
+    }
+}
+
+pub(crate) fn policy_head_is_current(observed: Head, current: Head) -> bool {
+    observed == current
+}

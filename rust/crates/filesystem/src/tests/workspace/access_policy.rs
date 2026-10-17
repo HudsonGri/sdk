@@ -200,7 +200,11 @@ async fn policy_history(revisions: Vec<Vec<u8>>) -> Result<(), Box<dyn Error>> {
         );
         previous = Some(revision.clone());
     }
-    let latest = current(&workspace, false).await?;
+    let mut latest = current(&workspace, false).await?;
+    let observed = unbounded!(workspace, current_access_policy_revision())?
+        .ok_or("unchanged head lost its policy observation")?;
+    assert_eq!(observed.0, latest.generation_id());
+    assert_eq!(observed.1, unbounded!(latest, access_policy_revision())?);
     for (mut snapshot, expected, sequence) in snapshots {
         assert_eq!(recorded(&mut snapshot).await?, expected);
         let position = unbounded!(latest, generation_position(snapshot.generation_id()))?;

@@ -187,6 +187,7 @@ mod volume_creation;
 mod work;
 mod workspace_creation;
 
+pub(crate) use access_policy::policy_head_is_current;
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;
 #[cfg(not(target_arch = "wasm32"))]
