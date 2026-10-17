@@ -223,3 +223,8 @@ fn ancestor_stop_handoff_negative_control_requires_its_property_assertion() {
     // The negative control must cease failing if its property is deleted.
     stop_handoffs(task, true, false);
 }
+
+mod stopped;
+
+#[cfg(unix)]
+mod errors;

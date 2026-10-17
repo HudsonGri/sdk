@@ -15,6 +15,14 @@ thread_local! {
     static CUT: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
+pub(super) fn arm(point: &'static str) {
+    CUT.with(|cut| cut.set(Some(point)));
+}
+
+pub(super) fn armed() -> bool {
+    CUT.with(|cut| cut.get().is_some())
+}
+
 pub(super) fn stop(point: &'static str, operation: OperationId) -> Result<()> {
     if CUT.with(|cut| cut.get() == Some(point)) {
         CUT.with(|cut| cut.set(None));

@@ -20,3 +20,6 @@ pub(crate) use command::{FsCommand, parse_fs_command};
 pub mod git;
 
 pub(crate) use defaults::bind_defaults;
+
+#[cfg(acyclic_harness_loom)]
+pub(crate) use children::cancellable as cancellable_child_wait;

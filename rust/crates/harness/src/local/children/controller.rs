@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Files = TaskFiles<dyn StreamProvider>;
 
+mod draining;
 mod inputs;
 mod results;
 mod stopping;
@@ -72,10 +73,19 @@ impl LocalHarness {
                     ));
                 }
             }
-            let parent = self.advance_while(task, commands, || async {
-                if commands
-                    .invocation_cancellation()
-                    .is_some_and(|token| token.is_cancelled())
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let drained = acyclic_fs::CancellationToken::new();
+            let scoped = draining::Commands {
+                harness: self,
+                inner: commands,
+                cancellation: cancellation.clone(),
+                drained: drained.clone(),
+            };
+            let parent = self.advance_while(task, &scoped, || async {
+                if cancellation.is_cancelled()
+                    || commands
+                        .invocation_cancellation()
+                        .is_some_and(|token| token.is_cancelled())
                 {
                     return Ok(false);
                 }
@@ -92,11 +102,13 @@ impl LocalHarness {
             });
             futures::pin_mut!(parent);
             let mut parent_done = false;
+            let result = async {
             loop {
                 if !inherited_stopped
                     && inherited.as_ref().is_some_and(|token| token.is_cancelled())
                 {
                     inherited_stopped = true;
+                    cancellation.cancel();
                     for request in values.values().filter(|file| {
                         matches!(
                             file.key,
@@ -125,6 +137,7 @@ impl LocalHarness {
                         }
                     }
                 }
+                if cancellation.is_cancelled() && jobs.is_empty() { drained.cancel(); }
                 if parent_done && jobs.is_empty() && completions.is_empty() {
                     return Ok(());
                 }
@@ -162,9 +175,32 @@ impl LocalHarness {
                     }
                     _ = async { inherited.as_ref().unwrap().cancelled().await },
                         if inherited.is_some() && !inherited_stopped => {}
-                    result = &mut parent, if !parent_done => { result?; parent_done = true; }
+                    result = &mut parent, if !parent_done => {
+                        parent_done = true;
+                        result?;
+                        if let Some(crate::Outcome::Indeterminate { operation_id }) = self.runtime.task_host().outcome(task).await? {
+                            return Err(Error::Indeterminate(operation_id));
+                        }
+                    }
                 }
             }
+            }.await;
+            if result.is_err() {
+                draining::finish(
+                    async {
+                        if parent_done {
+                            Ok(())
+                        } else {
+                            parent.as_mut().await
+                        }
+                    },
+                    &mut jobs,
+                    &cancellation,
+                    &drained,
+                )
+                .await;
+            }
+            result
         })
     }
 

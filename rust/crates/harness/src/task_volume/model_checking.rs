@@ -27,6 +27,8 @@ pub enum Fault {
     SkipChildInputFence,
     /// Send live child mail without acknowledging its result bound.
     SkipChildInputAck,
+    /// Return a controller error while sibling effect futures are live.
+    DropSiblingEffects,
 }
 
 loom::thread_local! {

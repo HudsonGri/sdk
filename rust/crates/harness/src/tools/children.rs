@@ -81,9 +81,12 @@ impl Executor {
                 {
                     return Ok(None);
                 }
-                if files::follow(files.as_ref(), &reference, limits, !reconcile, false)
-                    .await?
-                    .is_none()
+                if cancellable(
+                    files::follow(files.as_ref(), &reference, limits, !reconcile, false),
+                    owner.and_then(|owner| owner.invocation_cancellation()),
+                )
+                .await?
+                .is_none()
                 {
                     return Ok(None);
                 }
@@ -119,15 +122,18 @@ impl Executor {
             "wait" => {
                 let input: WaitInput =
                     serde_json::from_value(invocation.arguments).map_err(invalid)?;
-                match wait(
-                    files.as_ref(),
-                    input,
-                    limits,
-                    invocation.operation_id,
-                    !reconcile,
+                let result = cancellable(
+                    wait(
+                        files.as_ref(),
+                        input,
+                        limits,
+                        invocation.operation_id,
+                        !reconcile,
+                    ),
+                    owner.and_then(|owner| owner.invocation_cancellation()),
                 )
-                .await?
-                {
+                .await?;
+                match result {
                     Some(value) => value,
                     None => return Ok(None),
                 }
@@ -154,9 +160,12 @@ impl Executor {
                 {
                     return Ok(None);
                 }
-                if files::follow(files.as_ref(), &reference, limits, !reconcile, true)
-                    .await?
-                    .is_none()
+                if cancellable(
+                    files::follow(files.as_ref(), &reference, limits, !reconcile, true),
+                    owner.and_then(|owner| owner.invocation_cancellation()),
+                )
+                .await?
+                .is_none()
                 {
                     return Ok(None);
                 }
@@ -167,6 +176,23 @@ impl Executor {
         Ok(Some(ToolResult {
             value: files::bounded(value, limits)?,
         }))
+    }
+}
+
+pub(crate) async fn cancellable<T>(
+    future: impl std::future::Future<Output = Result<T>>,
+    cancellation: Option<&acyclic_fs::CancellationToken>,
+) -> Result<T> {
+    let Some(token) = cancellation else {
+        return future.await;
+    };
+    let cancelled = token.cancelled();
+    futures::pin_mut!(future, cancelled);
+    match futures::future::select(future, cancelled).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled,
+        )),
     }
 }
 

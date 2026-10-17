@@ -79,17 +79,19 @@ impl Commands<'_> {
             .durable_task_id()
             .ok_or_else(|| Error::Unauthorized("child command has no task".into()))?;
         let model = command.kind == crate::filesystem::MODEL_TASK_COMMAND_KIND;
+        let inherited = context.invocation_cancellation().cloned();
+        let cancellation = inherited.as_ref().unwrap_or(&self.cancellation);
         // Cancellation attenuates the effect context, never the workflow
         // checkpoint owner: the latter must still durably settle this result.
-        let context = if model {
+        let context = if model && inherited.is_none() {
             self.harness
                 .runtime
-                .task_context_with_cancellation(task, fence.clone(), Some(&self.cancellation))
+                .task_context_with_cancellation(task, fence.clone(), Some(cancellation))
                 .await?
         } else {
             context
         };
-        let result = if self.cancellation.is_cancelled() && model {
+        let result = if cancellation.is_cancelled() && model {
             Err(Error::InteractionRejected(
                 crate::InteractionRejection::Cancelled,
             ))
@@ -98,9 +100,19 @@ impl Commands<'_> {
                 .execute(context, fence.clone(), command.clone(), payload.clone())
                 .await
         };
-        if model && self.cancellation.is_cancelled() && result.is_err() {
-            if result.as_ref().is_err_and(Error::is_native_failure) {
-                return result;
+        if model
+            && result
+                .as_ref()
+                .is_err_and(|error| stopped(cancellation.is_cancelled(), error))
+        {
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            if matches!(
+                &result,
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled
+                ))
+            ) {
+                super::cuts::stop("model-stopped", command.operation_id)?;
             }
             let context = self
                 .harness
@@ -144,5 +156,34 @@ impl TaskCommandHost for Commands<'_> {
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(self.run(context, fence, command, payload, true))
+    }
+}
+
+fn stopped(cancelled: bool, error: &Error) -> bool {
+    !error.is_native_failure()
+        && (cancelled
+            || matches!(
+                error,
+                Error::InteractionRejected(crate::InteractionRejection::Cancelled)
+            ))
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn a_retained_stop_does_not_require_a_live_cancellation_token(
+            cancelled in any::<bool>(), kind in 0usize..4, reason in ".{0,32}",
+        ) {
+            let error = match kind {
+                0 => Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                1 => Error::Storage(reason),
+                2 => Error::Invalid(reason),
+                _ => Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native" },
+            };
+            prop_assert_eq!(stopped(cancelled, &error), kind != 3 && (cancelled || kind == 0));
+        }
     }
 }
