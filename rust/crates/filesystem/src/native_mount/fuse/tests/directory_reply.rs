@@ -26,11 +26,11 @@ fn paged_aliases(
             &crate::CancellationToken::new(),
         )?,
     };
-    let mut stream =
-        projection
-            .core
-            .state()?
-            .directory_stream(source.as_ref(), ROOT_INODE, 2, &work)?;
+    let mut stream = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .directory_stream(source.as_ref(), ROOT_INODE, 2, &work)?;
     projection.position_directory_stream(&mut stream, 2, &work)?;
     // Force the aliases onto different storage pages in one kernel request.
     stream.page = Some(source.read_directory_with_meter(&MountPath::root(), None, 1, &work)?);
@@ -41,7 +41,7 @@ fn paged_aliases(
         // Former production ordering, through the same page emitter and oracle.
         loop {
             let first = projection.next_directory_child(&mut stream, &work)?;
-            let mut state = projection.core.state()?;
+            let mut state = projection.core.state().map_err(NativeMountError::from)?;
             state
                 .list_directory(
                     source.as_ref(),
@@ -59,7 +59,7 @@ fn paged_aliases(
             source.write_range(&path(b"a"), 0, bytes::Bytes::from(vec![2; next_size]))?;
         }
     } else {
-        let mut state = projection.core.state()?;
+        let mut state = projection.core.state().map_err(NativeMountError::from)?;
         let parking = state.streams.prepare_park(&work)?;
         state.streams.park(ROOT_INODE, stream, parking);
         drop(state);
