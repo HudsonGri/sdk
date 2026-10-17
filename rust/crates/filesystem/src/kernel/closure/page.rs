@@ -31,13 +31,8 @@ pub(super) fn decode<S: crate::AsyncObjectStore, T: Any + Send + Sync>(
     ) -> Result<T, crate::FsError>,
 ) -> Result<ProvenPage<T>, crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let ProofMeter::Native {
-        original,
-        cancellation,
-    } = meter
     {
-        cancellation.check()?;
-        original.remaining()?;
+        meter.charge(WorkCounters::UNCHARGED)?;
         let key = crate::async_storage::DecodedCacheKey::new::<T>(id, limits);
         if let Some(cached) = store.decoded_cache_get(key)? {
             return Ok(ProvenPage::Shared {

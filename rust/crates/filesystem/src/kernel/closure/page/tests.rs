@@ -67,7 +67,7 @@ fn records(count: usize) -> Vec<FileRecord> {
         .collect()
 }
 
-fn check(count: usize, cold: bool) -> TestCaseResult {
+fn check(count: usize, cold: bool, native: bool) -> TestCaseResult {
     let limits = DecodeLimits::default();
     let expected = records(count);
     let bytes = encode_file_table_page(
@@ -86,9 +86,13 @@ fn check(count: usize, cold: bool) -> TestCaseResult {
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let initial_live = original.live_allocation_bytes();
-    let meter = ProofMeter::Native {
-        original: &original,
-        cancellation: &cancellation,
+    let meter = if native {
+        ProofMeter::Native {
+            original: &original,
+            cancellation: &cancellation,
+        }
+    } else {
+        ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation).unwrap()
     };
     let owned = (count * size_of::<FileRecord>()
         + size_of::<Page<FileTableFormat>>()
@@ -104,7 +108,7 @@ fn check(count: usize, cold: bool) -> TestCaseResult {
             )),
         }),
     );
-    let before = original.receipt();
+    let before = meter.work();
     let mut result = None;
     let (heap, trace): (_, Vec<DecodedCacheKey>) = acyclic_test_support::differential::observe(
         || (),
@@ -138,7 +142,7 @@ fn check(count: usize, cold: bool) -> TestCaseResult {
     };
     prop_assert_eq!(actual, &baseline);
     prop_assert_eq!(trace, vec![key, key]);
-    prop_assert_eq!(original.receipt(), before, "borrowing does no decoder work");
+    prop_assert_eq!(meter.work(), before, "borrowing does no decoder work");
     prop_assert_eq!(heap.count_total, 0);
     prop_assert_eq!(heap.bytes_total, 0);
     prop_assert_eq!(original.live_allocation_bytes(), initial_live + owned);
@@ -151,14 +155,18 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn authenticated_pages_are_borrowed_at_n_and_2n(n in 1usize..65) {
-        check(n, false)?;
-        check(2 * n, false)?;
+        for native in [false, true] {
+            check(n, false, native)?;
+            check(2 * n, false, native)?;
+        }
     }
 }
 
 #[test]
 fn restoring_the_canonical_decode_fails_the_same_work_assertion() {
     for count in [32, 64] {
-        assert!(check(count, true).is_err());
+        for native in [false, true] {
+            assert!(check(count, true, native).is_err());
+        }
     }
 }
