@@ -47,7 +47,7 @@ export default function(pi) {
     }), {flag:"wx"});
     return fauxAssistantMessage("compacted child ready");
   }] : [
-    () => call("acyclic_spawn",{id:"compacted-child",context:"native_cut",prompt:"Check inherited compacted context."},"spawn-after-compaction"),
+    () => call("acyclic_spawn",{id:"compacted-child",context:"native_cut",prompt:"child after compaction"},"spawn-after-compaction"),
     context => call("acyclic_wait",{child:result(context)},"wait-compacted-child"),
     context => {
       const outcome = result(context);
@@ -66,7 +66,10 @@ test("a child consumes the native parent's completed compaction across reopen", 
   let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     const oracle = join(directory,"compacted-child.json");
-    fixture = await installedNativeFixture(directory,nativeProvider,{ACYCLIC_COMPACT_CHILD:oracle});
+    const cutFile = join(directory,"selected-parent.jsonl");
+    fixture = await installedNativeFixture(directory,nativeProvider,{
+      ACYCLIC_COMPACT_CHILD:oracle,ACYCLIC_COMPACT_PARENT:cutFile,
+    });
     phase("installed");
     const {project,manager:parent,session:parentFile} = fixture;
     const settings = join(directory,"agent","settings.json");
@@ -81,6 +84,7 @@ test("a child consumes the native parent's completed compaction across reopen", 
     const compactExtension = join(directory, "compact.ts");
     writeFileSync(compactExtension, `
 import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { readFileSync, writeFileSync } from "node:fs";
 export default function (pi) {
   const faux = fauxProvider({ provider: "acyclic-qualification", models: [{ id: "probe" }] });
   faux.setResponses([
@@ -92,41 +96,38 @@ export default function (pi) {
     description: "Run native compaction for qualification",
     async handler(_args, ctx) {
       await new Promise((resolve, reject) => ctx.compact({ onComplete: resolve, onError: reject }));
+      writeFileSync(process.env.ACYCLIC_COMPACT_PARENT,readFileSync(ctx.sessionManager.getSessionFile()));
+      const native=ctx.modelRegistry.find("acyclic-native-qualification","probe");
+      if (!native || !await pi.setModel(native)) throw new Error("native launch model is unavailable");
     },
   });
 }
 `);
-    const compactResult = await invokePi(
-      [...probeArguments(parentFile, compactExtension), "/qualify-compact"], project, directory, fixture.environment,
-    );
+    await fixture.start();
+    phase("owner ready");
+    const compactResult = await invokePi([
+      ...probeArguments(parentFile, compactExtension),"-e",fixture.extension,"-e",fixture.provider,"--",
+      "/qualify-compact","Launch and wait for a child inheriting this exact compacted context.",
+    ], project, directory, fixture.environment);
     const compacted = SessionManager.open(parentFile, directory);
     phase("compacted");
     const compaction = compacted.getEntries().find(entry => entry.type === "compaction");
     assert.ok(compaction, `native CLI did not retain its completed compaction: ${compactResult.stdout} ${compactResult.stderr}`);
     assert.match(compaction.summary, /qualified native parent summary/);
-    const selectedParent = readFileSync(parentFile,"utf8");
-    await fixture.start();
-    phase("owner ready");
-    const launched = await fixture.runJson("Launch and wait for a child inheriting this exact compacted context.",line=>{
-      const event=JSON.parse(line);
-      if(event.type.startsWith("tool_")) phase(`${event.type} ${event.toolCallId}`);
-    });
-    phase("child settled");
-    const completed=launched.stdout.trim().split("\n").map(line=>JSON.parse(line))
-      .filter(event=>event.type==="message_end" && event.message?.role==="assistant")
-      .flatMap(event=>event.message.content.filter(part=>part.type==="text").map(part=>part.text));
-    assert.equal(completed.at(-1),"compaction child completed");
+    const selectedParent = readFileSync(cutFile,"utf8");
+    assert.equal(compactResult.stdout.trim(),"compaction child completed");
     const native = JSON.parse(readFileSync(oracle,"utf8"));
     assert.match(JSON.stringify(native.messages),/qualified native parent summary/);
     assert.doesNotMatch(JSON.stringify(native.messages),/old parent instruction|spawn-after-compaction/);
     assert.notEqual(native.native_session_id,parent.getSessionId());
     assert.equal(typeof native.session_file,"string");
     const child = native.session_file;
+    assert.equal(SessionManager.open(child,directory).getSessionId(),native.native_session_id);
     const originalParent = readFileSync(parentFile, "utf8");
     assert.ok(originalParent.startsWith(selectedParent),"selection changed the parent's retained history");
     const extension = join(directory, "provider.ts");
     writeFileSync(extension, provider);
-    for (const prompt of ["child after compaction", "resume compacted child"]) {
+    for (const prompt of ["resume compacted child"]) {
       const result = await invokePi([...probeArguments(child, extension), prompt], project, directory);
       phase(prompt);
       assert.match(result.stdout, /qualified native parent summary/);
