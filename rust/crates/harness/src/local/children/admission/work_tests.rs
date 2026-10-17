@@ -2,8 +2,9 @@ use super::*;
 use crate::{
     client::{CommandResolution, CommandTool},
     model::Model,
-    test_support::{ScriptedModelProvider, ScriptedTurn, differential},
+    test_support::{ScriptedModelProvider, ScriptedTurn},
 };
+use acyclic_test_support::differential;
 
 async fn fixture() -> (tempfile::TempDir, LocalHarness, FileValue) {
     let directory = tempfile::tempdir().unwrap();

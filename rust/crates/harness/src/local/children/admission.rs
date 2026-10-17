@@ -596,8 +596,8 @@ impl LocalHarness {
         let opened = workspace.view().open_related(child, &mut accounting).await;
         let view = io.sdk(io_ref.finish(opened, &accounting))?;
         let work = io.receipt();
-        crate::test_support::differential::record("view-items", work.items_examined);
-        crate::test_support::differential::record("view-allocations", work.allocation_operations);
+        acyclic_test_support::differential::record(("view-items", work.items_examined));
+        acyclic_test_support::differential::record(("view-allocations", work.allocation_operations));
         Ok(view)
     }
 }

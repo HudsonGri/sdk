@@ -12,7 +12,7 @@ pub(super) fn evict(values: &mut BTreeMap<FileKey, FileValue>, reference: &Compo
         .map(|(key, _)| key.clone())
     {
         #[cfg(test)]
-        crate::test_support::differential::record("result-fold-visit", 1);
+        acyclic_test_support::differential::record(("result-fold-visit", 1u64));
         values.remove(&previous);
     }
 }
@@ -20,7 +20,7 @@ pub(super) fn evict(values: &mut BTreeMap<FileKey, FileValue>, reference: &Compo
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests {
     use super::*;
-    use crate::test_support::differential;
+    use acyclic_test_support::differential;
     use proptest::prelude::*;
 
     fn run(count: usize) -> [(BTreeMap<FileKey, FileValue>, Vec<(&'static str, u64)>); 2] {
@@ -42,7 +42,7 @@ mod tests {
                     let reference = Component::new(&format!("child-{index:04}")).unwrap();
                     if old {
                         values.retain(|key, _| {
-                            differential::record("result-fold-visit", 1);
+                            differential::record(("result-fold-visit", 1u64));
                             !matches!(key, FileKey::Child { reference: r, file: ChildFile::Result(n) } if r == &reference && *n < 2)
                         });
                     }

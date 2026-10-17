@@ -256,6 +256,7 @@ proptest! {
 
 #[tokio::test]
 async fn authorized_queries_bound_snapshot_and_follow_content() {
+    use crate::task_volume::FileQuerySource;
     use futures::StreamExt as _;
     let agent = AgentId::from_bytes([4; 16]);
     let volume = volume(agent);
