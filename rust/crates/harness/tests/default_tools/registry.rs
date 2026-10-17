@@ -246,10 +246,10 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
                 ("read", volume),
                 ("write", volume),
                 ("edit", volume),
-                ("spawn", volume),
-                ("send", volume),
-                ("wait", volume),
-                ("archive", volume),
+                ("spawn", workspace),
+                ("send", workspace),
+                ("wait", workspace),
+                ("archive", workspace),
             ] {
                 assert_eq!(harness.runtime().tool(name).is_ok(), available);
                 assert_eq!(

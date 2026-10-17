@@ -173,16 +173,8 @@ impl ToolExecutor for CheckoutTools {
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             if let Some(project) = self.child_project(original)? {
-                if invocation.name != "fs" {
-                    let selected = self.child_checkout(original, project).await?;
-                    return selected.execute(invocation, context).await;
-                }
-                let command = invocation
-                    .arguments
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| Error::Invalid("checkout command must be text".into()))?;
-                return self.child_fs(command, original, project).await;
+                let selected = self.child_checkout(original, project).await?;
+                return selected.execute(invocation, context).await;
             }
             if !self.selected
                 && let Some(selected) = self
