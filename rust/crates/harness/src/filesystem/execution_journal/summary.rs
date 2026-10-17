@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct ExecutionSummary {
     pub(super) operation: Option<OperationId>,
     pub(super) tail: u64,
+    pub(super) fence: Option<acyclic_stream::CommitId>,
     pub(super) retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
     pub(super) contexts: BTreeMap<u32, bool>,
     pub(super) models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,

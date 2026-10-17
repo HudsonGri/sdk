@@ -15,6 +15,44 @@ impl<P: StreamProvider> TaskVolume<P> {
         payload: &[u8],
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> crate::Result<Option<JournalFile>> {
+        self.prepare_chunk_file(key, channel, payload, false, io)
+            .await
+    }
+
+    pub(crate) async fn prepare_next_chunk(
+        &self,
+        task: Component,
+        execution: crate::OperationId,
+        turn: u64,
+        channel: Channel,
+        payload: &[u8],
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> crate::Result<Option<JournalFile>> {
+        self.prepare_chunk_file(
+            FileKey::Task {
+                task,
+                file: TaskFile::Chunk {
+                    execution,
+                    turn,
+                    sequence: 0,
+                },
+            },
+            channel,
+            payload,
+            true,
+            io,
+        )
+        .await
+    }
+
+    async fn prepare_chunk_file(
+        &self,
+        mut key: FileKey,
+        channel: Channel,
+        payload: &[u8],
+        fresh: bool,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> crate::Result<Option<JournalFile>> {
         if !matches!(
             key,
             FileKey::Task {
@@ -28,6 +66,45 @@ impl<P: StreamProvider> TaskVolume<P> {
         if crate::test_support::accounted::chunk_scan_enabled() {
             let _ = self.snapshot(&Query::Root, 1024).await?;
         }
+        self.refresh_journal(io).await?;
+        // Lock order: index only across validation/encoding; no provider I/O.
+        // The captured head fences the sequence choice against every peer write.
+        let index = self.index.lock().await;
+        if fresh
+            && let FileKey::Task {
+                task,
+                file: TaskFile::Chunk { sequence, .. },
+            } = &mut key
+        {
+            let first = FileKey::Task {
+                task: task.clone(),
+                file: TaskFile::Chunk {
+                    sequence: 0,
+                    turn: 0,
+                    execution: crate::OperationId::from_bytes([0; 16]),
+                },
+            };
+            let last = FileKey::Task {
+                task: task.clone(),
+                file: TaskFile::Chunk {
+                    sequence: u64::MAX,
+                    turn: u64::MAX,
+                    execution: crate::OperationId::from_bytes([255; 16]),
+                },
+            };
+            *sequence = match index
+                .files
+                .range(first..=last)
+                .next_back()
+                .map(|(key, _)| key)
+            {
+                Some(FileKey::Task {
+                    file: TaskFile::Chunk { sequence, .. },
+                    ..
+                }) => sequence.checked_add(1).ok_or(Error::LimitExceeded)?,
+                _ => 0,
+            };
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let original = io.and_then(crate::filesystem::PreparationIo::original_native_work);
         #[cfg(target_arch = "wasm32")]
@@ -40,10 +117,6 @@ impl<P: StreamProvider> TaskVolume<P> {
             publication: None,
             bytes: record.slice(offset..),
         };
-        self.refresh_journal(io).await?;
-        // Lock order: index only; never held across provider I/O. The commit's
-        // captured Head rejects every writer that races this validation.
-        let index = self.index.lock().await;
         validate_file(&index, &file)?;
         Ok(Some(JournalFile {
             condition: CommitCondition::Head {

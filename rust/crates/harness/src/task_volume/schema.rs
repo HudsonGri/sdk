@@ -65,13 +65,13 @@ pub enum TaskFile {
     TurnRequest(u64),
     /// One immutable stream chunk.
     Chunk {
+        /// Durable task-wide publication order, independent of execution UUIDs.
+        sequence: u64,
         /// Turn/attempt identity.
         turn: u64,
         /// Execution journal identity; separates attempts that restart their ordinals.
         #[serde(default = "legacy_execution")]
         execution: crate::OperationId,
-        /// Assigned monotonically increasing chunk identity.
-        sequence: u64,
     },
     /// Read-only materialized text head, assembled from immutable chunk slices.
     TextHead {
@@ -246,23 +246,7 @@ impl FileKey {
             return None;
         };
         let (first, last, sequence) = match file {
-            TaskFile::Chunk {
-                turn,
-                execution,
-                sequence,
-            } => (
-                TaskFile::Chunk {
-                    turn: *turn,
-                    execution: *execution,
-                    sequence: 0,
-                },
-                TaskFile::Chunk {
-                    turn: *turn,
-                    execution: *execution,
-                    sequence: u64::MAX,
-                },
-                *sequence,
-            ),
+            TaskFile::Chunk { .. } => return None,
             TaskFile::Tool { turn, call, file } => {
                 let (first, last, sequence) = match file {
                     ToolFile::Arguments(n) => {

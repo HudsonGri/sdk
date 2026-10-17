@@ -216,6 +216,7 @@ struct Index {
     epoch: Uuid,
     next: u64,
     commit: CommitId,
+    chunk_tails: BTreeMap<(Component, crate::OperationId, u64), u64>,
     files: FileIndex,
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
     pending_commands: BTreeMap<Option<Component>, BTreeSet<FileKey>>,
@@ -516,6 +517,23 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
         return Err(Error::ImmutableConflict(file.key.clone()));
     }
     if !index.files.contains_key(&file.key)
+        && let FileKey::Task {
+            task,
+            file:
+                TaskFile::Chunk {
+                    execution,
+                    turn,
+                    sequence,
+                },
+        } = &file.key
+        && index
+            .chunk_tails
+            .get(&(task.clone(), *execution, *turn))
+            .is_some_and(|previous| sequence <= previous)
+    {
+        return Err(Error::SequenceConflict(file.key.clone()));
+    }
+    if !index.files.contains_key(&file.key)
         && let Some((first, last, sequence)) = file.key.sequence_range()
         && index
             .files
@@ -530,6 +548,22 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {
+    if let FileKey::Task {
+        task,
+        file:
+            TaskFile::Chunk {
+                execution,
+                turn,
+                sequence,
+            },
+    } = &file.key
+    {
+        index
+            .chunk_tails
+            .entry((task.clone(), *execution, *turn))
+            .and_modify(|previous| *previous = (*previous).max(*sequence))
+            .or_insert(*sequence);
+    }
     recent::record(index, &file, position);
     let owner = command_query::owner(&file.key);
     if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {

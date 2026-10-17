@@ -1,6 +1,6 @@
 //! Chunk projection prepared for the canonical observation's transaction.
 use super::*;
-use crate::task_volume::{Channel, Component, FileKey, TaskFile};
+use crate::task_volume::{Channel, Component};
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
@@ -11,7 +11,6 @@ where
     pub(super) async fn prepare_chunk(
         &self,
         execution: OperationId,
-        sequence: u64,
         event: &ExecutionEvent,
         model: Option<&ModelEvent>,
         io: Option<&PreparationIo>,
@@ -60,17 +59,16 @@ where
         let task = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(format_args!("{}", owner.task_id()), work)
         })?;
-        let key = FileKey::Task {
-            task: Component::new(task)?,
-            file: TaskFile::Chunk {
-                turn: u64::from(*step),
-                execution,
-                sequence,
-            },
-        };
         files
             .inner
-            .prepare_journal_file(key, channel, payload, io)
+            .prepare_next_chunk(
+                Component::new(task)?,
+                execution,
+                u64::from(*step),
+                channel,
+                payload,
+                io,
+            )
             .await
     }
 }
