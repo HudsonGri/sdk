@@ -1,6 +1,6 @@
 use super::page::ProvenPage;
 use super::*;
-use crate::kernel::persistent_btree::{Format, Page};
+use crate::kernel::persistent_btree::Page;
 use crate::kernel::{file_table_mutation::FileTableFormat, tree_mutation::TreeFormat};
 
 type PendingPage<N> = (ObjectId, Option<(N, ProofGuard)>, Option<(N, ProofGuard)>);
@@ -215,16 +215,12 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 return Err(ClosureError::RoutingAlias.into());
             }
             let bytes = self.read_object(page_id, true).await?;
-            let page = super::page::decode::<_, Page<FileTableFormat>>(
+            let page = super::page::persistent::<_, FileTableFormat>(
                 self.store,
                 page_id,
                 self.limits.decode,
                 &self.meter,
-                |observe| {
-                    FileTableFormat::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
-                        observe(step)
-                    })
-                },
+                &bytes.0.bytes,
             )?;
             drop(bytes);
             match page.page() {
@@ -351,16 +347,12 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 return Err(ClosureError::RoutingAlias.into());
             }
             let bytes = self.read_object(page_id, true).await?;
-            let page = super::page::decode::<_, Page<TreeFormat>>(
+            let page = super::page::persistent::<_, TreeFormat>(
                 self.store,
                 page_id,
                 self.limits.decode,
                 &self.meter,
-                |observe| {
-                    TreeFormat::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
-                        observe(step)
-                    })
-                },
+                &bytes.0.bytes,
             )?;
             drop(bytes);
             match page.page() {
