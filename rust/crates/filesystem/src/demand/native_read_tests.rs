@@ -9,8 +9,21 @@ use proptest::prelude::*;
 use std::error::Error;
 
 type Work = (&'static str, u64, u64);
-/// Bytes, or the failure's variant name.
-type Outcome = Result<Vec<u8>, String>;
+#[derive(Debug, PartialEq, Eq)]
+struct ReadError {
+    details: String,
+    io: Option<(std::io::ErrorKind, Option<i32>)>,
+}
+type Outcome = Result<Vec<u8>, ReadError>;
+fn failure(error: DemandError) -> ReadError {
+    ReadError {
+        details: format!("{error:?}"),
+        io: match &error {
+            DemandError::Io(error) => Some((error.kind(), error.raw_os_error())),
+            _ => None,
+        },
+    }
+}
 
 const MAXIMUM_READ: u64 = 1024 * 1024;
 
@@ -32,6 +45,14 @@ pub(super) fn held(
     runtime: &tokio::runtime::Runtime,
     contents: &[u8],
     remote: bool,
+) -> Result<(tempfile::TempDir, NativeDemandSource, Box<dyn DemandFile>), Box<dyn Error>> {
+    held_mode(runtime, contents, remote, false)
+}
+fn held_mode(
+    runtime: &tokio::runtime::Runtime,
+    contents: &[u8],
+    remote: bool,
+    old: bool,
 ) -> Result<(tempfile::TempDir, NativeDemandSource, Box<dyn DemandFile>), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     std::fs::write(directory.path().join("file"), contents)?;
@@ -61,6 +82,10 @@ pub(super) fn held(
             .await?
             .value
             .ok_or("file absent")?;
+        if old {
+            let file = super::native::baseline_file(source.clone(), &path("/file"), node.version)?;
+            return Ok((directory, source, file));
+        }
         let file = source
             .open_file(
                 reference,
@@ -76,15 +101,7 @@ pub(super) fn held(
 }
 
 fn outcome(result: Result<acyclic_stream::OwnedBytes, DemandError>) -> Outcome {
-    result
-        .map(|bytes| bytes.as_ref().to_vec())
-        .map_err(|error| {
-            format!("{error:?}")
-                .split(['(', ' '])
-                .next()
-                .unwrap_or("")
-                .to_owned()
-        })
+    result.map(|bytes| bytes.as_ref().to_vec()).map_err(failure)
 }
 
 /// One read, its outcome, the work it spent, and its trace on this thread.
@@ -93,33 +110,47 @@ fn production_read(
     offset: u64,
     length: u64,
 ) -> (Outcome, WorkCounters, Vec<Work>) {
+    read_mode(file, offset, length, false)
+}
+fn read_mode(
+    file: &dyn DemandFile,
+    offset: u64,
+    length: u64,
+    native: bool,
+) -> (Outcome, WorkCounters, Vec<Work>) {
     let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
     let ((result, spent), trace) = differential::observe::<_, _, Work>(
         || (),
         |()| {
-            let mut accounting =
-                crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let mut accounting = if native {
+                crate::kernel::KernelAccounting::native(&original, &cancellation)
+            } else {
+                crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
+            };
             let result = file.read_range(offset, length, &mut accounting);
-            (result.map(|chunk| chunk.bytes), accounting.spent())
+            (
+                result.map(|chunk| chunk.bytes),
+                if native {
+                    original.receipt()
+                } else {
+                    accounting.spent()
+                },
+            )
         },
     );
     (outcome(result), spent, trace)
 }
 
-/// The contract, written separately: requests over 1 MiB or past u64 are
-/// invalid; otherwise the bytes from `offset` to the request's end or end of
-/// file; a file changed since it was opened is stale.
-fn baseline_read(contents: &[u8], current: &[u8], offset: u64, length: u64) -> Outcome {
-    if length > MAXIMUM_READ || offset.checked_add(length).is_none() {
-        return Err("InvalidRequest".to_owned());
-    }
-    if contents != current {
-        return Err("StaleVersion".to_owned());
-    }
-    let start = usize::try_from(offset).map_or(contents.len(), |offset| offset.min(contents.len()));
-    let end =
-        usize::try_from(offset + length).map_or(contents.len(), |end| end.min(contents.len()));
-    Ok(contents[start..end.max(start)].to_vec())
+// Storage initialization intentionally differs; all read and authentication events
+// must match, in order. Allocation-lifetime events have their own assertions.
+fn observer(trace: &[Work]) -> Vec<Work> {
+    trace
+        .iter()
+        .copied()
+        .filter(|(op, ..)| !matches!(*op, "storage" | "free" | "wait"))
+        .collect()
 }
 
 proptest! {
@@ -133,20 +164,21 @@ proptest! {
         offset in prop_oneof![0_u64..90_000, Just(u64::MAX - 1)],
         length in prop_oneof![0_u64..90_000, Just(MAXIMUM_READ), Just(MAXIMUM_READ + 1)],
         edited in any::<bool>(),
+        native in any::<bool>(),
     ) {
         let runtime = runtime();
         let contents: Vec<u8> = (0..size).map(|byte| (byte * 31 + 7) as u8).collect();
         let (directory, _source, file) = held(&runtime, &contents, remote).unwrap();
-        let current = if edited {
+        let (old_directory, _old_source, old_file) = held_mode(&runtime, &contents, remote, true).unwrap();
+        if edited {
             let edit: Vec<u8> = contents.iter().map(|byte| byte ^ 0x5a).chain([1]).collect();
             std::fs::write(directory.path().join("file"), &edit).unwrap();
-            edit
-        } else {
-            contents.clone()
-        };
-        let expected = baseline_read(&contents, &current, offset, length);
-        let (actual, _, _) = production_read(file.as_ref(), offset, length);
+            std::fs::write(old_directory.path().join("file"), &edit).unwrap();
+        }
+        let (expected, _, expected_trace) = read_mode(old_file.as_ref(), offset, length, native);
+        let (actual, _, actual_trace) = read_mode(file.as_ref(), offset, length, native);
         prop_assert_eq!(actual, expected);
+        prop_assert_eq!(observer(&actual_trace), observer(&expected_trace));
     }
 }
 
@@ -157,56 +189,103 @@ fn held_file_reads_do_exact_uninitialized_work() -> Result<(), Box<dyn Error>> {
     let runtime = runtime();
     let contents: Vec<u8> = (0..100_000_u32).map(|byte| (byte * 13) as u8).collect();
     let (_directory, _source, file) = held(&runtime, &contents, false)?;
-    // The empty read at end of file spends only the per-read path and stat
-    // work; a read that serves bytes adds exactly one read of those bytes.
-    let mut empty = None;
-    for (offset, length, served) in [
-        (100_000_u64, 64_u64, 0_u64),
-        (10, 4096, 4096),
-        (99_000, 4096, 1000),
-    ] {
-        for broken in [false, true] {
-            let run = || production_read(file.as_ref(), offset, length);
-            let (bytes, spent, trace) = if broken {
-                demand_read_work::restoring_old_work(run)
-            } else {
-                run()
-            };
+    for native in [false, true] {
+        for (offset, length, served) in [
+            (100_000_u64, 64_u64, 0_u64),
+            (10, 4096, 4096),
+            (99_000, 4096, 1000),
+        ] {
+            let expected = expected_work(native, served, 0);
+            let (bytes, spent, trace) = read_mode(file.as_ref(), offset, length, native);
             let start = offset as usize;
             assert_eq!(bytes, Ok(contents[start..start + served as usize].to_vec()));
-            let mut expected = vec![("storage", 0, served)];
+            assert_eq!(spent, expected_work(native, served, wait_count(&trace)));
+            assert!(trace.contains(&("storage", 0, served)));
+            let (_, extra, extra_trace) = demand_read_work::adding_allocation(|| {
+                read_mode(file.as_ref(), offset, length, native)
+            });
+            assert_ne!(
+                extra,
+                expected_work(native, served, wait_count(&extra_trace)),
+                "extra allocation escaped"
+            );
+            assert_eq!(
+                extra.allocation_operations,
+                expected.allocation_operations + 1
+            );
+            assert_eq!(
+                extra.peak_allocation_bytes,
+                expected.peak_allocation_bytes + 17
+            );
             if served > 0 {
-                expected.push(("read", offset, served));
+                let (_, _, broken) = demand_read_work::restoring_old_work(|| {
+                    read_mode(file.as_ref(), offset, length, native)
+                });
+                assert!(
+                    !broken.contains(&("storage", 0, served)),
+                    "zero-fill escaped"
+                );
             }
-            if broken {
-                if served > 0 {
-                    assert_ne!(trace, expected, "restored zero-fill was not detected");
-                }
-                continue;
-            }
-            assert_eq!(trace, expected);
-            let base = *empty.get_or_insert(spent);
-            assert_eq!(
-                spent.bytes_copied, base.bytes_copied,
-                "served bytes were charged as copied"
-            );
-            assert_eq!(spent.output_bytes, served);
-            // The buffer is the only allocation that grows with the request.
-            assert!(spent.peak_allocation_bytes <= base.peak_allocation_bytes + served);
-            #[cfg(unix)]
-            assert_eq!(
-                spent,
-                WorkCounters {
-                    backend_read_operations: base.backend_read_operations + u64::from(served > 0),
-                    source_bytes_read: served,
-                    output_bytes: served,
-                    // The buffer allocates only when it holds bytes.
-                    allocation_operations: base.allocation_operations + u64::from(served > 0),
-                    peak_allocation_bytes: spent.peak_allocation_bytes,
-                    ..base
-                }
-            );
         }
+    }
+    Ok(())
+}
+
+fn wait_count(trace: &[Work]) -> u64 {
+    trace.iter().filter(|(op, ..)| *op == "wait").count() as u64
+}
+fn expected_work(native: bool, served: u64, waits: u64) -> WorkCounters {
+    let ledger = if native {
+        crate::NativeMaterializationWork::accounting_state_bytes()
+    } else {
+        0
+    };
+    // OwnedBytes' vector guard contains these three fields. No observed counter
+    // supplies an expected allocation size or count.
+    let header = if native {
+        std::mem::size_of::<(
+            Vec<u8>,
+            acyclic_native_runtime::ReadAllocation,
+            Option<crate::NativeAllocation>,
+        )>() as u64
+    } else {
+        0
+    };
+    #[cfg(unix)]
+    let (metadata_reads, path_bytes, path_items, path_allocations, path_capacity) = (2, 4, 4, 1, 5);
+    #[cfg(windows)]
+    let (metadata_reads, path_bytes, path_items, path_allocations, path_capacity) = (3, 0, 4, 0, 0);
+    WorkCounters {
+        backend_read_operations: metadata_reads
+            + u64::from(served > 0) * if cfg!(windows) { 2 } else { 1 },
+        source_bytes_read: served,
+        bytes_copied: path_bytes,
+        items_examined: path_items + waits,
+        output_bytes: served,
+        allocation_operations: path_allocations + u64::from(served > 0) + 2 * u64::from(native),
+        peak_allocation_bytes: ledger + served + header.max(path_capacity),
+        ..WorkCounters::UNCHARGED
+    }
+}
+
+#[test]
+fn exact_errors_and_observers_detect_mutations() -> Result<(), Box<dyn Error>> {
+    let runtime = runtime();
+    let (_dir, _source, file) = held(&runtime, b"contents", false)?;
+    let (_old_dir, _old_source, old) = held_mode(&runtime, b"contents", false, true)?;
+    for errno in [5, 13] {
+        let (expected, _, old_trace) =
+            demand_read_work::with_errno(errno, || production_read(old.as_ref(), 0, 4));
+        let (actual, _, trace) =
+            demand_read_work::with_errno(errno, || production_read(file.as_ref(), 0, 4));
+        assert_eq!(actual, expected);
+        assert_eq!(observer(&trace), observer(&old_trace));
+        let (changed, _, _) =
+            demand_read_work::with_errno(errno + 1, || production_read(file.as_ref(), 0, 4));
+        assert_ne!(changed, expected, "changed errno escaped");
+        let mut changed = observer(&trace);
+        changed.push(("path-stat", 0, 0));
+        assert_ne!(changed, observer(&old_trace), "extra observation escaped");
     }
     Ok(())
 }
@@ -227,12 +306,7 @@ fn remote_reads_reuse_one_reader() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// One read charged to an original native ledger: its outcome, the ledger's
-/// live bytes before it, and its trace. The ledger never ends below that
-/// baseline, and outside Windows it returns to it exactly. On Windows an edit
-/// breaks the held file's oplock and the read reopens it; the reopened
-/// handle's storage stays claimed on the read's ledger (a pre-existing claim
-/// with no release, outside this change).
+/// One native read, with exact return to the ledger's initial live bytes.
 fn native_read(
     file: Box<dyn DemandFile>,
     offset: u64,
@@ -254,9 +328,6 @@ fn native_read(
     );
     drop(file);
     let live = original.live_allocation_bytes();
-    #[cfg(windows)]
-    assert!(live >= baseline, "the read refunded more than it charged");
-    #[cfg(not(windows))]
     assert_eq!(live, baseline, "the read leaked capacity");
     Ok((result, baseline, trace))
 }
@@ -273,48 +344,45 @@ fn refunded_while_live(baseline: u64, trace: &[Work]) -> Vec<Work> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
-    /// Native reads that fail after their storage is charged, here because
-    /// the file changed, free that storage before the ledger refunds it.
+    /// Native I/O errors release charged storage before its ledger refund.
     #[test]
     fn native_read_errors_free_storage_before_refunding(
         size in 1_usize..5_000,
         offset in 0_u64..6_000,
         length in 1_u64..6_000,
-        edited in any::<bool>(),
+        fail in any::<bool>(),
     ) {
         let runtime = runtime();
         let contents: Vec<u8> = (0..size).map(|byte| (byte * 7 + 3) as u8).collect();
-        let (directory, _source, file) = held(&runtime, &contents, false).unwrap();
-        let current = if edited {
-            let edit: Vec<u8> = contents.iter().map(|byte| byte ^ 0x33).chain([2]).collect();
-            std::fs::write(directory.path().join("file"), &edit).unwrap();
-            edit
-        } else {
-            contents.clone()
+        let (_directory, _source, file) = held(&runtime, &contents, false).unwrap();
+        let (_old_directory, _old_source, old) = held_mode(&runtime, &contents, false, true).unwrap();
+        let run = || {
+            let (expected, _, _) = production_read(old.as_ref(), offset, length);
+            let (actual, baseline, trace) = native_read(file, offset, length).unwrap();
+            prop_assert_eq!(actual, expected);
+            prop_assert_eq!(refunded_while_live(baseline, &trace), Vec::<Work>::new());
+            if fail && offset < size as u64 {
+                prop_assert!(trace.iter().any(|&(operation, ..)| operation == "free"));
+            }
+            Ok(())
         };
-        let (actual, baseline, trace) = native_read(file, offset, length).unwrap();
-        prop_assert_eq!(actual, baseline_read(&contents, &current, offset, length));
-        prop_assert_eq!(refunded_while_live(baseline, &trace), Vec::<Work>::new());
-        let charged = (size as u64).saturating_sub(offset).min(length);
-        if edited && charged > 0 {
-            prop_assert!(
-                trace.iter().any(|&(operation, ..)| operation == "free"),
-                "the failed read freed no charged storage"
-            );
-        }
+        if fail { demand_read_work::with_errno(5, run)?; } else { run()?; }
     }
 }
 
-/// Refunding before freeing, as separate bindings did, is detected.
 #[test]
 fn refunding_before_freeing_is_detected() -> Result<(), Box<dyn Error>> {
     let runtime = runtime();
-    let contents = vec![7_u8; 4096];
-    let (directory, _source, file) = held(&runtime, &contents, false)?;
-    std::fs::write(directory.path().join("file"), [8_u8; 4097])?;
-    let (actual, baseline, trace) =
-        crate::native_host::charged::refunding_first(|| native_read(file, 0, 4096))?;
-    assert_eq!(actual, Err("StaleVersion".to_owned()));
+    let (_directory, _source, file) = held(&runtime, &[7_u8; 4096], false)?;
+    let (actual, baseline, trace) = crate::native_host::charged::refunding_first(|| {
+        demand_read_work::with_errno(5, || native_read(file, 0, 4096))
+    })?;
+    assert_eq!(
+        actual,
+        Err(failure(DemandError::Io(std::io::Error::from_raw_os_error(
+            5
+        ))))
+    );
     assert_ne!(
         refunded_while_live(baseline, &trace),
         Vec::<Work>::new(),
@@ -466,7 +534,9 @@ fn measure_held_file_reads() -> Result<(), Box<dyn Error>> {
     let contents: Vec<u8> = (0..2_000_000_u32).map(|byte| (byte * 7) as u8).collect();
     let (_inline_directory, _inline, inline) = held(&runtime, &contents, false)?;
     let (_remote_directory, _remote, remote) = held(&runtime, &contents, true)?;
-    let inline = std::sync::Arc::<dyn DemandFile>::from(inline);
+    let (_old_dir, _old_source, old_inline) = held_mode(&runtime, &contents, false, true)?;
+    let (_old_remote_dir, _old_remote_source, old_remote) =
+        held_mode(&runtime, &contents, true, true)?;
     let time = |rounds: u32, read: &dyn Fn(u32)| {
         for round in 0..rounds / 10 {
             read(round);
@@ -485,21 +555,14 @@ fn measure_held_file_reads() -> Result<(), Box<dyn Error>> {
             assert_eq!(bytes.map(|bytes| bytes.len() as u64), Ok(length));
         };
         let old = time(rounds, &|round| {
-            demand_read_work::restoring_old_work(|| read(inline.as_ref(), round));
+            read(old_inline.as_ref(), round);
         });
         let new = time(rounds, &|round| read(inline.as_ref(), round));
         eprintln!("inline {length} B: zero-filled {old} ns, uninitialized {new} ns");
     }
-    // The removed remote path started a thread per read; its baseline is that
-    // same read on a freshly started thread.
     let spawned = time(2000, &|round| {
-        let file = std::sync::Arc::clone(&inline);
-        std::thread::spawn(move || {
-            let (bytes, _, _) = production_read(file.as_ref(), u64::from(round % 16), 4096);
-            assert!(bytes.is_ok());
-        })
-        .join()
-        .unwrap();
+        let (bytes, _, _) = production_read(old_remote.as_ref(), u64::from(round % 16), 4096);
+        assert!(bytes.is_ok());
     });
     let pooled = time(2000, &|round| {
         let (bytes, _, _) = production_read(remote.as_ref(), u64::from(round % 16), 4096);

@@ -246,6 +246,8 @@ impl YieldingFile {
             let mut interrupted = None;
             if pending {
                 loop {
+                    #[cfg(test)]
+                    acyclic_test_support::differential::record(("wait", 0_u64, 0_u64));
                     let status = meter
                         .examine(1, 0)
                         .map_err(crate::demand::native_demand_error)
@@ -373,3 +375,7 @@ impl HostRoot {
         YieldingFile::new(file, work)
     }
 }
+
+#[cfg(test)]
+#[path = "yielding_baseline.rs"]
+mod yielding_baseline;

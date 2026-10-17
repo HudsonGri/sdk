@@ -35,3 +35,38 @@ pub(crate) fn storage(data: &mut Vec<u8>) {
     };
     record("storage", initialized as u64, data.capacity());
 }
+
+thread_local! {
+    static EXTRA: Cell<bool> = const { Cell::new(false) };
+    static ERRNO: Cell<Option<i32>> = const { Cell::new(None) };
+}
+
+pub(crate) fn take_extra() -> bool {
+    EXTRA.replace(false)
+}
+pub(crate) fn adding_allocation<T>(run: impl FnOnce() -> T) -> T {
+    EXTRA.set(true);
+    let value = run();
+    EXTRA.set(false);
+    value
+}
+pub(crate) fn with_errno<T>(errno: i32, run: impl FnOnce() -> T) -> T {
+    ERRNO.set(Some(errno));
+    let value = run();
+    ERRNO.set(None);
+    value
+}
+pub(crate) fn injected_error() -> Result<(), super::DemandError> {
+    match ERRNO.get() {
+        Some(errno) => Err(std::io::Error::from_raw_os_error(errno).into()),
+        None => Ok(()),
+    }
+}
+pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, Vec<(&'static str, u64, u64)>) {
+    acyclic_test_support::differential::observe(|| (), |()| run())
+}
+pub(crate) fn replay(trace: Vec<(&'static str, u64, u64)>) {
+    for event in trace {
+        acyclic_test_support::differential::record(event);
+    }
+}

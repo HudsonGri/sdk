@@ -25,9 +25,17 @@ const MAXIMUM_BLOCKED_REMOTE_READS: usize = 16;
 static REMOTE_READERS: std::sync::LazyLock<Arc<remote::RemoteReaders<RemoteDemandRead>>> =
     std::sync::LazyLock::new(|| remote::RemoteReaders::new(MAXIMUM_BLOCKED_REMOTE_READS));
 
+#[cfg(not(test))]
 type RemoteAnswer = (
     Result<crate::kernel::OwnedSourceChunk, DemandError>,
     CallbackWork,
+);
+
+#[cfg(test)]
+type RemoteAnswer = (
+    Result<crate::kernel::OwnedSourceChunk, DemandError>,
+    CallbackWork,
+    Vec<(&'static str, u64, u64)>,
 );
 
 /// One held-file read for a remote reader, answered to its waiting callback.
@@ -42,8 +50,17 @@ struct RemoteDemandRead {
 impl remote::RemoteRead for RemoteDemandRead {
     type Delivery = (std::sync::mpsc::SyncSender<RemoteAnswer>, RemoteAnswer);
     fn read(mut self) -> Self::Delivery {
+        #[cfg(not(test))]
         let result = self.file.read(self.offset, self.length, &mut self.context);
-        (self.answer, (result, self.context))
+        #[cfg(test)]
+        let (result, trace) = demand_read_work::capture(|| {
+            self.file.read(self.offset, self.length, &mut self.context)
+        });
+        #[cfg(not(test))]
+        let answer = (result, self.context);
+        #[cfg(test)]
+        let answer = (result, self.context, trace);
+        (self.answer, answer)
     }
 }
 
@@ -173,6 +190,14 @@ impl NativeDemandFile {
         length: u64,
         context: &mut CallbackWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
+        #[cfg(test)]
+        if demand_read_work::take_extra() {
+            let (extra, allocation) = crate::native_host::buffer::<u8, _>(17, context)?;
+            let result = self.read_once(file, offset, length, context);
+            drop(extra);
+            context.release(allocation)?;
+            return result;
+        }
         context.check()?;
         let capacity = usize::try_from(length.min(self.logical_bytes.saturating_sub(offset)))
             .map_err(|_| DemandError::InvalidRequest)?;
@@ -259,7 +284,11 @@ impl NativeDemandFile {
         file: &SourceFile,
         context: &mut CallbackWork,
     ) -> Result<(), DemandError> {
+        #[cfg(test)]
+        demand_read_work::record("held-stat", 0, 0);
         let held = stat_held(&self.provider, file, context)?;
+        #[cfg(test)]
+        demand_read_work::record("path-stat", 0, 0);
         #[cfg(unix)]
         let named = self.provider.inner.root.stat(&self.relative, context);
         #[cfg(windows)]
@@ -300,9 +329,15 @@ impl DemandFile for NativeDemandFile {
         if self.provider.inner.remote.submit(read).is_err() {
             return Err(DemandError::SourceUnavailable);
         }
-        let (result, context) = answered
+        let answer = answered
             .recv_timeout(REMOTE_READ_DEADLINE)
             .map_err(|_| DemandError::SourceUnavailable)?;
+        #[cfg(not(test))]
+        let (result, context) = answer;
+        #[cfg(test)]
+        let (result, context, trace) = answer;
+        #[cfg(test)]
+        demand_read_work::replay(trace);
         finish_context(result, context, accounting)
     }
 }
@@ -318,6 +353,8 @@ fn read_spare_at(
 ) -> Result<usize, DemandError> {
     #[cfg(test)]
     demand_read_work::record("read", offset, length);
+    #[cfg(test)]
+    demand_read_work::injected_error()?;
     context.admit(WorkCounters {
         source_bytes_read: length as u64,
         ..WorkCounters::UNCHARGED
@@ -345,6 +382,8 @@ fn read_spare_at(
 ) -> Result<usize, DemandError> {
     #[cfg(test)]
     demand_read_work::record("read", offset, length);
+    #[cfg(test)]
+    demand_read_work::injected_error()?;
     file.read_spare_at(offset, data, length, context)
 }
 
