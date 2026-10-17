@@ -86,6 +86,12 @@ pub use manifest::{claude_hooks, claude_manifest, owns_claude_hook};
 #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
 pub use mcp::{native_tool_catalog, serve_native_tools};
 #[cfg(all(
+    feature = "test-support",
+    feature = "hooks",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use native::fuzz_codex_parent;
+#[cfg(all(
     feature = "hooks",
     feature = "filesystem-local",
     feature = "native-execution",

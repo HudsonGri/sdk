@@ -10,6 +10,82 @@ use futures::StreamExt as _;
 use native_hooks::*;
 use serde_json::json;
 
+#[tokio::test]
+async fn codex_transcript_ancestry_routes_nested_forks_and_stops() -> Result {
+    let fixture = Fixture::new()?;
+    let cwd = fixture.path();
+    let owner = fixture.start_owner().await?;
+    let session = uuid::Uuid::from_u128(1).to_string();
+    let child = uuid::Uuid::from_u128(2).to_string();
+    let grandchild = uuid::Uuid::from_u128(3).to_string();
+    hook(
+        cwd,
+        "codex",
+        "SessionStart",
+        json!({"session_id":session,"cwd":cwd}),
+    )
+    .await?;
+    let mut parent_path = None;
+    for (current, parent) in [(&child, &session), (&grandchild, &child)] {
+        let transcript = cwd.join(format!("{current}.jsonl"));
+        std::fs::write(
+            &transcript,
+            serde_json::to_vec(&json!({"type":"session_meta","payload":{
+                "session_id":session,"id":current,"parent_thread_id":parent,
+            }}))?,
+        )?;
+        let input = json!({"session_id":session,"agent_id":current,"transcript_path":transcript});
+        let fork = hook(cwd, "codex", "SubagentStart", input.clone()).await?;
+        assert!(fork["Succeeded"].is_string(), "{fork}");
+        let mut expected = input;
+        expected["parent_agent_id"] = if parent == &session {
+            serde_json::Value::Null
+        } else {
+            json!(parent)
+        };
+        let request = request(ExternalHost::Codex, "SubagentStart", expected)?;
+        let task = Component::new(request.task_id().to_string())?;
+        let accepted = files(cwd, &format!("external/requests/{}", task.as_str())).await?;
+        let key = FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::Request(Component::new(request.operation_id.to_string())?),
+        };
+        let snapshot = accepted.snapshot(&Query::File(key), 1).await?;
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(
+            ExternalRequest::from_file(&task, &snapshot.files[0])?,
+            request
+        );
+        hook(
+            cwd,
+            "codex",
+            "SessionStart",
+            json!({"session_id":session,"agent_id":current,"cwd":cwd}),
+        )
+        .await?;
+        if parent == &child {
+            let stopped = hook(
+                cwd,
+                "codex",
+                "SubagentStop",
+                json!({
+                    "session_id":session,"agent_id":current,"agent_transcript_path":transcript,
+                    "transcript_path":parent_path,
+                }),
+            )
+            .await?;
+            assert!(stopped.get("Failed").is_none(), "{stopped}");
+        }
+        parent_path = Some(transcript);
+    }
+    let stopped = hook(cwd,"codex","SubagentStop",json!({
+        "session_id":session,"agent_id":child,"agent_transcript_path":cwd.join(format!("{child}.jsonl")),
+    })).await?;
+    assert!(stopped.get("Failed").is_none(), "{stopped}");
+    hook(cwd, "codex", "SessionEnd", json!({"session_id":session})).await?;
+    fixture.close_owner(owner).await
+}
+
 async fn started(files: &TaskVolume<Client>, call: &ExternalRequest) -> Result {
     let key = FileKey::Task {
         task: Component::new(call.task_id().to_string())?,

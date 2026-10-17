@@ -19,6 +19,12 @@ pub fn fuzz_local_owner_input(bytes: &[u8]) {
     crate::external_executor::fuzz_local_owner_input(bytes);
 }
 
+/// Exercises native Codex transcript ancestry without opening files or processes.
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+pub fn fuzz_codex_hook_parent(bytes: &[u8]) {
+    crate::external_executor::fuzz_codex_parent(bytes);
+}
+
 /// Exercises the typed native-to-stock command decoder without dispatching effects.
 #[cfg(feature = "filesystem")]
 pub fn fuzz_external_command(request: &crate::external_executor::ExternalRequest) {

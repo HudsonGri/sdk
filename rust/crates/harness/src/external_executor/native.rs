@@ -16,6 +16,9 @@ pub use task_volumes::local_hook_volumes;
 
 mod handler;
 pub use handler::handle_hook;
+mod codex_parent;
+#[cfg(feature = "test-support")]
+pub(crate) use codex_parent::fuzz as fuzz_codex_parent;
 
 /// Platform bindings read from the user's configuration volume.
 /// The token may append only to `requests`, and may only read `results`.
@@ -71,11 +74,14 @@ impl HookBinding {
 /// Reads one native event and uses only the platform Streams provider.
 pub async fn run_hook(host: &str, event: &str) -> Result<Value> {
     let host: ExternalHost = serde_json::from_value(Value::String(host.into())).map_err(storage)?;
-    let input: Value = volume::decode(&read_bounded(
+    let mut input: Value = volume::decode(&read_bounded(
         std::io::stdin().lock(),
         acyclic_stream::MAX_RECORD_BYTES,
     )?)
     .map_err(storage)?;
+    if host == ExternalHost::Codex {
+        codex_parent::prepare(event, &mut input)?;
+    }
     let cwd = match input.get("cwd").and_then(Value::as_str) {
         Some(path) => PathBuf::from(path),
         None => std::env::current_dir().map_err(storage)?,

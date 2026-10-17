@@ -38,6 +38,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     acyclic_harness::test_support::fuzz_local_owner_input(input);
+    acyclic_harness::test_support::fuzz_codex_hook_parent(input);
     if let Ok(executable) = std::str::from_utf8(input)
         && !executable.contains('\0')
     {
@@ -48,7 +49,8 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let expected = executable.clone();
         for (event, groups) in acyclic_harness::external_executor::claude_hooks(&executable) {
             let command = groups[0]["hooks"][0]["command"].as_str().unwrap();
-            let arguments = acyclic_harness::tools::parse_command(command).expect("quoted hook command");
+            let arguments =
+                acyclic_harness::tools::parse_command(command).expect("quoted hook command");
             assert_eq!(
                 arguments,
                 [expected.as_str(), "__hook", "claude-code", event]
