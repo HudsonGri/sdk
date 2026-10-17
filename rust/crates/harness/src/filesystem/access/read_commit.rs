@@ -69,26 +69,29 @@ pub(in crate::filesystem) async fn require_current<A: AsyncAuthorityStore, O: As
     view: &PathTrie,
     io: &PreparationIo,
 ) -> Result<()> {
-    let observed = io.sdk(
-        workspace
-            .current_access_policy_revision(io, io.cancellation())
-            .await,
-    )?;
-    let Some((generation, revision)) = observed else {
-        return Err(stock_boundary(
-            Some(io),
-            crate::wire::ErrorCode::Unauthorized,
-            "filesystem policy changed during disclosure fence",
-        ));
-    };
-    if !view.matches_policy_revision(generation, revision)
-        || view.valid_until().is_some_and(|end| access_now() >= end)
-    {
-        return Err(stock_boundary(
-            Some(io),
-            crate::wire::ErrorCode::Unauthorized,
-            "filesystem policy changed before disclosure",
-        ));
-    }
-    Ok(())
+    crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+        let observed = io.sdk(
+            workspace
+                .current_access_policy_revision(io, io.cancellation())
+                .await,
+        )?;
+        let Some((generation, revision)) = observed else {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unauthorized,
+                "filesystem policy changed during disclosure fence",
+            ));
+        };
+        if !view.matches_policy_revision(generation, revision)
+            || view.valid_until().is_some_and(|end| access_now() >= end)
+        {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unauthorized,
+                "filesystem policy changed before disclosure",
+            ));
+        }
+        Ok(())
+    })?
+    .await
 }
