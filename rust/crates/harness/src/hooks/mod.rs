@@ -174,7 +174,9 @@ impl Hooks {
         let mut output = HookOutput::default();
         for (failure, result) in results {
             if budget.apply(&mut output, event, failure, result).is_err() {
-                return Ok(HookOutput::output_limit(blocks));
+                return Ok(HookOutput::output_limit(
+                    blocks || output.blocks() || output.approval.is_some(),
+                ));
             }
         }
         Ok(output)

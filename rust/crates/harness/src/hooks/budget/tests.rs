@@ -70,3 +70,58 @@ fn accounting_detector_rejects_a_budget_reset_between_hooks() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
+    futures::executor::block_on(async {
+        let mut hooks = Hooks::default();
+        hooks.add_rules([HookRule {
+            on: HookEvent::SessionStart,
+            matcher: String::new(),
+            hooks: vec![
+                HookSpec {
+                    run: HookRun::Executable {
+                        executable: "deny".into(),
+                        argv: vec![],
+                    },
+                    timeout_ms: 1000,
+                    failure: HookFailure::Report,
+                },
+                HookSpec {
+                    run: HookRun::Executable {
+                        executable: "expand".into(),
+                        argv: vec![],
+                    },
+                    timeout_ms: 1000,
+                    failure: HookFailure::Report,
+                },
+            ],
+        }])?;
+        let output = hooks
+            .run_commands(
+                HookEvent::SessionStart,
+                &json!({}),
+                &ToolRegistry::default(),
+                512,
+                |hook, quota| {
+                    let stdout = match &hook.run {
+                        HookRun::Executable { executable, .. } if executable == "deny" => {
+                            br#"{"continue":false,"stopReason":"deny"}"#.to_vec()
+                        }
+                        _ => vec![0; 100],
+                    };
+                    assert!(stdout.len() <= quota, "fixture exceeds capture quota");
+                    std::future::ready(Ok((Some(0), stdout, vec![])))
+                },
+            )
+            .await?;
+        assert!(
+            output.blocks(),
+            "bounded failure discarded an explicit guard decision"
+        );
+        assert_eq!(output.diagnostics[0].kind, HookErrorKind::OutputLimit);
+        // The former failure-policy-only fallback loses the decoded denial.
+        assert!(!HookOutput::output_limit(false).blocks());
+        Ok(())
+    })
+}

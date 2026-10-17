@@ -107,7 +107,7 @@ where
     let (output, bytes) = match json_bytes_bounded(&output, bounds, None, &mut |_| Ok(())) {
         Ok(bytes) => (output, bytes),
         Err(_) => {
-            failure.diagnostics[0].blocking = output.blocks();
+            failure.diagnostics[0].blocking = output.blocks() || output.approval.is_some();
             let bytes = json_bytes_bounded(&failure, bounds, None, &mut |_| Ok(()))?;
             (failure, bytes)
         }
