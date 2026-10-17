@@ -9,6 +9,10 @@ mod completion_popup;
 pub mod config;
 #[cfg(feature = "tui")]
 mod display_text;
+#[cfg(feature = "tui")]
+mod feedback;
+#[cfg(feature = "tui")]
+pub use feedback::Feedback;
 mod editor;
 #[cfg(feature = "tui")]
 pub use display_text::display_text;
@@ -37,6 +41,14 @@ mod prompt_files;
 mod prompt_input;
 #[cfg(feature = "tui")]
 mod screen;
+#[cfg(feature = "tui")]
+mod transcript_search;
+#[cfg(feature = "tui")]
+pub use transcript_search::{TranscriptSearch, transcript_matches};
+#[cfg(feature = "tui")]
+mod thinking;
+#[cfg(feature = "tui")]
+pub use thinking::Thinking;
 #[cfg(feature = "tui")]
 mod widget;
 #[cfg(feature = "tui")]
