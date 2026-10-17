@@ -1,5 +1,25 @@
 use super::*;
 
+fn single_disclosure_boundary(source: &str) -> bool {
+    source.matches(".finish(").count() + source.matches("::finish(").count() == 1
+}
+
+#[test]
+fn read_results_have_one_checked_output_boundary() {
+    assert!(single_disclosure_boundary(include_str!(
+        "../../filesystem/src/workspace/read_core.rs"
+    )));
+}
+
+#[test]
+fn direct_output_bypass_negative_control() {
+    let old_exit = format!(
+        "{}\nwork.finish(result, accounting)",
+        include_str!("../../filesystem/src/workspace/read_core.rs")
+    );
+    assert!(!single_disclosure_boundary(&old_exit));
+}
+
 fn assert_denied(result: Result<(), acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>) {
     assert!(
         matches!(result, Err(failure) if matches!(failure.error, acyclic_fs::WorkspaceError::AccessDenied)),
@@ -7,7 +27,7 @@ fn assert_denied(result: Result<(), acyclic_fs::OperationFailure<acyclic_fs::Wor
     );
 }
 
-async fn racing_read(protected: bool, range: bool) -> Result<(), Box<dyn Error>> {
+async fn racing_read(protected: bool, range: bool, revoke: bool) -> Result<(), Box<dyn Error>> {
     let objects = objects::CountingObjects::default();
     let fs = Fs::new(
         acyclic_fs::StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
@@ -62,7 +82,7 @@ async fn racing_read(protected: bool, range: bool) -> Result<(), Box<dyn Error>>
             unchecked
                 .read("/secrets/blob", 65536, WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map(|_| ())
+                .map(|read| assert_eq!(read.value.as_ref(), contents.as_bytes()))
         } else if range {
             bound
                 .read_range(
@@ -73,15 +93,15 @@ async fn racing_read(protected: bool, range: bool) -> Result<(), Box<dyn Error>>
                     &cancellation,
                 )
                 .await
-                .map(|_| ())
+                .map(|read| assert_eq!(read.value.bytes.as_ref(), contents.as_bytes()))
         } else {
             bound
                 .read("/secrets/blob", 65536, WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map(|_| ())
+                .map(|read| assert_eq!(read.value.as_ref(), contents.as_bytes()))
         }
     };
-    let revoke = async {
+    let publish = async {
         entered.await?;
         let mut policy: Policy = serde_json::from_slice(INITIAL_POLICY)?;
         policy.version += 1;
@@ -90,23 +110,31 @@ async fn racing_read(protected: bool, range: bool) -> Result<(), Box<dyn Error>>
         deny.effect = Effect::Deny;
         deny.actions = [Action::Read].into_iter().collect();
         policy.layers[0].push(deny);
-        fixture.publish_policy(policy).await?;
+        if revoke {
+            fixture.publish_policy(policy).await?;
+        }
         release.send(()).map_err(|_| "read abandoned its gate")?;
         Ok::<_, Box<dyn Error>>(())
     };
     let (result, revoked) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        futures::join!(read, revoke)
+        futures::join!(read, publish)
     })
     .await?;
     revoked?;
-    assert_denied(result);
+    if revoke {
+        assert_denied(result);
+    } else {
+        result?;
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn coarse_reads_fence_current_policy_after_storage() -> Result<(), Box<dyn Error>> {
     for range in [false, true] {
-        racing_read(true, range).await?;
+        for revoke in [false, true] {
+            racing_read(true, range, revoke).await?;
+        }
     }
     Ok(())
 }
@@ -114,5 +142,5 @@ async fn coarse_reads_fence_current_policy_after_storage() -> Result<(), Box<dyn
 #[tokio::test]
 #[should_panic(expected = "coarse disclosure returned revoked bytes")]
 async fn pre_storage_only_coarse_read_negative_control() {
-    racing_read(false, false).await.unwrap();
+    racing_read(false, false, true).await.unwrap();
 }
