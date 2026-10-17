@@ -323,8 +323,29 @@ async fn check_events(
                 after = record.sequence;
                 let mut value = serde_json::to_value(&record.event)?;
                 if let ExecutionEvent::Model { event, .. } = &record.event {
-                    *value.get_mut("event").ok_or("missing model event")? =
-                        serde_json::from_slice(&journal.load(event, None)?.await?)?;
+                    let first = event.first().ok_or("missing model event segment")?;
+                    let media = first.descriptor().media_type();
+                    let decoded = if media == "application/json" {
+                        if event.len() != 1 {
+                            return Err("multipart JSON model event".into());
+                        }
+                        serde_json::from_slice(&journal.load(first, None)?.await?)?
+                    } else {
+                        let mut text = String::new();
+                        for file in event {
+                            if file.descriptor().media_type() != media {
+                                return Err("mixed model event channels".into());
+                            }
+                            text.push_str(std::str::from_utf8(&journal.load(file, None)?.await?)?);
+                        }
+                        let kind = match media {
+                            "text/x-acyclic-model-text" => "content",
+                            "text/x-acyclic-model-reasoning" => "reasoning",
+                            _ => return Err("unknown model event media type".into()),
+                        };
+                        serde_json::json!({"kind":kind,"delta":text})
+                    };
+                    *value.get_mut("event").ok_or("missing model event")? = decoded;
                 }
                 events.push(value);
             }

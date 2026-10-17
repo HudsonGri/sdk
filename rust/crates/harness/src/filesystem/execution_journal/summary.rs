@@ -342,7 +342,7 @@ impl ExecutionSummary {
     }
 }
 
-pub(super) const OBSERVATION_VERSION: u32 = 2;
+pub(super) const OBSERVATION_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

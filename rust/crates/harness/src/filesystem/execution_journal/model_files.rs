@@ -176,7 +176,7 @@ where
         sequence: usize,
         event: &ModelEvent,
         io: Option<&PreparationIo>,
-    ) -> Result<FileRef> {
+    ) -> Result<Vec<FileRef>> {
         let files = self.task_files.as_ref().ok_or_else(|| {
             canonical_boundary(
                 io,
@@ -234,36 +234,10 @@ where
                     "model chunk sequence overflow",
                 )
             })?;
-        // A large provider event must remain recoverable even if the process
-        // dies after its first part. Stage its original boundary before exposing
-        // any part. Small deltas refer directly to their sole raw chunk.
-        let mut reference = if delta.len() > MODEL_CHUNK_BYTES {
-            let key = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("model:{step}:{sequence}"), work)
-            })?;
-            let media = match channel {
-                Channel::Text => crate::executor::TEXT_DELTA,
-                Channel::Reasoning => crate::executor::REASONING_DELTA,
-            };
-            let source = self
-                .stage(operation, &key, delta.as_bytes(), media, io)?
-                .await?;
-            if source.volume().class() != VolumeClass::AgentPrivate
-                || source.descriptor().media_type() != media
-            {
-                return Err(canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::Storage,
-                    "model delta source is not private text",
-                ));
-            }
-            crate::executor::with_history_io(io, |work| {
-                source.descriptor().verify(delta.as_bytes(), work)
-            })?;
-            Some(source)
-        } else {
-            None
-        };
+        // Every segment of this provider event is accepted by one fenced commit.
+        // Recovery references those exact files; there is no private payload copy.
+        let mut references = Vec::new();
+        let mut writes = Vec::new();
         let mut offset = 0usize;
         let mut part = 0u64;
         loop {
@@ -295,18 +269,15 @@ where
                 bytes,
             );
             write.channel = Some(channel);
-            self.publish_model_file(&write, io).await?;
-            if reference.is_none() {
-                reference = Some(self.model_delta_reference(&write, io)?);
-            }
+            crate::executor::stock_vec_push(
+                &mut references,
+                self.model_delta_reference(&write, io)?,
+                io,
+            )?;
+            crate::executor::stock_vec_push(&mut writes, write, io)?;
             if end == delta.len() {
-                return reference.ok_or_else(|| {
-                    canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "model chunk lost its reference",
-                    )
-                });
+                self.publish_model_delta(&writes, io).await?;
+                return Ok(references);
             }
             offset = end;
             part += 1;
@@ -397,43 +368,67 @@ where
         let key = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(format_args!("model:{step}:{index}"), work)
         })?;
-        let reference = match self.staged_ref_with_io(operation, &key, io).await {
-            Ok(reference) => {
-                let (event, _event_hold) =
-                    crate::executor::load_model_event(self, &reference, io).await?;
-                let index = usize::try_from(index).map_err(|_| {
+        let mut references = Vec::new();
+        if let FileKey::Task {
+            file: TaskFile::Chunk { sequence, .. },
+            ..
+        } = &file.key
+        {
+            if sequence % MODEL_CHUNK_STRIDE >= acyclic_stream::MAX_ITEMS as u64 {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "model delta segment count exceeds its bound",
+                ));
+            }
+            let base = sequence - sequence % MODEL_CHUNK_STRIDE;
+            for part in 0..=sequence % MODEL_CHUNK_STRIDE {
+                let key = FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::Chunk {
+                        turn,
+                        sequence: base + part,
+                    },
+                };
+                let snapshot = files
+                    .inner
+                    .snapshot(&crate::task_volume::Query::File(key), 1)
+                    .await?;
+                let file = snapshot.files.into_iter().next().ok_or_else(|| {
                     canonical_boundary(
                         io,
-                        crate::wire::ErrorCode::Invalid,
-                        "model event index overflow",
+                        crate::wire::ErrorCode::Storage,
+                        "model delta segment is missing",
                     )
                 })?;
-                match event {
-                    ModelEvent::ToolCall(ref call) => {
-                        self.publish_tool_arguments(operation, step, index, call, io)
-                            .await?;
-                        reference
-                    }
-                    _ => {
-                        self.stage_model_delta(operation, step, index, &event, io)
-                            .await?
-                    }
-                }
+                crate::executor::stock_vec_push(
+                    &mut references,
+                    self.model_delta_reference(&file, io)?,
+                    io,
+                )?;
             }
-            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
-                if !matches!(file.key, FileKey::Task { file: TaskFile::Chunk { sequence, .. }, .. }
-                    if sequence % MODEL_CHUNK_STRIDE == 0)
-                {
-                    return Err(canonical_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "model chunk lost its provider event",
-                    ));
-                }
-                self.model_delta_reference(&file, io)?
-            }
-            Err(error) => return Err(error),
-        };
+        } else {
+            let reference = self.staged_ref_with_io(operation, &key, io).await?;
+            let (event, _event_hold) =
+                crate::executor::load_model_event(self, &reference, io).await?;
+            let ModelEvent::ToolCall(call) = event else {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "model argument file lost its tool call",
+                ));
+            };
+            let index = usize::try_from(index).map_err(|_| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "model event index overflow",
+                )
+            })?;
+            self.publish_tool_arguments(operation, step, index, &call, io)
+                .await?;
+            crate::executor::stock_vec_push(&mut references, reference, io)?;
+        }
         _hold = io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
@@ -444,7 +439,7 @@ where
             &ExecutionEvent::Model {
                 step,
                 purpose: crate::executor::ModelPurpose::Response,
-                event: reference,
+                event: references,
             },
             io,
         )?
@@ -462,56 +457,65 @@ where
         let ExecutionEvent::Model {
             step,
             purpose,
-            event: reference,
+            event: references,
         } = event
         else {
             return Ok(());
         };
-        if !matches!(
-            reference.descriptor().media_type(),
-            crate::executor::TEXT_DELTA | crate::executor::REASONING_DELTA
-        ) || !reference.path().starts_with(".tasks/")
-        {
-            return Ok(());
-        }
-        let (Some(files), Some(_)) = (&self.task_files, &self.owner) else {
-            return Err(canonical_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "model chunk has no task binding",
-            ));
-        };
-        let key = FileKey::parse(reference.path())?;
-        let FileKey::Task {
-            task,
-            file: TaskFile::Chunk { turn, sequence },
-        } = key
-        else {
+        if references.is_empty() || references.len() > acyclic_stream::MAX_ITEMS {
             return Err(canonical_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
-                "model event is not a chunk",
+                "invalid model segment count",
             ));
-        };
-        let admitted = summary
-            .models
-            .get(&(*step, *purpose))
-            .and_then(Option::as_ref)
-            .map(|admission| admission.count as u64);
-        if *purpose != crate::executor::ModelPurpose::Response
-            || admitted != Some(sequence / MODEL_CHUNK_STRIDE)
-            || sequence % MODEL_CHUNK_STRIDE != 0
-            || files
-                .inner
-                .published_turn(&task, Self::model_publication(operation, *step, io)?)
-                .await?
-                != Some(turn)
-        {
-            return Err(canonical_boundary(
-                io,
-                crate::wire::ErrorCode::Conflict,
-                "model chunk reordered its admitted stream",
-            ));
+        }
+        for (part, reference) in references.iter().enumerate() {
+            if !matches!(
+                reference.descriptor().media_type(),
+                crate::executor::TEXT_DELTA | crate::executor::REASONING_DELTA
+            ) || !reference.path().starts_with(".tasks/")
+            {
+                return Ok(());
+            }
+            let (Some(files), Some(_)) = (&self.task_files, &self.owner) else {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "model chunk has no task binding",
+                ));
+            };
+            let key = FileKey::parse(reference.path())?;
+            let FileKey::Task {
+                task,
+                file: TaskFile::Chunk { turn, sequence },
+            } = key
+            else {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "model event is not a chunk",
+                ));
+            };
+            let admitted = summary
+                .models
+                .get(&(*step, *purpose))
+                .and_then(Option::as_ref)
+                .map(|admission| admission.count as u64);
+            if *purpose != crate::executor::ModelPurpose::Response
+                || admitted != Some(sequence / MODEL_CHUNK_STRIDE)
+                || sequence % MODEL_CHUNK_STRIDE != part as u64
+                || files
+                    .inner
+                    .published_turn(&task, Self::model_publication(operation, *step, io)?)
+                    .await?
+                    != Some(turn)
+            {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "model chunk reordered its admitted stream",
+                ));
+            }
         }
         Ok(())
     }
@@ -620,6 +624,24 @@ where
         write: &Write,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        self.publish_model_writes(std::slice::from_ref(write), false, io)
+            .await
+    }
+
+    async fn publish_model_delta(
+        &self,
+        writes: &[Write],
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        self.publish_model_writes(writes, true, io).await
+    }
+
+    async fn publish_model_writes(
+        &self,
+        writes: &[Write],
+        delta: bool,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         let files = self.task_files.as_ref().ok_or_else(|| {
             canonical_boundary(
                 io,
@@ -639,23 +661,23 @@ where
         let native = io.and_then(PreparationIo::original_native_work);
         #[cfg(target_arch = "wasm32")]
         let native = None;
-        crate::task_volume::publish(
-            &files.inner,
-            generation,
-            write,
-            || async {
-                let mut history = io.map(PreparationIo::history_io);
-                let mut work = history
-                    .as_mut()
-                    .map(|work| work as &mut dyn crate::store::HistoryIo);
-                let condition = owner
-                    .condition(crate::distributed::JournalWrite::Settlement, &mut work)
-                    .await?;
-                Ok::<_, crate::Error>((vec![condition], owner.deadline_epoch_ms()))
-            },
-            native,
-        )
-        .await?;
+        let authorize = || async {
+            let mut history = io.map(PreparationIo::history_io);
+            let mut work = history
+                .as_mut()
+                .map(|work| work as &mut dyn crate::store::HistoryIo);
+            let condition = owner
+                .condition(crate::distributed::JournalWrite::Settlement, &mut work)
+                .await?;
+            Ok::<_, crate::Error>((vec![condition], owner.deadline_epoch_ms()))
+        };
+        if delta {
+            crate::task_volume::publish_delta(&files.inner, generation, writes, authorize, native)
+                .await?;
+        } else {
+            crate::task_volume::publish(&files.inner, generation, &writes[0], authorize, native)
+                .await?;
+        }
         Ok(())
     }
 }

@@ -77,7 +77,10 @@ where
                         },
                         Some(ModelEvent::ReasoningBlock { .. }),
                     ) => {
-                        assistant.push_back((record.sequence, None, event.clone()));
+                        let file = event
+                            .first()
+                            .ok_or_else(|| Error::Storage("reasoning file is missing".into()))?;
+                        assistant.push_back((record.sequence, None, file.clone()));
                     }
                     (
                         ExecutionEvent::Model {
@@ -87,7 +90,10 @@ where
                         },
                         Some(ModelEvent::ToolCall(call)),
                     ) => {
-                        assistant.push_back((record.sequence, Some(call.call_id), event.clone()));
+                        let file = event
+                            .first()
+                            .ok_or_else(|| Error::Storage("tool call file is missing".into()))?;
+                        assistant.push_back((record.sequence, Some(call.call_id), file.clone()));
                     }
                     _ => {}
                 }

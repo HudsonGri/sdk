@@ -351,7 +351,8 @@ where
                         );
                     }
                     ExecutionEvent::Model { event, .. } => {
-                        let event = crate::executor::load_model_event(self, event, io).await?;
+                        let event =
+                            crate::executor::load_model_event_parts(self, event, io).await?;
                         admission.observe(&event.0, limits, io)?;
                         match &event.0 {
                             ModelEvent::Content { delta } => {

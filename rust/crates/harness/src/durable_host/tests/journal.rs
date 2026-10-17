@@ -384,7 +384,7 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
     let observation = ExecutionEvent::Model {
         step: 0,
         purpose: ModelPurpose::Response,
-        event,
+        event: vec![event],
     };
     f.host.cancel(task).await?;
     let journal = f.execution(f.owner(1).await?, attempt)?;
@@ -428,7 +428,7 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
         &(ExecutionEvent::Model {
             step: 0,
             purpose: ModelPurpose::Response,
-            event: completed,
+            event: vec![completed],
         }),
         None,
     )?

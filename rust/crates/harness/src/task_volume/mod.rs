@@ -1,5 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
 mod child;
+mod delta;
 pub use child::{ChildFile, ChildState, ChildStatus};
 
 pub(crate) mod command_query;
@@ -13,7 +14,7 @@ mod page;
 mod plan_name;
 mod publication;
 mod recent;
-pub(crate) use publication::publish;
+pub(crate) use publication::{publish, publish_delta};
 mod refresh;
 mod schema;
 #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -445,7 +446,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     ) -> Result<Generation> {
         self.publish(
             expected,
-            write,
+            std::slice::from_ref(write),
             conditions,
             deadline_unix_millis,
             false,
@@ -457,14 +458,42 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Creates one file only if absent at the exact query generation. Unlike an
     /// idempotent append, an existing identical file is still a failed creation.
     pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.publish(expected, write, Vec::new(), None, true, None)
-            .await
+        self.publish(
+            expected,
+            std::slice::from_ref(write),
+            Vec::new(),
+            None,
+            true,
+            None,
+        )
+        .await
+    }
+
+    /// Publishes the segments of one provider delta at a single accepted cut.
+    pub(crate) async fn append_delta_if(
+        &self,
+        expected: Generation,
+        writes: &[Write],
+        conditions: Vec<CommitCondition>,
+        deadline_unix_millis: Option<u64>,
+        work: NativeWork<'_>,
+    ) -> Result<Generation> {
+        delta::validate(writes)?;
+        self.publish(
+            expected,
+            writes,
+            conditions,
+            deadline_unix_millis,
+            false,
+            work,
+        )
+        .await
     }
 
     async fn publish(
         &self,
         expected: Generation,
-        write: &Write,
+        writes: &[Write],
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
         create_only: bool,
@@ -475,22 +504,67 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
         }
-        if create_only && index.files.contains_key(&write.key) {
-            return Err(Error::ImmutableConflict(write.key.clone()));
+        let mut present = 0;
+        for write in writes {
+            if create_only && index.files.contains_key(&write.key) {
+                return Err(Error::ImmutableConflict(write.key.clone()));
+            }
+            validate_file(&index, write)?;
+            present += usize::from(
+                index
+                    .files
+                    .get(&write.key)
+                    .is_some_and(|stored| &stored.file == write),
+            );
         }
-        validate_file(&index, write)?;
-        if index
-            .files
-            .get(&write.key)
-            .is_some_and(|stored| &stored.file == write)
-        {
+        if present == writes.len() {
             return Ok(self.generation(&index));
+        }
+        if present != 0 {
+            return Err(Error::InvalidSegment);
         }
         let next = expected
             .position
-            .checked_add(1)
+            .checked_add(writes.len() as u64)
             .ok_or(Error::LimitExceeded)?;
-        let (segment, files) = segment::encode(write, work)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let buffer_io = work
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = &buffer_io {
+            for size in [
+                std::mem::size_of::<OwnedBytes>(),
+                std::mem::size_of::<FileValue>(),
+            ] {
+                let bytes = size.checked_mul(writes.len()).ok_or(Error::LimitExceeded)? as u64;
+                io.retain_owned(bytes)?;
+                io.allocation_attempt(bytes)?;
+            }
+        }
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(writes.len())
+            .map_err(|_| Error::LimitExceeded)?;
+        let mut files = Vec::new();
+        files
+            .try_reserve_exact(writes.len())
+            .map_err(|_| Error::LimitExceeded)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = &buffer_io {
+            let excess = (records.capacity() - writes.len()) * std::mem::size_of::<OwnedBytes>()
+                + (files.capacity() - writes.len()) * std::mem::size_of::<FileValue>();
+            io.retain_owned(excess as u64)?;
+        }
+        for write in writes {
+            let (record, file) = segment::encode(write, work)?;
+            records.push(record);
+            files.push(file);
+        }
+        #[cfg(acyclic_harness_loom)]
+        if model_checking::enabled(model_checking::Fault::TruncateDelta) {
+            records.truncate(1);
+        }
         #[cfg(acyclic_harness_loom)]
         if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions) {
             conditions.clear();
@@ -514,7 +588,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             conditions,
             mutations: vec![CommitMutation::Append {
                 path: self.path.clone(),
-                records: vec![segment],
+                records,
             }],
             idempotency_key: IdempotencyKey::new(Uuid::new_v4().as_bytes().to_vec())?,
         };
@@ -541,7 +615,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 let unchanged = unchanged
                     || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
                 if unchanged {
-                    apply(&mut index, files, next);
+                    for (offset, file) in files.into_iter().enumerate() {
+                        apply(&mut index, file, expected.position + offset as u64 + 1);
+                    }
                     index.next = next;
                     index.commit = envelope.commit_id;
                 }

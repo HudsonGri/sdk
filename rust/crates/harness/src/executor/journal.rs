@@ -50,10 +50,14 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         turn: (u32, ModelPurpose, usize),
         event: &'a ModelEvent,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<FileRef>>> {
         let _ = turn;
-        crate::conversation::BoundedContentFuture::new(io, || {
-            super::model_files::stage_event_json(self, operation, key, event, io)
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let reference =
+                super::model_files::stage_event_json(self, operation, key, event, io).await?;
+            let mut references = Vec::new();
+            stock_vec_push(&mut references, reference, io)?;
+            Ok(references)
         })
     }
 

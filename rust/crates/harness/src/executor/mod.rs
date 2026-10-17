@@ -49,7 +49,8 @@ mod model_files;
 mod prefix;
 mod records;
 pub(crate) use model_files::{
-    REASONING_DELTA, TEXT_DELTA, decode_model_event, load_model_event, stage_event_json,
+    REASONING_DELTA, TEXT_DELTA, decode_model_event, load_model_event, load_model_event_parts,
+    stage_event_json,
 };
 mod request;
 mod response;
@@ -249,9 +250,9 @@ pub enum ExecutionEvent {
         step: u32,
         /// Must match the corresponding admitted request.
         purpose: ModelPurpose,
-        /// Pinned, private JSON file containing one observed model event.
-        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-        event: FileRef,
+        /// One JSON event file, or the ordered raw chunk files of one delta.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
+        event: Vec<FileRef>,
     },
     /// Tool dispatch is about to begin.
     ToolStarted {

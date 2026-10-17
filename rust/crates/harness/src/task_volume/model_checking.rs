@@ -25,6 +25,8 @@ pub enum Fault {
     StopExecutionFenceRetry,
     /// Trust a preaccepted execution cache entry after its writer was dropped.
     RetainPendingExecutionCache,
+    /// Accept only the first segment of a multipart provider delta.
+    TruncateDelta,
 }
 
 loom::thread_local! {

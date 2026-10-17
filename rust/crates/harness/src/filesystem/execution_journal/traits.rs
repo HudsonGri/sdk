@@ -58,7 +58,7 @@ where
         turn: (u32, crate::executor::ModelPurpose, usize),
         event: &'a ModelEvent,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<FileRef>>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.require_operation(operation, io)?;
             if self.task_files.is_some()
@@ -80,7 +80,9 @@ where
                     self.publish_tool_arguments(operation, turn.0, turn.2, call, io)
                         .await?;
                 }
-                Ok(reference)
+                let mut references = Vec::new();
+                crate::executor::stock_vec_push(&mut references, reference, io)?;
+                Ok(references)
             }
         })
     }

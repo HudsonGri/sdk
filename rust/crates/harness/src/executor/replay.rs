@@ -188,6 +188,15 @@ pub(crate) async fn replay_execution<'a>(
 impl ExecutionRecord {
     fn payload_bytes(&self) -> Result<u64> {
         use ExecutionEvent::*;
+        if let Model { event, .. } = &self.event {
+            let bytes = native_size_add(
+                self.idempotency_key.capacity() as u64,
+                native_size_slots(event.capacity(), std::mem::size_of::<FileRef>())?,
+            )?;
+            return event.iter().try_fold(bytes, |bytes, file| {
+                native_size_add(bytes, file.logical_owned_bytes()?)
+            });
+        }
         let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match &self.event {
             Started { .. } => (None, [None; 3]),
             ContextPrepared {
@@ -201,9 +210,7 @@ impl ExecutionRecord {
                 accounting,
                 ..
             } => (None, [Some(projection), Some(compaction), Some(accounting)]),
-            ModelStarted { request: file, .. } | Model { event: file, .. } => {
-                (None, [Some(file), None, None])
-            }
+            ModelStarted { request: file, .. } => (None, [Some(file), None, None]),
             ToolStarted {
                 call_id,
                 invocation,
@@ -216,6 +223,7 @@ impl ExecutionRecord {
                 ..
             } => (Some(call_id), [Some(result), Some(projection), None]),
             ToolFailed { call_id, .. } => (Some(call_id), [None; 3]),
+            Model { .. } => (None, [None; 3]),
         };
         let bytes = native_size_add(
             self.idempotency_key.capacity() as u64,

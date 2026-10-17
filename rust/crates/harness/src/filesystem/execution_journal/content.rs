@@ -212,6 +212,14 @@ where
             let check_io = io;
             let result = async {
                 let io = check_io;
+                if let ExecutionEvent::Model {
+                    event: references, ..
+                } = event
+                {
+                    return Ok(Some(crate::executor::retain_preparation(
+                        crate::executor::load_model_event_parts(self, references, io).await?,
+                    )?));
+                }
                 let refs = match event {
                     ExecutionEvent::ContextPrepared {
                         projection,
@@ -225,7 +233,7 @@ where
                         ..
                     } => [Some(projection), Some(compaction), Some(accounting)],
                     ExecutionEvent::ModelStarted { request, .. } => [Some(request), None, None],
-                    ExecutionEvent::Model { event, .. } => [Some(event), None, None],
+                    ExecutionEvent::Model { .. } => [None, None, None],
                     ExecutionEvent::ToolStarted { invocation, .. } => {
                         [Some(invocation), None, None]
                     }
@@ -236,7 +244,6 @@ where
                         [None, None, None]
                     }
                 };
-                let mut model = None;
                 for reference in refs.into_iter().flatten() {
                     let _bytes_hold;
                     crate::model::charge_items(io, 1)?;
@@ -269,13 +276,8 @@ where
                             ));
                         }
                     }
-                    if matches!(event, ExecutionEvent::Model { .. }) {
-                        model = Some(crate::executor::retain_preparation(
-                            crate::executor::decode_model_event(reference, bytes, io)?,
-                        )?);
-                    }
                 }
-                Ok(model)
+                Ok(None)
             }
             .await;
             #[cfg(not(target_arch = "wasm32"))]
