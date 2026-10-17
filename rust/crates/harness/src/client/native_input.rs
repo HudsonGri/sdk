@@ -15,31 +15,67 @@ pub fn stdin_jsonl() -> BoxStream<'static, Result<String>> {
 
 /// Multiplex terminal input with authorized file publications.
 #[cfg(all(feature = "tui", feature = "filesystem-local"))]
-pub async fn next_file_tui_event(
+pub async fn next_file_tui_event<P: acyclic_stream::StreamProvider + ?Sized>(
     client: &mut super::TaskFileClient,
     input: &mut (impl futures::Stream<Item = Result<InputBatch>> + Unpin),
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
-    commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    commands: &mut super::CommandSession<P>,
     animation: bool,
     renderer: &mut crate::tui::ClientRenderer,
     documents: &mut crate::task_volume::ChangeStream,
 ) -> Result<Option<InputBatch>> {
-    tokio::select! {
-        biased;
-        event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
-        _ = animation_frame::<true>(animation) => Ok(None),
-        _ = renderer.search_progress() => Ok(None),
-        change = client.next_change() => { change?; Ok(None) },
-        update = documents.next() => {
-            client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
-            Ok(None)
-        },
-        change = commands.observe_change() => { change?; Ok(None) },
-        change = completions.read_change() => {
-            completions.apply_change(change?, prompt)?;
-            Ok(None)
-        },
+    next_event::<P, false>(
+        client,
+        input,
+        completions,
+        prompt,
+        commands,
+        animation,
+        renderer,
+        documents,
+    )
+    .await
+}
+
+#[cfg(all(feature = "tui", feature = "filesystem-local"))]
+async fn next_event<P: acyclic_stream::StreamProvider + ?Sized, const REDRAW_CHECKPOINTS: bool>(
+    client: &mut super::TaskFileClient,
+    input: &mut (impl futures::Stream<Item = Result<InputBatch>> + Unpin),
+    completions: &mut crate::tui_files::CompletionFiles,
+    prompt: &mut crate::tui::PromptInput,
+    commands: &mut super::CommandSession<P>,
+    animation: bool,
+    renderer: &mut crate::tui::ClientRenderer,
+    documents: &mut crate::task_volume::ChangeStream,
+) -> Result<Option<InputBatch>> {
+    let animation = animation_frame::<true>(animation);
+    tokio::pin!(animation);
+    loop {
+        let revision = client.presentation_revision();
+        tokio::select! {
+            biased;
+            event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
+            _ = &mut animation => return Ok(None),
+            _ = renderer.search_progress() => return Ok(None),
+            change = client.next_change() => {
+                change?;
+                if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { return Ok(None); }
+            },
+            update = documents.next() => {
+                client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
+                if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { return Ok(None); }
+            },
+            change = commands.observe_change_visible() => {
+                if change? || REDRAW_CHECKPOINTS { return Ok(None); }
+            },
+            change = completions.read_change() => {
+                let change = change?;
+                let visible = !change.is_checkpoint();
+                completions.apply_change(change, prompt)?;
+                if REDRAW_CHECKPOINTS || visible { return Ok(None); }
+            },
+        }
     }
 }
 
@@ -92,3 +128,12 @@ pub fn terminal_events(
         }
     }))
 }
+
+#[cfg(all(
+    test,
+    feature = "tui",
+    feature = "filesystem-local",
+    not(acyclic_harness_loom)
+))]
+#[path = "native_input/multiplexer.rs"]
+mod multiplexer;
