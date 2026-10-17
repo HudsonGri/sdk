@@ -63,7 +63,7 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
-            self.require_snapshot(&permissions, &mut checkout, work)
+            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
                 .await?;
             let file_id = checkout
                 .lookup_no_follow(&path, work, work.cancellation())
@@ -116,7 +116,7 @@ where
                 &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
-            self.require_snapshot(&permissions, &mut observer, work)
+            self.require_snapshot(permissions.policy_view(), &mut observer, work)
                 .await?;
             let lookup = self
                 .read_lookup(&mut observer, &namespace, &mut inputs, work.cancellation())
@@ -193,7 +193,7 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
-            self.require_snapshot(&permissions, &mut checkout, work)
+            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
                 .await?;
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, work, work.cancellation())

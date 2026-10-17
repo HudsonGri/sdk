@@ -396,6 +396,40 @@ fn native_access_rename_checks_source_and_destination() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn native_path_reads_and_enumeration_bind_their_actual_policy_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Portable)?;
+    seed(&source, "file", b"pinned")?;
+    let path = native_test_path("file");
+    let old = source.open_file(&path)?;
+    let mut policy: Policy = serde_json::from_slice(crate::access::INITIAL_POLICY)?;
+    policy.version += 1;
+    super::policy_refresh::publish(&source, &policy)?;
+    publish_test_access(&source, vec![])?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    // The pinned working checkout still has its original metadata. A new view
+    // cannot authorize it, even when the new rules happen to allow the path.
+    assert!(matches!(
+        source.read_range(&path, 0, 6),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert!(matches!(
+        source.lookup(&path),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert!(matches!(
+        source.open_file(&path),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert!(matches!(
+        source.directory_page(&MountPath::root(), None, 8, &work),
+        Err(MountSourceError::AccessDenied)
+    ));
+    assert_eq!(old.read_range(0, 6)?.as_ref(), b"pinned");
+    Ok(())
+}
+
+#[test]
 fn native_access_read_capability_does_not_disclose_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;

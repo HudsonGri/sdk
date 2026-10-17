@@ -99,7 +99,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::Read, work)
+            let permissions = self
+                .require_access(&path, crate::access::Action::Read, work)
                 .await?;
             let name = inputs.attribute_name(name, self.config.profile, self.config.limits)?;
             let observation = self
@@ -115,6 +116,8 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )?;
+            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
+                .await?;
             let value = checkout
                 .read_named_attribute(&path, &name, work, cancellation)
                 .await?;
@@ -137,7 +140,8 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
-            self.require_access(&path, crate::access::Action::List, work)
+            let permissions = self
+                .require_access(&path, crate::access::Action::List, work)
                 .await?;
             let cursor = cursor
                 .map(|bytes| inputs.attribute_name(bytes, self.config.profile, self.config.limits))
@@ -155,6 +159,8 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )?;
+            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
+                .await?;
             let mut accounting =
                 crate::kernel::allocation::KernelAccounting::native(work, cancellation);
             let listing = checkout

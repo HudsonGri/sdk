@@ -68,12 +68,8 @@ impl PinnedPath {
         self.view.volume()
     }
 
-    pub(crate) fn matches_policy_revision(
-        &self,
-        generation: crate::GenerationId,
-        revision: crate::kernel::MetadataField<crate::ObjectId>,
-    ) -> bool {
-        self.view.matches_policy_revision(generation, revision)
+    pub(crate) fn policy_view(&self) -> &PathTrie {
+        &self.view
     }
 
     /// Check the pinned policy, including its original expiry, without allocation.

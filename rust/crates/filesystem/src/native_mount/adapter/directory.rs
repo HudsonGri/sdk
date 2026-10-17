@@ -43,6 +43,7 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )?;
+            self.require_snapshot(&view, &mut checkout, work).await?;
             let folded = if self.folds_names() {
                 self.require_unique_folded_path(&mut checkout, &path, true, work, cancellation)
                     .await?

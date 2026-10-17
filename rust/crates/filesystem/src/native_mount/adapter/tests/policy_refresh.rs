@@ -93,7 +93,10 @@ impl crate::native_mount::NativeMountCallbackGuard for Reload {
     }
 }
 
-fn publish(source: &MemorySource, policy: &Policy) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn publish(
+    source: &MemorySource,
+    policy: &Policy,
+) -> Result<(), Box<dyn std::error::Error>> {
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     invoke(&source.runtime, &work, || async {
         let mut checkout = source

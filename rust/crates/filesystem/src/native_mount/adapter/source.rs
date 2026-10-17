@@ -111,11 +111,13 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
-        self.require_access(&path, action, &work).await?;
+        let permissions = self.require_access(&path, action, &work).await?;
         let mut inspector = checkout.inspector(
             &mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation),
             &cancellation,
         )?;
+        self.require_snapshot(permissions.policy_view(), &mut inspector, &work)
+            .await?;
         self.read_lookup(&mut inspector, &path, &mut inputs, &cancellation)
             .await
     }
@@ -206,7 +208,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             .carrier
             .original_native_work()
             .ok_or(MountSourceError::AccessDenied)?;
-        self.require_access(&path, crate::access::Action::Read, &work)
+        let permissions = self
+            .require_access(&path, crate::access::Action::Read, &work)
             .await?;
         let observation = self
             .checkout
@@ -228,6 +231,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
             &cancellation,
         )?;
+        self.require_snapshot(permissions.policy_view(), &mut checkout, &work)
+            .await?;
         let chunk = match range {
             Some(range) => {
                 let read = checkout
@@ -308,6 +313,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
             &cancellation,
         )?;
+        self.require_snapshot(access.policy_view(), &mut checkout, &work)
+            .await?;
         self.read_lookup(&mut checkout, &path, &mut inputs, &cancellation)
             .await
     }

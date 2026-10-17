@@ -85,7 +85,7 @@ impl<A, O> CheckoutMountSource<A, O> {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     pub(super) async fn require_snapshot(
         &self,
-        permissions: &PinnedPath,
+        permissions: &crate::access::PathTrie,
         checkout: &mut crate::Checkout<A, O>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
