@@ -104,8 +104,6 @@ export const models = {
 };
 
 const entry = /\bloom::model\b|\bcheck_with_bound\(|preemption_bound/;
-const lockNames = ['Mutex', 'RwLock', 'Condvar', 'SyncMutex', 'AsyncMutex'];
-const loomLock = /loom::sync::(?:Mutex|RwLock|Condvar)\b|loom::sync::\{[^}]*\b(?:Mutex|RwLock|Condvar)\b|loom::\{[^}]*\bsync::(?:\{[^}]*)?\b(?:Mutex|RwLock|Condvar)\b/;
 // Any bound other than a literal `None` counts, whether a number, a constant
 // or a forwarded parameter: a named bound is still a bound.
 const numericBound = /preemption_bound\s*=\s*(?!None\b)\S|(?<!fn\s+)\bcheck_with_bound\(\s*(?!None\b)[^\s)]|assert_negative_control\(\s*\d+\s*,\s*\d/;
@@ -113,64 +111,51 @@ const exhaustive = /exhaust|every (?:interleaving|schedule)|all (?:interleavings
 const grades = new Set(['real', 'abstract', 'external', 'runner']);
 
 // Comments and `const _: fn(Shim) -> loom::sync::Mutex` identity assertions
-// do not create state; strip them before looking for model-owned locks.
+// do not state a bound; strip them before looking for one.
 const code = source => source
   .split('\n')
   .filter(line => !/^\s*(?:\/\/|const _: fn\()/.test(line))
   .join('\n');
 
-// Lock type names visible in `source`: the known names plus every alias that
-// resolves to one (`use ...::SyncMutex as DataMutex`, `type Lock<T> = Mutex<T>`).
-export function lockAliases(source) {
-  const names = new Set(lockNames);
-  for (let grown = true; grown;) {
-    grown = false;
-    const known = [...names].join('|');
-    const alias = new RegExp(`\\b(?:${known})\\s+as\\s+(\\w+)|\\btype\\s+(\\w+)\\b[^=;]*=\\s*(?:[\\w:]*::)?(?:${known})\\s*<`, 'g');
-    for (const match of source.matchAll(alias)) {
-      const name = match[1] ?? match[2];
-      if (!names.has(name)) {
-        names.add(name);
-        grown = true;
-      }
-    }
-  }
-  return names;
+// Lock ownership is decided on parsed Rust, never on text: the scanner in
+// rust/verification/loom-locks resolves lock aliases and Loom lock imports and
+// finds every constructor spelling (turbofish, qualified, typed `default`,
+// macro bodies), so comments and nested generics cannot fake or hide one.
+const repository = dirname(dirname(fileURLToPath(import.meta.url)));
+const verdicts = new Map();
+let scannerPath;
+
+function scanner() {
+  scannerPath ??= execFileSync('cargo', [
+    'build', '--locked', '--quiet', '--message-format=json',
+    '--manifest-path', `${repository}/rust/verification/loom-locks/Cargo.toml`,
+    '--target-dir', `${process.env.CARGO_TARGET_DIR ?? `${repository}/target`}/loom-locks`,
+  ], {encoding: 'utf8', maxBuffer: 1 << 26}).split('\n').filter(Boolean).map(line => JSON.parse(line))
+    .find(message => message.reason === 'compiler-artifact' && message.executable)?.executable;
+  if (!scannerPath) throw new Error('loom-locks scanner did not build an executable');
+  return scannerPath;
 }
 
-// End of the balanced generic list opening at `source[start] === '<'`, or -1.
-// `->` inside a function type is not a closing bracket.
-function closeGenerics(source, start) {
-  let angle = 0;
-  let paren = 0;
-  for (let index = start; index < source.length; index++) {
-    const char = source[index];
-    if (char === '-' && source[index + 1] === '>') index++;
-    else if (char === '(' || char === '[') paren++;
-    else if (char === ')' || char === ']') paren--;
-    else if (char === '<') angle++;
-    else if (char === '>' && --angle === 0) return paren === 0 ? index + 1 : -1;
-    if (paren < 0 || char === '{' || char === '}') return -1;
+// Judges every source not judged yet in one scanner process.
+function scan(sources) {
+  const pending = [...new Set(sources)].filter(source => !verdicts.has(source));
+  if (!pending.length) return;
+  const output = execFileSync(scanner(), [], {
+    input: pending.map((source, index) => `${index}\0${source}\0`).join(''),
+    encoding: 'utf8',
+    maxBuffer: 1 << 26,
+  });
+  for (const line of output.split('\n').filter(Boolean)) {
+    const [index, verdict] = line.split('\t');
+    verdicts.set(pending[Number(index)], verdict);
   }
-  return -1;
 }
 
-// A lock path constructs a lock only when its own optional turbofish list
-// closes and `::new(` or `::default(` follows at once. A lock named inside
-// another type's generic list (`Vec::<SyncMutex<u8>>::new()`) does not.
-function constructsLock(source) {
-  const names = lockAliases(source);
-  for (const match of source.matchAll(/\b[A-Za-z_]\w*\b/g)) {
-    if (!names.has(match[0])) continue;
-    let rest = match.index + match[0].length;
-    const turbofish = /^\s*::\s*</.exec(source.slice(rest));
-    if (turbofish) {
-      rest = closeGenerics(source, rest + turbofish[0].length - 1);
-      if (rest < 0) continue;
-    }
-    if (/^\s*::\s*(?:new|default)\s*\(/.test(source.slice(rest))) return true;
-  }
-  return false;
+// '1' when the source constructs or imports a lock, '0' when not, and
+// '!reason' when it does not parse.
+function ownsLock(source) {
+  scan([source]);
+  return verdicts.get(source);
 }
 
 export const rules = {
@@ -180,7 +165,9 @@ export const rules = {
     ? [`${path}: ${model.grade} model does not state the boundary it substitutes`] : [],
   locks: (path, source, model) => {
     if (model?.grade !== 'real') return [];
-    const owned = constructsLock(code(source)) || loomLock.test(code(source));
+    const verdict = ownsLock(source);
+    if (verdict?.startsWith('!')) return [`${path}: lock scan could not parse the model: ${verdict.slice(1)}`];
+    const owned = verdict === '1';
     if (owned && !model.constructs) return [`${path}: real model defines its own lock without naming the production lock it is`];
     if (!owned && model.constructs) return [`${path}: stale lock reason; the model constructs no lock`];
     return [];
@@ -202,6 +189,7 @@ export const rules = {
 export function violations(sources, registry = models, active = rules) {
   const found = [];
   const discovered = new Set();
+  if (active.locks) scan([...sources].filter(([path, source]) => entry.test(source) && registry[path]?.grade === 'real').map(([, source]) => source));
   for (const [path, source] of sources) {
     if (!entry.test(source)) continue;
     discovered.add(path);
@@ -216,7 +204,7 @@ export function violations(sources, registry = models, active = rules) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const root = repository;
   const files = execFileSync('git', ['ls-files', '-z', '--', '*.rs'], {cwd: root, encoding: 'utf8'}).split('\0').filter(Boolean);
   const sources = new Map(files.map(path => [path, readFileSync(`${root}/${path}`, 'utf8').replaceAll('\r\n', '\n')]));
   const found = violations(sources);

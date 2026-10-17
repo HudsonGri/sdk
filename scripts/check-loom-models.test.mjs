@@ -11,8 +11,11 @@ const healthy = [
   'const _: fn(crate::sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;',
   'fn check() { loom::model(|| production::Component::new().race()); }',
 ].join('\n');
-const bounded = 'let mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(2);\n';
-const constant = 'const CAP: usize = 2;\nlet mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(CAP);\n';
+const bounded = 'fn bounded() {\nlet mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(2);\n}\n';
+const constant = 'const CAP: usize = 2;\nfn bounded() {\nlet mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(CAP);\n}\n';
+// A healthy model whose extra function runs `body`; fixtures are whole Rust files.
+const owning = (body, prefix = '') => `${prefix}${healthy}\nfn extra() { ${body} }`;
+const real = {[path]: {grade: 'real'}};
 
 // Each mutant must be reported by exactly its named rule: with every rule the
 // gate reports it, and with only that rule deleted the same fixture is clean.
@@ -21,29 +24,35 @@ const mutants = [
   ['grade', {[path]: healthy}, {[path]: {grade: 'substitute'}}],
   ['scope', {[path]: healthy}, {[path]: {grade: 'abstract', scope: ' '}}],
   // The deleted local admission model: provider head state behind a loom lock.
-  ['locks', {[path]: 'use loom::{sync::Mutex as DataMutex, thread};\n' + healthy}, {[path]: {grade: 'real'}}],
+  ['locks', {[path]: 'use loom::{sync::Mutex as DataMutex, thread};\n' + healthy}, real],
   // The deleted refresh model: a shim lock owning a hand-advanced generation.
-  ['locks', {[path]: healthy + '\nlet index = Arc::new(Mutex::new(Generation { position: 1 }));'}, {[path]: {grade: 'real'}}],
+  ['locks', {[path]: owning('let index = Arc::new(Mutex::new(Generation { position: 1 }));')}, real],
   ['locks', {[path]: healthy}, {[path]: {grade: 'real', constructs: 'production lock'}}],
   // Aliases of a lock type still construct a lock.
-  ['locks', {[path]: 'use crate::sync::SyncMutex as DataMutex;\n' + healthy + '\nlet head = DataMutex::new(Head::default());'}, {[path]: {grade: 'real'}}],
-  ['locks', {[path]: 'type Lock<T> = crate::sync::Mutex<T>;\ntype Cell<T> = Lock<T>;\n' + healthy + '\nlet head = Cell::new(0);'}, {[path]: {grade: 'real'}}],
-  // Nested turbofish generics still construct a lock.
-  ['locks', {[path]: healthy + '\nlet state = SyncMutex::<Vec<u8>>::new(Vec::new());'}, {[path]: {grade: 'real'}}],
-  ['locks', {[path]: healthy + '\nlet state = Mutex::<BTreeMap<u8, Vec<Option<u8>>>>::default();'}, {[path]: {grade: 'real'}}],
-  // Unit, tuple and array payloads put parentheses and semicolons in the list.
-  ['locks', {[path]: healthy + '\nlet state = SyncMutex::<()>::new(());'}, {[path]: {grade: 'real'}}],
-  ['locks', {[path]: healthy + '\nlet state = SyncMutex::<(u8, Vec<u8>)>::new((0, Vec::new()));'}, {[path]: {grade: 'real'}}],
-  ['locks', {[path]: healthy + '\nlet state = Mutex::<[u8; 4]>::default();'}, {[path]: {grade: 'real'}}],
-  ['locks', {[path]: healthy + '\nlet state = Mutex::<Box<dyn Fn() -> u8>>::new(Box::new(|| 0));'}, {[path]: {grade: 'real'}}],
-  ['bound', {[path]: bounded + healthy}, {[path]: {grade: 'real'}}],
+  ['locks', {[path]: owning('let head = DataMutex::new(Head::default());', 'use crate::sync::SyncMutex as DataMutex;\n')}, real],
+  ['locks', {[path]: owning('let head = Cell::new(0);', 'type Lock<T> = crate::sync::Mutex<T>;\ntype Cell<T> = Lock<T>;\n')}, real],
+  // Nested, unit, tuple, array and function-type turbofish payloads.
+  ['locks', {[path]: owning('let state = SyncMutex::<Vec<u8>>::new(Vec::new());')}, real],
+  ['locks', {[path]: owning('let state = SyncMutex::<()>::new(());')}, real],
+  ['locks', {[path]: owning('let state = SyncMutex::<(u8, Vec<u8>)>::new((0, Vec::new()));')}, real],
+  ['locks', {[path]: owning('let state = Mutex::<[u8; 4]>::default();')}, real],
+  ['locks', {[path]: owning('let state = Mutex::<Box<dyn Fn() -> u8>>::new(Box::new(|| 0));')}, real],
+  // The five forms that escaped the text matcher.
+  ['locks', {[path]: owning('let state = SyncMutex::<[u8; { 4 }]>::new([0; 4]);')}, real],
+  ['locks', {[path]: owning('let state = SyncMutex::<[u8; (8 >> 1)]>::new([0; 4]);')}, real],
+  ['locks', {[path]: owning('let state = SyncMutex::<Vec</* > */ u8>>::new(Vec::new());')}, real],
+  ['locks', {[path]: owning('let state = <SyncMutex<()>>::new(());')}, real],
+  ['locks', {[path]: owning('let state = SyncMutex /* x */ ::<u8>::new(0);')}, real],
+  // A real model that does not parse cannot be judged lock-free.
+  ['locks', {[path]: healthy + '\nfn broken( {'}, real],
+  ['bound', {[path]: bounded + healthy}, real],
   ['bound', {[path]: healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   // A constant or forwarded bound is still a bound.
-  ['bound', {[path]: constant + healthy}, {[path]: {grade: 'real'}}],
-  ['bound', {[path]: healthy + '\nfn run(bound: Option<usize>) { check_with_bound(bound, scenario); }'}, {[path]: {grade: 'real'}}],
+  ['bound', {[path]: constant + healthy}, real],
+  ['bound', {[path]: healthy + '\nfn run(bound: Option<usize>) { check_with_bound(bound, scenario); }'}, real],
   ['exhaustive', {[path]: '// Every interleaving of the race.\n' + constant + healthy}, {[path]: {grade: 'real', bound: 'CAP preemptions'}}],
   ['exhaustive', {[path]: '// Exhaustive schedules of the race.\n' + bounded + healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
-  ['missing', {}, {[path]: {grade: 'real'}}],
+  ['missing', {}, real],
 ];
 
 test('every repository Loom model is classified and clean', () => {
@@ -58,15 +67,17 @@ test('the healthy fixture passes every rule', () => {
   assert.deepEqual(violations(new Map([[path, healthy]]), {[path]: {grade: 'real'}}), []);
   assert.deepEqual(violations(new Map([[path, bounded + healthy]]), {[path]: {grade: 'real', bound: 'two preemptions'}}), []);
   // Defining the bounded runner or disabling the bound is not itself a bound.
-  const runner = 'pub fn check_with_bound(\n    preemptions: Option<usize>,\n) {}\nbuilder.preemption_bound = None;\n';
+  const runner = 'pub fn check_with_bound(\n    preemptions: Option<usize>,\n) {}\nfn unbounded() { builder.preemption_bound = None; }\n';
   assert.deepEqual(violations(new Map([[path, runner + healthy]]), {[path]: {grade: 'real'}}), []);
   // A lock named inside another type's generic list constructs that type.
   for (const container of [
     'let locks = Vec::<SyncMutex::<Vec<u8>>>::new();',
     'let lock = Option::<SyncMutex::<Vec<u8>>>::default();',
     'let locks = Vec::<SyncMutex<u8>>::new();',
+    '/* SyncMutex::new(0) */',
+    'let text = "SyncMutex::new(0)";',
   ]) {
-    assert.deepEqual(violations(new Map([[path, healthy + '\n' + container]]), {[path]: {grade: 'real'}}), [], container);
+    assert.deepEqual(violations(new Map([[path, owning(container)]]), real), [], container);
   }
 });
 
