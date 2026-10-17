@@ -92,7 +92,7 @@ pub fn console_register(handler: fn(u32) -> bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Generate an actual CTRL_BREAK event in this console.
+/// Generate an actual `CTRL_BREAK` event in this console.
 pub fn console_break() -> io::Result<()> {
     // SAFETY: this function has no pointer arguments.
     if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) } == 0 {
@@ -102,11 +102,12 @@ pub fn console_break() -> io::Result<()> {
 }
 
 /// Request cancellation on a live worker. The owner still waits for its ack;
-/// ERROR_NOT_FOUND alone does not fence a submission that has not started yet.
+/// `ERROR_NOT_FOUND` alone does not fence a submission that has not started yet.
 pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
     // SAFETY: JoinHandle owns a live thread handle throughout this call.
     let result = unsafe { CancelSynchronousIo(worker.as_raw_handle() as HANDLE) };
-    if result == 0 && io::Error::last_os_error().raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
+    let code = io::Error::last_os_error().raw_os_error();
+    if result == 0 && code.and_then(|code| u32::try_from(code).ok()) != Some(ERROR_NOT_FOUND) {
         // Cancellation is retried until the worker acknowledges completion.
         std::thread::yield_now();
     }
@@ -191,7 +192,7 @@ pub fn console_read(
             }
             let key = event.Event.KeyEvent;
             let vk = key.wVirtualKeyCode;
-            if event.EventType == KEY_EVENT as u16
+            if u32::from(event.EventType) == KEY_EVENT
                 && key.bKeyDown != 0
                 && (key.uChar.UnicodeChar != 0
                     || matches!(vk, 0x20 | 0x1b | 0x21..=0x28 | 0x2d | 0x2e | 0x70..=0x87))

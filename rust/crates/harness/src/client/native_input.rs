@@ -1,4 +1,4 @@
-//! Native input adapters; wire decoding and settlement stay in the shared runner.
+//! Native input adapters; JSONL decoding and settlement stay in the shared runner.
 use crate::{Error, Result};
 use futures::{StreamExt, stream::BoxStream};
 
@@ -124,7 +124,10 @@ mod stdin {
 
 /// A dedicated reader for input the reactor cannot wait on. One persistent
 /// thread fills recycled batches and feeds a bounded channel, so a slow or
-/// stalled read never blocks the runtime.
+/// stalled read never blocks the runtime. The thread waits in poll on the
+/// input and on a cancel pipe whose only writer the stream holds: dropping
+/// the stream hangs that pipe up, so the thread ends without reading again
+/// and releases its input.
 #[cfg(unix)]
 mod reader {
     use std::fs::File;
@@ -136,29 +139,37 @@ mod reader {
 
     const BATCH: usize = 64 * 1024;
 
-    /// Read, waiting as a blocking read would. An inherited description may
-    /// be nonblocking (a socket, say): WouldBlock then waits in poll for
-    /// input instead of ending it, without changing the shared flags.
-    pub(super) fn read_blocking(file: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
+    /// Read once the input is ready, or `None` once `cancel` is hung up or
+    /// written. The wait is in poll, so a read starts only with input
+    /// present and a cancel seen in the same wake wins. An inherited
+    /// description may be nonblocking (a socket, say): WouldBlock waits
+    /// again instead of ending input, without changing the shared flags.
+    pub(super) fn read_until_cancelled(
+        file: &mut File,
+        cancel: &io::PipeReader,
+        bytes: &mut [u8],
+    ) -> io::Result<Option<usize>> {
         use rustix::event::{PollFd, PollFlags, poll};
         loop {
+            let mut fds = [
+                PollFd::new(&*file, PollFlags::IN),
+                PollFd::new(cancel, PollFlags::IN),
+            ];
+            match poll(&mut fds, None) {
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
+                Ok(_) => {}
+            }
+            if !fds[1].revents().is_empty() {
+                return Ok(None);
+            }
+            // A device poll cannot watch (macOS reports some as invalid)
+            // answers reads at once; waiting on it again would spin.
+            let unwatchable = fds[0].revents().contains(PollFlags::NVAL);
             match file.read(bytes) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    let mut fds = [PollFd::new(&*file, PollFlags::IN)];
-                    match poll(&mut fds, None) {
-                        Err(error) if error != rustix::io::Errno::INTR => {
-                            return Err(error.into());
-                        }
-                        // A device poll cannot watch (macOS reports some
-                        // as invalid) would turn the retry into a spin.
-                        Ok(_) if fds[0].revents().contains(PollFlags::NVAL) => {
-                            return Err(error);
-                        }
-                        _ => {}
-                    }
-                }
-                read => return read,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock && !unwatchable => {}
+                read => return read.map(Some),
             }
         }
     }
@@ -168,22 +179,30 @@ mod reader {
         spare: mpsc::Sender<Vec<u8>>,
         current: Vec<u8>,
         offset: usize,
+        /// The cancel pipe's only writer; dropping it ends the thread's wait.
+        _cancel: io::PipeWriter,
     }
 
     impl Reader {
         pub(super) fn spawn(mut file: File) -> io::Result<Self> {
             let (send, batches) = tokio::sync::mpsc::channel(2);
             let (spare, recycled) = mpsc::channel::<Vec<u8>>();
-            // Detached: a dropped stream fails the next send, so the thread
-            // ends after its current read completes (at the next input or end
-            // of input for a pipe or terminal).
+            let (cancelled, cancel) = io::pipe()?;
+            // Detached, never joined: dropping the stream hangs up the cancel
+            // pipe (ending a wait) and closes the channel (ending a send), so
+            // the thread ends and closes its input without another read.
             std::thread::Builder::new()
                 .name("harness-stdin".into())
                 .spawn(move || {
                     loop {
                         let mut batch = recycled.try_recv().unwrap_or_default();
                         batch.resize(BATCH, 0);
-                        let result = read_blocking(&mut file, &mut batch).map(|count| {
+                        let result = match read_until_cancelled(&mut file, &cancelled, &mut batch) {
+                            Ok(None) => return,
+                            Ok(Some(count)) => Ok(count),
+                            Err(error) => Err(error),
+                        };
+                        let result = result.map(|count| {
                             batch.truncate(count);
                             batch
                         });
@@ -198,6 +217,7 @@ mod reader {
                 spare,
                 current: Vec::new(),
                 offset: 0,
+                _cancel: cancel,
             })
         }
 
@@ -225,37 +245,6 @@ mod reader {
     }
 }
 
-/// Waits for UI input or a validated delivery. Publication/commit is completed
-/// outside select, so an input event cannot cancel a half-published delivery.
-#[cfg(feature = "tui")]
-pub async fn next_tui_event<S: super::ClientStateStore>(
-    client: &mut super::HarnessClient<S>,
-    input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
-    completions: &mut crate::tui_files::CompletionFiles,
-    prompt: &mut crate::tui::PromptInput,
-    commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
-    documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
-) -> Result<Option<crate::tui::key_event::InputEvent>> {
-    let delivery = tokio::select! {
-        event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
-        delivery = client.read_delivery() => delivery?,
-        update = documents.next() => {
-            client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
-            return Ok(None);
-        },
-        change = commands.observe_change() => { change?; return Ok(None); },
-        change = completions.read_change() => {
-            completions.apply_change(change?, prompt)?;
-            return Ok(None);
-        },
-    };
-    let delivery = delivery.ok_or_else(|| {
-        Error::Conflict("live replay ended; reconnect from the committed cursor".into())
-    })?;
-    client.publish_delivery(delivery, |_| Ok(())).await?;
-    Ok(None)
-}
-
 /// Multiplex terminal input with authorized file publications.
 #[cfg(all(feature = "tui", feature = "filesystem-local"))]
 pub async fn next_file_tui_event(
@@ -264,13 +253,18 @@ pub async fn next_file_tui_event(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
-    documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
+    animation: bool,
+    renderer: &mut crate::tui::ClientRenderer,
+    documents: &mut crate::task_volume::ChangeStream,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
+        biased;
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
+        _ = animation_frame::<true>(animation) => Ok(None),
+        _ = renderer.search_progress() => Ok(None),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {
-            client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
+            client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
             Ok(None)
         },
         change = commands.observe_change() => { change?; Ok(None) },
@@ -280,6 +274,21 @@ pub async fn next_file_tui_event(
         },
     }
 }
+
+#[cfg(feature = "tui")]
+async fn animation_frame<const ENABLED: bool>(busy: bool) {
+    if !ENABLED || !busy {
+        return std::future::pending().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::tui::Thinking::FRAME_MS,
+    ))
+    .await;
+}
+
+#[cfg(all(test, feature = "tui", not(acyclic_harness_loom)))]
+#[path = "native_input/animation.rs"]
+mod animation;
 
 /// Follow controlling-terminal input through the decoder retained by
 /// negotiation. Input waits on the reactor (a console waiter on Windows);
@@ -470,6 +479,49 @@ mod tests {
         assert!(!blocked.is_finished());
         write.write_all(b"x")?;
         assert_eq!(blocked.join().map_err(|_| io::ErrorKind::Other)??, 1);
+        Ok(())
+    }
+
+    /// Writes one byte after `drop_reader` and reports whether it is still
+    /// unread once the reader has had time to take it.
+    fn byte_after_drop_unread(
+        spawn: impl FnOnce(File) -> io::Result<Box<dyn FnOnce()>>,
+    ) -> io::Result<bool> {
+        let (read, mut write) = pipe()?;
+        let probe = read.try_clone()?;
+        let drop_reader = spawn(read)?;
+        // Let the reader reach its wait before the stream goes away.
+        std::thread::sleep(Duration::from_millis(5));
+        drop_reader();
+        write.write_all(b"x")?;
+        std::thread::sleep(Duration::from_millis(20));
+        let mut fds = [rustix::event::PollFd::new(
+            &probe,
+            rustix::event::PollFlags::IN,
+        )];
+        Ok(rustix::event::poll(&mut fds, Some(&rustix::event::Timespec::default()))? == 1)
+    }
+
+    #[test]
+    fn a_dropped_reader_reads_nothing_written_after_it() -> io::Result<()> {
+        let unread = byte_after_drop_unread(|read| {
+            let runtime = runtime()?;
+            let reader = runtime.block_on(async { super::reader::Reader::spawn(read) })?;
+            Ok(Box::new(move || drop((reader, runtime))))
+        })?;
+        assert!(unread);
+        Ok(())
+    }
+
+    #[test]
+    fn negative_control_detects_a_dropped_reader_left_reading() -> io::Result<()> {
+        // The removed reader waited inside read, which the stream's drop
+        // could not interrupt: the next byte after the drop was consumed.
+        let unread = byte_after_drop_unread(|mut read| {
+            std::thread::spawn(move || io::Read::read(&mut read, &mut [0; 8]));
+            Ok(Box::new(|| {}))
+        })?;
+        assert!(!unread);
         Ok(())
     }
 
