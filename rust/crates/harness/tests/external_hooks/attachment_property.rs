@@ -2,7 +2,10 @@ use super::{
     session_runtime::{Fixture, VolumeBinding},
     *,
 };
-use acyclic_harness::{TaskId, runtime::TaskStateProvider, task_volume::Component};
+use acyclic_harness::{
+    TaskId, conversation::ContentResidencyVerifier, runtime::TaskStateProvider,
+    task_volume::Component,
+};
 use proptest::prelude::*;
 
 proptest! {
@@ -52,7 +55,7 @@ proptest! {
             let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
                 fixture.files.clone(),&fixture.verifier,&fixture.signed,65_536,None)?;
             let written = reader.read_private_path(&fixture.volume,"","file",None,65_536,None)?.await;
-            if rejected {assert!(matches!(written,Err(Error::NotFound(_))),"{written:?}");}
+            if rejected {assert!(matches!(written,Err(Error::NotFound(_))),"rejected native identity wrote content");}
             else {assert_eq!(written?.1.as_ref(),b"text");}
             let next = request(ExternalHost::Pi,"tool_call",json!({
                 "sessionId":original.session_id,"agentId":original.caller,"toolCallId":"next",
@@ -61,7 +64,8 @@ proptest! {
             let next = super::intake::deliver(&fixture,&task,&next).await?;
             assert!(next.get("Succeeded").is_some(),"{next}");
             assert_eq!(reader.read_private_path(&fixture.volume,"","after",None,65_536,None)?.await?.1.as_ref(),b"still authorized");
-            assert_eq!(fixture.runtime.task_host().observe_admission(TaskId::from_bytes([78;16])).await?,admitted);
+            assert!(fixture.runtime.task_host().observe_admission(TaskId::from_bytes([78;16])).await? == admitted,
+                "a tool request changed the retained native attachment");
             assert_eq!(fixture.runtime.task_host().outcome(TaskId::from_bytes([78;16])).await?,None);
             Ok::<_,Error>(())
         }))?;
