@@ -30,6 +30,8 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
     let stop = cancellation.clone();
     let fence = drained.clone();
     let finished = &parent_done;
+    let completed = &first;
+    let ready = second.as_ref();
     let parent = async move {
         // finish cancels this private token before polling the parent. The
         // passive wait's already-cancelled branch is independent of the effect
@@ -50,7 +52,12 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
             )
         };
         fence.cancelled().await;
-        finished.store(cancelled, Ordering::Release);
+        finished.store(
+            cancelled
+                && completed.load(Ordering::Acquire)
+                && ready.is_none_or(|saved| saved.load(Ordering::Acquire)),
+            Ordering::Release,
+        );
         Ok(())
     };
     let publisher = concurrent.then(|| thread::spawn(move || signal.cancel()));
