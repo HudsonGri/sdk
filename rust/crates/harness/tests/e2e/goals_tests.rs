@@ -106,13 +106,20 @@ fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestRe
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
         let mut baseline =
             crate::scenario::load_value(&root, &root.join("goals/continuations/cap-two.json"))?;
-        baseline["project_seed"] = json!({"GOAL.md":"Project sentinel"});
-        baseline["expect"]["project_files"] = json!({"GOAL.md":"Project sentinel"});
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            crate::drivers::run(baseline.clone()),
-        )
-        .await??;
+        let mut settled =
+            crate::scenario::load_value(&root, &root.join("goals/continuations/done.json"))?;
+        for case in [&mut baseline, &mut settled] {
+            case["project_seed"] = json!({"GOAL.md":"Project sentinel"});
+            case["expect"]["project_files"] = json!({"GOAL.md":"Project sentinel"});
+        }
+        futures::future::try_join_all([baseline.clone(), settled.clone()].into_iter().map(
+            |case| async move {
+                tokio::time::timeout(std::time::Duration::from_secs(5), crate::drivers::run(case))
+                    .await??;
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            },
+        ))
+        .await?;
         futures::future::try_join_all(
             [
                 "file",
@@ -134,7 +141,12 @@ fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestRe
             ]
             .into_iter()
             .map(|mutation| {
-                let mut value = baseline.clone();
+                // Only continuation-dependent assertions need the three-task case.
+                let mut value = if matches!(mutation, "view" | "context" | "policy" | "automatic") {
+                    baseline.clone()
+                } else {
+                    settled.clone()
+                };
                 async move {
                     match mutation {
                         "file" => value["expect"]["files"]["GOAL.md"] = json!("wrong"),
