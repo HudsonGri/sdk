@@ -233,20 +233,21 @@ pub(super) fn redundant_preflight() -> bool {
 }
 
 std::thread_local! {
-    static SKIP_REFUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EARLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-// Negative control: an unsettled copy reservation is never returned.
-pub(super) fn skip_refund() -> bool {
-    SKIP_REFUND.with(std::cell::Cell::get)
+// Negative control: charges the copy with the storage claim, before the
+// allocator has produced the capacity.
+pub(super) fn charge_before_allocating() -> bool {
+    EARLY.with(std::cell::Cell::get)
 }
 
-// An allocator failure after the combined claim must leave no copy charged,
-// no credit reserved and no storage held, on every scope; a lost refund is
-// caught by the same assertions.
+// An allocator failure after the combined check and claim must leave no copy
+// charged, no credit reserved and no storage held, on every scope; charging the copy
+// before allocating is caught by the same assertions.
 #[test]
-fn allocator_failure_returns_the_reserved_copy() {
-    let failed = |skip: bool, depth: u8| {
+fn allocator_failure_charges_no_copy() {
+    let failed = |early: bool, depth: u8| {
         let cancellation = CancellationToken::new();
         let limit = crate::WorkBudget {
             bytes_copied: 2,
@@ -265,25 +266,25 @@ fn allocator_failure_returns_the_reserved_copy() {
         let setup = root.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&work, &cancellation);
         crate::kernel::FAIL_RESERVE.with(|flag| flag.set(true));
-        SKIP_REFUND.with(|flag| flag.set(skip));
+        EARLY.with(|flag| flag.set(early));
         let result = restore_absolute_path("x", &mut accounting, &cancellation);
         crate::kernel::FAIL_RESERVE.with(|flag| flag.set(false));
-        SKIP_REFUND.with(|flag| flag.set(false));
+        EARLY.with(|flag| flag.set(false));
         let error = format!("{:?}", result.err().unwrap());
         assert!(error.contains("AllocationFailed"), "{error}");
-        assert_eq!(root.receipt().bytes_copied, 0);
         assert_eq!(root.live_allocation_bytes(), setup);
+        let uncharged = root.receipt().bytes_copied == 0;
         let root_credit =
             root.state(|state| state.budget.bytes_copied == state.original_budget().bytes_copied);
         let scopes = work
             .resource_chain()
             .iter()
             .all(|(local, pending)| local.bytes_copied == 0 && pending.bytes_copied == 0);
-        root_credit && scopes
+        uncharged && root_credit && scopes
     };
     for depth in [0, 2] {
         assert!(failed(false, depth), "depth={depth}");
-        assert!(!failed(true, depth), "a lost refund must be caught");
+        assert!(!failed(true, depth), "an early copy charge must be caught");
     }
 }
 
@@ -375,8 +376,7 @@ fn trace(
 
 // Exact lock pins against main's sequence on every native context: the
 // reserved copy takes fewer leaf passes and no more resource-mutex passes
-// than check-only admission did (the refundable reservation and its commit
-// cost one scope pass each, per level), and a single redundant preflight is
+// than check-only admission did, and a single redundant preflight is
 // caught even though it leaves every receipt unchanged.
 #[test]
 fn reserved_copies_take_fewer_locks_than_check_only_admission() {
@@ -423,9 +423,10 @@ fn paired_copy_timing_report() {
     let cancellation = CancellationToken::new();
     for (mode, recheck) in [(1_u8, false), (2, false), (3, true), (4, false)] {
         for restore in [false, true] {
-            let root =
+            let roots = [0, 1].map(|_| 
                 crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-                    .unwrap();
+                    .unwrap());
+            let work = roots.each_ref().map(|root| {
             let mut work = root.clone();
             for _ in 0..mode.saturating_sub(1).min(2) {
                 work = work
@@ -438,10 +439,12 @@ fn paired_copy_timing_report() {
             if recheck {
                 work = work.recheck_admitted();
             }
+            work
+            });
             let label = (!restore).then(|| name("workspace-name").unwrap());
             let text = "workspace-name";
             let run = |old_path: bool| {
-                let mut accounting = KernelAccounting::native(&work, &cancellation);
+                let mut accounting = KernelAccounting::native(&work[usize::from(!old_path)], &cancellation);
                 let start = std::time::Instant::now();
                 for _ in 0..COPIES {
                     let owned = match (old_path, restore) {
