@@ -1,6 +1,7 @@
 /// Incremental cursor over immutable history.
 pub(crate) struct HistoryCursor {
     root: Option<Arc<History>>,
+    first: Option<HistoryWindow>,
     windows: VecDeque<HistoryWindow>,
     next: u64,
 }
@@ -28,6 +29,7 @@ impl HistoryCursor {
     pub(crate) fn at(next: u64) -> Self {
         Self {
             root: None,
+            first: None,
             windows: VecDeque::new(),
             next,
         }
@@ -36,7 +38,8 @@ impl HistoryCursor {
         if let Some(window) = path.prefix_window(next, tail) {
             return Self {
                 root: path.history.clone(),
-                windows: VecDeque::from([window]),
+                first: Some(window),
+                windows: VecDeque::new(),
                 next,
             };
         }
@@ -65,41 +68,57 @@ impl HistoryCursor {
                 && Arc::ptr_eq(old, parent)
             {
                 if let Some(window) = history_window(Arc::clone(records), tail, self.next) {
-                    self.windows.push_back(window);
+                    self.push_window(window);
                 }
                 self.root = root.cloned();
                 return;
             }
         }
-        let mut added = Vec::new();
+        let mut added = Self::at(self.next);
+        let mut crossed_prefix = false;
         for (node, ceiling) in HistoryWalk::new(root, tail, self.next) {
-            if self
-                .root
-                .as_ref()
-                .is_some_and(|old| std::ptr::eq(old.as_ref(), node))
+            if !crossed_prefix
+                && self
+                    .root
+                    .as_ref()
+                    .is_some_and(|old| std::ptr::eq(old.as_ref(), node))
             {
-                added.reverse();
-                self.windows.extend(added);
+                if let Some(first) = added.first.take() {
+                    self.push_window(first);
+                }
+                self.windows.extend(added.windows);
                 self.root = root.cloned();
                 return;
             }
-            if let History::Batch { records, .. } = node
-                && let Some(window) = history_window(Arc::clone(records), ceiling, self.next)
-            {
-                added.push(window);
+            match node {
+                History::Batch { records, .. } => {
+                    if let Some(window) = history_window(Arc::clone(records), ceiling, self.next) {
+                        if let Some(first) = added.first.replace(window) {
+                            added.windows.push_front(first);
+                        }
+                    }
+                }
+                History::Prefix { .. } => crossed_prefix = true,
             }
         }
-        added.reverse();
-        self.windows = added.into();
+        self.first = added.first;
+        self.windows = added.windows;
         self.root = root.cloned();
     }
+    fn push_window(&mut self, window: HistoryWindow) {
+        if self.first.is_none() {
+            self.first = Some(window);
+        } else {
+            self.windows.push_back(window);
+        }
+    }
     fn next_record(&mut self) -> Option<Record> {
-        let window = self.windows.front_mut()?;
+        let window = self.first.as_mut()?;
         let record = window.records.records.get(window.start)?.clone();
         window.start += 1;
         self.next = record.sequence.checked_add(1)?;
         if window.start == window.end {
-            self.windows.pop_front();
+            self.first = self.windows.pop_front();
         }
         Some(record)
     }
