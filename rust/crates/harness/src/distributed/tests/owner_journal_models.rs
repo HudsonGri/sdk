@@ -155,6 +155,16 @@ fn cancelled_candidate(accepted: bool, broken: bool) {
     check_cancellation(journal, phase, accepted, broken);
 }
 
+// The driver owns immutable test input on the heap. Keeping two large enum
+// slots in the coroutine frame obscures the replay interleavings with a stack
+// overflow in Serde's pure decoder, before any model assertion can run.
+#[inline(never)]
+fn cancellation_event() -> Arc<ExecutionEvent> {
+    Arc::new(ExecutionEvent::Started {
+        request_digest: [1; 32],
+    })
+}
+
 fn check_cancellation(
     journal: Arc<dyn ExecutionJournal>,
     phase: Arc<AtomicU8>,
@@ -162,14 +172,12 @@ fn check_cancellation(
     broken: bool,
 ) {
     let operation = OperationId::from_bytes([2; 16]);
-    let event = ExecutionEvent::Started {
-        request_digest: [1; 32],
-    };
+    let event = cancellation_event();
     let writer = journal.clone();
     let candidate = event.clone();
     let future = Box::pin(async move {
         writer
-            .append(operation, "entry", &candidate, None)
+            .append(operation, "entry", candidate.as_ref(), None)
             .unwrap()
             .await
     });
@@ -182,7 +190,11 @@ fn check_cancellation(
     if broken {
         set_fault(Fault::RetainPendingExecutionCache);
     }
-    let resumed = block_on(journal.append(operation, "entry", &event, None).unwrap());
+    let resumed = block_on(
+        journal
+            .append(operation, "entry", event.as_ref(), None)
+            .unwrap(),
+    );
     assert!(
         resumed.is_ok(),
         "cancelled execution candidate survived: {resumed:?}"
