@@ -67,19 +67,10 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
         };
         host.start_task(&lease, &mut None).await?;
         let fence = LeaseFence::from(&lease.reservation);
-        let context = harness.runtime.task_context(parent, fence.clone()).await?;
+        let context = Arc::new(harness.runtime.task_context(parent, fence.clone()).await?);
         // Pin authored content. An uncaptured native source is a shared live
         // capability and is not an authored SDK generation.
-        context
-            .stage_file(
-                Some(harness.project()),
-                OperationId::new(),
-                "source.txt",
-                b"original",
-                "text/plain",
-                "source.txt",
-            )
-            .await?;
+        write_source(&harness, &context, "original").await?;
         let files = Arc::clone(&harness.task_files);
         let reference = Component::new("worker").map_err(storage)?;
         let mut request = FileValue::new(
@@ -122,17 +113,8 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
 
         let reopened = LocalHarness::open(config()?).await?;
         let files = Arc::clone(&reopened.task_files);
-        let parent_context = reopened.runtime.task_context(parent, fence.clone()).await?;
-        parent_context
-            .stage_file(
-                Some(reopened.project()),
-                OperationId::new(),
-                "source.txt",
-                b"changed after cut",
-                "text/plain",
-                "source.txt",
-            )
-            .await?;
+        let parent_context = Arc::new(reopened.runtime.task_context(parent, fence.clone()).await?);
+        write_source(&reopened, &parent_context, "changed after cut").await?;
         drop(parent_context);
         let (child, view) = reopened
             .admit_child_request(files.as_ref(), &request)
@@ -247,7 +229,15 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
                 Some(context),
             )
             .await?;
-        assert_eq!(result.value["success"], true);
+        let command: acyclic_fs::GitCommandOutput =
+            serde_json::from_value(result.value["result"].clone()).map_err(storage)?;
+        assert!(matches!(
+            command,
+            acyclic_fs::GitCommandOutput::Filesystem(
+                acyclic_fs::GitFilesystemResult::Applied { .. }
+            )
+        ));
+
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
         let mut accounting = budget.accounting(&cancellation);
@@ -265,5 +255,32 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
         );
         reopened.close().await?;
     }
+    Ok(())
+}
+
+async fn write_source(
+    harness: &LocalHarness,
+    context: &Arc<crate::runtime::TaskContext>,
+    text: &str,
+) -> Result<()> {
+    let operation = OperationId::new();
+    let tool = harness.tools().get("write", None, None)?.unwrap();
+    tool.executor
+        .execute(
+            ToolInvocation {
+                operation_id: operation,
+                call_id: "source-write".into(),
+                name: "write".into(),
+                arguments: serde_json::json!({"path":"source.txt","text":text,
+            "media_type":"text/plain","display_name":"source.txt"}),
+            },
+            Some(ToolContext::new(
+                Arc::clone(context),
+                operation,
+                "source-write",
+                None,
+            )?),
+        )
+        .await?;
     Ok(())
 }
