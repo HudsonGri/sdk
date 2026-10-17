@@ -94,7 +94,7 @@ impl Projections {
             #[cfg(test)]
             crate::work::scan(1);
             if let Some(code) = state.preview_code(token) {
-                let (root, opening) = (code.before.forest, code.opening.clone());
+                let (root, opening) = (code.before.forest(), code.opening.clone());
                 state.invalid |= !state.forest.restore(root);
                 state.forest.code(opening, physical);
             } else if escaped {

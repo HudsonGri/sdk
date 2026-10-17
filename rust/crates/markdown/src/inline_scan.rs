@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(test)]
 pub(crate) use forest::glyphs::events::KEEP_KEYS;
+#[path = "inline_angles.rs"]
+mod angles;
 #[path = "inline_bind.rs"]
 mod bind;
 #[path = "inline_compact.rs"]
@@ -32,6 +34,7 @@ pub(super) struct Slice<'a> {
 #[derive(Default)]
 pub(super) struct Scanner {
     tokens: Tokens,
+    angles: angles::Angles,
     capsules: Vec<Range<usize>>,
     state: State,
     render: forest::Cache,
@@ -272,8 +275,17 @@ impl Scanner {
             processed: start,
             frozen: start,
             frontier: start,
+            angles: angles::Angles::at(start),
             ..Self::default()
         }
+    }
+
+    /// Consume appended bytes in the angle recognizer. Returns the earliest
+    /// opener whose construct they may close.
+    pub(super) fn feed_angles(&mut self, source: &str) -> Option<usize> {
+        let closed = self.angles.feed(source);
+        self.state.angle = self.angles.floor();
+        closed
     }
 
     #[cfg(test)]
@@ -318,10 +330,6 @@ impl Scanner {
         self.tokens.expands_after(start)
     }
 
-    pub(super) fn pending_angle(&self) -> bool {
-        self.state.has_opaque()
-    }
-
     pub(super) fn classification_boundary(&self, mut position: usize) -> usize {
         if let Some(range) = self.tokens.covering(position) {
             position = range.start;
@@ -355,12 +363,8 @@ impl Scanner {
             .map_or(position, |scope| scope.start)
     }
 
-    pub(super) fn classification_start(&self, end: usize, foreign: bool) -> usize {
-        if foreign {
-            self.classification_boundary(self.state.classification_start(end))
-        } else {
-            self.classification_boundary(end)
-        }
+    pub(super) fn reopen_start(&self, end: usize, closed: usize) -> usize {
+        self.classification_boundary(self.state.reopen_start(end, closed))
     }
 
     pub(super) fn discard_before(&mut self, position: usize) {
@@ -379,7 +383,7 @@ impl Scanner {
         &mut self,
         source: &str,
         start: usize,
-        lines: &mut Vec<Line>,
+        lines: &mut crate::line_buffer::Buffer,
         first: usize,
         spare: Option<&mut crate::inline_views::Spare>,
     ) -> Option<(usize, usize)> {
@@ -697,7 +701,7 @@ impl Scanner {
             } else if kind == Kind::Break && self.pending_break.is_some() {
                 self.pending_after_break = true;
             }
-            if self.state.neutral()
+            if self.state.neutral_before(end)
                 && self.pending_break.is_none()
                 && (self.tokens.neutral() || pending.is_some_and(|start| start >= end))
             {

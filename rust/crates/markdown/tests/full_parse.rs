@@ -19,6 +19,12 @@ mod reference_updates;
 #[path = "whitespace.rs"]
 mod whitespace;
 
+#[path = "adversarial_work.rs"]
+mod adversarial_work;
+
+#[path = "inline_hold.rs"]
+mod inline_hold;
+
 pub(super) fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
     let source = if source.contains('\r') {
@@ -299,7 +305,11 @@ fn check_chunks(source: &str, cuts: &[usize]) {
         let changed = streamed.push(source.get(offset..end).unwrap_or_default());
         assert!(changed <= streamed.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(streamed.lines().get(changed..).unwrap_or_default());
+        consumer.extend(
+            (streamed.lines().slice(changed..).unwrap_or_default())
+                .iter()
+                .cloned(),
+        );
         assert_eq!(
             consumer,
             full_parse(source.get(..end).unwrap_or_default()),

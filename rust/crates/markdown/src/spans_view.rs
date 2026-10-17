@@ -174,8 +174,13 @@ pub struct Iter<'a> {
 
 impl<'a> Iter<'a> {
     pub(super) fn new(spans: &'a Spans) -> Self {
+        // A prefix chain is walked newest-first, so it parks one task per
+        // node before yielding the oldest run. Size the stack for the chain
+        // up front instead of regrowing it while the walk descends.
+        let mut tasks = Vec::with_capacity(spans.raw_count() + 2);
+        tasks.push(Task::Sequence(spans, Style::default(), None));
         Self {
-            tasks: vec![Task::Sequence(spans, Style::default(), None)],
+            tasks,
             buffered: None,
             boundary: false,
         }
@@ -193,11 +198,16 @@ impl<'a> Iter<'a> {
             crate::work::scan(1);
             match task {
                 Task::Sequence(spans, style, link) => {
-                    if let Some(tail) = &spans.tail {
-                        self.push(Task::Tail(tail, spans.forced, style, link));
+                    if let Some(tail) = &spans.data().tail {
+                        self.push(Task::Tail(tail, spans.data().forced, style, link));
                     }
-                    if let Some(prefix) = spans.prefix.as_deref() {
-                        self.push(Task::Prefix(prefix, spans.stop.as_deref(), style, link));
+                    if let Some(prefix) = spans.data().prefix.as_deref() {
+                        self.push(Task::Prefix(
+                            prefix,
+                            spans.data().stop.as_deref(),
+                            style,
+                            link,
+                        ));
                     }
                 }
                 Task::Prefix(node, stop, style, link) => {
@@ -205,7 +215,11 @@ impl<'a> Iter<'a> {
                         continue;
                     }
                     self.push(Task::Part(&node.part, style, link));
-                    if let Some(previous) = node.previous.as_deref() {
+                    if let Some(previous) = node
+                        .previous
+                        .as_deref()
+                        .and_then(|data| data.prefix.as_deref())
+                    {
                         self.push(Task::Prefix(previous, stop, style, link));
                     }
                 }

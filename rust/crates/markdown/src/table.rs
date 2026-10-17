@@ -162,10 +162,12 @@ fn row(cells: Vec<Line>, header: bool, widths: &[usize], alignments: &[Alignment
             _ => 0,
         };
         line.push(&" ".repeat(left + 1), Style::default(), None);
-        for mut span in cell.spans {
-            span.style.bold |= header;
-            line.spans.push(span);
-        }
+        // Share the cell's runs; a header only adds bold to each of them.
+        let style = Style {
+            bold: header,
+            ..Style::default()
+        };
+        line.spans.append_boundary(cell.spans, style);
         line.push(&" ".repeat(padding - left + 1), Style::default(), None);
         line.push("│", MUTED, None);
     }
@@ -190,19 +192,18 @@ fn trim(mut cell: Line, size: usize) -> Line {
         used += columns;
         remaining = offset + cluster.len();
     }
-    let mut keep = 0;
-    let mut spans = cell.spans.to_vec();
-    for (index, span) in spans.iter_mut().enumerate() {
-        let end = remaining.min(span.text.len());
-        remaining -= end;
-        let complete = end == span.text.len();
-        span.text.truncate(end);
-        keep = index + usize::from(end > 0);
-        if !complete {
+    // Materialize only the runs that remain visible.
+    let mut spans = Vec::new();
+    for span in cell.spans.iter() {
+        if remaining == 0 {
             break;
         }
+        let mut span = span.owned();
+        let end = remaining.min(span.text.len());
+        remaining -= end;
+        span.text.truncate(end);
+        spans.push(span);
     }
-    spans.truncate(keep);
     cell.spans = spans.into();
     cell.push("…", Style::default(), None);
     cell

@@ -236,6 +236,37 @@ pub(crate) fn extend_expansion<'a>(
     )
 }
 
+// The start of the last row of a definition-only `tail` that begins another
+// definition, when every definition before it is complete. Duplicate labels
+// keep only their first definition's span, so the pending frontier alone can
+// stall before later complete definitions. A row starting with `[` cannot
+// continue an earlier definition's title, and a standalone parse with no
+// events shows that nothing before it is still open.
+pub(crate) fn sealed_definitions(tail: &str) -> Option<usize> {
+    #[cfg(test)]
+    crate::work::scan(tail.len());
+    #[cfg(test)]
+    if STALL_DUPLICATES.get() {
+        return None;
+    }
+    let row = tail
+        .trim_end_matches('\n')
+        .rmatch_indices('\n')
+        .map(|(at, _)| at + 1)
+        .find(|&row| {
+            let line = tail.get(row..).unwrap_or_default();
+            let content = line.trim_start_matches(' ');
+            line.len() - content.len() <= 3 && content.starts_with('[')
+        })?;
+    let sealed = tail.get(..row)?;
+    #[cfg(test)]
+    PARSED_BYTES.with(|work| work.set(work.get() + sealed.len()));
+    Parser::new_ext(sealed, crate::options())
+        .next()
+        .is_none()
+        .then_some(row)
+}
+
 fn options(paragraph: bool) -> pulldown_cmark::Options {
     let mut options = crate::options();
     if paragraph {
@@ -248,4 +279,6 @@ fn options(paragraph: bool) -> pulldown_cmark::Options {
 std::thread_local! {
     pub(crate) static REPARSE_DEFINITIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    // Negative control: keep the frontier at the first definition of each label.
+    pub(crate) static STALL_DUPLICATES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

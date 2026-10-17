@@ -1,6 +1,11 @@
 use super::*;
 #[path = "inline_classify.rs"]
 mod classify;
+#[path = "inline_hold.rs"]
+mod hold;
+
+// Events and expansion calls already parsed from a classification base.
+pub(super) type Seed<'s, 'e> = (usize, &'s [(Event<'e>, Range<usize>)], &'s [(usize, usize)]);
 
 #[derive(Default)]
 pub(super) struct Checkpoint {
@@ -17,6 +22,8 @@ pub(super) struct Inline {
     classified: usize,
     rows: classify::Rows,
     charges: Vec<(usize, usize, Range<usize>)>,
+    code: Option<Range<usize>>,
+    held: Option<hold::Held>,
 }
 
 impl Inline {
@@ -36,7 +43,7 @@ impl Inline {
         )
     }
     pub(super) fn plain(&self) -> bool {
-        self.scanner.plain()
+        self.held.is_none() && self.scanner.plain()
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         (stable, fallback)
@@ -44,20 +51,25 @@ impl Inline {
 }
 
 impl Markdown {
-    pub(super) fn advance_inline(
+    fn advance_engine(
         &mut self,
         previous: usize,
-        seed: Option<(usize, &[(Event<'_>, Range<usize>)], &[(usize, usize)])>,
+        seed: Option<Seed<'_, '_>>,
     ) -> Option<usize> {
         let mut inline = self.inline.take()?;
         let appended = self.source.get(inline.classified..)?;
         let destination = inline
             .scanner
             .prepare_classification(&self.source, inline.start);
-        let reopen =
-            appended.contains('>') && (inline.scanner.pending_angle() || appended.contains('<'));
+        // Only a byte that may close an angle opener can reinterpret it.
+        // Openers before the checkpoint are escaped or settled; a live one
+        // holds the checkpoint behind it.
+        let reopen = inline
+            .scanner
+            .feed_angles(&self.source)
+            .map(|opener| opener.max(inline.checkpoint.offset));
         let foreign = destination
-            || reopen
+            || reopen.is_some()
             || ((!self.references.committed.is_empty() || !self.references.pending.is_empty())
                 && appended.contains(']'));
         let mut base = if foreign {
@@ -85,6 +97,19 @@ impl Markdown {
         if let Some(row) = row {
             base = base.min(row);
         }
+        // A row can begin inside a multiline code span; reclassifying the row
+        // can end the paragraph before the span closes, so classify from the
+        // span's start.
+        #[cfg(test)]
+        let skip_code = SKIP_CODE.get();
+        #[cfg(not(test))]
+        let skip_code = false;
+        if let Some(code) = inline.code.as_ref().filter(|_| !skip_code)
+            && code.start < base
+            && base < code.end
+        {
+            base = code.start;
+        }
         if classify {
             base = inline.scanner.classification_boundary(base);
         }
@@ -110,7 +135,12 @@ impl Markdown {
         } else {
             self.source.len()
         };
-        let end = if inline.rows.inline_at(end) {
+        // A row that can still interrupt is decided by all of its bytes: an
+        // EOF tick run is the content that makes `1. ` a list item.
+        let undecided = inline.rows.undecided();
+        #[cfg(test)]
+        let undecided = undecided.filter(|_| !SKIP_UNDECIDED.get());
+        let end = if inline.rows.inline_at(end) && undecided.is_none() {
             end
         } else {
             self.source.len()
@@ -188,6 +218,13 @@ impl Markdown {
                 std::borrow::Cow::Borrowed(&[][..]),
             )
         };
+        #[cfg(test)]
+        if std::env::var_os("GC_INLINE_TRACE").is_some() {
+            eprintln!(
+                "input={:?} start={} base={base} end={end} classify={classify} foreign={foreign} sentinel={sentinel} events={events:?}",
+                self.source, inline.start
+            );
+        }
         if classify
             && (events
                 .first()
@@ -200,6 +237,19 @@ impl Markdown {
                 }))
         {
             return None;
+        }
+        if classify {
+            let code = events
+                .iter()
+                .filter(|(event, range)| matches!(event, Event::Code(_)) && range.start >= sentinel)
+                .map(|(_, range)| base + range.start - sentinel..base + range.end - sentinel)
+                .next_back()
+                .filter(|range| {
+                    #[cfg(test)]
+                    work::scan(range.len());
+                    self.source.get(range.clone()).is_some_and(|code| code.contains('\n'))
+                });
+            inline.code = code.or(inline.code.take().filter(|code| code.start < base));
         }
         inline.scanner.frontier(
             inline_scan::Slice {
@@ -296,6 +346,8 @@ impl Markdown {
             classified: start,
             rows: classify::Rows::at(start),
             charges: Vec::new(),
+            code: None,
+            held: None,
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
@@ -425,5 +477,13 @@ fn boundary(
     boundary
 }
 
+// Negative control: feed rule and setext candidate rows to the engine.
+#[cfg(test)]
+thread_local! { pub(crate) static SKIP_HOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+thread_local! { pub(crate) static SKIP_CODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+// Negative control: treat rows that can still interrupt as decided.
+#[cfg(test)]
+thread_local! { pub(crate) static SKIP_UNDECIDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[cfg(test)]
 thread_local! { pub(super) static REPLAY_CLASSIFIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

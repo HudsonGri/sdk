@@ -336,11 +336,7 @@ impl Renderer {
             Event::HardBreak => self.flush(),
             Event::Rule => {
                 self.flush();
-                static RULE: std::sync::OnceLock<Line> = std::sync::OnceLock::new();
-                self.block_line(
-                    RULE.get_or_init(|| Line::plain(&"─".repeat(40), MUTED))
-                        .clone(),
-                );
+                self.block_line(rule());
             }
             Event::TaskListMarker(done) => {
                 // Replace the bullet, retaining any nesting indentation.
@@ -539,3 +535,9 @@ thread_local! { pub(super) static CLONE_CONTEXT: std::cell::Cell<bool> = const {
 #[cfg(test)]
 #[path = "../tests/render_context.rs"]
 mod context_tests;
+
+/// The rendered thematic break.
+pub(crate) fn rule() -> Line {
+    static RULE: std::sync::OnceLock<Line> = std::sync::OnceLock::new();
+    RULE.get_or_init(|| Line::plain(&"─".repeat(40), MUTED)).clone()
+}

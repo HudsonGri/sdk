@@ -1,5 +1,5 @@
 use super::Snapshot;
-use crate::inline_scan::forest::PAGE;
+use crate::inline_scan::forest::{new_page, push_page, slot};
 use std::{collections::HashMap, ops::Range};
 
 pub(super) struct Code {
@@ -43,7 +43,8 @@ impl Codes {
             return None;
         }
         let index = cursor.checked_sub(1)?;
-        self.nodes.get(index / PAGE)?.get(index % PAGE)
+        let (page, offset) = slot(index);
+        self.nodes.get(page)?.get(offset)
     }
 
     pub(super) fn get(&self, width: usize) -> Option<&Code> {
@@ -76,14 +77,14 @@ impl Codes {
             .earliest()
             .unwrap_or(opening.start)
             .min(before.frontier);
-        if self.length.is_multiple_of(PAGE) {
-            let page = self.length / PAGE;
+        let (page, offset) = slot(self.length);
+        if offset == 0 {
             if page == self.nodes.len() {
                 #[cfg(test)]
                 if self.nodes.len() == self.nodes.capacity() {
                     crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Code>>());
                 }
-                self.nodes.push(Vec::with_capacity(PAGE));
+                self.nodes.push(new_page(page));
             } else {
                 self.nodes[page].clear();
             }
@@ -92,7 +93,7 @@ impl Codes {
             .classification_start()
             .map_or(opening.start, |first| first.min(opening.start));
         let width = opening.len();
-        self.nodes[self.length / PAGE].push(Code {
+        push_page(&mut self.nodes[page], Code {
             opening,
             before,
             previous: self.head,

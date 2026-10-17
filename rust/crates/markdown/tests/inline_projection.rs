@@ -15,7 +15,7 @@ fn project(
     state: &mut State,
     root: usize,
     source: &str,
-    lines: &mut Vec<Line>,
+    lines: &mut crate::line_buffer::Buffer,
 ) -> usize {
     let end = source.trim_end_matches([' ', '\t', '\x0b', '\x0c']).len();
     let rendering = crate::work::rendering(true);
@@ -40,13 +40,13 @@ proptest! {
         let mut tokens = Tokens::default();
         let mut cache = Cache::default();
         let mut source = String::from("x ");
-        let mut lines = Vec::new();
+        let mut lines = crate::line_buffer::Buffer::default();
         for part in parts {
             for character in part.chars() {
                 source.push(character);
                 let root = advance(&mut state, &mut tokens, &source);
                 let visible = project(&mut cache, &mut state, root, &source, &mut lines);
-                prop_assert_eq!(&lines[..visible], &crate::tests::full_parse(&source), "source {:?}", source);
+                prop_assert_eq!(lines.view(..visible).unwrap(), &crate::tests::full_parse(&source), "source {:?}", source);
             }
         }
     }
@@ -57,7 +57,7 @@ fn measure(count: usize, replay: bool) -> (usize, usize) {
     let mut tokens = Tokens::default();
     let mut cache = Cache::default();
     let mut source = String::from("x ");
-    let mut lines = Vec::new();
+    let mut lines = crate::line_buffer::Buffer::default();
     let root = advance(&mut state, &mut tokens, &source);
     project(&mut cache, &mut state, root, &source, &mut lines);
     super::super::REPLAY.set(replay);
@@ -121,7 +121,7 @@ fn atom(
             },
             &events,
             &crate::References::default(),
-            &mut Vec::new(),
+            &mut crate::line_buffer::Buffer::default(),
             0,
         )
         .expect("compiled inline atom");
@@ -191,7 +191,7 @@ proptest! {
         model.push(crate::Event::End(crate::TagEnd::Strong));
         model.push(crate::Event::Text(" x".into()));
         let root = forest.snapshot();
-        let mut lines = Vec::new();
+        let mut lines = crate::line_buffer::Buffer::default();
         cache.forest(&mut forest, root, &source, 0..source.len(), &mut lines, 0).expect("scope projection");
         prop_assert_eq!(lines, crate::render::render_styled(&model, Style::default()), "source {:?}", source);
     }

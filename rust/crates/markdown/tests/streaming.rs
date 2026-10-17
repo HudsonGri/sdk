@@ -21,9 +21,9 @@ const FIXTURES: &[(&str, &str)] = &[
     ),
 ];
 
-fn plain(lines: &[Line]) -> String {
+fn plain<'a>(lines: impl IntoIterator<Item = &'a Line>) -> String {
     lines
-        .iter()
+        .into_iter()
         .map(|line| {
             line.spans
                 .iter()
@@ -57,7 +57,11 @@ fn check_prefixes(source: &str) {
         let changed = markdown.push(&delta);
         assert!(changed <= presentation.len());
         presentation.truncate(changed);
-        presentation.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
+        presentation.extend(
+            (markdown.lines().slice(changed..).unwrap_or_default())
+                .iter()
+                .cloned(),
+        );
         assert_eq!(presentation, markdown.lines());
         assert_eq!(
             markdown.lines(),
@@ -119,7 +123,7 @@ fn styles_links_and_highlighting_survive_the_port() {
     );
     let code = lines
         .iter()
-        .find(|line| plain(std::slice::from_ref(line)).contains("const value"));
+        .find(|line| plain([*line]).contains("const value"));
     assert!(code.is_some_and(|line| {
         let colors: std::collections::HashSet<_> = line
             .spans

@@ -50,7 +50,11 @@ fuzz_target!(|data: &[u8]| {
         let changed = streamed.push(delta);
         assert!(changed <= streamed.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(&streamed.lines()[changed..]);
+        consumer.extend(
+            (streamed.lines().slice(changed..).unwrap_or_default())
+                .iter()
+                .cloned(),
+        );
         let mut one_shot = Markdown::with_width(width);
         one_shot.push(source);
         assert_eq!(consumer, one_shot.lines());

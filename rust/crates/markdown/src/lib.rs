@@ -30,7 +30,8 @@ use std::{
 };
 pub use style::{Color, Line, Span, Style};
 pub use text::Text;
-
+mod line_buffer;
+pub use line_buffer::{Lines, LinesIter};
 /// Disposable incremental presentation of one append-only Markdown stream.
 /// Completed leaves and fence lines remain behind a parser checkpoint, including
 /// leaves inside containers. Reference changes parse only dependent blocks.
@@ -42,7 +43,7 @@ pub struct Markdown {
     stable_lines: usize,
     visibility: visibility::Visibility,
     visible_lines: usize,
-    lines: Vec<Line>,
+    lines: line_buffer::Buffer,
     spare: inline_views::Spare,
     state: render::Renderer,
     context: Vec<Container>,
@@ -82,7 +83,8 @@ struct Container {
 
 struct Cached {
     template: Template,
-    state: render::Renderer,
+    // Boxed so the cache vector's geometric slack holds handles, not renderers.
+    state: Box<render::Renderer>,
     lines: Range<usize>,
     cost: usize,
     cumulative: usize,
@@ -123,7 +125,7 @@ impl Cached {
         }
         Some(Self {
             template: Template::new(raw, quotes, events),
-            state,
+            state: Box::new(state),
             lines,
             cost: 0,
             cumulative: 0,
@@ -202,11 +204,7 @@ impl Markdown {
                 if visible.is_empty() {
                     self.plain_spaces += appended.len();
                 } else {
-                    if let Some(span) = line.spans.last_mut() {
-                        span.text
-                            .extend(std::iter::repeat_n(' ', self.plain_spaces));
-                        span.text.push_str(visible);
-                    }
+                    line.spans.append_text(self.plain_spaces, visible);
                     self.plain_spaces = appended.len() - visible.len();
                 }
             }
@@ -246,6 +244,8 @@ impl Markdown {
             let prefix = context_prefix(&self.context);
             let source = format!("{prefix}{tail}");
             #[cfg(test)]
+            if std::env::var("GC_LOOP").is_ok() { eprintln!("LOOP offset {} source {source:?}", self.offset); }
+            #[cfg(test)]
             work::copy(source.len());
             let keys = self.references.update(&source, self.offset, prefix.len());
             changed = changed.min(self.resolve(&keys));
@@ -259,13 +259,13 @@ impl Markdown {
 
     /// Current unwrapped lines. A partial delimiter remains visible until it
     /// forms valid Markdown; no input is hidden waiting for a future delta.
-    pub fn lines(&self) -> &[Line] {
-        self.lines.get(..self.visible_lines).unwrap_or_default()
+    pub fn lines(&self) -> Lines<'_> {
+        self.lines.view(..self.visible_lines).unwrap_or_default()
     }
 
     fn visible_end(&self, start: usize, end: usize, fallback: usize) -> usize {
         self.lines
-            .get(start..end)
+            .view(start..end)
             .unwrap_or_default()
             .iter()
             .rposition(|line| {
@@ -599,7 +599,9 @@ impl Markdown {
         if events.is_empty() && tail.ends_with("\n\n") {
             self.offset = self.source.len();
         } else if events.is_empty() {
-            self.offset = self.references.frontier(self.offset);
+            let sealed = self.context.is_empty().then(|| references::sealed_definitions(tail));
+            let sealed = sealed.flatten().map_or(0, |row| self.offset + row);
+            self.offset = self.references.frontier(self.offset).max(sealed);
         }
         if self.context.is_empty() {
             self.offset += self

@@ -49,17 +49,27 @@ fn measure(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/inline_render_work.txt")
+        ))),
+        ..ProptestConfig::with_cases(24)
+    })]
     #[test]
     fn inline_render_work_is_linear(
-        parts in prop::collection::vec(prop::sample::select(vec![
+        parts in prop_oneof![prop::collection::vec(prop::sample::select(vec![
             "*", "**", "***", "_", "__", "~", "~~", "`", "``", "```",
             "[", "]", "![", "](u)", "\\*", "\\`", "\\\\", "\\", "!", "x", " ", "¡", "‐", "🦀",
             "[x](u)", "![x](u)", "[a *b*](<u> \"t\")", "![*x* ![y](v)](u)",
             "x![](u)y", "![a ![](u)b](u)", "[x][r]", "[r]: /url\n\n",
             "<https://x>", "<a@b.example>", "&amp;", "&#10;", "&#13;", "&#0;",
             "<b>", "</b>", "<!--\n x\n-->", "\0", "word\n", "`code`", "**bold**",
-        ]), 1..5),
+            "- item\n\n", "-   parent\n\n      child\n", "![][r]\n\n", "\n\n", "```\nx\n```\n",
+        ]), 1..5), (
+            prop::sample::select(vec!["&#10;", "&#13;", "&amp;", "[x][r]", "![x](u)", "![][r]"]),
+            prop::sample::select(vec!["*", "**", "_", "~", "\\", "[", "]"]),
+            prop::sample::select(vec!["<!--\n x\n-->", "<div>\n x\n</div>", "- item\n\n", "[r]: /url\n\n", "\n\n", "```text\nx\n```\n"]),
+        ).prop_map(|(inline, delimiter, block)| vec![inline, delimiter, block])],
         separator in prop::sample::select(vec!["", " ", "\n", "!", "x"]),
     ) {
         // Each smaller run is an identical prefix of the largest run. Retain
@@ -73,6 +83,10 @@ proptest! {
                 "{parts:?} separated by {separator:?}: {} chunks, {used} render units for {bytes} bytes", count * 2);
             prop_assert!(used <= 2 * small.0 + 4096,
                 "{parts:?} separated by {separator:?}: {count} -> {} chunks use {} -> {used} render units; copy/visibility/feed/scan {:?} -> {breakdown:?}", count * 2, small.0, small.2);
+            for category in 0..4 {
+                prop_assert!(breakdown[category] <= 2 * small.2[category] + 4096,
+                    "{parts:?} separated by {separator:?}: category {category}, {count} -> {} chunks use {:?} -> {breakdown:?}", count * 2, small.2);
+            }
         }
     }
 }
@@ -147,7 +161,11 @@ fn provisional_views_preserve_finalized_prefixes_and_consumer_snapshots() {
             let changed = markdown.push(part);
             assert_eq!(previous, expected_previous.lines());
             consumer.truncate(changed);
-            consumer.extend_from_slice(&markdown.lines()[changed..]);
+            consumer.extend(
+                (markdown.lines().slice(changed..).unwrap_or_default())
+                    .iter()
+                    .cloned(),
+            );
             assert_eq!(consumer, crate::tests::full_parse(&markdown.source));
         }
     }
@@ -157,4 +175,34 @@ fn provisional_views_preserve_finalized_prefixes_and_consumer_snapshots() {
 fn escaped_reference_text_does_not_relocate_backing_chunks() {
     let snapshots = samples(&["\\*", "[x][r]", "](u)"], "", &[1024, 2048], false);
     assert!(snapshots[1].0 <= 2 * snapshots[0].0 + 4096, "{snapshots:?}");
+}
+
+#[test]
+fn entity_emphasis_comment_previews_share_committed_rows() {
+    let snapshots = samples(
+        &["&#10;", "*", "<!--\n x\n-->"],
+        "",
+        &[64, 128, 256, 512, 1024, 2048],
+        false,
+    );
+    for pair in snapshots.windows(2) {
+        assert!(pair[1].0 <= 2 * pair[0].0 + 4096, "{pair:?}");
+    }
+}
+
+#[test]
+fn rendering_property_detects_replaying_row_history_on_append() {
+    crate::line_buffer::COPY_HISTORY.set(true);
+    let snapshots = samples(
+        &["&#10;", "*", "<!--\n x\n-->"],
+        "",
+        &[64, 128, 256, 512, 1024, 2048],
+        false,
+    );
+    crate::line_buffer::COPY_HISTORY.set(false);
+    assert!(
+        snapshots
+            .windows(2)
+            .any(|pair| pair[1].0 > 2 * pair[0].0 + 4096)
+    );
 }

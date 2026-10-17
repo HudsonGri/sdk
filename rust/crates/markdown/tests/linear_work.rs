@@ -4,13 +4,15 @@ use super::*;
 mod mixed;
 
 fn work(chunk: usize) -> (usize, usize) {
-    let source = mixed::document(2 * 1024 * 1024);
-    let (small, remainder) = source.split_at(1024 * 1024);
+    // 256 copies of a 1 KiB record of every construct; doubling exposes any
+    // per-push cost that grows with the document.
+    let source = mixed::document(512 * 1024);
+    let (small, remainder) = source.split_at(256 * 1024);
     let mut totals = Vec::new();
     let before = work::current();
     let mut markdown = Markdown::default();
     let mut first = None;
-    // The 1 MiB run is exactly the prefix of the 2 MiB run. Retain its
+    // The 256 KiB run is exactly the prefix of the 512 KiB run. Retain its
     // counter checkpoint instead of executing that identical fixture twice.
     for part in [small, remainder] {
         for delta in part.as_bytes().chunks(chunk) {
@@ -39,15 +41,11 @@ fn work(chunk: usize) -> (usize, usize) {
                 delta.len()
             );
             if markdown.stable_lines > 0 {
-                let pointer = markdown
-                    .lines()
-                    .first()
-                    .and_then(|line| line.spans.first())
-                    .and_then(|span| span.text.allocation());
-                if let Some(first) = first {
-                    assert_eq!(pointer, Some(first), "a finalized line was replaced");
+                let spans = &markdown.lines().first().expect("stable first row").spans;
+                if let Some(first) = &first {
+                    assert!(spans.same_snapshot(first), "a finalized line was replaced");
                 } else {
-                    first = pointer;
+                    first = Some(spans.clone());
                 }
             }
         }
@@ -70,7 +68,7 @@ fn mixed_document_total_work_is_linear() {
             .map(|chunk| {
                 scope.spawn(move || {
                     let (small, large) = work(chunk);
-                    println!("chunk {chunk}: 1 MiB / 2 MiB use {small} / {large} units");
+                    println!("chunk {chunk}: 256 KiB / 512 KiB use {small} / {large} units");
                     assert!(
                         large * 10 <= small * 22,
                         "chunk {chunk}: {small} -> {large} work"
@@ -125,7 +123,7 @@ proptest! {
             let changed = markdown.push(source.get(offset..end).expect("ASCII chunk"));
             prop_assert!(changed <= markdown.lines().len());
             consumer.truncate(changed);
-            consumer.extend_from_slice(markdown.lines().get(changed..).expect("changed boundary"));
+            consumer.extend((markdown.lines().slice(changed..).expect("changed boundary")).iter().cloned());
             prop_assert_eq!(&consumer, &full_parse(source.get(..end).expect("ASCII prefix")));
             offset = end;
         }

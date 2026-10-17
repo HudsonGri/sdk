@@ -1,15 +1,15 @@
 use super::*;
 
 impl Scanner {
-    pub(crate) fn classification_resume(&self, end: usize, reopen: bool) -> usize {
+    pub(crate) fn classification_resume(&self, end: usize, reopen: Option<usize>) -> usize {
         let destination = self
             .render
             .completed_destinations()
             .filter(|start| *start <= end && self.state.destination_possible(*start))
             .min();
         let mut base = self.state.resume_closures(0, end, destination);
-        if reopen {
-            base = base.min(self.classification_start(end, true));
+        if let Some(closed) = reopen {
+            base = base.min(self.reopen_start(end, closed));
         }
         let mut depth = 0usize;
         let mut old = self.state.resume_bracket();

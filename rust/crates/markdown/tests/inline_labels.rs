@@ -19,7 +19,11 @@ fn replay(source: &str, cuts: &[usize]) -> Vec<crate::Line> {
         let changed = markdown.push(&source[start..end]);
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(&markdown.lines()[changed..]);
+        consumer.extend(
+            (markdown.lines().slice(changed..).unwrap_or_default())
+                .iter()
+                .cloned(),
+        );
         assert_eq!(
             consumer,
             crate::tests::full_parse(&source[..end]),

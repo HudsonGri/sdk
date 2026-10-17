@@ -1,6 +1,6 @@
 use super::*;
 
-fn replay(source: &str, cuts: &[usize]) {
+pub(super) fn replay(source: &str, cuts: &[usize]) {
     let mut markdown = Markdown::default();
     let mut consumer = Vec::new();
     let mut start = 0;
@@ -12,7 +12,11 @@ fn replay(source: &str, cuts: &[usize]) {
         let changed = markdown.push(delta);
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(markdown.lines().get(changed..).expect("change boundary"));
+        consumer.extend(
+            (markdown.lines().slice(changed..).expect("change boundary"))
+                .iter()
+                .cloned(),
+        );
         assert_eq!(
             consumer,
             full_parse(source.get(..end).expect("UTF-8 prefix")),
@@ -235,4 +239,56 @@ fn short_paragraphs_stay_within_the_total_work_bound() {
     let chunks = ["\n".to_owned(), "[]".to_owned(), "\n".to_owned()];
     let measured = units(&chunks, 128);
     assert!(measured.0 <= 128 * measured.1 + 4096, "{measured:?}");
+}
+
+#[test]
+fn closed_empty_brackets_keep_the_existing_work_bound() {
+    for count in [64, 128, 256, 512, 1024] {
+        let (used, bytes, parts) = units(&["[]".into()], count);
+        assert!(
+            used <= 128 * bytes + 4096,
+            "n={count}: {used} for {bytes}, {parts:?}"
+        );
+    }
+}
+
+#[test]
+fn multiline_code_then_pending_ticks_in_link_labels_match_replay() {
+    let source = include_str!("../fuzz/corpus/streaming/multiline-code-pending-link-tick");
+    let cuts: Vec<_> = (1..source.len()).collect();
+    replay(source, &cuts);
+    // Negative control: classifying from the row loses the span's opener.
+    crate::inline::SKIP_CODE.set(true);
+    let broken = std::panic::catch_unwind(|| replay(source, &cuts));
+    crate::inline::SKIP_CODE.set(false);
+    assert!(broken.is_err());
+}
+
+#[test]
+fn eof_ticks_decide_a_list_interrupt() {
+    let sources = ["a  \n1. `c`", "a\n1. `c`", "a\n- `c`", "a\n> `c`", "a\n# `c`"];
+    for source in sources {
+        let cuts: Vec<_> = (1..source.len()).collect();
+        replay(source, &cuts);
+    }
+    // Negative control: classifying the row without its EOF ticks keeps
+    // `1. ` as paragraph text.
+    crate::inline::SKIP_UNDECIDED.set(true);
+    let broken = std::panic::catch_unwind(|| replay(sources[0], &[1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    crate::inline::SKIP_UNDECIDED.set(false);
+    assert!(broken.is_err());
+}
+
+#[test]
+fn blank_start_items_reopen_as_items() {
+    let sources = ["*\n  e\n\n`", "1.\n   e\n\n# h", "-\n  e\n\n```\n", "> -\n>   e\n>\n> x"];
+    for source in sources {
+        let cuts: Vec<_> = (1..source.len()).collect();
+        replay(source, &cuts);
+    }
+    // Negative control: a marker glued to its placeholder text is no item.
+    crate::context::GLUED_MARKER.set(true);
+    let broken = std::panic::catch_unwind(|| replay(sources[0], &[7]));
+    crate::context::GLUED_MARKER.set(false);
+    assert!(broken.is_err());
 }

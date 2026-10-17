@@ -39,6 +39,37 @@ struct Node {
 
 pub(super) const PAGE: usize = 16;
 
+// Pages hold 2, 2, 4, 8 and then PAGE entries: a short paragraph's
+// structures stay small, storage stays within twice the entries plus one
+// page, and no entry moves once written.
+pub(super) fn slot(index: usize) -> (usize, usize) {
+    match index {
+        0 | 1 => (0, index),
+        2..PAGE => {
+            let page = index.ilog2() as usize;
+            (page, index - (1 << page))
+        }
+        _ => (index / PAGE + PAGE.ilog2() as usize - 1, index % PAGE),
+    }
+}
+
+pub(super) fn new_page<T>(page: usize) -> Vec<T> {
+    #[cfg(test)]
+    if crate::work::EAGER_RENDER_PAGE.get() {
+        return Vec::with_capacity(PAGE);
+    }
+    Vec::with_capacity(match page {
+        0 => 2,
+        _ if page < PAGE.ilog2() as usize => 1 << page,
+        _ => PAGE,
+    })
+}
+
+pub(super) fn push_page<T>(page: &mut Vec<T>, value: T) {
+    debug_assert!(page.len() < page.capacity(), "pages never reallocate");
+    page.push(value);
+}
+
 #[derive(Default)]
 pub(super) struct Forest {
     nodes: Vec<Box<Vec<Node>>>,
@@ -84,12 +115,7 @@ impl Forest {
     }
 
     fn location(&self, index: usize) -> (usize, usize) {
-        let first = self.nodes.first().map_or(2, |page| page.capacity());
-        if index < first {
-            (0, index)
-        } else {
-            (1 + (index - first) / PAGE, (index - first) % PAGE)
-        }
+        slot(index)
     }
 
     fn node_mut(&mut self, cursor: usize) -> Option<&mut Node> {
@@ -118,14 +144,7 @@ impl Forest {
                 if self.nodes.is_empty() {
                     self.nodes.reserve_exact(1);
                 }
-                let capacity = if self.nodes.is_empty() { 2 } else { PAGE };
-                #[cfg(test)]
-                let capacity = if crate::work::EAGER_RENDER_PAGE.get() {
-                    PAGE
-                } else {
-                    capacity
-                };
-                self.nodes.push(Box::new(Vec::with_capacity(capacity)));
+                self.nodes.push(Box::new(new_page(page)));
             } else {
                 self.nodes
                     .get_mut(page)
@@ -134,7 +153,7 @@ impl Forest {
             }
         }
         let page = self.nodes.get_mut(page).expect("node page allocated");
-        page.push(Node {
+        push_page(page, Node {
             previous: self.root,
             range,
             children,

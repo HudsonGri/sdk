@@ -46,16 +46,7 @@ impl Line {
         if text.is_empty() {
             return;
         }
-        if let Some(last) = self.spans.last_mut()
-            && last.style == style
-            && match (&last.link, link) {
-                (None, None) => true,
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                _ => false,
-            }
-        {
-            last.text.push_str(text);
-        } else {
+        if !self.spans.append_last(text, style, link) {
             self.spans.push_content(
                 Span {
                     text: text.into(),

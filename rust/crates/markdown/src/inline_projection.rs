@@ -1,6 +1,6 @@
 use super::{Cache, Key, Output, text_output};
 use crate::inline_scan::forest::{Forest, Kind, Rendered};
-use crate::{Line, Range, Style};
+use crate::{Range, Style};
 
 pub(in crate::inline_scan) struct Projection<'a, 'b> {
     pub(in crate::inline_scan) source: &'a str,
@@ -153,7 +153,7 @@ impl Cache {
         root: usize,
         source: &str,
         visible: Range<usize>,
-        lines: &mut Vec<Line>,
+        lines: &mut crate::line_buffer::Buffer,
         first: usize,
     ) -> Option<(usize, usize)> {
         let hard_breaks = pulldown_cmark::Parser::new_ext(source, crate::options())
@@ -181,7 +181,7 @@ impl Cache {
         forest: &mut Forest,
         root: usize,
         projection: Projection<'_, '_>,
-        lines: &mut Vec<Line>,
+        lines: &mut crate::line_buffer::Buffer,
         first: usize,
         spare: Option<&mut crate::inline_views::Spare>,
     ) -> Option<(usize, usize)> {

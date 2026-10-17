@@ -21,7 +21,7 @@ fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
         &References::default(),
     );
     let parsed_nodes = scanner.state.forest.length;
-    let mut lines = Vec::new();
+    let mut lines = crate::line_buffer::Buffer::default();
     scanner
         .render_tree(source, 0, &mut lines, 0, None)
         .expect("retained inline events");
@@ -32,7 +32,7 @@ fn view(scanner: &mut Scanner, source: &str) -> Vec<crate::Line> {
     while lines.last().is_some_and(|line| line.spans.is_empty()) {
         lines.pop();
     }
-    lines
+    lines.into_iter().collect()
 }
 
 fn full(source: &str) -> Vec<crate::Line> {
@@ -192,7 +192,11 @@ fn code_and_paragraph_boundaries_match_event_rendering() {
         for (at, character) in source.char_indices() {
             let changed = markdown.push(&source[at..at + character.len_utf8()]);
             consumer.truncate(changed);
-            consumer.extend_from_slice(&markdown.lines()[changed..]);
+            consumer.extend(
+                (markdown.lines().slice(changed..).unwrap_or_default())
+                    .iter()
+                    .cloned(),
+            );
             assert_eq!(
                 consumer,
                 crate::tests::full_parse(&source[..at + character.len_utf8()]),

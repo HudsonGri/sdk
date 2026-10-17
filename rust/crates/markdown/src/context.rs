@@ -67,6 +67,9 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
             ),
         };
     }
+    // An item whose marker ends its line takes its content one column after
+    // the marker; `*x` would instead be paragraph text.
+    let mut blank = false;
     let length = match tag {
         Tag::Item => {
             let marker = line.get(before..).unwrap_or_default();
@@ -77,6 +80,11 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
                 .bytes()
                 .take_while(|byte| matches!(byte, b' ' | b'\t'))
                 .count();
+            blank = padding == 0;
+            #[cfg(test)]
+            {
+                blank &= !GLUED_MARKER.get();
+            }
             before
                 + end
                 + if (1..=4).contains(&padding) {
@@ -94,7 +102,11 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
             };
         }
     };
-    let marker = line.get(before..length).unwrap_or_default();
+    let marker = format!(
+        "{}{}",
+        line.get(before..length).unwrap_or_default(),
+        if blank { " " } else { "" }
+    );
     let opening = format!(
         "{parent}{marker}{}\n",
         if matches!(tag, Tag::Item) { "x" } else { "" }
@@ -216,4 +228,11 @@ pub(super) fn item_marker_complete(source: &str, start: usize) -> bool {
             + 1
     };
     marker.get(length).is_some_and(u8::is_ascii_whitespace)
+}
+
+#[cfg(test)]
+thread_local! {
+    // Negative control: reopen a blank-start item as `*x`, which is paragraph
+    // text rather than an item.
+    pub(super) static GLUED_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

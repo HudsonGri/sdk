@@ -165,9 +165,6 @@ impl Markdown {
         #[cfg(test)]
         {
             work::copy((rows.len() + 2) * std::mem::size_of::<Line>());
-            if self.lines.len() + rows.len() + 2 > self.lines.capacity() {
-                work::copy(self.lines.len() * std::mem::size_of::<Line>());
-            }
         }
         self.lines.extend(rows);
         self.lines.push(border('└', '┴', '┘', &widths));

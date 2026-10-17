@@ -9,7 +9,7 @@ impl Scanner {
     ) {
         // Ready tokens start at a neutral lexer boundary. Resolve any delayed
         // break before feeding the token that opens the next construct.
-        if !self.state.neutral() || self.pending_break.is_some() {
+        if !self.state.neutral_before(position) || self.pending_break.is_some() {
             return;
         }
         self.frontier = self.frontier.max(position);

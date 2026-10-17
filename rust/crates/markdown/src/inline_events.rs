@@ -1,8 +1,6 @@
 use super::Input;
 #[cfg(test)]
 use super::REPLAY;
-#[cfg(test)]
-use crate::Line;
 use crate::{Event, Range, References, Span, Spans, Style, Tag, TagEnd};
 #[cfg(test)]
 use std::collections::HashSet;
@@ -207,12 +205,11 @@ impl Cache {
                 self.first_key_end = Some(self.first_key_end.map_or(*end, |old| old.min(*end)));
                 true
             });
+            // Reuse the open block's high-water allocation. Compaction would
+            // re-copy live keys at each checkpoint; the block owns this map
+            // and releases it when it closes.
             if self.keys.is_empty() {
                 self.keys = HashMap::new();
-            } else if self.keys.len() <= self.keys.capacity() / 4 {
-                #[cfg(test)]
-                crate::work::copy(self.keys.len() * std::mem::size_of::<(Key, (usize, usize))>());
-                self.keys.shrink_to_fit();
             }
         }
     }
@@ -331,7 +328,7 @@ impl Cache {
         source: crate::inline_scan::Slice<'_>,
         events: &[(Event<'_>, Range<usize>)],
         references: &References,
-        lines: &mut Vec<Line>,
+        lines: &mut crate::line_buffer::Buffer,
         first: usize,
     ) -> Option<(usize, usize)> {
         #[cfg(test)]

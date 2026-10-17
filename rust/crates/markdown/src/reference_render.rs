@@ -168,6 +168,9 @@ impl Markdown {
         if complete {
             self.reference_cost = cost;
         }
+        // Invalidate the alternate before any open-block preview can swap it
+        // back over reference replacements, including budget-only updates.
+        self.spare.invalidate(changed);
         self.apply_reference_lines(replacements, length, resize, growing);
         changed
     }
@@ -195,14 +198,8 @@ impl Markdown {
                     work::copy(lines.len() * std::mem::size_of::<Line>());
                 }
                 if let Some(cache) = self.cached.get(index) {
-                    for (target, line) in self
-                        .lines
-                        .get_mut(cache.lines.clone())
-                        .unwrap_or_default()
-                        .iter_mut()
-                        .zip(lines)
-                    {
-                        *target = line;
+                    for (index, line) in cache.lines.clone().zip(lines) {
+                        self.lines[index] = line;
                     }
                     let range = cache.lines.clone();
                     for index in range {
@@ -227,66 +224,64 @@ impl Markdown {
         #[cfg(test)]
         let mut moved = 0;
         let mut replacement = None::<(Range<usize>, std::vec::IntoIter<Line>)>;
-        // extract_if compacts the suffix in place. Each surviving old line moves
+        // Compact the affected suffix in place. Each surviving old line moves
         // at most once; no temporary copy of the entire suffix is necessary.
-        self.lines
-            .extract_if(first_line.., |line| {
-                while caches
-                    .peek()
-                    .is_some_and(|(_, cache)| cache.lines.start <= read)
+        self.lines.retain_suffix(first_line, |line| {
+            while caches
+                .peek()
+                .is_some_and(|(_, cache)| cache.lines.start <= read)
+            {
+                let (index, cache) = caches.next().expect("next cache");
+                #[cfg(test)]
                 {
-                    let (index, cache) = caches.next().expect("next cache");
+                    self.reference_cache_visits += 1;
+                }
+                let old = cache.lines.clone();
+                let lines = replacements.remove(&index);
+                let length = lines.as_ref().map_or(old.len(), Vec::len);
+                let start = write + old.start - read;
+                cache.lines = start..start + length;
+                if !old.is_empty() {
+                    replacement = lines.map(|lines| (old, lines.into_iter()));
+                }
+            }
+            #[cfg(test)]
+            work::scan(1);
+            #[cfg(test)]
+            let mut replaced = false;
+            let remove = if let Some((_, lines)) = replacement
+                .as_mut()
+                .filter(|(range, _)| range.contains(&read))
+            {
+                if let Some(next) = lines.next() {
+                    #[cfg(test)]
+                    work::copy(std::mem::size_of::<Line>());
+                    *line = next;
                     #[cfg(test)]
                     {
-                        self.reference_cache_visits += 1;
+                        replaced = true;
                     }
-                    let old = cache.lines.clone();
-                    let lines = replacements.remove(&index);
-                    let length = lines.as_ref().map_or(old.len(), Vec::len);
-                    let start = write + old.start - read;
-                    cache.lines = start..start + length;
-                    if !old.is_empty() {
-                        replacement = lines.map(|lines| (old, lines.into_iter()));
-                    }
-                }
-                #[cfg(test)]
-                work::scan(1);
-                #[cfg(test)]
-                let mut replaced = false;
-                let remove = if let Some((_, lines)) = replacement
-                    .as_mut()
-                    .filter(|(range, _)| range.contains(&read))
-                {
-                    if let Some(next) = lines.next() {
-                        #[cfg(test)]
-                        work::copy(std::mem::size_of::<Line>());
-                        *line = next;
-                        #[cfg(test)]
-                        {
-                            replaced = true;
-                        }
-                        false
-                    } else {
-                        true
-                    }
-                } else {
                     false
-                };
-                if !remove {
-                    if read != write {
-                        #[cfg(test)]
-                        work::copy(std::mem::size_of::<Line>());
-                    }
-                    #[cfg(test)]
-                    {
-                        moved += usize::from(replaced || read != write);
-                    }
-                    write += 1;
+                } else {
+                    true
                 }
-                read += 1;
-                remove
-            })
-            .for_each(drop);
+            } else {
+                false
+            };
+            if !remove {
+                if read != write {
+                    #[cfg(test)]
+                    work::copy(std::mem::size_of::<Line>());
+                }
+                #[cfg(test)]
+                {
+                    moved += usize::from(replaced || read != write);
+                }
+                write += 1;
+            }
+            read += 1;
+            !remove
+        });
         for (_, cache) in caches {
             #[cfg(test)]
             {
@@ -325,10 +320,6 @@ impl Markdown {
         let mut previous = self.lines.split_off(first_line).into_iter();
         let mut cursor = first_line;
         let mut lines = std::mem::take(&mut self.lines);
-        #[cfg(test)]
-        if length > lines.capacity() {
-            work::copy(lines.len() * std::mem::size_of::<Line>());
-        }
         lines.reserve(length.saturating_sub(lines.len()));
         // Caches are appended in source order. Walk them once while consuming
         // each old line once; neither splice a suffix nor rescan cache ranges.

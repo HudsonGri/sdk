@@ -155,7 +155,7 @@ proptest! {
         let mut events = Vec::new();
         let mut saved = None;
         let mut previous = Output::default();
-        let mut lines = previous.lines();
+        let mut lines: crate::line_buffer::Buffer = previous.lines().into_iter().collect();
         for action in actions {
             match action {
                 0..=3 => {

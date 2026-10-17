@@ -6,17 +6,38 @@ pub(super) struct Context {
     pub(super) links: usize,
     pub(super) floor: usize,
     pub(super) hint: bool,
-    pub(super) opaque: Option<std::num::NonZeroUsize>,
+    pub(super) paren: Option<std::num::NonZeroUsize>,
     pub(super) reference: Option<std::num::NonZeroUsize>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(in crate::inline_scan) struct Anchor {
     pub(super) context: std::sync::Arc<Context>,
-    pub(super) delimiter: usize,
-    pub(super) forest: usize,
-    pub(super) bracket: usize,
-    pub(super) closed: usize,
+    // Entry ordinals within one paragraph. An anchor is kept per opener, so
+    // they are stored narrow; each entry spans at least one source byte.
+    delimiter: u32,
+    forest: u32,
+    bracket: u32,
+    closed: u32,
+}
+
+fn narrow(ordinal: usize) -> u32 {
+    u32::try_from(ordinal).expect("paragraph entry ordinals fit in 32 bits")
+}
+
+impl Anchor {
+    pub(super) fn delimiter(&self) -> usize {
+        self.delimiter as usize
+    }
+    pub(in crate::inline_scan) fn forest(&self) -> usize {
+        self.forest as usize
+    }
+    pub(super) fn bracket(&self) -> usize {
+        self.bracket as usize
+    }
+    pub(super) fn closed(&self) -> usize {
+        self.closed as usize
+    }
 }
 
 impl State {
@@ -26,10 +47,11 @@ impl State {
         };
         #[cfg(test)]
         crate::work::scan(1);
+        let (page, offset) = super::forest::slot(ordinal);
         if let Some(slot) = self
             .anchors
-            .get_mut(ordinal / super::forest::PAGE)
-            .and_then(|page| page.get_mut(ordinal % super::forest::PAGE))
+            .get_mut(page)
+            .and_then(|page| page.get_mut(offset))
         {
             *slot = None;
         }
@@ -46,8 +68,8 @@ impl State {
             links: self.link_floor,
             floor,
             hint: self.labels != [0, 0],
-            opaque: self
-                .opaque
+            paren: self
+                .paren
                 .and_then(|position| std::num::NonZeroUsize::new(position + 1)),
         };
         #[cfg(test)]
@@ -72,10 +94,10 @@ impl State {
                 .as_ref()
                 .expect("resume context")
                 .clone(),
-            delimiter,
-            forest: self.forest.snapshot(),
-            bracket: self.bracket,
-            closed: self.closed,
+            delimiter: narrow(delimiter),
+            forest: narrow(self.forest.snapshot()),
+            bracket: narrow(self.bracket),
+            closed: narrow(self.closed),
         }
     }
 
@@ -90,23 +112,31 @@ impl State {
             .expect("mutable opener");
         #[cfg(test)]
         crate::work::scan(1);
+        let mut anchor = Some(anchor);
         while self.anchor_slots <= ordinal {
-            if self.anchor_slots.is_multiple_of(super::forest::PAGE) {
+            if super::forest::slot(self.anchor_slots).1 == 0 {
                 #[cfg(test)]
                 if self.anchors.len() == self.anchors.capacity() {
                     crate::work::copy(
-                        self.anchors.len() * std::mem::size_of::<Vec<Option<Box<Anchor>>>>(),
+                        self.anchors.len() * std::mem::size_of::<Vec<Option<Anchor>>>(),
                     );
                 }
-                self.anchors.push(Vec::with_capacity(super::forest::PAGE));
+                self.anchors.push(super::forest::new_page(self.anchors.len()));
             }
-            #[cfg(test)]
-            crate::work::copy(std::mem::size_of::<Option<Box<Anchor>>>());
-            self.anchors.last_mut().expect("resume page").push(None);
+            let value = if self.anchor_slots == ordinal {
+                anchor.take()
+            } else {
+                #[cfg(test)]
+                crate::work::copy(std::mem::size_of::<usize>());
+                None
+            };
+            super::forest::push_page(self.anchors.last_mut().expect("resume page"), value);
             self.anchor_slots += 1;
         }
-        self.anchors[ordinal / super::forest::PAGE][ordinal % super::forest::PAGE] =
-            Some(Box::new(anchor));
+        if let Some(anchor) = anchor {
+            let (page, offset) = super::forest::slot(ordinal);
+            self.anchors[page][offset] = Some(anchor);
+        }
     }
 
     pub(in crate::inline_scan) fn bind_resume(&mut self, anchor: Anchor) -> Option<()> {
@@ -117,11 +147,12 @@ impl State {
 
     pub(in crate::inline_scan) fn restore_at(&mut self, ordinal: usize) -> Option<()> {
         let ordinal = ordinal.checked_sub(self.anchor_origin)?;
+        let (page, offset) = super::forest::slot(ordinal);
         let anchor = self
             .anchors
-            .get(ordinal / super::forest::PAGE)?
-            .get(ordinal % super::forest::PAGE)?
-            .as_deref()?
+            .get(page)?
+            .get(offset)?
+            .as_ref()?
             .clone();
         #[cfg(test)]
         if SKIP_RESTORE.get() {
@@ -132,7 +163,7 @@ impl State {
         if !self.codes.valid(anchor.context.code) {
             return None;
         }
-        let (code, closed, links) = (anchor.context.code, anchor.closed, anchor.context.links);
+        let (code, closed, links) = (anchor.context.code, anchor.closed(), anchor.context.links);
         self.restore_resume(anchor, code, closed, links);
         if let Some(eof) = &mut self.eof {
             eof.invalidate();

@@ -617,7 +617,12 @@ impl Output {
         mask(&self.middle).same(mask(&previous.middle))
     }
 
-    pub(super) fn update(&self, previous: &Self, lines: &mut Vec<Line>, first: usize) -> usize {
+    pub(super) fn update(
+        &self,
+        previous: &Self,
+        lines: &mut crate::line_buffer::Buffer,
+        first: usize,
+    ) -> usize {
         if self.head_count() != previous.head_count()
             || self.tail.is_some() != previous.tail.is_some()
             || lines.len() != first + previous.len()
@@ -626,9 +631,6 @@ impl Output {
             #[cfg(test)]
             {
                 crate::work::copy(next.len() * std::mem::size_of::<Line>());
-                if lines.capacity() < first + next.len() {
-                    crate::work::copy(first * std::mem::size_of::<Line>());
-                }
             }
             lines.truncate(first);
             lines.extend(next);
@@ -637,12 +639,6 @@ impl Output {
         let mut changed = first + self.len();
         let end = first + self.len();
         if end > lines.len() {
-            #[cfg(test)]
-            {
-                if lines.capacity() < end {
-                    crate::work::copy(lines.len() * std::mem::size_of::<Line>());
-                }
-            }
             // New rows are appended from the changed iterator below; do not
             // initialize empty rows only to overwrite them with rendered ones.
             lines.reserve(end - lines.len());

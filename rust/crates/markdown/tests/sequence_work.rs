@@ -62,9 +62,10 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
         + table_metadata
         + inline_metadata
         + markdown.context.capacity() * std::mem::size_of::<Container>()
-        + (markdown.lines.capacity() + markdown.spare.lines.capacity())
-            * std::mem::size_of::<Line>()
+        + markdown.lines.retained()
+        + markdown.spare.lines.retained()
         + markdown.cached.capacity() * std::mem::size_of::<Cached>()
+        + markdown.cached.len() * std::mem::size_of::<render::Renderer>()
         + markdown.dependencies.capacity() * std::mem::size_of::<(Key, Vec<usize>)>()
         + markdown
             .dependencies
@@ -191,7 +192,11 @@ fn measure_with(
         let production = work::current() + maintenance_after.iter().sum::<usize>() - before;
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
+        consumer.extend(
+            (markdown.lines().slice(changed..).unwrap_or_default())
+                .iter()
+                .cloned(),
+        );
         let used = work::current()
             + markdown.visible_work.get()
             + markdown.reference_cache_visits
@@ -562,13 +567,15 @@ fn image_reference_list_work_is_linear() {
 
 #[test]
 fn paragraph_and_table_work_is_linear() {
-    let (small, large) = measure_pair(&[13, 14], 1, "unused", 2, &[1]);
+    // Large enough that reparsing each table from its start exceeds the
+    // allowance below.
+    let (small, large) = measure_pair(&[13, 14], 2, "unused", 2, &[1]);
     assert!(large.0 <= 2 * small.0 + 1024, "{} -> {}", small.0, large.0);
     assert!(large.1 <= 2 * small.1 + 1024);
     crate::stream_table::REJECT_TABLE_PREFIX.set(true);
-    let (small, large) = measure_pair(&[13, 14], 1, "unused", 2, &[1]);
+    let (small, large) = measure_pair(&[13, 14], 2, "unused", 2, &[1]);
     crate::stream_table::REJECT_TABLE_PREFIX.set(false);
-    assert!(large.0 > 2 * small.0 + 1024);
+    assert!(large.0 > 2 * small.0 + 1024, "{small:?} -> {large:?}");
 }
 
 #[test]
@@ -599,12 +606,17 @@ fn image_link_entities_and_list_work_is_linear() {
     crate::references::REPARSE_DEFINITIONS.set(true);
     crate::render::CLONE_CONTEXT.set(true);
     crate::RESCAN_NEWLINE.set(true);
-    let (small, large) = measure_pair(&[9, 12, 11, 6], 5, "unused", 4, &[1, 4, 2, 1]);
+    crate::line_buffer::COPY_HISTORY.set(true);
+    let broken = std::panic::catch_unwind(|| {
+        let (small, large) = measure_pair(&[9, 12, 11, 6], 5, "unused", 4, &[1, 4, 2, 1]);
+        assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
+    });
     crate::reference_render::COMPILE_PROVISIONAL.set(false);
     crate::references::REPARSE_DEFINITIONS.set(false);
     crate::render::CLONE_CONTEXT.set(false);
     crate::RESCAN_NEWLINE.set(false);
-    assert!(large.0 > 2 * small.0 + 1024, "{small:?} -> {large:?}");
+    crate::line_buffer::COPY_HISTORY.set(false);
+    assert!(broken.is_err());
 }
 
 #[test]
@@ -626,9 +638,14 @@ fn code_rule_and_list_work_is_linear() {
     assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
     assert!(large.1 <= 2 * small.1 + 1024);
     crate::RESCAN_NEWLINE.set(true);
-    let (small, large) = measure_pair(&[16, 34, 11, 6], 1, "unused", 4, &[1, 4, 2, 1]);
+    crate::line_buffer::COPY_HISTORY.set(true);
+    let broken = std::panic::catch_unwind(|| {
+        let (small, large) = measure_pair(&[16, 34, 11, 6], 1, "unused", 4, &[1, 4, 2, 1]);
+        assert!(large.0 <= 2 * small.0 + 1024);
+    });
     crate::RESCAN_NEWLINE.set(false);
-    assert!(large.0 > 2 * small.0 + 1024);
+    crate::line_buffer::COPY_HISTORY.set(false);
+    assert!(broken.is_err());
 }
 
 #[test]
@@ -646,5 +663,195 @@ fn local_definitions_share_the_document_expansion_budget() {
         markdown.push(&definition);
         crate::events::UNCHECKED_LOCAL_BUDGET.set(false);
         assert_eq!(markdown.lines() == expected, !unchecked);
+    }
+}
+
+#[test]
+fn repeated_references_with_late_definitions_share_snapshot_contents() {
+    for destination in [
+        "x".repeat(942),
+        "x".repeat(1000),
+        include_str!("../fuzz/corpus/streaming/late-reference-destination").to_owned(),
+    ] {
+        let (small, large) = measure_pair(&[3], 28, &destination, 4, &[1, 4, 3, 0]);
+        assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
+    }
+}
+
+#[test]
+fn scratch_push_trace() {
+    let cases: [(&str, &[&str], &str); 4] = [
+        ("- ", &["]]>", "<https://x>", "
+
+", "[r]:"], " "),
+        ("[r]
+
+", &["***
+", " ", "[r]:"], " "),
+        ("x ", &["&#10;", "- item
+", "="], ""),
+        ("| a |
+| - |
+", &["<!--
+ x
+-->", "<div>
+", "=", ";"], " "),
+    ];
+    for (prefix, parts, separator) in cases { for n in [24, 48, 96] {
+        let mut markdown = Markdown::default();
+        markdown.push(prefix);
+        let mut worst = (0isize, String::new());
+        for part in parts.iter().cycle().take(n) {
+            for delta in [*part, separator] {
+                let open = markdown.source.len() - markdown.offset;
+                crate::work::TRACE.with_borrow_mut(|trace| *trace = Some(Default::default()));
+                let parts0 = [work::current(), markdown.visible_work.get(), markdown.reference_cache_visits, markdown.reference_moved_lines, markdown.boundary_work];
+                let before = work::current() + markdown.visible_work.get() + markdown.reference_cache_visits + markdown.reference_moved_lines + markdown.boundary_work;
+                let growth = work::source_growth();
+                markdown.push(delta);
+                let used = work::current() + markdown.visible_work.get() + markdown.reference_cache_visits + markdown.reference_moved_lines + markdown.boundary_work - before - (work::source_growth() - growth);
+                let trace = crate::work::TRACE.with_borrow_mut(|trace| trace.take()).unwrap();
+                let excess = used as isize;
+                if excess > worst.0 || worst.1.is_empty() {
+                    let mut rows: Vec<_> = trace.into_iter().filter(|(_, v)| *v > 16).collect();
+                    rows.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
+                    let parts1 = [work::current(), markdown.visible_work.get(), markdown.reference_cache_visits, markdown.reference_moved_lines, markdown.boundary_work];
+                    let deltas: Vec<usize> = (0..5).map(|i| parts1[i] - parts0[i]).collect();
+                    worst = (excess, format!("used {used} open {open} delta {delta:?} [work visible cache moved boundary] {deltas:?} {rows:?}"));
+                }
+            }
+        }
+        println!("CASE {n} {prefix:?} {parts:?} {separator:?} excess {}: {}", worst.0, &worst.1[..worst.1.len().min(700)]);
+    } }
+}
+
+#[test]
+fn scratch_undecided_search() {
+    let heads = ["x `a\n", "\u{a1}`A\n", "`a\n", "x ``a\nb\n", "x `a  \n", "x `a\nb\n", "x\n`a\n"];
+    let rows = ["#", "# b`", "> b`", ">`", "- b`", "1. b`", "```", "<div>`", "* b`", "+ b`", "--`", "</div>`", "<!--`", "`[`x](u)", "[`x](u)", "b`", "  > b`", "   # b`"];
+    let tails = ["", "\nz", "`", " c`"];
+    for head in heads {
+        for row in rows {
+            for tail in tails {
+                let source = format!("{head}{row}{tail}");
+                let cuts: Vec<_> = (1..source.len()).filter(|&cut| source.is_char_boundary(cut)).collect();
+                if std::panic::catch_unwind(|| super::inline_chunks::replay(&source, &cuts)).is_err() {
+                    println!("UNDEC baseline-broken {source:?}");
+                    continue;
+                }
+                for (undecided, code) in [(true, false), (false, true), (true, true)] {
+                    crate::inline::SKIP_UNDECIDED.set(undecided);
+                    crate::inline::SKIP_CODE.set(code);
+                    let broken = std::panic::catch_unwind(|| super::inline_chunks::replay(&source, &cuts));
+                    crate::inline::SKIP_UNDECIDED.set(false);
+                    crate::inline::SKIP_CODE.set(false);
+                    if broken.is_err() {
+                        println!("UNDEC found {undecided} {code} {source:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scratch_hard_list() {
+    let mut markdown = Markdown::default();
+    for chunk in ["a", " ", " ", "\n", "1", ".", " ", "`"] {
+        println!("CHUNK {chunk:?}");
+        markdown.push(chunk);
+    }
+    println!("LINES {:?}", markdown.lines());
+}
+
+#[test]
+fn scratch_render_case() {
+    let parts = ["*", "    code\n", "```\n", "\n\n"];
+    let mut markdown = Markdown::default();
+    let mut chunks = vec!["```\n".to_owned()];
+    markdown.push("```\n");
+    for part in parts.iter().cycle().take(48) {
+        for delta in [*part, "\n"] {
+            markdown.push(delta);
+            chunks.push(delta.to_owned());
+            let expected = full_parse(&markdown.source);
+            if markdown.lines() != expected {
+                println!("RENDER chunks {chunks:?}");
+                println!("RENDER got {:?}", markdown.lines());
+                println!("RENDER exp {expected:?}");
+                return;
+            }
+        }
+    }
+}
+
+fn scratch_fails(chunks: &[String]) -> bool {
+    let source: String = chunks.concat();
+    let mut cuts = Vec::new();
+    let mut at = 0;
+    for chunk in chunks {
+        at += chunk.len();
+        cuts.push(at);
+    }
+    std::panic::catch_unwind(|| super::inline_chunks::replay(&source, &cuts)).is_err()
+}
+
+fn scratch_min(mut chunks: Vec<String>) -> Vec<String> {
+    if !scratch_fails(&chunks) { return vec!["NOFAIL".into()]; }
+    loop {
+        let mut progress = false;
+        'outer: for i in 0..chunks.len() {
+            let mut fewer = chunks.clone();
+            fewer.remove(i);
+            if scratch_fails(&fewer) { chunks = fewer; progress = true; break; }
+            if i + 1 < chunks.len() {
+                let mut merged = chunks.clone();
+                let next = merged.remove(i + 1);
+                merged[i].push_str(&next);
+                if scratch_fails(&merged) { chunks = merged; progress = true; break; }
+            }
+            for j in 0..chunks[i].len() {
+                if !chunks[i].is_char_boundary(j) { continue; }
+                let mut shorter = chunks.clone();
+                shorter[i].remove(j);
+                if !shorter[i].is_empty() && scratch_fails(&shorter) { chunks = shorter; progress = true; break 'outer; }
+            }
+        }
+        if !progress { break; }
+    }
+    chunks
+}
+
+#[test]
+fn scratch_minimize() {
+    std::panic::set_hook(Box::new(|_| {}));
+    let cases: [(&str, &[&str], &str); 3] = [
+        ("", &["[r]:", "<b>", "\"", "&copy"], "\n"),
+        ("- ", &["- item\n", "\t", "- item\n\n", "\n\n"], ""),
+        ("- ", &["~~~\n", ">", "[s]: /s\n", "[a *b*](<u> \"t\")"], " "),
+    ];
+    for (prefix, parts, separator) in cases {
+        let mut chunks = vec![prefix.to_owned()];
+        for part in parts.iter().cycle().take(24) {
+            chunks.push(part.to_string());
+            chunks.push(separator.to_string());
+        }
+        chunks.retain(|c| !c.is_empty());
+        println!("MIN {:?}", scratch_min(chunks));
+    }
+}
+
+#[test]
+fn scratch_show() {
+    let cases: [&[&str]; 9] = [&[">[s]:s\n~\n>["], &[">[s]:s\n~\n>x"], &[">~\n>["], &[">[s]:s\n~\n["], &["> [s]: s\n> ~\n> ["], &[">[s]:s\n>~\n>["], &[">[s]:s\n~\n>[x]"], &["[s]:s\n~\n["], &[">[s]:s\n~"]];
+    for chunks in cases {
+        let mut markdown = Markdown::default();
+        let mut source = String::new();
+        for chunk in chunks {
+            markdown.push(chunk);
+            source.push_str(chunk);
+        }
+        let text = |lines: Vec<Line>| lines.iter().map(|l| l.spans.iter().map(|s| format!("{}{}", if s.style.bold {"B:"} else {""}, s.text.as_str())).collect::<Vec<_>>().join("|")).collect::<Vec<_>>();
+        println!("SHOW {chunks:?}\n  got {:?}\n  exp {:?}", text(markdown.lines().to_vec()), text(full_parse(&source)));
     }
 }

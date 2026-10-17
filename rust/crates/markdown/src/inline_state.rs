@@ -28,11 +28,19 @@ pub(super) struct State {
     closed: usize,
     closed_labels: Vec<Vec<brackets::Closed>>,
     closed_count: usize,
-    opaque: Option<usize>,
+    // The label start of a pending link destination, which reopens its
+    // label whenever it completes.
+    paren: Option<usize>,
+    // Earliest angle opener that a later byte can still close, maintained
+    // from the source by the scanner. An opener reopens only when it closes,
+    // but it holds every checkpoint until then.
+    pub(super) angle: Option<usize>,
+    // Start of the current block. Openers before it cannot close inside it.
+    block: usize,
     reference: Option<usize>,
     codes: codes::Codes,
     eof: Option<Box<eof::Projections>>,
-    anchors: Vec<Vec<Option<Box<anchors::Anchor>>>>,
+    anchors: Vec<Vec<Option<anchors::Anchor>>>,
     anchor_slots: usize,
     pub(super) anchor_origin: usize,
     anchor_context: Option<std::sync::Arc<anchors::Context>>,
@@ -86,7 +94,8 @@ impl State {
         self.closed = 0;
         self.closed_labels.clear();
         self.closed_count = 0;
-        self.opaque = None;
+        self.paren = None;
+        self.block = 0;
         self.reference = None;
         self.codes.reset();
         if let Some(eof) = &mut self.eof {
@@ -112,7 +121,8 @@ impl State {
         self.bracket = 0;
         self.closed = 0;
         self.labels = [0, 0];
-        self.opaque = None;
+        self.paren = None;
+        self.block = end;
         self.reference = None;
         self.link_floor = end;
         if let Some(eof) = &mut self.eof {
@@ -131,7 +141,7 @@ impl State {
     }
 
     fn restore(&mut self, before: Snapshot) {
-        let (code, closed, links) = (before.context.code, before.closed, before.context.links);
+        let (code, closed, links) = (before.context.code, before.closed(), before.context.links);
         self.restore_resume(before.resume, code, closed, links);
     }
 
@@ -147,11 +157,11 @@ impl State {
             return;
         }
         self.delimiter.restore(delimiters::Snapshot::from_parts(
-            before.delimiter,
+            before.delimiter(),
             before.context.floor,
         ));
-        self.invalid |= !self.forest.restore(before.forest);
-        self.bracket = before.bracket;
+        self.invalid |= !self.forest.restore(before.forest());
+        self.bracket = before.bracket();
         self.labels = if before.context.hint {
             [closed, 0]
         } else {
@@ -164,24 +174,32 @@ impl State {
         if restore_closed {
             self.closed = closed;
         }
-        self.opaque = before.context.opaque.map(|position| position.get() - 1);
+        self.paren = before.context.paren.map(|position| position.get() - 1);
         self.reference = before.context.reference.map(|position| position.get() - 1);
         self.link_floor = links;
     }
 
     pub(super) fn neutral(&self) -> bool {
+        self.neutral_before(usize::MAX)
+    }
+
+    /// Neutral for a boundary at `position`: an angle opener at or after it
+    /// cannot reinterpret anything before it.
+    pub(super) fn neutral_before(&self, position: usize) -> bool {
         self.delimiter.neutral()
             && self
                 .pending_bracket(self.bracket, self.link_floor)
                 .is_none()
             && self.labels == [0, 0]
-            && self.opaque.is_none()
+            && self.paren.is_none()
+            && self.angle_before(position).is_none()
             && self.reference.is_none()
             && self.codes.head() == 0
     }
 
-    fn defer(&mut self, start: usize) {
-        self.opaque = Some(self.opaque.map_or(start, |previous| previous.min(start)));
+    fn angle_before(&self, position: usize) -> Option<usize> {
+        self.angle
+            .filter(|&start| start >= self.block && start < position)
     }
 
     pub(super) fn outside_brackets(&self) -> bool {
@@ -195,9 +213,8 @@ impl State {
 
     fn opening(&self, id: usize) -> Option<&Bracket> {
         let index = id.checked_sub(1)?;
-        self.brackets
-            .get(index / forest::PAGE)?
-            .get(index % forest::PAGE)
+        let (page, offset) = forest::slot(index);
+        self.brackets.get(page)?.get(offset)
     }
 
     fn pending_bracket(&self, cursor: usize, floor: usize) -> Option<&Bracket> {
@@ -209,12 +226,11 @@ impl State {
         }
     }
 
-    pub(super) fn has_opaque(&self) -> bool {
-        self.opaque.is_some()
-    }
-
     pub(super) fn foreign_neutral(&self) -> bool {
-        self.codes.head() == 0 && self.opaque.is_none() && self.reference.is_none()
+        self.codes.head() == 0
+            && self.paren.is_none()
+            && self.angle_before(usize::MAX).is_none()
+            && self.reference.is_none()
     }
 
     pub(super) fn code_pending(&self) -> bool {
@@ -234,14 +250,14 @@ impl State {
     pub(super) fn resume_code(&self, width: usize) -> Option<(usize, usize, usize, usize)> {
         let code = self.codes.get(width)?;
         let start = self
-            .pending_bracket(code.before.bracket, code.before.context.links)
+            .pending_bracket(code.before.bracket(), code.before.context.links)
             .map_or(code.opening.start, |bracket| {
                 bracket.first.min(code.opening.start)
             });
         Some((
             code.depth,
             self.codes.depth_at(code.before.context.code),
-            code.before.bracket,
+            code.before.bracket(),
             start,
         ))
     }
@@ -277,7 +293,7 @@ impl State {
             .iter()
             .find_map(|&id| self.label(id).map(|label| label.range.start))
             .unwrap_or(end);
-        for start in [self.opaque, self.reference].into_iter().flatten() {
+        for start in [self.paren, self.reference].into_iter().flatten() {
             base = base.min(start);
         }
         let mut cursor = self.bracket;
@@ -312,9 +328,29 @@ impl State {
             self.labels
                 .iter()
                 .find_map(|&id| self.label(id).map(|label| label.range.start)),
-            self.opaque,
+            self.paren,
+            self.angle_before(end),
             self.reference,
             self.codes.classification_start(),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(end, usize::min)
+    }
+
+    /// Where classification restarts when a later byte may close the angle
+    /// opener at `closed`. Older unclosed openers remain literal text.
+    pub(super) fn reopen_start(&self, end: usize, closed: usize) -> usize {
+        [
+            self.pending_bracket(self.bracket, self.link_floor)
+                .map(|bracket| bracket.first),
+            self.labels
+                .iter()
+                .find_map(|&id| self.label(id).map(|label| label.range.start)),
+            self.paren,
+            self.reference,
+            self.codes.classification_start(),
+            Some(closed),
         ]
         .into_iter()
         .flatten()
@@ -328,7 +364,8 @@ impl State {
             self.labels
                 .iter()
                 .find_map(|&id| self.label(id).map(|label| label.range.start)),
-            self.opaque,
+            self.paren,
+            self.angle_before(end),
             self.reference,
             self.codes.earliest(),
         ]
@@ -380,12 +417,12 @@ impl State {
         }
         if let Some((image, start)) = opening.filter(|_| !linked) {
             let frontier = self.earliest(range.start);
-            if self.bracket_count.is_multiple_of(forest::PAGE) {
+            if forest::slot(self.bracket_count).1 == 0 {
                 #[cfg(test)]
                 if self.brackets.len() == self.brackets.capacity() {
                     crate::work::copy(self.brackets.len() * std::mem::size_of::<Vec<Bracket>>());
                 }
-                self.brackets.push(Vec::with_capacity(forest::PAGE));
+                self.brackets.push(forest::new_page(self.brackets.len()));
             }
             let image_parent = if image {
                 self.bracket_count + 1
@@ -397,17 +434,17 @@ impl State {
                 .iter()
                 .find_map(|&id| self.label(id).map(|label| label.range.start))
                 .unwrap_or(start);
-            self.brackets
-                .last_mut()
-                .expect("bracket page")
-                .push(Bracket {
+            forest::push_page(
+                self.brackets.last_mut().expect("bracket page"),
+                Bracket {
                     previous: self.bracket,
                     start,
                     frontier,
                     first,
                     image,
                     image_parent,
-                });
+                },
+            );
             self.bracket_count += 1;
             self.bracket = self.bracket_count;
             self.labels = [0, 0];
@@ -438,11 +475,8 @@ impl State {
                     .iter()
                     .find_map(|&id| self.label(id).map(|label| label.range.start))
                 {
-                    self.defer(start);
+                    self.paren = Some(self.paren.map_or(start, |previous| previous.min(start)));
                 }
-            }
-            Kind::AngleOpen => {
-                self.defer(range.start);
             }
             Kind::Run {
                 byte,
@@ -527,15 +561,14 @@ impl State {
             + (usize::from(self.anchor_context.is_some())
                 + usize::from(self.anchor_context_other.is_some()))
                 * (std::mem::size_of::<anchors::Context>() + 2 * std::mem::size_of::<usize>())
-            + self.anchors.capacity() * std::mem::size_of::<Vec<Option<Box<anchors::Anchor>>>>()
+            + self.anchors.capacity() * std::mem::size_of::<Vec<Option<anchors::Anchor>>>()
             + self
                 .anchors
                 .iter()
                 .map(|page| {
-                    page.capacity() * std::mem::size_of::<Option<Box<anchors::Anchor>>>()
+                    page.capacity() * std::mem::size_of::<Option<anchors::Anchor>>()
                         + page.iter().filter(|slot| slot.is_some()).count()
-                            * (std::mem::size_of::<anchors::Anchor>()
-                                + std::mem::size_of::<anchors::Context>())
+                            * std::mem::size_of::<anchors::Context>()
                 })
                 .sum::<usize>()
             + self.forest.retained()

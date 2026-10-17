@@ -199,9 +199,8 @@ impl Delimiters {
 
     fn entry(&self, id: usize) -> Option<&Entry> {
         let index = id.checked_sub(1)?;
-        self.entries
-            .get(index / super::forest::PAGE)?
-            .get(index % super::forest::PAGE)
+        let (page, offset) = super::forest::slot(index);
+        self.entries.get(page)?.get(offset)
     }
 
     fn push(&mut self, range: Range<usize>, original: usize, byte: u8, both: bool, cursor: usize) {
@@ -223,18 +222,17 @@ impl Delimiters {
             crate::work::scan(1);
             crate::work::copy(2 * std::mem::size_of::<[usize; 3]>());
         }
-        if self.length.is_multiple_of(super::forest::PAGE) {
+        if super::forest::slot(self.length).1 == 0 {
             #[cfg(test)]
             if self.entries.len() == self.entries.capacity() {
                 crate::work::copy(self.entries.len() * std::mem::size_of::<Vec<Entry>>());
             }
-            self.entries.push(Vec::with_capacity(super::forest::PAGE));
+            self.entries.push(super::forest::new_page(self.entries.len()));
         }
         self.length += 1;
-        self.entries
-            .last_mut()
-            .expect("delimiter page")
-            .push(Entry {
+        super::forest::push_page(
+            self.entries.last_mut().expect("delimiter page"),
+            Entry {
                 before: self.heads.heads,
                 candidates,
                 range,
@@ -245,7 +243,8 @@ impl Delimiters {
                 cursor,
                 #[cfg(test)]
                 byte,
-            });
+            },
+        );
         if let Some(head) = self.heads.heads.get_mut(class) {
             *head = id;
         }

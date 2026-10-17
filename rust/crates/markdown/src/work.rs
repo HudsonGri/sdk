@@ -10,7 +10,11 @@ thread_local! {
     static RENDER_PARTS: Cell<[usize; 4]> = const { Cell::new([0; 4]) };
     static RENDERING: Cell<bool> = const { Cell::new(false) };
 }
+thread_local! { pub(crate) static TRACE: std::cell::RefCell<Option<std::collections::BTreeMap<String, usize>>> = const { std::cell::RefCell::new(None) }; }
+#[track_caller]
 pub(crate) fn copy(bytes: usize) {
+    let location = std::panic::Location::caller();
+    TRACE.with_borrow_mut(|trace| if let Some(trace) = trace { *trace.entry(format!("copy {}:{}", location.file(), location.line())).or_default() += bytes; });
     COPY.set(COPY.get() + bytes);
     render_work(0, bytes);
 }
@@ -102,7 +106,10 @@ pub(crate) fn grow_source(bytes: usize) {
     SOURCE_GROWTH.set(SOURCE_GROWTH.get() + bytes);
 }
 
+#[track_caller]
 pub(crate) fn scan(bytes: usize) {
+    let location = std::panic::Location::caller();
+    TRACE.with_borrow_mut(|trace| if let Some(trace) = trace { *trace.entry(format!("scan {}:{}", location.file(), location.line())).or_default() += bytes; });
     SCAN.set(SCAN.get() + bytes);
     render_work(3, bytes);
 }

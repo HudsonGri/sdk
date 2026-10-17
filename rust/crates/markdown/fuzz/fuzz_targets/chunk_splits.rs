@@ -34,7 +34,11 @@ fuzz_target!(|data: &[u8]| {
         let changed = markdown.push(source.get(start..end).expect("UTF-8 boundary"));
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(markdown.lines().get(changed..).expect("change boundary"));
+        consumer.extend(
+            (markdown.lines().slice(changed..).expect("change boundary"))
+                .iter()
+                .cloned(),
+        );
         let mut full = Markdown::default();
         full.push(source.get(..end).expect("UTF-8 prefix"));
         assert_eq!(consumer, full.lines());

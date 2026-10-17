@@ -87,7 +87,7 @@ proptest! {
     })]
     #[test]
     fn shared_styled_snapshots_match_owned_runs(
-        actions in prop::collection::vec((0u8..8, prop::collection::vec(any::<char>(), 0..8), 0u8..64, any::<u8>()), 0..64),
+        actions in prop::collection::vec((0u8..9, prop::collection::vec(any::<char>(), 0..8), 0u8..64, any::<u8>()), 0..64),
     ) {
         let targets: [Arc<str>; 3] = [Arc::from("a"), Arc::from("b"), Arc::from("a")];
         let mut actual = Spans::default();
@@ -138,6 +138,11 @@ proptest! {
                     }
                 }
                 6 => { actual.clear(); expected.clear(); }
+                8 => {
+                    expected = canonical(&expected);
+                    if let Some(last) = actual.last_mut() { last.style = style; last.link = link.clone(); }
+                    if let Some(last) = expected.last_mut() { last.style = style; last.link = link; }
+                }
                 _ => {
                     let (snapshot, model) = &saved[usize::from(index) % saved.len()];
                     actual.concat(snapshot.clone()); expected.extend(model.iter().cloned());
@@ -222,4 +227,114 @@ fn dropping_deep_span_snapshots_does_not_recurse() {
         });
     }
     drop(spans);
+}
+
+#[test]
+fn every_line_snapshot_shares_its_complete_contents() {
+    let mut line = crate::Line::default();
+    line.push("unfrozen tail", Style::default(), None);
+    let before = crate::work::parts()[1];
+    let snapshots: Vec<_> = (0..128).map(|_| line.clone()).collect();
+    assert_eq!(
+        crate::work::parts()[1] - before,
+        128 * std::mem::size_of::<usize>()
+    );
+    for snapshot in &snapshots {
+        assert!(Arc::ptr_eq(
+            line.spans.value.as_ref().unwrap(),
+            snapshot.spans.value.as_ref().unwrap()
+        ));
+    }
+    line.spans.last_mut().unwrap().text.push_str(" changed");
+    assert_eq!(
+        snapshots[0].spans.first().unwrap().text.as_str(),
+        "unfrozen tail"
+    );
+    assert_eq!(
+        line.spans.first().unwrap().text.as_str(),
+        "unfrozen tail changed"
+    );
+}
+
+#[test]
+fn snapshot_copy_property_detects_materializing_contents() {
+    let mut line = crate::Line::default();
+    line.push("a", Style::default(), None);
+    COPY_PREFIX.set(true);
+    let before = crate::work::parts()[1];
+    let snapshots: Vec<_> = (0..128).map(|_| line.clone()).collect();
+    let copies = crate::work::parts()[1] - before;
+    COPY_PREFIX.set(false);
+    assert_eq!(snapshots.len(), 128);
+    assert!(copies > 128 * std::mem::size_of::<usize>());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn mutable_runs_use_the_same_canonical_view(
+        flags in any::<u8>(),
+        text in prop::collection::vec("[a-z]{1,8}", 3),
+        linked in any::<bool>(),
+    ) {
+        let style = attributes(flags);
+        let link = linked.then(|| Arc::<str>::from("target"));
+        let mut expected: Vec<_> = text.into_iter().enumerate().map(|(i, text)| Expected {
+            text, style: if i == 1 { style } else { Style::default() },
+            link: if i == 1 { link.clone() } else { None }, forced: false,
+        }).collect();
+        let mut actual = Spans::default();
+        for entry in &expected { actual.push_content(Span { text: entry.text.as_str().into(), style: entry.style, link: entry.link.clone() }, false); }
+        let before = actual.clone();
+        let last = actual.last_mut().unwrap();
+        last.style = style;
+        last.link = link.clone();
+        prop_assert_eq!(before.to_vec(), value(&expected));
+        expected[2].style = style;
+        expected[2].link = link;
+        for frozen in [false, true] {
+            if frozen { actual.freeze(); }
+            let wanted = value(&expected);
+            prop_assert_eq!(actual.len(), wanted.len());
+            prop_assert_eq!(actual.last().map(SpanRef::owned), wanted.last().cloned());
+            prop_assert_eq!(actual.to_vec(), wanted.clone());
+            for keep in 0..=wanted.len()+1 {
+                let mut shortened = actual.clone();
+                shortened.truncate(keep);
+                prop_assert_eq!(shortened.to_vec(), wanted[..keep.min(wanted.len())].to_vec());
+            }
+        }
+    }
+}
+
+#[test]
+fn mutable_run_property_detects_stale_counts() {
+    let mut spans = Spans::default();
+    for (text, italic) in [("a", false), ("b", true), ("c", false)] {
+        spans.push_content(
+            Span {
+                text: text.into(),
+                style: Style {
+                    italic,
+                    ..Style::default()
+                },
+                link: None,
+            },
+            false,
+        );
+    }
+    spans.last_mut().unwrap().style.italic = true;
+    STALE_COUNTS.set(true);
+    let broken = std::panic::catch_unwind(|| assert_eq!(spans.len(), spans.iter().count()));
+    STALE_COUNTS.set(false);
+    assert!(broken.is_err());
+    assert_eq!(spans.last().unwrap().text.as_str(), "bc");
+    spans.truncate(2);
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>(),
+        "abc"
+    );
 }
