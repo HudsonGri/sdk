@@ -137,7 +137,7 @@ pub enum PublicationError {
     ActiveProjection,
     /// The current or candidate policy metadata could not be authenticated.
     #[error("projection policy validation failed: {0}")]
-    ProjectionValidation(Box<crate::FsError>),
+    ProjectionValidation(#[source] Box<crate::FsError>),
     /// Whole-generation authentication failed.
     #[error(transparent)]
     Closure(#[from] ClosureError),

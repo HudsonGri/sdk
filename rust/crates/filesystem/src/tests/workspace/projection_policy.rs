@@ -194,3 +194,27 @@ async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
     assert!(crate::access::projection::enter(volume).is_ok());
     Ok(())
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    // The publication fence must preserve bounded failure identity through any
+    // nesting of validation errors, including cancellation and exact counters.
+    #[test]
+    fn projection_validation_preserves_budget_and_cancellation(
+        maximum in proptest::prelude::any::<u32>(), cancelled in proptest::prelude::any::<bool>(), depth in 1usize..4,
+    ) {
+        let work = crate::WorkError::BudgetExceeded {
+            counter: "object_bytes_read", maximum: u64::from(maximum), observed: u64::from(maximum) + 1,
+        };
+        let mut cause = if cancelled { FsError::Cancelled(crate::CancellationError) } else { FsError::Work(work) };
+        for _ in 0..depth {
+            cause = FsError::Publication(crate::kernel::PublicationError::ProjectionValidation(Box::new(cause)));
+        }
+        let bounded = WorkspaceError::from(cause);
+        if cancelled {
+            proptest::prop_assert!(matches!(bounded, WorkspaceError::Cancelled(_)));
+        } else {
+            proptest::prop_assert!(matches!(bounded, WorkspaceError::Work(actual) if actual == work));
+        }
+    }
+}
