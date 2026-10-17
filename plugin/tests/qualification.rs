@@ -31,8 +31,15 @@ fn native_compiler_runs_after_home_and_rustup_state_are_isolated() {
     compiler.env("RUSTUP_HOME", directory.path().join("empty-rustup"));
     compiler.env_remove("RUSTUP_TOOLCHAIN");
     support::bind_native_compiler(&mut compiler);
-    let output = compiler.arg("--version").output().expect("execute native compiler");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = compiler
+        .arg("--version")
+        .output()
+        .expect("execute native compiler");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(String::from_utf8_lossy(&output.stdout).starts_with("rustc "));
     assert!(!directory.path().join("empty-rustup").exists());
 }
@@ -251,8 +258,14 @@ fn assert_native_hook_lifecycle(requests: &[acyclic_harness::external_executor::
             _ => continue,
         }] = true;
     }
-    for (index, name) in ["attach", "tool call", "tool result", "fork", "join"].into_iter().enumerate() {
-        assert!(seen[index], "native host did not publish its {name} request: {requests:?}");
+    for (index, name) in ["attach", "tool call", "tool result", "fork", "join"]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(
+            seen[index],
+            "native host did not publish its {name} request: {requests:?}"
+        );
     }
 }
 
@@ -610,6 +623,7 @@ fn assert_semantic_provider_exchange(provider: &ScriptedProvider) -> bool {
         RequestFingerprint::CodexRootPrompt,
         RequestFingerprint::CodexRootToolResult,
         RequestFingerprint::CodexRootSpawnResult,
+        RequestFingerprint::CodexRootWaitResult,
         RequestFingerprint::CodexChildPrompt,
         RequestFingerprint::CodexChildToolResult,
     ];
@@ -622,7 +636,8 @@ fn assert_semantic_provider_exchange(provider: &ScriptedProvider) -> bool {
     denied.sort_unstable();
     assert!(
         observed == success || observed == denied,
-        "unexpected Codex request phases: {fingerprints:?}"
+        "unexpected Codex request phases: {fingerprints:?}; tool results: {:#?}",
+        provider.tool_results()
     );
     assert_fingerprint_before(
         &fingerprints,
@@ -635,6 +650,11 @@ fn assert_semantic_provider_exchange(provider: &ScriptedProvider) -> bool {
         RequestFingerprint::CodexRootSpawnResult,
     );
     if observed == success {
+        assert_fingerprint_before(
+            &fingerprints,
+            RequestFingerprint::CodexChildToolResult,
+            RequestFingerprint::CodexRootWaitResult,
+        );
         assert_fingerprint_before(
             &fingerprints,
             RequestFingerprint::CodexChildPrompt,

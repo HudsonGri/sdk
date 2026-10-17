@@ -2,7 +2,10 @@
 #[path = "sdk_client.rs"]
 mod sdk_client;
 use super::{ACYCLIC, command, isolated_state};
-use acyclic_harness::{external_executor::ExternalRequest, task_volume::{Component, FileKey, Query, TaskFile, TaskVolume}};
+use acyclic_harness::{
+    external_executor::ExternalRequest,
+    task_volume::{Component, FileKey, Query, TaskFile, TaskVolume},
+};
 use acyclic_native_runtime::ProcessTree;
 use acyclic_stream::{StreamPath, StreamProvider as _};
 use fs2::FileExt as _;
@@ -39,6 +42,8 @@ impl ServiceGuard {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        super::bind_native_compiler(&mut spawn);
+        spawn.env("ACYCLIC_WORKFLOW_TOKEN", "qualified");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt as _;
@@ -193,7 +198,10 @@ pub fn assert_service_absent(home: &Path) -> Result<(), String> {
     lock.try_lock_exclusive().map_err(|error| error.to_string())
 }
 
-async fn settled(home: &Path, workspace: &Path) -> Result<Vec<ExternalRequest>, Box<dyn std::error::Error>> {
+async fn settled(
+    home: &Path,
+    workspace: &Path,
+) -> Result<Vec<ExternalRequest>, Box<dyn std::error::Error>> {
     let client = Arc::new(sdk_client::workspace(&home.join("owner"), workspace).await?);
     let page = client
         .children_page(acyclic_stream::ChildrenPageRequest {
@@ -261,6 +269,9 @@ async fn settled(home: &Path, workspace: &Path) -> Result<Vec<ExternalRequest>, 
             }
         }
     }
-    assert!(!accepted.is_empty(), "installed hooks must publish requests; an idle owner is insufficient");
+    assert!(
+        !accepted.is_empty(),
+        "installed hooks must publish requests; an idle owner is insufficient"
+    );
     Ok(accepted)
 }

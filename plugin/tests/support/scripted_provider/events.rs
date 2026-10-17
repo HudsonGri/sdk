@@ -7,33 +7,24 @@ pub(super) fn claude_child_tool_events(
 ) -> Option<String> {
     let failed = target.is_none();
     let target = target.map_or("", String::as_str);
-    let (tool, input) = if offered_tools.iter().any(|tool| tool == "PowerShell") {
-        (
-            "PowerShell",
-            if failed {
-                json!({"command":"exit 7"})
-            } else {
-                json!({"command":format!(
-                    "rustc --edition 2021 acyclic-workflow.rs -o acyclic-workflow-bin.exe; .\\acyclic-workflow-bin.exe '{}'",
-                    target.replace('\'', "''")
-                )})
-            },
-        )
-    } else if offered_tools.iter().any(|tool| tool == "Bash") {
-        (
-            "Bash",
-            if failed {
-                json!({"command":"exit 7"})
-            } else {
-                json!({"command":format!(
-                    "rustc --edition 2021 acyclic-workflow.rs -o acyclic-workflow-bin && ./acyclic-workflow-bin '{}'",
-                    target.replace('\'', "'\"'\"'")
-                )})
-            },
-        )
+    let tool = if failed {
+        offered_tools
+            .iter()
+            .find(|tool| matches!(tool.as_str(), "Bash" | "PowerShell"))?
     } else {
-        return None;
+        offered_tools.iter().find(|tool| {
+            matches!(
+                tool.as_str(),
+                "mcp__acyclic__bash" | "mcp__plugin_acyclic_acyclic__bash"
+            )
+        })?
     };
+    let command = if failed {
+        "exit 7".into()
+    } else {
+        workflow_command(target)
+    };
+    let input = json!({"command":command});
     Some(anthropic_named_tool_events_with_prefix(
         if failed {
             "failed_child"
@@ -140,31 +131,32 @@ pub(super) fn responses_workflow_tool_events(target: &str) -> String {
         !target.contains(['\r', '\n', '\'', '"']),
         "scripted workflow target must be a simple relative path"
     );
-    let (compile, run) = if cfg!(windows) {
-        (
-            "rustc --edition 2021 acyclic-workflow.rs -o acyclic-workflow-bin.exe",
-            format!(".\\acyclic-workflow-bin.exe '{target}'"),
-        )
-    } else {
-        (
-            "rustc --edition 2021 acyclic-workflow.rs -o acyclic-workflow-bin",
-            format!("./acyclic-workflow-bin '{target}'"),
-        )
-    };
-    let input = format!(
-        "// @exec: {{\"yield_time_ms\": 120000}}\nasync function finish(cmd) {{ let result = await tools.exec_command({{cmd, yield_time_ms: 1000}}); let output = String(result.output ?? ''); for (let i = 0; result.session_id && i < 16; i++) {{ result = await tools.write_stdin({{session_id: result.session_id, chars: '', yield_time_ms: 5000}}); output = (output + String(result.output ?? '')).slice(-4000); }} if (result.session_id) throw new Error('workflow command timed out: ' + cmd + ': ' + output); return {{exit_code: result.exit_code, output}}; }} const compile = await finish({}); if (compile.exit_code !== 0) throw new Error('rustc failed: ' + compile.output); const run = await finish({}); text(run.output); if (run.exit_code !== 0) throw new Error('workflow failed: ' + run.output);",
-        json!(compile),
-        json!(run),
-    );
+    let command = workflow_command(target);
     let item = json!({
-        "id":"ctc_codex_workflow",
-        "type":"custom_tool_call",
-        "call_id":"call_codex_workflow",
-        "name":"exec",
-        "input":input,
-        "status":"completed"
+        "id":"fc_codex_workflow","type":"function_call",
+        "call_id":"call_codex_workflow","name":"bash","namespace":"mcp__plugin_acyclic_acyclic",
+        "arguments":json!({"command":command}).to_string(),"status":"completed"
     });
     responses_item_events("resp_workflow", &item)
+}
+
+fn workflow_command(target: &str) -> String {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    format!(
+        "rustc --edition 2021 acyclic-workflow.rs -o acyclic-workflow-bin{suffix} && ./acyclic-workflow-bin{suffix} '{}'",
+        target.replace('\'', "'\"'\"'")
+    )
+}
+
+pub(super) fn responses_wait_events() -> String {
+    responses_item_events(
+        "resp_wait",
+        &json!({
+            "id":"fc_codex_wait","type":"function_call","call_id":"call_codex_wait",
+            "name":"wait_agent","namespace":"collaboration",
+            "arguments":json!({"timeout_ms":10000}).to_string(),"status":"completed"
+        }),
+    )
 }
 
 fn responses_item_events(response_id: &str, item: &Value) -> String {
