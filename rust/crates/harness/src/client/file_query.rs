@@ -193,6 +193,7 @@ impl FileQueryView {
                 bytes: bytes.clone(),
                 channel: head.channel,
                 publication: head.publication,
+                requester: None,
             };
             match &value.key {
                 FileKey::Goal => {
