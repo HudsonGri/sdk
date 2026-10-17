@@ -3,6 +3,9 @@ use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
+#[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
+mod recovery_tests;
+
 #[cfg(target_os = "linux")]
 pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
     let relative = Path::new(SCRATCH_PATH);
@@ -11,7 +14,7 @@ pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
         .ok_or_else(|| Error::Invalid("scratch mount has no parent".into()))?;
     create_mount_directory(root, parent)?;
     let destination = root.join(relative);
-    match std::fs::metadata(&destination) {
+    match scratch_status(&destination) {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotConnected => {
@@ -22,6 +25,20 @@ pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
         }
         Err(error) => Err(storage(error)),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn scratch_status(destination: &Path) -> std::io::Result<()> {
+    // FUSE attributes can outlive their provider in the kernel cache. Force a
+    // provider request so a disconnected mount cannot appear healthy.
+    rustix::fs::statx(
+        rustix::fs::CWD,
+        destination,
+        rustix::fs::AtFlags::STATX_FORCE_SYNC,
+        rustix::fs::StatxFlags::TYPE,
+    )
+    .map(|_| ())
+    .map_err(Into::into)
 }
 
 pub(in crate::local) fn require_available(
