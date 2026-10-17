@@ -104,9 +104,9 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             host.outcome(before.task).await?,
             Some(crate::Outcome::Cancelled)
         ));
-        let checkpoint = host.workflow_suspension(before.task, &mut None).await?;
+        let checkpoint = host.cancelled_workflow_suspension(before.task, &mut None).await?;
+        assert!(checkpoint.is_some(), "cancellation must retain its receive cut");
         drop(context);
-        drop(host);
         drop(files);
         harness.close().await?;
 
@@ -136,7 +136,7 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
             reopened
                 .runtime
                 .task_host()
-                .workflow_suspension(before.task, &mut None)
+                .cancelled_workflow_suspension(before.task, &mut None)
                 .await?,
             checkpoint
         );

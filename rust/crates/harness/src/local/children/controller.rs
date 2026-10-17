@@ -242,10 +242,12 @@ impl LocalHarness {
                         && previous.is_some_and(|status| {
                             status.settled && status.inputs == inputs && status.task == child
                         })) {
-                    self.runtime
-                        .task_host()
-                        .workflow_suspension(child, &mut None)
-                        .await?
+                    let host = self.runtime.task_host();
+                    if cancelled {
+                        host.cancelled_workflow_suspension(child, &mut None).await?
+                    } else {
+                        host.workflow_suspension(child, &mut None).await?
+                    }
                 } else {
                     None
                 };

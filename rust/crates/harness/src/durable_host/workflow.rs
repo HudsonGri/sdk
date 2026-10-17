@@ -164,6 +164,26 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
+        self.read_workflow_suspension(task, false, work).await
+    }
+
+    /// Reads a retained receive cut after cancellation released execution ownership.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn cancelled_workflow_suspension(
+        &self,
+        task: TaskId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
+        self.read_workflow_suspension(task, true, work).await
+    }
+
+    #[cfg(feature = "filesystem")]
+    async fn read_workflow_suspension(
+        &self,
+        task: TaskId,
+        cancelled: bool,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         let operation = coordinator.observe_operation(
@@ -173,9 +193,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             OperationId::from_bytes(task.into_bytes()),
             work,
         )?;
-        if operation.phase != crate::scheduler::OperationPhase::Suspended
-            || operation.cancellation_requested
-        {
+        let readable = if cancelled {
+            operation.phase == crate::scheduler::OperationPhase::Terminal
+                && matches!(operation.outcome, Some(Outcome::Cancelled))
+                && operation.reservation.is_none()
+        } else {
+            operation.phase == crate::scheduler::OperationPhase::Suspended
+                && !operation.cancellation_requested
+        };
+        if !readable {
             return Ok(None);
         }
         operation
