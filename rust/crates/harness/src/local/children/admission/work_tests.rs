@@ -2,8 +2,9 @@ use super::*;
 use crate::{
     client::{CommandResolution, CommandTool},
     model::Model,
-    test_support::{ScriptedModelProvider, ScriptedTurn, differential},
+    test_support::{ScriptedModelProvider, ScriptedTurn},
 };
+use acyclic_test_support::differential;
 
 async fn fixture() -> (tempfile::TempDir, LocalHarness, FileValue) {
     let directory = tempfile::tempdir().unwrap();
@@ -75,7 +76,7 @@ fn replay_admission_preserves_results_and_errors_with_zero_workspace_work() {
         .enable_all()
         .build()
         .unwrap();
-    let pair = differential::pair(
+    let pair = differential::pair::<_, _, (&'static str, u64)>(
         || runtime.block_on(fixture()),
         |(_directory, harness, request), old| {
             runtime.block_on(async {
@@ -177,7 +178,7 @@ fn preparation_status_preserves_bytes_and_errors_without_loading_its_report() {
         .enable_all()
         .build()
         .unwrap();
-    let pair = differential::pair(
+    let pair = differential::pair::<_, _, (&'static str, u64)>(
         || runtime.block_on(fixture()),
         |(_directory, harness, _request), old| {
             runtime.block_on(async {

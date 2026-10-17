@@ -39,7 +39,7 @@ async fn open(
     cursor: crate::task_volume::Cursor,
 ) -> crate::task_volume::Result<crate::task_volume::ChangeStream> {
     #[cfg(test)]
-    crate::test_support::differential::record("child-follow-open", 1);
+    acyclic_test_support::differential::record(("child-follow-open", 1u64));
     files.inner.follow(query, cursor).await
 }
 

@@ -2,8 +2,9 @@ use super::*;
 use crate::{
     context::ModelContextCapacity,
     model::Model,
-    test_support::{ScriptedModelProvider, ScriptedTurn, differential},
+    test_support::{ScriptedModelProvider, ScriptedTurn},
 };
+use acyclic_test_support::differential;
 use futures::FutureExt as _;
 use tokio::sync::oneshot;
 
@@ -92,7 +93,7 @@ fn accepted_records_reuse_one_follow_and_cancellation_drops_its_pending_read() {
         .build()
         .unwrap();
     for count in [8, 16] {
-        let pair = differential::pair(
+        let pair = differential::pair::<_, _, (&'static str, u64)>(
             || runtime.block_on(fixture(count)),
             |(_directory, harness, cursor), old| {
                 runtime.block_on(async {
@@ -156,7 +157,7 @@ fn accepted_metadata_refresh_avoids_replaying_a_stale_admission_cut() {
         .build()
         .unwrap();
     let reference = Component::new("worker").unwrap();
-    let pair = differential::pair(
+    let pair = differential::pair::<_, _, (&'static str, u64)>(
         || {
             runtime.block_on(async {
                 let (directory, harness, _) = fixture(1).await;

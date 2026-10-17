@@ -538,7 +538,7 @@ async fn publish<P: StreamProvider + ?Sized>(
         serde_json::to_vec(&status).map_err(storage)?,
     );
     #[cfg(test)]
-    crate::test_support::differential::record("child-status-publish", 1);
+    acyclic_test_support::differential::record(("child-status-publish", 1u64));
     match files.inner.append(*generation, &file).await {
         Ok(next) => {
             *generation = next;
