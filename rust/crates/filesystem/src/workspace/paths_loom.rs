@@ -18,35 +18,26 @@ pub(super) fn completed(copied: u64) {
     });
 }
 
-// Runs one real caller and retires a successful owner, so every allocation
-// byte surviving beyond setup is a leak from a failed copy.
+// Runs one real caller. Successful owners are retired after the join, so
+// every allocation byte surviving beyond setup is a leak from a failed copy.
 fn once<const OLD: bool>(
     work: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
-    restore: bool,
+    label: Option<&WorkspaceName>,
     actual: &Arc<AtomicU64>,
-) {
+) -> Option<crate::kernel::Owned<String>> {
     OMIT_RESERVATION.with(|flag| flag.set(OLD));
     ACTUAL.with(|slot| *slot.borrow_mut() = Some(actual.clone()));
     let mut accounting = KernelAccounting::native(work, cancellation);
-    let copied = if restore {
-        restore_absolute_path("x", &mut accounting, cancellation)
-    } else {
-        let name = WorkspaceName::new(
-            "xy",
-            &crate::WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .ok()
-        .map(|name| name.value);
-        copy_workspace_label(&name.unwrap(), &mut accounting)
+    let copied = match label {
+        Some(name) => copy_workspace_label(name, &mut accounting),
+        None => restore_absolute_path("x", &mut accounting, cancellation),
     };
-    if let Ok(owned) = copied {
-        assert_eq!(owned.value, if restore { "/x" } else { "xy" });
-        owned.retire(&mut accounting).unwrap();
-    }
     ACTUAL.with(|slot| *slot.borrow_mut() = None);
     OMIT_RESERVATION.with(|flag| flag.set(false));
+    let owned = copied.ok()?;
+    assert_eq!(owned.value, if label.is_some() { "xy" } else { "/x" });
+    Some(owned)
 }
 
 fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
@@ -80,20 +71,39 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
             work = work.recheck_admitted();
         }
         let setup = root.live_allocation_bytes();
+        let name = WorkspaceName::new(
+            "xy",
+            &crate::WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .ok()
+        .map(|name| name.value);
+        let labels = callers.map(|restore| (!restore).then(|| name.clone().unwrap()));
         let actual = Arc::new(AtomicU64::new(0));
         let worker_work = work.clone();
         let worker_cancel = caller_cancel.clone();
         let worker_actual = actual.clone();
+        let [worker_label, label] = labels;
         let worker = loom::thread::spawn(move || {
-            once::<OLD>(&worker_work, &worker_cancel, callers[0], &worker_actual)
+            once::<OLD>(
+                &worker_work,
+                &worker_cancel,
+                worker_label.as_ref(),
+                &worker_actual,
+            )
         });
         match cancel {
             1 => caller_cancel.cancel(),
             2 => root_cancel.cancel(),
             _ => (),
         }
-        once::<OLD>(&work, &caller_cancel, callers[1], &actual);
-        worker.join().unwrap();
+        let owned = once::<OLD>(&work, &caller_cancel, label.as_ref(), &actual);
+        let owners = [worker.join().unwrap(), owned];
+        let retiring = CancellationToken::new();
+        let mut accounting = KernelAccounting::native(&work, &retiring);
+        for owned in owners.into_iter().flatten() {
+            owned.retire(&mut accounting).unwrap();
+        }
         let copied = actual.load(Ordering::Relaxed);
         if CHECK_EFFECTS {
             assert!(
@@ -118,16 +128,15 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
     });
 }
 
+// Label and restore share one helper; one mixed pair covers both callers.
 #[test]
 fn concurrent_workspace_text_copies_cannot_share_remaining_credit() {
-    for callers in [[false, false], [false, true], [true, true]] {
-        for copies in 0..3 {
-            model::<false, true>(copies, callers, 0, false, 0);
-        }
+    for copies in 0..3 {
+        model::<false, true>(copies, [false, true], 0, false, 0);
     }
-    model::<false, true>(1, [false, true], 2, true, 0);
-    model::<false, true>(1, [true, false], 1, false, 1);
-    model::<false, true>(1, [false, true], 0, false, 2);
+    model::<false, true>(1, [true, true], 1, true, 0);
+    model::<false, true>(1, [true, false], 0, false, 1);
+    model::<false, true>(1, [false, false], 0, false, 2);
 }
 
 fn message(panic: &(dyn std::any::Any + Send)) -> &str {
@@ -140,16 +149,14 @@ fn message(panic: &(dyn std::any::Any + Send)) -> &str {
 
 #[test]
 fn old_check_only_copy_admission_fails_the_real_effect_assertion_and_needs_it() {
-    for callers in [[false, false], [false, true], [true, true]] {
-        let panic = std::panic::catch_unwind(|| model::<true, true>(1, callers, 0, false, 0))
-            .expect_err("check-only admission must let both copies spend one allowance");
-        assert!(
-            message(&*panic).contains("workspace text copies must be admitted before they execute"),
-            "{}",
-            message(&*panic)
-        );
-        // Delete only the effect-limit assertion: the old path still records
-        // every completed byte and retires storage, so the variant passes.
-        model::<true, false>(1, callers, 0, false, 0);
-    }
+    let panic = std::panic::catch_unwind(|| model::<true, true>(1, [false, true], 0, false, 0))
+        .expect_err("check-only admission must let both copies spend one allowance");
+    assert!(
+        message(&*panic).contains("workspace text copies must be admitted before they execute"),
+        "{}",
+        message(&*panic)
+    );
+    // Delete only the effect-limit assertion: the old path still records
+    // every completed byte and retires storage, so the variant passes.
+    model::<true, false>(1, [false, true], 0, false, 0);
 }
