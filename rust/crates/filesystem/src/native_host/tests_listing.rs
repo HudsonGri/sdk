@@ -135,7 +135,6 @@ fn facts(stat: &HostStat) -> Vec<i128> {
 }
 #[cfg(windows)]
 fn baseline(path: &std::path::Path) -> std::io::Result<Vec<i128>> {
-    use cap_primitives::fs::_WindowsByHandle;
     use cap_std::fs::MetadataExt as _;
     let invalid = || io::Error::other("fixture must have a parent and leaf");
     let directory = Dir::open_ambient_dir(
@@ -148,15 +147,15 @@ fn baseline(path: &std::path::Path) -> std::io::Result<Vec<i128>> {
         i128::from(length),
         i128::from(meta.is_dir()),
         i128::from(
-            _WindowsByHandle::file_index(&meta)
+            cap_primitives::fs::_WindowsByHandle::file_index(&meta)
                 .ok_or_else(|| io::Error::other("missing file index"))?,
         ),
         i128::from(
-            _WindowsByHandle::volume_serial_number(&meta)
+            cap_primitives::fs::_WindowsByHandle::volume_serial_number(&meta)
                 .ok_or_else(|| io::Error::other("missing volume"))?,
         ),
         i128::from(
-            _WindowsByHandle::number_of_links(&meta)
+            cap_primitives::fs::_WindowsByHandle::number_of_links(&meta)
                 .ok_or_else(|| io::Error::other("missing link count"))?,
         ),
         i128::from(meta.file_attributes()),
