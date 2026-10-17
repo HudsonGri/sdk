@@ -1,3 +1,6 @@
+use crate::{MAX_ITEMS, MAX_PATH_BYTES, StreamError};
+use std::{fmt, sync::Arc};
+
 /// Permanent account-relative slash-separated ASCII path.
 pub struct StreamPath {
     text: PathText,
@@ -56,7 +59,7 @@ impl StreamPath {
         })
     }
 
-    fn validate(path: &str) -> Result<(), StreamError> {
+    pub(crate) fn validate(path: &str) -> Result<(), StreamError> {
         if path.is_empty()
             || path.len() > MAX_PATH_BYTES
             || !path.is_ascii()
@@ -136,6 +139,19 @@ impl StreamPath {
         }
     }
 
+    /// Shares this path or a complete ancestor; rejects partial segments.
+    pub(crate) fn ancestor(&self, ancestor: &str) -> Option<Self> {
+        let path = self.as_str();
+        if ancestor.is_empty()
+            || ancestor.len() > path.len()
+            || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))
+            || (ancestor.len() < path.len() && path.as_bytes()[ancestor.len()] != b'/')
+        {
+            return None;
+        }
+        Some(self.prefix(ancestor.len()))
+    }
+
     /// Immediate parent, if any.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
@@ -171,7 +187,7 @@ impl std::borrow::Borrow<str> for StreamPath {
 impl Clone for StreamPath {
     fn clone(&self) -> Self {
         #[cfg(all(test, not(target_arch = "wasm32")))]
-        if matches!(&self.text, PathText::Plain(_)) && path_text_tests::copy_on_clone() {
+        if matches!(&self.text, PathText::Plain(_)) && crate::path_text_tests::copy_on_clone() {
             return Self::new(self.as_str())
                 .unwrap_or_else(|_| unreachable!("validated path clone"));
         }

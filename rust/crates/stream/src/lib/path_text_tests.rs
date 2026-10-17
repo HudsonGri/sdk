@@ -69,6 +69,30 @@ proptest! {
             }
         }
     }
+    #[test]
+    fn ancestors_only_expose_complete_validated_segments(text in "[a-z]{1,12}(/[a-z]{1,12}){1,8}", other in input()) {
+        let path = StreamPath::new(&text).unwrap();
+        for end in 0..=text.len() {
+            let candidate = &text[..end];
+            let ancestor = path.ancestor(candidate);
+            prop_assert_eq!(ancestor.is_some(), end > 0 && (end == text.len() || text.as_bytes()[end] == b'/'));
+            if let Some(ancestor) = ancestor {
+                prop_assert_eq!(ancestor.as_str(), candidate);
+                prop_assert_eq!(StreamPath::new(candidate).unwrap(), ancestor);
+            }
+        }
+        let expected = !other.is_empty() && text.strip_prefix(&other)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'));
+        prop_assert_eq!(path.ancestor(&other).is_some(), expected);
+    }
+}
+
+#[test]
+fn ancestor_rejects_the_reviewed_invalid_trailing_separator() {
+    let path = StreamPath::new("a/b").unwrap();
+    assert!(path.ancestor("a/").is_none());
+    assert!(path.ancestor("").is_none());
+    assert_eq!(path.ancestor("a").unwrap().as_str(), "a");
 }
 
 #[test]

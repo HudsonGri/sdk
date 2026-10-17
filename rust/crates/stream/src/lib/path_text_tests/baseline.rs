@@ -1,4 +1,5 @@
 use super::super::*;
+use std::fmt;
 
 // Independent original representation and validation, copied before this change.
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]

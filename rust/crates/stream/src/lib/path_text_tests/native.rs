@@ -2,17 +2,19 @@ use super::*;
 use crate::test_meter::{Meter, trace};
 use std::sync::atomic::Ordering;
 
-fn clone_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
-    let output_bytes = text.len() + text.rfind('/').unwrap();
-    let text_allocation = std::alloc::Layout::new::<[usize; 2]>()
+fn text_allocation(text: &str) -> usize {
+    std::alloc::Layout::new::<[usize; 2]>()
         .extend(std::alloc::Layout::array::<u8>(text.len()).unwrap())
         .unwrap()
         .0
         .pad_to_align()
-        .size();
+        .size()
+}
+fn clone_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
+    let output_bytes = text.len() + text.rfind('/').unwrap();
     // Two identical output Strings, plus one shared text allocation.
     assert_eq!(heap.count_total, 3);
-    assert_eq!(heap.bytes_total as usize, text_allocation + output_bytes);
+    assert_eq!(heap.bytes_total as usize, text_allocation(text) + output_bytes);
 }
 fn cloned_output(text: &str) -> (String, String) {
     let path = StreamPath::new(text).unwrap();
@@ -37,12 +39,6 @@ fn cloned_plain_paths_allocate_once_and_original_storage_fails_the_same_bound() 
 }
 #[test]
 fn copying_on_the_real_clone_path_fails_the_same_heap_assertion() {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            COPY_ON_CLONE.with(|flag| flag.set(self.0));
-        }
-    }
     let text = "swarm/agent/task/files";
     let mut clean = None;
     let heap = acyclic_test_support::measure(|| clean = Some(cloned_output(text)));
@@ -56,6 +52,87 @@ fn copying_on_the_real_clone_path_fails_the_same_heap_assertion() {
         std::panic::catch_unwind(|| clone_heap_bound(heap, text)).is_err(),
         "a production-path copy escaped the same allocation bound"
     );
+}
+
+struct Restore(bool);
+impl Drop for Restore {
+    fn drop(&mut self) {
+        COPY_ON_CLONE.with(|flag| flag.set(self.0));
+    }
+}
+
+fn chain(old: bool, text: &str) -> (usize, u64) {
+    let mut count = 0;
+    let mut hash = DefaultHasher::new();
+    let mut end = text.len();
+    if old {
+        let mut path = BaselinePath::new(text).unwrap();
+        loop {
+            let cloned = path.clone();
+            assert_eq!(cloned.as_str(), &text[..end]);
+            cloned.as_str().hash(&mut hash);
+            count += 1;
+            let parent = cloned.parent();
+            assert_eq!(parent.is_some(), text[..end].contains('/'));
+            let Some(parent) = parent else { break };
+            end = text[..end].rfind('/').unwrap();
+            path = parent;
+        }
+    } else {
+        let mut path = StreamPath::new(text).unwrap();
+        loop {
+            let cloned = path.clone();
+            assert_eq!(cloned.as_str(), &text[..end]);
+            cloned.as_str().hash(&mut hash);
+            count += 1;
+            let parent = cloned.parent();
+            assert_eq!(parent.is_some(), text[..end].contains('/'));
+            let Some(parent) = parent else { break };
+            end = text[..end].rfind('/').unwrap();
+            path = parent;
+        }
+    }
+    (count, hash.finish())
+}
+
+fn chain_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
+    assert_eq!(heap.count_total, 1);
+    assert_eq!(heap.count_max, 1);
+    assert_eq!(heap.bytes_total as usize, text_allocation(text));
+    assert_eq!(heap.bytes_max as usize, text_allocation(text));
+    assert_eq!(heap.count_current, 0);
+    assert_eq!(heap.bytes_current, 0);
+}
+
+#[test]
+fn n_and_two_n_long_paths_and_deep_chains_allocate_one_owner_and_reject_copies() {
+    for (width, depth) in [(16, 4), (32, 4), (8, 16), (8, 32)] {
+        let text = vec!["a".repeat(width); depth].join("/");
+        let (expected, [before, after]) = acyclic_test_support::differential(
+            || chain(true, &text),
+            || chain(false, &text),
+        );
+        assert_eq!(expected.0, depth);
+        assert_eq!(before.count_total, 2);
+        assert_eq!(
+            before.bytes_total as usize,
+            text.len() + 3 * std::mem::size_of::<usize>()
+        );
+        chain_heap_bound(after, &text);
+        let restore = Restore(COPY_ON_CLONE.with(|flag| flag.replace(true)));
+        let mut broken = None;
+        let heap = acyclic_test_support::measure(|| broken = Some(chain(false, &text)));
+        drop(restore);
+        assert_eq!(broken, Some(expected));
+        assert_eq!(heap.count_total as usize, depth + 1);
+        let copied: usize = text
+            .match_indices('/')
+            .map(|(end, _)| text_allocation(&text[..end]))
+            .chain(std::iter::once(text_allocation(&text)))
+            .sum();
+        assert_eq!(heap.bytes_total as usize, text_allocation(&text) + copied);
+        assert!(std::panic::catch_unwind(|| chain_heap_bound(heap, &text)).is_err());
+    }
 }
 
 fn native_observation(
