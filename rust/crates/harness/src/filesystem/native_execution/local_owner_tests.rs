@@ -431,10 +431,10 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
     initialize()?;
     let fs = acyclic_fs::Fs::memory();
     let identity = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes());
-    let first = local_owner_workspace(&fs, &format!("preparation-{identity}")).await?;
+    let first = preparation_workspace(&fs, &format!("preparation-{identity}")).await?;
     first.write_text("/secret", "first secret").await?;
     let target = if foreign {
-        local_owner_workspace(&fs, &format!("preparation-{identity}-foreign")).await?
+        preparation_workspace(&fs, &format!("preparation-{identity}-foreign")).await?
     } else {
         first.clone()
     };
@@ -487,6 +487,28 @@ async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> Te
         "working-set admission disclosed bytes"
     );
     Ok(())
+}
+
+async fn preparation_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    fs: &acyclic_fs::Fs<A, O>,
+    name: &str,
+) -> TestResult<acyclic_fs::Workspace<A, O>> {
+    Ok(fs
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+            name,
+            acyclic_fs::VolumeInitialization {
+                config: VolumeConfig::native(Lifecycle::Ephemeral),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+            },
+            acyclic_fs::OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value
+        .workspace())
 }
 
 #[tokio::test]
