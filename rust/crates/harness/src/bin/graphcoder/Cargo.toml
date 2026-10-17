@@ -33,6 +33,10 @@ proptest.workspace = true
 name = "cli"
 path = "tests/cli.rs"
 
+[[test]]
+name = "live-progress"
+path = "tests/live_progress.rs"
+
 [dev-dependencies.axum]
 workspace = true
 
