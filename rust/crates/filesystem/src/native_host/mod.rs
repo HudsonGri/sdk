@@ -172,3 +172,8 @@ pub(crate) mod private_file;
 #[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
 #[path = "tests_flat_parent.rs"]
 mod flat_parent_tests;
+
+#[cfg(any(test, target_os = "macos"))]
+mod macos_record;
+#[cfg(test)]
+mod tests_macos_record;

@@ -75,3 +75,10 @@ path = "fuzz_targets/encoder_work.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "macos_record"
+path = "fuzz_targets/macos_record.rs"
+test = false
+doc = false
+bench = false

@@ -69,7 +69,7 @@ impl HostStatReader {
         // SAFETY: only initialized bytes from the last bounded query are exposed.
         let bytes =
             unsafe { std::slice::from_raw_parts(self.buffer.as_ptr().cast::<u8>(), self.filled) };
-        let record = Self::macos_record(bytes, self.next)?;
+        let record = super::super::macos_record::record(bytes, self.next)?;
         let returned = [
             u32_at(record, 4)?,
             u32_at(record, 8)?,

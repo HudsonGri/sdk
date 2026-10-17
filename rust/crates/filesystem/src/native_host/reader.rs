@@ -230,17 +230,6 @@ impl HostStatReader {
         Ok(filled)
     }
 
-    #[cfg(target_os = "macos")]
-    fn macos_record(bytes: &[u8], start: usize) -> io::Result<&[u8]> {
-        let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
-        let tail = bytes.get(start..).ok_or_else(malformed)?;
-        let prefix = tail.get(..4).ok_or_else(malformed)?;
-        let length = u32::from_ne_bytes(prefix.try_into().map_err(|_| malformed())?) as usize;
-        if length < 32 || !length.is_multiple_of(8) {
-            return Err(malformed());
-        }
-        tail.get(..length).ok_or_else(malformed)
-    }
     #[cfg(windows)]
     fn name(&self) -> io::Result<(usize, &[u16])> {
         use fs::FILE_ID_EXTD_DIR_INFO;
@@ -324,35 +313,14 @@ impl HostStatReader {
 
     #[cfg(target_os = "macos")]
     fn name(&self) -> io::Result<(usize, &std::ffi::CStr)> {
-        let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
-        // SAFETY: only initialized bytes from the last bounded query are exposed.
+        // SAFETY: only the initialized prefix from the bounded query is exposed.
         let bytes =
             unsafe { std::slice::from_raw_parts(self.buffer.as_ptr().cast::<u8>(), self.filled) };
-        let record = Self::macos_record(bytes, self.next)?;
-        // SAFETY: the checked record contains the length, returned attributes and name reference.
-        let (attributes, reference) = unsafe {
-            (
-                std::ptr::read_unaligned(record.as_ptr().add(4).cast::<libc::attribute_set_t>()),
-                std::ptr::read_unaligned(record.as_ptr().add(24).cast::<libc::attrreference_t>()),
-            )
-        };
-        if attributes.commonattr & libc::ATTR_CMN_NAME == 0 {
-            return Err(malformed());
-        }
-        let offset = usize::try_from(reference.attr_dataoffset).map_err(|_| malformed())?;
-        let start = 24_usize.checked_add(offset).ok_or_else(malformed)?;
-        let length = usize::try_from(reference.attr_length).map_err(|_| malformed())?;
-        let end = start.checked_add(length).ok_or_else(malformed)?;
-        if start < 32 {
-            return Err(malformed());
-        }
-        let name =
-            std::ffi::CStr::from_bytes_with_nul(record.get(start..end).ok_or_else(malformed)?)
-                .map_err(|_| malformed())?;
-        if name.is_empty() || name.to_bytes().contains(&b'/') {
-            return Err(malformed());
-        }
-        Ok((self.next + record.len(), name))
+        let record = super::macos_record::record(bytes, self.next)?;
+        Ok((
+            self.next + record.len(),
+            super::macos_record::name(record, macos_listing::FIXED)?,
+        ))
     }
 }
 
