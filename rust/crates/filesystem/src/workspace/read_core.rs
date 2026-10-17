@@ -47,7 +47,7 @@ pub(super) async fn read_selected<
             .map_err(WorkspaceError::from)
     }
     .await;
-    finish(workspace, work, result, &mut accounting, cancellation).await
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn read_range<
@@ -110,7 +110,7 @@ pub(super) async fn read_range<
         Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(read.bytes, bytes))
     }
     .await;
-    finish(workspace, work, result, &mut accounting, cancellation).await
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn read_link<
@@ -136,7 +136,7 @@ pub(super) async fn read_link<
             .map_err(WorkspaceError::from)
     }
     .await;
-    finish(workspace, work, result, &mut accounting, cancellation).await
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 async fn lookup_stat<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -188,7 +188,7 @@ pub(super) async fn stat<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::
     let result = lookup_stat(workspace, selector, path, &mut accounting, cancellation)
         .await
         .and_then(|value| value.ok_or(WorkspaceError::NotFound));
-    finish(workspace, work, result, &mut accounting, cancellation).await
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn list<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
@@ -219,7 +219,7 @@ pub(super) async fn list<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::
         Ok::<_, WorkspaceError>((page, allocation))
     }
     .await;
-    finish(workspace, work, result, &mut accounting, cancellation).await
+    finish(workspace, &work, result, &mut accounting, cancellation).await
 }
 
 pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -284,7 +284,7 @@ pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Ok(WorkspaceExtentPlan { spans })
     }
     .await;
-    finish(workspace, work, result, &mut accounting, &cancellation)
+    finish(workspace, &work, result, &mut accounting, &cancellation)
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)
@@ -292,7 +292,7 @@ pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 async fn finish<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork, T>(
     workspace: &Workspace<A, O>,
-    work: W,
+    work: &W,
     result: Result<T, WorkspaceError>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
