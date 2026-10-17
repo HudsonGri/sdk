@@ -56,7 +56,8 @@ fn check_effects(data: &[u8], text: &str, cancellation: &CancellationToken) -> R
         ..WorkBudget::UNBOUNDED
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancellation)?;
+    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancellation)
+        .map_err(|(error, _)| error)?;
     #[cfg(not(target_arch = "wasm32"))]
     let child = root.native_volume_work(limit)?;
     #[cfg(not(target_arch = "wasm32"))]
