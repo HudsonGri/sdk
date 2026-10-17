@@ -22,6 +22,15 @@ proptest! {
                 if previous.as_ref() != Some(&file) { expected += 1; }
                 for _ in 0..repeats {
                     let cut = volume.snapshot(&query, 1).await.unwrap();
+                    #[cfg(feature = "test-support")]
+                    {
+                        let unchanged = cut.files.first() == Some(&file);
+                        let (result, examined) = crate::test_support::measure_task_volume_work(||
+                            futures::executor::block_on(publish_changed(&volume, &cut, &file)));
+                        result.unwrap();
+                        if unchanged { prop_assert_eq!(examined, 0, "unchanged projection re-entered the volume index"); }
+                    }
+                    #[cfg(not(feature = "test-support"))]
                     publish_changed(&volume, &cut, &file).await.unwrap();
                     let after = volume.snapshot(&query, 1).await.unwrap();
                     prop_assert_eq!(after.generation.position, expected);
