@@ -343,7 +343,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
         maximum_scroll: usize,
     ) -> Result<()> {
         if let Some(rows) = super::transcript_motion(&effect, page_rows) {
-            return super::scroll_tui(files, rows, maximum_scroll).await;
+            return super::scroll_tui(files, [rows], maximum_scroll).await;
         }
         let reader = self.files.as_ref().ok_or_else(|| {
             Error::Unauthorized("command input requires bound file authority".into())

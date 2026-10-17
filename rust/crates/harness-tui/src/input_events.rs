@@ -41,18 +41,3 @@ impl PromptInput {
         self.chord_timeout(now_ms)
     }
 }
-
-/// Merge each run of adjacent scroll movements into one, so a burst of
-/// notches publishes one scroll and draws one frame. Order is otherwise kept.
-pub fn coalesce_scrolls(effects: impl IntoIterator<Item = InputEffect>) -> Vec<InputEffect> {
-    let mut merged: Vec<InputEffect> = Vec::new();
-    for effect in effects {
-        match (merged.last_mut(), effect) {
-            (Some(InputEffect::Scroll(total)), InputEffect::Scroll(rows)) => {
-                *total = total.saturating_add(rows);
-            }
-            (_, effect) => merged.push(effect),
-        }
-    }
-    merged
-}

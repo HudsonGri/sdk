@@ -537,6 +537,26 @@ fn alternate_screen_reports_sgr_wheel_and_inline_keeps_native_scrolling() -> io:
             b"\x1b[?1049h\x18\x1b[?1049l"
         );
     }
+    // Mouse reporting needs a confirmed alternate screen: with 1049 unknown,
+    // unsupported or permanently reset, both supported reporting modes stay
+    // off, because reports would replace the primary screen's own wheel.
+    for primary in [
+        ModeState::Unknown,
+        ModeState::Unsupported,
+        ModeState::AlwaysReset,
+    ] {
+        assert_eq!(
+            setup(ScreenMode::Alternate, &[(1049, primary), both[0], both[1]])?,
+            b""
+        );
+    }
+    // An alternate screen already active (or permanent) is confirmed as is.
+    for active in [ModeState::Set, ModeState::AlwaysSet] {
+        assert_eq!(
+            setup(ScreenMode::Alternate, &[(1049, active), both[0], both[1]])?,
+            b"[?1006h[?1002h[?1002l[?1006l"
+        );
+    }
     // What the terminal then reports decodes to wheel notches, burst intact.
     let mut decoder = Decoder::default();
     decoder.feed(b"\x1b[<64;5;7M\x1b[<64;5;7M\x1b[<65;5;7M")?;

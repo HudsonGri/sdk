@@ -190,13 +190,14 @@ mod native_input;
 #[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
 pub use native_input::stdin_jsonl;
 #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
-pub use native_input::{next_tui_event, terminal_events};
+pub use native_input::{InputBatch, next_tui_event, terminal_events};
 
 #[cfg(feature = "tui")]
 mod input_files;
 #[cfg(feature = "tui")]
 pub use input_files::{
-    apply_tui_input, file_tui_input, handle_tui_input, restore_tui_prompt, save_tui_draft,
+    apply_tui_input, file_tui_input, file_tui_inputs, handle_tui_input, restore_tui_prompt,
+    save_tui_draft,
 };
 #[cfg(feature = "tui")]
 mod prompt_files;

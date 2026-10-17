@@ -38,22 +38,39 @@ impl<W: Write> RestoreGuard<W> {
         for mode in [1004, 2004, 2027] {
             self.enable_mode(mode)?;
         }
-        if screen == ScreenMode::Alternate {
-            self.enable_mode(1049)?;
-            // The alternate screen has no native scrollback, so it owns the
-            // wheel: button-event reports (1002), SGR-encoded (1006) because
-            // the decoder reads only SGR. Encoding first, so no legacy report
-            // can precede it; neither without the other. Inline keeps the
-            // terminal's own wheel scrolling and selection.
-            let mutable = |mode| self.modes.get(&mode).is_some_and(|state| state.supported());
-            if mutable(1006) && mutable(1002) {
-                self.enable_mode(1006)?;
-                self.enable_mode(1002)?;
-            }
+        if screen == ScreenMode::Alternate
+            && let Some(screen) = self.alternate_screen()?
+        {
+            self.report_wheel(screen)?;
         }
         if let Err(error) = self.writer.flush() {
             let _ = self.restore();
             return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Enter the alternate screen; the proof it is active, only when its
+    /// state is confirmed (set by us, or already set).
+    fn alternate_screen(&mut self) -> io::Result<Option<OnAlternateScreen>> {
+        self.enable_mode(1049)?;
+        Ok(matches!(
+            self.modes.get(&1049),
+            Some(ModeState::Set | ModeState::AlwaysSet)
+        )
+        .then_some(OnAlternateScreen(())))
+    }
+
+    /// The alternate screen has no native scrollback, so it owns the wheel:
+    /// button-event reports (1002), SGR-encoded (1006) because the decoder
+    /// reads only SGR. Encoding first, so no legacy report can precede it;
+    /// neither without the other. Requiring the proof keeps reporting off the
+    /// primary screen, whose own wheel scrolling and selection stay native.
+    fn report_wheel(&mut self, _screen: OnAlternateScreen) -> io::Result<()> {
+        let mutable = |mode| self.modes.get(&mode).is_some_and(|state| state.supported());
+        if mutable(1006) && mutable(1002) {
+            self.enable_mode(1006)?;
+            self.enable_mode(1002)?;
         }
         Ok(())
     }
@@ -223,6 +240,9 @@ impl<W: Write> super::Present for RestoreGuard<W> {
         }
     }
 }
+
+/// Made only by `RestoreGuard::alternate_screen` on a confirmed alternate screen.
+struct OnAlternateScreen(());
 
 impl<W: Write> Drop for RestoreGuard<W> {
     fn drop(&mut self) {

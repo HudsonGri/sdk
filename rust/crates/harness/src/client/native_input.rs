@@ -50,13 +50,13 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
 #[cfg(all(feature = "tui", feature = "filesystem-local"))]
 pub async fn next_file_tui_event(
     client: &mut super::TaskFileClient,
-    input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
+    input: &mut (impl futures::Stream<Item = Result<InputBatch>> + Unpin),
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
     animation: bool,
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
-) -> Result<Option<crate::tui::key_event::InputEvent>> {
+) -> Result<Option<InputBatch>> {
     tokio::select! {
         _ = animation_frame::<true>(animation) => Ok(None),
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
@@ -88,32 +88,37 @@ async fn animation_frame<const ENABLED: bool>(busy: bool) {
 #[path = "native_input/animation.rs"]
 mod animation;
 
-/// Follow controlling-terminal input through the decoder retained by negotiation.
+/// The events decoded from one terminal read, in order.
+#[cfg(feature = "tui")]
+pub type InputBatch = std::collections::VecDeque<crate::tui::key_event::InputEvent>;
+
+/// Follow controlling-terminal input through the decoder retained by negotiation,
+/// one decoded read per item, so read boundaries survive to the caller.
 /// Terminal waits use Tokio's blocking executor, never the bounded filesystem
 /// I/O service needed by the active task. Closing output wakes the retained read.
 #[cfg(feature = "tui")]
 pub fn terminal_events(
     tty: crate::tui::term::Tty,
-) -> acyclic_stream::BoxProviderStream<'static, Result<crate::tui::key_event::InputEvent>> {
-    Box::pin(futures::stream::try_unfold(
-        (tty, std::collections::VecDeque::new()),
-        |(mut tty, mut pending)| async move {
-            loop {
-                if let Some(event) = pending.pop_front() {
-                    return Ok(Some((event, (tty, pending))));
-                }
-                let completion = tokio::task::spawn_blocking(move || {
-                    let events = tty.read_events(
-                        std::time::Instant::now() + std::time::Duration::from_secs(86_400),
-                    );
-                    (tty, events)
-                });
-                let (reader, events) = completion
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                tty = reader;
-                pending.extend(events.map_err(|error| Error::Storage(error.to_string()))?);
+) -> acyclic_stream::BoxProviderStream<'static, Result<InputBatch>> {
+    Box::pin(futures::stream::try_unfold(tty, |mut tty| async move {
+        loop {
+            let completion = tokio::task::spawn_blocking(move || {
+                let events = tty.read_events(
+                    std::time::Instant::now() + std::time::Duration::from_secs(86_400),
+                );
+                (tty, events)
+            });
+            let (reader, events) = completion
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            tty = reader;
+            let batch: InputBatch = events
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .into_iter()
+                .collect();
+            if !batch.is_empty() {
+                return Ok(Some((batch, tty)));
             }
-        },
-    ))
+        }
+    }))
 }

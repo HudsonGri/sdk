@@ -39,20 +39,29 @@ pub fn transcript_motion(effect: &crate::tui::InputEffect, page_rows: usize) -> 
     }
 }
 
-/// Publish a movement bounded by the actual rendered transcript viewport. A
-/// movement that changes nothing appends nothing.
-pub async fn scroll_tui<P: StreamProvider + ?Sized>(
-    files: &mut CommandSession<P>,
-    rows: isize,
-    maximum: usize,
-) -> Result<()> {
-    let back = tui_scroll(files)?;
-    let current = back.min(maximum);
-    let next = if rows >= 0 {
+/// One movement applied against the bounds of the rendered viewport.
+fn scroll_step(current: usize, rows: isize, maximum: usize) -> usize {
+    if rows >= 0 {
         current.saturating_add(rows.unsigned_abs()).min(maximum)
     } else {
         current.saturating_sub(rows.unsigned_abs())
-    };
+    }
+}
+
+/// Publish movements bounded by the actual rendered transcript viewport,
+/// each folded against the bounds in order, as one layout change. A burst
+/// that changes nothing appends nothing.
+pub async fn scroll_tui<P: StreamProvider + ?Sized>(
+    files: &mut CommandSession<P>,
+    motions: impl IntoIterator<Item = isize>,
+    maximum: usize,
+) -> Result<()> {
+    let back = tui_scroll(files)?;
+    let next = motions
+        .into_iter()
+        .fold(back.min(maximum), |current, rows| {
+            scroll_step(current, rows, maximum)
+        });
     if next != back {
         let mut layout = files
             .state(CommandFileRoot::Session, "layout.json")?
@@ -70,46 +79,29 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
     Ok(())
 }
 
-/// Effects for one input event plus the view motions the stream has already
-/// decoded behind it, without waiting. A wheel flick or held `PageUp` arrives
-/// as one input batch; its wheel notches and page keys merge into one scroll,
-/// so the caller publishes one layout change and draws one frame for the
-/// whole burst. Draining stops after the first event that is not purely a
-/// motion; that event is routed here, in order, against the same layout,
-/// which a motion never changes. Polling once is cancel-safe: a stream keeps
-/// any in-flight read itself.
-pub fn input_burst<S>(
-    first: crate::tui::key_event::InputEvent,
-    input: &mut S,
+/// Effects for the next decoded input event plus the view motions decoded
+/// in the same read behind it. A wheel flick or held `PageUp` arrives as one
+/// input batch; its motions publish as one layout change and draw one frame.
+/// Draining stops after the first event that is not purely a motion; that
+/// event is routed here, in order, against the same layout, which a motion
+/// never changes. Later events of the batch stay queued, and the next read is
+/// never touched, so read boundaries stay frame boundaries.
+pub fn input_burst(
+    batch: &mut std::collections::VecDeque<crate::tui::key_event::InputEvent>,
     page_rows: usize,
     mut route: impl FnMut(crate::tui::key_event::InputEvent) -> Vec<crate::tui::InputEffect>,
-) -> Result<Vec<crate::tui::InputEffect>>
-where
-    S: futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin,
-{
-    use crate::tui::InputEffect;
-    use futures::{FutureExt, StreamExt};
+) -> Vec<crate::tui::InputEffect> {
     let mut effects = Vec::new();
-    let mut event = first;
-    loop {
+    while let Some(event) = batch.pop_front() {
         let routed = route(event);
         let motion = !routed.is_empty()
             && routed
                 .iter()
                 .all(|effect| transcript_motion(effect, page_rows).is_some());
-        effects.extend(routed.into_iter().map(|effect| {
-            match transcript_motion(&effect, page_rows) {
-                Some(rows) => InputEffect::Scroll(rows),
-                None => effect,
-            }
-        }));
+        effects.extend(routed);
         if !motion {
             break;
         }
-        match input.next().now_or_never() {
-            Some(Some(next)) => event = next?,
-            Some(None) | None => break,
-        }
     }
-    Ok(crate::tui::coalesce_scrolls(effects))
+    effects
 }
