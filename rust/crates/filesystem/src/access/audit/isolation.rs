@@ -1,6 +1,3 @@
-use crate::access::{
-    Action, Capability, Context, Grant, PathTrie, Policy, Principal, PrincipalKind, Resource,
-};
 use crate::{
     CancellationToken, Fs, IdempotencyKey, Lifecycle, OperationId, PublicationPermit,
     TransactionCommit, VolumeConfig, VolumeInitialization, WorkBudget, WorkCounters,
@@ -10,14 +7,19 @@ use proptest::prelude::*;
 
 async fn trace(
     name: &str,
-    audited: bool,
-    shared: bool,
+    mode: u8,
 ) -> Result<(Vec<WorkCounters>, Vec<Vec<u8>>), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let fs = if shared {
-        fs.with_shared_audit_caches()
-    } else {
-        fs
+    // Each run has fresh providers. Within a run, the independent reference
+    // owner and the tested owner see identical storage; only cache ownership differs.
+    let stream = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
+    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = std::sync::Arc::new(objects);
+    let fs = Fs::from_memory_providers(stream.clone(), objects.clone(), bucket.clone());
+    let reference = Fs::from_memory_providers(stream, objects, bucket);
+    let audit = match mode {
+        0 => reference,
+        1 => fs.audit_storage(),
+        _ => fs.audit_storage_with_shared_caches(),
     };
     let cancellation = CancellationToken::new();
     let workspace = fs
@@ -35,46 +37,24 @@ async fn trace(
         .await?
         .value
         .workspace();
-    let view = if audited {
-        let policy: Policy = serde_json::from_slice(crate::access::INITIAL_POLICY)?;
-        let principal = Principal {
-            kind: PrincipalKind::Service,
-            id: "audit-isolation".into(),
-            lineage: vec![],
-            groups: Default::default(),
-            roles: Default::default(),
-            tags: Default::default(),
-            attributes: Default::default(),
-        };
-        let capability = Capability {
-            layers: vec![vec![Grant {
-                actions: Action::ALL.into_iter().collect(),
-                resource: policy.layers[0][0].resource.clone(),
-            }]],
-            expires_at: None,
-        };
-        let volume = uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string();
-        let view = PathTrie::compile(
-            &policy,
-            &principal,
-            Resource {
-                config: workspace.volume_config(),
-                volume: &volume,
-                lineage: &[],
-                generation: 0,
-                head: 0,
-                path: "",
+    let audit = audit
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            format!(
+                "acyclic-audit-{}",
+                uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes())
+            ),
+            VolumeInitialization {
+                config: VolumeConfig::portable(Lifecycle::Ephemeral),
+                access_policy: None,
             },
-            Context {
-                now: 0,
-                approvals: 0,
-            },
-            &capability,
-        )?;
-        Some(workspace.audit_view(view, principal, capability, None, None)?)
-    } else {
-        None
-    };
+            OperationId::from_bytes([42; 16]),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            None,
+        )
+        .await?
+        .value
+        .workspace();
     let mut counters = Vec::new();
     for index in 0..3u8 {
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -106,13 +86,39 @@ async fn trace(
             .await?;
         assert!(matches!(outcome, TransactionCommit::Committed(_)));
         counters.push(work.receipt());
-        if let Some(view) = &view {
-            assert!(
-                view.decide(Action::Read, &format!("file-{index}"), 0)?
-                    .allowed
-            );
-            fs.flush_access_audit()?;
-        }
+        let mut batch = audit
+            .begin_transaction(
+                IdempotencyKey::from_bytes([index + 11; 16]),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        batch
+            .create_file(
+                &format!("/decision-{index}"),
+                bytes::Bytes::from_static(b"fixed audit payload"),
+                Default::default(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        let outcome = batch
+            .commit::<WorkspaceError, _, _>(
+                None,
+                PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                |_| async {
+                    Ok(crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await?
+            .value;
+        assert!(matches!(outcome, TransactionCommit::Committed(_)));
     }
     let generation = workspace
         .head(WorkBudget::UNBOUNDED, &cancellation)
@@ -150,12 +156,12 @@ proptest! {
             uuid::Uuid::from_bytes(source.into_bytes()))).unwrap().volume_id();
         // This ordering deterministically exposes the extra shared-index probe.
         prop_assume!(source < audit);
-        let run = |audited, shared| futures::executor::block_on(trace(&name, audited, shared))
+        let run = |mode| futures::executor::block_on(trace(&name, mode))
             .map_err(|error| TestCaseError::fail(error.to_string()));
-        let baseline = run(false, false)?;
-        let isolated = run(true, false)?;
+        let baseline = run(0)?;
+        let isolated = run(1)?;
         prop_assert_eq!(&isolated, &baseline);
-        let coupled = run(true, true)?;
+        let coupled = run(2)?;
         prop_assert_eq!(&coupled.1, &baseline.1);
         prop_assert_ne!(&coupled.0, &baseline.0,
             "negative control must expose background cache work charged to the caller");

@@ -268,23 +268,32 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
         if self.inner.audit.is_some() {
             return self;
         }
-        self.with_audit_caches(Arc::default())
+        let raw = self.audit_storage();
+        self.with_audit_storage(raw)
+    }
+
+    pub(crate) fn audit_storage(&self) -> Self {
+        Self {
+            inner: Arc::new(FsInner {
+                audit: None,
+                caches: Arc::default(),
+                stores: Arc::clone(&self.inner.stores),
+            }),
+        }
     }
 
     #[cfg(test)]
-    pub(crate) fn with_shared_audit_caches(self) -> Self {
-        let caches = Arc::clone(&self.inner.caches);
-        self.with_audit_caches(caches)
-    }
-
-    fn with_audit_caches(self, caches: Arc<Caches>) -> Self {
-        let raw = Self {
+    pub(crate) fn audit_storage_with_shared_caches(&self) -> Self {
+        Self {
             inner: Arc::new(FsInner {
                 audit: None,
-                caches,
+                caches: Arc::clone(&self.inner.caches),
                 stores: Arc::clone(&self.inner.stores),
             }),
-        };
+        }
+    }
+
+    fn with_audit_storage(self, raw: Self) -> Self {
         Self {
             inner: Arc::new(FsInner {
                 caches: Arc::clone(&self.inner.caches),
