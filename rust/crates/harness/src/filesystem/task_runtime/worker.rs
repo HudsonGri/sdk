@@ -240,23 +240,21 @@ where
         maximum_transitions: u32,
         io: Option<&super::super::PreparationIo>,
     ) -> TaskWorkerAttempt {
-        let result = match crate::conversation::BoundedContentFuture::new(io, || {
-            self.run_task_observed(&lease, commands, maximum_transitions, io)
-        }) {
-            Ok(future) => future.await,
-            Err(error) => Err(error),
-        };
-        // This rejection is returned only after a model stream has been dropped
-        // or before a tool dispatch. Indeterminate native work retains its lease.
-        if matches!(
-            &result,
-            Err(Error::InteractionRejected(
-                crate::InteractionRejection::Cancelled
-            ))
-        ) {
-            let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-            let fence = LeaseFence::from(&lease.reservation);
-            let settled = async {
+        let result = match crate::conversation::BoundedContentFuture::new(io, || async {
+            let result = self
+                .run_task_observed(&lease, commands, maximum_transitions, io)
+                .await;
+            // Cancellation settlement belongs to the same funded state machine.
+            // Keeping it outside this boundary enlarges every caller's future,
+            // even when the task never requests cancellation.
+            if matches!(
+                &result,
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled
+                ))
+            ) {
+                let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+                let fence = LeaseFence::from(&lease.reservation);
                 self.host.cancel(task).await?;
                 self.host
                     .settle_task(
@@ -267,16 +265,14 @@ where
                             .as_mut()
                             .map(|work| work as &mut dyn crate::store::HistoryIo),
                     )
-                    .await
+                    .await?;
+                return Ok(WorkerTurn::Completed { task });
             }
-            .await;
-            return match settled {
-                Ok(()) => {
-                    TaskWorkerAttempt::Progress(WorkerTurn::Completed { task }.with_lease(lease))
-                }
-                Err(error) => TaskWorkerAttempt::Unresolved { lease, error },
-            };
-        }
+            result
+        }) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
         match result {
             Ok(progress) => TaskWorkerAttempt::Progress(progress.with_lease(lease)),
             Err(error) => TaskWorkerAttempt::Unresolved { lease, error },
