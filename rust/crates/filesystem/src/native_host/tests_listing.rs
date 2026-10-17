@@ -124,13 +124,40 @@ fn facts(stat: &HostStat) -> Vec<i128> {
     vec![
         i128::from(if directory { 0 } else { stat.len() }),
         i128::from(directory),
+        i128::from(stat.raw.FileId.cast_unsigned()),
+        i128::from(stat.volume_serial_number),
+        i128::from(stat.raw.NumberOfLinks),
+        i128::from(stat.raw.FileAttributes),
+        i128::from(stat.raw.CreationTime),
+        i128::from(stat.raw.LastAccessTime),
+        i128::from(stat.raw.LastWriteTime),
     ]
 }
 #[cfg(windows)]
 fn baseline(path: &std::path::Path) -> std::io::Result<Vec<i128>> {
+    use std::os::windows::fs::MetadataExt as _;
     let meta = std::fs::symlink_metadata(path)?;
     let length = if meta.is_dir() { 0 } else { meta.len() };
-    Ok(vec![i128::from(length), i128::from(meta.is_dir())])
+    Ok(vec![
+        i128::from(length),
+        i128::from(meta.is_dir()),
+        i128::from(
+            meta.file_index()
+                .ok_or_else(|| io::Error::other("missing file index"))?,
+        ),
+        i128::from(
+            meta.volume_serial_number()
+                .ok_or_else(|| io::Error::other("missing volume"))?,
+        ),
+        i128::from(
+            meta.number_of_links()
+                .ok_or_else(|| io::Error::other("missing link count"))?,
+        ),
+        i128::from(meta.file_attributes()),
+        i128::from(meta.creation_time()),
+        i128::from(meta.last_access_time()),
+        i128::from(meta.last_write_time()),
+    ])
 }
 
 /// The work an exact listing performs: one storage event with nothing
