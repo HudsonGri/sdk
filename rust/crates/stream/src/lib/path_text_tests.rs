@@ -72,8 +72,8 @@ proptest! {
 }
 
 #[test]
-fn path_storage_is_four_native_words_and_old_storage_fails_the_same_bound() {
-    let expected = if cfg!(target_arch = "wasm32") { 3 } else { 4 } * std::mem::size_of::<usize>();
+fn path_storage_is_three_words_and_old_storage_fails_the_same_bound() {
+    let expected = 3 * std::mem::size_of::<usize>();
     eprintln!(
         "path_value_size before={} after={}",
         std::mem::size_of::<BaselinePath>(),
