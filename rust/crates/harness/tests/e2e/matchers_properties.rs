@@ -1,4 +1,4 @@
-use super::{model_requests, ordered, subset};
+use super::matchers::{model_requests, ordered, subset};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -61,14 +61,14 @@ fn subsequence(expected: &[Value], actual: &[Value]) -> bool {
 }
 
 proptest! {
-    // Content arrays are positional and complete while each part's metadata is
+    // Request content arrays are positional and complete while each part's metadata is
     // a subset. Inserting even an empty text part at any position is corruption.
     #[test]
     fn content_parts_require_exact_shape(
         parts in proptest::collection::vec(value(), 0..8), extra in value(), slot in any::<usize>(),
     ) {
         let expected = json!({"content":parts});
-        prop_assert!(subset(&expected, &json!({"content":parts, "metadata":extra})), "unchanged content");
+        prop_assert!(model_requests(&[expected.clone()], &[json!({"content":parts, "metadata":extra})]).is_ok(), "unchanged content");
         for inserted in [extra.clone(), json!({"kind":"text", "text":""}),
             json!({"kind":"text", "text":"UNEXPECTED TEXT IN IMAGE-ONLY INPUT"})] {
             let mut actual = parts.clone();
@@ -199,7 +199,8 @@ proptest! {
 
 #[test]
 fn content_matcher_seed_corpus() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/content_matcher");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../harness-fuzz/corpus/content_matcher");
     for entry in std::fs::read_dir(root).unwrap() {
         content_matcher_input::check(&std::fs::read(entry.unwrap().path()).unwrap());
     }

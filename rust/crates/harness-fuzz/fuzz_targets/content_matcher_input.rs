@@ -14,16 +14,22 @@ pub fn check(bytes: &[u8]) {
     let mut inserted = parts.clone();
     let slot = bytes.len() % (parts.len() + 1);
     inserted.insert(slot, json!({"kind":"text", "text":""}));
-    assert!(!crate::matchers::model_requests(
-        &[expected.clone()],
-        &[json!({"messages":[{"content":inserted}]})]
-    ).is_ok());
+    assert!(
+        !crate::matchers::model_requests(
+            &[expected.clone()],
+            &[json!({"messages":[{"content":inserted}]})]
+        )
+        .is_ok()
+    );
     if !parts.is_empty() {
         let mut removed = parts;
         removed.remove(slot % removed.len());
-        assert!(!crate::matchers::model_requests(
-            &[expected],
-            &[json!({"messages":[{"content":removed}]})]
-        ).is_ok());
+        assert!(
+            !crate::matchers::model_requests(
+                &[expected],
+                &[json!({"messages":[{"content":removed}]})]
+            )
+            .is_ok()
+        );
     }
 }

@@ -1,12 +1,5 @@
 use serde_json::Value;
 
-#[cfg(test)]
-#[path = "matchers_properties.rs"]
-mod properties;
-#[cfg(test)]
-#[path = "request_matchers_tests.rs"]
-mod requests;
-
 // Objects are recursive subsets. Arrays are ordered subsequences with distinct
 // matches; an empty array asserts emptiness. Scalar values match exactly.
 // Arguments are complete JSON payloads: extra keys or elements are corruption.

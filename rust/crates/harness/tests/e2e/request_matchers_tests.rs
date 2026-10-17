@@ -1,4 +1,4 @@
-use super::{model_requests, ordered};
+use super::matchers::{model_requests, ordered};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
