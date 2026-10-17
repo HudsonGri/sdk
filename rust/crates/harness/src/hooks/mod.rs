@@ -174,5 +174,6 @@ mod output;
 pub use output::HookOutput;
 
 mod native;
+pub(crate) use native::HookCheck;
 #[cfg(test)]
 mod tests;

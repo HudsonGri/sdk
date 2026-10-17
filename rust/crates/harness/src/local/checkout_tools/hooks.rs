@@ -109,11 +109,10 @@ impl CheckoutTools {
             workspace::volumes::project(&state.mounts).await?;
             // Each blocking worker retains this guard through cancellation and
             // child-tree reaping; dropping the caller cannot switch its view.
-            let held = StateArc::new(state);
             let check_workspace = Arc::clone(&workspace);
             let check_owner = Arc::clone(owner);
             let runtime = tokio::runtime::Handle::current();
-            let check = retain_guard(StateArc::clone(&held), move || {
+            let check = move || {
                 if acyclic_fs::capture_root_identity(&check_workspace.path)
                     .map_err(std::io::Error::other)?
                     != check_workspace.identity
@@ -131,18 +130,19 @@ impl CheckoutTools {
                     .map_err(std::io::Error::other)?
                     .map_err(std::io::Error::other)
                 })
-            });
-            let result = hooks
-                .run_checked(
-                    event,
-                    (&workspace.path, &workspace.path),
-                    input,
-                    registry,
-                    check,
-                )
-                .await;
-            let mut state = StateArc::try_unwrap(held)
-                .map_err(|_| Error::Conflict("hook cleanup still owns its selected view".into()))?;
+            };
+            let (result, mut state) = with_workers::<_, _, true>(state, check, async |check| {
+                hooks
+                    .run_checked(
+                        event,
+                        (&workspace.path, &workspace.path),
+                        input,
+                        registry,
+                        check,
+                    )
+                    .await
+            })
+            .await?;
             workspace::volumes::sync(&state.mounts).await?;
             let State {
                 active, watcher, ..
@@ -164,16 +164,28 @@ impl CheckoutTools {
     }
 }
 
-// Only the owner can recover the guard after every worker has dropped its
-// callback. Workers retain ownership without reading or locking the state.
-fn retain_guard<T: Send + Sync + 'static>(
-    guard: StateArc<OwnedMutexGuard<T>>,
+// The native runner and model share this whole ownership boundary. Only the
+// caller can recover the guard, after all workers have released their checks.
+async fn with_workers<T: Send + Sync + 'static, R, const RETAIN: bool>(
+    state: OwnedMutexGuard<T>,
     check: impl Fn() -> std::io::Result<()> + Send + Sync + 'static,
-) -> Arc<dyn Fn() -> std::io::Result<()> + Send + Sync> {
-    Arc::new(move || {
-        let _guard = &guard;
-        check()
-    })
+    execute: impl AsyncFnOnce(crate::hooks::HookCheck) -> R,
+) -> Result<(R, OwnedMutexGuard<T>)> {
+    let held = StateArc::new(state);
+    let worker = StateArc::clone(&held);
+    let check: crate::hooks::HookCheck = if RETAIN {
+        Arc::new(move || {
+            let _guard = &worker;
+            check()
+        })
+    } else {
+        drop(worker);
+        Arc::new(check)
+    };
+    let result = execute(check).await;
+    let state = StateArc::try_unwrap(held)
+        .map_err(|_| Error::Conflict("hook cleanup still owns its selected view".into()))?;
+    Ok((result, state))
 }
 
 #[cfg(all(test, acyclic_harness_loom))]
