@@ -94,14 +94,16 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
             admission::child_operation(files.volume(), reference.as_str(), b"child")?.into_bytes(),
         );
         CUT.with(|cut| cut.set(Some(point)));
+        let interrupted = harness
+            .service_child(files.clone(), reference.clone(), request.clone(), None)
+            .await;
+        let reached = CUT.with(|cut| cut.replace(None).is_none());
         assert!(
-            matches!(
-                harness.service_child(files.clone(), reference.clone(), request.clone(), None).await,
-                Err(Error::Indeterminate(operation)) if operation == OperationId::from_bytes(expected.into_bytes())
-            ),
+            reached
+                && matches!(interrupted,
+                Err(Error::Indeterminate(operation)) if operation == OperationId::from_bytes(expected.into_bytes())),
             "crash cut {point} was not reached"
         );
-        assert!(CUT.with(|cut| cut.get().is_none()));
         assert!(provider.requests().is_empty());
         drop(context);
         drop(files);
