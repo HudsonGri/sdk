@@ -316,3 +316,66 @@ proptest! {
         compare(kind, mode, limit, WorkCounters { bytes_copied: copies, items_examined: items, ..WorkCounters::UNCHARGED }, bytes, failure, recheck, false, false).map_err(proptest::test_runner::TestCaseError::fail)?;
     }
 }
+
+fn timed(old: bool, kind: u8, mode: u8, iterations: u32) -> f64 {
+    // Separate initialization for every side and round. No shared ledgers,
+    // cancellation tokens, resource registrations or pending completion work.
+    let caller = crate::CancellationToken::new();
+    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &caller).unwrap();
+    let work = scoped(&root, mode, u64::MAX);
+    let delta = WorkCounters {
+        bytes_copied: 1,
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
+    let start = std::time::Instant::now();
+    for _ in 0..iterations {
+        let output = operation(old, kind, &work, &caller, delta, 8).unwrap();
+        match output {
+            Output::Remaining(remaining) => {
+                std::hint::black_box(remaining);
+            }
+            Output::Recorded => (),
+            Output::Claimed(allocation) => drop(std::hint::black_box(allocation)),
+        }
+    }
+    let elapsed = start.elapsed().as_nanos() as f64 / f64::from(iterations);
+    std::hint::black_box(root.receipt());
+    elapsed
+}
+
+#[test]
+#[ignore = "paired production-path timing report"]
+fn paired_accounting_boundaries() {
+    for kind in 0..3 {
+        for mode in 0..4 {
+            // Warm both implementations without retaining their fixture state.
+            timed(true, kind, mode, 128);
+            timed(false, kind, mode, 128);
+            let mut old = Vec::new();
+            let mut new = Vec::new();
+            let mut gains = Vec::new();
+            for round in 0..31 {
+                let (before, after) = if round % 2 == 0 {
+                    (
+                        timed(true, kind, mode, 4096),
+                        timed(false, kind, mode, 4096),
+                    )
+                } else {
+                    let after = timed(false, kind, mode, 4096);
+                    (timed(true, kind, mode, 4096), after)
+                };
+                old.push(before);
+                new.push(after);
+                gains.push(100.0 * (before - after) / before);
+            }
+            old.sort_by(f64::total_cmp);
+            new.sort_by(f64::total_cmp);
+            gains.sort_by(f64::total_cmp);
+            eprintln!(
+                "BOUNDARY_PAIR kind={kind} mode={mode} old_ns={:.1} new_ns={:.1} paired_percent={:.2} range={:.2}..{:.2}",
+                old[15], new[15], gains[15], gains[0], gains[30]
+            );
+        }
+    }
+}
