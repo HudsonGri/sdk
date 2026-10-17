@@ -26,6 +26,24 @@ impl CheckoutTools {
                 owner.task_id(),
                 &digest,
                 scope.limits().file_bytes,
+                || async {
+                    // Reconstruct the derived pointer from the owner's immutable
+                    // admission, never from a request or current settings file.
+                    let value = owner.admission().input.get("model").ok_or_else(|| {
+                        Error::Unauthorized("hook task has no admitted model command".into())
+                    })?;
+                    let command: crate::workflow::WorkflowCommand =
+                        serde::Deserialize::deserialize(value).map_err(storage)?;
+                    if command.kind != crate::filesystem::MODEL_TASK_COMMAND_KIND {
+                        return Err(Error::Unauthorized(
+                            "hook task has no admitted model command".into(),
+                        ));
+                    }
+                    let bytes = context.task().read_file(&command.payload, None).await?;
+                    let command: crate::filesystem::ModelTaskCommand =
+                        serde_json::from_slice(&bytes).map_err(storage)?;
+                    Ok(command.context_manifest)
+                },
             )
             .await?;
         }

@@ -126,6 +126,116 @@ printf '{"hookSpecificOutput":{"additionalContext":"%s"}}' "$1"
 }
 
 #[tokio::test]
+async fn queued_admissions_reconstruct_hook_authority_from_their_original_model_command()
+-> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = root.path().join("workspace");
+    let home = root.path().join("home");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let script = root.path().join("hook.sh");
+    std::fs::write(
+        &script,
+        "cat >/dev/null\nprintf 'once\\n' >> hook-runs\nprintf '%s' \"$1\"\n",
+    )
+    .map_err(super::super::storage)?;
+    let current = home.join(".claude/settings.json");
+    std::fs::write(
+        &current,
+        settings(&script, "original-admission-context").to_string(),
+    )
+    .map_err(super::super::storage)?;
+    let provider = text();
+    let config = || -> Result<LocalHarnessConfig> {
+        Ok(checkout_config(&workspace, (model()?, provider.clone()))?
+            .state_directory(root.path().join("state"))
+            .settings(SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))))
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let operation = OperationId::new();
+    // Admit the durable contract directly, as other producers do. No derived
+    // LocalHarness context pointer has been published by stage_bound_turn.
+    let manifest = harness.stage_context_manifest(operation).await?;
+    let command = crate::filesystem::ModelTaskCommand {
+        input: crate::model::ModelContent::Text("queued before hook dispatch".into()),
+        context_manifest: manifest.clone(),
+        summary_source: None,
+        selected_context: None,
+        max_steps: 8,
+        max_output_tokens: None,
+        mailbox_operation: None,
+        selected_output_volume: None,
+    };
+    let publisher = harness.input_publisher()?;
+    let bytes = serde_json::to_vec(&command).map_err(super::super::storage)?;
+    let payload = publisher
+        .stage_once(
+            operation,
+            &format!("inputs/{operation}.json"),
+            &bytes,
+            "application/json",
+            "queued model",
+            None,
+        )?
+        .await?
+        .0;
+    let (receive, model) = harness
+        .finish_turn_inputs(operation, payload, publisher.as_ref())
+        .await?;
+    let definition = harness
+        .runtime
+        .harness()
+        .task::<Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
+    let task = super::context::admitted(
+        harness
+            .runtime
+            .harness()
+            .admit(
+                operation,
+                &definition,
+                json!({"receive":receive,"model":model}),
+                None,
+            )
+            .await?,
+    )?;
+    let key = crate::task_volume::FileKey::parse(&format!(
+        ".tasks/{task}/context/context-manifest/manifest.json"
+    ))?;
+    assert!(
+        harness
+            .task_files
+            .inner
+            .snapshot(&crate::task_volume::Query::File(key.clone()), 1)
+            .await?
+            .files
+            .is_empty()
+    );
+    let backend = harness.workspace.as_ref().unwrap().store.clone();
+    drop(publisher);
+    drop(harness);
+    std::fs::remove_file(&current).map_err(super::super::storage)?;
+    let harness = LocalHarness::open(config()?).await?;
+    drop(backend);
+    assert_eq!(harness.resume(task).await?.text, "done");
+    assert!(request_has(&provider, 0, "original-admission-context")?);
+    let files = harness
+        .task_files
+        .inner
+        .snapshot(&crate::task_volume::Query::File(key), 1)
+        .await?;
+    let retained: crate::conversation::FileRef =
+        serde_json::from_slice(&files.files[0].bytes).map_err(super::super::storage)?;
+    assert_eq!(retained, manifest);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("hook-runs")).map_err(super::super::storage)?,
+        "once\n"
+    );
+    assert_eq!(harness.resume(task).await?.text, "done");
+    assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn reopening_after_hook_completion_reuses_its_outcome_without_relaunching() -> Result<()> {
     let root = tempfile::tempdir().map_err(super::super::storage)?;
     let workspace = root.path().join("workspace");
