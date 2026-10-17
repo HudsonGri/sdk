@@ -392,21 +392,31 @@ impl<'a> KernelAccounting<'a> {
 
     /// Charges an examined-item count without constructing or summing zero fields.
     pub(crate) fn charge_items(&mut self, count: u64) -> Result<(), crate::FsError> {
-        self.check()?;
         match self {
-            Self::Standalone { work, budget, .. } => {
+            Self::Standalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.charge_items(count, budget).map_err(Into::into)
             }
-            Self::BorrowedStandalone { work, budget, .. } => {
+            Self::BorrowedStandalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.charge_items(count, budget).map_err(Into::into)
             }
+            // Keep native charges on the existing single-leaf admission path.
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work
-                .charge(WorkCounters {
-                    items_examined: count,
-                    ..WorkCounters::UNCHARGED
-                })
-                .map_err(Into::into),
+            Self::NativeOriginal { .. } => self.charge(WorkCounters {
+                items_examined: count,
+                ..WorkCounters::UNCHARGED
+            }),
         }
     }
 
