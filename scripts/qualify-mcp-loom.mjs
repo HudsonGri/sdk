@@ -65,7 +65,10 @@ export function qualifyFsRetryLoom(run = spawnSync) {
   ], run, {
     kind: "--lib", filter: "distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity",
     timeout: 9500,
-    suites: [{ filter: "git_compat::tests::model::", exact: false, expected: 6, timeout: 9500 }],
+    suites: [
+      { filter: "git_compat::tests::model::", exact: false, expected: 6, timeout: 9500 },
+      { filter: "native_mount::fuse::handles::model::", exact: false, expected: 2, timeout: 9500 },
+    ],
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom --cfg acyclic_loom` }, targetCfg: [],
   });
 }

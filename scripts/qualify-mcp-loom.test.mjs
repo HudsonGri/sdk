@@ -18,7 +18,7 @@ test("filesystem qualification instruments both real lock shims and requires eve
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} }) };
       }
       assert.equal(options.timeout, 9500);
-      return { status: 0, stderr: "", stdout: summary(calls.length === 3 ? 6 : passed, ignored, 100) };
+      return { status: 0, stderr: "", stdout: summary(calls.length === 3 ? 6 : calls.length === 4 ? 2 : passed, ignored, 100) };
     };
     if (passed === 1 && ignored === 0) qualifyFsRetryLoom(run);
     else assert.throws(() => qualifyFsRetryLoom(run), /requires a nonzero/);
@@ -26,7 +26,10 @@ test("filesystem qualification instruments both real lock shims and requires eve
       ["cargo", ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run", "--features", "default,distributed,local,memory,model-checking,native-mount,native-watch"]],
       ["model-binary", ["distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity", "--exact"]],
     ];
-    if (passed === 1 && ignored === 0) expected.push(["model-binary", ["git_compat::tests::model::"]]);
+    if (passed === 1 && ignored === 0) expected.push(
+      ["model-binary", ["git_compat::tests::model::"]],
+      ["model-binary", ["native_mount::fuse::handles::model::"]],
+    );
     assert.deepEqual(calls, expected);
   }
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
@@ -39,6 +42,17 @@ test("filesystem qualification rejects missing restore models and negative contr
       status: 0, stderr: "", stdout: command === "cargo"
         ? JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} })
         : summary(args[0] === "git_compat::tests::model::" ? passed : 1, 0, 100),
+    })), /requires a nonzero/);
+  }
+});
+
+test("filesystem qualification requires both deferred-open models", () => {
+  for (const passed of [0, 1, 3]) {
+    assert.throws(() => qualifyFsRetryLoom((command, args) => ({
+      status: 0, stderr: "", stdout: command === "cargo"
+        ? JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} })
+        : summary(args[0] === "native_mount::fuse::handles::model::" ? passed
+          : args[0] === "git_compat::tests::model::" ? 6 : 1, 0, 100),
     })), /requires a nonzero/);
   }
 });
