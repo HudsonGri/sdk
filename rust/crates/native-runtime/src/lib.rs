@@ -32,8 +32,6 @@ use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 pub mod terminal;
 #[cfg(windows)]
 pub use windows::terminal;
-#[cfg(target_os = "macos")]
-pub mod terminal;
 #[cfg(windows)]
 use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 

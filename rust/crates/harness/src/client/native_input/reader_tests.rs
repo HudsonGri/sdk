@@ -146,12 +146,13 @@ mod model {
     /// A Loom deadlock can abort the process, so each control runs in a
     /// child of this test binary.
     fn child_deadlocks(mode: &str) -> io::Result<bool> {
+        // libtest names omit the crate prefix, unlike module_path!().
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, module)| module);
+        let child = format!("{module}::shutdown_child");
         let output = std::process::Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                &format!("{}::shutdown_child", module_path!()),
-                "--test-threads=1",
-            ])
+            .args(["--exact", &child, "--test-threads=1"])
             .env("ACYCLIC_READER_SHUTDOWN_CHILD", mode)
             .output()?;
         // The test harness reports a panic on stdout; an abort, on stderr.
