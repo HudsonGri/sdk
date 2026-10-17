@@ -1,5 +1,6 @@
 use super::*;
-use acyclic_fs::{CancellationToken, FsWork, Lifecycle, VolumeConfig, WorkBudget};
+use acyclic_fs::facade::FsWork;
+use acyclic_fs::{CancellationToken, Lifecycle, VolumeConfig, WorkBudget};
 use proptest::prelude::*;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
