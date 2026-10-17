@@ -134,11 +134,7 @@ impl ContentResidencyVerifier for BrowserReader {
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
-        if ceiling.is_some() {
-            return Err(Error::Unsupported(
-                "context discovery host has no caller ceiling binding".into(),
-            ));
-        }
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             let query = ContextDirectoryQuery {
                 root: ContextRoot {
@@ -187,11 +183,7 @@ impl ContentResidencyVerifier for BrowserReader {
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        if ceiling.is_some() {
-            return Err(Error::Unsupported(
-                "context discovery host has no caller ceiling binding".into(),
-            ));
-        }
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             let query = ContextReadQuery {
                 source: PinnedContextPath {
@@ -231,11 +223,7 @@ impl ContentResidencyVerifier for BrowserReader {
     where
         'io: 'a,
     {
-        if ceiling.is_some() {
-            return Err(Error::Unsupported(
-                "context discovery host has no caller ceiling binding".into(),
-            ));
-        }
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
             let generation = generation.ok_or_else(|| {
