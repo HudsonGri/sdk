@@ -103,6 +103,8 @@ pub(super) async fn run(mut value: Value) -> TestResult {
             ))
             .await
         }
+        #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+        Some("agents") => Box::pin(super::agents::run(value)).await,
         None if driver.is_none() => {
             Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
         }
@@ -114,6 +116,7 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         Some("task_query") => {
             Box::pin(TaskQueryCase::execute(serde_json::from_value(value)?)).await
         }
+
         Some("provider") => {
             Box::pin(super::provider_case::ProviderCase::execute(
                 serde_json::from_value(value)?,
