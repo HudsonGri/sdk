@@ -17,6 +17,11 @@ fuzz_target!(|bytes: &[u8]| {
     if bytes.len() > 4096 {
         return;
     }
+    if let Ok(output) = serde_json::from_slice::<HookOutput>(bytes) {
+        let encoded = serde_json::to_vec(&output).unwrap();
+        let decoded: HookOutput = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(output, decoded);
+    }
     for event in [
         HookEvent::SessionStart,
         HookEvent::PreToolUse,
