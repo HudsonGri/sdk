@@ -73,28 +73,25 @@ fn scenario(broken: bool, change_owner: bool) {
         let result_path = results.path().clone();
         // A successful edit is proven to precede pinning by its atomic guard
         // on the still-empty result stream. No auxiliary observer mutex.
-        let editor = loom::thread::spawn(move || {
-            loom::future::block_on(Box::pin(competitor.commit(CommitRequest {
-                conditions: vec![
-                    CommitCondition::Head {
-                        path: result_path,
-                        expected: generation.position,
-                        commit_id: CommitId::from_bytes(generation.commit),
-                    },
-                    // Every mutation must guard its own destination too.
-                    CommitCondition::Tail {
-                        path: destination.clone(),
-                        expected: destination_tail,
-                    },
-                ],
-                mutations: vec![CommitMutation::Append {
-                    path: destination,
-                    records: vec![changed],
-                }],
-                idempotency_key: IdempotencyKey::new(b"edit".to_vec()).unwrap(),
-            })))
-            .unwrap()
-        });
+        let edit = CommitRequest {
+            conditions: vec![
+                CommitCondition::Head {
+                    path: result_path,
+                    expected: generation.position,
+                    commit_id: CommitId::from_bytes(generation.commit),
+                },
+                // Every mutation must guard its own destination too.
+                CommitCondition::Tail {
+                    path: destination.clone(),
+                    expected: destination_tail,
+                },
+            ],
+            mutations: vec![CommitMutation::Append {
+                path: destination,
+                records: vec![changed],
+            }],
+            idempotency_key: IdempotencyKey::new(b"edit".to_vec()).unwrap(),
+        };
         if broken {
             model_checking::set_fault(model_checking::Fault::OmitAuthorityConditions);
         }
@@ -105,17 +102,32 @@ fn scenario(broken: bool, change_owner: bool) {
             },
             b"pinned".to_vec(),
         );
-        let pinned = selected
-            .publish(&source, &results, (session, 1, source_head), &file, || {
-                std::future::ready(Ok((
-                    CommitCondition::Tail {
-                        path: lease.clone(),
-                        expected: 1,
-                    },
-                    None,
-                )))
-            })
-            .await;
+        let mut publication =
+            Box::pin(
+                selected.publish(&source, &results, (session, 1, source_head), &file, || {
+                    std::future::ready(Ok((
+                        CommitCondition::Tail {
+                            path: lease.clone(),
+                            expected: 1,
+                        },
+                        None,
+                    )))
+                }),
+            );
+        // The editor cannot change result preparation: it writes only the
+        // source or lease. Reach the real provider boundary before spawning
+        // it. Both atomic commit orders, including an earlier edit, remain
+        // exhaustive; unrelated serialization/index-lock interleavings vanish.
+        model_checking::pause_next_publication();
+        std::future::poll_fn(|cx| {
+            assert!(publication.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let editor = loom::thread::spawn(move || {
+            loom::future::block_on(Box::pin(competitor.commit(edit))).unwrap()
+        });
+        let pinned = publication.await;
         let edited = editor.join().unwrap();
         assert!(
             !(matches!(edited, CommitOutcome::Committed(_)) && pinned.is_ok()),
