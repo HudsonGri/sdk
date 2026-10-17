@@ -9,13 +9,9 @@ where
     O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
 {
     Ok(
-        acyclic_harness::filesystem::local_owner_mount_options(
-            workspace,
-            "mount-benchmark",
-            true,
-        )
-        .await?
-        .publication(acyclic_fs::MountPublication::Manual),
+        acyclic_harness::filesystem::local_owner_mount_options(workspace, "mount-benchmark", true)
+            .await?
+            .publication(acyclic_fs::MountPublication::Manual),
     )
 }
 
@@ -45,7 +41,10 @@ mod tests {
             .workspace();
         let options = options(&workspace).await?;
         let view = options.require_access_view()?.current()?;
-        assert!(view.allows_every_path(&Action::ALL, 0));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        assert!(view.allows_every_path(&Action::ALL, now));
         assert_eq!(
             view.volume(),
             uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string()
