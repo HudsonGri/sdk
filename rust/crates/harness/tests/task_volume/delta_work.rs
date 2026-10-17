@@ -114,6 +114,8 @@ proptest! {
     #[test]
     fn rewriting_the_prefix_fails_the_same_delta_bound(count in 16usize..32, length in 2048usize..4096) {
         let deltas = vec![vec![b'x'; length]; count];
+        prop_assert!(futures::executor::block_on(publish_deltas(&deltas, false))
+            .map_err(|error| TestCaseError::fail(error.to_string()))?);
         let bounded = futures::executor::block_on(publish_deltas(&deltas, true))
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert!(!bounded);

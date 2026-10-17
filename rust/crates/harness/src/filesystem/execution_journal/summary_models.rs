@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 
-fn scenario(broken: bool) {
+fn scenario(lose_custody: bool, split_tail: bool) {
     assert!(
         cfg!(acyclic_fs_loom),
         "model requires the real native ledger locks"
@@ -32,7 +32,7 @@ fn scenario(broken: bool) {
             let work = work.clone();
             let summary = summary.clone();
             loom::thread::spawn(move || {
-                LOSE_NATIVE_CUSTODY.with(|fault| fault.set(broken));
+                LOSE_NATIVE_CUSTODY.with(|fault| fault.set(lose_custody));
                 let io = PreparationIo::from_native_work(&work).unwrap();
                 let event = ExecutionEvent::ToolFailed {
                     step: 0,
@@ -40,8 +40,13 @@ fn scenario(broken: bool) {
                     reason: crate::executor::ToolFailureKind::ExecutorRejected,
                 };
                 loom::future::block_on(async {
+                    let stale = if split_tail {
+                        Some(summary.lock().await.tail + 1)
+                    } else {
+                        None
+                    };
                     let mut summary = summary.lock().await;
-                    let next = summary.tail + 1;
+                    let next = stale.unwrap_or(summary.tail + 1);
                     summary
                         .accept_fields((next, call, &event), None, Limits::default(), Some(&io))
                         .unwrap();
@@ -70,8 +75,8 @@ fn scenario(broken: bool) {
 
 #[test]
 fn concurrent_cached_settlement_retains_original_custody_with_negative_control() {
-    loom::model(|| scenario(false));
-    let error = std::panic::catch_unwind(|| loom::model(|| scenario(true)))
+    loom::model(|| scenario(false, false));
+    let error = std::panic::catch_unwind(|| loom::model(|| scenario(true, false)))
         .expect_err("unfunded cached summary was accepted");
     let message = error
         .downcast_ref::<String>()
@@ -80,6 +85,17 @@ fn concurrent_cached_settlement_retains_original_custody_with_negative_control()
         .unwrap_or("");
     assert!(
         message.contains("cached summary lost its native custody"),
+        "{message}"
+    );
+    let error = std::panic::catch_unwind(|| loom::model(|| scenario(false, true)))
+        .expect_err("split cache read/accept was accepted");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("execution journal sequence or retry identity is invalid"),
         "{message}"
     );
 }

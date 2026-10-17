@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 5;
 
 /// Stock model chunks reserve the low 32 bits for parts of one provider event.
 /// Gaps are intentional: readers order by numeric sequence and follow the cursor.

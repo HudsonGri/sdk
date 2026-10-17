@@ -264,6 +264,7 @@ proptest! {
     fn rewriting_the_whole_file_fails_the_stock_delta_work_oracle(count in 16usize..24, length in 2048usize..4096) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let deltas = vec!["x".repeat(length); count];
+        prop_assert!(runtime.block_on(run(&deltas, false)).map_err(|error| TestCaseError::fail(error.to_string()))?);
         prop_assert!(!runtime.block_on(run(&deltas, true)).map_err(|error| TestCaseError::fail(error.to_string()))?);
     }
 }

@@ -150,7 +150,7 @@ impl FileValue {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-            if !matches!(header.schema, 2 | 3 | SCHEMA) {
+            if !matches!(header.schema, 2 | 3 | 4 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
             Ok(None)
@@ -353,7 +353,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         let header: Header =
             serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if !matches!(header.schema, 2 | 3 | SCHEMA) {
+        if !matches!(header.schema, 2 | 3 | 4 | SCHEMA) {
             return Err(Error::InvalidSegment);
         }
         let mut hasher = blake3::Hasher::new();
