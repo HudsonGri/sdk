@@ -3,6 +3,8 @@
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
 pub(crate) mod admission_work;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod crash_cuts;
 mod scripted;
 mod search;
 mod task_volume_work;
