@@ -51,6 +51,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
                 AppAction::Find => CommandQuery::Find,
                 AppAction::Reasoning => CommandQuery::Reasoning,
                 AppAction::Details => CommandQuery::Details,
+                AppAction::Tree => CommandQuery::Tree,
                 _ => {
                     return Err(Error::Unsupported(
                         "This shortcut is unavailable in this session".into(),
