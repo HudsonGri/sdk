@@ -3,6 +3,20 @@ use crate::sync::{Mutex, MutexGuard};
 use crate::{DemandError, WorkBudget, WorkCounters, WorkError};
 use std::sync::{Arc, Weak};
 
+#[cfg(all(test, not(acyclic_fs_loom)))]
+std::thread_local! {
+    static RESOURCE_LOCKS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Counts this thread's resource-allowance mutex acquisitions in `operation`.
+#[cfg(all(test, not(acyclic_fs_loom)))]
+pub(crate) fn count_resource_locks<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    let previous = RESOURCE_LOCKS.with(|count| count.replace(Some(0)));
+    let result = operation();
+    let count = RESOURCE_LOCKS.with(|count| count.replace(previous));
+    (result, count.unwrap_or(0))
+}
+
 #[derive(Debug)]
 pub(crate) struct NativeResourceAllowance {
     pub(super) budget: WorkBudget,
@@ -89,6 +103,8 @@ impl NativeResourceAllowance {
             })
     }
     fn lock(&self) -> MutexGuard<'_, NativeResourceState> {
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        RESOURCE_LOCKS.with(|count| count.set(count.get().map(|count| count + 1)));
         self.state.lock().unwrap_or_else(|error| {
             let mut state = error.into_inner();
             state.poisoned = true;

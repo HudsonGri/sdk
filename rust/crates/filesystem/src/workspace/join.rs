@@ -240,8 +240,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
                 head
             };
             let copied = copy_work((2 * std::mem::size_of::<Generation<A, O>>()) as u64);
-            let (source, target) =
-                accounting.perform(copied, || (source.clone(), target.clone()))?;
+            accounting.charge(copied)?;
+            let (source, target) = (source.clone(), target.clone());
             let plan = self
                 .plan_generations(
                     source,
@@ -279,21 +279,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             )
             .await?;
         let copied = copy_work(std::mem::size_of::<JoinPlan<A, O>>() as u64);
-        Ok(accounting.perform(copied, || {
-            source_head.workspace = self.source;
-            target_head.workspace = self.target;
-            JoinPlan {
-                source_head,
-                target_head,
-                target_authority_head,
-                base,
-                history: self.history,
-                git_metadata: self.git_metadata,
-                maximum_generations: self.maximum_generations,
-                maximum_changes: self.maximum_changes,
-                maximum_conflicts: self.maximum_conflicts,
-            }
-        })?)
+        accounting.charge(copied)?;
+        source_head.workspace = self.source;
+        target_head.workspace = self.target;
+        Ok(JoinPlan {
+            source_head,
+            target_head,
+            target_authority_head,
+            base,
+            history: self.history,
+            git_metadata: self.git_metadata,
+            maximum_generations: self.maximum_generations,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
+        })
     }
 }
 
@@ -347,15 +346,16 @@ impl<A, O> JoinPlan<A, O> {
         let mut accounting = work.accounting(cancellation);
         let result = (|| -> Result<_, WorkspaceError> {
             let examined = item_work(1);
-            let incompatible = accounting.perform(examined, || {
-                application.generation.workspace.id() != self.target_head.workspace.id()
-                    || application.generation.id() == self.target_head.id()
-            })?;
+            accounting.charge(examined)?;
+            let incompatible = application.generation.workspace.id()
+                != self.target_head.workspace.id()
+                || application.generation.id() == self.target_head.id();
             if incompatible {
                 return Err(WorkspaceError::IncompatibleWorkspace);
             }
             let copied = copy_work(std::mem::size_of::<crate::JoinCommitWitness>() as u64);
-            let witness = accounting.perform(copied, || crate::JoinCommitWitness {
+            accounting.charge(copied)?;
+            let witness = crate::JoinCommitWitness {
                 source_workspace: self.source_head.workspace.id().volume_id(),
                 source_generation: self.source_head.id,
                 target_workspace: self.target_head.workspace.id().volume_id(),
@@ -370,7 +370,7 @@ impl<A, O> JoinPlan<A, O> {
                 expected_head: self.target_authority_head,
                 operation_id: idempotency_key.operation_id(),
                 result_generation: application.generation.id,
-            })?;
+            };
             Ok(witness)
         })();
         work.finish(result, &accounting)

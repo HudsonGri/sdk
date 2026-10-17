@@ -1,5 +1,4 @@
 use super::*;
-use crate::kernel::allocation::effects::OMIT_RESERVATION;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use std::cell::RefCell;
 
@@ -7,6 +6,12 @@ use std::cell::RefCell;
 const COPIED: u64 = 2;
 loom::thread_local! {
     static ACTUAL: RefCell<Option<Arc<AtomicU64>>> = RefCell::new(None);
+    static CHECK_ONLY: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+// Restores main's check, copy, record sequence on native ledgers.
+pub(super) fn check_only() -> bool {
+    CHECK_ONLY.with(std::cell::Cell::get)
 }
 
 pub(super) fn completed(copied: u64) {
@@ -26,7 +31,7 @@ fn once<const OLD: bool>(
     label: Option<&WorkspaceName>,
     actual: &Arc<AtomicU64>,
 ) -> Option<crate::kernel::Owned<String>> {
-    OMIT_RESERVATION.with(|flag| flag.set(OLD));
+    CHECK_ONLY.with(|flag| flag.set(OLD));
     ACTUAL.with(|slot| *slot.borrow_mut() = Some(actual.clone()));
     let mut accounting = KernelAccounting::native(work, cancellation);
     let copied = match label {
@@ -34,7 +39,7 @@ fn once<const OLD: bool>(
         None => restore_absolute_path("x", &mut accounting, cancellation),
     };
     ACTUAL.with(|slot| *slot.borrow_mut() = None);
-    OMIT_RESERVATION.with(|flag| flag.set(false));
+    CHECK_ONLY.with(|flag| flag.set(false));
     let owned = copied.ok()?;
     assert_eq!(owned.value, if label.is_some() { "xy" } else { "/x" });
     Some(owned)
@@ -64,8 +69,10 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
         )
         .unwrap();
         let mut work = root.clone();
+        let mut scopes = vec![root.clone()];
         for _ in 0..depth {
             work = work.native_volume_work(limit).unwrap();
+            scopes.push(work.clone());
         }
         if recheck {
             work = work.recheck_admitted();
@@ -120,10 +127,18 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
             setup,
             "failed copies retire storage"
         );
-        let remaining = work.state(|state| state.remaining());
-        match limit.bytes_copied.checked_sub(copied) {
-            Some(copy) => assert_eq!(remaining.unwrap().bytes_copied, copy),
-            None => assert!(remaining.is_err()),
+        // Every bounded scope, including a grandparent of the caller, must
+        // hold exactly the unspent credit: nothing reserved or stranded.
+        for scope in scopes.iter().skip(usize::from(depth != 0)) {
+            let remaining = scope.state(|state| state.remaining());
+            match limit.bytes_copied.checked_sub(copied) {
+                Some(copy) => assert_eq!(
+                    remaining.unwrap().bytes_copied,
+                    copy,
+                    "copy credit must not remain reserved"
+                ),
+                None => assert!(remaining.is_err()),
+            }
         }
     });
 }
@@ -134,9 +149,9 @@ fn concurrent_workspace_text_copies_cannot_share_remaining_credit() {
     for copies in 0..3 {
         model::<false, true>(copies, [false, true], 0, false, 0);
     }
-    model::<false, true>(1, [true, true], 1, true, 0);
-    model::<false, true>(1, [true, false], 0, false, 1);
-    model::<false, true>(1, [false, false], 0, false, 2);
+    model::<false, true>(1, [true, true], 2, true, 0);
+    model::<false, true>(1, [true, false], 2, false, 1);
+    model::<false, true>(1, [false, true], 0, false, 2);
 }
 
 fn message(panic: &(dyn std::any::Any + Send)) -> &str {

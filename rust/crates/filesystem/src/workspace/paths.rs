@@ -99,10 +99,12 @@ pub(super) fn copy_workspace_label(
 
 /// Copies `prefix` and `text` into one exactly sized accounted string.
 ///
-/// The check-only preflight keeps copy-limit failures ahead of allocation
-/// failures. The copy itself reserves its credit atomically with admission, so
-/// concurrent owners of one native ledger cannot both spend the same remaining
-/// allowance; unused credit and the allocation return on every failure.
+/// On a native ledger the copy is admitted and recorded together with its
+/// storage in one leaf pass, before the copy: copy limits still fail ahead of
+/// allocation limits and concurrent owners cannot spend the same remaining
+/// credit. The copy fills the new capacity before the claim is reconciled,
+/// so a later cancellation rejects work that was both charged and done.
+/// Standalone contexts have a single owner and keep check, copy, record.
 fn copy_owned_text(
     prefix: &str,
     text: &str,
@@ -113,18 +115,50 @@ fn copy_owned_text(
         .checked_add(text.len())
         .ok_or(crate::WorkError::Overflow)?;
     let copied = copy_work(length as u64);
+    let fill = |bytes: &mut Vec<u8>| {
+        bytes.extend_from_slice(prefix.as_bytes());
+        bytes.extend_from_slice(text.as_bytes());
+        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        model::completed(bytes.len() as u64);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = accounting.native_work() {
+        #[cfg(all(test, acyclic_fs_loom))]
+        let fused = !model::check_only();
+        #[cfg(not(all(test, acyclic_fs_loom)))]
+        let fused = true;
+        if fused {
+            #[cfg(all(test, not(acyclic_fs_loom)))]
+            if tests::redundant_preflight() {
+                accounting.admit(copied)?;
+            }
+            let bytes = crate::kernel::Owned::<Vec<u8>>::allocate_with(
+                length,
+                accounting,
+                |accounting, requested, operations| {
+                    accounting.check()?;
+                    work.claim(requested, operations, copied)
+                        .map(KernelOwnedAllocation::NativeOriginal)
+                        .map_err(Into::into)
+                },
+                fill,
+            )?;
+            return owned_text(bytes);
+        }
+    }
     accounting.admit(copied)?;
     let mut bytes = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
-    let filled = accounting.perform(copied, || {
-        bytes.value.extend_from_slice(prefix.as_bytes());
-        bytes.value.extend_from_slice(text.as_bytes());
-        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
-        model::completed(bytes.value.len() as u64);
-    });
-    if let Err(error) = filled {
+    fill(&mut bytes.value);
+    if let Err(error) = accounting.record_completed(copied) {
         bytes.retire(accounting)?;
         return Err(error.into());
     }
+    owned_text(bytes)
+}
+
+fn owned_text(
+    bytes: crate::kernel::Owned<Vec<u8>>,
+) -> Result<crate::kernel::Owned<String>, WorkspaceError> {
     Ok(crate::kernel::Owned::new(
         String::from_utf8(bytes.value).map_err(WorkspaceError::engine)?,
         bytes.allocation,

@@ -222,3 +222,167 @@ fn copy_limit_precedes_allocation_and_one_byte_less_has_no_effect() {
         }
     }
 }
+
+std::thread_local! {
+    static REDUNDANT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Negative control: restores a discarded copy preflight before the claim.
+pub(super) fn redundant_preflight() -> bool {
+    REDUNDANT.with(std::cell::Cell::get)
+}
+
+// (original leaf, resource mutex) acquisitions for one successful copy.
+fn trace(
+    old_path: bool,
+    restore: bool,
+    mode: u8,
+    recheck: bool,
+) -> ((usize, usize), crate::WorkCounters) {
+    let cancellation = CancellationToken::new();
+    let root =
+        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let mut work = root.clone();
+    for _ in 0..mode.saturating_sub(1).min(2) {
+        work = work
+            .native_volume_work(crate::WorkBudget::UNBOUNDED)
+            .unwrap();
+    }
+    if mode == 4 {
+        work = work.invocation_view().unwrap().0;
+    }
+    if recheck {
+        work = work.recheck_admitted();
+    }
+    let label = (!restore).then(|| name("abcd").unwrap());
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
+    let ((owned, leaf), resource) = crate::materializer::count_resource_locks(|| {
+        root.state.count_locks(|| match old_path {
+            true if restore => old("/", "abc", &mut accounting, Some(&cancellation)),
+            // Main's label also re-admitted the copy after allocating.
+            true => {
+                let copied = copy_work(4);
+                let length = 4;
+                (|| -> Result<_, WorkspaceError> {
+                    accounting.admit(copied)?;
+                    let mut bytes =
+                        crate::kernel::Owned::<Vec<u8>>::allocate(length, &mut accounting)?;
+                    accounting.admit(copied)?;
+                    bytes.value.extend_from_slice(b"abcd");
+                    accounting.record_completed(copied)?;
+                    Ok(owned_text(bytes)?)
+                })()
+            }
+            false => candidate(label.as_ref(), "abc", &mut accounting, &cancellation),
+        })
+    });
+    owned.unwrap().retire(&mut accounting).unwrap();
+    ((leaf, resource), root.receipt())
+}
+
+// Exact lock pins against main's sequence on every native context: the
+// reserved copy takes fewer leaf and resource-mutex passes than check-only
+// admission did, and a single redundant preflight is caught even though it
+// leaves every receipt unchanged.
+#[test]
+fn reserved_copies_take_fewer_locks_than_check_only_admission() {
+    // (mode, recheck) -> [main, fused] (leaf, resource) acquisitions. Mode 1
+    // is a bare root, 2 and 3 add one and two resource scopes, 4 views two.
+    let pins = |main: usize, per_level: usize| -> [((u8, bool), [(usize, usize); 2]); 6] {
+        [
+            ((1, false), [(main, 0), (3, 0)]),
+            ((1, true), [(main, 0), (3, 0)]),
+            ((2, false), [(main, per_level), (3, 3)]),
+            ((3, false), [(main, 2 * per_level), (3, 6)]),
+            ((3, true), [(main, 2 * per_level), (3, 6)]),
+            ((4, false), [(main, 2 * per_level), (3, 6)]),
+        ]
+    };
+    for (restore, pins) in [(false, pins(7, 9)), (true, pins(6, 7))] {
+        let mut observed = pins;
+        for ((mode, recheck), locks) in &mut observed {
+            let (main, main_receipt) = trace(true, restore, *mode, *recheck);
+            let (fused, receipt) = trace(false, restore, *mode, *recheck);
+            *locks = [main, fused];
+            assert_eq!(receipt, main_receipt);
+            REDUNDANT.with(|flag| flag.set(true));
+            let (redundant, redundant_receipt) = trace(false, restore, *mode, *recheck);
+            REDUNDANT.with(|flag| flag.set(false));
+            assert_eq!(redundant_receipt, receipt);
+            assert!(
+                redundant > fused,
+                "a redundant preflight must break the pin"
+            );
+        }
+        assert_eq!(observed, pins, "restore={restore}");
+    }
+}
+
+// Paired per-OS timing, run explicitly in release on each host:
+// `cargo test --release --lib workspace::paths::tests::paired -- --ignored --nocapture`.
+// Rounds alternate order; prints the median ns per copy and paired change.
+#[test]
+#[ignore = "timing report, not a check"]
+fn paired_copy_timing_report() {
+    const COPIES: usize = 4096;
+    let cancellation = CancellationToken::new();
+    for (mode, recheck) in [(1_u8, false), (2, false), (3, true), (4, false)] {
+        for restore in [false, true] {
+            let root =
+                crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+                    .unwrap();
+            let mut work = root.clone();
+            for _ in 0..mode.saturating_sub(1).min(2) {
+                work = work
+                    .native_volume_work(crate::WorkBudget::UNBOUNDED)
+                    .unwrap();
+            }
+            if mode == 4 {
+                work = work.invocation_view().unwrap().0;
+            }
+            if recheck {
+                work = work.recheck_admitted();
+            }
+            let label = (!restore).then(|| name("workspace-name").unwrap());
+            let text = "workspace-name";
+            let run = |old_path: bool| {
+                let mut accounting = KernelAccounting::native(&work, &cancellation);
+                let start = std::time::Instant::now();
+                for _ in 0..COPIES {
+                    let owned = match (old_path, restore) {
+                        (true, true) => old("/", text, &mut accounting, Some(&cancellation)),
+                        (true, false) => old("", text, &mut accounting, None),
+                        (false, _) => {
+                            candidate(label.as_ref(), text, &mut accounting, &cancellation)
+                        }
+                    };
+                    std::hint::black_box(&owned);
+                    owned.unwrap().retire(&mut accounting).unwrap();
+                }
+                start.elapsed().as_nanos() as f64 / COPIES as f64
+            };
+            let mut pairs = Vec::new();
+            for round in 0..31 {
+                let (before, after) = if round % 2 == 0 {
+                    let before = run(true);
+                    (before, run(false))
+                } else {
+                    let after = run(false);
+                    (run(true), after)
+                };
+                pairs.push((before, after, 100.0 * (1.0 - after / before)));
+            }
+            let median = |mut values: Vec<f64>| {
+                values.sort_by(f64::total_cmp);
+                values[values.len() / 2]
+            };
+            println!(
+                "PAIRED os={} mode={mode} recheck={recheck} restore={restore} main_ns={:.1} fused_ns={:.1} faster_percent={:.1}",
+                std::env::consts::OS,
+                median(pairs.iter().map(|pair| pair.0).collect()),
+                median(pairs.iter().map(|pair| pair.1).collect()),
+                median(pairs.iter().map(|pair| pair.2).collect()),
+            );
+        }
+    }
+}
