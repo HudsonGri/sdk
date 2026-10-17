@@ -297,6 +297,7 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
                 "text/markdown",
                 "plan.md",
                 None,
+                None,
             )?
             .await?;
         let workspace = acyclic_harness::filesystem::workspace_ref(
@@ -351,6 +352,7 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
                         revision.text.as_bytes(),
                         "text/markdown",
                         "plan.md",
+                        None,
                         None,
                     )?
                     .await?;

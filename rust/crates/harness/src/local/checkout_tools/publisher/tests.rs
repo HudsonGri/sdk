@@ -68,6 +68,8 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
             acyclic_fs::OperationId::new(),
             false,
             false,
+            acyclic_fs::LocalCoreStateStore::open_shared_owner(state.path().join("workspace"))
+                .map_err(storage)?,
             None,
         )
         .await?,
