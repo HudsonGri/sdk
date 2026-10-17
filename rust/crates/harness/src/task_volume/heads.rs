@@ -41,13 +41,19 @@ impl FileValue {
             (
                 FileKey::Task {
                     task,
-                    file: TaskFile::Chunk { turn, sequence },
+                    file:
+                        TaskFile::Chunk {
+                            turn,
+                            execution,
+                            sequence,
+                        },
                 },
                 Some(channel),
             ) => (
                 FileKey::Task {
                     task: task.clone(),
                     file: TaskFile::TextHead {
+                        execution: *execution,
                         turn: *turn,
                         channel,
                     },

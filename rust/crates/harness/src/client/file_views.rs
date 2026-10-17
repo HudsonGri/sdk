@@ -215,7 +215,12 @@ impl FileViews {
             Some((
                 FileKey::Task {
                     task,
-                    file: TaskFile::TextHead { turn, channel },
+                    file:
+                        TaskFile::TextHead {
+                            turn,
+                            execution,
+                            channel,
+                        },
                 },
                 _,
             )) => {
@@ -227,6 +232,7 @@ impl FileViews {
                     .get(&FileKey::Task {
                         task: task.clone(),
                         file: TaskFile::TextHead {
+                            execution: *execution,
                             turn: *turn,
                             channel,
                         },

@@ -670,9 +670,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             #[cfg(not(all(test, not(target_arch = "wasm32"))))]
             adding.await?;
         }
-        let (outcome, retained) =
-            crate::distributed::commit(request, &self.host.stream, Some(self.operation_id()), None)
-                .await?;
+        let (outcome, retained) = crate::distributed::commit_journal(
+            request,
+            held,
+            &self.host.stream,
+            self.operation_id(),
+        )
+        .await?;
         let received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),

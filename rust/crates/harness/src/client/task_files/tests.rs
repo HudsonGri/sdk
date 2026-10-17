@@ -25,7 +25,7 @@ proptest! {
             let mut generation = volume.snapshot(&Query::Tasks, 32).await.unwrap().generation;
             let files: Vec<_> = chunks.iter().enumerate().map(|(index, bytes)| FileValue {
                 publication: None,
-                key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { turn: 0, sequence: index as u64 } },
+                key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { execution: crate::OperationId::from_bytes([0; 16]),  turn: 0, sequence: index as u64 } },
                 channel: Some(if reasoning { Channel::Reasoning } else { Channel::Text }), bytes: bytes.clone().into(),
             }).collect();
             let cut = cut.min(files.len());
@@ -80,6 +80,7 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
                     key: FileKey::Task {
                         task: Component::new(&owner.id).unwrap(),
                         file: TaskFile::Chunk {
+                            execution: crate::OperationId::from_bytes([0; 16]),
                             turn: 0,
                             sequence: 0,
                         },
@@ -137,6 +138,7 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
                 key: FileKey::Task {
                     task: Component::new(&owners[0].id).unwrap(),
                     file: TaskFile::Chunk {
+                        execution: crate::OperationId::from_bytes([0; 16]),
                         turn: 0,
                         sequence: 1,
                     },
@@ -184,7 +186,7 @@ proptest! {
             let cut = volume.snapshot(&Query::Tasks, 32).await.unwrap();
             volume.append(cut.generation, &FileValue {
                 publication: None,
-                key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { turn: 0, sequence: 0 } },
+                key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { execution: crate::OperationId::from_bytes([0; 16]),  turn: 0, sequence: 0 } },
                 channel: Some(Channel::Reasoning), bytes: b"reasoning".to_vec().into(),
             }).await.unwrap();
             let mut followed = TaskFileClient::observe(&volume, &owner, 32, 16_384).await.unwrap();
@@ -242,6 +244,7 @@ async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
         key: FileKey::Task {
             task: current,
             file: TaskFile::Chunk {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn: 0,
                 sequence: 0,
             },

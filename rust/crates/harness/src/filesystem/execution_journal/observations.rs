@@ -368,7 +368,8 @@ where
                 return Ok(false);
             }
             summary.validate_next(event, model.as_ref(), limits, io)?;
-            let preparing = self.prepare_chunk(summary.tail, event, model.as_ref(), io);
+            let preparing =
+                self.prepare_chunk(operation_id, summary.tail, event, model.as_ref(), io);
             #[cfg(all(test, not(target_arch = "wasm32")))]
             let chunk = crate::test_support::differential::observe_chunk(preparing, io).await?;
             #[cfg(not(all(test, not(target_arch = "wasm32"))))]

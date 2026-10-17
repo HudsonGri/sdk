@@ -10,14 +10,13 @@ pub(crate) struct JournalFile {
 impl<P: StreamProvider> TaskVolume<P> {
     pub(crate) async fn prepare_journal_file(
         &self,
-        file: &FileValue,
+        key: FileKey,
+        channel: Channel,
+        payload: &[u8],
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> crate::Result<Option<JournalFile>> {
-        // The chunk's ordinal is its canonical journal position. That journal's
-        // CAS fences identity, order and immutability; retries and rejected
-        // events never reach preparation. No task-index replay is needed.
         if !matches!(
-            file.key,
+            key,
             FileKey::Task {
                 file: TaskFile::Chunk { .. },
                 ..
@@ -25,49 +24,114 @@ impl<P: StreamProvider> TaskVolume<P> {
         ) {
             return Err(Error::Unauthorized.into());
         }
-        file.validate()?;
         #[cfg(all(test, not(target_arch = "wasm32")))]
         if crate::test_support::differential::chunk_scan_enabled() {
-            // Deliberately quadratic regression: rebuild and copy the prefix.
             let _ = self.snapshot(&Query::Root, 1024).await?;
         }
-        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
-        let mut work = history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::HistoryIo);
-        let bounds =
-            crate::store::operations::bounds_with_work(&self.provider, &self.path, &mut work)
-                .await?
-                .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
-        let anchor = bounds.tail.checked_sub(1).ok_or(Error::ResetRequired)?;
-        let mut records = crate::store::operations::read_records(
-            &self.provider,
-            &self.path,
-            anchor,
-            1,
-            &mut work,
-        )
-        .await?
-        .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
-        let record = records.next(&mut work).await?.ok_or(Error::ResetRequired)?;
-        item_examined();
-        if record.sequence != anchor {
-            return Err(Error::ResetRequired.into());
-        }
-        let condition = CommitCondition::Head {
-            path: self.path.clone(),
-            expected: bounds.tail,
-            commit_id: record.commit_id,
-        };
         #[cfg(not(target_arch = "wasm32"))]
         let original = io.and_then(crate::filesystem::PreparationIo::original_native_work);
         #[cfg(target_arch = "wasm32")]
         let original = None;
-        let (record, _) = segment::encode_record(file, original)?;
+        let (record, offset) = segment::encode_parts(&key, Some(channel), None, payload, original)
+            .map_err(journal_error)?;
+        let file = FileValue {
+            key,
+            channel: Some(channel),
+            publication: None,
+            bytes: record.slice(offset..),
+        };
+        self.refresh_journal(io).await?;
+        // Lock order: index only; never held across provider I/O. The commit's
+        // captured Head rejects every writer that races this validation.
+        let index = self.index.lock().await;
+        validate_file(&index, &file)?;
         Ok(Some(JournalFile {
-            condition,
+            condition: CommitCondition::Head {
+                path: self.path.clone(),
+                expected: index.next,
+                commit_id: index.commit,
+            },
             path: self.path.clone(),
             record,
         }))
     }
+
+    // Incrementally refresh the same authoritative index as ordinary file writes,
+    // routing every provider read through the caller's original native ledger.
+    async fn refresh_journal(
+        &self,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> crate::Result<()> {
+        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        loop {
+            let expected = {
+                let index = self.index.lock().await;
+                self.generation(&index)
+            };
+            let bounds =
+                crate::store::operations::bounds_with_work(&self.provider, &self.path, &mut work)
+                    .await?
+                    .map_err(|e| crate::store::operations::stream_error_with_work(e, &work))?;
+            if expected.position > bounds.tail {
+                return Err(Error::ResetRequired.into());
+            }
+            let count =
+                (bounds.tail - expected.position).min(acyclic_stream::MAX_ITEMS as u64 - 1) + 1;
+            let mut records = crate::store::operations::read_records(
+                &self.provider,
+                &self.path,
+                expected.position - 1,
+                count as u32,
+                &mut work,
+            )
+            .await?
+            .map_err(|e| crate::store::operations::stream_error_with_work(e, &work))?;
+            let anchor = records.next(&mut work).await?.ok_or(Error::ResetRequired)?;
+            item_examined();
+            if anchor.sequence != expected.position - 1
+                || anchor.commit_id.as_bytes() != &expected.commit
+            {
+                return Err(Error::ResetRequired.into());
+            }
+            let mut expected = expected;
+            while expected.position < bounds.tail {
+                let Some(record) = records.next(&mut work).await? else {
+                    break;
+                };
+                item_examined();
+                if record.sequence != expected.position {
+                    return Err(Error::ResetRequired.into());
+                }
+                let file = segment::decode_journal(&record.value, io).map_err(journal_error)?;
+                let mut index = self.index.lock().await;
+                if self.generation(&index) != expected {
+                    break;
+                }
+                validate_file(&index, &file)?;
+                let next = index.next.checked_add(1).ok_or(Error::LimitExceeded)?;
+                apply(&mut index, file, next);
+                index.next = next;
+                index.commit = record.commit_id;
+                expected = self.generation(&index);
+            }
+            let index = self.index.lock().await;
+            if index.next >= bounds.tail {
+                return Ok(());
+            }
+        }
+    }
 }
+
+fn journal_error(error: Error) -> crate::Error {
+    match error {
+        Error::FileRead(error) => error,
+        error => error.into(),
+    }
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+#[path = "journal_tests.rs"]
+mod tests;

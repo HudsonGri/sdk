@@ -5,7 +5,11 @@ fn chunk(task: &str, sequence: u64, bytes: &[u8]) -> FileValue {
         publication: None,
         key: FileKey::Task {
             task: crate::task_volume::Component::new(task).unwrap(),
-            file: TaskFile::Chunk { turn: 0, sequence },
+            file: TaskFile::Chunk {
+                execution: crate::OperationId::from_bytes([0; 16]),
+                turn: 0,
+                sequence,
+            },
         },
         channel: Some(Channel::Text),
         bytes: bytes.to_vec().into(),
@@ -133,4 +137,26 @@ fn older_completion_does_not_commit_the_current_turns_provisional_suffix() {
         let transcript = &live.transcripts["AGGREGATE_KIND_TASK:attempts"];
         assert_eq!(transcript.pending(channel == Channel::Reasoning), 3);
     }
+}
+
+#[test]
+fn separate_execution_cursors_do_not_drop_restarted_ordinals() {
+    let mut views = TaskFileViews::default();
+    for (id, payload) in [(1, b"first".as_slice()), (2, b"second".as_slice())] {
+        let mut file = chunk("active", 0, payload);
+        let FileKey::Task {
+            file: TaskFile::Chunk { execution, .. },
+            ..
+        } = &mut file.key
+        else {
+            unreachable!()
+        };
+        *execution = crate::OperationId::from_bytes([id; 16]);
+        assert_eq!(append(&mut views, &file), payload.len());
+        assert_eq!(append(&mut views, &file), 0);
+    }
+    assert_eq!(
+        views.transcripts["AGGREGATE_KIND_TASK:active"].streaming_text,
+        "first\n\nsecond"
+    );
 }
