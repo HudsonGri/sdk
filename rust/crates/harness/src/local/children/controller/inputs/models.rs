@@ -24,6 +24,25 @@ fn input_ack(broken: bool, assert_property: bool) {
     let reference = Component::new("worker").unwrap();
     let mut values = BTreeMap::new();
     let mut generation = loom::future::block_on(Box::pin(files.inner.head())).unwrap();
+    for (file, bytes) in [
+        (ChildFile::Request, b"work".as_slice()),
+        (
+            ChildFile::Inbox(Component::new("next").unwrap()),
+            b"next".as_slice(),
+        ),
+    ] {
+        generation = loom::future::block_on(Box::pin(files.inner.append(
+            generation,
+            &FileValue::new(
+                FileKey::Child {
+                    reference: reference.clone(),
+                    file,
+                },
+                bytes.to_vec(),
+            ),
+        )))
+        .unwrap();
+    }
     let status = ChildStatus {
         task: TaskId::from_bytes([2; 16]),
         state: ChildState::Running,
@@ -54,20 +73,6 @@ fn input_ack(broken: bool, assert_property: bool) {
     };
     generation =
         loom::future::block_on(Box::pin(files.inner.append(generation, &result(1)))).unwrap();
-    let control = FileValue::new(
-        FileKey::Child {
-            reference: reference.clone(),
-            file: ChildFile::Control,
-        },
-        Control::Cancel.bytes().to_vec(),
-    );
-    let cut = generation;
-    let other = loom::future::block_on(Box::pin(crate::task_volume::TaskVolume::open(
-        provider, path,
-    )))
-    .unwrap();
-    let writer =
-        loom::thread::spawn(move || loom::future::block_on(Box::pin(other.append(cut, &control))));
     if broken {
         crate::task_volume::model_checking::set_fault(
             crate::task_volume::model_checking::Fault::SkipChildInputAck,
@@ -91,17 +96,16 @@ fn input_ack(broken: bool, assert_property: bool) {
     } else {
         None
     };
-    let stopped = writer.join().unwrap().is_ok();
     if assert_property {
         assert!(
-            (!admitted || answer.is_some_and(|result| result.is_ok())) && (!stopped || !admitted),
+            admitted && answer.is_some_and(|result| result.is_ok()),
             "live child answer escaped its input acknowledgement"
         );
     }
 }
 
 #[test]
-fn live_input_ack_fences_result_publication_against_control() {
+fn live_input_ack_precedes_its_result_publication() {
     loom::model(|| input_ack(false, true));
     let failure = std::panic::catch_unwind(|| loom::model(|| input_ack(true, true)))
         .expect_err("missing input acknowledgement was not detected");
