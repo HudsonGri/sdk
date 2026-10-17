@@ -90,7 +90,10 @@ delegate! {
     read_commit(id: CommitId) -> CommittedEnvelope;
 }
 
-pub(super) fn pause_before_publish<T>(mut future: Pending<T>, phase: &AtomicU8) -> Pending<T> {
+pub(super) fn pause_before_publish<F: Future + ?Sized>(
+    mut future: Pin<Box<F>>,
+    phase: &AtomicU8,
+) -> Pin<Box<F>> {
     assert!(
         future
             .as_mut()
@@ -105,7 +108,10 @@ pub(super) fn pause_before_publish<T>(mut future: Pending<T>, phase: &AtomicU8) 
     future
 }
 
-pub(super) fn publish_until_cut<T>(mut future: Pending<T>, phase: Arc<AtomicU8>) -> Pending<T> {
+pub(super) fn publish_until_cut<F: Future + ?Sized>(
+    mut future: Pin<Box<F>>,
+    phase: Arc<AtomicU8>,
+) -> Pin<Box<F>> {
     block_on(futures::future::poll_fn(|cx| {
         assert!(future.as_mut().poll(cx).is_pending());
         if phase.load(Ordering::SeqCst) == 2 {

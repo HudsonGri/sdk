@@ -3,6 +3,7 @@ use super::*;
 use crate::{
     durable_host::tests::fixture::Fixture,
     executor::{ExecutionEvent, ExecutionJournal},
+    runtime::TaskSpawner,
     task_volume::model_checking::{Fault, set_fault},
 };
 use acyclic_stream::{IdempotencyKey as StreamKey, ReadRequest, StreamPath};
@@ -105,11 +106,18 @@ fn cancelled_candidate(accepted: bool, broken: bool) {
     .unwrap();
     let operation = OperationId::from_bytes([2; 16]);
     let owner = block_on(fixture.running(1)).unwrap();
-    let journal = fixture.execution(owner, operation).unwrap();
+    let journal = Arc::new(fixture.execution(owner, operation).unwrap());
     let event = ExecutionEvent::Started {
         request_digest: [1; 32],
     };
-    let future = Box::pin(journal.append(operation, "entry", &event, None).unwrap());
+    let writer = journal.clone();
+    let candidate = event.clone();
+    let future = Box::pin(async move {
+        writer
+            .append(operation, "entry", &candidate, None)
+            .unwrap()
+            .await
+    });
     let future = if accepted {
         publish_until_cut(future, phase)
     } else {

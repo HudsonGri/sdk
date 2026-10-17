@@ -39,6 +39,12 @@ fn scenario(lose_custody: bool, split_tail: bool) {
                     call_id: call.into(),
                     reason: crate::executor::ToolFailureKind::ExecutorRejected,
                 };
+                let digest = crate::executor::json::canonical_json_digest(
+                    &event,
+                    Limits::default().file_bytes,
+                    &mut None,
+                )
+                .unwrap();
                 loom::future::block_on(async {
                     let stale = if split_tail {
                         Some(summary.lock().await.tail + 1)
@@ -48,7 +54,13 @@ fn scenario(lose_custody: bool, split_tail: bool) {
                     let mut summary = summary.lock().await;
                     let next = stale.unwrap_or(summary.tail + 1);
                     summary
-                        .accept_fields((next, call, &event), None, Limits::default(), Some(&io))
+                        .accept_fields(
+                            (next, call, &event),
+                            digest,
+                            None,
+                            Limits::default(),
+                            Some(&io),
+                        )
                         .unwrap();
                 });
                 drop(io);

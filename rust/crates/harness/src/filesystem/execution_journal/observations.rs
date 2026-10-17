@@ -332,11 +332,11 @@ where
         let event_digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 event,
-                if io.is_some() {
+                limits.file_bytes.min(if io.is_some() {
                     acyclic_stream::MAX_RECORD_BYTES as u64
                 } else {
                     u64::MAX
-                },
+                }),
                 work,
             )
         })?;
@@ -404,7 +404,13 @@ where
                     "execution journal sequence overflow",
                 )
             })?;
-            summary.accept_fields((next, &retry_digest, event), model.as_ref(), limits, io)?;
+            summary.accept_fields(
+                (next, &retry_digest, event),
+                event_digest,
+                model.as_ref(),
+                limits,
+                io,
+            )?;
             // Cancellation can drop this future at the provider await below.
             // Its next reader must replay before trusting an unacknowledged candidate.
             summary.pending = true;

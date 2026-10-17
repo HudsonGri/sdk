@@ -152,8 +152,21 @@ impl ExecutionSummary {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let recheck = io
+            .and_then(PreparationIo::original_native_work)
+            .map(|work| PreparationIo::from_native_work(&work.recheck_admitted()))
+            .transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let digest_io = recheck.as_ref().or(io);
+        #[cfg(target_arch = "wasm32")]
+        let digest_io = io;
+        let digest = crate::executor::with_history_io(digest_io, |work| {
+            crate::executor::json::canonical_json_digest(&record.event, limits.file_bytes, work)
+        })?;
         self.accept_fields(
             (record.sequence, &record.idempotency_key, &record.event),
+            digest,
             model,
             limits,
             io,
@@ -163,6 +176,7 @@ impl ExecutionSummary {
     pub(super) fn accept_fields(
         &mut self,
         record: (u64, &str, &ExecutionEvent),
+        digest: [u8; 32],
         model: Option<&ModelEvent>,
         limits: Limits,
         io: Option<&PreparationIo>,
@@ -172,7 +186,7 @@ impl ExecutionSummary {
             .filter(|io| io.original_native_work().is_some())
             .map(|io| io.owned_bytes().map(|before| (io, before)))
             .transpose()?;
-        let result = self.accept_inner(record, model, limits, io);
+        let result = self.accept_inner(record, digest, model, limits, io);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some((io, before)) = native.filter(|_| {
             #[cfg(acyclic_harness_loom)]
@@ -215,6 +229,7 @@ impl ExecutionSummary {
     fn accept_inner(
         &mut self,
         (sequence, idempotency_key, event): (u64, &str, &ExecutionEvent),
+        digest: [u8; 32],
         model: Option<&ModelEvent>,
         limits: Limits,
         io: Option<&PreparationIo>,
@@ -231,18 +246,6 @@ impl ExecutionSummary {
             ));
         }
         let tool_key = self.require_next(event, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let recheck = io
-            .and_then(PreparationIo::original_native_work)
-            .map(|work| PreparationIo::from_native_work(&work.recheck_admitted()))
-            .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let digest_io = recheck.as_ref().or(io);
-        #[cfg(target_arch = "wasm32")]
-        let digest_io = io;
-        let digest = crate::executor::with_history_io(digest_io, |work| {
-            crate::executor::json::canonical_json_digest(event, limits.file_bytes, work)
-        })?;
         if let Some(io) = io {
             let extra = match event {
                 ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
