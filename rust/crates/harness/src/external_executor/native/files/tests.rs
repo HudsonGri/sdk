@@ -117,11 +117,31 @@ async fn bounded_lines_and_file_client_future_do_not_grow_with_history() -> Resu
         "native file client future grew to {size} bytes"
     );
     drop(future);
-    let mut exact = vec![b'x'; jsonl::MAXIMUM_REQUEST_BYTES];
-    exact[jsonl::MAXIMUM_REQUEST_BYTES - 1] = b'\n';
+    let expected = input("boundary", b"retained");
+    let mut exact = jsonl::request(&expected)?.into_bytes();
+    exact.resize(jsonl::MAXIMUM_REQUEST_BYTES, b' ');
+    exact.push(b'\n');
     let mut buffer = Vec::new();
     assert!(line(&mut exact.as_slice(), &mut buffer).await?);
+    assert_eq!(buffer.len(), jsonl::MAXIMUM_REQUEST_BYTES + 1);
+    assert_eq!(
+        parse(
+            TaskId::from_bytes([0; 16]),
+            std::str::from_utf8(&buffer).unwrap()
+        )?,
+        expected
+    );
+    buffer.clear();
+    exact.pop();
+    assert!(line(&mut exact.as_slice(), &mut buffer).await?);
     assert_eq!(buffer.len(), jsonl::MAXIMUM_REQUEST_BYTES);
+    assert_eq!(
+        parse(
+            TaskId::from_bytes([0; 16]),
+            std::str::from_utf8(&buffer).unwrap()
+        )?,
+        expected
+    );
     let oversized = vec![b'x'; jsonl::MAXIMUM_REQUEST_BYTES + 1];
     buffer.clear();
     assert!(line(&mut oversized.as_slice(), &mut buffer).await.is_err());

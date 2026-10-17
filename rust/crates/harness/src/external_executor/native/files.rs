@@ -78,19 +78,22 @@ fn validate(task: TaskId, file: &FileValue) -> Result<()> {
 }
 
 pub(super) fn parse(task: TaskId, line: &str) -> Result<FileValue> {
-    let file = jsonl::parse_request(line)?;
+    let file = jsonl::parse_request(line.strip_suffix('\n').unwrap_or(line))?;
     validate(task, &file)?;
     Ok(file)
 }
 
 async fn line<R: AsyncBufRead + Unpin>(input: &mut R, bytes: &mut Vec<u8>) -> Result<bool> {
-    let remaining = jsonl::MAXIMUM_REQUEST_BYTES.saturating_sub(bytes.len());
+    // The codec bounds the JSON bytes; the optional line terminator is framing.
+    let framed = jsonl::MAXIMUM_REQUEST_BYTES + 1;
+    let remaining = framed.saturating_sub(bytes.len());
     (&mut *input)
         .take(remaining as u64 + 1)
         .read_until(b'\n', bytes)
         .await
         .map_err(storage)?;
-    if bytes.len() > jsonl::MAXIMUM_REQUEST_BYTES {
+    let payload = bytes.len() - usize::from(bytes.last() == Some(&b'\n'));
+    if payload > jsonl::MAXIMUM_REQUEST_BYTES {
         return Err(Error::Invalid("stdin line exceeds byte bound".into()));
     }
     Ok(!bytes.is_empty())
