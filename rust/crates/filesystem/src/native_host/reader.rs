@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(target_os = "macos")]
+#[path = "macos_listing.rs"]
+mod macos_listing;
+
 /// Reads native names and facts from one held directory.
 pub struct HostStatReader {
     directory: Dir,
@@ -91,6 +95,15 @@ impl HostStatReader {
                         return stat_at_metadata(self.directory.as_raw_fd(), native_name, work)
                             .map(Some);
                     }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let listed = self.listed_stat()?;
+                        #[cfg(test)]
+                        super::reader_work::examined(listed.is_some());
+                        if listed.is_some() {
+                            return Ok(listed);
+                        }
+                    }
                     stat_at(self.directory.as_raw_fd(), native_name, work).map(Some)
                 }
                 #[cfg(windows)]
@@ -175,10 +188,10 @@ impl HostStatReader {
         let mut attributes = libc::attrlist {
             bitmapcount: libc::ATTR_BIT_MAP_COUNT,
             reserved: 0,
-            commonattr: libc::ATTR_CMN_RETURNED_ATTRS | libc::ATTR_CMN_NAME,
+            commonattr: macos_listing::COMMON,
             volattr: 0,
             dirattr: 0,
-            fileattr: 0,
+            fileattr: macos_listing::FILE,
             forkattr: 0,
         };
         // SAFETY: the held directory, attribute list and bounded aligned buffer remain live.
@@ -194,13 +207,25 @@ impl HostStatReader {
         if count < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: the entire owned buffer is initialized, and the kernel query is bounded by it.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(self.buffer.as_ptr().cast::<u8>(), Self::BUFFER_BYTES)
-        };
-        let mut filled = 0;
+        let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed directory record");
+        let mut filled = 0_usize;
         for _ in 0..count {
-            filled += Self::macos_record(bytes, filled)?.len();
+            let header = filled.checked_add(4).ok_or_else(malformed)?;
+            if header > Self::BUFFER_BYTES {
+                return Err(malformed());
+            }
+            // SAFETY: the kernel packed `count` records from the buffer's
+            // start; this record's length word lies within the buffer.
+            let length = unsafe {
+                std::ptr::read_unaligned(
+                    self.buffer.as_ptr().cast::<u8>().add(filled).cast::<u32>(),
+                )
+            } as usize;
+            let end = filled.checked_add(length).ok_or_else(malformed)?;
+            if length < 32 || !length.is_multiple_of(8) || end > Self::BUFFER_BYTES {
+                return Err(malformed());
+            }
+            filled = end;
         }
         Ok(filled)
     }
@@ -354,8 +379,11 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
         nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
         work,
     )?;
-    let (mut buffer, allocation) = buffer::<u64, _>(HostStatReader::BUFFER_BYTES / 8, work)?;
-    buffer.resize(HostStatReader::BUFFER_BYTES / 8, 0);
+    // The kernel writes each refill into the capacity; records are parsed
+    // only from the prefix it wrote, so the storage is never zero-filled.
+    let (buffer, allocation) = buffer::<u64, _>(HostStatReader::BUFFER_BYTES / 8, work)?;
+    #[cfg(test)]
+    let buffer = super::reader_work::storage(buffer);
     Ok((
         HostStatReader {
             directory: Dir::from_std_file(file),

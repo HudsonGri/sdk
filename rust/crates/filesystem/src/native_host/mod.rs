@@ -80,6 +80,8 @@ pub(crate) mod stat_probe;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use unix_stat::stat_probe;
 mod reader;
+#[cfg(test)]
+pub(crate) mod reader_work;
 pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
@@ -140,6 +142,9 @@ pub use yielding::{Yielded, YieldingFile};
 #[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
 #[path = "tests_bounded_record.rs"]
 mod bounded_record_tests;
+#[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
+#[path = "tests_listing.rs"]
+mod listing_tests;
 #[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
 #[path = "tests_bounded_source.rs"]
 mod bounded_source_tests;
