@@ -135,22 +135,28 @@ fn facts(stat: &HostStat) -> Vec<i128> {
 }
 #[cfg(windows)]
 fn baseline(path: &std::path::Path) -> std::io::Result<Vec<i128>> {
-    use std::os::windows::fs::MetadataExt as _;
-    let meta = std::fs::symlink_metadata(path)?;
+    use cap_primitives::fs::_WindowsByHandle;
+    use cap_std::fs::MetadataExt as _;
+    let invalid = || io::Error::other("fixture must have a parent and leaf");
+    let directory = Dir::open_ambient_dir(
+        path.parent().ok_or_else(invalid)?,
+        cap_std::ambient_authority(),
+    )?;
+    let meta = directory.symlink_metadata(path.file_name().ok_or_else(invalid)?)?;
     let length = if meta.is_dir() { 0 } else { meta.len() };
     Ok(vec![
         i128::from(length),
         i128::from(meta.is_dir()),
         i128::from(
-            meta.file_index()
+            _WindowsByHandle::file_index(&meta)
                 .ok_or_else(|| io::Error::other("missing file index"))?,
         ),
         i128::from(
-            meta.volume_serial_number()
+            _WindowsByHandle::volume_serial_number(&meta)
                 .ok_or_else(|| io::Error::other("missing volume"))?,
         ),
         i128::from(
-            meta.number_of_links()
+            _WindowsByHandle::number_of_links(&meta)
                 .ok_or_else(|| io::Error::other("missing link count"))?,
         ),
         i128::from(meta.file_attributes()),
