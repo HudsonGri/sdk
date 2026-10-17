@@ -78,10 +78,12 @@ mod tests {
         fn reserved_metadata_policy_is_shared_and_component_exact(name in "[a-z]{1,16}") {
             for root in RESERVED_DIRECTORIES {
                 let policy = ignore_policy(&format!("!{root}/\n!{root}/**"));
+                let path = format!("{root}/{name}");
+                let ordinary = format!("{root}-project/{name}");
                 prop_assert!(!policy.eligible(root, true, false));
-                prop_assert!(!policy.eligible(&format!("{root}/{name}"), false, false));
-                prop_assert!(policy.eligible(&format!("{root}-project/{name}"), false, false));
-                prop_assert!(policy.eligible(&format!("{root}/{name}"), false, true));
+                prop_assert!(!policy.eligible(&path, false, false));
+                prop_assert!(policy.eligible(&ordinary, false, false));
+                prop_assert!(policy.eligible(&path, false, true));
             }
         }
     }
