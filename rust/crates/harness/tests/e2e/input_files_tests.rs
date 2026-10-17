@@ -1,6 +1,6 @@
 use super::{
     TestResult, drivers,
-    input_files::{FileBytes, InputFile},
+    file_bytes::FileBytes, input_files::InputFile,
     scenario,
 };
 use acyclic_harness::model::{
@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::path::Path;
 
-#[path = "../../fuzz/fuzz_targets/input_files_input.rs"]
+#[path = "../../../harness-fuzz/fuzz_targets/input_files_input.rs"]
 mod input_files_input;
 
 fn contents() -> impl Strategy<Value = FileBytes> {
@@ -72,7 +72,7 @@ fn input_file_codec_rejects_bad_bytes_policies_and_fields() {
 
 #[test]
 fn input_file_fuzz_corpus() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/input_files");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/input_files");
     let mut count = 0;
     for entry in std::fs::read_dir(root)? {
         input_files_input::check(&std::fs::read(entry?.path())?);

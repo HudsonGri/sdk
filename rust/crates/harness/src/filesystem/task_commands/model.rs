@@ -35,6 +35,11 @@ where
                 "model command provider is not bound",
             )
         })?;
+        let compaction = if command.summary_source.is_some() {
+            &crate::context::CompactionPolicy::Disabled
+        } else {
+            &binding.compaction
+        };
         let steering = if stock || command.mailbox_operation.is_some() {
             BoundedContentFuture::new(io, || async {
                 let journal = 'journal: {
@@ -90,9 +95,10 @@ where
             None
         };
         let (journal, operation) = if io.is_some() || reconciliation_only {
-            let (journal, operation) =
-                BoundedContentFuture::new(io, || self.command_journal(task, fence, turn, io))?
-                    .await?;
+            let (journal, operation) = BoundedContentFuture::new(io, || {
+                self.command_journal(task, fence, turn, &context, io)
+            })?
+            .await?;
             (Some(journal), operation)
         } else {
             (
@@ -135,6 +141,18 @@ where
                     .saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64,
             )?;
         }
+        let (pipeline, tools) = BoundedContentFuture::new(io, || async {
+            if command.summary_source.is_some() {
+                Ok((
+                    crate::context::ContextPipeline::default(),
+                    crate::tool::ToolRegistry::default(),
+                ))
+            } else {
+                self.model_context(command.context_manifest, &context, io)
+                    .await
+            }
+        })?
+        .await?;
         let input = TurnInput {
             operation_id: operation,
             input: command.input,
@@ -156,19 +174,23 @@ where
                     None => context,
                 };
                 let journal = require_journal()?;
-                let executor = self.runtime.stock_executor_with_native_work(
-                    task,
-                    fence,
-                    operation,
-                    &context,
-                    &binding.model,
-                    Arc::clone(&binding.provider),
-                    &binding.context,
-                    journal,
-                    work,
-                    &binding.compaction,
-                    command.max_output_tokens,
-                )?;
+                let executor = self
+                    .runtime
+                    .stock_executor_with_native_work(
+                        task,
+                        fence,
+                        operation,
+                        &context,
+                        &binding.model,
+                        Arc::clone(&binding.provider),
+                        &pipeline,
+                        tools,
+                        journal,
+                        work,
+                        compaction,
+                        command.max_output_tokens,
+                    )?
+                    .with_summary_source(command.summary_source);
                 let executor = if reconciliation_only {
                     executor.into_reconciliation()
                 } else {
@@ -197,11 +219,13 @@ where
                     turn,
                     binding.model.clone(),
                     Arc::clone(&binding.provider),
-                    binding.context.clone(),
+                    pipeline,
+                    tools,
                     command.selected_output_volume.as_ref(),
                 )
                 .await?
-                .with_compaction_policy(binding.compaction.clone());
+                .with_compaction_policy(compaction.clone())
+                .with_summary_source(command.summary_source);
             let execution = match command.max_output_tokens {
                 Some(maximum) => execution.with_max_output_tokens(maximum)?,
                 None => execution,
