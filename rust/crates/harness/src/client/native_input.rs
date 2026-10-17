@@ -46,10 +46,13 @@ mod stdin {
         #[cfg(target_os = "linux")]
         fn reopen(file: &File) -> Option<Self> {
             use rustix::fs::{Mode, OFlags};
+            use std::os::unix::fs::FileTypeExt;
             let kind = file.metadata().ok()?.file_type();
-            // Regular files and block devices are always "ready" yet may
-            // block on storage: they belong to the reader as well.
-            if kind.is_file() || std::os::unix::fs::FileTypeExt::is_block_device(&kind) {
+            // Only sources whose readiness means data: pipes, sockets and
+            // terminals. Files, block and other character devices (which
+            // epoll may still accept) belong to the reader.
+            let terminal = kind.is_char_device() && std::io::IsTerminal::is_terminal(file);
+            if !(kind.is_fifo() || kind.is_socket() || terminal) {
                 return None;
             }
             rustix::fs::open(
@@ -133,6 +136,33 @@ mod reader {
 
     const BATCH: usize = 64 * 1024;
 
+    /// Read, waiting as a blocking read would. An inherited description may
+    /// be nonblocking (a socket, say): WouldBlock then waits in poll for
+    /// input instead of ending it, without changing the shared flags.
+    pub(super) fn read_blocking(file: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
+        use rustix::event::{PollFd, PollFlags, poll};
+        loop {
+            match file.read(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let mut fds = [PollFd::new(&*file, PollFlags::IN)];
+                    match poll(&mut fds, None) {
+                        Err(error) if error != rustix::io::Errno::INTR => {
+                            return Err(error.into());
+                        }
+                        // A device poll cannot watch (macOS reports some
+                        // as invalid) would turn the retry into a spin.
+                        Ok(_) if fds[0].revents().contains(PollFlags::NVAL) => {
+                            return Err(error);
+                        }
+                        _ => {}
+                    }
+                }
+                read => return read,
+            }
+        }
+    }
+
     pub(super) struct Reader {
         batches: tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
         spare: mpsc::Sender<Vec<u8>>,
@@ -153,7 +183,7 @@ mod reader {
                     loop {
                         let mut batch = recycled.try_recv().unwrap_or_default();
                         batch.resize(BATCH, 0);
-                        let result = file.read(&mut batch).map(|count| {
+                        let result = read_blocking(&mut file, &mut batch).map(|count| {
                             batch.truncate(count);
                             batch
                         });
@@ -441,5 +471,73 @@ mod tests {
         write.write_all(b"x")?;
         assert_eq!(blocked.join().map_err(|_| io::ErrorKind::Other)??, 1);
         Ok(())
+    }
+
+    #[test]
+    fn a_nonblocking_socket_waits_for_input_instead_of_ending_it() -> io::Result<()> {
+        let (read, mut write) = std::os::unix::net::UnixStream::pair()?;
+        read.set_nonblocking(true)?;
+        let read = File::from(std::os::fd::OwnedFd::from(read));
+        let runtime = runtime()?;
+        let lines = runtime.block_on(async {
+            let input = from_file(read)?;
+            assert!(matches!(input, Stdin::Reader(_)));
+            let mut lines = FramedRead::new(input, LinesCodec::new());
+            // Empty: the reader's read would block, so it waits in poll.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), lines.next())
+                    .await
+                    .is_err()
+            );
+            write.write_all(b"late\n")?;
+            drop(write);
+            let lines: Vec<_> = lines.collect().await;
+            io::Result::Ok(lines)
+        })?;
+        let lines: Vec<String> = lines
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .map_err(io::Error::other)?;
+        assert_eq!(lines, ["late"]);
+        Ok(())
+    }
+
+    #[test]
+    fn negative_control_detects_a_nonblocking_read_ending_input() -> io::Result<()> {
+        // The removed reader loop took this error as the end of input.
+        let (read, _write) = std::os::unix::net::UnixStream::pair()?;
+        read.set_nonblocking(true)?;
+        let mut read = File::from(std::os::fd::OwnedFd::from(read));
+        let error = io::Read::read(&mut read, &mut [0; 8]).err();
+        assert_eq!(
+            error.map(|error| error.kind()),
+            Some(io::ErrorKind::WouldBlock)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn devices_other_than_terminals_are_read_off_the_reactor() -> io::Result<()> {
+        let runtime = runtime()?;
+        runtime.block_on(async {
+            for device in ["/dev/null", "/dev/random", "/dev/urandom", "/dev/zero"] {
+                let input = from_file(File::open(device)?)?;
+                assert!(matches!(input, Stdin::Reader(_)), "{device}");
+            }
+            io::Result::Ok(())
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn negative_control_detects_epoll_accepting_a_device() -> io::Result<()> {
+        // Without the allow-list, a reopened /dev/random registers with epoll
+        // and would be awaited on the reactor.
+        let runtime = runtime()?;
+        runtime.block_on(async {
+            let device = File::open("/dev/random")?;
+            assert!(tokio::io::unix::AsyncFd::try_new(device).is_ok());
+            io::Result::Ok(())
+        })
     }
 }
