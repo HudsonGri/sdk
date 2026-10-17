@@ -208,6 +208,13 @@ impl NativeResourceAllowance {
             None,
             &|scope, state| {
                 scope.check(state, delta, bytes)?;
+                #[cfg(all(test, acyclic_fs_loom))]
+                if delta.bytes_copied != 0
+                    && std::ptr::eq(scope, self)
+                    && OMIT_CHILD_DEBIT.with(std::cell::Cell::get)
+                {
+                    return Ok(());
+                }
                 state.completed(delta, bytes)
             },
             operation,
