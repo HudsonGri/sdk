@@ -13,6 +13,14 @@ pub(crate) mod effects;
 mod snapshot;
 mod spec;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
+mod input;
+pub use input::HookInput;
+
+#[cfg(feature = "filesystem")]
+pub(crate) struct BoundHooks {
+    pub(crate) rules: Hooks,
+    pub(crate) manifest: [u8; 32],
+}
 
 struct Binding {
     event: HookEvent,
@@ -51,6 +59,15 @@ impl Hooks {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
+    }
+
+    pub(crate) fn has_tool_hooks(&self) -> bool {
+        self.bindings.iter().any(|binding| {
+            matches!(
+                binding.event,
+                HookEvent::PreToolUse | HookEvent::PostToolUse
+            ) && !binding.commands.is_empty()
+        })
     }
 
     /// Adds a Claude settings file or a Codex hooks.json document atomically.
@@ -112,19 +129,13 @@ impl Hooks {
         Ok(())
     }
 
-    pub(crate) fn commands<'a>(
+    pub(crate) fn commands<'a, 'input>(
         &'a self,
         event: HookEvent,
-        input: &'a Value,
+        input: impl Into<HookInput<'input>>,
         registry: &'a ToolRegistry,
     ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
-        let subject = match event {
-            HookEvent::SessionStart => input.get("source"),
-            HookEvent::PreToolUse | HookEvent::PostToolUse => input.get("tool_name"),
-            HookEvent::Stop => None,
-        }
-        .and_then(Value::as_str)
-        .unwrap_or("");
+        let subject = input.into().subject(event);
         let tool = if matches!(event, HookEvent::PreToolUse | HookEvent::PostToolUse) {
             registry.get(subject, None, None)?
         } else {
@@ -146,10 +157,10 @@ impl Hooks {
             .flat_map(|binding| &binding.commands))
     }
 
-    async fn run_commands<F, Fut>(
+    async fn run_commands<'a, F, Fut>(
         &self,
         event: HookEvent,
-        input: &Value,
+        input: impl Into<HookInput<'a>>,
         registry: &ToolRegistry,
         maximum_bytes: u64,
         mut execute: F,
@@ -158,6 +169,7 @@ impl Hooks {
         F: FnMut(&Arc<HookSpec>, usize) -> Fut,
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
+        let input = input.into();
         let commands = self.commands(event, input, registry)?;
         let count = commands.clone().count();
         let blocks = event != HookEvent::Stop
@@ -189,6 +201,14 @@ fn capture_quota(maximum: u64, count: usize) -> usize {
     usize::try_from(maximum / (count.max(1) as u64))
         .unwrap_or(usize::MAX)
         .min(65_536)
+}
+
+pub(crate) fn report(event: HookEvent, output: &HookOutput) {
+    for failure in &output.diagnostics {
+        tracing::warn!(hook_event = event.name(), kind = ?failure.kind,
+            exit_code = failure.exit_code, blocking = failure.blocking,
+            error = %failure.message, "configured hook failed");
+    }
 }
 
 mod output;

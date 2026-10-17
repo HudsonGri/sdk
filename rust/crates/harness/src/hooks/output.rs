@@ -103,6 +103,15 @@ impl HookOutput {
         self.blocked.is_some() || self.diagnostics.iter().any(|failure| failure.blocking)
     }
 
+    pub(crate) fn take_block_reason(&mut self) -> Option<String> {
+        self.blocked.take().or_else(|| {
+            self.diagnostics
+                .iter_mut()
+                .find(|failure| failure.blocking)
+                .map(|failure| std::mem::take(&mut failure.message))
+        })
+    }
+
     /// Propagates a blocking process/output failure with its retained kind/code.
     /// Explicit permission decisions remain distinct from failed guard commands.
     pub fn into_result(mut self) -> Result<Self> {

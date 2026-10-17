@@ -6,11 +6,11 @@ impl CheckoutTools {
         &self,
         configuration: (&Hooks, [u8; 32]),
         event: HookEvent,
-        input: serde_json::Value,
+        input: crate::hooks::HookInput<'_>,
         registry: &ToolRegistry,
         context: ToolContext,
         reconcile_only: bool,
-    ) -> Result<HookOutput> {
+    ) -> Result<Option<HookOutput>> {
         let (hooks, digest) = configuration;
         let scope = context.effective_scope();
         if !scope.grants().contains(&self.read_grant) || !scope.grants().contains(&self.write_grant)
@@ -85,7 +85,7 @@ impl CheckoutTools {
         &self,
         hooks: &Hooks,
         event: HookEvent,
-        input: serde_json::Value,
+        input: crate::hooks::HookInput<'_>,
         registry: &ToolRegistry,
         context: &ToolContext,
     ) -> Result<HookOutput> {

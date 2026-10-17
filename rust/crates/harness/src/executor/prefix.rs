@@ -58,19 +58,73 @@ impl StockExecution<'_> {
                 ),
                 _ => continue,
             };
-            let projection = completed_tool_projection(
-                journal,
-                &records,
-                step,
-                crate::tool::RecordedInvocation {
-                    invocation: &invocation,
-                    metadata: &metadata,
-                },
-                &request.tools,
-                self.stock.limits,
-                self.io,
-            )
-            .await?;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let mut invocation = invocation;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let mut guard = self
+                .tool_hook(
+                    input.operation_id,
+                    crate::hooks::HookEvent::PreToolUse,
+                    &invocation,
+                    None,
+                    true,
+                )
+                .await?;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let denied = guard.blocks();
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let original_arguments = if denied {
+                None
+            } else {
+                guard
+                    .updated_input
+                    .take()
+                    .map(|arguments| std::mem::replace(&mut invocation.arguments, arguments))
+            };
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let blocked = guard.take_block_reason();
+            #[cfg(not(all(
+                feature = "hooks",
+                feature = "filesystem",
+                not(target_arch = "wasm32")
+            )))]
+            let blocked: Option<String> = None;
+            let projection = if let Some(text) = blocked {
+                crate::model::ToolResultContent::Parts {
+                    parts: vec![crate::model::ModelDataPart::Text { text }],
+                }
+            } else {
+                completed_tool_projection(
+                    journal,
+                    &records,
+                    step,
+                    crate::tool::RecordedInvocation {
+                        invocation: &invocation,
+                        metadata: &metadata,
+                    },
+                    &request.tools,
+                    self.stock.limits,
+                    self.io,
+                )
+                .await?
+            };
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let feedback = if denied {
+                crate::hooks::HookOutput::default()
+            } else {
+                self.tool_hook(
+                    input.operation_id,
+                    crate::hooks::HookEvent::PostToolUse,
+                    &invocation,
+                    None,
+                    true,
+                )
+                .await?
+            };
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(original) = original_arguments {
+                invocation.arguments = original;
+            }
             stock_vec_push(
                 &mut request.messages,
                 ModelMessage {
@@ -98,6 +152,11 @@ impl StockExecution<'_> {
                 },
                 self.io,
             )?;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                self.append_hook_context(&mut results, guard)?;
+                self.append_hook_context(&mut results, feedback)?;
+            }
             if through_call.is_some_and(|id| invocation.call_id == id) {
                 break;
             }

@@ -136,7 +136,7 @@ where
                     .run_hooks(
                         (&crate::hooks::Hooks::default(), [0; 32]),
                         crate::hooks::HookEvent::SessionStart,
-                        Value::Null,
+                        (&Value::Null).into(),
                         &crate::tool::ToolRegistry::default(),
                         issued,
                         true,
@@ -179,7 +179,7 @@ where
         })?
         .await?;
         #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        let pipeline = if command.summary_source.is_none() {
+        let (pipeline, hooks) = if command.summary_source.is_none() {
             BoundedContentFuture::new(io, || {
                 self.session_start(
                     pipeline,
@@ -191,7 +191,7 @@ where
             })?
             .await?
         } else {
-            pipeline
+            (pipeline, None)
         };
         let input = TurnInput {
             operation_id: operation,
@@ -242,7 +242,8 @@ where
                 drop(executor);
                 drop(context);
                 if reconciliation_only {
-                    return Self::reconcile_model(result.map(drop), journal, Some(io)).await;
+                    return Self::reconcile_model(result.map(drop), journal, operation, Some(io))
+                        .await;
                 }
                 let (progress, custody) = result?;
                 io.absorb_native_custody(custody)?;
@@ -266,13 +267,16 @@ where
                 .await?
                 .with_compaction_policy(compaction.clone())
                 .with_summary_source(command.summary_source);
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            let execution = execution.with_hooks(hooks);
             let execution = match command.max_output_tokens {
                 Some(maximum) => execution.with_max_output_tokens(maximum)?,
                 None => execution,
             };
             if reconciliation_only {
                 let result = execution.reconcile_progress(input).await;
-                return Self::reconcile_model(result.map(drop), require_journal()?, io).await;
+                return Self::reconcile_model(result.map(drop), require_journal()?, operation, io)
+                    .await;
             }
             Self::model_progress(execution.execute_progress(input).await?, io)
         })?
@@ -293,10 +297,13 @@ where
     async fn reconcile_model(
         result: Result<()>,
         journal: &FilesystemExecutionJournal<P, A, O>,
+        operation: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         match result {
-            Ok(()) | Err(Error::Indeterminate(_)) => {}
+            Ok(()) => {}
+            Err(Error::Indeterminate(id)) if id == operation => {}
+            Err(Error::Indeterminate(_)) => return Ok(TaskCommandProgress::Indeterminate),
             Err(error) => return Err(error),
         }
         if journal.is_quiescent(io).await? {

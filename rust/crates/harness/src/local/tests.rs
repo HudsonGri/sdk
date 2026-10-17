@@ -6,7 +6,7 @@ use crate::test_support::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
 };
 use crate::{
-    Admission, Error, LocalHarness, LocalHarnessConfig, OperationId, Result,
+    Admission, Error, LocalHarness, LocalHarnessConfig, OperationId, Result, TaskId,
     context::ModelContextCapacity,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
@@ -17,14 +17,16 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+mod compact;
 mod compaction;
 mod context;
-mod compact;
 mod goals;
 #[cfg(feature = "hooks")]
 mod hook_configuration;
 #[cfg(all(feature = "native-execution", unix))]
 mod hook_lifecycle;
+#[cfg(all(feature = "native-execution", unix))]
+mod tool_hooks;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
