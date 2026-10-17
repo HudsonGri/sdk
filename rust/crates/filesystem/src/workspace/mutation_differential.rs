@@ -81,7 +81,6 @@ fn run(
     if mode == 0 {
         root.state(|state| state.budget.bytes_copied = copies);
     }
-    let setup = root.live_allocation_bytes();
     let funding = CancellationToken::new();
     let mut accounting = KernelAccounting::native(&work, &funding);
     let mut operations = crate::kernel::Owned::<Vec<Value>>::allocate(1, &mut accounting).unwrap();
@@ -143,7 +142,10 @@ fn run(
     operations
         .retire(&mut KernelAccounting::native(&work, &funding))
         .unwrap();
-    assert_eq!(root.live_allocation_bytes(), setup);
+    // Cancellation can retire standing invocation metadata. The receipt/live
+    // snapshot above has reconciled it; retiring the list must release exactly
+    // all bytes its funding owns, independently of that metadata transition.
+    assert_eq!(root.live_allocation_bytes(), data.6 - held);
     data
 }
 
@@ -209,6 +211,7 @@ fn pushes_match_full_independent_results_and_redundant_admission_breaks_the_lock
             Err("exact lock counts")
         );
     }
+    compare(3, 0, 2, false, false).unwrap();
 }
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(96))]

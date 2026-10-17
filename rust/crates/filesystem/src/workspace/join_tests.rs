@@ -19,7 +19,11 @@ pub(super) fn before_charge(
     Ok(())
 }
 pub(super) fn observed(tag: u8, amount: u64) {
-    EVENTS.with_borrow_mut(|events| events.push((tag, amount)));
+    EVENTS.with_borrow_mut(|events| {
+        if events.capacity() != 0 {
+            events.push((tag, amount));
+        }
+    });
 }
 
 fn generation(fs: &crate::Fs<A, O>, workspace: u8, version: u8) -> Generation<A, O> {
