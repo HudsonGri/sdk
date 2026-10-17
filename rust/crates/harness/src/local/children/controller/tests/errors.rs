@@ -7,6 +7,7 @@ use crate::{
     runtime::{RuntimeTask, TaskContext},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
 };
+use acyclic_fs::facade::FsWork as _;
 use serde_json::Value;
 use std::io::Write as _;
 
@@ -288,7 +289,8 @@ async fn exercise(parent_fails: bool) -> Result<()> {
     );
     let (_, view) = harness.admit_child_request(&files, &request).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let mut work = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut work = budget.accounting(&cancellation);
     assert_eq!(
         view.read("/sibling.txt", 1024, &mut work)
             .await

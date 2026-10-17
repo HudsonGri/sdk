@@ -21,19 +21,20 @@ pub(super) async fn write<P: StreamProvider + ?Sized>(
     ) {
         file.requester = owner.map(OwnedTaskMailbox::task_id);
     }
-    let mut observation = files
-        .observe_files(
-            Query::Child(reference.clone()),
-            None,
-            limits.attachments,
-            usize::try_from(limits.render_bytes).map_err(invalid)?,
+    let snapshot = files
+        .inner
+        .snapshot_files(
+            &[
+                file.key.clone(),
+                FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Request,
+                },
+            ],
+            &Query::Child(reference.clone()),
         )
         .await
         .map_err(storage)?;
-    let snapshot = observation
-        .snapshot
-        .take()
-        .ok_or_else(|| Error::Conflict("child snapshot is absent".into()))?;
     crate::task_volume::authorize_write(&file.key, file.bytes.len() as u64, files.maximum_bytes())?;
     if reconcile {
         return Ok(snapshot.files.contains(&file));
@@ -78,33 +79,33 @@ pub(super) async fn follow<P: StreamProvider + ?Sized>(
     settled: bool,
 ) -> Result<Option<Value>> {
     let maximum = usize::try_from(limits.render_bytes).map_err(invalid)?;
-    let mut observation = files
-        .observe_files(
-            Query::Child(reference.clone()),
-            None,
-            limits.attachments,
-            maximum,
-        )
+    let snapshot = files
+        .inner
+        .child_lifecycle(Some(reference), false)
         .await
         .map_err(storage)?;
-    let mut values = observation
-        .snapshot
-        .take()
-        .ok_or_else(|| Error::Conflict("child snapshot is absent".into()))?
-        .files;
-    if !values.iter().any(|file| {
-        matches!(
-            file.key,
-            FileKey::Child {
-                file: ChildFile::Request,
-                ..
-            }
-        )
-    }) {
+    if files
+        .inner
+        .child_input_count(reference)
+        .await
+        .map_err(storage)?
+        == 0
+    {
         return Err(Error::NotFound(format!("agents/{}", reference.as_str())));
     }
+    let mut changes = files
+        .inner
+        .follow(Query::Child(reference.clone()), snapshot.cursor)
+        .await
+        .map_err(storage)?;
+    let mut values = snapshot.files;
     loop {
-        let result = status(reference, &values, maximum)?;
+        let inputs = files
+            .inner
+            .child_input_count(reference)
+            .await
+            .map_err(storage)?;
+        let result = super::super::agent_files::status_at(reference, &values, maximum, inputs)?;
         let ready = if settled {
             result["settled"] == true
         } else {
@@ -116,8 +117,7 @@ pub(super) async fn follow<P: StreamProvider + ?Sized>(
         if !wait {
             return Ok(None);
         }
-        let change = observation
-            .changes
+        let change = changes
             .next()
             .await
             .ok_or_else(|| Error::Conflict("child follow ended".into()))?
@@ -129,6 +129,22 @@ pub(super) async fn follow<P: StreamProvider + ?Sized>(
 fn fold(values: &mut Vec<FileValue>, change: crate::task_volume::Change) {
     values.retain(|file| !change.removed.contains(&file.key));
     for file in change.file.into_iter().chain(change.files) {
+        if matches!(
+            file.key,
+            FileKey::Child {
+                file: ChildFile::Request | ChildFile::Inbox(_),
+                ..
+            }
+        ) {
+            continue;
+        }
+        if let FileKey::Child {
+            reference,
+            file: ChildFile::Result(turn),
+        } = &file.key
+        {
+            values.retain(|old| !matches!(&old.key, FileKey::Child { reference: r, file: ChildFile::Result(n) } if r == reference && n < turn));
+        }
         values.retain(|previous| previous.key != file.key);
         values.push(file);
     }

@@ -57,6 +57,8 @@ pub enum TaskFile {
     ExecutionClaim(Component),
     /// Immutable outcome of that dispatch (absence after a claim is uncertain).
     ExecutionResult(Component),
+    /// Immutable selection made by one child wait operation.
+    ChildWait(Component),
     /// Immutable model turn input; turn numbers include retries/attempts.
     TurnRequest(u64),
     /// One immutable stream chunk.
@@ -119,6 +121,7 @@ impl TaskFile {
             Self::Status => "status.json".into(),
             Self::ExecutionClaim(id) => format!("executions/{}/claim.json", id.as_str()),
             Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
+            Self::ChildWait(id) => format!("child-waits/{}.json", id.as_str()),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
             Self::TextHead { turn, channel } => format!(
@@ -311,6 +314,9 @@ impl FileKey {
             ["status.json"] => TaskFile::Status,
             ["executions", request, "claim.json"] => TaskFile::ExecutionClaim(id(request)?),
             ["executions", request, "result.json"] => TaskFile::ExecutionResult(id(request)?),
+            ["child-waits", name] => {
+                TaskFile::ChildWait(id(name.strip_suffix(".json").ok_or(Error::InvalidPath)?)?)
+            }
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
@@ -396,7 +402,7 @@ impl FileKey {
                 ..
             } => Owner::Caller,
             Self::Child {
-                file: ChildFile::Status | ChildFile::Result(_),
+                file: ChildFile::Status | ChildFile::Delivered | ChildFile::Result(_),
                 ..
             } => Owner::Harness,
             Self::Goal | Self::Plan(_) | Self::Input(_) | Self::Child { .. } => Owner::Agent,
@@ -423,7 +429,7 @@ impl FileKey {
                     ..
                 }
                 | Self::Child {
-                    file: ChildFile::Status,
+                    file: ChildFile::Status | ChildFile::Delivered,
                     ..
                 }
                 | Self::Input(_)

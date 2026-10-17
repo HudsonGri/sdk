@@ -34,7 +34,7 @@ pub(super) fn stop(point: &'static str, operation: OperationId) -> Result<()> {
 #[tokio::test]
 async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before_merge()
 -> Result<()> {
-    for point in ["prepared", "admitted", "status"] {
+    for point in ["prepared", "admitted", "input-sent", "status"] {
         let directory = tempfile::tempdir().map_err(storage)?;
         let provider = Arc::new(
             ScriptedModelProvider::new([ScriptedTurn::Text("retained answer".into())])

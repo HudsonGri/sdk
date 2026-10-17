@@ -4,7 +4,7 @@ use crate::{
     runtime::TaskStateProvider,
     task_volume::{
         Change, ChildFile, ChildRequest, ChildState, ChildStatus, Component, Control, FileKey,
-        FileQuerySource, FileValue, Generation, Query, TaskFiles,
+        FileValue, Generation, Query, TaskFiles,
     },
 };
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
@@ -13,8 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Files = TaskFiles<dyn StreamProvider>;
 
+mod delivery;
 mod draining;
 mod inputs;
+mod lease;
 mod results;
 mod stopping;
 
@@ -27,19 +29,20 @@ impl LocalHarness {
         control: Option<(Arc<Files>, Component)>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            let mut observation = files
-                .observe_files(
-                    Query::Children,
-                    None,
-                    self.limits.attachments,
-                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                )
+            let snapshot = files
+                .inner
+                .child_lifecycle(None, true)
                 .await
                 .map_err(storage)?;
-            let snapshot = observation
-                .snapshot
-                .take()
-                .ok_or_else(|| Error::Conflict("child folder snapshot missing".into()))?;
+            let mut observation = crate::task_volume::Observation {
+                snapshot: None,
+                reset: false,
+                changes: files
+                    .inner
+                    .follow(Query::Children, snapshot.cursor)
+                    .await
+                    .map_err(storage)?,
+            };
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
                 .files
@@ -63,7 +66,16 @@ impl LocalHarness {
                 let FileKey::Child { reference, .. } = &request.key else {
                     unreachable!()
                 };
-                if needs_work(reference, &values, false)? {
+                if needs_work_count(
+                    reference,
+                    &values,
+                    false,
+                    files
+                        .inner
+                        .child_input_count(reference)
+                        .await
+                        .map_err(storage)?,
+                )? {
                     active.insert(reference.clone());
                     jobs.push(self.service_child(
                         files.clone(),
@@ -154,7 +166,7 @@ impl LocalHarness {
                         advance_fold(&mut values, &mut generation, change);
                         changed.extend(release_completed(generation.position, &mut active, &mut completions));
                         for reference in changed {
-                            if active.contains(&reference) || !needs_work(&reference, &values, inherited_stopped)? { continue; }
+                            if active.contains(&reference) || !needs_work_count(&reference, &values, inherited_stopped, files.inner.child_input_count(&reference).await.map_err(storage)?)? { continue; }
                             let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
                             let request = values.get(&key).ok_or_else(|| Error::Conflict("child input has no request".into()))?.clone();
                             active.insert(reference.clone());
@@ -165,7 +177,7 @@ impl LocalHarness {
                         let (reference, position) = result.ok_or_else(|| Error::Conflict("child worker disappeared".into()))??;
                         completions.insert(reference, position);
                         for reference in release_completed(generation.position, &mut active, &mut completions) {
-                        if needs_work(&reference, &values, inherited_stopped)? {
+                        if needs_work_count(&reference, &values, inherited_stopped, files.inner.child_input_count(&reference).await.map_err(storage)?)? {
                             let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
                             let request = values.get(&key).ok_or_else(|| Error::Conflict("child has no request".into()))?.clone();
                             active.insert(reference.clone());
@@ -212,19 +224,20 @@ impl LocalHarness {
         inherited: Option<acyclic_fs::CancellationToken>,
     ) -> BoxProviderFuture<'a, Result<(Component, u64)>> {
         Box::pin(async move {
-            let mut observation = files
-                .observe_files(
-                    Query::Child(reference.clone()),
-                    None,
-                    self.limits.attachments,
-                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                )
+            let snapshot = files
+                .inner
+                .child_lifecycle(Some(&reference), true)
                 .await
                 .map_err(storage)?;
-            let snapshot = observation
-                .snapshot
-                .take()
-                .ok_or_else(|| Error::Conflict("child snapshot missing".into()))?;
+            let mut observation = crate::task_volume::Observation {
+                snapshot: None,
+                reset: false,
+                changes: files
+                    .inner
+                    .follow(Query::Child(reference.clone()), snapshot.cursor)
+                    .await
+                    .map_err(storage)?,
+            };
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
                 .files
@@ -243,7 +256,16 @@ impl LocalHarness {
                 )
                 .await?;
             }
-            if !needs_work(&reference, &values, inherited_stopped)? {
+            if !needs_work_count(
+                &reference,
+                &values,
+                inherited_stopped,
+                files
+                    .inner
+                    .child_input_count(&reference)
+                    .await
+                    .map_err(storage)?,
+            )? {
                 return Ok((reference, generation.position));
             }
             let (child, _view) = self.admit_child_request(files.as_ref(), &request).await?;
@@ -268,7 +290,11 @@ impl LocalHarness {
                 }
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
-                let inputs = input_count(&reference, &values);
+                let inputs = files
+                    .inner
+                    .child_input_count(&reference)
+                    .await
+                    .map_err(storage)?;
                 let cancelled = matches!(state, ChildState::Cancelled | ChildState::Archived)
                     && matches!(
                         self.runtime.task_host().outcome(child).await?,
@@ -453,7 +479,7 @@ impl LocalHarness {
                                             if stopping::requested(state) { cancellation.cancel(); }
                                             if state != ChildState::Running { break; }
                                             let status = ChildStatus { task: child, state, settled: false,
-                                                inputs: input_count(&reference, &values) };
+                                                inputs: files.inner.child_input_count(&reference).await.map_err(storage)? };
                                             if inputs::publish(files.as_ref(), &reference, status, &mut values, &mut generation).await? {
                                                 self.deliver_child_inputs(files.as_ref(), &reference, child, &request, &values).await?;
                                                 break;
@@ -506,7 +532,14 @@ impl LocalHarness {
                     }
                 }
                 let state = desired(&reference, &values)?;
-                if state == ChildState::Running && processed < input_count(&reference, &values) {
+                if state == ChildState::Running
+                    && processed
+                        < files
+                            .inner
+                            .child_input_count(&reference)
+                            .await
+                            .map_err(storage)?
+                {
                     continue;
                 }
                 if matches!(state, ChildState::Cancelled | ChildState::Archived) {
@@ -553,79 +586,6 @@ impl LocalHarness {
             }
         })
     }
-
-    async fn deliver_child_inputs(
-        &self,
-        files: &Files,
-        reference: &Component,
-        child: TaskId,
-        request: &FileValue,
-        values: &BTreeMap<FileKey, FileValue>,
-    ) -> Result<()> {
-        let sender = request
-            .requester
-            .ok_or_else(|| Error::Unauthorized("child request has no sender".into()))?;
-        let publisher = self.input_publisher_with_limit(self.limits.file_bytes)?;
-        let prompt = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?.prompt;
-        for file in std::iter::once(request).chain(values.values().filter(|file| matches!(&file.key,
-            FileKey::Child { reference: candidate, file: ChildFile::Inbox(_) } if candidate == reference))) {
-            let operation = admission::child_operation(files.volume(), &file.key.path(), b"mail")?;
-            let body = if file.key == request.key { prompt.as_bytes() } else { file.bytes.as_ref() };
-            let (payload, _) = publisher.stage_once(operation, &format!("inputs/agents/{child}/{operation}.md"),
-                body, "text/plain", "message.md", None)?.await?;
-            self.runtime.task_host().send(sender, child, operation, payload).await?;
-        }
-        Ok(())
-    }
-
-    async fn child_files(
-        &self,
-        child: TaskId,
-        parent: &Files,
-    ) -> Result<(Arc<Files>, crate::runtime::TaskContext)> {
-        use crate::distributed::{WorkPull, Worker};
-        let host = self.runtime.task_host();
-        let lease = match host.recover_work(child, &mut None).await? {
-            WorkPull::Claimed(lease) => lease,
-            WorkPull::Idle => {
-                if !self.runtime.poll_task_wake(child, None).await? {
-                    if let Some(slot) = host.workflow_suspension(child, &mut None).await?
-                        && let Some(waiting) = slot.waiting_command
-                    {
-                        host.wake_command(child, slot.revision, waiting, &mut None)
-                            .await?;
-                    }
-                }
-                let worker = Worker {
-                    id: "child-file-controller".into(),
-                    available: Default::default(),
-                    labels: Default::default(),
-                };
-                let WorkPull::Claimed(lease) = host
-                    .pull_work(
-                        &worker,
-                        Some(OperationId::from_bytes(child.into_bytes())),
-                        &mut None,
-                    )
-                    .await?
-                else {
-                    return Err(Error::Indeterminate(OperationId::from_bytes(
-                        child.into_bytes(),
-                    )));
-                };
-                lease
-            }
-            WorkPull::Unresolved { error, .. } => return Err(error),
-        };
-        host.start_task(&lease, &mut None).await?;
-        let fence = LeaseFence::from(&lease.reservation);
-        let context = self.runtime.task_context(child, fence.clone()).await?;
-        let files = parent
-            .for_created_task(&context, context.scope())
-            .await?
-            .ok_or_else(|| Error::Unauthorized("child has no created private files".into()))?;
-        Ok((Arc::new(files), context))
-    }
 }
 
 fn fold(values: &mut BTreeMap<FileKey, FileValue>, change: Change) {
@@ -633,6 +593,22 @@ fn fold(values: &mut BTreeMap<FileKey, FileValue>, change: Change) {
         values.remove(&key);
     }
     for file in change.file.into_iter().chain(change.files) {
+        if matches!(
+            file.key,
+            FileKey::Child {
+                file: ChildFile::Inbox(_),
+                ..
+            }
+        ) {
+            continue;
+        }
+        if let FileKey::Child {
+            reference,
+            file: ChildFile::Result(turn),
+        } = &file.key
+        {
+            values.retain(|old, _| !matches!(old, FileKey::Child { reference: r, file: ChildFile::Result(n) } if r == reference && n < turn));
+        }
         values.insert(file.key.clone(), file);
     }
 }
@@ -682,6 +658,7 @@ fn execution(
         .transpose()
 }
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
 fn input_count(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> u64 {
     values
         .keys()
@@ -715,10 +692,20 @@ fn settled_turn(
     })
 }
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
 fn needs_work(
     reference: &Component,
     values: &BTreeMap<FileKey, FileValue>,
     stopping: bool,
+) -> Result<bool> {
+    needs_work_count(reference, values, stopping, input_count(reference, values))
+}
+
+fn needs_work_count(
+    reference: &Component,
+    values: &BTreeMap<FileKey, FileValue>,
+    stopping: bool,
+    inputs: u64,
 ) -> Result<bool> {
     let state = desired(reference, values)?;
     if stopping && !matches!(state, ChildState::Cancelled | ChildState::Archived) {
@@ -728,7 +715,7 @@ fn needs_work(
         !status.settled
             || status.state != state
             || state == ChildState::Running
-                && (status.inputs != input_count(reference, values)
+                && (status.inputs != inputs
                     || !values.contains_key(&FileKey::Child {
                         reference: reference.clone(),
                         file: ChildFile::Result(status.inputs),

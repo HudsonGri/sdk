@@ -1,12 +1,11 @@
 //! Child tools read and write the parent's existing task-volume files.
-use super::agent_files::{files as bound_files, status};
+use super::agent_files::files as bound_files;
 use crate::{
     Error, Result,
     conversation::Limits,
     runtime::{RuntimeScope, ToolContext},
     task_volume::{
-        ChildFile, ChildRequest, Component, Control, FileKey, FileQuerySource, FileValue, Query,
-        TaskFiles,
+        ChildFile, ChildRequest, Component, Control, FileKey, FileValue, Query, TaskFiles,
     },
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
@@ -18,6 +17,7 @@ use std::collections::BTreeSet;
 mod arguments;
 pub use arguments::{ArchiveInput, SendInput, SpawnInput, WaitInput, WaitMode};
 mod files;
+mod selection;
 
 pub(crate) fn family(name: &str) -> bool {
     matches!(name, "spawn" | "send" | "wait" | "archive")
@@ -129,6 +129,10 @@ impl Executor {
                         limits,
                         invocation.operation_id,
                         !reconcile,
+                        owner
+                            .ok_or_else(|| invalid("wait owner is absent"))?
+                            .task_id(),
+                        owner,
                     ),
                     owner.and_then(|owner| owner.invocation_cancellation()),
                 )
@@ -202,9 +206,18 @@ async fn wait<P: StreamProvider + ?Sized>(
     limits: Limits,
     operation: crate::OperationId,
     block: bool,
+    task: crate::TaskId,
+    owner: Option<&dyn crate::runtime::OwnedTaskMailbox>,
 ) -> Result<Option<Value>> {
     if input.agents.is_empty() || input.agents.len() > limits.attachments {
         return Err(invalid("wait requires a bounded nonempty agent selection"));
+    }
+    let binding = serde_json::to_value(&input).map_err(invalid)?;
+    let selection = selection::key(task, operation)?;
+    if input.mode == Some(WaitMode::Any) {
+        if let Some(value) = selection::load(files, &selection, &binding).await? {
+            return files::bounded(value, limits).map(Some);
+        }
     }
     let agents = input
         .agents
@@ -246,7 +259,11 @@ async fn wait<P: StreamProvider + ?Sized>(
             result
         })
         .collect();
-    files::bounded(json!({"agents":results}), limits).map(Some)
+    let value = files::bounded(json!({"agents":results}), limits)?;
+    if input.mode == Some(WaitMode::Any) {
+        selection::save(files, selection, binding, value.clone(), owner).await?;
+    }
+    Ok(Some(value))
 }
 
 impl ToolExecutor for Executor {
