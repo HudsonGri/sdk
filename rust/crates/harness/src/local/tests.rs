@@ -783,6 +783,8 @@ mod checked_commands;
 mod checkout;
 
 #[cfg(all(feature = "native-execution", unix))]
+mod lazy_volumes;
+#[cfg(all(feature = "native-execution", unix))]
 mod volumes;
 
 #[cfg(feature = "native-execution")]
