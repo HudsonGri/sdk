@@ -150,18 +150,26 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             checkout_context: checkout.is_some(),
         };
-        if let Some(provider) = local
-            .provider
-            .bind_content(local.context_reader()?, local.limits.file_bytes)
-        {
-            local.provider = provider;
-        }
+        local.bind_provider_content()?;
         Ok(local)
     }
 
     /// The same task runtime used by request-file consumers and SDK queries.
     pub fn task_runtime(&self) -> &Arc<LocalTaskRuntime> {
         &self.runtime
+    }
+
+    pub(super) fn bind_provider_content(&mut self) -> Result<()> {
+        let bound = match &self.model {
+            Some((_, provider)) => {
+                provider.bind_content(self.context_reader()?, self.limits.file_bytes)
+            }
+            None => None,
+        };
+        if let (Some((_, provider)), Some(bound)) = (&mut self.model, bound) {
+            *provider = bound;
+        }
+        Ok(())
     }
 }
 
