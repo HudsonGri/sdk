@@ -25,6 +25,8 @@ pub enum Fault {
     DropActiveChild,
     /// Admit child preparation before its staged inputs are durable.
     SkipChildInputFence,
+    /// Send live child mail without acknowledging its result bound.
+    SkipChildInputAck,
 }
 
 loom::thread_local! {
@@ -60,4 +62,16 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
         snapshot.files,
         "acknowledgement overwrote rebuilt files"
     );
+}
+
+pub(crate) async fn files(
+    provider: Arc<dyn StreamProvider>,
+    path: StreamPath,
+    volume: crate::conversation::VolumeRef,
+) -> TaskFiles<dyn StreamProvider> {
+    TaskFiles {
+        inner: TaskVolume::open(provider, path).await.unwrap(),
+        volume,
+        maximum_bytes: 4096,
+    }
 }

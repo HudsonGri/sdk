@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Files = TaskFiles<dyn StreamProvider>;
 
+mod inputs;
 mod results;
 mod stopping;
 
@@ -410,7 +411,23 @@ impl LocalHarness {
                                     advance_fold(&mut values, &mut generation, change);
                                     let state = desired(&reference, &values)?;
                                     if stopping::requested(state) { cancellation.cancel(); }
-                                    if input && state == ChildState::Running { self.deliver_child_inputs(files.as_ref(), &reference, child, &request, &values).await?; }
+                                    if input {
+                                        loop {
+                                            let state = desired(&reference, &values)?;
+                                            if stopping::requested(state) { cancellation.cancel(); }
+                                            if state != ChildState::Running { break; }
+                                            let status = ChildStatus { task: child, state, settled: false,
+                                                inputs: input_count(&reference, &values) };
+                                            if inputs::publish(files.as_ref(), &reference, status, &mut values, &mut generation).await? {
+                                                self.deliver_child_inputs(files.as_ref(), &reference, child, &request, &values).await?;
+                                                break;
+                                            }
+                                            let change = observation.changes.next().await
+                                                .ok_or_else(|| Error::Conflict("child input fence follow ended".into()))?
+                                                .map_err(storage)?;
+                                            advance_fold(&mut values, &mut generation, change);
+                                        }
+                                    }
                                 }
                                 _ = async { inherited.as_ref().unwrap().cancelled().await },
                                     if inherited.is_some() && !inherited_stopped => {
@@ -474,7 +491,9 @@ impl LocalHarness {
                     inputs: if state == ChildState::Running {
                         processed
                     } else {
-                        previous.map_or(inputs, |status| status.inputs)
+                        execution(&reference, &values)?
+                            .map_or(inputs, |status| status.inputs)
+                            .max(processed)
                     },
                 };
                 if publish(
@@ -704,8 +723,8 @@ fn release_completed(
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
-async fn publish(
-    files: &Files,
+async fn publish<P: StreamProvider + ?Sized>(
+    files: &TaskFiles<P>,
     reference: &Component,
     status: ChildStatus,
     values: &mut BTreeMap<FileKey, FileValue>,

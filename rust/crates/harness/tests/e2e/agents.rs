@@ -56,7 +56,8 @@ struct Action {
     model: String,
     request: usize,
     agent: String,
-    control: Control,
+    control: Option<Control>,
+    message: Option<String>,
 }
 
 struct Models {
@@ -146,19 +147,29 @@ impl ModelProvider for Models {
 }
 
 async fn control(harness: &LocalHarness, action: &Action) -> Result<()> {
-    if action.model != "parent" {
-        return Err(Error::Invalid(
-            "scenario client action must name the root parent".into(),
-        ));
-    }
     let reference =
         Component::new(action.agent.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+    let (file, bytes) = match (action.control, action.message.as_ref()) {
+        (Some(control), None) => (ChildFile::Control, control.bytes().to_vec()),
+        (None, Some(message)) => (
+            ChildFile::Inbox(
+                Component::new(format!("scenario-{}-{}", action.model, action.request))
+                    .map_err(|e| Error::Invalid(e.to_string()))?,
+            ),
+            message.as_bytes().to_vec(),
+        ),
+        _ => {
+            return Err(Error::Invalid(
+                "scenario action needs exactly one control or message".into(),
+            ));
+        }
+    };
     let file = FileValue::new(
         FileKey::Child {
             reference: reference.clone(),
-            file: ChildFile::Control,
+            file,
         },
-        action.control.bytes().to_vec(),
+        bytes,
     );
     let mut observation = harness
         .task_files()
