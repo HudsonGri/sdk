@@ -27,7 +27,6 @@ fn every_lock_constructor_spelling_is_found() {
         "let a = vec![SyncMutex::<u8>::new(0)];",
         // A closure argument, as in a Loom model entry.
         "run(|| { let a = SyncMutex::<[u8; (8 >> 1)]>::new([0; 4]); });",
-        "my_macro!(x => SyncMutex::<[u8; (8 >> 1)]>::new([0; 4]));",
     ] {
         assert!(constructs(body), "missed {body}");
     }
@@ -43,14 +42,15 @@ fn lock_types_inside_other_constructors_are_not_locks() {
         "// SyncMutex::new(0)\nlet a = 1;",
         "let a = \"SyncMutex::new(0)\";",
         "let a = production::Component::new();",
-        "my_macro!(x => Vec::<SyncMutex<u8>>::new());",
-        "my_macro!(x => Option::<SyncMutex<u8>>::default(), y);",
     ] {
         assert!(!constructs(body), "flagged {body}");
     }
     let identity =
         "const _: fn(crate::sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;";
     assert_eq!(scan(identity).ok(), Some(false));
+    // Only the identity closure is an assertion; any other body is a value.
+    let converting = "const _: fn(u8) -> SyncMutex<u8> = |value| value.into();";
+    assert!(scan(converting).is_err());
 }
 
 #[test]
@@ -68,104 +68,164 @@ fn aliases_and_loom_imports_are_resolved() {
     assert_eq!(scan(threads).ok(), Some(false));
 }
 
-// The four transcriber forms that escaped the token fallback, each compiling
-// with rustc, plus alias and import forms inside transcribers.
+fn verdict(source: &str) -> Result<bool, String> {
+    scan(source).map_err(|error| error.to_string())
+}
+
+fn rejected(source: &str) -> bool {
+    verdict(source).is_err_and(|error| !error.starts_with("indeterminate"))
+}
+
+fn indeterminate(source: &str) -> bool {
+    verdict(source).is_err_and(|error| error.starts_with("indeterminate"))
+}
+
+// Generated code cannot be seen, so it cannot appear: the r4 probes that
+// generated alias names and constructions through macro_rules! are hard
+// errors, as are unknown macros, attributes, derives and rebound macro names.
 #[test]
-fn macro_rules_transcribers_are_analysed_like_source() {
+fn generated_code_is_rejected() {
+    for source in [
+        "macro_rules! alias { ($n:ident) => { type $n = std::sync::Mutex<()>; }; }\nalias!(Cell);\nfn m() { Cell::new(()); }",
+        "macro_rules! m { () => { let lock: std::sync::Mutex<()> = (Default::default()); }; }",
+        "macro_rules! m { () => {}; }",
+        "fn m() { my_macro!(x => 1); }",
+        "fn m() { crate::vec![1]; }",
+        "fn m() { other::json!(1); }",
+        "#[tokio::test]\nasync fn m() {}",
+        "#[derive(serde::Deserialize)]\nstruct S;",
+        "use crate::locks::make as vec;\nfn m() { vec![]; }",
+        "use crate::locks::vec;",
+    ] {
+        assert!(rejected(source), "{source}: {:?}", verdict(source));
+    }
+    let definition = verdict("macro_rules! m { () => {}; }");
+    assert!(definition.is_err_and(|error| error.starts_with("a macro_rules! definition")));
+    for source in [
+        "use serde_json::json;\nfn m() { json!({\"a\": 1}); }",
+        "use std::vec;\n#[derive(Clone, Debug, Default)]\nstruct S;\n#[test]\nfn m() { vec![1]; }",
+    ] {
+        assert_eq!(verdict(source), Ok(false), "{source}");
+    }
+}
+
+// Allowed macros are parsed with their own grammar, so constructions inside
+// their arguments are found, and arguments outside it are indeterminate.
+#[test]
+fn allowed_macro_arguments_are_parsed_with_their_grammar() {
     for body in [
-        "macro_rules! m { () => { <SyncMutex<()>>::new(()) }; }",
-        "macro_rules! m { () => { let a: SyncMutex<u8> = Default::default(); }; }",
-        "macro_rules! m { () => { use crate::sync::SyncMutex as DataMutex; DataMutex::new(0) }; }",
-        "macro_rules! m { () => { type Lock = crate::sync::SyncMutex<u8>; Lock::new(0) }; }",
-        "macro_rules! m { ($e:expr) => { <SyncMutex<u8> as Default>::default() }; }",
+        "assert!(SyncMutex::new(0).lock().is_ok(), \"{}\", 1);",
+        "assert_eq!(1, { let a: SyncMutex<u8> = Default::default(); 1 });",
+        "let a = vec![SyncMutex::new(0); 2];",
+        "let a = format!(\"{x}\", x = SyncMutex::new(0));",
+        "let a = matches!(x, Some(_) if SyncMutex::new(0).lock().is_ok());",
+        "let a = proptest::prop_oneof![1 => SyncMutex::new(0)];",
+        "let a = serde_json::json!({\"k\": [1, {\"n\": SyncMutex::new(0)}]});",
+        "let a = serde_json::json!({ (SyncMutex::new(0)): 1 });",
     ] {
         assert!(constructs(body), "missed {body}");
     }
-    let outside =
-        "use crate::sync::SyncMutex as DataMutex;\nmacro_rules! m { () => { DataMutex::new(0) }; }";
-    assert_eq!(scan(outside).ok(), Some(true));
-}
-
-#[test]
-fn unknowable_transcribers_are_indeterminate_not_lock_free() {
+    let statics = "loom::thread_local! { static A: SyncMutex<u8> = SyncMutex::new(0) }";
+    assert_eq!(verdict(statics), Ok(true));
+    let typed = "thread_local! { static A: SyncMutex<u8> = const { Default::default() }; }";
+    assert_eq!(verdict(typed), Ok(true));
+    let proptest = "proptest::proptest! {\n#![proptest_config(Config::with_cases(4))]\n#[test]\nfn p(a in 0..4u8, b: u8) { let lock: SyncMutex<u8> = (a.into()); }\n}";
+    assert_eq!(verdict(proptest), Ok(true));
     for body in [
-        "macro_rules! m { ($t:ty) => { <$t>::new(()) }; }",
-        "macro_rules! m { ($t:ident) => { $t::default() }; }",
-        "macro_rules! m { ($t:ty) => { let a: $t = Default::default(); }; }",
-        "macro_rules! m { ($t:ty) => { type Lock = $t; Lock::new(0) }; }",
-        "macro_rules! m { () => { a b c }; }",
-        "macro_rules! m { () => { }; garbage }",
+        "assert!(a b c);",
+        "let a = matches!(x);",
+        "let a = vec![a b];",
+        "proptest::proptest! { fn p(a: ) {} }",
+        "let a = serde_json::json!({ \"k\" 1 });",
     ] {
-        let verdict = scan(&format!("fn model() {{ {body} }}"));
-        assert!(
-            verdict
-                .as_ref()
-                .is_err_and(|error| error.to_string().starts_with("indeterminate")),
-            "{body}: {:?}",
-            verdict.map_err(|error| error.to_string())
-        );
+        let source = format!("fn m() {{ {body} }}");
+        assert!(indeterminate(&source), "{body}: {:?}", verdict(&source));
     }
 }
 
-// Every lock construction, in every macro wrapping, is found; every
-// non-lock construction in the same wrappings is not. The grammar is small
-// enough to enumerate exhaustively instead of sampling it.
+// A binding declared as a lock constructs one whatever the initializer's
+// shape, including the r4 wrapped-default probes.
 #[test]
-fn generated_constructions_in_every_macro_wrapping() {
-    let constructions = [
-        "let _a = SyncMutex::new(0);",
-        "let _a = crate::sync::RwLock::<u8>::default();",
-        "let _a = SyncMutex::<[u8; (8 >> 1)]>::new([0; 4]);",
-        "let _a = <SyncMutex<()>>::new(());",
-        "let _a = <SyncMutex<u8> as Default>::default();",
-        "let _a: SyncMutex<u8> = Default::default();",
-        "use crate::sync::SyncMutex as DataMutex; let _a = DataMutex::new(0);",
-        "type Lock = crate::sync::Mutex<u8>; let _a = Lock::new(0);",
-        "let _a = std::sync::Arc::new(loom::sync::Condvar::new());",
-    ];
-    let others = [
-        "let _a = Vec::<SyncMutex<u8>>::new();",
-        "let _a: Option<SyncMutex<u8>> = Default::default();",
-        "let _a = Option::<SyncMutex<u8>>::default();",
-        "let _a = \"SyncMutex::new(0)\";",
-        "use crate::cell::Cell as Slot; let _a = Slot::new(0);",
-    ];
-    let wrappings = [
-        "macro_rules! m { () => { WRAPPED }; }",
-        "macro_rules! m { ($e:expr) => { let _x = $e; WRAPPED }; }",
-        "macro_rules! m { ($($e:expr),*) => { $( let _x = $e; )* WRAPPED }; }",
-        "macro_rules! m { ($($e:expr),*) => { $( WRAPPED let _x = $e; )* }; }",
-        "macro_rules! m { ($($e:expr);+) => { $( WRAPPED let _x = $e; );+ }; }",
-        "macro_rules! m { (a) => {}; (b) => {{ WRAPPED }}; }",
-        "macro_rules! m { () => { vec![{ WRAPPED }] }; }",
-        "macro_rules! m { () => { fn inner() { WRAPPED } }; }",
-        "macro_rules! m { () => { impl Probe { fn inner(&self) { WRAPPED } } }; }",
-        "macro_rules! m { () => { #[test] fn inner() { WRAPPED } }; }",
-        "macro_rules! outer { () => { macro_rules! inner { () => { WRAPPED }; } }; }",
-        "my_macro!(x => { WRAPPED });",
-        "my_macro! { key: value; WRAPPED }",
-    ];
-    for wrapping in wrappings {
-        for construction in constructions {
-            let body = wrapping.replace("WRAPPED", construction);
-            assert_eq!(
-                scan(&format!("fn model() {{ {body} }}")).ok(),
-                Some(true),
-                "missed {body}"
-            );
-            assert_eq!(
-                scan(&body).ok().or(Some(true)),
-                Some(true),
-                "item-level {body}"
-            );
-        }
-        for construction in others {
-            let body = wrapping.replace("WRAPPED", construction);
-            assert_eq!(
-                scan(&format!("fn model() {{ {body} }}")).ok(),
-                Some(false),
-                "flagged {body}"
-            );
-        }
+fn bindings_declared_as_locks_construct_whatever_the_initializer() {
+    for body in [
+        "let lock: std::sync::Mutex<()> = (Default::default());",
+        "let lock: std::sync::Mutex<()> = { Default::default() };",
+        "let lock: std::sync::Mutex<()> = unsafe { { (Default::default()) } };",
+        "let lock: SyncMutex<u8> = From::from(0);",
+        "let lock: SyncMutex<u8> = 0.into();",
+        "let lock: SyncMutex<u8> = make();",
+        "let lock: SyncMutex<u8>;",
+        "let pair: (SyncMutex<u8>, u8) = (Default::default(), 0);",
+        "let locks: [SyncMutex<u8>; 2] = Default::default();",
+        "let shared: Arc<SyncMutex<u8>> = Default::default();",
+        "let shared = Arc::<SyncMutex<u8>>::default();",
+        "let lock = <(SyncMutex<u8>, u8)>::default();",
+    ] {
+        assert!(constructs(body), "missed {body}");
     }
+    for source in [
+        "static A: SyncMutex<u8> = SyncMutex::new(0);",
+        "const A: SyncMutex<u8> = make();",
+        "struct Holder { lock: SyncMutex<u8> }",
+        "fn make() -> SyncMutex<u8> { if a { (Default::default()) } else { 0.into() } }",
+        "fn take(_: SyncMutex<u8>) {}\nfn m() { take({ Default::default() }); }",
+        "struct Holder<T>(T);\nfn m() { let h: Holder<SyncMutex<u8>> = Default::default(); }",
+        "type Pair = (SyncMutex<u8>, u8);\nfn m() { let p: Pair = Default::default(); }",
+        "trait Make { fn make() -> Self; }\nimpl Make for SyncMutex<u8> { fn make() -> Self { Self::new(0) } }",
+    ] {
+        assert_eq!(verdict(source), Ok(true), "{source}");
+    }
+}
+
+// In a file that writes a lock type by value, a context-typed constructor
+// whose type the file does not determine is indeterminate; one whose type it
+// determines as no lock is clean. A file that writes no lock type leaves such
+// types to signatures in other files.
+#[test]
+fn inferred_types_are_resolved_or_indeterminate() {
+    const MENTION: &str = concat!(
+        "fn mention(_: Arc<SyncMutex<u8>>) {}\n",
+        "use std::default::Default as Fresh;\n",
+        "use std::convert::From as Convert;\n",
+    );
+    for body in [
+        "let a = Default::default();",
+        "let a: _ = Default::default();",
+        "take(Default::default());",
+        "let a = Arc::new(Into::into(0));",
+        "let a = values.map(Into::into);",
+        "let a = <_>::default();",
+        "x = Default::default();",
+        "let h = Holder { lock: Default::default() };",
+        "let a = Fresh::default();",
+        "let a = Convert::from(0);",
+        "let a = std::mem::take(&mut slot);",
+        "let a = slot.unwrap_or_default();",
+    ] {
+        let source = format!("{MENTION}fn m() {{ {body} }}");
+        assert!(indeterminate(&source), "{body}: {:?}", verdict(&source));
+        let elsewhere = format!("fn m() {{ {body} }}");
+        assert_eq!(verdict(&elsewhere), Ok(false), "{elsewhere}");
+    }
+    for source in [
+        "fn m() { let a: Vec<SyncMutex<u8>> = (0..2).map(|_| 0.into()).collect(); }",
+        "fn make<T: Default>() -> T { T::default() }\nfn m() { make::<SyncMutex<u8>>(); }",
+        "type Lock = SyncMutex<u8>;\nfn m() { let a = Default::default(); }",
+    ] {
+        assert!(indeterminate(source), "{source}: {:?}", verdict(source));
+    }
+    for source in [
+        "fn m() { let a: u8 = Default::default(); let s: String = \"x\".into(); }",
+        "fn take(_: String, _: &str) {}\nfn m() { take(\"x\".into(), &Default::default()); }",
+        "struct S { a: u8 }\nfn m() { let s = S { a: 0.into() }; let t = Other { a: 1, ..Default::default() }; }",
+        "fn make() -> u8 { if a { return 1.into(); } Default::default() }",
+        "fn m() { let f = || -> u8 { Default::default() }; }",
+        "fn m() { let a: Option<SyncMutex<u8>> = Default::default(); }",
+    ] {
+        let source = format!("{MENTION}{source}");
+        assert_eq!(verdict(&source), Ok(false), "{source}");
+    }
+    // A borrowed lock is not a lock type written by value.
+    let borrowed = "fn m(lock: &SyncMutex<u8>) { let a = Default::default(); }";
+    assert_eq!(verdict(borrowed), Ok(false));
 }

@@ -1,29 +1,33 @@
 //! Reports which Rust sources construct or import a lock, for
 //! `scripts/check-loom-models.mjs`. Sources are parsed, not pattern matched,
 //! so comments, const-generic blocks, shifts inside array lengths, qualified
-//! paths and nested generics cannot hide or fake a constructor. Macro bodies
-//! are expanded into parsed statements first (see [`macros`]), and a
-//! `macro_rules!` transcriber that constructs through a metavariable type, or
-//! does not parse, makes the scan indeterminate (an error) rather than lock free.
+//! paths and nested generics cannot hide or fake a constructor.
+//!
+//! The scan is decided on types, not expression shapes ([`finder`]): a
+//! binding declared as a lock, or a context-typed constructor
+//! (`Default::default()`, `From::from`, `.into()`, ...) whose expected type
+//! holds a lock, is a construction however it is wrapped, and one whose
+//! expected type the file does not determine is indeterminate. Generated code
+//! is excluded structurally ([`macros`]): only allow-listed macros and
+//! attributes may appear, and their arguments are parsed with their grammar.
 //!
 //! stdin: records `path\0source\0`. stdout: one `path\t1`, `path\t0` or
 //! `path\t!error` line per record.
+mod finder;
 mod macros;
 
-use macros::{Fragment, METAVARIABLE};
 use std::{
     collections::BTreeSet,
     io::{Read, Write},
     process::ExitCode,
 };
 use syn::{
-    Expr, ExprPath, Local, Pat, Path, Type, UseTree,
+    Stmt, Type, UseTree,
     visit::{self, Visit},
 };
 
 const LOCKS: [&str; 5] = ["Mutex", "RwLock", "Condvar", "SyncMutex", "AsyncMutex"];
 const LOOM_LOCKS: [&str; 3] = ["Mutex", "RwLock", "Condvar"];
-const CONSTRUCTORS: [&str; 2] = ["new", "default"];
 
 fn main() -> ExitCode {
     let mut input = String::new();
@@ -45,71 +49,64 @@ fn main() -> ExitCode {
     }
 }
 
-/// Whether `source` constructs a lock or imports a Loom lock.
+/// Whether `source` constructs a lock or imports a Loom lock; an error when
+/// it uses generated code or a construction whose type it does not determine.
 pub fn scan(source: &str) -> syn::Result<bool> {
     let file = syn::parse_file(source)?;
     let fragments = macros::fragments(&file)?;
+    let stmts: Vec<&Stmt> = fragments.iter().flatten().collect();
     let mut names = Names::default();
     names.visit_file(&file);
-    for fragment in &fragments {
-        fragment
-            .stmts
-            .iter()
-            .for_each(|stmt| names.visit_stmt(stmt));
+    stmts.iter().for_each(|stmt| names.visit_stmt(stmt));
+    if let Some(error) = names.error {
+        return Err(error);
     }
-    let mut finder = Finder {
-        locks: names.resolve(&[]),
-        found: names.loom_import,
-    };
-    finder.visit_file(&file);
-    for fragment in &fragments {
-        fragment
-            .stmts
-            .iter()
-            .for_each(|stmt| finder.visit_stmt(stmt));
-    }
-    if finder.found {
-        return Ok(true);
-    }
-    // A transcriber constructing a metavariable type constructs whatever the
-    // caller passes in: that is unknown here, not lock free.
-    let mut templated = Finder {
-        locks: names.resolve(&[METAVARIABLE]),
-        found: false,
-    };
-    for Fragment { stmts, template } in &fragments {
-        if *template {
-            stmts.iter().for_each(|stmt| templated.visit_stmt(stmt));
-        }
-    }
-    if templated.found {
-        return Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "indeterminate: a macro_rules! transcriber constructs a metavariable type",
-        ));
-    }
-    Ok(false)
+    let found = finder::find(&file, &stmts, &names)?;
+    Ok(found || names.loom_import)
 }
 
 /// Lock names, renames and type aliases visible anywhere in the file.
 #[derive(Default)]
-struct Names {
-    aliases: Vec<(String, String)>,
+pub struct Names<'ast> {
+    renames: Vec<(String, String)>,
+    /// `type` items: name, generic parameter count and target.
+    aliases: Vec<(String, usize, &'ast Type)>,
     loom_import: bool,
+    error: Option<syn::Error>,
 }
 
-impl Names {
-    fn resolve(&self, extra: &[&str]) -> BTreeSet<String> {
-        let mut locks: BTreeSet<String> =
-            LOCKS.iter().chain(extra).map(ToString::to_string).collect();
-        while let Some(alias) = self
-            .aliases
-            .iter()
-            .find(|(target, alias)| locks.contains(target) && !locks.contains(alias))
-        {
-            locks.insert(alias.1.clone());
+impl<'ast> Names<'ast> {
+    /// Names that denote a lock: the lock types, their renames, and aliases
+    /// whose target is one.
+    pub fn locks(&self) -> BTreeSet<String> {
+        let mut locks: BTreeSet<String> = LOCKS.iter().map(ToString::to_string).collect();
+        loop {
+            let renamed = self
+                .renames
+                .iter()
+                .find(|(target, alias)| locks.contains(target) && !locks.contains(alias))
+                .map(|(_, alias)| alias.clone());
+            let aliased = self
+                .aliases
+                .iter()
+                .find(|(alias, _, target)| {
+                    !locks.contains(alias)
+                        && finder::type_name(target).is_some_and(|name| locks.contains(&name))
+                })
+                .map(|(alias, _, _)| alias.clone());
+            match renamed.or(aliased) {
+                Some(name) => locks.insert(name),
+                None => return locks,
+            };
         }
-        locks
+    }
+
+    /// The target and generic parameter count of the alias `name`.
+    pub fn alias(&self, name: &str) -> Option<(usize, &'ast Type)> {
+        self.aliases
+            .iter()
+            .find(|(alias, _, _)| alias == name)
+            .map(|(_, count, target)| (*count, *target))
     }
 
     fn walk(&mut self, tree: &UseTree, prefix: &mut Vec<String>) {
@@ -122,12 +119,15 @@ impl Names {
                 prefix.pop();
             }
             UseTree::Name(name) => {
-                self.loom_import |= loom && LOOM_LOCKS.contains(&name.ident.to_string().as_str());
+                let target = name.ident.to_string();
+                self.loom_import |= loom && LOOM_LOCKS.contains(&target.as_str());
+                self.bind(prefix, &target, &target);
             }
             UseTree::Rename(rename) => {
                 let target = rename.ident.to_string();
                 self.loom_import |= loom && LOOM_LOCKS.contains(&target.as_str());
-                self.aliases.push((target, rename.rename.to_string()));
+                self.bind(prefix, &target, &rename.rename.to_string());
+                self.renames.push((target, rename.rename.to_string()));
             }
             UseTree::Glob(_) => self.loom_import |= loom,
             UseTree::Group(group) => {
@@ -137,87 +137,35 @@ impl Names {
             }
         }
     }
+
+    fn bind(&mut self, prefix: &[String], target: &str, name: &str) {
+        let mut path = prefix.to_vec();
+        path.push(target.to_string());
+        if macros::redirects(&path, name) && self.error.is_none() {
+            self.error = Some(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "`use {} as {name}` rebinds an allow-listed macro name",
+                    path.join("::")
+                ),
+            ));
+        }
+    }
 }
 
-impl Visit<'_> for Names {
-    fn visit_item_use(&mut self, item: &syn::ItemUse) {
+impl<'ast> Visit<'ast> for Names<'ast> {
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         self.walk(&item.tree, &mut Vec::new());
     }
 
-    fn visit_item_type(&mut self, item: &syn::ItemType) {
-        if let Some(target) = type_name(&item.ty) {
-            self.aliases.push((target, item.ident.to_string()));
-        }
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        self.aliases
+            .push((item.ident.to_string(), item.generics.params.len(), &item.ty));
         visit::visit_item_type(self, item);
     }
 }
 
-// The last segment of an unqualified type path.
-fn type_name(ty: &Type) -> Option<String> {
-    match ty {
-        Type::Path(path) if path.qself.is_none() => last(&path.path),
-        Type::Paren(inner) => type_name(&inner.elem),
-        Type::Group(inner) => type_name(&inner.elem),
-        _ => None,
-    }
-}
-
-fn last(path: &Path) -> Option<String> {
-    path.segments
-        .last()
-        .map(|segment| segment.ident.to_string())
-}
-
-struct Finder {
-    locks: BTreeSet<String>,
-    found: bool,
-}
-
-impl Finder {
-    fn is_lock(&self, ty: &Type) -> bool {
-        type_name(ty).is_some_and(|name| self.locks.contains(&name))
-    }
-
-    // `Lock::new`, `Lock::<T>::default`, `<Lock<T>>::new` and
-    // `<Lock<T> as Default>::default` name a lock constructor.
-    fn constructor(&self, path: &ExprPath) -> bool {
-        let segments = &path.path.segments;
-        let Some(name) = segments.last().map(|segment| segment.ident.to_string()) else {
-            return false;
-        };
-        if !CONSTRUCTORS.contains(&name.as_str()) {
-            return false;
-        }
-        if let Some(qself) = &path.qself {
-            return self.is_lock(&qself.ty);
-        }
-        segments.len() >= 2
-            && self
-                .locks
-                .contains(&segments[segments.len() - 2].ident.to_string())
-    }
-}
-
-impl Visit<'_> for Finder {
-    fn visit_expr_path(&mut self, path: &ExprPath) {
-        self.found |= self.constructor(path);
-        visit::visit_expr_path(self, path);
-    }
-
-    // `let lock: Lock<T> = Default::default();`
-    fn visit_local(&mut self, local: &Local) {
-        if let Pat::Type(typed) = &local.pat
-            && self.is_lock(&typed.ty)
-            && let Some(init) = &local.init
-            && let Expr::Call(call) = &*init.expr
-            && let Expr::Path(function) = &*call.func
-            && last(&function.path).is_some_and(|name| name == "default")
-        {
-            self.found = true;
-        }
-        visit::visit_local(self, local);
-    }
-}
-
+#[cfg(test)]
+mod properties;
 #[cfg(test)]
 mod tests;

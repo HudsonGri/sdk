@@ -118,9 +118,11 @@ const code = source => source
   .join('\n');
 
 // Lock ownership is decided on parsed Rust, never on text: the scanner in
-// rust/verification/loom-locks resolves lock aliases and Loom lock imports and
-// finds every constructor spelling (turbofish, qualified, typed `default`,
-// macro bodies), so comments and nested generics cannot fake or hide one.
+// rust/verification/loom-locks resolves lock aliases and Loom lock imports,
+// finds every constructor spelling, and decides context-typed constructors
+// (`Default::default()`, `.into()`, ...) on their expected type. Generated
+// code is excluded: a real model may use only allow-listed macros and
+// attributes, and never macro_rules!.
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));
 const verdicts = new Map();
 let scannerPath;
@@ -152,7 +154,7 @@ function scan(sources) {
 }
 
 // '1' when the source constructs or imports a lock, '0' when not, and
-// '!reason' when it does not parse.
+// '!reason' when it does not parse, uses generated code, or is indeterminate.
 function ownsLock(source) {
   scan([source]);
   return verdicts.get(source);
@@ -166,7 +168,7 @@ export const rules = {
   locks: (path, source, model) => {
     if (model?.grade !== 'real') return [];
     const verdict = ownsLock(source);
-    if (verdict?.startsWith('!')) return [`${path}: lock scan could not parse the model: ${verdict.slice(1)}`];
+    if (verdict?.startsWith('!')) return [`${path}: lock scan rejected the model: ${verdict.slice(1)}`];
     const owned = verdict === '1';
     if (owned && !model.constructs) return [`${path}: real model defines its own lock without naming the production lock it is`];
     if (!owned && model.constructs) return [`${path}: stale lock reason; the model constructs no lock`];
