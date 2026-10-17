@@ -17,17 +17,17 @@ pub(super) struct AdmittedSelection<'a> {
 }
 
 impl<'a> AdmittedSelection<'a> {
-    pub(super) async fn admit<A, O>(
+    pub(super) fn admit<A, O>(
         options: &'a MountOptions,
         workspace: &Workspace<A, O>,
         generation: GenerationId,
         work: &NativeMaterializationWork,
-    ) -> Result<Self, MountLifecycleError>
+    ) -> impl Future<Output = Result<Self, MountLifecycleError>>
     where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
-        Self::bind(options, workspace, generation, work, true).await
+        Self::bind(options, workspace, generation, work, true)
     }
 
     async fn bind<A, O>(
