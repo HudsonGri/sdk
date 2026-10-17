@@ -44,24 +44,53 @@ pub(super) fn sort_capture_states(
     if super::state_order_tests::use_previous_sort() {
         return super::state_order_tests::comparison_sort(states, meter);
     }
-    let pairs = states.len().saturating_sub(1);
-    let ascending = states
-        .windows(2)
-        .take_while(|pair| matches!(pair, [left, right] if left.1 < right.1))
-        .count();
-    // Each adjacent comparison is charged as the comparison sort charges one.
-    let compared = if ascending == pairs {
-        pairs
-    } else {
-        ascending + 1
-    };
-    capture_charge(
-        meter,
-        crate::materializer::NativeResourceCredit::Items.delta(2 * compared as u64),
-    )?;
-    if ascending != pairs {
+    // Even the cheapest heapsort costs less than the counting pass for two
+    // or three states. Select it before inspecting paths or charging work.
+    if states.len() < 4 {
         return capture_sort_by(states, capture_state_order, meter);
     }
+    let remaining = meter
+        .with_original_leaf(|work| work.remaining())
+        .map_err(capture_demand_error)?;
+    let slots = if states.len() > INLINE_SLOTS {
+        states.len()
+    } else {
+        0
+    };
+    if slots != 0 && remaining.allocation_operations == 0 {
+        return capture_sort_by(states, capture_state_order, meter);
+    }
+    let pairs = states.len() - 1;
+    if !states.windows(2).all(|pair| pair[0].1 < pair[1].1) {
+        return capture_sort_by(states, capture_state_order, meter);
+    }
+    let deepest = states
+        .iter()
+        .map(|state| state.1.depth())
+        .max()
+        .unwrap_or(0);
+    let classes = deepest.checked_add(1).and_then(|span| span.checked_mul(4));
+    let Some(classes) = classes else {
+        return capture_sort_by(states, capture_state_order, meter);
+    };
+    let starts = if classes > INLINE_CLASSES { classes } else { 0 };
+    let bytes = slots
+        .checked_add(starts)
+        .and_then(|slots| slots.checked_mul(std::mem::size_of::<usize>()));
+    let operations = u64::from(slots != 0) + u64::from(starts != 0);
+    let items = 2 * pairs as u64 + states.len() as u64;
+    if bytes.is_none_or(|bytes| bytes as u64 > remaining.peak_allocation_bytes)
+        || operations > remaining.allocation_operations
+        || items > remaining.items_examined
+    {
+        return capture_sort_by(states, capture_state_order, meter);
+    }
+    // Strategy selection does not spend a rejected strategy's allowance.
+    // Once selected, charge every path comparison and the keying pass.
+    capture_charge(
+        meter,
+        crate::materializer::NativeResourceCredit::Items.delta(2 * pairs as u64),
+    )?;
     bucket_path_ordered_states(states, meter)
 }
 

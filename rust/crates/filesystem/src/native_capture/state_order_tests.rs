@@ -188,15 +188,16 @@ proptest! {
         });
         let input = states(&kinds, &ordered);
         let count = input.len() as u64;
-        let (expected, _, old_heap) = charged(&kinds, states(&kinds, &ordered), comparison_sort);
+        let (expected, old_items, old_heap) = charged(&kinds, states(&kinds, &ordered), comparison_sort);
         let (actual, items, heap) = charged(&kinds, input, sort_capture_states);
         prop_assert_eq!(&actual, &expected);
         prop_assert_eq!(old_heap, 0);
         prop_assert_eq!(heap, u64::from(count > 128));
-        let bucketed = if count < 2 { 0 } else { count };
-        prop_assert_eq!(items, 2 * count.saturating_sub(1) + bucketed);
-        // Negative control: reversed input fails the path check and takes the
-        // comparison sort, charging every comparison it makes.
+        let expected_items = if count < 4 { old_items } else { 3 * count - 2 };
+        prop_assert_eq!(items, expected_items);
+        prop_assert!(items <= old_items);
+        // Reversed input selects the comparison sort before spending the
+        // counting strategy's allowance.
         if count > 1 {
             let mut reversed = ordered.clone();
             reversed.reverse();
@@ -205,7 +206,7 @@ proptest! {
             let (_, comparison_items, comparison_heap) =
                 charged(&kinds, states(&kinds, &reversed), comparison_sort);
             prop_assert_eq!(&fallback, &expected);
-            prop_assert_eq!(fallback_items, 2 + comparison_items);
+            prop_assert_eq!(fallback_items, comparison_items);
             prop_assert_eq!((fallback_heap, comparison_heap), (0, 0));
         }
     }
@@ -252,4 +253,77 @@ fn deep_paths_take_a_measured_class_buffer() {
     assert_eq!(actual, expected);
     assert_eq!(items, 2 * (count - 1) + count);
     assert!(kinds.meter.receipt().peak_allocation_bytes > live);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    /// Any batch funded for the old exact item receipt still succeeds. When
+    /// either scratch allowance is zero, sorting needs no new allocation.
+    #[test]
+    fn old_budget_boundaries_admit_the_selected_strategy(
+        count in 0usize..150,
+        depth in 1usize..25,
+        ranks in proptest::collection::vec(0u8..4, 150),
+        spare in 0u64..2,
+        no_bytes in any::<bool>(),
+        no_operations in any::<bool>(),
+    ) {
+        let kinds = kinds();
+        let prefix = vec!["d"; depth].join("/");
+        let entries: Vec<_> = (0..count)
+            .map(|index| (format!("/{prefix}/{index:03}"), ranks[index]))
+            .collect();
+        let (expected, old_items, _) =
+            charged(&kinds, states(&kinds, &entries), comparison_sort);
+        let budget = WorkBudget {
+            items_examined: old_items + spare,
+            peak_allocation_bytes: if no_bytes { 0 } else { u64::MAX },
+            allocation_operations: if no_operations { 0 } else { u64::MAX },
+            ..WorkBudget::UNBOUNDED
+        };
+        let meter = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+        let mut candidate = states(&kinds, &entries);
+        sort_capture_states(&mut candidate, &meter).unwrap();
+        prop_assert_eq!(order(&candidate), expected);
+        let work = meter.receipt();
+        prop_assert!(work.items_examined <= old_items);
+        let needs_heap = count > 128 || depth + 1 >= 16;
+        if count < 4 || (needs_heap && (no_bytes || no_operations)) {
+            prop_assert_eq!(work.items_examined, old_items);
+            prop_assert_eq!(work.allocation_operations, 0);
+            prop_assert_eq!(work.peak_allocation_bytes, 0);
+        }
+    }
+}
+
+#[test]
+fn rejected_counting_strategies_fail_the_same_budget_boundaries() {
+    let kinds = kinds();
+    // Negative controls restore the rejected strategy: two states exceed the
+    // old item receipt; 129 states or deep paths need unfunded scratch.
+    for (count, depth) in [(2, 1), (129, 1), (4, 16)] {
+        let prefix = vec!["d"; depth].join("/");
+        let entries: Vec<_> = (0..count)
+            .map(|index| (format!("/{prefix}/{index:03}"), (index % 4) as u8))
+            .collect();
+        let (_, items, _) = charged(&kinds, states(&kinds, &entries), comparison_sort);
+        let budget = WorkBudget {
+            items_examined: items,
+            allocation_operations: 0,
+            peak_allocation_bytes: 0,
+            ..WorkBudget::UNBOUNDED
+        };
+        let rejected = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+        let mut input = states(&kinds, &entries);
+        let result = capture_charge(
+            &rejected,
+            crate::materializer::NativeResourceCredit::Items.delta(2 * (count - 1) as u64),
+        )
+        .and_then(|()| bucket_path_ordered_states(&mut input, &rejected));
+        assert!(result.is_err());
+        let funded = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+        sort_capture_states(&mut states(&kinds, &entries), &funded).unwrap();
+        assert_eq!(funded.receipt().allocation_operations, 0);
+        assert!(funded.receipt().items_examined <= items);
+    }
 }
