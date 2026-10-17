@@ -445,11 +445,11 @@ fn reserved_copies_take_fewer_locks_than_check_only_admission() {
 #[ignore = "timing report, not a check"]
 fn paired_copy_timing_report() {
     const COPIES: usize = 4096;
-    let cancellation = CancellationToken::new();
     for (mode, recheck) in [(1_u8, false), (2, false), (3, true), (4, false)] {
         for restore in [false, true] {
-            let roots = [0, 1].map(|_| {
-                crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+            let cancellations = [CancellationToken::new(), CancellationToken::new()];
+            let roots = cancellations.each_ref().map(|cancellation| {
+                crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, cancellation)
                     .unwrap()
             });
             let work = roots.each_ref().map(|root| {
@@ -470,15 +470,16 @@ fn paired_copy_timing_report() {
             let label = (!restore).then(|| name("workspace-name").unwrap());
             let text = "workspace-name";
             let run = |old_path: bool| {
-                let mut accounting =
-                    KernelAccounting::native(&work[usize::from(!old_path)], &cancellation);
+                let index = usize::from(!old_path);
+                let cancellation = &cancellations[index];
+                let mut accounting = KernelAccounting::native(&work[index], cancellation);
                 let start = std::time::Instant::now();
                 for _ in 0..COPIES {
                     let owned = match (old_path, restore) {
-                        (true, true) => old("/", text, &mut accounting, Some(&cancellation)),
+                        (true, true) => old("/", text, &mut accounting, Some(cancellation)),
                         (true, false) => old("", text, &mut accounting, None),
                         (false, _) => {
-                            candidate(label.as_ref(), text, &mut accounting, &cancellation)
+                            candidate(label.as_ref(), text, &mut accounting, cancellation)
                         }
                     };
                     std::hint::black_box(&owned);
