@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {check, evaluate, parseCfg, strip, useTree} from './target-features.mjs';
+import {check, evaluate, parseCfg, resolveFeatures, strip, useTree} from './target-features.mjs';
 
 // A two-crate workspace laid out on disk with the metadata Cargo would report.
 function workspace(t, {targetSource, required, extraFiles = {}, devFeatures = [], kind = 'test', dependencies = [], features = {}}) {
@@ -122,4 +122,71 @@ test('bin targets do not see dev-dependency features', t => {
   const target = 'use core::test_support::helper;\nfn main() {}';
   assert.deepEqual(check(workspace(t, {targetSource: target, devFeatures: ['test-support']})), []);
   assert.deepEqual(check(workspace(t, {targetSource: target, devFeatures: ['test-support'], kind: 'bin'})).map(f => f.segment), ['core::test_support']);
+});
+
+
+test('cfg(test) belongs to the target, never its dependency library', t => {
+  const targetSource = '#[cfg(test)] mod cases { use core::remote::connect; }';
+  assert.equal(check(workspace(t, {targetSource})).length, 1);
+  assert.deepEqual(check(workspace(t, {targetSource, required: ['grpc']})), []);
+  assert.deepEqual(check(workspace(t, {targetSource, kind: 'bin'})), []);
+  const metadata = workspace(t, {
+    targetSource: 'use core::remote::connect;',
+    extraFiles: {'core/src/lib.rs': '#[cfg(test)] pub mod remote;'},
+  });
+  assert.equal(check(metadata).length, 1);
+});
+
+test('unexpanded macro token trees cannot prove a dependency', t => {
+  for (const targetSource of [
+    'macro_rules! unused { () => { core::remote::connect(); } } fn main() {}',
+    'unknown!(core::remote::connect());',
+    'fn main() { unknown!(core::remote::connect()); }',
+    'fn main() { unknown! { core::remote::connect(); } }',
+  ]) assert.deepEqual(check(workspace(t, {targetSource})), []);
+  assert.equal(check(workspace(t, {targetSource: 'fn main() { unknown!(); core::remote::connect(); }'})).length, 1);
+});
+
+test('cfg_attr removes items conditionally and unknown conditions stay quiet', t => {
+  const body = 'fn f() { core::remote::connect(); }';
+  for (const attribute of [
+    '#[cfg_attr(not(feature = "grpc"), cfg(any()))]',
+    '#[cfg_attr(loom, cfg(any()))]',
+    '#[cfg_attr(all(), cfg_attr(all(), cfg(any())))]',
+    '#[cfg_attr(test, allow(clippy::indexing_slicing, reason = "fixture, indexing"), cfg(any()))]',
+  ]) assert.deepEqual(check(workspace(t, {targetSource: attribute + body})), []);
+  assert.equal(check(workspace(t, {targetSource: '#[cfg_attr(feature = "grpc", cfg(any()))]' + body})).length, 1);
+  assert.equal(check(workspace(t, {targetSource: '#[cfg_attr(all(), inline)]' + body})).length, 1);
+});
+
+test('local modules cannot be mistaken for extern-prelude dependency names', t => {
+  assert.deepEqual(check(workspace(t, {targetSource: 'mod core { pub mod remote { pub fn connect() {} } } fn main() { core::remote::connect(); }'})), []);
+  assert.equal(check(workspace(t, {targetSource: 'fn main() { core::remote::connect(); }'})).length, 1);
+});
+
+test('weak dependency feature forwarding reaches a fixed point independent of declaration order', t => {
+  for (const entries of [['dep?/grpc', 'dep:dep'], ['dep:dep', 'dep?/grpc']]) {
+    const metadata = workspace(t, {
+      targetSource: '', features: {default: entries},
+      dependencies: [{name: 'dep', optional: true}],
+    });
+    const dep = {name: 'dep', features: {grpc: []}, dependencies: []};
+    metadata.packages.push(dep);
+    const {on} = resolveFeatures(metadata, metadata.packages[0], ['default']);
+    assert.equal(on.get('dep').has('grpc'), true);
+  }
+});
+
+test('re-exports preserve cfgs through private modules and aliases', t => {
+  for (const library of [
+    'mod inner { pub mod api { #[cfg(feature = "grpc")] pub fn connect() {} } } pub use inner::api;',
+    'mod inner { #[cfg(feature = "grpc")] pub mod api { pub fn connect() {} } } pub use inner::api;',
+    'mod inner { #[cfg(feature = "grpc")] pub fn connect() {} } pub use inner::connect as api;',
+    'mod inner { pub mod api { #[cfg(feature = "grpc")] pub fn connect() {} } } pub use crate::inner::api;',
+  ]) {
+    const targetSource = library.includes('as api') ? 'use core::api;' : 'use core::api::connect;';
+    const options = {targetSource, extraFiles: {'core/src/lib.rs': library}};
+    assert.equal(check(workspace(t, options)).length, 1, library);
+    assert.deepEqual(check(workspace(t, {...options, required: ['grpc']})), []);
+  }
 });

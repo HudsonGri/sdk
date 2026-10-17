@@ -36,6 +36,8 @@ jobs:
         run: node scripts/check-target-features.mjs
       - name: Verify target feature gate and its negative controls
         run: node --test scripts/target-features.test.mjs
+      - name: Verify the local cloud fixture's guards and verdict
+        run: node --test scripts/local-cloud.test.mjs
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
   aarch64:

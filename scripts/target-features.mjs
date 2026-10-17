@@ -11,8 +11,8 @@
 // against that crate's `cfg`-gated public declarations. A reference that is
 // configured out under the closure, or any use of an optional dependency the
 // closure leaves disabled, is an undeclared feature dependency.
-// Evaluation assumes a native x86_64 Linux host (`test`, `windows` and
-// `wasm32` are false). Unknown predicates and unresolvable paths (globs,
+// Evaluation assumes a native x86_64 Linux host; `test` is set for test targets.
+// Unknown predicates and unresolvable paths (globs,
 // macros, other crates) never produce a finding.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -134,21 +134,21 @@ const HOST_KEYS = {
   panic: 'unwind',
 };
 
-export function evaluate(node, features) {
+export function evaluate(node, features, flags = HOST_FLAGS) {
   if (node.op === 'all' || node.op === 'any') {
-    const values = node.args.map(arg => evaluate(arg, features));
+    const values = node.args.map(arg => evaluate(arg, features, flags));
     const decisive = node.op === 'any';
     if (values.includes(decisive)) return decisive;
     return values.includes(undefined) ? undefined : !decisive;
   }
   if (node.op === 'not') {
-    const value = evaluate(node.args[0], features);
+    const value = evaluate(node.args[0], features, flags);
     return value === undefined ? undefined : !value;
   }
   if (node.op) return undefined;
   if (node.key === 'feature') return features.has(node.value);
   if (node.key) return node.key in HOST_KEYS ? HOST_KEYS[node.key] === node.value : undefined;
-  return HOST_FLAGS[node.flag];
+  return flags[node.flag];
 }
 
 function featureNames(node, out) {
@@ -211,22 +211,47 @@ export function items(text, raw, from = 0, to = text.length) {
   return result;
 }
 
+function cfgAttribute(literal) {
+  if (/^cfg\s*\(/.test(literal)) return parseCfg(literal);
+  if (!/^cfg_attr\s*\(/.test(literal)) return {op: 'ignored_attribute'};
+  const open = literal.indexOf('(');
+  const text = strip(literal);
+  const parts = [];
+  let start = open + 1;
+  for (let i = start; i < text.length - 1; i++) {
+    if (CLOSE[text[i]]) { i = matching(text, i) - 1; continue; }
+    if (text[i] === ',') { parts.push(literal.slice(start, i).trim()); start = i + 1; }
+  }
+  const tail = literal.slice(start, literal.lastIndexOf(')')).trim();
+  if (tail) parts.push(tail);
+  return {op: 'cfg_attr', args: [parseCfg(parts[0]), ...parts.slice(1).map(cfgAttribute)]};
+}
+
 function attribute(text, raw, from, to) {
   const body = text.slice(from, to).trim();
   // Structure comes from the stripped text; literal values from the source.
   const literal = raw.slice(from, to).replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, ' ').trim();
-  const cfg = /^cfg\s*\(/.test(body) ? /^cfg\s*\(([\s\S]*)\)$/.exec(literal) : null;
+  const cfg = /^(?:cfg|cfg_attr)\s*\(/.test(body) ? cfgAttribute(literal) : undefined;
   return {
-    cfg: cfg ? parseCfg(cfg[1].trim()) : undefined,
+    cfg,
     path: /^path\s*=\s*"/.test(body) ? /"([^"]*)"/.exec(raw.slice(from, to))[1] : undefined,
   };
 }
 
-function enabled(attributes, features) {
+function attributeEnabled(node, features, flags) {
+  if (node.op === 'cfg') return evaluate(node.args[0], features, flags);
+  if (node.op !== 'cfg_attr') return true;
+  const condition = evaluate(node.args[0], features, flags);
+  if (condition === false) return true;
+  const nested = enabled(node.args.slice(1).map(cfg => ({cfg})), features, flags);
+  return condition === true || nested === true ? nested : undefined;
+}
+
+function enabled(attributes, features, flags = HOST_FLAGS) {
   let value = true;
   for (const {cfg} of attributes) {
     if (!cfg) continue;
-    const next = evaluate(cfg, features);
+    const next = attributeEnabled(cfg, features, flags);
     if (next === false) return false;
     if (next === undefined) value = undefined;
   }
@@ -319,8 +344,8 @@ class Library {
     for (const item of items(text, raw, inline?.from, inline?.to)) {
       if (item.inner) continue;
       const on = enabled(item.attributes, this.features);
-      const named = PUBLIC.exec(item.head);
-      if (named?.[1] === 'mod') {
+      const named = PUBLIC.exec(item.head) ?? /^\s*()mod\s+(?:r#)?(\w+)/.exec(item.head);
+      if (named && (named[1] === 'mod' || named[1] === '')) {
         const name = named[2];
         const explicit = item.attributes.find(a => a.path)?.path;
         add(name, {mod: () => {
@@ -339,39 +364,38 @@ class Library {
     return module;
   }
 
-  // The first configured-out segment of `segments`, or undefined.
+  // Follow aliases and private modules with the same cfg oracle at every hop.
   resolve(segments) {
-    let module = this.rootModule();
-    for (let n = 0; n < segments.length; n++) {
-      const entries = module.names.get(segments[n]);
+    const walk = (module, rest, seen = new Set()) => {
+      if (!rest.length) return undefined;
+      const entries = module.names.get(rest[0]);
       if (!entries?.length) return undefined;
       const live = entries.filter(entry => entry.enabled !== false);
       if (!live.length) {
         const features = new Set();
         for (const entry of entries) for (const cfg of entry.cfg) featureNames(cfg, features);
-        return {segment: [this.crate, ...segments.slice(0, n + 1)].join('::'), features: [...features].sort()};
+        return {segment: [this.crate, ...segments.slice(0, segments.length - rest.length + 1)].join('::'), features: [...features].sort()};
       }
-      if (n === segments.length - 1) return undefined;
-      module = live.map(entry => this.descend(entry, 0)).find(Boolean);
-      if (!module) return undefined;
-    }
-    return undefined;
-  }
-
-  descend(entry, depth) {
-    if (entry.mod) return entry.mod();
-    if (!entry.use || depth > 8) return undefined;
-    let [first, ...rest] = entry.use;
-    let module = entry.from;
-    if (first === 'crate') module = this.rootModule();
-    else if (first === 'super') return undefined;
-    else if (first !== 'self') rest = entry.use;
-    for (const segment of rest) {
-      const live = (module.names.get(segment) ?? []).filter(e => e.enabled !== false);
-      module = live.map(e => this.descend(e, depth + 1)).find(Boolean);
-      if (!module) return undefined;
-    }
-    return module;
+      for (const entry of live) {
+        if (seen.has(entry)) continue;
+        const next = new Set([...seen, entry]);
+        if (entry.use) {
+          let alias = entry.use;
+          let origin = entry.from;
+          if (alias[0] === 'crate') { origin = this.rootModule(); alias = alias.slice(1); }
+          else if (alias[0] === 'self') alias = alias.slice(1);
+          else if (alias[0] === 'super') continue;
+          const finding = walk(origin, [...alias, ...rest.slice(1)], next);
+          if (finding) return finding;
+        } else if (entry.mod && rest.length > 1) {
+          const child = entry.mod();
+          const finding = child && walk(child, rest.slice(1), next);
+          if (finding) return finding;
+        }
+      }
+      return undefined;
+    };
+    return walk(this.rootModule(), segments);
   }
 }
 
@@ -383,6 +407,7 @@ export function resolveFeatures(metadata, root, features, dev = true) {
   const byName = new Map(metadata.packages.map(p => [p.name, p]));
   const on = new Map();
   const active = new Map();
+  const weak = [];
   const depName = dep => dep.rename ?? dep.name;
   const edge = dep => {
     if (!onHost(dep)) return;
@@ -415,7 +440,7 @@ export function resolveFeatures(metadata, root, features, dev = true) {
       const sub = /^([^/?]+)(\??)\/(.+)$/.exec(entry);
       if (dep) optional(pkg, dep[1]);
       else if (sub) {
-        if (sub[2] && !live(pkg, sub[1])) continue;
+        if (sub[2] && !live(pkg, sub[1])) { weak.push({pkg, name: sub[1], feature: sub[3]}); continue; }
         if (!sub[2]) optional(pkg, sub[1]);
         for (const d of pkg.dependencies) {
           if (depName(d) === sub[1] && d.kind !== 'build' && byName.has(d.name)) enable(byName.get(d.name), sub[3]);
@@ -426,6 +451,18 @@ export function resolveFeatures(metadata, root, features, dev = true) {
   };
   activate(root, dev);
   for (const feature of features) enable(root, feature);
+  // Weak requests must be revisited after all strong activations, including
+  // activations caused by a previously deferred request.
+  for (;;) {
+    const ready = weak.filter(request => live(request.pkg, request.name));
+    if (!ready.length) break;
+    for (const request of ready) {
+      weak.splice(weak.indexOf(request), 1);
+      for (const dep of request.pkg.dependencies) {
+        if ((dep.rename ?? dep.name) === request.name && onHost(dep) && byName.has(dep.name)) enable(byName.get(dep.name), request.feature);
+      }
+    }
+  }
   return {on, active};
 }
 
@@ -467,6 +504,13 @@ function inactiveDependencies(pkg, active, dev) {
 // --- targets ---
 
 function references(text, crates, visit) {
+  // Macro token trees are unexpanded syntax, never proven references.
+  const chars = text.split('');
+  for (const match of text.matchAll(/\b(?:r#)?[A-Za-z_]\w*\s*!\s*([([{])/g)) {
+    const open = match.index + match[0].length - 1;
+    for (let i = match.index; i < matching(text, open); i++) chars[i] = ' ';
+  }
+  text = chars.join('');
   for (const match of text.matchAll(/\buse\s+((?:::)?\s*\w[\s\S]*?);/g)) {
     for (const entry of useTree(match[1])) {
       const [first, ...rest] = entry.path;
@@ -481,21 +525,26 @@ function references(text, crates, visit) {
   }
 }
 
-function scanTarget(file, childDir, features, crates, visit, seen) {
+function scanTarget(file, childDir, features, crates, visit, seen, flags) {
   if (seen.has(file) || !fs.existsSync(file)) return;
   seen.add(file);
   const {text, raw} = source(file);
+  // Locally bound roots are ambiguous with extern-prelude names. Never
+  // diagnose those as dependency paths without a Rust name resolver.
+  crates = new Map(crates);
+  for (const match of text.matchAll(/\b(?:mod|let|struct|enum|type)\s+(?:r#)?(\w+)/g)) crates.delete(match[1]);
   const walk = (from, to, dir, inline) => {
     for (const item of items(text, raw, from, to)) {
       if (item.inner) {
-        if (item.inner.cfg && evaluate(item.inner.cfg, features) !== true) return;
+        if (enabled([item.inner], features, flags) !== true) return;
         continue;
       }
-      if (enabled(item.attributes, features) !== true) continue;
+      if (enabled(item.attributes, features, flags) !== true) continue;
+      if (/^\s*(?:macro_rules\s*!|(?:\w+\s*::\s*)*\w+\s*!)/.test(item.head)) continue;
       const mod = /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?:r#)?(\w+)\s*;?\s*$/.exec(text.slice(item.start, item.body ? item.body[0] - 1 : item.end));
       if (mod && !item.body) {
         const [found, next] = moduleFile(file, dir, mod[1], item.attributes.find(a => a.path)?.path, inline);
-        if (found) scanTarget(found, next, features, crates, visit, seen);
+        if (found) scanTarget(found, next, features, crates, visit, seen, flags);
         continue;
       }
       if (!item.body || /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?use\b/.test(item.head)) {
@@ -537,7 +586,7 @@ export function check(metadata) {
         reported.add(finding.segment);
         findings.push({package: pkg.name, kind: target.kind[0], target: target.name, ...finding});
       };
-      scanTarget(target.src_path, path.dirname(target.src_path), sets.get(pkg.name), crates, visit, new Set());
+      scanTarget(target.src_path, path.dirname(target.src_path), sets.get(pkg.name), crates, visit, new Set(), {...HOST_FLAGS, test: target.kind.includes('test') || target.kind.includes('bench')});
     }
   }
   return findings;
