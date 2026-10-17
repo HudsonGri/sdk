@@ -151,7 +151,7 @@ pub use build::{BlobBuild, BlobBuildOptions, build_blob};
 mod index;
 use index::*;
 mod range;
-pub(crate) use range::read_blob_range_with_accounting;
+pub(crate) use range::{append_blob_range_with_accounting, read_blob_range_with_accounting};
 pub use range::{BlobRead, read_blob_range};
 mod error;
 #[cfg(not(target_arch = "wasm32"))]

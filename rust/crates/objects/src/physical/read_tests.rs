@@ -273,28 +273,19 @@ fn fixture(sizes: &[usize], journal: usize) -> Fixture {
                 .collect()
         })
         .collect();
-    let entries: Vec<([u8; 32], acyclic_stream::OwnedBytes)> = payloads
-        .iter()
-        .map(|payload| {
-            (
-                *blake3::hash(payload).as_bytes(),
-                acyclic_stream::OwnedBytes::copy_from_slice(payload),
-            )
-        })
-        .collect();
-    let (id, offsets) = persist_segment(
-        directory.path(),
-        &entries,
-        LocalDurability::FullFlush,
-        &mut Publication::new(None),
+    let (id, offsets) = persisted(sizes, &payloads);
+    fs::copy(
+        segment_path(&id.0, &id.1),
+        segment_path(directory.path(), &id.1),
     )
     .unwrap();
     let mut bodies: Vec<_> = payloads
         .into_iter()
-        .zip(entries)
         .zip(offsets)
-        .map(|((payload, (digest, _)), offset)| {
-            (payload, digest, LocalBodyLocation::Segment { id, offset })
+        .map(|(payload, offset)| {
+            let digest = *blake3::hash(&payload).as_bytes();
+            let location = LocalBodyLocation::Segment { id: id.1, offset };
+            (payload, digest, location)
         })
         .collect();
     let inline: Vec<u8> = (0..journal).map(|byte| (byte * 13 + 5) as u8).collect();
@@ -311,6 +302,53 @@ fn fixture(sizes: &[usize], journal: usize) -> Fixture {
     }
 }
 
+/// Segments persisted once per size list, durably, and copied into each
+/// fixture: the copy needs no flush, so a fixture costs no fsync.
+fn persisted(sizes: &[usize], payloads: &[Vec<u8>]) -> ((PathBuf, [u8; 32]), Vec<u64>) {
+    static SEGMENTS: Mutex<Vec<(Vec<usize>, tempfile::TempDir, [u8; 32], Vec<u64>)>> =
+        Mutex::new(Vec::new());
+    let mut segments = SEGMENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, directory, id, offsets)) = segments.iter().find(|entry| entry.0 == sizes) {
+        return ((directory.path().to_path_buf(), *id), offsets.clone());
+    }
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir_all(directory.path().join("segments")).unwrap();
+    let entries: Vec<([u8; 32], acyclic_stream::OwnedBytes)> = payloads
+        .iter()
+        .map(|payload| {
+            (
+                *blake3::hash(payload).as_bytes(),
+                acyclic_stream::OwnedBytes::copy_from_slice(payload),
+            )
+        })
+        .collect();
+    let (id, offsets) = persist_segment(
+        directory.path(),
+        &entries,
+        LocalDurability::FullFlush,
+        &mut Publication::new(None),
+    )
+    .unwrap();
+    let path = directory.path().to_path_buf();
+    segments.push((sizes.to_vec(), directory, id, offsets.clone()));
+    ((path, id), offsets)
+}
+
+/// Body size lists for the baseline sweep: one to three bodies, empty, small
+/// and large, at odd and even lengths so table entries and offsets vary.
+static SHAPES: [&[usize]; 8] = [
+    &[0],
+    &[79],
+    &[40_000],
+    &[1, 47_999],
+    &[47_999, 0, 33],
+    &[12, 41_234, 79],
+    &[0, 0, 0],
+    &[40_001, 44_444, 5],
+];
+
 fn segment_path_of(fixture: &Fixture) -> PathBuf {
     match &fixture.bodies[0].2 {
         LocalBodyLocation::Segment { id, .. } => segment_path(fixture.directory.path(), id),
@@ -324,14 +362,14 @@ proptest! {
     /// through valid, truncated and corrupted segments and journals.
     #[test]
     fn object_reads_match_independent_baseline(
-        sizes in prop::collection::vec(prop_oneof![0_usize..80, 40_000_usize..48_000], 1..4),
+        sizes in prop::sample::select(&SHAPES[..]),
         journal in 0_usize..300,
         selected in any::<prop::sample::Index>(),
         range in any::<(prop::sample::Index, prop::sample::Index)>(),
         fault in 0_u8..4,
         position in any::<prop::sample::Index>(),
     ) {
-        let fixture = fixture(&sizes, journal);
+        let fixture = fixture(sizes, journal);
         let (payload, digest, location) = &fixture.bodies[selected.index(fixture.bodies.len())];
         let (a, b) = (range.0.index(payload.len() + 1), range.1.index(payload.len() + 1));
         let span = (a.min(b), a.max(b));
