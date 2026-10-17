@@ -103,20 +103,47 @@ pub(in crate::local) async fn project(mounts: &Mounts) -> Result<()> {
         if let Some(source) = &mount.view.source {
             // A Linux task view aliases the original binding; mount at that
             // binding's root, never below another owner-only FUSE mount.
-            let root = source
-                .destination
-                .ancestors()
-                .nth(Path::new(relative).components().count())
-                .filter(|_| source.destination.ends_with(relative))
-                .ok_or_else(|| {
-                    Error::Invalid("volume projection lies outside its binding".into())
-                })?;
+            let root = projection_root(&source.destination, relative)?;
             source
                 .project(root, relative, mount.mode.read_only())
                 .await?;
         }
     }
     Ok(())
+}
+
+fn projection_root<'a>(destination: &'a Path, relative: &str) -> Result<&'a Path> {
+    destination
+        .ancestors()
+        .nth(Path::new(relative).components().count())
+        .filter(|_| destination.ends_with(relative))
+        .ok_or_else(|| Error::Invalid("volume projection lies outside its binding".into()))
+}
+
+#[cfg(test)]
+mod binding_paths {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        // Native aliases retain their source's composed root, independent of
+        // prefix spelling or a nested task's different physical root.
+        #[test]
+        fn projection_keeps_the_source_binding_root(
+            directories in prop::collection::vec("[a-zA-ZΩα]{1,8}", 0..4),
+            volume in "[a-zA-ZΩα]{1,8}",
+        ) {
+            let mut root=std::env::current_dir()?;
+            for directory in directories {root.push(directory);}
+            let relative=format!(".volumes/{volume}");
+            let destination=root.join(&relative);
+            prop_assert_eq!(projection_root(&destination,&relative)?,root.as_path());
+            prop_assert!(projection_root(&destination,&format!("{relative}x")).is_err());
+            // Choosing the alias task's root loses the source binding.
+            prop_assert_ne!(root.join("task-view").as_path(),projection_root(&destination,&relative)?);
+        }
+    }
 }
 
 // fusermount's elevated helper cannot traverse an owner-only FUSE mount.
