@@ -12,7 +12,7 @@ cargo-fuzz = true
 fuzz-targets = ["dep:libfuzzer-sys"]
 
 [dependencies]
-acyclic-fs = { path = ".." }
+acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
 libfuzzer-sys = { version = "0.4", optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -52,6 +52,14 @@ bench = false
 name = "paths"
 required-features = ["fuzz-targets"]
 path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decoder_work"
+required-features = ["fuzz-targets"]
+path = "fuzz_targets/decoder_work.rs"
 test = false
 doc = false
 bench = false
