@@ -116,33 +116,48 @@ impl NativeSettings {
     pub async fn load(config: impl Into<std::sync::Arc<SettingsConfig>>) -> Result<Self> {
         let config = config.into();
         let load_mcp = config.load_mcp;
-        Self::snapshot(config, load_mcp).await
+        Self::snapshot(config, load_mcp, true).await
     }
 
     #[cfg(all(feature = "hooks", feature = "filesystem-local"))]
     pub(crate) async fn load_hooks(
         config: std::sync::Arc<SettingsConfig>,
     ) -> Result<crate::hooks::Hooks> {
-        Ok(Self::snapshot(config, false).await?.hooks)
+        Ok(Self::snapshot(config, false, true).await?.hooks)
     }
 
-    async fn snapshot(config: std::sync::Arc<SettingsConfig>, load_mcp: bool) -> Result<Self> {
+    #[cfg(all(
+        feature = "filesystem-local",
+        any(feature = "mcp-stdio", feature = "mcp-http")
+    ))]
+    pub(crate) async fn load_mcp(config: std::sync::Arc<SettingsConfig>) -> Result<McpConfig> {
+        Ok(Self::snapshot(config, true, false).await?.mcp)
+    }
+
+    async fn snapshot(
+        config: std::sync::Arc<SettingsConfig>,
+        load_mcp: bool,
+        load_hooks: bool,
+    ) -> Result<Self> {
         if config.maximum_file_bytes == 0 || config.maximum_file_bytes == u64::MAX {
             return Err(Error::Invalid(
                 "settings require a finite positive byte bound".into(),
             ));
         }
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
-        acyclic_native_runtime::run_blocking_io(move || Self::read(&config, load_mcp), None)
-            .map_err(Error::process_io)?
-            .await
-            .map_err(Error::process_io)?
+        acyclic_native_runtime::run_blocking_io(
+            move || Self::read(&config, load_mcp, load_hooks),
+            None,
+        )
+        .map_err(Error::process_io)?
+        .await
+        .map_err(Error::process_io)?
     }
 
-    fn read(config: &SettingsConfig, load_mcp: bool) -> Result<Self> {
+    fn read(config: &SettingsConfig, load_mcp: bool, load_hooks: bool) -> Result<Self> {
         let configured_workspace = &config.workspace;
         let workspace = std::fs::canonicalize(configured_workspace).map_err(Error::process_io)?;
-        let hooks = cfg!(feature = "hooks");
+        let hooks = cfg!(feature = "hooks") && load_hooks;
         let mut sources = vec![
             Source {
                 path: config.home.join(".claude.json"),

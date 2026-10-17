@@ -136,15 +136,15 @@ impl LocalHarness {
             #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             let settings_configuration = settings::configuration(&config.project, config.settings)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let settings =
-                crate::native_settings::NativeSettings::load(Arc::clone(&settings_configuration))
-                    .await?;
+            let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
+                &settings_configuration,
+            ))
+            .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let mcp_workspace =
                 std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = settings
-                .mcp
+            let installation = mcp
                 .install(tools, &mcp_workspace, config.mcp_limits)
                 .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

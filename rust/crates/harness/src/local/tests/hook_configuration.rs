@@ -184,13 +184,20 @@ async fn queued_prompts_keep_normalized_user_hooks_after_settings_change_and_reo
         );
     }
     drop(harness);
-    std::fs::write(home.join(".claude/settings.json"), settings("user-guard-B"))
-        .map_err(super::super::storage)?;
+    // Startup has no need to import current hooks while recovering the pinned
+    // command. Even an unreadable-as-JSON hook file must not affect recovery.
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        b"{malformed-current-hooks",
+    )
+    .map_err(super::super::storage)?;
     let reopened = LocalHarness::open(config()?).await?;
     let (recovered, rules) = pinned(&reopened, operation).await?;
     assert_eq!(recovered, original);
     guard(&rules, "user-guard-A");
     assert_eq!(reopened.resume(task_id).await?.text, "original");
+    std::fs::write(home.join(".claude/settings.json"), settings("user-guard-B"))
+        .map_err(super::super::storage)?;
     let next = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
         reopened.submit(next, "next prompt").await?
