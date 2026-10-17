@@ -568,10 +568,43 @@ pub(crate) fn release_standalone_read_bytes(
 pub(crate) fn cache_decoded_read<S: AsyncObjectStore, T: std::any::Any + Send + Sync>(
     store: &S,
     key: crate::async_storage::DecodedCacheKey,
-    owner: ReadOwned<(T, u64)>,
+    mut owner: ReadOwned<(T, u64)>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(crate::async_storage::DecodedCacheValue, u64), FsError> {
-    let (value, logical_bytes) = share_decoded_read(owner, accounting)?;
+    let page_control = std::mem::size_of::<T>()
+        .checked_add(2 * std::mem::size_of::<usize>())
+        .ok_or(WorkError::Overflow)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let guard_control = if accounting.native_work().is_some() {
+        std::mem::size_of::<crate::NativeAllocation>() + 2 * std::mem::size_of::<usize>()
+    } else {
+        0
+    };
+    #[cfg(target_arch = "wasm32")]
+    let guard_control = 0;
+    let controls = page_control
+        .checked_add(guard_control)
+        .ok_or(WorkError::Overflow)?;
+    let controls_custody =
+        accounting.claim_owned(usize_to_u64(controls), 1 + u64::from(guard_control != 0))?;
+    absorb_read_custody(&mut owner.custody, controls_custody)?;
+    let logical_bytes = owner
+        .value
+        .1
+        .checked_add(usize_to_u64(controls))
+        .ok_or(WorkError::Overflow)?;
+    let value = std::sync::Arc::new(owner.value.0);
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_custody = match owner.custody {
+        KernelOwnedAllocation::Standalone => None,
+        KernelOwnedAllocation::NativeOriginal(custody) => Some(std::sync::Arc::new(custody)),
+    };
+    let value = crate::async_storage::DecodedCacheValue {
+        value,
+        logical_bytes,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_custody,
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let admitted = if let Some(original) = accounting.native_work() {
         {
@@ -592,55 +625,6 @@ pub(crate) fn cache_decoded_read<S: AsyncObjectStore, T: std::any::Any + Send + 
         | crate::async_storage::DecodedCacheAdmission::Uncached(value) => value,
     };
     Ok((value, logical_bytes))
-}
-
-pub(crate) fn share_decoded_read<T: std::any::Any + Send + Sync>(
-    mut owner: ReadOwned<(T, u64)>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(crate::async_storage::DecodedCacheValue, u64), FsError> {
-    let (controls, operations) = decoded_cache_controls::<T>(accounting)?;
-    let controls_custody = accounting.claim_owned(usize_to_u64(controls), operations)?;
-    absorb_read_custody(&mut owner.custody, controls_custody)?;
-    let logical_bytes = owner
-        .value
-        .1
-        .checked_add(usize_to_u64(controls))
-        .ok_or(WorkError::Overflow)?;
-    let value = std::sync::Arc::new(owner.value.0);
-    #[cfg(not(target_arch = "wasm32"))]
-    let native_custody = match owner.custody {
-        KernelOwnedAllocation::Standalone => None,
-        KernelOwnedAllocation::NativeOriginal(custody) => Some(std::sync::Arc::new(custody)),
-    };
-    let value = crate::async_storage::DecodedCacheValue {
-        value,
-        logical_bytes,
-        #[cfg(not(target_arch = "wasm32"))]
-        native_custody,
-    };
-    Ok((value, logical_bytes))
-}
-
-pub(crate) fn decoded_cache_controls<T>(
-    accounting: &KernelAccounting<'_>,
-) -> Result<(usize, u64), FsError> {
-    let page_control = std::mem::size_of::<T>()
-        .checked_add(2 * std::mem::size_of::<usize>())
-        .ok_or(WorkError::Overflow)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let guard_control = if accounting.native_work().is_some() {
-        std::mem::size_of::<crate::NativeAllocation>() + 2 * std::mem::size_of::<usize>()
-    } else {
-        0
-    };
-    #[cfg(target_arch = "wasm32")]
-    let guard_control = 0;
-    let controls = page_control
-        .checked_add(guard_control)
-        .ok_or(WorkError::Overflow)?;
-    #[cfg(target_arch = "wasm32")]
-    let _ = accounting;
-    Ok((controls, 1 + u64::from(guard_control != 0)))
 }
 
 /// Measured composed file-read failure.

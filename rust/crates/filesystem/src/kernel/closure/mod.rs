@@ -2,7 +2,8 @@
 
 use super::{
     AttributeName, AttributePage, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload,
-    FileRecord, GenerationRoot, LogicalName, MetadataField, TreeEntry, decode_file_metadata,
+    FileRecord, FileTablePage, GenerationRoot, LogicalName, MetadataField, TreeEntry, TreePage,
+    decode_file_metadata,
 };
 use crate::CancellationToken;
 use crate::foundation::{FileId, GenerationId, usize_to_u64};
@@ -178,7 +179,6 @@ pub(crate) use memory::{CachedProofs, ProofGuard, ProofMeter};
 use memory::{ProofVec, map_get, map_insert, set_insert};
 mod walk;
 pub(crate) use walk::ProofContext;
-mod page;
 
 pub(crate) struct CachedProof {
     limits: ClosureLimits,
