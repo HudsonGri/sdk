@@ -21,10 +21,11 @@ proptest! {
     // retain the root attachment. The original root and child IDs never change.
     #[test]
     fn ancestry_round_trips_and_selects_only_the_native_parent(
-        ids in prop::collection::btree_set(any::<u128>(), 3),
+        ids in prop::collection::vec(any::<u128>(), 3),
         root_parent in any::<bool>(),
         parent_file in any::<bool>(),
     ) {
+        prop_assume!(ids[0] != ids[1] && ids[0] != ids[2] && ids[1] != ids[2]);
         let ids: Vec<_> = ids.into_iter().map(Uuid::from_u128).collect();
         let (session, child) = (ids[0], ids[1]);
         let parent = if root_parent {session} else {ids[2]};
@@ -56,6 +57,18 @@ fn only_the_first_metadata_record_is_read() -> Result<()> {
     assert_eq!(metadata.id, child);
     assert!(cursor.position() <= header.len() as u64 + 1);
     Ok(())
+}
+
+#[test]
+fn malformed_or_duplicate_metadata_cannot_select_a_parent() {
+    for bytes in [
+        b"{\"type\":\"event_msg\",\"payload\":{}}".as_slice(),
+        b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"invalid\"}}",
+        br#"{"type":"session_meta","payload":{"session_id":"00000000-0000-0000-0000-000000000001","id":"00000000-0000-0000-0000-000000000003","parent_thread_id":"00000000-0000-0000-0000-000000000002","parent_thread_id":"00000000-0000-0000-0000-000000000004"}}"#,
+        b"{\"type\":\"session_meta\",\"payload\":null}",
+    ] {
+        assert!(decode(bytes).is_err());
+    }
 }
 
 #[test]
