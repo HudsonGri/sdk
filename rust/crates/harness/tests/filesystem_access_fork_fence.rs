@@ -116,7 +116,7 @@ async fn racing_fork(protected: bool, action: Action) -> Result<(), Box<dyn Erro
         .await?
         .value
         .read(
-            "secrets/key",
+            "/secrets/key",
             4096,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
