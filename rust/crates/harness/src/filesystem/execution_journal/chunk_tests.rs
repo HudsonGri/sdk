@@ -431,12 +431,13 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
         modes.push(measured);
     }
     // Exact production allocations include all three chunk scopes and their
-    // actual node splits. Neither temporary payload copies nor prefix scans fit.
+    // actual node splits and shared StreamPath future frames. Neither temporary
+    // payload copies nor prefix scans fit.
     let expected = [
-        [[112, 171, 25960, 0, 0, 0, 0], [224, 349, 62704, 0, 0, 0, 0]],
+        [[112, 171, 21672, 0, 0, 0, 0], [224, 349, 54128, 0, 0, 0, 0]],
         [
-            [112, 251, 27696, 136, 5256, 2768, 13440],
-            [224, 509, 66184, 272, 10528, 5552, 26888],
+            [112, 251, 24368, 136, 5256, 2768, 13440],
+            [224, 509, 59528, 272, 10528, 5552, 26888],
         ],
     ];
     for (mode, measured) in modes.into_iter().enumerate() {
@@ -572,15 +573,16 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
     ];
     // Whole-append physical and original-ledger receipts. N/2N includes
     // fixed initial replay and the real index/map splits; no projection gap.
+    // Shared StreamPath clones remove 5*N+2 allocations from the old path owner.
     let expected = [
         [
-            [25, 112, 10536, 3483615, 0, 0, 0, 0, 0],
-            [49, 224, 20484, 6823239, 0, 0, 0, 0, 0],
+            [25, 112, 10494, 3400887, 0, 0, 0, 0, 0],
+            [49, 224, 20402, 6657175, 0, 0, 0, 0, 0],
         ],
         [
-            [25, 112, 14067, 6210603, 12787, 407874, 305002, 290950, 7083],
+            [25, 112, 14025, 6152305, 12787, 407874, 305002, 290950, 7083],
             [
-                49, 224, 24303, 11485005, 22334, 728460, 540802, 523560, 13515,
+                49, 224, 24221, 11374955, 22334, 726156, 540802, 523560, 13515,
             ],
         ],
     ];
