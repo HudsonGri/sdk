@@ -14,7 +14,7 @@ export default function(pi) {
   let session;
   pi.on("session_start",(_event,ctx)=>{
     session=ctx.sessionManager.getSessionId();
-    if(native) appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({session,task})+"\\n");
+    if(native) appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({session,task,entries:ctx.sessionManager.getBranch()})+"\\n");
   });
   const faux=fauxProvider({provider:"acyclic-native-qualification",models:[{id:"probe"}]});
   const call=(name,args,id)=>fauxAssistantMessage(fauxToolCall(name,args,{id}),{stopReason:"toolUse"});
@@ -27,7 +27,7 @@ export default function(pi) {
   faux.setResponses(native ? [
     context=>{
       const bytes=JSON.stringify(context.messages);
-      if(bytes.includes("ROOT_ONLY_NATIVE_INSTRUCTION") || !bytes.includes("CHILD_ONLY_NATIVE_INSTRUCTION")) {
+      if(bytes.includes("ROOT_ONLY_NATIVE_INSTRUCTION") !== Boolean(process.env.ACYCLIC_NATIVE_CUT) || !bytes.includes("CHILD_ONLY_NATIVE_INSTRUCTION")) {
         throw new Error("native launch substituted the selected fresh context");
       }
       return call("write",{path:"automatic-child.txt",content:"automatic native child"},"child-write");
@@ -39,7 +39,7 @@ export default function(pi) {
       return fauxAssistantMessage("automatic-child-complete");
     },
   ] : [
-    ()=>call("acyclic_spawn",{id:"automatic-child",prompt:"CHILD_ONLY_NATIVE_INSTRUCTION"},"native-spawn"),
+    ()=>call("acyclic_spawn",{id:"automatic-child",prompt:"CHILD_ONLY_NATIVE_INSTRUCTION",...(process.env.ACYCLIC_NATIVE_CUT ? {context:"native_cut"} : {})},"native-spawn"),
     context=>{child=result(context);return call("acyclic_wait",{child},"native-wait");},
     context=>{
       const outcome=result(context);
@@ -52,14 +52,14 @@ export default function(pi) {
 }
 `;
 
-test("the installed Pi spawn tool launches and reaps its own native child", async () => {
+for(const selected of [false,true]) test(`the installed Pi spawn tool launches and reaps its own ${selected?"selected":"fresh"} native child`, async () => {
   const directory=mkdtempSync(fileURLToPath(new URL(".pi-native-launch-",import.meta.url)));
   let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     const oracle=join(directory,"native-oracle.jsonl");
-    fixture=await installedNativeFixture(directory,provider,{ACYCLIC_NATIVE_ORACLE:oracle});
+    fixture=await installedNativeFixture(directory,provider,{ACYCLIC_NATIVE_ORACLE:oracle,...(selected?{ACYCLIC_NATIVE_CUT:"1"}:{})});
     await fixture.start();
-    const answer=await fixture.run("Launch and wait for the automatic native child.");
+    const answer=await fixture.run("ROOT_ONLY_NATIVE_INSTRUCTION Launch and wait for the automatic native child.");
     const reported=JSON.parse(answer.stdout.trim());
     assert.equal(reported.marker,"automatic-native-launch");
     const children=readFileSync(oracle,"utf8").trim().split("\n").map(line=>JSON.parse(line));
@@ -67,6 +67,9 @@ test("the installed Pi spawn tool launches and reaps its own native child", asyn
     assert.equal(children[0].task,reported.child);
     assert.match(children[0].session,/^[0-9a-f-]{36}$/);
     assert.notEqual(children[0].session,fixture.manager.getSessionId());
+    const inherited=JSON.stringify(children[0].entries);
+    assert.equal(inherited.includes("ROOT_ONLY_NATIVE_INSTRUCTION"),selected);
+    assert.ok(!inherited.includes("native-spawn"),"the invoking assistant entered the child seed");
     assert.ok(!existsSync(join(fixture.project,"automatic-child.txt")));
     await fixture.close();
     assert.deepEqual(fixture.resources(),{mounts:[],processes:[]});
