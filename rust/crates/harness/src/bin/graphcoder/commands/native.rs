@@ -44,19 +44,22 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    #[tokio::test]
-    async fn native_dispatch_accepts_unsized_output_and_preserves_admission_errors() {
+    #[test]
+    fn native_dispatch_accepts_unsized_output_and_preserves_admission_errors() {
         let mut bytes = Vec::new();
         let writer: &mut dyn std::io::Write = &mut bytes;
-        let error = execute(
-            "/outcome",
-            &mut None,
-            &mut None,
-            &mut tokio::task::JoinSet::new(),
-            writer,
-        )
-        .await
-        .unwrap_err();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(execute(
+                "/outcome",
+                &mut None,
+                &mut None,
+                &mut tokio::task::JoinSet::new(),
+                writer,
+            ))
+            .unwrap_err();
         assert!(matches!(error, Error::Conflict(message) if message == "session is closed"));
         assert!(bytes.is_empty());
     }
