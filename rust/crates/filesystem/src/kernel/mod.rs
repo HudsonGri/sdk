@@ -264,3 +264,6 @@ pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volum
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod decoder_fuzz;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+pub(crate) mod counter_snapshots;

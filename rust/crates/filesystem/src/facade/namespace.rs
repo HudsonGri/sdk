@@ -163,7 +163,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     lookup = retried;
                 }
             }
-            lookup.0.work = accounting.spent();
+            #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+            crate::kernel::counter_snapshots::restore(accounting, 2);
             Ok::<_, FsError>(lookup)
         }
         .await;

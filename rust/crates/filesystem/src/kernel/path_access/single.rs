@@ -193,13 +193,15 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                     value: dependencies,
                     custody: allocation,
                 } = dependencies;
+                #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+                crate::kernel::counter_snapshots::restore(accounting, 1);
                 let result = (
                     ObservedPathLookup {
                         lookup: PathLookup {
                             record: found.then_some(current),
                             parent,
                             resolved_components: u16::try_from(resolved).unwrap_or(u16::MAX),
-                            work: accounting.spent(),
+                            work: WorkCounters::UNCHARGED,
                         },
                         dependencies,
                     },

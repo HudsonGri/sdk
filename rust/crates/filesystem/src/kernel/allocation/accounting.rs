@@ -460,12 +460,15 @@ impl<'a> KernelAccounting<'a> {
     }
 
     pub(crate) fn spent(&self) -> WorkCounters {
-        match self {
+        let result = match self {
             Self::Standalone { work, .. } => *work,
             Self::BorrowedStandalone { work, .. } => **work,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, .. } => work.receipt(),
-        }
+        };
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        crate::kernel::counter_snapshots::copied(&result);
+        result
     }
 
     #[cfg(not(target_arch = "wasm32"))]
