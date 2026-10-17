@@ -31,6 +31,11 @@ const mutants = [
   // Nested turbofish generics still construct a lock.
   ['locks', {[path]: healthy + '\nlet state = SyncMutex::<Vec<u8>>::new(Vec::new());'}, {[path]: {grade: 'real'}}],
   ['locks', {[path]: healthy + '\nlet state = Mutex::<BTreeMap<u8, Vec<Option<u8>>>>::default();'}, {[path]: {grade: 'real'}}],
+  // Unit, tuple and array payloads put parentheses and semicolons in the list.
+  ['locks', {[path]: healthy + '\nlet state = SyncMutex::<()>::new(());'}, {[path]: {grade: 'real'}}],
+  ['locks', {[path]: healthy + '\nlet state = SyncMutex::<(u8, Vec<u8>)>::new((0, Vec::new()));'}, {[path]: {grade: 'real'}}],
+  ['locks', {[path]: healthy + '\nlet state = Mutex::<[u8; 4]>::default();'}, {[path]: {grade: 'real'}}],
+  ['locks', {[path]: healthy + '\nlet state = Mutex::<Box<dyn Fn() -> u8>>::new(Box::new(|| 0));'}, {[path]: {grade: 'real'}}],
   ['bound', {[path]: bounded + healthy}, {[path]: {grade: 'real'}}],
   ['bound', {[path]: healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   // A constant or forwarded bound is still a bound.
@@ -55,6 +60,14 @@ test('the healthy fixture passes every rule', () => {
   // Defining the bounded runner or disabling the bound is not itself a bound.
   const runner = 'pub fn check_with_bound(\n    preemptions: Option<usize>,\n) {}\nbuilder.preemption_bound = None;\n';
   assert.deepEqual(violations(new Map([[path, runner + healthy]]), {[path]: {grade: 'real'}}), []);
+  // A lock named inside another type's generic list constructs that type.
+  for (const container of [
+    'let locks = Vec::<SyncMutex::<Vec<u8>>>::new();',
+    'let lock = Option::<SyncMutex::<Vec<u8>>>::default();',
+    'let locks = Vec::<SyncMutex<u8>>::new();',
+  ]) {
+    assert.deepEqual(violations(new Map([[path, healthy + '\n' + container]]), {[path]: {grade: 'real'}}), [], container);
+  }
 });
 
 for (const [index, [rule, sources, registry]] of mutants.entries()) {

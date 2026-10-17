@@ -138,11 +138,40 @@ export function lockAliases(source) {
   return names;
 }
 
-// Turbofish generics nest (`SyncMutex::<Vec<Option<u8>>>::new`); span any
-// depth up to the constructor so spelling the type out cannot hide it.
-const generics = '<[^;(){}]*>';
-const constructsLock = source =>
-  new RegExp(`\\b(?:${[...lockAliases(source)].join('|')})(?:::${generics})?::(?:new|default)\\s*\\(`).test(source);
+// End of the balanced generic list opening at `source[start] === '<'`, or -1.
+// `->` inside a function type is not a closing bracket.
+function closeGenerics(source, start) {
+  let angle = 0;
+  let paren = 0;
+  for (let index = start; index < source.length; index++) {
+    const char = source[index];
+    if (char === '-' && source[index + 1] === '>') index++;
+    else if (char === '(' || char === '[') paren++;
+    else if (char === ')' || char === ']') paren--;
+    else if (char === '<') angle++;
+    else if (char === '>' && --angle === 0) return paren === 0 ? index + 1 : -1;
+    if (paren < 0 || char === '{' || char === '}') return -1;
+  }
+  return -1;
+}
+
+// A lock path constructs a lock only when its own optional turbofish list
+// closes and `::new(` or `::default(` follows at once. A lock named inside
+// another type's generic list (`Vec::<SyncMutex<u8>>::new()`) does not.
+function constructsLock(source) {
+  const names = lockAliases(source);
+  for (const match of source.matchAll(/\b[A-Za-z_]\w*\b/g)) {
+    if (!names.has(match[0])) continue;
+    let rest = match.index + match[0].length;
+    const turbofish = /^\s*::\s*</.exec(source.slice(rest));
+    if (turbofish) {
+      rest = closeGenerics(source, rest + turbofish[0].length - 1);
+      if (rest < 0) continue;
+    }
+    if (/^\s*::\s*(?:new|default)\s*\(/.test(source.slice(rest))) return true;
+  }
+  return false;
+}
 
 export const rules = {
   unregistered: (path, source, model) => model ? [] : [`${path}: Loom model is not classified in scripts/check-loom-models.mjs`],
