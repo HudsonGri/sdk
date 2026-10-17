@@ -470,6 +470,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         } else {
             deadline_unix_millis
         };
+        #[cfg(acyclic_harness_loom)]
+        model_checking::publication_ready().await;
         let outcome = if let Some(deadline) = deadline_unix_millis {
             self.provider.commit_before(request, deadline).await?
         } else {

@@ -25,6 +25,25 @@ pub enum Fault {
 
 loom::thread_local! {
     static FAULT: Cell<Fault> = Cell::new(Fault::None);
+    static PAUSE_PUBLICATION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Parks the next prepared publication at its provider IO boundary.
+pub fn pause_next_publication() {
+    PAUSE_PUBLICATION.with(|pause| pause.set(true));
+}
+
+pub(crate) async fn publication_ready() {
+    let mut pause = PAUSE_PUBLICATION.with(|pause| pause.replace(false));
+    std::future::poll_fn(|cx| {
+        if std::mem::replace(&mut pause, false) {
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await
 }
 
 /// Selects a mutation on the current modeled actor.
