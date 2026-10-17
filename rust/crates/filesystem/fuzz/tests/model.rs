@@ -16,8 +16,6 @@ fn key(byte: u8) -> ObjectId {
 #[path = "../../src/native_mount/adapter/folded_cache.rs"]
 mod cache;
 
-#[path = "../../src/native_mount/observation.rs"]
-mod observation;
 mod view;
 
 #[path = "../../src/access/projection.rs"]
