@@ -90,6 +90,7 @@ impl CheckoutTools {
         context: &ToolContext,
     ) -> Result<HookOutput> {
         serialized(&self.state, async |mut state| {
+            let publication_owner = context.task().ordinary_journal_owner::<LocalStream>()?;
             let owner = context
                 .task()
                 .owned_mailbox
@@ -120,7 +121,7 @@ impl CheckoutTools {
                     context.operation_id(),
                     0,
                     PublicationPermit::Unrestricted,
-                    Some(Arc::clone(owner)),
+                    Some((Arc::clone(&publication_owner), false)),
                 )
                 .await?;
             }
@@ -171,7 +172,7 @@ impl CheckoutTools {
                 context.operation_id(),
                 1,
                 PublicationPermit::Unrestricted,
-                Some(Arc::clone(owner)),
+                Some((Arc::clone(&publication_owner), false)),
             )
             .await?;
             owner.verify_owner(None)?.await?;
