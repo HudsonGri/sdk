@@ -1,4 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
+mod child;
+pub use child::{ChildFile, ChildState, ChildStatus};
 
 pub(crate) mod command_query;
 mod durability;
@@ -15,9 +17,16 @@ pub(crate) use publication::publish;
 mod refresh;
 mod schema;
 mod segment;
+pub(crate) use segment::record_bytes;
 mod source;
 mod watermarks;
 pub use files::TaskFiles;
+pub(crate) use follow::query_id;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub(crate) use follow::record_changes;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
@@ -226,6 +235,10 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    pub(crate) async fn reopen(&self) -> Result<Self> {
+        Self::open_existing(self.provider.clone(), self.path.clone()).await
+    }
+
     /// Authenticated provider path bound to this volume's history identity.
     pub fn path(&self) -> &StreamPath {
         &self.path
@@ -376,8 +389,28 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Creates one file only if absent at the exact query generation. Unlike an
     /// idempotent append, an existing identical file is still a failed creation.
     pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.publish(expected, write, Vec::new(), None, true, None)
+        self.create_if(expected, write, Vec::new(), None, None)
             .await
+    }
+
+    /// Creates an absent file under the same owner and deadline conditions as append.
+    pub async fn create_if(
+        &self,
+        expected: Generation,
+        write: &Write,
+        conditions: Vec<CommitCondition>,
+        deadline_unix_millis: Option<u64>,
+        work: NativeWork<'_>,
+    ) -> Result<Generation> {
+        self.publish(
+            expected,
+            write,
+            conditions,
+            deadline_unix_millis,
+            true,
+            work,
+        )
+        .await
     }
 
     async fn publish(
@@ -447,6 +480,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         } else {
             deadline_unix_millis
         };
+        #[cfg(acyclic_harness_loom)]
+        model_checking::publication_ready().await;
         let outcome = if let Some(deadline) = deadline_unix_millis {
             self.provider.commit_before(request, deadline).await?
         } else {
@@ -485,6 +520,15 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 }
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
+    if matches!(
+        file.key,
+        FileKey::Child {
+            file: ChildFile::Status,
+            ..
+        }
+    ) {
+        ChildStatus::parse(&file.bytes)?;
+    }
     file.validate()?;
     if !file.key.mutable()
         && index

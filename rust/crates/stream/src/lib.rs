@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 
 use crate::OwnedBytes as Bytes;
 use async_trait::async_trait;
@@ -137,7 +137,9 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
     "list", "read", "follow", "append", "fork", "create", "commit",
 ];
 
-include!("lib/path.rs");
+#[path = "lib/path.rs"]
+mod path;
+pub use path::StreamPath;
 
 include!("lib/domain.rs");
 
@@ -171,3 +173,7 @@ mod test_meter;
     any(feature = "grpc", feature = "local")
 ))]
 mod test_trace;
+
+#[cfg(test)]
+#[path = "lib/path_text_tests.rs"]
+mod path_text_tests;

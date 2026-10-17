@@ -45,6 +45,7 @@ use std::collections::BTreeSet;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
+mod bytes;
 mod admission;
 use admission::*;
 mod content;
@@ -65,12 +66,14 @@ mod reducer;
 use reducer::schema_registry;
 mod tool;
 use tool::*;
-mod wire;
 #[cfg(target_arch = "wasm32")]
 mod file_client;
 mod file_worker;
 #[cfg(target_arch = "wasm32")]
 mod query;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod swarm;
+mod wire;
 
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;

@@ -9,9 +9,11 @@ mod expectations;
 mod limits_tests;
 mod local_admission;
 mod local_case;
+mod local_cloud;
 mod local_execution;
 mod local_tests;
 mod local_tool_files;
+mod local_tool_files_check;
 mod local_tool_files_tests;
 mod local_workspace;
 mod matchers;
@@ -33,6 +35,8 @@ mod swarm;
 mod swarm_case;
 mod swarm_provider;
 mod swarm_publish;
+#[path = "../support/swarm_session.rs"]
+mod swarm_runtime;
 mod swarm_scaling;
 mod swarm_tests;
 mod swarm_views;
@@ -240,25 +244,19 @@ fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
         return Err("scenario services must start before the async runtime".into());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
-    let available = std::thread::available_parallelism().map_or(1, usize::from);
-    Ok(scenario_builder(available).build()?)
+    Ok(scenario_builder().build()?)
 }
 
-fn scenario_builder(available: usize) -> tokio::runtime::Builder {
-    let workers = runtime_workers(available);
+const BLOCKING_WORKERS: usize = 16;
+const MAX_ASYNC_WORKERS: usize = 32;
+fn scenario_builder() -> tokio::runtime::Builder {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
     builder
-        .worker_threads(workers)
-        .max_blocking_threads(workers)
+        .worker_threads(available.clamp(2, MAX_ASYNC_WORKERS))
+        .max_blocking_threads(BLOCKING_WORKERS)
         .enable_all();
     builder
-}
-
-fn runtime_workers(available: usize) -> usize {
-    // Three concurrent suites share the host. Their async and blocking pools
-    // share that budget too; bounding only the async pool still spawns hundreds
-    // of filesystem workers. All scenario futures remain admitted in parallel.
-    (available / (3 * 2)).max(1)
 }
 
 #[tokio::test]
@@ -269,6 +267,17 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
             .to_string()
             .contains("services must start before the async runtime")
     );
+}
+
+fn scenario_admission<I>(
+    cases: I,
+) -> impl futures::Stream<Item = <I::Item as std::future::Future>::Output>
+where
+    I: ExactSizeIterator,
+    I::Item: std::future::Future,
+{
+    let capacity = runtime_tests::admission_capacity(cases.len());
+    stream::iter(cases).buffer_unordered(capacity)
 }
 
 async fn run_scenarios(started: Instant) -> TestResult {
@@ -283,7 +292,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    let mut results = stream::iter(paths.into_iter().map(|path| {
+    let mut results = scenario_admission(paths.into_iter().map(|path| {
         let root = root.clone();
         async move {
             let case_path = path.clone();
@@ -296,8 +305,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
             .unwrap_or_else(|error| Err(Box::new(error)));
             (path, result)
         }
-    }))
-    .buffer_unordered(count);
+    }));
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path.strip_prefix(&root)?.display();
