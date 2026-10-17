@@ -29,12 +29,17 @@ impl CheckoutTools {
             standard_input: None,
             mcp_stdio: None,
         };
-        let invocation = native_process::bash::prepare(
-            input,
-            &state.mounts,
-            invocation,
-            self.clock.now_unix_millis() / 1000,
-        )?;
+        // A native cwd can be a demand-backed mount served by this runtime.
+        // Resolving it on the runtime thread would block its own FUSE reply.
+        let now = self.clock.now_unix_millis() / 1000;
+        let (invocation, state) = tokio::task::spawn_blocking(move || {
+            native_process::capture::with_custody(state, |state| {
+                native_process::bash::prepare(input, &state.mounts, invocation, now)
+            })
+        })
+        .await
+        .map_err(storage)?;
+        let invocation = invocation?;
         let check_owner = Arc::clone(&files.owner);
         let cancellation = files.cancellation.take();
         let runtime = tokio::runtime::Handle::current();
