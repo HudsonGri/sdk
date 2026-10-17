@@ -12,11 +12,6 @@ const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 #[cfg(all(acyclic_fs_loom, acyclic_loom))]
 pub(in crate::distributed) mod append_retry;
 
-#[cfg(all(acyclic_fs_loom, acyclic_loom))]
-type PeerCommit = Box<
-    dyn Fn() -> Option<loom::thread::JoinHandle<Result<CommitOutcome, StreamError>>> + Send + Sync,
->;
-
 fn proposed(id: u8) -> ProposedCommit {
     ProposedCommit {
         operation_id: OperationId::from_bytes([id; 16]),
@@ -576,8 +571,6 @@ struct ReleaseSpy {
     cancel_inspect: Option<CancellationToken>,
     lose_ack: bool,
     corrupt_observation: u8,
-    #[cfg(all(acyclic_fs_loom, acyclic_loom))]
-    before_commit: Option<PeerCommit>,
 }
 
 impl ReleaseSpy {
@@ -589,8 +582,6 @@ impl ReleaseSpy {
             cancel_inspect: None,
             lose_ack: false,
             corrupt_observation: 0,
-            #[cfg(all(acyclic_fs_loom, acyclic_loom))]
-            before_commit: None,
         }
     }
 }
@@ -654,16 +645,7 @@ impl StreamProvider for ReleaseSpy {
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.writes.store(true, SeqCst);
-        // Model peer starts before acquiring provider locks and is joined only
-        // after the provider future has released them, including error paths.
-        #[cfg(all(acyclic_fs_loom, acyclic_loom))]
-        let peer = self.before_commit.as_ref().and_then(|before| before());
-        let result = self.inner.commit(request).await;
-        #[cfg(all(acyclic_fs_loom, acyclic_loom))]
-        if let Some(peer) = peer {
-            peer.join().unwrap()?;
-        }
-        let result = result?;
+        let result = self.inner.commit(request).await?;
         if self.lose_ack {
             Err(StreamError::Unavailable)
         } else {

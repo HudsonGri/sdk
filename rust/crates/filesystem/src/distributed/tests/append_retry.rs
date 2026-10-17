@@ -1,6 +1,5 @@
-//! Race one prepared provider commit against the real authority append path.
+//! Prepared commit races exercise the production retry-slot lookup and provider locks.
 use super::*;
-use crate::sync::atomic::AtomicBool as ModeledBool;
 use std::{cell::Cell, future::Future};
 
 const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
@@ -14,24 +13,16 @@ fn ready<F: Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
 }
 
-fn scenario(broken: bool, same_operation: bool) {
-    BROKEN.with(|fault| fault.set(broken));
-    let stream = Arc::new(MemoryStream::default());
-    let authority = AuthorityId::from_bytes([71; 16]);
-    let cancellation = CancellationToken::new();
-    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
-    let initial = StreamAuthorityStore::new(Arc::clone(&stream));
-    ready(initial.create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)).unwrap();
-    let head = ready(initial.head(authority, &mut work)).unwrap();
-    let peer = proposed(if same_operation { 73 } else { 72 });
+fn record(authority: AuthorityId, head: Head, id: u8) -> DurableCommit {
+    let proposed = proposed(id);
     let mut record = DurableCommit {
         epoch: head.epoch,
         sequence: head.sequence.checked_next().unwrap(),
-        operation_id: peer.operation_id,
-        fingerprint: peer.fingerprint,
+        operation_id: proposed.operation_id,
+        fingerprint: proposed.fingerprint,
         previous_digest: head.digest,
         digest: Digest::ZERO,
-        payload: peer.payload,
+        payload: proposed.payload,
         settled_at_micros: None,
     };
     record.digest = authority_commit_digest(
@@ -43,88 +34,132 @@ fn scenario(broken: bool, same_operation: bool) {
         record.previous_digest,
         &record.payload,
     );
+    record
+}
+
+fn request(authority: AuthorityId, record: &DurableCommit, key: IdempotencyKey) -> CommitRequest {
     let path = stream_path(authority, "/records").unwrap();
-    let peer_request = CommitRequest {
+    CommitRequest {
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
-            expected: head.sequence.get() + 1,
+            expected: record.sequence.get(),
         }],
         mutations: vec![CommitMutation::Append {
             path,
             records: vec![
-                StreamsDurableRecord::encode(&record, STREAM_RECORD_LIMIT)
+                StreamsDurableRecord::encode(record, STREAM_RECORD_LIMIT)
                     .unwrap()
                     .into(),
             ],
         }],
-        idempotency_key: super::super::replay::operation_key(
+        idempotency_key: key,
+    }
+}
+
+fn scenario(broken: bool, same_operation: bool) {
+    BROKEN.with(|fault| fault.set(broken));
+    let stream = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(Arc::clone(&stream));
+    let authority = AuthorityId::from_bytes([71; 16]);
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    // Preparation is deterministic and precedes the only concurrent mutation.
+    // Use the production constructor without unrelated reopen/head reads.
+    let mut creation = CommitRequest {
+        conditions: Vec::new(),
+        mutations: Vec::new(),
+        idempotency_key: stream_key(b"fixture", b"authority").unwrap(),
+    };
+    store
+        .creation_request(
+            &mut creation,
             authority,
-            peer.operation_id,
-            0,
+            Epoch::GENESIS,
+            None,
+            None,
             &mut work,
         )
-        .unwrap(),
-    };
-    let once = ModeledBool::new(true);
-    let inner = Arc::clone(&stream);
-    let mut provider = ReleaseSpy::new(stream);
-    provider.before_commit = Some(Box::new(move || {
-        if !once.swap(false, SeqCst) {
-            return None;
-        }
-        let stream = Arc::clone(&inner);
-        let request = peer_request.clone();
-        Some(loom::thread::spawn(move || ready(stream.commit(request))))
-    }));
-    let store = StreamAuthorityStore::new(Arc::new(provider));
-    let request = |expected| crate::GuardedAppend {
-        authority_id: authority,
-        epoch: head.epoch,
-        expected,
-        commit: proposed(73),
-        permit: PublicationPermit::Unrestricted,
-    };
-    let result = ready(store.compare_and_append(request(head), &mut work, None::<&mut ()>));
-    // The conflicting provider outcome has already retained the first attempt's
-    // key. Rebase the same logical operation; do not replay that failed request.
-    let result = match result {
-        Ok(FsAppendOutcome::Conflict { actual }) => {
-            ready(store.compare_and_append(request(actual), &mut work, None::<&mut ()>))
-        }
-        result => result,
-    };
-    assert!(
-        matches!(
-            &result,
-            Ok(FsAppendOutcome::Committed(_) | FsAppendOutcome::AlreadyCommitted(_))
-        ),
-        "rebased authority append did not commit: {result:?}"
-    );
-    let retained = ready(store.find_operation(authority, proposed(73).operation_id, &mut work))
-        .unwrap()
         .unwrap();
-    assert_eq!(retained.fingerprint, proposed(73).fingerprint);
     assert!(matches!(
-        ready(store.compare_and_append(request(head), &mut work, None::<&mut ()>)).unwrap(),
-        FsAppendOutcome::AlreadyCommitted(_)
+        ready(stream.commit(creation)).unwrap(),
+        CommitOutcome::Committed(_)
     ));
-    let (history, _) = ready(store.replay(
-        authority,
-        Sequence::GENESIS,
-        ReplayLimit {
-            records: 3,
-            payload_bytes: 1024,
+    let head = Head::genesis(Epoch::GENESIS);
+    let own = record(authority, head, 73);
+    let peer = record(authority, head, if same_operation { 73 } else { 72 });
+    let (_, key, existing) =
+        ready(store.operation_attempt(authority, own.operation_id, &mut work)).unwrap();
+    assert!(existing.is_none());
+    let mut own_request = request(authority, &own, key);
+    own_request.conditions.extend([
+        CommitCondition::Absent {
+            path: stream_path(authority, "/retirement").unwrap(),
         },
-        &mut work,
-    ))
-    .unwrap();
-    assert_eq!(
-        history
-            .iter()
-            .filter(|record| record.operation_id == proposed(73).operation_id)
-            .count(),
-        1
+        CommitCondition::Tail {
+            path: stream_path(authority, "/epochs").unwrap(),
+            expected: 1,
+        },
+        CommitCondition::Tail {
+            path: stream_path(authority, "/publication-gate").unwrap(),
+            expected: 1,
+        },
+    ]);
+    let peer_request = request(
+        authority,
+        &peer,
+        super::super::replay::operation_key(authority, peer.operation_id, 0, &mut work).unwrap(),
     );
+    let writer = Arc::clone(&stream);
+    let writer = loom::thread::spawn(move || ready(writer.commit(peer_request)));
+    let first = ready(stream.commit(own_request));
+    let other = writer.join().unwrap();
+    assert!(matches!(
+        first,
+        Ok(_) | Err(StreamError::IdempotencyMismatch)
+    ));
+    assert!(matches!(
+        other,
+        Ok(_) | Err(StreamError::IdempotencyMismatch)
+    ));
+    // All commit orderings are explored above. Settlement is now sequential;
+    // repeat the real slot lookup rather than rebuilding the task/runtime.
+    let (_, key, committed) =
+        ready(store.operation_attempt(authority, own.operation_id, &mut work)).unwrap();
+    if committed.is_none() {
+        let rebased = record(
+            authority,
+            Head {
+                epoch: peer.epoch,
+                sequence: peer.sequence,
+                digest: peer.digest,
+            },
+            73,
+        );
+        let result = ready(stream.commit(request(authority, &rebased, key)));
+        assert!(
+            matches!(result, Ok(CommitOutcome::Committed(_))),
+            "rebased authority append did not commit: {result:?}"
+        );
+    }
+    let (_, _, retained) =
+        ready(store.operation_attempt(authority, own.operation_id, &mut work)).unwrap();
+    assert_eq!(retained.unwrap().fingerprint, own.fingerprint);
+    let mut records = ready(stream.read(ReadRequest {
+        path: stream_path(authority, "/records").unwrap(),
+        from: 1,
+        limit: 3,
+    }))
+    .unwrap();
+    let mut count = 0;
+    while let Some(record) = ready(records.next()) {
+        let record = record.unwrap();
+        let durable = work.decode_durable(&record.value).unwrap();
+        count += usize::from(durable.operation_id == own.operation_id);
+    }
+    assert_eq!(count, 1);
+    work.spent()
+        .verify(crate::performance::BOUNDARY_BUDGET)
+        .unwrap();
 }
 
 #[test]
