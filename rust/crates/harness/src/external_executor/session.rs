@@ -69,7 +69,7 @@ impl CommandSessionMachine {
 
     /// Registers a session without a model provider or a separate executor.
     pub fn definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, Value>> {
-        TaskDefinition::resumable(self.clone(), input_schema(), json!({}))
+        TaskDefinition::resumable(self.clone(), input_schema(), output_schema())
     }
 }
 
@@ -209,6 +209,11 @@ fn input_schema() -> Value {
     },"additionalProperties":false})
 }
 
+fn output_schema() -> Value {
+    json!({"oneOf":[{"type":"null"},{"type":"object","required":["success","exit_code"],
+        "properties":{"success":{"type":"boolean"},"exit_code":{"type":["integer","null"]}}}]})
+}
+
 fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T> {
     T::deserialize(value).map_err(|error| Error::Invalid(error.to_string()))
 }
@@ -219,4 +224,30 @@ fn encode(state: State) -> Result<Value> {
 
 fn invalid(message: &str) -> Error {
     Error::Invalid(message.into())
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+        // Session outputs are disconnect/null or native process envelopes;
+        // scalars, arrays and malformed native outcomes never match the schema.
+        #[test]
+        fn output_contract_registers_and_preserves_native_process_metadata(
+            success in any::<bool>(), code in any::<Option<i32>>(), text in ".{0,64}",
+        ) {
+            let machine=Arc::new(CommandSessionMachine::new());
+            machine.definition()?;
+            let check=|value:&Value|crate::executor::validate_json_schema_value(&output_schema(),value,"session output",&mut None);
+            check(&Value::Null)?;
+            check(&json!({"success":success,"exit_code":code,"native_metadata":{"text":text}}))?;
+            for invalid in [json!(success),json!(text),json!([code]),json!({}),json!({"success":success}),
+                json!({"success":text,"exit_code":code}),json!({"success":success,"exit_code":text})] {
+                prop_assert!(check(&invalid).is_err());
+            }
+        }
+    }
 }

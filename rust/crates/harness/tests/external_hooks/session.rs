@@ -158,13 +158,13 @@ proptest! {
         let command=tool_command(id)?;
         let ready=machine.initialize(&json!({"command":command,"terminal":false}))?;
         let waiting=machine.transition(&ready,&Value::Null)?;
-        let outcome=if failed {json!({"Failed":{"message":text}})} else {json!({"Succeeded":{"native":text}})};
+        let outcome=if failed {json!({"Failed":{"message":text}})} else {json!({"Succeeded":{"success":true,"exit_code":0,"native":text}})};
         let finished=json!({"native_exit":outcome});
         prop_assert!(machine.transition(&waiting.state,&finished).is_err());
         let idle=machine.transition(&waiting.state,&result(command.operation_id,Value::Null))?;
         let completed=machine.transition(&idle.state,&finished)?;
         prop_assert!(completed.commands.is_empty());
-        let expected=if failed {MachineStatus::Failed {message:text}} else {MachineStatus::Completed {value:json!({"native":text})}};
+        let expected=if failed {MachineStatus::Failed {message:text}} else {MachineStatus::Completed {value:json!({"success":true,"exit_code":0,"native":text})}};
         prop_assert_eq!(completed.status,expected);
         prop_assert!(machine.transition(&completed.state,&finished).is_err());
         for invalid in [json!({"native_exit":outcome,"extra":true}),json!({"native_exit":"Cancelled"}),
