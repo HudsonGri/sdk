@@ -5,7 +5,7 @@ mod incremental;
 pub(crate) struct ProofContext<'a, S> {
     store: &'a S,
     limits: ClosureLimits,
-    objects: ProofVec<'a, ObjectId>,
+    objects: ProofObjects<'a>,
     // ObjectId includes its kind: complete blob and extent proofs can share
     // one invocation-owned length table without a second allocation domain.
     proven_lengths: ProofVec<'a, (ObjectId, u64)>,
@@ -18,7 +18,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         Self {
             store,
             limits,
-            objects: ProofVec::new(&meter),
+            objects: ProofObjects::new(&meter, limits.maximum_objects),
             proven_lengths: ProofVec::new(&meter),
             object_bytes: 0,
             meter,
@@ -44,7 +44,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     }
 
     pub(super) fn take_objects(&mut self) -> Result<(Vec<ObjectId>, ProofGuard), crate::FsError> {
-        let objects = std::mem::replace(&mut self.objects, ProofVec::new(&self.meter));
+        let objects = std::mem::replace(
+            &mut self.objects,
+            ProofObjects::new(&self.meter, self.limits.maximum_objects),
+        );
         objects.into_parts()
     }
 
@@ -107,8 +110,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 output.0.work = self.meter.work();
                 return Ok(output);
             }
-            self.objects = ProofVec::new(&self.meter);
-            set_insert(&mut self.objects, generation_root)?;
+            self.objects = ProofObjects::new(&self.meter, self.limits.maximum_objects);
+            self.objects.insert(generation_root)?;
             self.proven_lengths = ProofVec::new(&self.meter);
             self.object_bytes = root_object_bytes;
         }
@@ -160,19 +163,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         object: ObjectId,
         page: bool,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
-        let count = usize_to_u64(self.objects.values.len())
-            .checked_add(u64::from(
-                self.objects.values.binary_search(&object).is_err(),
-            ))
-            .ok_or(WorkError::Overflow)?;
-        if count > self.limits.maximum_objects {
-            return Err(ClosureError::TooManyObjects {
-                observed: count,
-                maximum: self.limits.maximum_objects,
-            }
-            .into());
-        }
-        set_insert(&mut self.objects, object)?;
+        self.objects.insert(object)?;
         self.meter.charge(WorkCounters {
             page_reads: u64::from(page),
             ..WorkCounters::default()
@@ -308,7 +299,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     async fn prove_metadata(&mut self, metadata_id: ObjectId) -> Result<(), crate::FsError> {
         Self::require_kind(metadata_id, ObjectKind::Metadata)?;
         // Immutable metadata is authenticated once even when many records share it.
-        if self.objects.values.binary_search(&metadata_id).is_ok() {
+        if self.objects.contains(metadata_id)? {
             return Ok(());
         }
         let bytes = self.read_object(metadata_id, false).await?;

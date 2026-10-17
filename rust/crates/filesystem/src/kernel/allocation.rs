@@ -424,6 +424,24 @@ impl VisitedObjectSet {
         result
     }
 
+    pub(crate) fn contains_with_accounting(
+        &self,
+        object: ObjectId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, crate::FsError> {
+        accounting.check()?;
+        let mask = self.slots.len().checked_sub(1).ok_or(WorkError::Overflow)?;
+        let mut index = object_hash(object) & mask;
+        loop {
+            accounting.charge_items(1)?;
+            match self.slots.get(index).ok_or(WorkError::Overflow)? {
+                Some(existing) if *existing == object => return Ok(true),
+                Some(_) => index = (index + 1) & mask,
+                None => return Ok(false),
+            }
+        }
+    }
+
     fn insert_accounted(
         &mut self,
         object: ObjectId,

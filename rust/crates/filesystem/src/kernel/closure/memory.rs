@@ -309,7 +309,7 @@ impl Drop for ProofGuard {
 pub(super) struct ProofVec<'a, T> {
     pub(super) values: Vec<T>,
     guard: Option<ProofGuard>,
-    meter: ProofMeter<'a>,
+    pub(super) meter: ProofMeter<'a>,
 }
 
 #[derive(Default)]

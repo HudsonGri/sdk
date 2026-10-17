@@ -358,3 +358,6 @@ include!("authentication.rs");
 include!("routing.rs");
 include!("namespace.rs");
 include!("limits.rs");
+
+#[cfg(not(target_arch = "wasm32"))]
+mod inventory;

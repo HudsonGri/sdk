@@ -137,7 +137,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         // These are conservative bounds; recompute the exact closure when they reach a limit.
         let object_count = previous
             .object_count
-            .checked_add(self.objects.values.len() as u64)
+            .checked_add(self.objects.len() as u64)
             .ok_or(WorkError::Overflow)?;
         if bytes > self.limits.maximum_object_bytes || object_count > self.limits.maximum_objects {
             return Ok(None);
