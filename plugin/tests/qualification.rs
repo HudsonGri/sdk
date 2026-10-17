@@ -124,7 +124,7 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     );
     assert_host_success("installed Codex", &output, expired, &installed_debug);
     assert_host_sentinel("installed Codex", &workspace, &output, &installed_debug);
-    let child_ran = assert_semantic_provider_exchange(&provider);
+    let child_ran = assert_semantic_provider_exchange(&provider, &output, &installed_debug);
     service.assert_hook_service_live();
     assert_native_hook_lifecycle(&service.assert_requests_settled(&workspace));
     assert_overlay_workflow_stayed_in_child(&workspace, "codex-child-isolation.txt");
@@ -615,7 +615,11 @@ fn prepend_binary_directory(command: &mut std::process::Command, binary: &Path) 
     command.env("PATH", std::env::join_paths(paths).expect("host PATH"));
 }
 
-fn assert_semantic_provider_exchange(provider: &ScriptedProvider) -> bool {
+fn assert_semantic_provider_exchange(
+    provider: &ScriptedProvider,
+    output: &std::process::Output,
+    debug: &str,
+) -> bool {
     let fingerprints = provider.semantic_fingerprints(5, Duration::from_millis(250));
     let mut observed = fingerprints.clone();
     observed.sort_unstable();
@@ -637,8 +641,10 @@ fn assert_semantic_provider_exchange(provider: &ScriptedProvider) -> bool {
     denied.sort_unstable();
     assert!(
         observed == success || observed == denied,
-        "unexpected Codex request phases: {fingerprints:?}; tool results: {:#?}",
-        provider.tool_results()
+        "unexpected Codex request phases: {fingerprints:?}; tool results: {:#?}\nstdout:\n{}\nstderr:\n{}\ninstalled configuration:\n{debug}",
+        provider.tool_results(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
     assert_fingerprint_before(
         &fingerprints,
