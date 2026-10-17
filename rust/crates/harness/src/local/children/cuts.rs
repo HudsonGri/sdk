@@ -231,12 +231,11 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
             .await?;
         let command: acyclic_fs::GitCommandOutput =
             serde_json::from_value(result.value["result"].clone()).map_err(storage)?;
-        assert!(matches!(
-            command,
-            acyclic_fs::GitCommandOutput::Filesystem(
-                acyclic_fs::GitFilesystemResult::Applied { .. }
-            )
-        ));
+        let acyclic_fs::GitCommandOutput::Committed(commit) = command else {
+            panic!("child merge did not commit: {command:?}");
+        };
+        assert_eq!(commit.message, "merge agents/worker");
+        assert!(matches!(commit.tree, acyclic_fs::GitTreeRef::Exact(_)));
 
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
