@@ -28,10 +28,14 @@ pub(crate) fn require_projfs_mode(
     writable: bool,
     now: u64,
 ) -> Result<(), super::MountLifecycleError> {
-    if writable
-        && (view.valid_until().is_some()
-            || view.generation_sensitive()
-            || !view.allows_every_path(&[Action::Create, Action::Write, Action::Append], now))
+    if !writable {
+        return Err(super::MountLifecycleError::NativePolicy(
+            "ProjFS cannot prevent host mutations on read-only mounts",
+        ));
+    }
+    if view.valid_until().is_some()
+        || view.generation_sensitive()
+        || !view.allows_every_path(&[Action::Create, Action::Write, Action::Append], now)
     {
         return Err(super::MountLifecycleError::NativePolicy(
             "ProjFS cannot enforce restrictive writable policies before host effects",

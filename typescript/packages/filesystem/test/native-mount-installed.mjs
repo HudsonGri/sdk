@@ -33,9 +33,19 @@ try {
   await workspace.write("/content", Buffer.from("original"));
   for (const writable of [false, true]) {
     const destination = await mkdtemp(join(root, writable ? "write-" : "read-"));
-    const mount = await workspace.mount(destination, {
+    const options = {
       writable, subdirectory: "/", publication: "close-and-sync",
-    });
+    };
+    if (process.platform === "win32" && !writable) {
+      await assert.rejects(workspace.mount(destination, options),
+        /ProjFS cannot prevent host mutations on read-only mounts/);
+      assert.equal(await workspace.read("/content", 64n).then((bytes) =>
+        new TextDecoder().decode(bytes)), "original");
+      continue;
+    }
+    const mount = await workspace.mount(destination, options)
+      .catch((cause) => { throw new Error(`mount writable=${writable}`, { cause }); });
+    let failure;
     try {
       assert.equal(await read(join(destination, "content")), "original");
       if (writable) {
@@ -45,8 +55,16 @@ try {
       } else {
         await assert.rejects(write(join(destination, "content"), "forbidden"));
       }
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
-      assert.equal(await mount.unmount(), true);
+      try {
+        assert.equal(await mount.unmount(), true);
+      } catch (cleanup) {
+        throw failure ? new AggregateError([failure, cleanup], "mount operation and cleanup failed")
+          : new Error(`unmount writable=${writable}`, { cause: cleanup });
+      }
     }
   }
 } finally {

@@ -35,7 +35,12 @@ fn projfs_rejects_each_restrictive_writable_mode() -> Result<(), Box<dyn std::er
             ),
             "unsupported writable mode for {action:?}",
         );
-        require_projfs_mode(&view, false, now)?;
+        assert!(matches!(
+            require_projfs_mode(&view, false, now),
+            Err(crate::native_mount::MountLifecycleError::NativePolicy(
+                "ProjFS cannot prevent host mutations on read-only mounts"
+            )),
+        ));
     }
     Ok(())
 }
