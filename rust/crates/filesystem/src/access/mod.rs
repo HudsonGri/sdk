@@ -5,6 +5,7 @@
 //! A compiled view pins all inputs except action and path. Rebuild it before a
 //! new open after a policy change, generation change, or credential expiry.
 
+pub mod audit;
 mod capability;
 mod compilation;
 mod decision;

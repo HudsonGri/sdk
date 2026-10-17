@@ -125,11 +125,11 @@ proptest! {
         if let Some(Ok(trie)) = compiled {
             prop_assert_eq!(trie.logical_owned_bytes(), measured.bytes_current as u64);
             for path in ["", "a/b", "secrets/key", "Σ/b", "a/x/y/b"] {
-                prop_assert_eq!(trie.decide(Action::Read, path, 10),
+                prop_assert_eq!(trie.evaluate(Action::Read, path, 10),
                     decide(&policy, &caller, Action::Read, Resource { path, ..resource }, context, &capability));
             }
             let hot = acyclic_test_support::measure(|| {
-                for _ in 0..32 { std::hint::black_box(trie.decide(Action::Read, "secrets/key", 10)); }
+                for _ in 0..32 { std::hint::black_box(trie.evaluate(Action::Read, "secrets/key", 10)); }
             });
             prop_assert_eq!(hot.count_total, 0);
         }

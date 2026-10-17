@@ -78,5 +78,6 @@ pub async fn options<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &capability,
     )?
     .with_policy_revision(head.generation_id(), revision);
+    let view = workspace.audit_view(view, principal, capability, None, None)?;
     Ok(options.access_view(Arc::new(AccessView::new(view))))
 }

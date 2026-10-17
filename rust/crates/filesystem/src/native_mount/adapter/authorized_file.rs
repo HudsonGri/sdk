@@ -69,7 +69,10 @@ impl AuthorizedFile {
             access::require(&self.permissions, Action::Create, now)?;
             Ok(true)
         } else {
-            Ok(self.permissions.decide(Action::Write, now).allowed)
+            Ok(self
+                .permissions
+                .decide(Action::Write, now)
+                .is_ok_and(|decision| decision.allowed))
         }
     }
 

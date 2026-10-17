@@ -74,3 +74,11 @@ path = "fuzz_targets/encoder_work.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "audit"
+required-features = ["fuzz-targets"]
+path = "fuzz_targets/audit.rs"
+test = false
+doc = false
+bench = false

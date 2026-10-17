@@ -186,3 +186,5 @@ fn retirement_model(
         insert(&cache, key(64), cache::DirectoryNames::Unique);
     });
 }
+
+mod audit;

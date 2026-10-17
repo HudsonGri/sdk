@@ -3,7 +3,7 @@ use super::{
 };
 
 /// Reason access was refused, including implicit and capability denials.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum Denial {
     /// A matching deny rule.
     Rule,

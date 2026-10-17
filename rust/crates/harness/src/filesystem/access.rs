@@ -39,7 +39,10 @@ pub(crate) fn require_unrestricted(
     actions: &[Action],
     surface: &'static str,
 ) -> Result<()> {
-    if view.allows_every_path(actions, access_now()) {
+    if actions.iter().all(|action| {
+        view.decide_all(*action, access_now())
+            .is_ok_and(|decision| decision.allowed)
+    }) {
         Ok(())
     } else {
         Err(Error::FilesystemAccessConfiguration(surface))
@@ -67,13 +70,26 @@ fn require_authenticated_facts(policy: &Policy, io: &PreparationIo) -> Result<()
     Ok(())
 }
 
+pub(in crate::filesystem) fn decide<'a>(
+    view: &'a PathTrie,
+    action: Action,
+    path: &str,
+    io: &PreparationIo,
+) -> std::result::Result<acyclic_fs::access::Decision<'a>, acyclic_fs::access::audit::AuditError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = io.original_native_work() {
+        return view.decide_with_work(action, path, access_now(), work);
+    }
+    view.decide(action, path, access_now())
+}
+
 pub(in crate::filesystem) fn require(
     view: &PathTrie,
     action: Action,
     path: &str,
     io: &PreparationIo,
 ) -> Result<()> {
-    if view.decide(action, path, access_now()).allowed {
+    if decide(view, action, path, io).is_ok_and(|decision| decision.allowed) {
         Ok(())
     } else {
         Err(stock_boundary(
@@ -410,6 +426,32 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
             })?,
             holds,
         );
+        let credential =
+            crate::executor::with_history_io(Some(io), |work| scope.audit_fingerprint(work))?;
+        let (principal, mut audit_hold) = principal;
+        let (capability, capability_holds) = capability;
+        for hold in capability_holds.into_iter().flatten() {
+            audit_hold.absorb(hold)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let custody = if io.original_native_work().is_some() {
+            Some(crate::filesystem::native_decoded(((), audit_hold))?.1)
+        } else {
+            audit_hold.into_retained()?;
+            None
+        };
+        #[cfg(target_arch = "wasm32")]
+        audit_hold.into_retained()?;
+        compiled.0 = workspace
+            .audit_view(
+                compiled.0,
+                principal,
+                capability,
+                Some(credential),
+                #[cfg(not(target_arch = "wasm32"))]
+                custody,
+            )
+            .map_err(|_| io.invalid("filesystem decision audit unavailable"))?;
         let mut retained = compiled.0.logical_owned_bytes();
         for hold in compiled.1.iter_mut().flatten() {
             let bytes = retained.min(hold.bytes());
@@ -420,9 +462,7 @@ pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>
             return Err(io.invalid("compiled access storage exceeds admission"));
         }
         drop(volume);
-        drop(principal);
         drop(policy);
-        drop(capability);
         drop(bytes);
         drop(head);
         let view = compiled

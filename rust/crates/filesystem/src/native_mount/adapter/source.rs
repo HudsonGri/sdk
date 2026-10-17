@@ -289,7 +289,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         if disclose
             && !access
                 .decide(crate::access::Action::List, access::access_time()?)
-                .allowed
+                .is_ok_and(|decision| decision.allowed)
         {
             return Ok(None);
         }
@@ -657,12 +657,12 @@ where
             let view = self.access_snapshot(work).await?;
             let now = access::access_time()?;
             let permissions = view
-                .pin(&file)
+                .pin_with_work(&file, work)
                 .map_err(|_| MountSourceError::AccessDenied)?;
             if let ContentChange::CloneFrom { source, .. } = &change {
                 access::require(
                     &view
-                        .pin(source)
+                        .pin_with_work(source, work)
                         .map_err(|_| MountSourceError::AccessDenied)?,
                     crate::access::Action::Read,
                     now,
@@ -670,7 +670,7 @@ where
             }
             let append_only = !permissions
                 .decide(crate::access::Action::Write, now)
-                .allowed;
+                .is_ok_and(|decision| decision.allowed);
             if append_only {
                 let action = if matches!(&change, ContentChange::Write { .. }) {
                     crate::access::Action::Append

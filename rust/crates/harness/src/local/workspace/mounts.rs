@@ -1,90 +1,147 @@
-//! Default ownership policy, compiled through the common composed-view path.
+//! Task routes retain the provider's authenticated policy view.
 use super::*;
-use acyclic_fs::access::*;
 
-pub(super) fn owner<T>(
+pub(super) async fn owner(
     root: &Path,
+    filesystem: &acyclic_fs::LocalFs,
+    workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
     volume: &VolumeRef,
-    source: T,
-    volumes: impl IntoIterator<Item = (String, VolumeRef, T)>,
-) -> Result<crate::workspace::MountTable<T>> {
-    let principal = Principal {
-        kind: PrincipalKind::Agent,
-        id: "owner".into(),
-        lineage: vec!["owner".into()],
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
+    volumes: impl IntoIterator<Item = (String, VolumeRef)>,
+    authority: (&AuthorityIssuer, AgentId),
+) -> Result<Mounts> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let options = crate::filesystem::owner_mount_options(
+        workspace,
+        authority.0,
+        Some(authority.1),
+        true,
+        &work,
+    )
+    .await?;
+    let access = Arc::clone(options.require_access_view()?);
+    let head = access.current().map_err(storage)?.head_position();
+    let primary = crate::workspace::VolumeView {
+        name: "project".into(),
+        agent: authority.1.to_string(),
+        volume: volume.clone(),
+        generation: head,
+        head,
+        access,
+        source: None,
     };
-    let resource = ResourcePattern {
-        lineage_root: None,
-        volume: None,
-        generations: Generations::All,
-        path: "**".into(),
-    };
-    let actions = Action::ALL.into_iter().collect();
-    let policy = Arc::new(Policy {
-        schema_version: POLICY_SCHEMA_VERSION,
-        version: 1,
-        layers: vec![vec![Rule {
-            id: "owner".into(),
-            effect: Effect::Allow,
-            principal: PrincipalPattern::default(),
-            actions,
-            resource: resource.clone(),
-            conditions: Conditions {
-                relation: Some(Relation::SelfTask),
-                ..Conditions::default()
-            },
-        }]],
-    });
-    let volumes: Vec<_> = volumes.into_iter().collect();
-    let capability = Capability {
-        layers: vec![
-            std::iter::once(volume)
-                .chain(volumes.iter().map(|(_, volume, _)| volume))
-                .map(|volume| Grant {
-                    actions: Action::ALL.into_iter().collect(),
-                    resource: ResourcePattern {
-                        volume: Some(volume.id().into()),
-                        ..resource.clone()
-                    },
-                })
-                .collect(),
-        ],
-        expires_at: None,
-    };
-    let view = |name, volume, source| crate::workspace::VolumeView {
-        name,
-        agent: principal.id.clone(),
-        volume,
-        lineage: principal.lineage.clone(),
-        generation: 0,
-        head: 0,
-        config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-        policy: Arc::clone(&policy),
-        source,
-    };
+    let mut others = Vec::new();
+    for (name, volume) in volumes {
+        let workspace = filesystem
+            .open_workspace(&volume.storage_name(&mut None)?, &work, &cancellation)
+            .await
+            .map_err(storage)?;
+        let options = crate::filesystem::owner_mount_options(
+            &workspace,
+            authority.0,
+            Some(authority.1),
+            true,
+            &work,
+        )
+        .await?
+        .publication(acyclic_fs::MountPublication::Manual);
+        let access = Arc::clone(options.require_access_view()?);
+        let head = access.current().map_err(storage)?.head_position();
+        let source = Some(Arc::new(MountedVolume {
+            workspace: crate::tools::git::OwnedView::Volume(workspace),
+            destination: root.join(".volumes").join(&name),
+            options,
+            native: StateArc::new(AsyncMutex::new(None)),
+        }));
+        others.push(crate::workspace::VolumeView {
+            name,
+            agent: authority.1.to_string(),
+            volume,
+            generation: head,
+            head,
+            access,
+            source,
+        });
+    }
     crate::workspace::compose(
         root.into(),
-        &principal,
-        &capability,
-        Context {
-            now: 0,
-            approvals: 0,
-        },
-        view("project".into(), volume.clone(), source),
-        volumes
-            .into_iter()
-            .map(|(name, volume, source)| view(name, volume, source)),
+        crate::filesystem::access::access_now(),
+        primary,
+        others,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_fs::access::Action;
     use proptest::prelude::*;
+
+    fn owner<T>(
+        root: &Path,
+        volume: &VolumeRef,
+        source: T,
+        volumes: impl IntoIterator<Item = (String, VolumeRef, T)>,
+    ) -> Result<crate::workspace::MountTable<T>> {
+        use acyclic_fs::access::*;
+        let principal = Principal {
+            kind: PrincipalKind::Agent,
+            id: "owner".into(),
+            lineage: vec!["owner".into()],
+            groups: Default::default(),
+            roles: Default::default(),
+            tags: Default::default(),
+            attributes: Default::default(),
+        };
+        let policy: Policy = serde_json::from_slice(INITIAL_POLICY)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let capability = Capability {
+            layers: vec![vec![Grant {
+                actions: Action::ALL.into_iter().collect(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations: Generations::All,
+                    path: "**".into(),
+                },
+            }]],
+            expires_at: None,
+        };
+        let view = |name, volume, source| -> Result<_> {
+            Ok(crate::workspace::VolumeView {
+                name,
+                agent: "owner".into(),
+                volume,
+                generation: 0,
+                head: 0,
+                source,
+                access: crate::workspace::fixtures::access(
+                    &policy,
+                    &principal,
+                    &capability,
+                    Resource {
+                        config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Ephemeral),
+                        lineage: &principal.lineage,
+                        volume: "",
+                        generation: 0,
+                        head: 0,
+                        path: "",
+                    },
+                    Context {
+                        now: 0,
+                        approvals: 0,
+                    },
+                )?,
+            })
+        };
+        let primary = view("project".into(), volume.clone(), source)?;
+        let others = volumes
+            .into_iter()
+            .map(|(name, volume, source)| view(name, volume, source))
+            .collect::<Result<Vec<_>>>()?;
+        crate::workspace::compose(root.into(), 0, primary, others)
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]

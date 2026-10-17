@@ -295,7 +295,7 @@ where
         let permissions = self.authored.permissions_for_path(path, work)?;
         if !permissions
             .decide(crate::access::Action::List, adapter::access::access_time()?)
-            .allowed
+            .is_ok_and(|decision| decision.allowed)
         {
             return Ok(None);
         }

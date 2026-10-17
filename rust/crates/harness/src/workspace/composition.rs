@@ -1,7 +1,5 @@
 use crate::{Error, Result, conversation::VolumeRef};
-use acyclic_fs::access::{
-    Action, Capability, Context, MountMode, PathTrie, Policy, Principal, Resource,
-};
+use acyclic_fs::access::{AccessView, Action, MountMode};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     path::{Component, Path, PathBuf},
@@ -9,6 +7,7 @@ use std::{
 };
 
 /// Host-selected published view. `source` remains unopened during composition.
+#[derive(Clone)]
 pub struct VolumeView<T> {
     /// Stable lineage name, also used by `fs --volume`.
     pub name: String,
@@ -16,16 +15,12 @@ pub struct VolumeView<T> {
     pub agent: String,
     /// Provider-owned volume identity.
     pub volume: VolumeRef,
-    /// Root-first ancestry of the owning task.
-    pub lineage: Vec<String>,
     /// Selected published generation sequence.
     pub generation: u64,
     /// Authoritative current published head sequence.
     pub head: u64,
-    /// Name semantics and limits of this volume.
-    pub config: acyclic_fs::VolumeConfig,
-    /// Policy loaded by the host from this volume.
-    pub policy: Arc<Policy>,
+    /// Authenticated provider view shared with native operations.
+    pub access: Arc<AccessView>,
     /// Lazy provider binding, retained without opening or copying its files.
     pub source: T,
 }
@@ -36,14 +31,21 @@ pub struct Mount<T> {
     pub view: VolumeView<T>,
     /// Maximum access anywhere in this mount; paths may be more restrictive.
     pub mode: MountMode,
-    access: PathTrie,
     pub(crate) native_root: Option<PathBuf>,
 }
 
 impl<T> Mount<T> {
     /// Uses the same compiled decision for tools and native provider callbacks.
     pub fn check(&self, action: Action, path: &str, now: u64) -> Result<()> {
-        if self.access.decide(action, path, now).allowed {
+        if self
+            .view
+            .access
+            .current()
+            .map_err(|_| Error::FilesystemAccessConfiguration("access view publication"))?
+            .decide(action, path, now)
+            .map_err(|_| Error::FilesystemAccessConfiguration("filesystem decision audit"))?
+            .allowed
+        {
             return Ok(());
         }
         Err(Error::Unauthorized(
@@ -152,15 +154,12 @@ impl<T> MountTable<T> {
     }
 }
 
-/// Composes only policy- and capability-visible volumes. The caller supplies
-/// its authenticated principal, verified capability, and authoritative context.
+/// Composes only volumes visible through their authenticated provider views.
 /// Other agents' sources pin their latest published generation, excluding their
 /// in-flight writes. No source is opened while enumerating visible mounts.
 pub fn compose<T>(
     root: PathBuf,
-    principal: &Principal,
-    capability: &Capability,
-    context: Context,
+    now: u64,
     primary: VolumeView<T>,
     volumes: impl IntoIterator<Item = VolumeView<T>>,
 ) -> Result<MountTable<T>> {
@@ -174,29 +173,28 @@ pub fn compose<T>(
         ));
     }
     let primary_name = primary.name.clone();
+    let subject = primary
+        .access
+        .current()
+        .map_err(|_| Error::FilesystemAccessConfiguration("access view publication"))?;
+    let subject = (subject.subject().0, subject.subject().1.to_owned());
     let mut mounts = BTreeMap::new();
     for (index, view) in std::iter::once(primary).chain(volumes).enumerate() {
-        let access = PathTrie::compile(
-            &view.policy,
-            principal,
-            Resource {
-                lineage: &view.lineage,
-                volume: view.volume.id(),
-                generation: view.generation,
-                head: view.head,
-                path: "",
-                config: view.config,
-            },
-            context,
-            capability,
-        )
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mode = access.subtree_mode("", context.now);
+        let access = view
+            .access
+            .current()
+            .map_err(|_| Error::FilesystemAccessConfiguration("access view publication"))?;
+        if access.subject() != (subject.0, subject.1.as_str()) {
+            return Err(Error::Unauthorized(
+                "task views have different authenticated principals".into(),
+            ));
+        }
+        let mode = access.subtree_mode("", now);
         let path = if index == 0 {
             String::new()
         } else {
             component(&view.name)?;
-            if view.agent == principal.id {
+            if view.agent == subject.1 {
                 format!(".volumes/{}", view.name)
             } else {
                 component(&view.agent)?;
@@ -224,7 +222,7 @@ pub fn compose<T>(
             entry.insert(None);
             continue;
         }
-        if view.agent != principal.id && view.generation != view.head {
+        if view.agent != subject.1 && view.generation != view.head {
             return Err(Error::Conflict(
                 "foreign mount must select its latest published generation".into(),
             ));
@@ -232,7 +230,6 @@ pub fn compose<T>(
         entry.insert(Some(Mount {
             view,
             mode,
-            access,
             native_root: None,
         }));
     }

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
+use acyclic_fs::kernel::NamespacePath;
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
@@ -47,53 +47,39 @@ pub(in crate::local) fn excluded(
 }
 
 pub(super) async fn attach(
-    filesystem: &acyclic_fs::LocalFs,
     store: &acyclic_fs::LocalCoreStateStore,
     root: &Path,
     mounts: &mut Mounts,
-    authority: (&AuthorityIssuer, AgentId),
 ) -> Result<()> {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
             continue;
         }
-        let source = filesystem
-            .open_workspace(
-                &mount.view.volume.storage_name(&mut None)?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
-        let destination = root.join(relative);
+        let source = mount
+            .view
+            .source
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("task volume binding"))?;
         // Bind the namespace before the initial source/watch cut. Creating its
         // parent during the first shell command would author a project change
         // even when that command only reads. The projection itself stays absent.
         if let Some(parent) = Path::new(relative).parent() {
             create_mount_directory(root, parent)?;
         }
-        let options = crate::filesystem::owner_mount_options(
-            &source,
-            authority.0,
-            Some(authority.1),
-            !mount.mode.read_only(),
-            &work,
-        )
-        .await?
-        .publication(MountPublication::Manual);
         acyclic_fs::WorkspaceGraph::new(store.clone())
-            .register_root(&source)
+            .register_root(source.workspace.workspace())
             .await?;
-        mount.view.source = Some(Arc::new(MountedVolume {
-            workspace: crate::tools::git::OwnedView::Volume(source),
-            destination,
-            options,
-            native: StateArc::new(AsyncMutex::new(None)),
-        }));
+        let destination = root.join(relative);
+        if source.destination != destination {
+            mount.view.source = Some(Arc::new(MountedVolume {
+                workspace: crate::tools::git::OwnedView::Volume(
+                    source.workspace.workspace().clone(),
+                ),
+                destination,
+                options: source.options.clone(),
+                native: StateArc::new(AsyncMutex::new(None)),
+            }));
+        }
     }
     Ok(())
 }
@@ -117,9 +103,7 @@ pub(in crate::local) async fn project(mounts: &Mounts) -> Result<()> {
             // A Linux task view aliases the original binding; mount at that
             // binding's root, never below another owner-only FUSE mount.
             let root = projection_root(&source.destination, relative)?;
-            source
-                .project(root, relative)
-                .await?;
+            source.project(root, relative).await?;
         }
     }
     Ok(())

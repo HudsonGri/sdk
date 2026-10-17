@@ -120,7 +120,7 @@ impl Capability {
     }
 }
 
-pub(super) fn binding(capability: &Capability) -> Result<[u8; 32], InvalidPolicy> {
+pub(super) fn binding(capability: &impl serde::Serialize) -> Result<[u8; 32], InvalidPolicy> {
     use sha2::Digest as _;
     struct Writer {
         hash: sha2::Sha256,

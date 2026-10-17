@@ -70,14 +70,14 @@ where
             let actions = crate::native_mount::actions::Mutation::Rename.actions();
             access::require(
                 &view
-                    .pin(&source)
+                    .pin_with_work(&source, work)
                     .map_err(|_| MountSourceError::AccessDenied)?,
                 actions.0,
                 now,
             )?;
             access::require(
                 &view
-                    .pin(&destination)
+                    .pin_with_work(&destination, work)
                     .map_err(|_| MountSourceError::AccessDenied)?,
                 actions.1,
                 now,

@@ -138,7 +138,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(WorkspaceError::JoinLimit.into());
         }
-        if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
+        if !self.same_deployment(&source.workspace.volume.fs)
             || source.workspace.volume.config != target.config
         {
             return Err(WorkspaceError::IncompatibleWorkspace.into());

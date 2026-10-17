@@ -38,8 +38,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceCommonAncestor, WorkspaceError> {
         if maximum_generations == 0
-            || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
-            || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
+            || !self.same_deployment(&source.workspace.volume.fs)
+            || !self.same_deployment(&target.workspace.volume.fs)
         {
             return Err(WorkspaceError::ForeignGeneration);
         }
@@ -79,8 +79,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<GenerationId, WorkspaceError> {
         accounting.check()?;
-        if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
-            || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
+        if !self.same_deployment(&source.workspace.volume.fs)
+            || !self.same_deployment(&target.workspace.volume.fs)
             || source.workspace.volume.config != target.workspace.volume.config
         {
             return Err(WorkspaceError::IncompatibleWorkspace);

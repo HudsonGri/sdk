@@ -13,7 +13,10 @@ pub(in crate::native_mount) fn require(
     action: Action,
     now: u64,
 ) -> Result<(), MountSourceError> {
-    if path.decide(action, now).allowed {
+    if path
+        .decide(action, now)
+        .is_ok_and(|decision| decision.allowed)
+    {
         return Ok(());
     }
     let mode = path.mount_mode(now);
@@ -40,14 +43,19 @@ pub(in crate::native_mount) fn require_open(
             require(path, Action::Read, now)?;
         }
         if matches!(access, MountOpenAccess::Write | MountOpenAccess::ReadWrite)
-            && !path.decide(Action::Append, now).allowed
+            && !path
+                .decide(Action::Append, now)
+                .is_ok_and(|decision| decision.allowed)
         {
             require(path, Action::Write, now)?;
         }
         Ok(())
     } else if [Action::List, Action::Read, Action::Write, Action::Append]
         .into_iter()
-        .any(|action| path.decide(action, now).allowed)
+        .any(|action| {
+            path.decide(action, now)
+                .is_ok_and(|decision| decision.allowed)
+        })
     {
         Ok(())
     } else {
@@ -173,7 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     ) -> Result<PinnedPath, MountSourceError> {
         self.access_snapshot(work)
             .await?
-            .pin(path)
+            .pin_with_work(path, work)
             .map_err(|_| MountSourceError::AccessDenied)
     }
 
@@ -228,7 +236,7 @@ where
                 inputs.items(1)?;
                 let path = self.namespace_inputs(path, &mut inputs)?;
                 let permissions = view
-                    .pin(&path)
+                    .pin_with_work(&path, work)
                     .map_err(|_| MountSourceError::AccessDenied)?;
                 require(&permissions, *action, now)?;
             }
@@ -244,7 +252,7 @@ where
                 for (action, path) in requests {
                     let path = self.namespace_inputs(path, &mut inputs)?;
                     let permissions = current
-                        .pin(&path)
+                        .pin_with_work(&path, work)
                         .map_err(|_| MountSourceError::AccessDenied)?;
                     require(&permissions, *action, now)?;
                 }

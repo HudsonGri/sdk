@@ -59,7 +59,7 @@ impl PathTrie {
     /// A stale, expired or malformed view projects no permissions.
     #[must_use]
     pub fn mount_mode(&self, path: &str, now: u64) -> MountMode {
-        self.prepare(path)
+        self.prepare_for_preview(path)
             .map_or_else(|_| MountMode::default(), |path| path.mount_mode(now))
     }
 }
@@ -67,7 +67,7 @@ impl PathTrie {
 impl PreparedPath<'_> {
     /// Constant-time, allocation-free native mode from the same pinned decisions.
     #[must_use]
-    pub fn mount_mode(self, now: u64) -> MountMode {
+    pub fn mount_mode(&self, now: u64) -> MountMode {
         MountMode {
             actions: self.action_mask(now),
         }

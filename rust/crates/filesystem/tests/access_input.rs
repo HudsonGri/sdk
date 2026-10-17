@@ -101,9 +101,9 @@ fn check_decisions<const CORRUPT_DECISION: bool>(bytes: &[u8]) {
         } else {
             expected
         };
-        assert_eq!(trie.decide(action, &input.path, input.now), expected);
-        if let Ok(path) = prepared {
-            assert_eq!(path.decide(action, input.now), expected);
+        assert_eq!(trie.evaluate(action, &input.path, input.now), expected);
+        if let Ok(path) = &prepared {
+            assert_eq!(path.evaluate(action, input.now), expected);
         }
     }
     if let Some((encoding, bytes)) = input.native_name {
@@ -151,19 +151,19 @@ fn check_decisions<const CORRUPT_DECISION: bool>(bytes: &[u8]) {
             assert_eq!(pinned.is_ok(), native.is_ok());
             if let (Ok(native), Some(path)) = (native, decoded) {
                 for action in Action::ALL {
-                    let expected = native.decide(action, input.now);
+                    let expected = native.evaluate(action, input.now);
                     assert_eq!(
                         namespace_access
                             .as_ref()
                             .expect("same native namespace")
-                            .decide(action, input.now),
+                            .evaluate(action, input.now),
                         expected
                     );
                     assert_eq!(
                         pinned
                             .as_ref()
                             .expect("same pinned namespace")
-                            .decide(action, input.now),
+                            .evaluate(action, input.now),
                         expected
                     );
                     assert_eq!(

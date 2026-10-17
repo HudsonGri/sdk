@@ -2,7 +2,7 @@ use super::PathTrie;
 
 impl PathTrie {
     pub(in crate::access) fn subtree_action_mask(&self, prefix: &str, now: u64) -> u16 {
-        let Ok(path) = self.prepare(prefix) else {
+        let Ok(path) = self.prepare_for_preview(prefix) else {
             return 0;
         };
         let Some(initial) = self.state_at(path.state, now) else {

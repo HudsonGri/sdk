@@ -147,7 +147,7 @@ fn cached_denial_observes_owner_policy_publication_before_host_probes()
             .as_ref()
             .unwrap()
             .current()?
-            .decide(
+            .evaluate(
                 Action::Read,
                 "file",
                 crate::native_mount::adapter::access::access_time()?

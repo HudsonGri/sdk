@@ -8,7 +8,9 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod path;
 mod reachability;
+pub use path::{PinnedPath, PreparedPath};
 
 #[derive(Clone, Copy)]
 struct Outcome {
@@ -26,18 +28,21 @@ struct State {
 /// Prepare paths once during namespace lookup, then check the resulting handle
 /// without scanning names, allocating, or depending on policy size.
 pub struct PathTrie {
+    pub(crate) audit: Option<std::sync::Arc<super::audit::Binding>>,
     alphabet: Alphabet,
     states: Vec<State>,
-    rules: Vec<String>,
+    pub(crate) rules: std::sync::Arc<[String]>,
     version: u64,
     head: u64,
+    pub(crate) generation: u64,
     valid_from: u64,
     valid_until: Option<u64>,
     config: crate::VolumeConfig,
     volume: String,
     subject: (super::PrincipalKind, String),
     capability_binding: [u8; 32],
-    policy_revision: Option<(
+    principal_binding: [u8; 32],
+    pub(crate) policy_revision: Option<(
         crate::GenerationId,
         crate::kernel::MetadataField<crate::ObjectId>,
     )>,
@@ -45,136 +50,6 @@ pub struct PathTrie {
     generation_sensitive: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) native_custody: Option<crate::NativeAllocation>,
-}
-
-/// A path bound to its immutable compiled view. Its private state cannot be
-/// forged or transferred to a different policy, principal or capability.
-#[derive(Clone, Copy)]
-pub struct PreparedPath<'a> {
-    trie: &'a PathTrie,
-    state: usize,
-    bytes: usize,
-    depth: usize,
-}
-
-/// Immutable permission state retained by an open native handle.
-#[derive(Clone)]
-pub struct PinnedPath {
-    view: std::sync::Arc<PathTrie>,
-    state: usize,
-}
-
-impl PinnedPath {
-    pub(crate) fn volume(&self) -> &str {
-        self.view.volume()
-    }
-
-    pub(crate) fn policy_view(&self) -> &PathTrie {
-        &self.view
-    }
-
-    /// Check the pinned policy, including its original expiry, without allocation.
-    #[must_use]
-    pub fn decide(&self, action: Action, now: u64) -> Decision<'_> {
-        self.view.decision(self.state, action, now)
-    }
-
-    pub(super) fn action_mask(&self, now: u64) -> u16 {
-        self.view
-            .state_at(self.state, now)
-            .map_or(0, |state| state.actions)
-    }
-}
-
-impl<'a> PreparedPath<'a> {
-    /// Prepare a child during namespace lookup. Only this new name is scanned;
-    /// previously prepared ancestors are never scanned again.
-    pub fn child(self, name: &str) -> Result<Self, InvalidPolicy> {
-        if name.is_empty() || name.contains('/') {
-            return Err(InvalidPolicy("expected one path component"));
-        }
-        super::names::validate(name, self.trie.config)?;
-        self.advance(super::names::encoded_len(name, self.trie.config), |sink| {
-            super::names::write_key(name, self.trie.config, sink)
-                .map_err(|_| InvalidPolicy("invalid compiled path"))
-        })
-    }
-
-    fn advance(
-        self,
-        length: usize,
-        emit: impl FnOnce(&mut PathWriter<'_>) -> Result<(), InvalidPolicy>,
-    ) -> Result<Self, InvalidPolicy> {
-        let bytes = length
-            .checked_add(1)
-            .and_then(|length| self.bytes.checked_add(length))
-            .ok_or(InvalidPolicy("path length overflow"))?;
-        let depth = self.depth + 1;
-        if bytes > self.trie.config.limits.maximum_path_bytes as usize
-            || depth > self.trie.config.limits.maximum_path_depth as usize
-        {
-            return Err(InvalidPolicy("path exceeds volume limits"));
-        }
-        let mut state = self.state;
-        if self.depth != 0 {
-            state = self.trie.step(state, '/')?;
-        }
-        let mut sink = PathWriter {
-            trie: self.trie,
-            state,
-        };
-        emit(&mut sink)?;
-        Ok(Self {
-            state: sink.state,
-            bytes,
-            depth,
-            ..self
-        })
-    }
-
-    /// Prepare an authenticated native name without losing its encoding identity.
-    /// Unsupported profile/encoding pairs and non-Unicode names fail closed.
-    pub fn child_name(self, name: &crate::kernel::LogicalName) -> Result<Self, InvalidPolicy> {
-        use crate::kernel::NameEncoding;
-        if name.encoding() != super::names::encoding(self.trie.config)
-            || name.as_bytes().len() > self.trie.config.limits.maximum_component_bytes as usize
-        {
-            return Err(InvalidPolicy(
-                "name encoding does not match the access view profile",
-            ));
-        }
-        match name.encoding() {
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-                let text = std::str::from_utf8(name.as_bytes())
-                    .map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))?;
-                self.child(text)
-            }
-            NameEncoding::WindowsUtf16Le => {
-                let units = crate::kernel::types::utf16le_units(name.as_bytes())
-                    .ok_or(InvalidPolicy("invalid UTF-16 access name"))?;
-                self.advance(name.as_bytes().len(), |sink| {
-                    for ch in char::decode_utf16(units) {
-                        let ch = ch
-                            .map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))?;
-                        sink.state = sink.trie.step(sink.state, ch)?;
-                    }
-                    Ok(())
-                })
-            }
-        }
-    }
-
-    /// Constant-time, allocation-free decision, including the pinned deadline.
-    #[must_use]
-    pub fn decide(self, action: Action, now: u64) -> Decision<'a> {
-        self.trie.decision(self.state, action, now)
-    }
-
-    pub(super) fn action_mask(self, now: u64) -> u16 {
-        self.trie
-            .state_at(self.state, now)
-            .map_or(0, |state| state.actions)
-    }
 }
 
 struct PathWriter<'a> {
@@ -280,6 +155,17 @@ impl PathTrie {
     /// Heap bytes retained by the compiled view, excluding its inline header.
     #[must_use]
     pub fn logical_owned_bytes(&self) -> u64 {
+        let rules = self.rules_owned_bytes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let rules = if self
+            .audit
+            .as_ref()
+            .is_some_and(|audit| audit.identity._custody.is_some())
+        {
+            0
+        } else {
+            rules
+        };
         (self.alphabet.pages.capacity() * size_of::<[u16; 256]>()
             + size_of::<[u16; 4352]>()
             + self.states.capacity() * size_of::<State>()
@@ -288,10 +174,15 @@ impl PathTrie {
                 .iter()
                 .map(|state| state.transitions.capacity() * size_of::<usize>())
                 .sum::<usize>()
-            + self.rules.capacity() * size_of::<String>()
-            + self.rules.iter().map(String::capacity).sum::<usize>()
+            + rules
             + self.volume.capacity()
             + self.subject.1.capacity()) as u64
+    }
+
+    pub(crate) fn rules_owned_bytes(&self) -> usize {
+        self.rules.len() * size_of::<String>()
+            + 2 * size_of::<usize>()
+            + self.rules.iter().map(String::capacity).sum::<usize>()
     }
 
     /// Authoritative name semantics pinned by this view.
@@ -310,6 +201,17 @@ impl PathTrie {
     #[must_use]
     pub fn subject(&self) -> (super::PrincipalKind, &str) {
         (self.subject.0, &self.subject.1)
+    }
+
+    pub(in crate::access) fn audit_binding(
+        &self,
+        principal: &Principal,
+        capability: &Capability,
+    ) -> Result<bool, InvalidPolicy> {
+        Ok(
+            self.principal_binding == super::capability::binding(principal)?
+                && self.capability_binding == super::capability::binding(capability)?,
+        )
     }
 
     /// Whether two views belong to the same authenticated volume, principal,
@@ -333,29 +235,6 @@ impl PathTrie {
     #[must_use]
     pub const fn head_position(&self) -> u64 {
         self.head
-    }
-
-    /// Prepare exact encoded names instead of a potentially lossy path projection.
-    pub fn prepare_namespace(
-        &self,
-        path: &crate::kernel::NamespacePath,
-    ) -> Result<PreparedPath<'_>, InvalidPolicy> {
-        let mut prepared = self.prepare("")?;
-        for name in path.components() {
-            prepared = prepared.child_name(name)?;
-        }
-        Ok(prepared)
-    }
-
-    /// Pin the current compiled state for an opened file's lifetime.
-    pub fn pin(
-        self: &std::sync::Arc<Self>,
-        path: &crate::kernel::NamespacePath,
-    ) -> Result<PinnedPath, InvalidPolicy> {
-        Ok(PinnedPath {
-            state: self.prepare_namespace(path)?.state,
-            view: std::sync::Arc::clone(self),
-        })
     }
 
     /// Compile the same decision reducer used by `decide` into terminal states.
@@ -537,17 +416,20 @@ impl PathTrie {
                     && state.actions & (1 << Action::ReadHistory as u16) == 0
             });
             Ok(Self {
+                audit: None,
                 alphabet: Alphabet::new(&symbols)?,
                 states,
-                rules: rule_ids,
+                rules: rule_ids.into(),
                 version: policy.version,
                 head: resource.head,
+                generation: resource.generation,
                 valid_from: context.now,
                 valid_until,
                 config: resource.config,
                 volume: resource.volume.to_owned(),
                 subject: (principal.kind, principal.id.clone()),
                 capability_binding: super::capability::binding(capability)?,
+                principal_binding: super::capability::binding(principal)?,
                 policy_revision: None,
                 data_generation: None,
                 generation_sensitive: history_sensitive
@@ -606,8 +488,12 @@ impl PathTrie {
         let mut prepared = PreparedPath {
             trie: self,
             state: 0,
+            audit_path: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            work: None,
             bytes: 0,
             depth: 0,
+            capture: true,
         };
         if !path.is_empty() {
             for name in path.split('/') {
@@ -620,11 +506,65 @@ impl PathTrie {
     /// Convenience decision for an unprepared UTF-8 path. Preparation is linear
     /// in path bytes; the bound handle's decision itself is constant time.
     #[must_use]
-    pub fn decide(&self, action: Action, path: &str, now: u64) -> Decision<'_> {
-        self.prepare(path).map_or_else(
+    pub fn evaluate(&self, action: Action, path: &str, now: u64) -> Decision<'_> {
+        self.prepare_for_preview(path).map_or_else(
             |_| Decision::denied(self.version, Denial::Invalid),
-            |path| path.decide(action, now),
+            |path| path.evaluate(action, now),
         )
+    }
+
+    /// Runtime authorization: exactly one queued record for either policy outcome.
+    /// Audit failure is an error, never a usable authorization decision.
+    pub fn decide(
+        &self,
+        action: Action,
+        path: &str,
+        now: u64,
+    ) -> Result<Decision<'_>, super::audit::AuditError> {
+        self.prepare(path)
+            .map_err(|_| super::audit::AuditError)?
+            .decide(action, now)
+    }
+
+    fn authorize_state(
+        &self,
+        state: usize,
+        path: &Option<std::sync::Arc<super::audit::Path>>,
+        action: Action,
+        now: u64,
+    ) -> Result<Decision<'_>, super::audit::AuditError> {
+        let decision = self.decision(state, action, now);
+        let binding = self.audit.as_ref().ok_or(super::audit::AuditError)?;
+        let rule = self
+            .states
+            .get(state)
+            .and_then(|node| node.decisions.get(action as usize))
+            .and_then(|outcome| outcome.rule)
+            .filter(|_| decision.rule_id.is_some());
+        binding.record(self, path.as_ref(), action, now, decision, rule, false)?;
+        Ok(decision)
+    }
+
+    /// Authorize a coarse adapter over its whole exposed path set. The first
+    /// refusing terminal state attributes a denial; the resource is the glob `**`.
+    pub fn decide_all(
+        &self,
+        action: Action,
+        now: u64,
+    ) -> Result<Decision<'_>, super::audit::AuditError> {
+        let state = (0..self.states.len())
+            .find(|state| !self.decision(*state, action, now).allowed)
+            .unwrap_or(0);
+        let decision = self.decision(state, action, now);
+        let binding = self.audit.as_ref().ok_or(super::audit::AuditError)?;
+        let rule = self
+            .states
+            .get(state)
+            .and_then(|node| node.decisions.get(action as usize))
+            .and_then(|outcome| outcome.rule)
+            .filter(|_| decision.rule_id.is_some());
+        binding.record(self, None, action, now, decision, rule, true)?;
+        Ok(decision)
     }
 
     fn step(&self, state: usize, ch: char) -> Result<usize, InvalidPolicy> {
@@ -639,7 +579,7 @@ impl PathTrie {
             .ok_or(InvalidPolicy("invalid compiled path"))
     }
 
-    fn decision(&self, state: usize, action: Action, now: u64) -> Decision<'_> {
+    pub(super) fn decision(&self, state: usize, action: Action, now: u64) -> Decision<'_> {
         match self
             .state_at(state, now)
             .and_then(|node| node.decisions.get(action as usize))

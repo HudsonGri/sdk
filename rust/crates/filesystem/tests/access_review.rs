@@ -18,7 +18,7 @@ fn a_later_head_revokes_head_only_reads_without_a_policy_edit() -> Result<(), In
     let old = PathTrie::compile(&policy, &caller, selected, context, &cap)?;
     let view = AccessView::new(old);
     let initial = view.current()?;
-    assert!(initial.decide(Action::Read, "key", 100).allowed);
+    assert!(initial.evaluate(Action::Read, "key", 100).allowed);
     let advanced = Resource {
         head: 2,
         ..selected
@@ -38,7 +38,7 @@ fn a_later_head_revokes_head_only_reads_without_a_policy_edit() -> Result<(), In
         &cap,
     );
     assert!(!expected.allowed);
-    assert_eq!(view.current()?.decide(Action::Read, "key", 100), expected);
+    assert_eq!(view.current()?.evaluate(Action::Read, "key", 100), expected);
     assert!(
         view.publish(PathTrie::compile(
             &policy, &caller, selected, context, &cap
@@ -46,7 +46,7 @@ fn a_later_head_revokes_head_only_reads_without_a_policy_edit() -> Result<(), In
         .is_err()
     );
     assert_eq!(view.current()?.head_position(), 2);
-    assert!(initial.decide(Action::Read, "key", 100).allowed);
+    assert!(initial.evaluate(Action::Read, "key", 100).allowed);
     Ok(())
 }
 
@@ -101,8 +101,8 @@ fn read_does_not_authorize_name_or_metadata_disclosure() -> Result<(), InvalidPo
         let res = resource(&caller.lineage, "secrets/key", 10);
         let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
         let path = trie.prepare(res.path)?;
-        assert!(path.decide(Action::Read, 100).allowed);
-        assert!(!path.decide(Action::List, 100).allowed);
+        assert!(path.evaluate(Action::Read, 100).allowed);
+        assert!(!path.evaluate(Action::List, 100).allowed);
         assert!(!path.mount_mode(100).visible());
         assert!(!trie.mount_mode(res.path, 100).visible());
         assert!(path.mount_mode(100).allows(Action::Read));
@@ -141,8 +141,8 @@ fn full_case_folding_preserves_glob_literal_matches() -> Result<(), InvalidPolic
             let decision = decide(&policy, &caller, action, res, context, &cap);
             assert!(!decision.allowed, "{glob}: {path}");
             assert_eq!(decision.rule_id, Some("hidden"));
-            assert_eq!(trie.decide(action, path, 100), decision);
-            assert_eq!(trie.prepare(path)?.decide(action, 100), decision);
+            assert_eq!(trie.evaluate(action, path, 100), decision);
+            assert_eq!(trie.prepare(path)?.evaluate(action, 100), decision);
         }
     }
     Ok(())
@@ -207,8 +207,8 @@ proptest! {
             let reference = decide(&policy, &caller, Action::Read, res, context, &cap);
             prop_assert_eq!(reference.allowed, expected);
             let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
-            prop_assert_eq!(trie.decide(Action::Read, &candidate, 100), reference);
-            prop_assert_eq!(trie.prepare(&candidate)?.decide(Action::Read, 100), reference);
+            prop_assert_eq!(trie.evaluate(Action::Read, &candidate, 100), reference);
+            prop_assert_eq!(trie.prepare(&candidate)?.evaluate(Action::Read, 100), reference);
         }
     }
 }
@@ -229,17 +229,20 @@ fn published_policy_refreshes_new_opens_and_preserves_pinned_handles()
     let name = LogicalName::new(NameEncoding::Utf8, b"public".to_vec(), 255)?;
     let path = acyclic_fs::kernel::NamespacePath::new(vec![name], res.config.limits)?;
     let opened = view.current()?.pin(&path)?;
-    assert!(opened.decide(Action::Read, 100).allowed);
+    assert!(opened.evaluate(Action::Read, 100).allowed);
     policy.version = 2;
     policy
         .layers
         .push(vec![rule("revoked", Effect::Deny, &Action::ALL, "public")]);
     view.publish(PathTrie::compile(&policy, &caller, res, context, &cap)?)?;
     let reopened = view.current()?.pin(&path)?;
-    assert!(!reopened.decide(Action::Read, 100).allowed);
-    assert_eq!(reopened.decide(Action::Read, 100).rule_id, Some("revoked"));
-    assert!(opened.decide(Action::Read, 199).allowed);
-    assert!(!opened.decide(Action::Read, 200).allowed);
+    assert!(!reopened.evaluate(Action::Read, 100).allowed);
+    assert_eq!(
+        reopened.evaluate(Action::Read, 100).rule_id,
+        Some("revoked")
+    );
+    assert!(opened.evaluate(Action::Read, 199).allowed);
+    assert!(!opened.evaluate(Action::Read, 200).allowed);
     assert!(!opened.mount_mode(200).visible());
     policy.version = 1;
     policy.layers.pop();
@@ -288,7 +291,7 @@ fn published_policy_refreshes_new_opens_and_preserves_pinned_handles()
         !view
             .current()?
             .pin(&path)?
-            .decide(Action::Read, 100)
+            .evaluate(Action::Read, 100)
             .allowed
     );
     Ok(())
@@ -352,11 +355,11 @@ fn native_exact_grant(
             reference.allowed, allowed,
             "{profile:?}, capability={capability_grant}: {path}"
         );
-        assert_eq!(trie.decide(Action::Read, path, 100), reference);
+        assert_eq!(trie.evaluate(Action::Read, path, 100), reference);
         assert_eq!(
             trie.prepare("")?
                 .child_name(&name(path)?)?
-                .decide(Action::Read, 100),
+                .evaluate(Action::Read, 100),
             reference
         );
     }
@@ -418,7 +421,7 @@ fn native_name_views_reject_unsupported_encodings_and_names() -> Result<(), Inva
         // NFC admission applies only to UTF-8 logical names in the filesystem.
         res.path = "e\u{301}";
         assert!(decide(&policy, &caller, Action::Read, res, context, &cap).allowed);
-        assert!(trie.decide(Action::Read, res.path, 100).allowed);
+        assert!(trie.evaluate(Action::Read, res.path, 100).allowed);
     }
     Ok(())
 }
@@ -451,7 +454,7 @@ fn windows_access_paths_obey_encoded_name_and_path_limits() -> Result<(), Invali
             "{path}"
         );
         assert_eq!(
-            trie.decide(Action::Read, path, 100).allowed,
+            trie.evaluate(Action::Read, path, 100).allowed,
             allowed,
             "{path}"
         );
@@ -484,7 +487,7 @@ fn volume_name_keys_apply_to_rules_and_capabilities() -> Result<(), InvalidPolic
             let reference = decide(&policy, &caller, action, res, context, &cap);
             assert!(!reference.allowed, "{deny}: {alias}");
             assert_eq!(reference.rule_id, Some("hidden"));
-            assert_eq!(trie.prepare(alias)?.decide(action, 100), reference);
+            assert_eq!(trie.prepare(alias)?.evaluate(action, 100), reference);
         }
     }
     let policy = super::policy(vec![
@@ -507,7 +510,7 @@ fn volume_name_keys_apply_to_rules_and_capabilities() -> Result<(), InvalidPolic
     assert!(
         PathTrie::compile(&policy, &caller, res, context, &cap)?
             .prepare(res.path)?
-            .decide(Action::Read, 100)
+            .evaluate(Action::Read, 100)
             .allowed
     );
     Ok(())
@@ -534,7 +537,7 @@ fn unicode_admission_matches_the_volume() -> Result<(), InvalidPolicy> {
             decide(&policy, &caller, Action::Read, res, context, &cap).allowed,
             allowed
         );
-        assert_eq!(trie.decide(Action::Read, path, 100).allowed, allowed);
+        assert_eq!(trie.evaluate(Action::Read, path, 100).allowed, allowed);
     }
     Ok(())
 }
@@ -608,12 +611,12 @@ fn prepared_paths_retain_deadlines_and_view_identity() -> Result<(), InvalidPoli
         .child("agents")?
         .child("worker")?
         .child("é.txt")?;
-    assert!(path.decide(Action::Read, 109).allowed);
-    assert!(!path.decide(Action::Read, 110).allowed);
-    assert!(!path.decide(Action::Read, 99).allowed);
+    assert!(path.evaluate(Action::Read, 109).allowed);
+    assert!(!path.evaluate(Action::Read, 110).allowed);
+    assert!(!path.evaluate(Action::Read, 99).allowed);
     assert_eq!(
-        path.decide(Action::Read, 109),
-        trie.decide(Action::Read, "agents/worker/é.txt", 109)
+        path.evaluate(Action::Read, 109),
+        trie.evaluate(Action::Read, "agents/worker/é.txt", 109)
     );
     let revoked = Policy {
         version: 2,
@@ -630,10 +633,10 @@ fn prepared_paths_retain_deadlines_and_view_identity() -> Result<(), InvalidPoli
     assert!(
         !revoked
             .prepare("agents/worker/é.txt")?
-            .decide(Action::Read, 109)
+            .evaluate(Action::Read, 109)
             .allowed
     );
-    assert!(path.decide(Action::Read, 109).allowed);
+    assert!(path.evaluate(Action::Read, 109).allowed);
     assert!(trie.prepare("a").and_then(|p| p.child("../b")).is_err());
     assert!(trie.prepare("a//b").is_err());
     Ok(())
@@ -674,11 +677,11 @@ fn full_case_fold_question_preserves_native_scalar_aliases()
             let res = Resource { path, ..res };
             let decision = decide(&policy, &caller, Action::Read, res, context, &cap);
             prop_assert!(!decision.allowed, "{path}");
-            prop_assert_eq!(trie.decide(Action::Read, path, 100), decision);
+            prop_assert_eq!(trie.evaluate(Action::Read, path, 100), decision);
         }
         Ok(())
     })?;
-    assert!(trie.decide(Action::Read, "fileab.txt", 100).allowed);
+    assert!(trie.evaluate(Action::Read, "fileab.txt", 100).allowed);
     Ok(())
 }
 
@@ -724,7 +727,7 @@ proptest! {
         prop_assert!(work.live_allocation_bytes() > before);
         drop(view);
         prop_assert!(work.live_allocation_bytes() >= baseline + bytes);
-        prop_assert!(pinned.decide(Action::Read, "file", 100).allowed);
+        prop_assert!(pinned.evaluate(Action::Read, "file", 100).allowed);
         drop(pinned);
         prop_assert_eq!(work.live_allocation_bytes(), baseline);
       }

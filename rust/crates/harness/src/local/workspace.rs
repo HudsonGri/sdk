@@ -91,37 +91,20 @@ impl LocalWorkspace {
 
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
-        let mut mounts = mounts::owner(
-            path,
-            &primary.view.volume,
-            None,
+        let mut mounts = crate::workspace::compose(
+            path.into(),
+            crate::filesystem::access::access_now(),
+            primary.view.clone(),
             self.mounts
                 .mounts()
                 .filter(|(relative, _)| !relative.is_empty())
-                .map(|(_, mount)| {
-                    (
-                        mount.view.name.clone(),
-                        mount.view.volume.clone(),
-                        mount.view.source.clone(),
-                    )
-                }),
+                .map(|(_, mount)| mount.view.clone()),
         )?;
         #[cfg(target_os = "linux")]
         volumes::link(path, &mut mounts)?;
         #[cfg(not(target_os = "linux"))]
         {
-            let (issuer, agent) = self
-                .mount_authority
-                .as_ref()
-                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
-            volumes::attach(
-                &self.filesystem,
-                &self.store,
-                path,
-                &mut mounts,
-                (issuer, *agent),
-            )
-            .await?;
+            volumes::attach(&self.store, path, &mut mounts).await?;
         }
         Ok(Arc::new(mounts))
     }
@@ -321,19 +304,15 @@ pub(super) async fn open(
         .map_err(storage)?;
     let mut mounts = mounts::owner(
         &path,
+        filesystem,
+        view.workspace(),
         volume,
-        None,
-        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
-    )?;
+        native_mounts.then(|| ("scratch".into(), scratch.clone())),
+        authority.ok_or(Error::FilesystemAccessConfiguration("task volume owner"))?,
+    )
+    .await?;
     if native_mounts {
-        volumes::attach(
-            filesystem,
-            &store,
-            &path,
-            &mut mounts,
-            authority.ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
-        )
-        .await?;
+        volumes::attach(&store, &path, &mut mounts).await?;
     }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);

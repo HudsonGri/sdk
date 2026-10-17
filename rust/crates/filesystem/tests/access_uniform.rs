@@ -49,7 +49,7 @@ proptest! {
         let context = Context { now: 100, approvals: 0 };
         let trie = PathTrie::compile(&policy, &caller, res, context, &cap).unwrap();
         for action in Action::ALL {
-            prop_assert_eq!(trie.decide(action, &path, context.now),
+            prop_assert_eq!(trie.evaluate(action, &path, context.now),
                 decide(&policy, &caller, action, res, context, &cap));
         }
     }

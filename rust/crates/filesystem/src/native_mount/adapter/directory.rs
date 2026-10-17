@@ -19,10 +19,13 @@ where
             let path = self.namespace_inputs(path, &mut inputs)?;
             let view = self.access_snapshot(work).await?;
             let access = view
-                .prepare_namespace(&path)
+                .prepare_namespace_with_work(&path, work)
                 .map_err(|_| MountSourceError::AccessDenied)?;
             let now = access::access_time()?;
-            if !access.decide(crate::access::Action::List, now).allowed {
+            if !access
+                .decide(crate::access::Action::List, now)
+                .is_ok_and(|decision| decision.allowed)
+            {
                 return Err(MountSourceError::AccessDenied);
             }
             let cursor = cursor
@@ -67,8 +70,8 @@ where
                 let visible = access
                     .child_name(&entry.name)
                     .map_err(|_| MountSourceError::AccessDenied)?
-                    .mount_mode(now)
-                    .visible();
+                    .decide(crate::access::Action::List, now)
+                    .is_ok_and(|decision| decision.allowed);
                 if !visible {
                     continue;
                 }

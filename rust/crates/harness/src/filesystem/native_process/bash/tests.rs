@@ -59,25 +59,29 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
                 VolumeOwner::Project("project".into()),
                 &mut None,
             )?,
-            lineage: principal.lineage.clone(),
             generation: 1,
             head: 1,
-            config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Ephemeral),
-            policy: policy.clone(),
+            access: crate::workspace::fixtures::access(
+                &policy,
+                &principal,
+                &capability,
+                Resource {
+                    config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Ephemeral),
+                    lineage: &principal.lineage,
+                    volume: "",
+                    generation: 1,
+                    head: 1,
+                    path: "",
+                },
+                Context {
+                    now: 1,
+                    approvals: 0,
+                },
+            )?,
             source: (),
         })
     };
-    compose(
-        root,
-        &principal,
-        &capability,
-        Context {
-            now: 1,
-            approvals: 0,
-        },
-        volume("project")?,
-        [volume("data")?],
-    )
+    compose(root, 1, volume("project")?, [volume("data")?])
 }
 
 fn invocation(root: &Path) -> Invocation {

@@ -362,7 +362,7 @@ fn scenario_table() -> Result<(), Box<dyn std::error::Error>> {
             &case.capability,
         )?;
         assert_eq!(
-            trie.decide(case.action, case.path, case.context.now),
+            trie.evaluate(case.action, case.path, case.context.now),
             direct,
             "{}",
             case.name
@@ -395,7 +395,7 @@ fn globs_and_deny_precedence() -> Result<(), Box<dyn std::error::Error>> {
         ] {
             for action in Action::ALL {
                 assert_eq!(
-                    trie.decide(action, path, 100),
+                    trie.evaluate(action, path, 100),
                     decide(
                         &policy,
                         &principal,
@@ -443,8 +443,8 @@ fn expiry_and_revocation_require_new_open_views() -> Result<(), Box<dyn std::err
         approvals: 0,
     };
     let trie = PathTrie::compile(&policy, &principal, res, context, &cap)?;
-    assert!(trie.decide(Action::Read, "a", 100).allowed);
-    assert!(!trie.decide(Action::Read, "a", 101).allowed);
+    assert!(trie.evaluate(Action::Read, "a", 100).allowed);
+    assert!(!trie.evaluate(Action::Read, "a", 101).allowed);
     assert!(
         !decide(
             &policy,
@@ -463,7 +463,7 @@ fn expiry_and_revocation_require_new_open_views() -> Result<(), Box<dyn std::err
     policy.version += 1;
     policy.layers.clear();
     let revoked = PathTrie::compile(&policy, &principal, res, context, &cap)?;
-    assert!(!revoked.decide(Action::Read, "a", 100).allowed);
+    assert!(!revoked.evaluate(Action::Read, "a", 100).allowed);
     Ok(())
 }
 
@@ -920,8 +920,8 @@ proptest! {
         prop_assert_eq!(mode.visible(), decide(&policy, &principal, Action::List, res, context, &cap).allowed);
         for action in Action::ALL {
             prop_assert_eq!(mode.allows(action), decide(&policy, &principal, action, res, context, &cap).allowed);
-            prop_assert_eq!(trie.decide(action, &path, 100), decide(&policy, &principal, action, res, context, &cap));
-            prop_assert_eq!(prepared.decide(action, 100), decide(&policy, &principal, action, res, context, &cap));
+            prop_assert_eq!(trie.evaluate(action, &path, 100), decide(&policy, &principal, action, res, context, &cap));
+            prop_assert_eq!(prepared.evaluate(action, 100), decide(&policy, &principal, action, res, context, &cap));
         }
     }
 

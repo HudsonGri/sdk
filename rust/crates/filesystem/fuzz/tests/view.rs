@@ -86,8 +86,8 @@ fn head_model(publish: Publish) {
         writer.join().expect("publisher finishes without deadlock");
         let current = views.current().expect("new open");
         assert_eq!(current.head_position(), 2, "volume head rolled back");
-        assert!(!current.decide(Action::Read, "", 0).allowed);
-        assert!(pinned.decide(Action::Read, 0).allowed);
+        assert!(!current.evaluate(Action::Read, "", 0).allowed);
+        assert!(pinned.evaluate(Action::Read, 0).allowed);
     });
 }
 
@@ -121,7 +121,7 @@ fn publication_model(publish: Publish) {
         assert!(matches!(
             (
                 observed.policy_version(),
-                observed.decide(Action::Read, "", 0).allowed
+                observed.evaluate(Action::Read, "", 0).allowed
             ),
             (1, true) | (2, true) | (3, false)
         ));
@@ -131,11 +131,11 @@ fn publication_model(publish: Publish) {
             !views
                 .current()
                 .expect("new open")
-                .decide(Action::Read, "", 0)
+                .evaluate(Action::Read, "", 0)
                 .allowed,
             "revocation was lost"
         );
-        assert!(pinned.decide(Action::Read, 0).allowed);
+        assert!(pinned.evaluate(Action::Read, 0).allowed);
     });
 }
 
@@ -163,7 +163,7 @@ fn revision_model(publish: Publish) {
         writer.join().expect("publisher finishes without deadlock");
         let current = views.current().expect("current view");
         assert_eq!(current.policy_version(), 3, "policy revision rolled back");
-        assert!(!current.decide(Action::Read, "", 0).allowed);
+        assert!(!current.evaluate(Action::Read, "", 0).allowed);
         assert_eq!(current.volume(), "project");
     });
 }

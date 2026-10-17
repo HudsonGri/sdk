@@ -51,6 +51,14 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
+    let issuer = AuthorityIssuer::new(
+        "publisher",
+        [17; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "publisher".into(),
+        },
+    );
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
@@ -70,19 +78,11 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
             false,
             acyclic_fs::LocalCoreStateStore::open_shared_owner(state.path().join("workspace"))
                 .map_err(storage)?,
-            None,
+            Some((&issuer, agent)),
         )
         .await?,
     );
     let files = FilesystemHost::new(filesystem, &provider, None)?;
-    let issuer = AuthorityIssuer::new(
-        "publisher",
-        [17; 32],
-        Authority {
-            kind: AggregateKind::Task,
-            id: "publisher".into(),
-        },
-    );
     let verifier = issuer.verifier(&mut None)?;
     let signed = issuer.issue(
         "publisher",
@@ -163,6 +163,7 @@ async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() 
             "file",
             crate::filesystem::access::access_now()
         )
+        .map_err(storage)?
         .allowed
     );
     Ok(())

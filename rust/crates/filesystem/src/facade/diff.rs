@@ -207,8 +207,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         use crate::workspace::WorkspaceError;
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
-            {
+            if maximum_changes == 0 || !self.same_deployment(&source.workspace.volume.fs) {
                 return Err(WorkspaceError::ForeignGeneration);
             }
             let config = source.workspace.volume.config;

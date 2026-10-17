@@ -129,7 +129,7 @@ where
         expires_at: None,
     });
     let volume = uuid::Uuid::from_bytes(source.volume_id()?.into_bytes()).to_string();
-    Ok(PathTrie::compile(
+    let view = PathTrie::compile(
         policy,
         &caller,
         Resource {
@@ -147,7 +147,12 @@ where
         &cap,
     )
     .map_err(|_| MountSourceError::AccessDenied)?
-    .with_policy_revision(head, revision))
+    .with_policy_revision(head, revision);
+    source
+        .checkout
+        .volume
+        .audit_view(view, caller, cap, None)
+        .map_err(|_| MountSourceError::AccessDenied)
 }
 
 pub(in crate::native_mount) fn bind_test_access<
@@ -755,7 +760,7 @@ fn projection_admission_holds_policy_publication_until_retirement()
                 Action::Write,
                 "file",
                 crate::native_mount::adapter::access::access_time()?
-            )
+            )?
             .allowed
     );
     drop(lease);
@@ -765,7 +770,8 @@ fn projection_admission_holds_policy_publication_until_retirement()
 }
 
 #[test]
-fn private_policy_staging_does_not_hold_a_publication_lease() -> Result<(), Box<dyn std::error::Error>> {
+fn private_policy_staging_does_not_hold_a_publication_lease()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let editor = invoke(&source.runtime, &work, || async {

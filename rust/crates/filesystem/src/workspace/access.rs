@@ -32,7 +32,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }]],
             expires_at: None,
         };
-        self.unrestricted_access(&principal, &capability, actions, cancellation)
+        self.unrestricted_access(principal, capability, actions, cancellation)
             .await
     }
 
@@ -40,8 +40,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// and claims this adapter cannot authenticate are errors, never defaults.
     async fn compile_access(
         &self,
-        principal: &Principal,
-        capability: &Capability,
+        principal: Principal,
+        capability: Capability,
         cancellation: &CancellationToken,
     ) -> Result<PathTrie, WorkspaceError> {
         let mut checkout = self
@@ -80,7 +80,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let volume = uuid::Uuid::from_bytes(self.id.volume_id().into_bytes()).to_string();
         PathTrie::compile(
             &policy,
-            principal,
+            &principal,
             Resource {
                 config: self.volume.config,
                 lineage: &[],
@@ -93,9 +93,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 now: access_time()?,
                 approvals: 0,
             },
-            capability,
+            &capability,
         )
-        .map(|view| view.with_policy_revision(checkout.generation_id(), revision))
+        .and_then(|view| {
+            self.audit_view(
+                view.with_policy_revision(checkout.generation_id(), revision),
+                principal,
+                capability,
+                None,
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            )
+            .map_err(|_| crate::access::InvalidPolicy("audit unavailable"))
+        })
         .map_err(|_| WorkspaceError::AccessDenied)
     }
 
@@ -103,15 +113,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// authorized. Every later checkout fences this view against its own root.
     async fn unrestricted_access(
         mut self,
-        principal: &Principal,
-        capability: &Capability,
+        principal: Principal,
+        capability: Capability,
         actions: &[Action],
         cancellation: &CancellationToken,
     ) -> Result<Self, WorkspaceError> {
         let view = self
             .compile_access(principal, capability, cancellation)
             .await?;
-        if !view.allows_every_path(actions, access_time()?) {
+        if !actions.iter().all(|action| {
+            view.decide_all(*action, access_time().unwrap_or(u64::MAX))
+                .is_ok_and(|decision| decision.allowed)
+        }) {
             return Err(WorkspaceError::AccessDenied);
         }
         self.access = Some((
@@ -171,7 +184,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             || !Action::ALL
                 .into_iter()
                 .filter(|action| *actions & (1 << *action as u16) != 0)
-                .all(|action| view.allows_every_path(&[action], now))
+                .all(|action| {
+                    view.decide_all(action, now)
+                        .is_ok_and(|decision| decision.allowed)
+                })
         {
             return Err(WorkspaceError::AccessDenied);
         }

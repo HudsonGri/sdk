@@ -91,7 +91,7 @@ async fn local_root_lifecycle_outlives_provider_destruction()
     let ownership = Arc::clone(&lifecycle).try_lock_owned()?;
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
-    let inner = FsInner {
+    let inner = Stores {
         authority: BlockingProviderDrop {
             entered: entered_tx,
             release: release_rx,

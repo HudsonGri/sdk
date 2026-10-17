@@ -226,8 +226,6 @@ use extents::regular_range_regions;
 pub use fs::EmbeddedCapabilities;
 pub use fs::Fs;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-use fs::FsInner;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use fs::LocalAuthorityBackend;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use fs::LocalFs;
@@ -245,6 +243,8 @@ pub(crate) use fs::MemoryCheckout;
 pub use fs::MemoryFs;
 #[cfg(all(feature = "memory", feature = "distributed"))]
 pub use fs::MemoryObjectBackend;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+use fs::{FsInner, Stores};
 use generation::MAXIMUM_VOLUME_EVENT_BYTES;
 pub use generation::Volume;
 use generation::generation_from_record;

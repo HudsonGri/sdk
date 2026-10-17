@@ -86,6 +86,21 @@ fn policy(read_all: bool) -> Arc<Policy> {
     })
 }
 fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>> {
+    let lineage = vec!["root".into(), agent.into()];
+    let access = acyclic_harness::workspace::fixtures::access(
+        &policy,
+        &principal("B"),
+        &capability(),
+        Resource {
+            lineage: &lineage,
+            volume: "",
+            generation: 10,
+            head: 10,
+            path: "",
+            config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Ephemeral),
+        },
+        CONTEXT,
+    )?;
     Ok(VolumeView {
         name: name.into(),
         agent: agent.into(),
@@ -101,11 +116,9 @@ fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>
             VolumeOwner::Project("project".into()),
             &mut None,
         )?,
-        lineage: vec!["root".into(), agent.into()],
         generation: 10,
         head: 10,
-        policy,
-        config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+        access,
         source: (),
     })
 }
@@ -119,13 +132,10 @@ const CONTEXT: Context = Context {
 
 #[test]
 fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
-    let principal = principal("B");
     let policy = policy(false);
     let table = compose(
         root(),
-        &principal,
-        &capability(),
-        CONTEXT,
+        CONTEXT.now,
         volume("B", "project", policy.clone())?,
         [
             volume("B", "data", policy.clone())?,
@@ -166,7 +176,6 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
 
 #[test]
 fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
-    let principal = principal("B");
     let policy = policy(true);
     let build = |include_c| -> Result<_> {
         let mut others = vec![volume("A", "project", policy.clone())?];
@@ -175,9 +184,7 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
         }
         compose(
             root(),
-            &principal,
-            &capability(),
-            CONTEXT,
+            CONTEXT.now,
             volume("B", "project", policy.clone())?,
             others,
         )
@@ -208,9 +215,7 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
     assert!(matches!(
         compose(
             root(),
-            &principal,
-            &capability(),
-            CONTEXT,
+            CONTEXT.now,
             volume("B", "project", policy)?,
             [stale]
         ),
@@ -221,7 +226,6 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
 
 #[test]
 fn descendant_rules_choose_a_writable_mount_and_keep_path_denials() -> Result<()> {
-    let principal = principal("B");
     let policy = Arc::new(Policy {
         schema_version: POLICY_SCHEMA_VERSION,
         version: 1,
@@ -230,14 +234,7 @@ fn descendant_rules_choose_a_writable_mount_and_keep_path_denials() -> Result<()
             rule("write-output", &[Action::Write], true, "output/**"),
         ]],
     });
-    let table = compose(
-        root(),
-        &principal,
-        &capability(),
-        CONTEXT,
-        volume("B", "project", policy)?,
-        [],
-    )?;
+    let table = compose(root(), CONTEXT.now, volume("B", "project", policy)?, [])?;
     let mount = table.resolve(Path::new(""))?.0;
     assert!(mount.mode.allows(Action::Write));
     mount.check(Action::Write, "output/result", 100)?;
@@ -247,15 +244,12 @@ fn descendant_rules_choose_a_writable_mount_and_keep_path_denials() -> Result<()
 
 #[test]
 fn hidden_stale_views_do_not_block_or_hide_primary_user_directories() -> Result<()> {
-    let caller = principal("B");
     let policy = policy(false);
     let mut hidden = volume("A", "project", policy.clone())?;
     hidden.generation -= 1;
     let table = compose(
         root(),
-        &caller,
-        &capability(),
-        CONTEXT,
+        CONTEXT.now,
         volume("B", "project", policy)?,
         [hidden],
     )?;
@@ -275,14 +269,11 @@ fn hidden_stale_views_do_not_block_or_hide_primary_user_directories() -> Result<
 
 #[test]
 fn duplicate_hidden_mount_paths_are_rejected() -> Result<()> {
-    let caller = principal("B");
     let policy = policy(false);
     assert!(matches!(
         compose(
             root(),
-            &caller,
-            &capability(),
-            CONTEXT,
+            CONTEXT.now,
             volume("B", "project", policy.clone())?,
             [
                 volume("A", "project", policy.clone())?,
@@ -304,13 +295,13 @@ proptest! {
         if create { actions.push(Action::Create); }
         let policy = Arc::new(Policy { schema_version: POLICY_SCHEMA_VERSION, version: 1, layers: vec![vec![rule("selected", &actions, own, "**")]] });
         let capability = capability();
-        let table = compose(root(), &caller, &capability, CONTEXT, volume("B", "project", policy.clone()).unwrap(), [volume("A", "project", policy.clone()).unwrap()]).unwrap();
+        let table = compose(root(), CONTEXT.now, volume("B", "project", policy.clone()).unwrap(), [volume("A", "project", policy.clone()).unwrap()]).unwrap();
         for agent in ["A", "B"] {
             let lineage = vec!["root".into(), agent.into()];
             let id = format!("{agent}-project");
             let selected = if agent == "B" { path.to_owned() } else { format!(".volumes/agents/A/{path}") };
             for action in [Action::Read, Action::Write, Action::Create] {
-                let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, generation: 10, head: 10, path, config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable) }, CONTEXT, &capability).allowed;
+                let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, generation: 10, head: 10, path, config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Ephemeral) }, CONTEXT, &capability).allowed;
                 let mounted = table.resolve(Path::new(&selected)).is_ok_and(|(mount, relative)| mount.check(action, &relative, 100).is_ok());
                 prop_assert_eq!(mounted, direct);
             }

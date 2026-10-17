@@ -27,16 +27,11 @@ fn owned_bytes(page: &DirectoryPage) -> Result<u64> {
     )
 }
 
-fn visible(parent: PreparedPath<'_>, name: &LogicalName, root: bool, now: u64) -> bool {
-    let internal = root
-        && match name.encoding() {
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => name.as_bytes() == b".system",
-            NameEncoding::WindowsUtf16Le => name.as_bytes() == b".\0s\0y\0s\0t\0e\0m\0",
-        };
-    !internal
-        && parent
-            .child_name(name)
-            .is_ok_and(|path| path.decide(Action::List, now).allowed)
+fn visible(parent: &PreparedPath<'_>, name: &LogicalName, now: u64) -> bool {
+    parent.child_name(name).is_ok_and(|path| {
+        path.decide(Action::List, now)
+            .is_ok_and(|decision| decision.allowed)
+    })
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -139,10 +134,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         guard().await?;
         super::super::access::require(&view.0, Action::List, request.path, io)?;
-        let parent = view
-            .0
-            .prepare(request.path)
-            .map_err(|_| io.invalid("invalid directory access path"))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let parent = match io.original_native_work() {
+            Some(work) => view.0.prepare_with_work(request.path, work),
+            None => view.0.prepare(request.path),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let parent = view.0.prepare(request.path);
+        let parent = parent.map_err(|_| io.invalid("invalid directory access path"))?;
         fork_preparer_io::retain(&generation, Some(io)).await?;
         guard().await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
@@ -193,7 +192,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let last = page.entries.pop();
             let mut removed = 0;
             page.entries.retain(|entry| {
-                let keep = visible(parent, &entry.name, request.path.is_empty(), now);
+                let keep = visible(&parent, &entry.name, now);
                 if !keep {
                     removed += entry.name.logical_owned_bytes();
                 }
@@ -201,7 +200,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             });
             let mut successor = None;
             if let Some(last) = last {
-                if visible(parent, &last.name, request.path.is_empty(), now) {
+                if visible(&parent, &last.name, now) {
                     page.entries.push(last);
                 } else if page.entries.is_empty() && page.has_more {
                     successor = Some(last.name);

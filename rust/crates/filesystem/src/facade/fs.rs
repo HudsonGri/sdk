@@ -12,7 +12,7 @@ impl EmbeddedCapabilities {
     pub const MEMORY: Self = Self { durable: false };
 }
 
-pub(super) struct FsInner<A, O> {
+pub(super) struct Stores<A, O> {
     pub(super) authority: A,
     pub(super) objects: O,
     pub(super) capabilities: EmbeddedCapabilities,
@@ -23,6 +23,18 @@ pub(super) struct FsInner<A, O> {
     // This field must remain last: Rust drops fields in declaration order, so every durable
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(super) _local_root_lifecycle: Option<OwnershipAnchor>,
+}
+
+pub(super) struct FsInner<A, O> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) audit: Option<Arc<crate::access::audit::writer::Recorder>>,
+    pub(super) stores: Arc<Stores<A, O>>,
+}
+impl<A, O> std::ops::Deref for FsInner<A, O> {
+    type Target = Stores<A, O>;
+    fn deref(&self) -> &Self::Target {
+        &self.stores
+    }
 }
 
 /// Embedded filesystem composition handle.
@@ -53,6 +65,23 @@ impl<A, O> Fs<A, O> {
             return true;
         }
         false
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn audit_recorder(
+        &self,
+    ) -> Result<&crate::access::audit::writer::Recorder, crate::access::audit::AuditError> {
+        self.inner
+            .audit
+            .as_deref()
+            .ok_or(crate::access::audit::AuditError)
+    }
+
+    /// Persist all access decisions admitted before this explicit barrier.
+    /// Individual checks only enqueue; they never flush storage.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn flush_access_audit(&self) -> Result<(), crate::access::audit::AuditError> {
+        self.audit_recorder()?.flush()
     }
 
     /// Deployment guarantees supplied when this engine was composed.
@@ -141,7 +170,7 @@ impl<A, O> Fs<A, O> {
     }
 
     pub(crate) fn same_deployment(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
+        Arc::ptr_eq(&self.inner.stores, &other.inner.stores)
     }
 
     /// Whether a workspace was acquired from this exact filesystem handle or its clones.
@@ -187,15 +216,19 @@ impl<A, O> Fs<A, O> {
     ) -> Self {
         Self {
             inner: Arc::new(FsInner {
-                authority,
-                objects,
-                capabilities,
-                workspace_namespace,
-                path_index: crate::path_index::MemoryGenerationPathIndex::default(),
-                generation_positions: super::generation_cache::GenerationPositions::default(),
-                publication_proof: Mutex::default(),
-                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-                _local_root_lifecycle: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                audit: None,
+                stores: Arc::new(Stores {
+                    authority,
+                    objects,
+                    capabilities,
+                    workspace_namespace,
+                    path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+                    generation_positions: super::generation_cache::GenerationPositions::default(),
+                    publication_proof: Mutex::default(),
+                    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+                    _local_root_lifecycle: None,
+                }),
             }),
         }
     }
@@ -219,6 +252,31 @@ impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
     #[must_use]
     pub fn operation_window_store(&self) -> crate::StreamOperationWindowStore<P> {
         crate::StreamOperationWindowStore::new(self.inner.authority.provider())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send + Sync + 'static>
+    Fs<A, O>
+{
+    /// Enable the bounded volume-file audit writer for owned backends.
+    #[must_use]
+    pub fn with_access_audit(self) -> Self {
+        if self.inner.audit.is_some() {
+            return self;
+        }
+        let raw = Self {
+            inner: Arc::new(FsInner {
+                audit: None,
+                stores: Arc::clone(&self.inner.stores),
+            }),
+        };
+        Self {
+            inner: Arc::new(FsInner {
+                stores: Arc::clone(&self.inner.stores),
+                audit: Some(Arc::new(crate::access::audit::writer::Recorder::new(raw))),
+            }),
+        }
     }
 }
 
@@ -310,10 +368,13 @@ impl
         objects: std::sync::Arc<acyclic_objects::v1::MemoryObjects>,
         bucket: acyclic_objects::v1::wire::BucketRef,
     ) -> Self {
-        Self::new(
+        let fs = Self::new(
             crate::distributed::StreamAuthorityStore::new(stream),
             crate::LogicalObjectStore::new(objects, bucket),
             EmbeddedCapabilities::MEMORY,
-        )
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let fs = fs.with_access_audit();
+        fs
     }
 }

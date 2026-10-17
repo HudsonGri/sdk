@@ -19,10 +19,13 @@ where
         let mut inputs = adapter::InputBuffers::new(&mut carrier)?;
         let namespace = self.authored.namespace_inputs(path, &mut inputs)?;
         let access = view
-            .prepare_namespace(&namespace)
+            .prepare_namespace_with_work(&namespace, work)
             .map_err(|_| MountSourceError::AccessDenied)?;
         let now = adapter::access::access_time()?;
-        if !access.decide(crate::access::Action::List, now).allowed {
+        if !access
+            .decide(crate::access::Action::List, now)
+            .is_ok_and(|decision| decision.allowed)
+        {
             return Err(MountSourceError::AccessDenied);
         }
         let (text, _allocation) = self.path(path, work)?;
@@ -90,7 +93,7 @@ where
                     .await
                     .map_err(lazy_error)?;
                 let (entries, mut output_allocation) = self
-                    .directory_entries(path, &page, &mut checkout, &state, carrier, access)
+                    .directory_entries(path, &page, &mut checkout, &state, carrier, &access)
                     .await?;
                 if !self
                     .authored
@@ -131,7 +134,7 @@ where
         checkout: &mut crate::Checkout<A, O>,
         state: &crate::LazyWorkspaceState,
         carrier: &mut adapter::NativeDemandCarrier<'_>,
-        access: crate::access::PreparedPath<'_>,
+        access: &crate::access::PreparedPath<'_>,
     ) -> Result<(Vec<MountDirectoryEntry>, crate::NativeAllocation), MountSourceError> {
         let owner = ViewGate::callback_owner()?;
         let now = adapter::access::access_time()?;
@@ -150,7 +153,7 @@ where
                 .child_name(&entry.name)
                 .map_err(|_| MountSourceError::AccessDenied)?
                 .decide(crate::access::Action::List, now)
-                .allowed
+                .is_ok_and(|decision| decision.allowed)
             {
                 continue;
             }

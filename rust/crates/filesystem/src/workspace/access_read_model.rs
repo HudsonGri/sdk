@@ -94,7 +94,7 @@ fn model(check_snapshot: bool) {
         let served = (!check_snapshot
             || permissions
                 .matches_policy_revision(GenerationId::new(snapshot.digest), revision(snapshot)))
-            && permissions.decide(Action::Read, "", 0).allowed;
+            && permissions.evaluate(Action::Read, "", 0).allowed;
         writer
             .join()
             .expect("commit and publication finish without deadlock");

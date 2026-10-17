@@ -120,6 +120,19 @@ impl std::fmt::Debug for Scope {
 }
 
 impl Scope {
+    pub(crate) fn audit_fingerprint(
+        &self,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(self.proof.len() as u64)?;
+        }
+        Ok(blake3::derive_key(
+            "acyclic.authority.audit/v1",
+            &self.proof,
+        ))
+    }
+
     /// Returns the stable scope identity.
     #[must_use]
     pub fn id(&self) -> &str {
