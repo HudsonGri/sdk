@@ -260,7 +260,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         #[cfg(not(acyclic_harness_loom))]
         let replace = true;
         if replace {
-            *self.index.lock().await = fresh.index.into_inner();
+            let replacement = std::mem::take(&mut *fresh.index.lock().await);
+            *self.index.lock().await = replacement;
         }
         self.snapshot_follow(query, maximum_files, true).await
     }
