@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use windows_sys::Win32::{
     Foundation::{ERROR_NOT_FOUND, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    Storage::FileSystem::ReadFile,
+    Storage::FileSystem::{FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType, ReadFile},
     System::{
         Console::{
             CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetConsoleCP, GetConsoleMode,
@@ -110,6 +110,91 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
         // Cancellation is retried until the worker acknowledges completion.
         std::thread::yield_now();
     }
+}
+
+/// How a process input handle can be awaited without polling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputKind {
+    /// Disk files and the NUL device: a read never waits for a peer.
+    Ready,
+    /// A pipe opened for overlapped I/O: completions arrive on the IOCP.
+    Overlapped,
+    /// A synchronous pipe: only a blocking read observes data, and
+    /// `CancelSynchronousIo` releases it.
+    Blocking,
+    /// A console input buffer: as `Blocking`, but its text is UTF-16.
+    Console,
+}
+
+/// Classify a live input handle.
+pub fn input_kind(file: &std::fs::File) -> InputKind {
+    let handle = file.as_raw_handle() as HANDLE;
+    let mut mode = 0;
+    // SAFETY: the borrowed file keeps the handle live for both queries, and
+    // the mode output outlives the console query.
+    let (kind, console) = unsafe { (GetFileType(handle), GetConsoleMode(handle, &raw mut mode)) };
+    match kind {
+        FILE_TYPE_DISK => InputKind::Ready,
+        FILE_TYPE_PIPE if super::io::is_overlapped(file) => InputKind::Overlapped,
+        FILE_TYPE_CHAR if console == 0 => InputKind::Ready,
+        FILE_TYPE_CHAR => InputKind::Console,
+        _ => InputKind::Blocking,
+    }
+}
+
+/// Process input, opened so it can be awaited without polling.
+#[cfg(feature = "async-stdin")]
+pub enum AsyncInput {
+    /// A disk file or NUL: read directly.
+    Ready(std::fs::File),
+    /// An overlapped pipe registered with the runtime's IOCP.
+    Overlapped(tokio::net::windows::named_pipe::NamedPipeClient),
+    /// A synchronous pipe or a console, for a dedicated reader that
+    /// `cancel_thread` releases.
+    Blocking(std::fs::File),
+    /// A console input buffer, for a dedicated reader of decoded text.
+    Console(std::fs::File),
+}
+
+/// Classify an owned input handle and open it accordingly. An overlapped pipe
+/// is registered with the current Tokio runtime, so this must run inside one.
+#[cfg(feature = "async-stdin")]
+pub fn async_input(file: std::fs::File) -> io::Result<AsyncInput> {
+    use std::os::windows::io::IntoRawHandle as _;
+    Ok(match input_kind(&file) {
+        InputKind::Ready => AsyncInput::Ready(file),
+        // SAFETY: the file owned the handle and gives up ownership to the
+        // client, and the classification confirmed a pipe opened for
+        // overlapped I/O, which is what the client requires.
+        InputKind::Overlapped => AsyncInput::Overlapped(unsafe {
+            tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
+                file.into_raw_handle(),
+            )
+        }?),
+        InputKind::Blocking => AsyncInput::Blocking(file),
+        InputKind::Console => AsyncInput::Console(file),
+    })
+}
+
+/// Bytes queued in a pipe and not yet read by anyone.
+pub fn pipe_bytes_available(pipe: &std::fs::File) -> io::Result<u32> {
+    let mut available = 0;
+    // SAFETY: the borrowed file keeps the handle live, the optional buffers
+    // are null, and the count output outlives the call.
+    let peeked = unsafe {
+        windows_sys::Win32::System::Pipes::PeekNamedPipe(
+            pipe.as_raw_handle() as HANDLE,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &raw mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if peeked == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(available)
 }
 
 /// Manual-reset event that every unbounded console input wait includes, so

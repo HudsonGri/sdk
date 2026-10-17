@@ -5,9 +5,9 @@ use futures::{StreamExt, stream::BoxStream};
 /// Bounded JSONL stdin, independently scheduled from replay/follow. Must be
 /// called within a Tokio runtime with I/O enabled.
 pub fn stdin_jsonl() -> Result<BoxStream<'static, Result<String>>> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let input = stdin::open().map_err(|error| Error::Storage(error.to_string()))?;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let input = tokio::io::stdin();
     Ok(Box::pin(
         tokio_util::codec::FramedRead::new(
@@ -122,12 +122,76 @@ mod stdin {
     }
 }
 
-/// A dedicated reader for input the reactor cannot wait on. One persistent
+/// Windows stdin, awaited the way its handle allows. Overlapped pipes
+/// complete on the runtime's IOCP with no thread; disk files and NUL never
+/// wait for a peer and are read directly. Synchronous pipes and consoles are
+/// observable only by a blocking read, so the dedicated reader takes them
+/// (the console through std's stdin, which decodes its UTF-16); on
+/// anonymous pipes it measured about 1.7x the throughput of
+/// `tokio::io::stdin` at equal latency, and dropping it cancels the pending
+/// read and joins the thread, so no orphaned read consumes later input.
+#[cfg(windows)]
+mod stdin {
+    use std::fs::File;
+    use std::io::{self, Read};
+    use std::os::windows::io::AsHandle;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, ready};
+
+    use acyclic_native_runtime::terminal::{AsyncInput, async_input};
+    use tokio::io::{AsyncRead, ReadBuf};
+    use tokio::net::windows::named_pipe::NamedPipeClient;
+
+    use super::reader::{Reader, end_of_input};
+
+    pub(super) enum Stdin {
+        Ready(File),
+        Overlapped(NamedPipeClient),
+        Reader(Reader),
+    }
+
+    pub(super) fn open() -> io::Result<Stdin> {
+        from_file(File::from(io::stdin().as_handle().try_clone_to_owned()?))
+    }
+
+    pub(super) fn from_file(file: File) -> io::Result<Stdin> {
+        Ok(match async_input(file)? {
+            AsyncInput::Ready(file) => Stdin::Ready(file),
+            AsyncInput::Overlapped(pipe) => Stdin::Overlapped(pipe),
+            AsyncInput::Blocking(file) => Stdin::Reader(Reader::spawn(file)?),
+            // The console decodes its UTF-16 input through std's stdin.
+            AsyncInput::Console(_) => Stdin::Reader(Reader::spawn(io::stdin())?),
+        })
+    }
+
+    impl AsyncRead for Stdin {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            match self.get_mut() {
+                Self::Ready(file) => {
+                    let count = end_of_input(file.read(buf.initialize_unfilled()))?;
+                    buf.advance(count);
+                    Poll::Ready(Ok(()))
+                }
+                Self::Overlapped(pipe) => {
+                    let before = buf.filled().len();
+                    let read = ready!(Pin::new(pipe).poll_read(cx, buf));
+                    let read = read.map(|()| buf.filled().len() - before);
+                    Poll::Ready(end_of_input(read).map(drop))
+                }
+                Self::Reader(reader) => reader.poll_read(cx, buf),
+            }
+        }
+    }
+}
+
+/// A dedicated reader for input the runtime cannot wait on. One persistent
 /// thread fills recycled batches and feeds a bounded channel, so a slow or
 /// stalled read never blocks the runtime.
-#[cfg(unix)]
 mod reader {
-    use std::fs::File;
     use std::io::{self, Read};
     use std::sync::mpsc;
     use std::task::{Context, Poll, ready};
@@ -136,10 +200,50 @@ mod reader {
 
     const BATCH: usize = 64 * 1024;
 
+    /// Input the dedicated reader can wait on with a blocking read.
+    pub(super) trait Source: Send + 'static {
+        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize>;
+    }
+
+    #[cfg(unix)]
+    impl Source for std::fs::File {
+        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            read_blocking(self, bytes)
+        }
+    }
+
+    #[cfg(windows)]
+    impl Source for std::fs::File {
+        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            end_of_input(self.read(bytes))
+        }
+    }
+
+    #[cfg(windows)]
+    impl Source for io::Stdin {
+        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            end_of_input(self.read(bytes))
+        }
+    }
+
+    /// ERROR_BROKEN_PIPE: the writer closed, which is the end of input.
+    #[cfg(windows)]
+    const BROKEN_PIPE: i32 = 109;
+
+    /// A closed pipe's writer is the end of input, not an error.
+    #[cfg(windows)]
+    pub(super) fn end_of_input(read: io::Result<usize>) -> io::Result<usize> {
+        match read {
+            Err(error) if error.raw_os_error() == Some(BROKEN_PIPE) => Ok(0),
+            read => read,
+        }
+    }
+
+    #[cfg(unix)]
     /// Read, waiting as a blocking read would. An inherited description may
     /// be nonblocking (a socket, say): WouldBlock then waits in poll for
     /// input instead of ending it, without changing the shared flags.
-    pub(super) fn read_blocking(file: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
+    pub(super) fn read_blocking(file: &mut std::fs::File, bytes: &mut [u8]) -> io::Result<usize> {
         use rustix::event::{PollFd, PollFlags, poll};
         loop {
             match file.read(bytes) {
@@ -168,22 +272,25 @@ mod reader {
         spare: mpsc::Sender<Vec<u8>>,
         current: Vec<u8>,
         offset: usize,
+        #[cfg(windows)]
+        thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Reader {
-        pub(super) fn spawn(mut file: File) -> io::Result<Self> {
+        pub(super) fn spawn(mut file: impl Source) -> io::Result<Self> {
             let (send, batches) = tokio::sync::mpsc::channel(2);
             let (spare, recycled) = mpsc::channel::<Vec<u8>>();
-            // Detached: a dropped stream fails the next send, so the thread
-            // ends after its current read completes (at the next input or end
-            // of input for a pipe or terminal).
-            std::thread::Builder::new()
+            // A dropped stream fails the next send. On Unix the thread is
+            // detached and ends once its current read completes; it holds no
+            // lock or runtime resource, so process exit never waits for it.
+            // On Windows the drop cancels the read and joins.
+            let thread = std::thread::Builder::new()
                 .name("harness-stdin".into())
                 .spawn(move || {
                     loop {
                         let mut batch = recycled.try_recv().unwrap_or_default();
                         batch.resize(BATCH, 0);
-                        let result = read_blocking(&mut file, &mut batch).map(|count| {
+                        let result = file.read_input(&mut batch).map(|count| {
                             batch.truncate(count);
                             batch
                         });
@@ -193,11 +300,15 @@ mod reader {
                         }
                     }
                 })?;
+            #[cfg(unix)]
+            drop(thread);
             Ok(Self {
                 batches,
                 spare,
                 current: Vec::new(),
                 offset: 0,
+                #[cfg(windows)]
+                thread: Some(thread),
             })
         }
 
@@ -221,6 +332,21 @@ mod reader {
             buf.put_slice(&self.current[self.offset..self.offset + count]);
             self.offset += count;
             Poll::Ready(Ok(()))
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for Reader {
+        fn drop(&mut self) {
+            // The closed channel fails the reader's next send; cancellation is
+            // retried until the thread has left its read and observed it.
+            self.batches.close();
+            if let Some(thread) = self.thread.take() {
+                while !thread.is_finished() {
+                    acyclic_native_runtime::terminal::cancel_thread(&thread);
+                }
+                let _ = thread.join();
+            }
         }
     }
 }
@@ -296,248 +422,8 @@ pub fn terminal_events(
     })))
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests;
+
 #[cfg(all(test, unix))]
-mod tests {
-    use super::stdin::{Stdin, from_file};
-    use futures::StreamExt;
-    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
-    use std::fs::File;
-    use std::io::{self, Write};
-    use std::time::Duration;
-    use tokio_util::codec::{FramedRead, LinesCodec};
-
-    fn runtime() -> io::Result<tokio::runtime::Runtime> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-    }
-
-    fn pipe() -> io::Result<(File, File)> {
-        let (read, write) = io::pipe()?;
-        Ok((
-            File::from(std::os::fd::OwnedFd::from(read)),
-            File::from(std::os::fd::OwnedFd::from(write)),
-        ))
-    }
-
-    #[test]
-    fn pipe_input_never_changes_the_shared_description() -> io::Result<()> {
-        let (read, mut write) = pipe()?;
-        let observer = read.try_clone()?;
-        let original = fcntl_getfl(&observer)?;
-        assert!(!original.contains(OFlags::NONBLOCK));
-        let runtime = runtime()?;
-        let lines = runtime.block_on(async {
-            let input = from_file(read)?;
-            assert_eq!(
-                matches!(input, Stdin::Reactor(_)),
-                cfg!(target_os = "linux")
-            );
-            // Nothing a killed process could leave behind: the description
-            // shared with the parent keeps its flags while input is followed.
-            assert_eq!(fcntl_getfl(&observer)?, original);
-            write.write_all(b"one\ntwo\n")?;
-            drop(write);
-            let lines: Vec<_> = FramedRead::new(input, LinesCodec::new()).collect().await;
-            io::Result::Ok(lines)
-        })?;
-        let lines: Vec<String> = lines
-            .into_iter()
-            .collect::<Result<_, _>>()
-            .map_err(io::Error::other)?;
-        assert_eq!(lines, ["one", "two"]);
-        assert_eq!(fcntl_getfl(&observer)?, original);
-        Ok(())
-    }
-
-    #[test]
-    fn negative_control_detects_flags_set_through_a_duplicate() -> io::Result<()> {
-        let (read, _write) = pipe()?;
-        let original = fcntl_getfl(&read)?;
-        let duplicate = read.try_clone()?;
-        fcntl_setfl(&duplicate, original | OFlags::NONBLOCK)?;
-        assert_ne!(
-            fcntl_getfl(&read)?,
-            original,
-            "a duplicate shares the description"
-        );
-        Ok(())
-    }
-
-    /// Another reader takes the announced byte between the readiness edge and
-    /// this stream's read. The reactor path must keep waiting without
-    /// blocking the runtime. (The thread path cannot be raced into blocking
-    /// the runtime: only its own thread ever waits in a read.)
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn input_stolen_after_readiness_leaves_the_runtime_running() -> io::Result<()> {
-        let (read, mut write) = pipe()?;
-        let mut thief = read.try_clone()?;
-        let runtime = runtime()?;
-        runtime.block_on(async {
-            let mut input = from_file(read)?;
-            let Stdin::Reactor(fd) = &input else {
-                return Err(io::ErrorKind::Unsupported.into());
-            };
-            write.write_all(b"x")?;
-            // Hold the edge, then let the thief consume its byte.
-            fd.readable().await?.retain_ready();
-            assert_eq!(io::Read::read(&mut thief, &mut [0; 1])?, 1);
-            let stalled = tokio::time::timeout(
-                Duration::from_millis(5),
-                tokio::io::AsyncReadExt::read(&mut input, &mut [0; 1]),
-            )
-            .await;
-            assert!(stalled.is_err(), "the stolen byte was read");
-            write.write_all(b"y\n")?;
-            let mut lines = FramedRead::new(input, LinesCodec::new());
-            let line = lines.next().await.ok_or(io::ErrorKind::UnexpectedEof)?;
-            assert_eq!(line.map_err(io::Error::other)?, "y");
-            io::Result::Ok(())
-        })
-    }
-
-    #[test]
-    fn negative_control_detects_a_blocking_read_after_stolen_readiness() -> io::Result<()> {
-        // The removed shared path: readiness seen, byte stolen, then a read of
-        // the blocking description holds its thread.
-        let (read, mut write) = pipe()?;
-        let mut thief = read.try_clone()?;
-        write.write_all(b"x")?;
-        let mut fds = [rustix::event::PollFd::new(
-            &read,
-            rustix::event::PollFlags::IN,
-        )];
-        rustix::event::poll(&mut fds, None)?;
-        assert_eq!(io::Read::read(&mut thief, &mut [0; 1])?, 1);
-        let mut shared = read;
-        let blocked = std::thread::spawn(move || io::Read::read(&mut shared, &mut [0; 1]));
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(!blocked.is_finished(), "the stale read returned");
-        write.write_all(b"y")?;
-        assert_eq!(blocked.join().map_err(|_| io::ErrorKind::Other)??, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn regular_files_are_read_off_the_reactor() -> io::Result<()> {
-        let mut file = tempfile::tempfile()?;
-        file.write_all(b"alpha\nbeta\n")?;
-        std::io::Seek::rewind(&mut file)?;
-        let runtime = runtime()?;
-        let lines = runtime.block_on(async {
-            let input = from_file(file)?;
-            assert!(matches!(input, Stdin::Reader(_)));
-            let lines: Vec<_> = FramedRead::new(input, LinesCodec::new()).collect().await;
-            io::Result::Ok(lines)
-        })?;
-        let lines: Vec<String> = lines
-            .into_iter()
-            .collect::<Result<_, _>>()
-            .map_err(io::Error::other)?;
-        assert_eq!(lines, ["alpha", "beta"]);
-        Ok(())
-    }
-
-    #[test]
-    fn a_stalled_dedicated_read_leaves_the_runtime_running() -> io::Result<()> {
-        // A read that cannot complete stands in for a stalled filesystem.
-        let (read, mut write) = pipe()?;
-        let runtime = runtime()?;
-        runtime.block_on(async {
-            let reader = super::reader::Reader::spawn(read)?;
-            let mut lines = FramedRead::new(Stdin::Reader(reader), LinesCodec::new());
-            assert!(
-                tokio::time::timeout(Duration::from_millis(5), lines.next())
-                    .await
-                    .is_err()
-            );
-            write.write_all(b"late\n")?;
-            let line = lines.next().await.ok_or(io::ErrorKind::UnexpectedEof)?;
-            assert_eq!(line.map_err(io::Error::other)?, "late");
-            io::Result::Ok(())
-        })
-    }
-
-    #[test]
-    fn negative_control_detects_a_read_that_blocks_its_thread() -> io::Result<()> {
-        // The removed path read regular files inline; on a stalled source that
-        // read holds its thread, which the timer here observes.
-        let (mut read, mut write) = pipe()?;
-        let blocked = std::thread::spawn(move || io::Read::read(&mut read, &mut [0; 8]));
-        let runtime = runtime()?;
-        runtime.block_on(async { tokio::time::sleep(Duration::from_millis(5)).await });
-        assert!(!blocked.is_finished());
-        write.write_all(b"x")?;
-        assert_eq!(blocked.join().map_err(|_| io::ErrorKind::Other)??, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn a_nonblocking_socket_waits_for_input_instead_of_ending_it() -> io::Result<()> {
-        let (read, mut write) = std::os::unix::net::UnixStream::pair()?;
-        read.set_nonblocking(true)?;
-        let read = File::from(std::os::fd::OwnedFd::from(read));
-        let runtime = runtime()?;
-        let lines = runtime.block_on(async {
-            let input = from_file(read)?;
-            assert!(matches!(input, Stdin::Reader(_)));
-            let mut lines = FramedRead::new(input, LinesCodec::new());
-            // Empty: the reader's read would block, so it waits in poll.
-            assert!(
-                tokio::time::timeout(Duration::from_millis(5), lines.next())
-                    .await
-                    .is_err()
-            );
-            write.write_all(b"late\n")?;
-            drop(write);
-            let lines: Vec<_> = lines.collect().await;
-            io::Result::Ok(lines)
-        })?;
-        let lines: Vec<String> = lines
-            .into_iter()
-            .collect::<Result<_, _>>()
-            .map_err(io::Error::other)?;
-        assert_eq!(lines, ["late"]);
-        Ok(())
-    }
-
-    #[test]
-    fn negative_control_detects_a_nonblocking_read_ending_input() -> io::Result<()> {
-        // The removed reader loop took this error as the end of input.
-        let (read, _write) = std::os::unix::net::UnixStream::pair()?;
-        read.set_nonblocking(true)?;
-        let mut read = File::from(std::os::fd::OwnedFd::from(read));
-        let error = io::Read::read(&mut read, &mut [0; 8]).err();
-        assert_eq!(
-            error.map(|error| error.kind()),
-            Some(io::ErrorKind::WouldBlock)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn devices_other_than_terminals_are_read_off_the_reactor() -> io::Result<()> {
-        let runtime = runtime()?;
-        runtime.block_on(async {
-            for device in ["/dev/null", "/dev/random", "/dev/urandom", "/dev/zero"] {
-                let input = from_file(File::open(device)?)?;
-                assert!(matches!(input, Stdin::Reader(_)), "{device}");
-            }
-            io::Result::Ok(())
-        })
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn negative_control_detects_epoll_accepting_a_device() -> io::Result<()> {
-        // Without the allow-list, a reopened /dev/random registers with epoll
-        // and would be awaited on the reactor.
-        let runtime = runtime()?;
-        runtime.block_on(async {
-            let device = File::open("/dev/random")?;
-            assert!(tokio::io::unix::AsyncFd::try_new(device).is_ok());
-            io::Result::Ok(())
-        })
-    }
-}
+mod unix_tests;
