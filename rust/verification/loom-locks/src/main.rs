@@ -69,8 +69,8 @@ pub fn scan(source: &str) -> syn::Result<bool> {
 #[derive(Default)]
 pub struct Names<'ast> {
     renames: Vec<(String, String)>,
-    /// `type` items: name, generic parameter count and target.
-    aliases: Vec<(String, usize, &'ast Type)>,
+    /// `type` items: name, parameters and target.
+    aliases: Vec<(String, &'ast syn::Generics, &'ast Type)>,
     loom_import: bool,
     error: Option<syn::Error>,
 }
@@ -101,12 +101,12 @@ impl<'ast> Names<'ast> {
         }
     }
 
-    /// The target and generic parameter count of the alias `name`.
-    pub fn alias(&self, name: &str) -> Option<(usize, &'ast Type)> {
+    /// The parameters and target of the alias `name`.
+    pub fn alias(&self, name: &str) -> Option<(&'ast syn::Generics, &'ast Type)> {
         self.aliases
             .iter()
             .find(|(alias, _, _)| alias == name)
-            .map(|(_, count, target)| (*count, *target))
+            .map(|(_, parameters, target)| (*parameters, *target))
     }
 
     fn walk(&mut self, tree: &UseTree, prefix: &mut Vec<String>) {
@@ -160,7 +160,7 @@ impl<'ast> Visit<'ast> for Names<'ast> {
 
     fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
         self.aliases
-            .push((item.ident.to_string(), item.generics.params.len(), &item.ty));
+            .push((item.ident.to_string(), &item.generics, &item.ty));
         visit::visit_item_type(self, item);
     }
 }

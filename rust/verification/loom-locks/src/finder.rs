@@ -220,15 +220,29 @@ impl<'ast> Finder<'_, 'ast> {
     /// a lock, a tuple or array of one, an alias of one, or a type with a lock
     /// argument other than an [`EMPTY`] container.
     fn holds(&self, ty: &Type, depth: usize) -> Option<bool> {
+        self.holds_bound(ty, depth, &BTreeMap::new())
+    }
+
+    fn holds_bound(
+        &self,
+        ty: &Type,
+        depth: usize,
+        bindings: &BTreeMap<String, Option<bool>>,
+    ) -> Option<bool> {
         if depth > 16 {
             return None;
         }
         match ty {
-            Type::Paren(inner) => self.holds(&inner.elem, depth),
-            Type::Group(inner) => self.holds(&inner.elem, depth),
-            Type::Tuple(tuple) => any(tuple.elems.iter().map(|ty| self.holds(ty, depth + 1))),
-            Type::Array(array) => self.holds(&array.elem, depth + 1),
+            Type::Paren(inner) => self.holds_bound(&inner.elem, depth, bindings),
+            Type::Group(inner) => self.holds_bound(&inner.elem, depth, bindings),
+            Type::Tuple(tuple) => any(tuple.elems.iter().map(|ty| self.holds_bound(ty, depth + 1, bindings))),
+            Type::Array(array) => self.holds_bound(&array.elem, depth + 1, bindings),
             Type::Path(path) if path.qself.is_none() => {
+                if path.path.segments.len() == 1
+                    && let Some(verdict) = bindings.get(&path.path.segments[0].ident.to_string())
+                {
+                    return *verdict;
+                }
                 if self.is_lock(ty)? {
                     return Some(true);
                 }
@@ -245,18 +259,26 @@ impl<'ast> Finder<'_, 'ast> {
                         .collect(),
                     _ => Vec::new(),
                 };
-                let argued = any(arguments.iter().map(|ty| self.holds(ty, depth + 1)));
-                let aliased = if path.path.segments.len() == 1
-                    && let Some((_, target)) = self.names.alias(&name)
+                if path.path.segments.len() == 1
+                    && let Some((parameters, target)) = self.names.alias(&name)
                 {
-                    self.holds(target, depth + 1)
-                } else {
-                    Some(false)
-                };
+                    let mut resolved = BTreeMap::new();
+                    let mut supplied = arguments.iter();
+                    for parameter in parameters.type_params() {
+                        let verdict = match supplied.next() {
+                            Some(ty) => self.holds_bound(ty, depth + 1, bindings),
+                            None => parameter.default.as_ref().and_then(|ty| {
+                                self.holds_bound(ty, depth + 1, &resolved)
+                            }),
+                        };
+                        resolved.insert(parameter.ident.to_string(), verdict);
+                    }
+                    return self.holds_bound(target, depth + 1, &resolved);
+                }
                 if EMPTY.contains(&name.as_str()) {
-                    aliased
+                    Some(false)
                 } else {
-                    any([argued, aliased].into_iter())
+                    any(arguments.iter().map(|ty| self.holds_bound(ty, depth + 1, bindings)))
                 }
             }
             _ => self.is_lock(ty),
