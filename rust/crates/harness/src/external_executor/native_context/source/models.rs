@@ -64,17 +64,29 @@ fn scenario(broken: bool, change_owner: bool) {
         } else {
             source.path().clone()
         };
+        let destination_tail = if change_owner {
+            1
+        } else {
+            source.head().await.unwrap().position
+        };
         let competitor = provider.clone();
         let result_path = results.path().clone();
         // A successful edit is proven to precede pinning by its atomic guard
         // on the still-empty result stream. No auxiliary observer mutex.
         let editor = loom::thread::spawn(move || {
             loom::future::block_on(Box::pin(competitor.commit(CommitRequest {
-                conditions: vec![CommitCondition::Head {
-                    path: result_path,
-                    expected: generation.position,
-                    commit_id: CommitId::from_bytes(generation.commit),
-                }],
+                conditions: vec![
+                    CommitCondition::Head {
+                        path: result_path,
+                        expected: generation.position,
+                        commit_id: CommitId::from_bytes(generation.commit),
+                    },
+                    // Every mutation must guard its own destination too.
+                    CommitCondition::Tail {
+                        path: destination.clone(),
+                        expected: destination_tail,
+                    },
+                ],
                 mutations: vec![CommitMutation::Append {
                     path: destination,
                     records: vec![changed],
