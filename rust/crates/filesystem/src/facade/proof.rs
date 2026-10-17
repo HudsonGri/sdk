@@ -181,3 +181,10 @@ impl DependencyLedger {
         )
     }
 }
+
+#[cfg(test)]
+impl<A, O> Checkout<A, O> {
+    pub(crate) fn directory_observations(&self) -> CheckoutDependencies {
+        self.dependencies.proof().dependencies.clone()
+    }
+}

@@ -191,6 +191,7 @@ pub use path_access::{
     observe_path_async, observe_paths_async,
 };
 pub(crate) use path_access::{
+    CaptureRecords, resolve_path_with_accounting,
     PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
     observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
