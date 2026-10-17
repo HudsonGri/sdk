@@ -107,6 +107,7 @@ impl Commands<'_> {
                     "native process selected a foreign session".into(),
                 ));
             }
+            drop(launch);
             let output = Output {
                 owner,
                 volumes: self.volumes.clone(),

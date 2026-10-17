@@ -28,6 +28,8 @@ where
             {
                 return failed("native process execution is not bound to this task".into());
             }
+            let child = spawn.fork(request);
+            drop(spawn);
             let bytes = match super::super::launch::encode(&super::super::launch::Launch {
                 parent: owner.task_id(),
                 request,
@@ -45,7 +47,7 @@ where
                 context,
                 fence,
                 owner,
-                &spawn.fork(request),
+                &child,
                 workspace,
                 Some(executor),
                 reconcile,
@@ -77,6 +79,7 @@ where
                     "native executor declaration belongs to another session".into(),
                 ));
             }
+            drop((launch, spawn));
             if !cfg!(all(feature = "native-execution", feature = "hooks"))
                 || self.children.is_none()
                 || !context.scope().grants().contains("tool:call:bash")

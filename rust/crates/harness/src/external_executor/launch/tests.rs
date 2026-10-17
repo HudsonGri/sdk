@@ -75,6 +75,47 @@ fn native_decoder_rejects_unknown_fields_and_duplicate_headers() {
 }
 
 #[test]
+fn checked_native_launch_seeds_reach_the_executor_and_header_decoders() -> Result<()> {
+    for (seed, valid) in [
+        (
+            include_str!("../../../../harness-fuzz/corpus/external-hooks/native-launch.json"),
+            true,
+        ),
+        (
+            include_str!(
+                "../../../../harness-fuzz/corpus/external-hooks/duplicate-native-header.json"
+            ),
+            false,
+        ),
+    ] {
+        let mut seed: serde_json::Value = serde_json::from_str(seed).unwrap();
+        // Keep the checked seed portable across Windows and Unix test binaries.
+        seed["input"]["input"]["executor"]["executable"] = json!(std::env::current_exe().unwrap());
+        let request =
+            crate::external_executor::request(ExternalHost::Pi, "tool_call", seed["input"].take())?;
+        let bytes = encode(&Launch {
+            parent: request.task_id(),
+            request,
+        })?;
+        assert_eq!(Launch::decode(&bytes).is_ok(), valid);
+        fuzz(&bytes);
+    }
+    let mut request = request("child", "fresh", uuid::Uuid::nil(), "literal");
+    let ExternalAction::RunTool { arguments, .. } = &mut request.action else {
+        unreachable!()
+    };
+    let header = arguments["executor"]["session_bytes"].as_str().unwrap();
+    arguments["executor"]["session_bytes"] = json!(format!(
+        "{header}\n{{\"type\":\"message\",\"foreign\":true}}\n"
+    ));
+    assert!(
+        Spawn::from_request(&request).is_err(),
+        "fresh launch accepted appended parent history"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_full_request_record_fits_its_retained_parent_envelope() -> Result<()> {
     let mut request = request("child", "x", uuid::Uuid::nil(), "literal");
     let task = crate::task_volume::Component::new(request.task_id().to_string()).unwrap();
