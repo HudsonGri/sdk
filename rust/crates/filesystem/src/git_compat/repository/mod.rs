@@ -48,6 +48,27 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// Reads one registered branch at the caller's selected workspace cut.
+    pub async fn branch(
+        &self,
+        name: &str,
+        workspace_tree: GitTreeRef,
+    ) -> Result<GitBranch, GitCompatError<S::Error>> {
+        let mut state = self.load().await?;
+        if state
+            .current()
+            .map_err(|_| GitCompatError::InvalidState)?
+            .workspace_id
+            != workspace_tree.workspace_id()
+        {
+            return Err(GitCompatError::WorkspaceMismatch);
+        }
+        state
+            .branches
+            .remove(name)
+            .ok_or_else(|| GitCompatError::UnknownObject(name.into()))
+    }
+
     /// Reads the selected workspace and its pending native publication at one durable cut.
     pub async fn checkout_selection(
         &self,

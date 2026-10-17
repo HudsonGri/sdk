@@ -3,6 +3,26 @@ use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
+    // Selecting a branch never adopts a different current workspace identity.
+    #[test]
+    fn branch_lookup_is_bound_to_the_selected_workspace(name in "[a-z]{1,16}", wrong in any::<bool>()) {
+        futures::executor::block_on(async {
+            let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+            let child = WorkspaceId::from_bytes([2; 16]);
+            let name = format!("agents/{name}");
+            repository.register_branch_workspace(&name, child, None, false).await.unwrap();
+            let selected = if wrong { GitTreeRef::exact(child, generation(1)) } else { tree(1) };
+            let result = repository.branch(&name, selected).await;
+            if wrong {
+                prop_assert!(matches!(result, Err(GitCompatError::WorkspaceMismatch)));
+            } else {
+                let branch = result.unwrap();
+                prop_assert_eq!(branch.name, name);
+                prop_assert_eq!(branch.workspace_id, child);
+            }
+            Ok(())
+        })?;
+    }
     // A failed working-head restore retains its exact source and selection;
     // competing restores cannot replace it, and recovery keeps its operation.
     #[test]
