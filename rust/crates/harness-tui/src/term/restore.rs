@@ -19,6 +19,7 @@ pub struct RestoreGuard<W: Write> {
     undo: Vec<(u16, Cow<'static, [u8]>)>,
     modes: std::collections::BTreeMap<u16, ModeState>,
     desired: Vec<u16>,
+    scroll_regions: bool,
 }
 
 impl<W: Write> RestoreGuard<W> {
@@ -29,6 +30,7 @@ impl<W: Write> RestoreGuard<W> {
             undo: Vec::new(),
             modes: caps.modes.clone(),
             desired: Vec::new(),
+            scroll_regions: caps.scroll_regions,
         }
     }
 
@@ -77,6 +79,7 @@ impl<W: Write> RestoreGuard<W> {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
         self.modes.clone_from(&caps.modes);
+        self.scroll_regions = caps.scroll_regions;
         Ok(())
     }
 
@@ -214,6 +217,9 @@ impl<W: Write> RestoreGuard<W> {
 }
 
 impl<W: Write> super::Present for RestoreGuard<W> {
+    fn supports_scroll_regions(&self) -> bool {
+        self.scroll_regions
+    }
     fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
         let synchronized = self.begin_frame(effects);
         match self.write_frame(frame, synchronized, synchronized) {

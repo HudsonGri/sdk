@@ -218,7 +218,13 @@ impl Rig {
             } else {
                 Output::Frame(
                     FrameTerminal::new(
-                        RestoreGuard::new(output.clone(), &Capabilities::default()),
+                        RestoreGuard::new(
+                            output.clone(),
+                            &Capabilities {
+                                scroll_regions: true,
+                                ..Capabilities::default()
+                            },
+                        ),
                         Size::new(width, height),
                     )
                     .unwrap(),

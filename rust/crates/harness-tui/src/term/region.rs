@@ -41,22 +41,14 @@ impl RegionScroll {
         })
     }
 
-    /// Shift `shown` (the frame on the device) as the device will shift it,
-    /// into `previous`, and encode the device scroll into `out`. Exposed rows
+    /// Shift the retained baseline in place and encode the device scroll.
+    /// Exposed rows
     /// are blank, as the device erases them. Returns whether it applied.
-    pub(crate) fn apply(
-        self,
-        shown: &mut Buffer,
-        previous: &mut Buffer,
-        out: &mut impl Write,
-    ) -> io::Result<bool> {
+    pub(crate) fn apply(self, shown: &mut Buffer, out: &mut impl Write) -> io::Result<bool> {
         let area = shown.area;
         let Some((top, bottom, distance)) = self.band(area) else {
             return Ok(false);
         };
-        if previous.area != area {
-            return Ok(false);
-        }
         let width = usize::from(area.width);
         let band = &mut shown.content[top * width..bottom * width];
         let moved = distance * width;
@@ -70,7 +62,6 @@ impl RegionScroll {
         for cell in &mut band[exposed] {
             cell.reset();
         }
-        previous.content.clone_from(&shown.content);
         // DECSTBM bounds the scroll to the band, SU/SD scroll it, and the
         // margins are restored at once. Both leave the cursor at the origin.
         let direction = if self.rows > 0 { 'S' } else { 'T' };

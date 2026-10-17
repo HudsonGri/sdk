@@ -34,6 +34,9 @@ impl Write for Output {
     }
 }
 impl super::Present for Output {
+    fn supports_scroll_regions(&self) -> bool {
+        lifecycle::active(&self.state, |guard| Ok(guard.supports_scroll_regions())).unwrap_or(false)
+    }
     fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
         lifecycle::active(&self.state, |guard| guard.present(frame, effects))
     }

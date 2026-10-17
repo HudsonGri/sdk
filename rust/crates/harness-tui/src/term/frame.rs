@@ -13,6 +13,11 @@ use super::RegionScroll;
 /// A terminal device that presents whole frames under its restoration
 /// journal (see `RestoreGuard`): the session's `Output`, or a guard itself.
 pub trait Present {
+    /// The negotiated profile supports both bounded margins and row scrolling.
+    fn supports_scroll_regions(&self) -> bool {
+        false
+    }
+
     /// Present one frame with the given effects. The buffer's contents are
     /// consumed. On error, a begun synchronized update and set margins have
     /// been undone or remain journaled for restoration.
@@ -30,6 +35,10 @@ pub struct FrameEffects {
 }
 
 impl<P: Present + ?Sized> Present for &mut P {
+    fn supports_scroll_regions(&self) -> bool {
+        (**self).supports_scroll_regions()
+    }
+
     fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
         (**self).present(frame, effects)
     }
@@ -165,6 +174,10 @@ impl<D: Present> FrameBackend<D> {
 impl<D: Present> Backend for FrameBackend<D> {
     type Error = io::Error;
     fn draw<'a, I: Iterator<Item = (u16, u16, &'a Cell)>>(&mut self, content: I) -> io::Result<()> {
+        let mut content = content.peekable();
+        if content.peek().is_none() {
+            return Ok(());
+        }
         self.crossterm().draw(content)
     }
     fn append_lines(&mut self, lines: u16) -> io::Result<()> {
@@ -221,14 +234,18 @@ impl<D: Present> Drop for FrameBackend<D> {
 /// and repaints only the rows that then differ.
 pub struct FrameTerminal<D: Present> {
     terminal: Terminal<FrameBackend<D>>,
-    /// The frame on the device, kept to shift for a region scroll: ratatui
-    /// keeps its own copy private.
+    /// One retained screen baseline, exchanged with the render buffer.
     shown: Buffer,
+    scroll_regions: bool,
+    invalid: bool,
+    repaired: Vec<usize>,
+    cursor: Vec<u8>,
 }
 
 impl<D: Present> FrameTerminal<D> {
     /// Present frames of `size` to `device`.
     pub fn new(device: D, size: Size) -> io::Result<Self> {
+        let scroll_regions = device.supports_scroll_regions();
         Ok(Self {
             terminal: Terminal::new(FrameBackend {
                 output: FrameOutput {
@@ -239,6 +256,10 @@ impl<D: Present> FrameTerminal<D> {
                 size,
             })?,
             shown: Buffer::empty(ratatui::layout::Rect::default()),
+            scroll_regions,
+            invalid: false,
+            repaired: Vec::new(),
+            cursor: Vec::new(),
         })
     }
 
@@ -262,7 +283,7 @@ impl<D: Present> FrameTerminal<D> {
         let committed = self.terminal.backend_mut().output.commit();
         if drawn.is_err() || committed.is_err() {
             // The device may hold any part of the frame: never shift it.
-            self.shown.area = ratatui::layout::Rect::default();
+            self.invalid = true;
         }
         drawn.and(committed)
     }
@@ -272,42 +293,61 @@ impl<D: Present> FrameTerminal<D> {
         scroll: Option<RegionScroll>,
         render: impl FnOnce(&mut Frame<'_>),
     ) -> io::Result<()> {
-        // A resize clears the device and both frames; the stale copy then
-        // has another area and is never shifted.
         self.terminal.autoresize()?;
-        if let Some(scroll) = scroll {
-            let Self { terminal, shown } = self;
-            let mut frame = std::mem::take(&mut terminal.backend_mut().output.frame);
-            let applied = scroll.apply(shown, terminal.current_buffer_mut(), &mut frame);
-            let output = &mut terminal.backend_mut().output;
-            output.frame = frame;
-            if applied? {
-                output.effects.margins = true;
-                // The shifted copy becomes the frame the next diff is against.
-                terminal.swap_buffers();
-            }
+        if self.invalid {
+            self.terminal.clear()?;
         }
-        let mut repaired = Vec::new();
-        let shown = &mut self.shown;
-        let completed = self.terminal.draw(|frame| {
-            render(frame);
-            repaired = repair_wide_trails(shown, frame.buffer_mut());
-        })?;
-        self.shown.area = completed.buffer.area;
-        self.shown.content.clone_from(&completed.buffer.content);
-        if !repaired.is_empty() {
-            // AlwaysUpdate is a one-frame encoding instruction, not displayed
-            // state. Reinstall the clean baseline so repeats remain free.
-            for index in repaired {
-                self.shown.content[index].diff_option = CellDiffOption::None;
-            }
-            self.terminal
-                .current_buffer_mut()
-                .content
-                .clone_from(&self.shown.content);
-            self.terminal.swap_buffers();
+        let area = self.terminal.current_buffer_mut().area;
+        let retained = !self.invalid && self.shown.area == area;
+        if !retained {
+            self.shown.resize(area);
+            self.shown.reset();
         }
-        Ok(())
+        self.invalid = false;
+        let mut bytes = std::mem::replace(
+            &mut self.terminal.backend_mut().output.frame,
+            std::mem::take(&mut self.cursor),
+        );
+        let margins = if retained && self.scroll_regions {
+            match scroll {
+                Some(scroll) => scroll.apply(&mut self.shown, &mut bytes)?,
+                None => false,
+            }
+        } else {
+            false
+        };
+        let Self {
+            terminal,
+            shown,
+            repaired,
+            cursor,
+            ..
+        } = self;
+        let mut encoded = Ok(());
+        let drawn = terminal
+            .draw(|frame| {
+                render(frame);
+                let next = frame.buffer_mut();
+                repair_wide_trails(shown, next, repaired);
+                // Ratatui's Buffer::diff_iter remains the encoder input. Owning its
+                // baseline lets scrolling rotate cells and retain heap symbols.
+                encoded = CrosstermBackend::new(&mut bytes).draw(shown.diff_iter(next));
+                for &index in repaired.iter() {
+                    next.content[index].diff_option = CellDiffOption::None;
+                }
+                std::mem::swap(shown, next);
+                // Terminal retains only empty staging buffers; its cursor/resize
+                // lifecycle still runs, without a second copy of the visible cells.
+                next.reset();
+            })
+            .map(drop);
+        let output = &mut terminal.backend_mut().output;
+        bytes.append(&mut output.frame);
+        *cursor = std::mem::replace(&mut output.frame, bytes);
+        // Pair the effect with its encoded reset only after the body is back.
+        // A render panic must not let cursor teardown retire older margins.
+        output.effects.margins = margins;
+        drawn.and(encoded)
     }
 }
 
@@ -315,10 +355,10 @@ impl<D: Present> FrameTerminal<D> {
 /// buffer stores reset cells there. If a new wide glyph covers the old lead,
 /// ratatui skips that lead and can miss its newly uncovered trailing style.
 /// Force those uncovered cells through the diff before cursor placement.
-fn repair_wide_trails(previous: &Buffer, next: &mut Buffer) -> Vec<usize> {
-    let mut repaired = Vec::new();
+fn repair_wide_trails(previous: &Buffer, next: &mut Buffer, repaired: &mut Vec<usize>) {
+    repaired.clear();
     if previous.area != next.area || next.area.width == 0 {
-        return repaired;
+        return;
     }
     let width = usize::from(next.area.width);
     let visible = Modifier::REVERSED
@@ -354,7 +394,6 @@ fn repair_wide_trails(previous: &Buffer, next: &mut Buffer) -> Vec<usize> {
             }
         }
     }
-    repaired
 }
 
 #[cfg(test)]

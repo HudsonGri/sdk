@@ -77,6 +77,9 @@ pub struct Output {
 pub(crate) const CONSOLE_CHUNK: usize = 256 * 1024;
 
 impl super::Present for Output {
+    fn supports_scroll_regions(&self) -> bool {
+        self.owner.supports_scroll_regions()
+    }
     fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
         let owner = &self.owner;
         let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
@@ -209,6 +212,11 @@ impl Tty {
     }
 }
 impl ProbeIo for Tty {
+    // open() succeeded only after enabling native VT processing.
+    fn native_scroll_regions(&self) -> bool {
+        true
+    }
+
     fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
         if Instant::now() >= deadline {
             return Err(io::ErrorKind::TimedOut.into());

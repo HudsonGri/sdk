@@ -76,8 +76,23 @@ fn per_command(scenes: &[Scene]) -> Vec<Vec<u8>> {
 }
 
 fn scrolled(steps: &[(Scene, Option<RegionScroll>)], size: Size) -> Vec<Vec<u8>> {
+    scrolled_profile(steps, size, true)
+}
+
+fn region_caps(supported: bool) -> Capabilities {
+    Capabilities {
+        scroll_regions: supported,
+        ..Capabilities::default()
+    }
+}
+
+fn scrolled_profile(
+    steps: &[(Scene, Option<RegionScroll>)],
+    size: Size,
+    supported: bool,
+) -> Vec<Vec<u8>> {
     let device = Device::default();
-    let guard = RestoreGuard::new(device.clone(), &Capabilities::default());
+    let guard = RestoreGuard::new(device.clone(), &region_caps(supported));
     let mut terminal = FrameTerminal::new(guard, size).unwrap();
     steps
         .iter()
@@ -111,12 +126,20 @@ const DEFAULT_COLOURS: &str = "Named(Foreground)Named(Background)";
 
 /// Emulated screens after each frame: text, colours and a shown cursor.
 fn screens(frames: &[Vec<u8>]) -> Vec<String> {
+    screens_with_support(frames, true)
+}
+
+fn screens_with_support(frames: &[Vec<u8>], supported: bool) -> Vec<String> {
     let mut term = Term::new(Config::default(), &Grid, Events);
     let mut parser: Processor = Processor::new();
     frames
         .iter()
         .map(|bytes| {
-            parser.advance(&mut term, bytes);
+            if supported {
+                parser.advance(&mut term, bytes);
+            } else {
+                parser.advance(&mut term, &without_scrolling(bytes));
+            }
             let mut text = String::new();
             for row in 0..usize::from(HEIGHT) {
                 for column in 0..usize::from(WIDTH) {
@@ -136,6 +159,30 @@ fn screens(frames: &[Vec<u8>]) -> Vec<String> {
             text
         })
         .collect()
+}
+
+// Model a VT that ignores unsupported CSI scrolling and margin commands.
+// All other bytes reach the independent VT processor unchanged.
+fn without_scrolling(bytes: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at..].starts_with(b"\x1b[") {
+            if let Some(end) = bytes[at + 2..]
+                .iter()
+                .position(|byte| (0x40..=0x7e).contains(byte))
+            {
+                let end = at + 2 + end;
+                if matches!(bytes[end], b'S' | b'T' | b'r') {
+                    at = end + 1;
+                    continue;
+                }
+            }
+        }
+        result.push(bytes[at]);
+        at += 1;
+    }
+    result
 }
 
 /// Lines `top..top + height` of a long transcript.
@@ -259,8 +306,12 @@ proptest! {
         let old: Vec<_> = scenes.iter().map(|scene| {
             screens(&per_command(std::slice::from_ref(scene))).remove(0)
         }).collect();
-        let new = screens(&scrolled(&steps, Size::new(WIDTH, HEIGHT)));
-        prop_assert_eq!(new, old);
+        for supported in [false, true] {
+            let frames = scrolled_profile(&steps, Size::new(WIDTH, HEIGHT), supported);
+            let new = screens_with_support(&frames, supported);
+            prop_assert_eq!(&new, &old);
+            if !supported { prop_assert_eq!(frames.iter().map(|frame| without_scrolling(frame)).collect::<Vec<_>>(), frames); }
+        }
     }
 }
 
@@ -374,7 +425,7 @@ fn a_band_moved_by_its_height_or_not_full_width_is_repainted() {
     }
     // A resize clears the device: the hint is not applied to the old frame.
     let device = Device::default();
-    let guard = RestoreGuard::new(device.clone(), &Capabilities::default());
+    let guard = RestoreGuard::new(device.clone(), &region_caps(true));
     let mut terminal = FrameTerminal::new(guard, size).unwrap();
     terminal
         .draw(size, |frame| paint(frame, &window(0, HEIGHT)))
@@ -438,7 +489,7 @@ fn a_region_scroll_cut_short_at_any_byte_restores_full_margins() {
             at,
             failed: false,
         };
-        let mut guard = RestoreGuard::new(&mut device, &Capabilities::default());
+        let mut guard = RestoreGuard::new(&mut device, &region_caps(true));
         {
             let mut terminal = FrameTerminal::new(&mut guard, size).unwrap();
             // Either frame may be the one cut short.
@@ -527,4 +578,111 @@ fn a_later_cursor_frame_cannot_discharge_a_failed_margin_reset() {
         controls_detected > 0,
         "the old journal loss must be observable"
     );
+}
+
+#[test]
+fn negative_control_shifting_an_unsupported_device_changes_the_screen() {
+    let region = Rect::new(0, 0, WIDTH, HEIGHT);
+    let steps = [
+        (window(0, HEIGHT), None),
+        (window(1, HEIGHT), Some(RegionScroll { region, rows: 1 })),
+    ];
+    let baseline = screens(&per_command(
+        &steps
+            .iter()
+            .map(|(scene, _)| scene.clone())
+            .collect::<Vec<_>>(),
+    ));
+    // Wrongly enabling hints on a VT that ignores them is the former defect.
+    assert_ne!(
+        screens_with_support(
+            &scrolled_profile(&steps, Size::new(WIDTH, HEIGHT), true),
+            false
+        ),
+        baseline
+    );
+    assert_eq!(
+        screens_with_support(
+            &scrolled_profile(&steps, Size::new(WIDTH, HEIGHT), false),
+            false
+        ),
+        baseline
+    );
+}
+
+fn grapheme_allocations<const CLONE: bool>() {
+    const COLUMNS: u16 = 12;
+    for height in [8u16, 16] {
+        let area = Rect::new(0, 0, COLUMNS, height);
+        let size = Size::new(COLUMNS, height);
+        let scene = |top: u16| -> Scene {
+            (
+                (top..top + height)
+                    .map(|row| {
+                        let base = char::from(b'a' + u8::try_from(row % 26).unwrap());
+                        let cluster = format!("{base}{}", "\u{301}".repeat(40));
+                        Line::raw(cluster.repeat(usize::from(COLUMNS)))
+                    })
+                    .collect(),
+                None,
+            )
+        };
+        let mut old = Terminal::with_options(
+            CrosstermBackend::new(io::sink()),
+            TerminalOptions {
+                viewport: Viewport::Fixed(area),
+            },
+        )
+        .unwrap();
+        let mut new =
+            FrameTerminal::new(RestoreGuard::new(io::sink(), &region_caps(true)), size).unwrap();
+        let first = scene(0);
+        old.draw(|frame| paint(frame, &first)).unwrap();
+        new.draw(size, |frame| paint(frame, &first)).unwrap();
+        for (top, moved) in [
+            (0, None),
+            (
+                1,
+                Some(RegionScroll {
+                    region: area,
+                    rows: 1,
+                }),
+            ),
+            (1, None),
+            (
+                0,
+                Some(RegionScroll {
+                    region: area,
+                    rows: -1,
+                }),
+            ),
+        ] {
+            let scene = scene(top);
+            let before = acyclic_test_support::measure(|| {
+                old.draw(|frame| paint(frame, &scene)).unwrap();
+            });
+            let after = acyclic_test_support::measure(|| {
+                new.draw_scrolled(size, moved, |frame| {
+                    paint(frame, &scene);
+                    if CLONE {
+                        std::hint::black_box(frame.buffer_mut().clone());
+                    }
+                })
+                .unwrap();
+            });
+            assert_eq!(
+                after.count_total, before.count_total,
+                "one retained baseline must match the independent path"
+            );
+        }
+    }
+}
+#[test]
+fn heap_backed_graphemes_do_not_allocate_a_second_screen() {
+    grapheme_allocations::<false>();
+}
+#[test]
+#[should_panic(expected = "one retained baseline must match the independent path")]
+fn negative_control_cloning_heap_backed_cells_is_detected() {
+    grapheme_allocations::<true>();
 }

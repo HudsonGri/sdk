@@ -42,6 +42,18 @@ pub(crate) struct Owner<W: Write> {
 }
 
 impl<W: Write + Send + 'static> Owner<W> {
+    /// Read profile metadata without borrowing the guard for driver work.
+    /// Lock order: owner only; unknown ownership conservatively disables hints.
+    pub(crate) fn supports_scroll_regions(&self) -> bool {
+        let Ok(state) = self.state.try_lock() else {
+            return false;
+        };
+        state
+            .guard
+            .as_ref()
+            .is_some_and(super::Present::supports_scroll_regions)
+    }
+
     fn wait<'a>(
         &self,
         state: MutexGuard<'a, State<W>>,
@@ -336,6 +348,39 @@ mod tests {
     use super::*;
     use crate::term::{Capabilities, ModeState};
     use loom::sync::atomic::{AtomicBool, Ordering};
+
+    fn profile_model(broken: bool) {
+        loom::model(move || {
+            let caps = crate::term::Capabilities {
+                scroll_regions: true,
+                ..crate::term::Capabilities::default()
+            };
+            let owner = Owner::new(RestoreGuard::new(Vec::<u8>::new(), &caps), |_| {});
+            assert!(owner.supports_scroll_regions());
+            let borrowing = Arc::clone(&owner);
+            let worker = thread::spawn(move || {
+                Owner::run(&borrowing, Instant::now() + Duration::from_secs(10), |_| {
+                    Ok(())
+                })
+                .unwrap()
+            });
+            let _ = owner.supports_scroll_regions();
+            worker.join().unwrap();
+            assert!(owner.supports_scroll_regions());
+            let guard = owner.state.lock().unwrap().guard.take().unwrap();
+            let supported = broken || owner.supports_scroll_regions();
+            assert!(!supported, "borrowed profile must be unknown");
+            owner.state.lock().unwrap().guard = Some(guard);
+        });
+    }
+    #[test]
+    fn scroll_profile_observation_follows_guard_ownership() {
+        profile_model(false);
+    }
+    #[test]
+    fn negative_control_scroll_profile_cannot_outlive_guard_ownership() {
+        assert!(std::panic::catch_unwind(|| profile_model(true)).is_err());
+    }
 
     struct Console {
         restored: Arc<AtomicBool>,
