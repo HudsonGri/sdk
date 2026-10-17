@@ -8,7 +8,7 @@ mod baseline;
 use baseline::BaselinePath;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "path_text_tests/native.rs"]
-pub(super) mod native;
+mod native;
 
 fn input() -> impl Strategy<Value = String> {
     prop_oneof![3 => "[a-zA-Z0-9_.-]{1,16}(/[a-zA-Z0-9_.-]{1,16}){0,6}", 1 => any::<String>()]
@@ -81,4 +81,11 @@ fn path_storage_is_four_native_words_and_old_storage_fails_the_same_bound() {
     );
     assert_eq!(std::mem::size_of::<StreamPath>(), expected);
     assert_ne!(std::mem::size_of::<BaselinePath>(), expected);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+std::thread_local! { static COPY_ON_CLONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn copy_on_clone() -> bool {
+    COPY_ON_CLONE.with(std::cell::Cell::get)
 }

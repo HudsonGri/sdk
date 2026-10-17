@@ -2,11 +2,6 @@ use super::*;
 use crate::test_meter::{Meter, trace};
 use std::sync::atomic::Ordering;
 
-std::thread_local! { static COPY_ON_CLONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-pub(super) fn copy_on_clone() -> bool {
-    COPY_ON_CLONE.with(std::cell::Cell::get)
-}
-
 fn clone_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
     let output_bytes = text.len() + text.rfind('/').unwrap();
     let text_allocation = std::alloc::Layout::new::<[usize; 2]>()
