@@ -134,14 +134,17 @@ mod binding_paths {
             directories in prop::collection::vec("[a-zA-ZΩα]{1,8}", 0..4),
             volume in "[a-zA-ZΩα]{1,8}",
         ) {
-            let mut root=std::env::current_dir()?;
+            let mut root=std::env::current_dir().map_err(|error| TestCaseError::fail(error.to_string()))?;
             for directory in directories {root.push(directory);}
             let relative=format!(".volumes/{volume}");
             let destination=root.join(&relative);
-            prop_assert_eq!(projection_root(&destination,&relative)?,root.as_path());
+            let projected=projection_root(&destination,&relative)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(projected,root.as_path());
             prop_assert!(projection_root(&destination,&format!("{relative}x")).is_err());
             // Choosing the alias task's root loses the source binding.
-            prop_assert_ne!(root.join("task-view").as_path(),projection_root(&destination,&relative)?);
+            let task_root=root.join("task-view");
+            prop_assert_ne!(task_root.as_path(),projected);
         }
     }
 }
