@@ -81,7 +81,7 @@ pub(super) async fn follow<P: StreamProvider + ?Sized>(
     let maximum = usize::try_from(limits.render_bytes).map_err(invalid)?;
     let snapshot = files
         .inner
-        .child_lifecycle(Some(reference), false)
+        .child_lifecycle(Some(reference))
         .await
         .map_err(storage)?;
     if files

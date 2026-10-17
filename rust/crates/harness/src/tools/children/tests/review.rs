@@ -38,11 +38,7 @@ async fn retained_bodies_cannot_block_wait_control_or_archive() {
             .len(),
         3072
     );
-    let lifecycle = files
-        .inner
-        .child_lifecycle(Some(&reference), false)
-        .await
-        .unwrap();
+    let lifecycle = files.inner.child_lifecycle(Some(&reference)).await.unwrap();
     assert_eq!(lifecycle.files.len(), 2);
     assert!(lifecycle.files.iter().all(|file| matches!(
         file.key,

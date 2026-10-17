@@ -2,6 +2,37 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    pub(crate) async fn child_references(&self) -> Result<Vec<Component>> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        Ok(index
+            .child_inputs
+            .keys()
+            .filter(|reference| {
+                index.files.contains_key(&FileKey::Child {
+                    reference: (*reference).clone(),
+                    file: ChildFile::Request,
+                })
+            })
+            .cloned()
+            .collect())
+    }
+
+    pub(crate) async fn child_request(&self, reference: &Component) -> Result<FileValue> {
+        let key = FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::Request,
+        };
+        let snapshot = self
+            .snapshot_files(&[key.clone()], &Query::File(key))
+            .await?;
+        snapshot
+            .files
+            .into_iter()
+            .next()
+            .ok_or(Error::InvalidSegment)
+    }
+
     pub(crate) async fn child_input_count(&self, reference: &Component) -> Result<u64> {
         self.refresh().await?;
         let index = self.index.lock().await;
@@ -28,11 +59,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .map(|stored| stored.file.clone()))
     }
 
-    pub(crate) async fn child_lifecycle(
-        &self,
-        reference: Option<&Component>,
-        requests: bool,
-    ) -> Result<Snapshot> {
+    pub(crate) async fn child_lifecycle(&self, reference: Option<&Component>) -> Result<Snapshot> {
         self.refresh().await?;
         let index = self.index.lock().await;
         let mut files = Vec::new();
@@ -47,15 +74,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 reference: candidate.clone(),
                 file,
             };
-            for kind in [
-                ChildFile::Request,
-                ChildFile::Control,
-                ChildFile::Status,
-                ChildFile::Delivered,
-            ] {
-                if kind == ChildFile::Request && !requests {
-                    continue;
-                }
+            for kind in [ChildFile::Control, ChildFile::Status, ChildFile::Delivered] {
                 if let Some(stored) = index.files.get(&key(kind)) {
                     files.push(stored.file.clone());
                 }

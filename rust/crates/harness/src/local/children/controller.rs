@@ -29,11 +29,7 @@ impl LocalHarness {
         control: Option<(Arc<Files>, Component)>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            let snapshot = files
-                .inner
-                .child_lifecycle(None, true)
-                .await
-                .map_err(storage)?;
+            let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
             let mut observation = crate::task_volume::Observation {
                 snapshot: None,
                 reset: false,
@@ -54,29 +50,23 @@ impl LocalHarness {
             let mut jobs = FuturesUnordered::new();
             let inherited = commands.invocation_cancellation().cloned();
             let mut inherited_stopped = false;
-            for request in values.values().filter(|file| {
-                matches!(
-                    file.key,
-                    FileKey::Child {
-                        file: ChildFile::Request,
-                        ..
-                    }
-                )
-            }) {
-                let FileKey::Child { reference, .. } = &request.key else {
-                    unreachable!()
-                };
+            for reference in files.inner.child_references().await.map_err(storage)? {
                 if needs_work_count(
-                    reference,
+                    &reference,
                     &values,
                     false,
                     files
                         .inner
-                        .child_input_count(reference)
+                        .child_input_count(&reference)
                         .await
                         .map_err(storage)?,
                 )? {
                     active.insert(reference.clone());
+                    let request = files
+                        .inner
+                        .child_request(&reference)
+                        .await
+                        .map_err(storage)?;
                     jobs.push(self.service_child(
                         files.clone(),
                         reference.clone(),
@@ -121,25 +111,15 @@ impl LocalHarness {
                 {
                     inherited_stopped = true;
                     cancellation.cancel();
-                    for request in values.values().filter(|file| {
-                        matches!(
-                            file.key,
-                            FileKey::Child {
-                                file: ChildFile::Request,
-                                ..
-                            }
-                        )
-                    }) {
-                        let FileKey::Child { reference, .. } = &request.key else {
-                            unreachable!()
-                        };
-                        if !active.contains(reference)
+                    for reference in files.inner.child_references().await.map_err(storage)? {
+                        if !active.contains(&reference)
                             && !matches!(
-                                desired(reference, &values)?,
+                                desired(&reference, &values)?,
                                 ChildState::Cancelled | ChildState::Archived
                             )
                         {
                             active.insert(reference.clone());
+                            let request = files.inner.child_request(&reference).await.map_err(storage)?;
                             jobs.push(self.service_child(
                                 files.clone(),
                                 reference.clone(),
@@ -167,8 +147,7 @@ impl LocalHarness {
                         changed.extend(release_completed(generation.position, &mut active, &mut completions));
                         for reference in changed {
                             if active.contains(&reference) || !needs_work_count(&reference, &values, inherited_stopped, files.inner.child_input_count(&reference).await.map_err(storage)?)? { continue; }
-                            let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
-                            let request = values.get(&key).ok_or_else(|| Error::Conflict("child input has no request".into()))?.clone();
+                            let request = files.inner.child_request(&reference).await.map_err(storage)?;
                             active.insert(reference.clone());
                             jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
                         }
@@ -178,8 +157,7 @@ impl LocalHarness {
                         completions.insert(reference, position);
                         for reference in release_completed(generation.position, &mut active, &mut completions) {
                         if needs_work_count(&reference, &values, inherited_stopped, files.inner.child_input_count(&reference).await.map_err(storage)?)? {
-                            let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
-                            let request = values.get(&key).ok_or_else(|| Error::Conflict("child has no request".into()))?.clone();
+                            let request = files.inner.child_request(&reference).await.map_err(storage)?;
                             active.insert(reference.clone());
                             jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
                         }
@@ -226,7 +204,7 @@ impl LocalHarness {
         Box::pin(async move {
             let snapshot = files
                 .inner
-                .child_lifecycle(Some(&reference), true)
+                .child_lifecycle(Some(&reference))
                 .await
                 .map_err(storage)?;
             let mut observation = crate::task_volume::Observation {
@@ -596,7 +574,7 @@ fn fold(values: &mut BTreeMap<FileKey, FileValue>, change: Change) {
         if matches!(
             file.key,
             FileKey::Child {
-                file: ChildFile::Inbox(_),
+                file: ChildFile::Request | ChildFile::Inbox(_),
                 ..
             }
         ) {
