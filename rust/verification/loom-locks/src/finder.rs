@@ -429,6 +429,19 @@ impl<'ast> Finder<'_, 'ast> {
             return Some(false);
         }
         if let Some(qself) = &path.qself {
+            // A user trait may return any associated type, independently of
+            // its implementor. Only known conversion traits determine ownership.
+            if qself.position > 0 {
+                let owner = segments
+                    .iter()
+                    .take(qself.position)
+                    .map(|segment| crate::name(&segment.ident))
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if !TRAITS.contains(&owner.rsplit("::").next()?) {
+                    return None;
+                }
+            }
             return if name == "default" {
                 self.holds(&qself.ty, 0)
             } else {
@@ -638,6 +651,20 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
         };
         if let Some(ty) = ty {
             self.found |= self.is_lock(ty) == Some(true);
+            // Macro-generated typed inputs have no source initializer. Their
+            // Arbitrary implementation may populate even an empty-by-default
+            // container, so Default's empty-container rule cannot judge them.
+            if local.init.is_none() {
+                match ty {
+                    Type::Path(path)
+                        if path.qself.is_none()
+                            && path.path.segments.last().is_some_and(|segment| {
+                                matches!(segment.arguments, syn::PathArguments::None)
+                            })
+                            && self.is_lock(ty).is_some() => {}
+                    _ => self.unresolved.push(ty.to_token_stream().to_string()),
+                }
+            }
         }
         if let Some(init) = &local.init {
             self.assign(&init.expr, ty.map(Expect::Type));
