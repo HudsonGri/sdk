@@ -115,13 +115,12 @@
               "role": "tool",
               "content": {
                 "kind": "tool_result",
-                "call_id": "archive",
+                "call_id": "control",
                 "name": "archive",
                 "content": {
                   "kind": "json",
                   "value": {
-                    "state": "Archived",
-                    "settled": true
+                    "agent": "worker"
                   }
                 }
               }

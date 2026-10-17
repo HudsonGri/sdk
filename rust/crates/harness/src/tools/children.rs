@@ -154,10 +154,13 @@ impl Executor {
                 {
                     return Ok(None);
                 }
-                match files::follow(files.as_ref(), &reference, limits, !reconcile, true).await? {
-                    Some(value) => value,
-                    None => return Ok(None),
+                if files::follow(files.as_ref(), &reference, limits, !reconcile, true)
+                    .await?
+                    .is_none()
+                {
+                    return Ok(None);
                 }
+                json!({"agent":reference})
             }
             _ => return Err(invalid("unknown child tool")),
         };
@@ -206,6 +209,17 @@ async fn wait<P: StreamProvider + ?Sized>(
             results
         }
     };
+    // The settled barrier is the tool's contract. Detailed execution status
+    // remains in status.json; avoid repeating it in every model request.
+    let results: Vec<_> = results
+        .into_iter()
+        .map(|mut result| {
+            let fields = result.as_object_mut().unwrap();
+            fields.remove("execution");
+            fields.remove("settled");
+            result
+        })
+        .collect();
     files::bounded(json!({"agents":results}), limits).map(Some)
 }
 
