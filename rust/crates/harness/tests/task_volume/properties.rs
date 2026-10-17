@@ -3,7 +3,7 @@ use acyclic_stream::{CommitCondition, CommitId, CommitMutation, CommitRequest, I
 use proptest::prelude::*;
 
 fn key() -> impl Strategy<Value = String> {
-    (0..23_u8, "[a-z][a-z0-9_-]{0,7}", any::<u64>(), any::<u64>()).prop_map(
+    (0..24_u8, "[a-z][a-z0-9_-]{0,7}", any::<u64>(), any::<u64>()).prop_map(
         |(kind, name, turn, sequence)| match kind {
             0 => "GOAL.md".into(),
             1 => format!(".volumes/agents/{name}"),
@@ -27,6 +27,7 @@ fn key() -> impl Strategy<Value = String> {
             20 => format!(".tasks/{name}/requests/r/ready.json"),
             21 => format!(".tasks/{name}/requests/r/result.json"),
             22 => format!(".tasks/{name}/turns/{turn}/errors/{sequence}.json"),
+            23 => format!(".tasks/{name}/turns/{turn}/tools/c/error.json"),
             _ => format!(".tasks/{name}/context/r/manifest.json"),
         },
     )

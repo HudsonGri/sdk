@@ -1,0 +1,20 @@
+{
+  "writes": [
+    {
+      "text": "{\"error\":\"rejected\"}",
+      "path": ".tasks/t/turns/0/tools/c/error.json"
+    }
+  ],
+  "folder": ".tasks/t/turns/0/tools/c",
+  "expect": {
+    "files": {
+      ".tasks/t/turns/0/tools/c/error.json": "{\"error\":\"rejected\"}"
+    },
+    "changes": [
+      {
+        "text": "{\"error\":\"rejected\"}",
+        "path": ".tasks/t/turns/0/tools/c/error.json"
+      }
+    ]
+  }
+}

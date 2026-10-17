@@ -7,6 +7,7 @@ mod expectations;
 mod limits_tests;
 mod local_admission;
 mod local_case;
+mod local_crash;
 mod local_execution;
 mod local_streams;
 mod local_tests;
@@ -252,6 +253,9 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
 }
 
 async fn run_scenarios(started: Instant) -> TestResult {
+    if let Some(input) = std::env::var_os("GC_STREAM_CHILD") {
+        return local_crash::child(std::path::Path::new(&input)).await;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;

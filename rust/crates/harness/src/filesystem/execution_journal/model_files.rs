@@ -1,5 +1,7 @@
 use super::*;
-use crate::task_volume::{Channel, Component, FileKey, TaskFile, Write};
+use crate::task_volume::{
+    Channel, Component, FileKey, MODEL_CHUNK_BYTES, MODEL_CHUNK_STRIDE, TaskFile, Write,
+};
 
 #[derive(Serialize)]
 struct ModelIdentity<'a> {
@@ -217,24 +219,74 @@ where
                     "model chunk has no published request",
                 )
             })?;
-        let bytes = crate::executor::stock_string_copy(delta, io)?.into_bytes();
-        let bytes = crate::executor::with_history_io(io, |work| {
-            crate::store::operations::owned_bytes_from_retained_vec(bytes, work)
-                .map(|value| value.0)
-        })?;
-        let mut write = Write::new(
-            FileKey::Task {
-                task: task.clone(),
-                file: TaskFile::Chunk {
-                    turn,
-                    sequence: sequence as u64,
+        let base = u64::try_from(sequence)
+            .ok()
+            .and_then(|sequence| sequence.checked_mul(MODEL_CHUNK_STRIDE))
+            .ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "model chunk sequence overflow",
+                )
+            })?;
+        // A large provider event must remain recoverable even if the process
+        // dies after its first part. Stage its original boundary before exposing
+        // any part. Small deltas refer directly to their sole raw chunk.
+        let mut reference = if delta.len() > MODEL_CHUNK_BYTES {
+            let key = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(format_args!("model:{step}:{sequence}"), work)
+            })?;
+            Some(crate::executor::stage_event_json(self, operation, &key, event, io).await?)
+        } else {
+            None
+        };
+        let mut offset = 0;
+        let mut part = 0u64;
+        loop {
+            let mut end = offset.saturating_add(MODEL_CHUNK_BYTES).min(delta.len());
+            while !delta.is_char_boundary(end) {
+                end -= 1;
+            }
+            if part >= MODEL_CHUNK_STRIDE {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "model chunk part overflow",
+                ));
+            }
+            let bytes = crate::executor::stock_string_copy(&delta[offset..end], io)?.into_bytes();
+            let bytes = crate::executor::with_history_io(io, |work| {
+                crate::store::operations::owned_bytes_from_retained_vec(bytes, work)
+                    .map(|value| value.0)
+            })?;
+            let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            let mut write = Write::new(
+                FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::Chunk {
+                        turn,
+                        sequence: base + part,
+                    },
                 },
-            },
-            bytes,
-        );
-        write.channel = Some(channel);
-        self.publish_model_file(&write, io).await?;
-        self.model_delta_reference(&write, io)
+                bytes,
+            );
+            write.channel = Some(channel);
+            self.publish_model_file(&write, io).await?;
+            if reference.is_none() {
+                reference = Some(self.model_delta_reference(&write, io)?);
+            }
+            if end == delta.len() {
+                return reference.ok_or_else(|| {
+                    canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "model chunk lost its reference",
+                    )
+                });
+            }
+            offset = end;
+            part += 1;
+        }
     }
 
     fn model_delta_reference(&self, write: &Write, io: Option<&PreparationIo>) -> Result<FileRef> {
@@ -310,29 +362,54 @@ where
         else {
             return Ok(());
         };
-        let Some(file) = files.inner.latest_chunk(&task, turn).await? else {
+        let Some((index, file)) = files.inner.latest_model_file(&task, turn).await? else {
             return Ok(());
-        };
-        let FileKey::Task {
-            file: TaskFile::Chunk { sequence, .. },
-            ..
-        } = &file.key
-        else {
-            return Err(canonical_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "model recovery selected another file",
-            ));
         };
         // The stock producer awaits the referring append before accepting the
         // next delta, so only its final accepted chunk can lack an observation.
         // Reading that file repairs the crash boundary without publishing it again.
         let _hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let reference = self.model_delta_reference(&file, io)?;
         let key = crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("model:{step}:{sequence}"), work)
+            crate::executor::preparation_format(format_args!("model:{step}:{index}"), work)
         })?;
+        let reference = match self.staged_ref_with_io(operation, &key, io).await {
+            Ok(reference) => {
+                let (event, _event_hold) =
+                    crate::executor::load_model_event(self, &reference, io).await?;
+                let index = usize::try_from(index).map_err(|_| {
+                    canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "model event index overflow",
+                    )
+                })?;
+                match event {
+                    ModelEvent::ToolCall(ref call) => {
+                        self.publish_tool_arguments(operation, step, index, call, io)
+                            .await?;
+                        reference
+                    }
+                    _ => {
+                        self.stage_model_delta(operation, step, index, &event, io)
+                            .await?
+                    }
+                }
+            }
+            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
+                if !matches!(file.key, FileKey::Task { file: TaskFile::Chunk { sequence, .. }, .. }
+                    if sequence % MODEL_CHUNK_STRIDE == 0)
+                {
+                    return Err(canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "model chunk lost its provider event",
+                    ));
+                }
+                self.model_delta_reference(&file, io)?
+            }
+            Err(error) => return Err(error),
+        };
         _hold = io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
@@ -397,7 +474,8 @@ where
             .and_then(Option::as_ref)
             .map(|admission| admission.count as u64);
         if *purpose != crate::executor::ModelPurpose::Response
-            || admitted != Some(sequence)
+            || admitted != Some(sequence / MODEL_CHUNK_STRIDE)
+            || sequence % MODEL_CHUNK_STRIDE != 0
             || files
                 .inner
                 .published_turn(&task, Self::model_publication(operation, *step, io)?)
@@ -511,7 +589,11 @@ where
         Ok(Some(file.bytes))
     }
 
-    async fn publish_model_file(&self, write: &Write, io: Option<&PreparationIo>) -> Result<()> {
+    pub(super) async fn publish_model_file(
+        &self,
+        write: &Write,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         let files = self.task_files.as_ref().ok_or_else(|| {
             canonical_boundary(
                 io,

@@ -24,7 +24,12 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
         stream.clone(),
         acyclic_fs::Fs::memory(),
         json!({"type":"integer"}),
-        None,
+        Some(crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 0,
+            model_steps: 1,
+        }),
         &[],
     )
     .await?;
@@ -43,7 +48,7 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
             stream,
             &fixture.storage,
             &fixture.issuer.verifier(&mut None)?,
-            &fixture.host.owner_scope,
+            fixture.scope(),
             65_536,
         )
         .await?,
@@ -56,7 +61,7 @@ async fn run(deltas: &[String], rewrite: bool) -> Result<bool> {
         FilesystemJournalBinding {
             volume: &fixture.storage,
             verifier: &fixture.issuer.verifier(&mut None)?,
-            scope: &fixture.host.owner_scope,
+            scope: fixture.scope(),
             maximum_bytes: 65_536,
             io: Some(&io),
         },

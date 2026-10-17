@@ -1,0 +1,73 @@
+{
+  "expect": {
+    "task_files": [
+      {
+        "path": "turns/0/request.json",
+        "model": {
+          "provider": "scripted",
+          "revision": "1",
+          "name": "local"
+        }
+      },
+      {
+        "channel": "Text",
+        "path": "turns/0/chunks/0",
+        "text": "before "
+      },
+      {
+        "channel": "Reasoning",
+        "path": "turns/0/chunks/4294967296",
+        "text": "recovered"
+      },
+      {
+        "channel": "Text",
+        "path": "turns/0/chunks/8589934592",
+        "text": "after"
+      },
+      {
+        "channel": null,
+        "path": "turns/0/completion.json",
+        "text": "{\"metadata\":null}"
+      }
+    ],
+    "text": "before after"
+  },
+  "turns": [
+    [
+      {
+        "type": "event",
+        "delta": "before ",
+        "kind": "content"
+      },
+      {
+        "type": "pending"
+      }
+    ]
+  ],
+  "recoveries": [
+    {
+      "observed": [
+        {
+          "delta": "before ",
+          "kind": "content"
+        }
+      ],
+      "orphan": true,
+      "continuation": [
+        {
+          "delta": "recovered",
+          "kind": "reasoning"
+        },
+        {
+          "delta": "after",
+          "kind": "content"
+        },
+        {
+          "metadata": null,
+          "kind": "completed"
+        }
+      ]
+    }
+  ],
+  "kill_after": 1
+}

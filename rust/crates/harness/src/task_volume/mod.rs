@@ -24,7 +24,8 @@ pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
 pub use schema::{
-    Channel, Component, FileKey, InputPath, Owner, Query, SCHEMA, TaskFile, ToolFile,
+    Channel, Component, FileKey, InputPath, MODEL_CHUNK_BYTES, MODEL_CHUNK_STRIDE, Owner, Query,
+    SCHEMA, TaskFile, ToolFile,
 };
 pub use source::FileQuerySource;
 
@@ -253,24 +254,39 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .copied())
     }
 
-    pub(crate) async fn latest_chunk(
+    pub(crate) async fn latest_model_file(
         &self,
         task: &Component,
         turn: u64,
-    ) -> Result<Option<FileValue>> {
+    ) -> Result<Option<(u64, FileValue)>> {
         self.refresh().await?;
-        let key = |sequence| FileKey::Task {
+        let index = self.index.lock().await;
+        // Recovery visits only this turn. Chunk and argument identities share
+        // the provider event index; ordinary tool output is not a model delta.
+        Ok(Query::Turn {
             task: task.clone(),
-            file: TaskFile::Chunk { turn, sequence },
-        };
-        Ok(self
-            .index
-            .lock()
-            .await
-            .files
-            .range(key(0)..=key(u64::MAX))
-            .next_back()
-            .map(|(_, stored)| stored.file.clone()))
+            turn,
+        }
+        .ranges()
+        .into_iter()
+        .flat_map(|range| index.files.range(range))
+        .filter_map(|(key, stored)| match key {
+            FileKey::Task {
+                file: TaskFile::Chunk { sequence, .. },
+                ..
+            }
+            | FileKey::Task {
+                file:
+                    TaskFile::Tool {
+                        file: ToolFile::Arguments(sequence),
+                        ..
+                    },
+                ..
+            } => Some((*sequence / MODEL_CHUNK_STRIDE, &stored.file)),
+            _ => None,
+        })
+        .max_by_key(|(sequence, _)| *sequence)
+        .map(|(sequence, file)| (sequence, file.clone())))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

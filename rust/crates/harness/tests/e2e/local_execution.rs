@@ -66,23 +66,31 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     let turns = super::local_case::bind_seed_files(case.turns, &references)?;
-    let provider = Arc::new(ScriptedModelProvider::new(turns));
+    let interrupted_turn = case.kill_after.map(|_| turns[0].clone());
+    let provider = Arc::new(
+        ScriptedModelProvider::new(
+            turns
+                .into_iter()
+                .skip(usize::from(case.kill_after.is_some())),
+        )
+        .with_reconciliations(case.recoveries.clone()),
+    );
     let config = local_harness_config(&directory, (model, provider.clone()))?
         .state_directory(&state)
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None);
-    let harness = LocalHarness::open(config).await?;
+    let mut harness = LocalHarness::open(config).await?;
     if !state.join("owner.json").is_file() {
         return Err("harness did not use the fixture-owned state directory".into());
     }
-    let stream = local_task_stream(&harness);
-    let (operation, task_id, status) =
+    let mut stream = local_task_stream(&harness);
+    let (operation, task_id, mut status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
     let task_query = Query::Task(acyclic_harness::task_volume::Component::new(
         task_id.to_string(),
     )?);
-    let task_files = if case.expect.task_files.is_some() {
+    let mut task_files = if case.expect.task_files.is_some() {
         Some(
             harness
                 .task_files()
@@ -92,6 +100,79 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     } else {
         None
     };
+    let mut prefix = Vec::new();
+    let mut requests = Vec::new();
+    if let Some(after) = case.kill_after {
+        let initial = task_files
+            .as_mut()
+            .and_then(|files| files.snapshot.take())
+            .ok_or("kill cases require exact task-file expectations")?;
+        let status_snapshot = status
+            .snapshot
+            .take()
+            .ok_or("missing admission status snapshot")?;
+        let status_query = Query::File(
+            status_snapshot
+                .files
+                .first()
+                .ok_or("missing initial status")?
+                .key
+                .clone(),
+        );
+        drop(task_files.take());
+        drop(status);
+        drop(stream);
+        drop(harness);
+        let checkpoint = super::local_crash::interrupt(
+            temporary.path().join("crash.json"),
+            super::local_crash::Input {
+                directory: directory.clone(),
+                state: state.clone(),
+                volume: volume.clone(),
+                task: task_id,
+                turn: interrupted_turn.ok_or("missing interrupted turn")?,
+                query: task_query.clone(),
+                cursor: initial.cursor.clone(),
+                after,
+            },
+        )
+        .await?;
+        let cursor = checkpoint
+            .changes
+            .last()
+            .ok_or("child followed no files")?
+            .cursor
+            .clone();
+        prefix = checkpoint.changes;
+        requests = checkpoint.requests;
+        let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
+        harness = LocalHarness::open(
+            local_harness_config(&directory, (model, provider.clone()))?
+                .state_directory(&state)
+                .volume(volume.clone())
+                .compaction(CompactionPolicy::Disabled)
+                .goal_continuations(None),
+        )
+        .await?;
+        stream = local_task_stream(&harness);
+        status = harness
+            .task_files()
+            .observe(status_query, Some(status_snapshot.cursor.clone()), 1)
+            .await?;
+        if status.reset || status.snapshot.is_some() {
+            return Err("kill reset the status follower".into());
+        }
+        status.snapshot = Some(status_snapshot);
+        let mut resumed = harness
+            .task_files()
+            .observe(task_query.clone(), Some(cursor), 128)
+            .await?;
+        if resumed.reset || resumed.snapshot.is_some() {
+            return Err("kill reset the task follower".into());
+        }
+        resumed.snapshot = Some(initial);
+        task_files = Some(resumed);
+    }
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
@@ -106,8 +187,14 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let task_cursor =
         if let (Some(expected), Some(observation)) = (&case.expect.task_files, task_files) {
             Some(
-                super::local_streams::check(&harness, task_query.clone(), observation, expected)
-                    .await?,
+                super::local_streams::check(
+                    &harness,
+                    task_query.clone(),
+                    observation,
+                    prefix,
+                    expected,
+                )
+                .await?,
             )
         } else {
             None
@@ -116,7 +203,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     if provider.remaining() != 0 {
         return Err("local turn output or model script differs".into());
     }
-    let requests = provider.requests();
+    if provider.reconciliations().len() != case.recoveries.len()
+        || !provider.recoveries().is_empty()
+    {
+        return Err("local turn did not consume exactly its scripted recoveries".into());
+    }
+    requests.extend(provider.requests());
     if requests.len() != steps {
         return Err("local scenario did not consume exactly its scripted model turns".into());
     }
@@ -418,7 +510,7 @@ fn check_terminal_frames(
         acyclic_harness::scheduler::SchedulerEvent::Completed { outcome, .. } => matches!(
             (success, outcome),
             (true, acyclic_harness::Outcome::Succeeded(_))
-                | (false, acyclic_harness::Outcome::Failed(_))
+                | (false, acyclic_harness::Outcome::Failed { .. })
         ),
         _ => false,
     };

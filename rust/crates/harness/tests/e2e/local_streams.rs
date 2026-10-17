@@ -1,7 +1,7 @@
 use super::TestResult;
 use acyclic_harness::{
     LocalHarness,
-    task_volume::{Cursor, FileKey, FileValue, Observation, Query, TaskFile},
+    task_volume::{Change, Cursor, FileKey, FileValue, Observation, Query, TaskFile, ToolFile},
 };
 use futures::StreamExt as _;
 use serde_json::{Value, json};
@@ -11,6 +11,7 @@ pub(super) async fn check(
     harness: &LocalHarness,
     query: Query,
     mut observation: Observation,
+    prefix: Vec<Change>,
     expected: &[Value],
 ) -> TestResult<Cursor> {
     let initial = observation
@@ -30,17 +31,21 @@ pub(super) async fn check(
     let mut turns = BTreeMap::new();
     let mut calls = BTreeMap::new();
     let mut actual = Vec::new();
+    let mut prefix = prefix.into_iter();
     for file in initial.files {
         if normalize(file, &mut turns, &mut calls)?.is_some() {
             return Err("streaming started before the admission snapshot".into());
         }
     }
     while position < cut {
-        let change = observation
-            .changes
-            .next()
-            .await
-            .ok_or("task file follow ended")??;
+        let change = match prefix.next() {
+            Some(change) => change,
+            None => observation
+                .changes
+                .next()
+                .await
+                .ok_or("task file follow ended")??,
+        };
         if change.cursor.position <= position || change.cursor.position > cut {
             return Err("task file cursor reordered a publication".into());
         }
@@ -161,7 +166,21 @@ fn normalize(
         }
         _ => unreachable!(),
     };
+    let mut text = std::str::from_utf8(&file.bytes)?.to_owned();
+    if let TaskFile::Tool {
+        call,
+        file: ToolFile::Request,
+        ..
+    } = kind
+    {
+        let invocation: acyclic_harness::tool::ToolInvocation =
+            serde_json::from_slice(&file.bytes)?;
+        if invocation.operation_id.to_string() != call.as_str() {
+            return Err("tool request identity differs from its file".into());
+        }
+        text = text.replace(call.as_str(), "<operation>");
+    }
     Ok(Some(
-        json!({"path":path,"channel":file.channel,"text":std::str::from_utf8(&file.bytes)?}),
+        json!({"path":path,"channel":file.channel,"text":text}),
     ))
 }

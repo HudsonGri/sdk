@@ -162,6 +162,7 @@ fn files() -> Vec<(FileKey, bool)> {
             ToolFile::Arguments(0),
             ToolFile::Stdout(0),
             ToolFile::Stderr(0),
+            ToolFile::Error,
             ToolFile::Result,
         ]
         .into_iter()

@@ -11,7 +11,7 @@
     "task_files":[
       {"path":"turns/0/request.json","model":{"provider":"scripted","name":"local","revision":"1"}},
       {"path":"turns/0/chunks/0","channel":"Text","text":"before"},
-      {"path":"turns/0/chunks/1","channel":"Reasoning","text":"thinking"},
+      {"path":"turns/0/chunks/4294967296","channel":"Reasoning","text":"thinking"},
       {"path":"turns/0/errors/2.json","channel":null,"text":"{\"error\":\"storage failure: provider stopped\"}"}
     ]
   }

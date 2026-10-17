@@ -370,6 +370,8 @@ where
             self.validate_model_file_position(operation_id, event, summary, io)
                 .await?;
             summary.validate_next(event, model.as_ref(), limits, io)?;
+            self.publish_tool_event_file(operation_id, event, io)
+                .await?;
             if let ExecutionEvent::ModelStarted {
                 step,
                 purpose: crate::executor::ModelPurpose::Response,

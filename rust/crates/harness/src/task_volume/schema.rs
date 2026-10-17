@@ -8,6 +8,12 @@ mod tests;
 /// Task namespace and packed-segment format revision.
 pub const SCHEMA: u32 = 4;
 
+/// Stock model chunks reserve the low 32 bits for parts of one provider event.
+/// Gaps are intentional: readers order by numeric sequence and follow the cursor.
+pub const MODEL_CHUNK_STRIDE: u64 = 1 << 32;
+/// Raw model payload per immutable segment, leaving room for its typed key.
+pub const MODEL_CHUNK_BYTES: usize = acyclic_stream::MAX_RECORD_BYTES / 2;
+
 #[path = "component.rs"]
 mod component;
 pub use component::Component;
@@ -38,6 +44,8 @@ pub enum ToolFile {
     Stdout(u64),
     /// Ordered standard error.
     Stderr(u64),
+    /// Terminal tool failure with a stable credential-free diagnostic.
+    Error,
     /// Terminal tool outcome.
     Result,
 }
@@ -150,6 +158,7 @@ impl TaskFile {
                     ToolFile::Arguments(n) => format!("arguments/{n}"),
                     ToolFile::Stdout(n) => format!("stdout/{n}"),
                     ToolFile::Stderr(n) => format!("stderr/{n}"),
+                    ToolFile::Error => "error.json".into(),
                     ToolFile::Result => "result.json".into(),
                 };
                 format!("turns/{turn}/tools/{}/{leaf}", call.as_str())
@@ -346,6 +355,7 @@ impl FileKey {
                 let file = match rest {
                     ["request.json"] => ToolFile::Request,
                     ["result.json"] => ToolFile::Result,
+                    ["error.json"] => ToolFile::Error,
                     ["arguments", seq] => ToolFile::Arguments(number(seq)?),
                     ["stdout", seq] => ToolFile::Stdout(number(seq)?),
                     ["stderr", seq] => ToolFile::Stderr(number(seq)?),

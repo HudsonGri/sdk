@@ -110,13 +110,31 @@ impl StockExecution<'_> {
             .await?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
-                Either::Right(
-                    self.stock
-                        .provider
-                        .generate_with_native_work(&request, dispatch, work)?
-                        .await?
-                        .map(|result| self.admit_model_event(result)),
-                )
+                let generated = match self
+                    .stock
+                    .provider
+                    .generate_with_native_work(&request, dispatch, work)
+                {
+                    Ok(prepared) => prepared.await,
+                    Err(error) => Err(error),
+                };
+                let generated = match generated {
+                    Ok(generated) => generated,
+                    Err(error) => {
+                        if purpose == ModelPurpose::Response {
+                            journal
+                                .publish_model_outcome(
+                                    input.operation_id,
+                                    step,
+                                    Err((admission.count, &error)),
+                                    io,
+                                )?
+                                .await?;
+                        }
+                        return Err(error);
+                    }
+                };
+                Either::Right(generated.map(|result| self.admit_model_event(result)))
             } else {
                 Either::Left(self.stock.provider.generate(request, dispatch))
             };

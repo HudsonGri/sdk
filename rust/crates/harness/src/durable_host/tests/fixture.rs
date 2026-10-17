@@ -32,6 +32,10 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    pub(crate) fn scope(&self) -> &Scope {
+        &self.host.owner_scope
+    }
+
     pub(crate) async fn owner(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         let lease = match self
             .host

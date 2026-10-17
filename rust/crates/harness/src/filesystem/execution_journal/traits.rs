@@ -71,7 +71,16 @@ where
                 self.stage_model_delta(operation, turn.0, turn.2, event, io)
                     .await
             } else {
-                crate::executor::stage_event_json(self, operation, key, event, io).await
+                let reference =
+                    crate::executor::stage_event_json(self, operation, key, event, io).await?;
+                if self.task_files.is_some()
+                    && turn.1 == crate::executor::ModelPurpose::Response
+                    && let ModelEvent::ToolCall(call) = event
+                {
+                    self.publish_tool_arguments(operation, turn.0, turn.2, call, io)
+                        .await?;
+                }
+                Ok(reference)
             }
         })
     }

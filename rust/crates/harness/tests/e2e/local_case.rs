@@ -1,4 +1,4 @@
-use acyclic_harness::test_support::ScriptedTurn;
+use acyclic_harness::test_support::{ScriptedReconciliation, ScriptedTurn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -10,6 +10,9 @@ pub(super) struct LocalCase {
     pub seed: BTreeMap<String, String>,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
+    pub kill_after: Option<usize>,
+    #[serde(default)]
+    pub recoveries: Vec<ScriptedReconciliation>,
     pub expect: Expectations,
 }
 
@@ -30,6 +33,7 @@ pub(super) struct Expectations {
 impl LocalCase {
     pub(super) fn validate(&self) -> Result<(), &'static str> {
         if self.prompt.is_empty()
+            || self.kill_after == Some(0)
             || self.turns.is_empty()
             || self.expect.files.is_empty()
             || self.expect.frames.is_empty()
