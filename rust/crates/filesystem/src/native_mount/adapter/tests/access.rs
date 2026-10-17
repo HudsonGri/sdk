@@ -765,7 +765,7 @@ fn projection_admission_holds_policy_publication_until_retirement()
 }
 
 #[test]
-fn staged_policy_editor_prevents_projection_admission() -> Result<(), Box<dyn std::error::Error>> {
+fn private_policy_staging_does_not_hold_a_publication_lease() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let editor = invoke(&source.runtime, &work, || async {
@@ -789,7 +789,7 @@ fn staged_policy_editor_prevents_projection_admission() -> Result<(), Box<dyn st
             .await?;
         Ok::<_, MountSourceError>(editor)
     })?;
-    assert!(source.projection_policy_lease(true, &work).is_err());
+    assert!(source.projection_policy_lease(true, &work).is_ok());
     drop(editor);
     assert!(source.projection_policy_lease(true, &work).is_ok());
     Ok(())

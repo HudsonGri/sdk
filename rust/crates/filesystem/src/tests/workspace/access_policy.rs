@@ -6,7 +6,7 @@ use proptest::prelude::*;
 type MemoryCheckout = Checkout<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
 type MemoryWorkspace = Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
 
-async fn current(
+pub(super) async fn current(
     workspace: &MemoryWorkspace,
     writable: bool,
 ) -> Result<MemoryCheckout, Box<dyn Error>> {
@@ -23,13 +23,13 @@ async fn current(
     )?)
 }
 
-async fn recorded(checkout: &mut MemoryCheckout) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+pub(super) async fn recorded(checkout: &mut MemoryCheckout) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
     Ok(unbounded!(checkout, read_access_policy())?
         .0
         .map(|chunk| chunk.bytes.to_vec()))
 }
 
-async fn publish(checkout: &mut MemoryCheckout) -> Result<bool, Box<dyn Error>> {
+pub(super) async fn publish(checkout: &mut MemoryCheckout) -> Result<bool, Box<dyn Error>> {
     let result = checkout
         .commit(
             crate::OperationId::new(),

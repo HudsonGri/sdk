@@ -1,0 +1,184 @@
+use super::access_policy::{current, publish, recorded};
+use super::*;
+use crate::{AuthoredMutation, NamedAttributeWriteMode};
+
+fn denied_policy() -> Vec<u8> {
+    serde_json::to_vec(&crate::access::fixtures::denied(
+        crate::access::Action::Write,
+        "**",
+    ))
+    .unwrap()
+}
+
+fn assert_projection_denied<T>(result: Result<T, WorkspaceError>) {
+    assert!(
+        matches!(
+            result,
+            Err(WorkspaceError::Filesystem(FsError::Publication(
+                crate::kernel::PublicationError::ActiveProjection
+            )))
+        ),
+        "policy publication escaped projection fence"
+    );
+}
+
+async fn set_metadata(protected: bool) -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("root-metadata-policy"))?;
+    let mut donor = current(&workspace, true).await?;
+    let policy = denied_policy();
+    unbounded!(
+        donor,
+        write_access_policy(&policy, NamedAttributeWriteMode::Create)
+    )?;
+    let root = crate::kernel::NamespacePath::new(
+        vec![],
+        VolumeConfig::portable(Lifecycle::Ephemeral).limits,
+    )?;
+    let metadata = unbounded!(donor, read_metadata(&root))?;
+    drop(donor);
+    let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        transaction.checkout,
+        apply_authored_transaction(vec![AuthoredMutation::SetMetadata {
+            path: root,
+            metadata,
+        }])
+    )?;
+    let before = unbounded!(workspace, head())?.id();
+    let projection = protected
+        .then(|| crate::access::projection::enter(workspace.id().volume_id()))
+        .transpose()?;
+    assert_projection_denied(commit(&mut transaction).await);
+    assert_eq!(unbounded!(workspace, head())?.id(), before);
+    assert_eq!(
+        recorded(&mut current(&workspace, false).await?).await?,
+        None
+    );
+    drop(projection);
+    assert!(matches!(
+        commit(&mut transaction).await?,
+        TransactionCommit::Committed(_)
+    ));
+    assert_eq!(
+        recorded(&mut current(&workspace, false).await?).await?,
+        Some(policy)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn root_set_metadata_transaction_is_fenced_at_publication() -> Result<(), Box<dyn Error>> {
+    set_metadata(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "policy publication escaped projection fence")]
+async fn root_set_metadata_missing_projection_negative_control() {
+    set_metadata(false).await.unwrap();
+}
+
+async fn join(protected: bool) -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let parent = unbounded!(fs, create_workspace("join-policy-parent"))?;
+    let base = unbounded!(parent, head())?;
+    let child = fork_workspace(
+        &parent,
+        "join-policy-child",
+        ForkOptions::from_generation(base, IdempotencyKey::new()),
+    )
+    .await?;
+    let mut editor = current(&child, true).await?;
+    let policy = denied_policy();
+    unbounded!(
+        editor,
+        write_access_policy(&policy, NamedAttributeWriteMode::Create)
+    )?;
+    publish(&mut editor).await?;
+    let plan = unbounded!(child.join_into(&parent), plan())?;
+    let options = ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    let before = unbounded!(parent, head())?.id();
+    let projection = protected
+        .then(|| crate::access::projection::enter(parent.id().volume_id()))
+        .transpose()?;
+    assert_projection_denied(
+        plan.apply(
+            options,
+            BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await,
+    );
+    assert_eq!(unbounded!(parent, head())?.id(), before);
+    assert_eq!(recorded(&mut current(&parent, false).await?).await?, None);
+    drop(projection);
+    assert!(matches!(
+        plan.apply(
+            options,
+            BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted
+        )
+        .await?,
+        JoinOutcome::Applied(_)
+    ));
+    assert_eq!(
+        recorded(&mut current(&parent, false).await?).await?,
+        Some(policy)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_join_is_fenced_at_publication() -> Result<(), Box<dyn Error>> {
+    join(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "policy publication escaped projection fence")]
+async fn workspace_join_missing_projection_negative_control() {
+    join(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn unchanged_policy_publishes_and_inflight_cas_excludes_new_projection()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("publication-projection"))?;
+    let projection = crate::access::projection::enter(workspace.id().volume_id())?;
+    workspace
+        .write_text("/ordinary", "unrestricted content publication")
+        .await?;
+    drop(projection);
+    let mut editor = current(&workspace, true).await?;
+    unbounded!(
+        editor,
+        write_access_policy(&denied_policy(), NamedAttributeWriteMode::Create)
+    )?;
+    let volume = workspace.id().volume_id();
+    editor
+        .commit(
+            crate::OperationId::new(),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            move |_| async move {
+                assert!(
+                    crate::access::projection::enter(volume).is_err(),
+                    "projection entered an in-flight policy CAS"
+                );
+                Ok::<_, crate::OperationFailure<FsError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?;
+    assert!(crate::access::projection::enter(volume).is_ok());
+    Ok(())
+}

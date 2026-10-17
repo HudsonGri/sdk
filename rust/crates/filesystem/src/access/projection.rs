@@ -26,30 +26,41 @@ static POLICIES: std::sync::OnceLock<Arc<ProjectionPolicies>> = std::sync::OnceL
 #[cfg(acyclic_fs_loom)]
 loom::lazy_static! { static ref POLICIES: Arc<ProjectionPolicies> = Arc::new(ProjectionPolicies::default()); }
 
-pub(crate) fn enter(volume: crate::VolumeId, projection: bool) -> Result<Lease, crate::FsError> {
+fn register(volume: crate::VolumeId, projection: bool) -> Result<(Lease, bool), crate::FsError> {
     #[cfg(not(acyclic_fs_loom))]
     let policies = POLICIES.get_or_init(|| Arc::new(ProjectionPolicies::default()));
     #[cfg(acyclic_fs_loom)]
     let policies = &*POLICIES;
     ProjectionPolicies::enter(policies, volume, projection)
 }
+
+pub(crate) fn enter(volume: crate::VolumeId) -> Result<Lease, crate::FsError> {
+    register(volume, true).map(|(lease, _)| lease)
+}
+
+// Registration is linearized with projection admission. No backend I/O or CAS
+// runs under the registry lock; the returned lease excludes admission until CAS.
+pub(crate) fn publication(volume: crate::VolumeId) -> Result<(Lease, bool), crate::FsError> {
+    register(volume, false)
+}
+pub(crate) fn check_policy(projected: bool, changed: bool) -> Result<(), crate::FsError> {
+    if projected && changed {
+        Err(crate::kernel::PublicationError::ActiveProjection.into())
+    } else {
+        Ok(())
+    }
+}
 impl ProjectionPolicies {
     fn enter(
         owner: &Arc<Self>,
         volume: crate::VolumeId,
         projection: bool,
-    ) -> Result<Lease, crate::FsError> {
+    ) -> Result<(Lease, bool), crate::FsError> {
         let mut entries = owner
             .entries
             .lock()
             .map_err(|_| crate::FsError::MutationNotAllowed)?;
-        if let Some(state) = entries.get(&volume)
-            && if projection {
-                state.editors != 0
-            } else {
-                state.projections != 0
-            }
-        {
+        if projection && entries.get(&volume).is_some_and(|state| state.editors != 0) {
             return Err(crate::FsError::MutationNotAllowed);
         }
         let state = entries.entry(volume).or_default();
@@ -59,11 +70,14 @@ impl ProjectionPolicies {
             &mut state.editors
         };
         *count = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-        Ok(Lease {
-            owner: Arc::clone(owner),
-            volume,
-            projection,
-        })
+        Ok((
+            Lease {
+                owner: Arc::clone(owner),
+                volume,
+                projection,
+            },
+            state.projections != 0,
+        ))
     }
 }
 impl Drop for Lease {
@@ -95,40 +109,48 @@ impl Drop for Lease {
 #[cfg(all(test, acyclic_fs_loom))]
 mod model {
     use super::*;
-    fn run(omit_editor_lease: bool) {
-        // Collect outcomes only; all schedule-dependent state uses the shim.
-        // Report after Loom retires its lazy registry, including failing schedules.
+    fn run(omit_publication_lease: bool) {
+        // The reporter only aggregates completed schedules. Every value affecting
+        // the protocol, including the CAS and admission lock, is instrumented.
         let violated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = std::sync::Arc::clone(&violated);
         loom::model(move || {
             let volume = crate::VolumeId::from_bytes([1; 16]);
-            let projecting = Arc::new(crate::sync::atomic::AtomicBool::new(false));
-            let editor = loom::thread::spawn({
-                let projecting = Arc::clone(&projecting);
+            let revision = Arc::new(crate::sync::atomic::AtomicUsize::new(0));
+            let publisher = loom::thread::spawn({
+                let revision = Arc::clone(&revision);
                 move || {
-                    let lease = if omit_editor_lease {
-                        None
+                    let (lease, projected) = if omit_publication_lease {
+                        (None, false)
                     } else {
-                        match enter(volume, false) {
-                            Ok(lease) => Some(lease),
-                            Err(_) => return false,
-                        }
+                        let (lease, projected) = publication(volume).unwrap();
+                        (Some(lease), projected)
                     };
-                    let overlap = projecting.load(crate::sync::atomic::Ordering::SeqCst);
+                    // The real publication reducer checks the candidate metadata
+                    // under this lease and retains it through the authority CAS.
+                    if check_policy(projected, true).is_ok() {
+                        let _ = revision.compare_exchange(
+                            0,
+                            1,
+                            crate::sync::atomic::Ordering::SeqCst,
+                            crate::sync::atomic::Ordering::SeqCst,
+                        );
+                    }
                     drop(lease);
-                    overlap
                 }
             });
-            if let Ok(lease) = enter(volume, true) {
-                projecting.store(true, crate::sync::atomic::Ordering::SeqCst);
+            let mut overlap = false;
+            if let Ok(lease) = enter(volume) {
+                let pinned = revision.load(crate::sync::atomic::Ordering::SeqCst);
                 loom::thread::yield_now();
-                projecting.store(false, crate::sync::atomic::Ordering::SeqCst);
+                overlap = pinned != revision.load(crate::sync::atomic::Ordering::SeqCst);
                 drop(lease);
             }
-            if editor.join().unwrap() {
+            publisher.join().unwrap();
+            if overlap {
                 observed.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            assert!(enter(volume, false).is_ok());
+            assert!(publication(volume).is_ok());
         });
         assert!(
             !violated.load(std::sync::atomic::Ordering::Relaxed),
@@ -136,12 +158,12 @@ mod model {
         );
     }
     #[test]
-    fn policy_publication_and_projection_are_exclusive() {
+    fn policy_publication_cas_racing_projection_start_is_fenced() {
         run(false);
     }
     #[test]
     #[should_panic(expected = "policy changed during projection")]
-    fn missing_policy_lease_negative_control() {
+    fn missing_publication_fence_negative_control() {
         run(true);
     }
 }
@@ -169,10 +191,15 @@ mod properties {
                 match step {
                     0 | 1 => {
                         let projection = step == 0;
-                        let allowed = if projection { editors.is_empty() } else { projections.is_empty() };
+                        let allowed = !projection || editors.is_empty();
                         let entered = ProjectionPolicies::enter(&policies, volume, projection);
                         prop_assert_eq!(entered.is_ok(), allowed);
-                        if let Ok(lease) = entered { if projection { projections.push(lease); } else { editors.push(lease); } }
+                        if let Ok((lease, projected)) = entered {
+                            prop_assert_eq!(projected, !projections.is_empty() || projection);
+                            prop_assert_eq!(check_policy(projected, true).is_ok(), !projected);
+                            prop_assert!(check_policy(projected, false).is_ok());
+                            if projection { projections.push(lease); } else { editors.push(lease); }
+                        }
                     }
                     2 => { projections.pop(); }
                     _ => { editors.pop(); }

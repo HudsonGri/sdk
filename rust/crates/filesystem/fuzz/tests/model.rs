@@ -1,5 +1,6 @@
 //! Exhaustive schedules through the production native directory cache.
 #![cfg(acyclic_fs_loom)]
+use acyclic_fs::kernel;
 use acyclic_fs::{Digest, FsError, ObjectId, ObjectKind, VolumeId, WorkError};
 
 #[path = "../../src/sync.rs"]
