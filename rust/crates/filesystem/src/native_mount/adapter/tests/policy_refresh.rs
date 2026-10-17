@@ -62,10 +62,14 @@ impl crate::native_mount::NativeAccessOwner for Reload {
     }
 }
 
-pub(super) fn publish(
-    source: &MemorySource,
+pub(super) fn publish<A, O>(
+    source: &CheckoutMountSource<A, O>,
     policy: &Policy,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     invoke(&source.runtime, &work, || async {
         let mut checkout = source

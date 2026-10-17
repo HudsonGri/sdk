@@ -659,8 +659,12 @@ impl PathTrie {
         }
     }
 
+    pub(super) fn valid_at(&self, now: u64) -> bool {
+        now >= self.valid_from && self.valid_until.is_none_or(|expiry| now < expiry)
+    }
+
     fn state_at(&self, state: usize, now: u64) -> Option<&State> {
-        if now < self.valid_from || self.valid_until.is_some_and(|expiry| now >= expiry) {
+        if !self.valid_at(now) {
             None
         } else {
             self.states.get(state)

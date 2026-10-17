@@ -83,6 +83,40 @@ impl<A, O> CheckoutMountSource<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
+    /// The sole return/admission boundary for fresh native disclosures. Existing
+    /// open handles keep their pinned authority and do not pass through here.
+    pub(in crate::native_mount) async fn disclose<T>(
+        &self,
+        view: &crate::access::PathTrie,
+        work: &crate::NativeMaterializationWork,
+        read: impl Future<Output = Result<T, MountSourceError>>,
+    ) -> Result<T, MountSourceError> {
+        let result = read.await;
+        #[cfg(test)]
+        if super::tests::return_fence::omitted() {
+            return result;
+        }
+        let revision = self
+            .checkout
+            .volume
+            .current_access_policy_revision_accounted(
+                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )
+            .await?;
+        let valid = self
+            .access_view
+            .as_ref()
+            .ok_or(MountSourceError::AccessDenied)?
+            .confirms_disclosure(view, revision, access_time()?)
+            .map_err(|_| MountSourceError::AccessDenied)?;
+        if !valid {
+            return Err(MountSourceError::AccessDenied);
+        }
+        NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))?;
+        result
+    }
+
     pub(super) async fn require_snapshot(
         &self,
         permissions: &crate::access::PathTrie,
@@ -194,6 +228,17 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    pub(in crate::native_mount) fn disclose_result<T>(
+        &self,
+        view: &crate::access::PathTrie,
+        result: Result<T, MountSourceError>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<T, MountSourceError> {
+        invoke(&self.runtime, work, || {
+            self.disclose(view, work, std::future::ready(result))
+        })
+    }
+
     pub(in crate::native_mount) fn access_snapshot_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -249,7 +294,8 @@ where
                     require(&permissions, *action, now)?;
                 }
             }
-            Ok(())
+            self.disclose(&current, work, std::future::ready(Ok(())))
+                .await
         })
     }
 

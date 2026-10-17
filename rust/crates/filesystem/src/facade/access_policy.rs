@@ -192,6 +192,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
         work.finish(result, &accounting)
     }
 
+    pub(crate) fn current_access_policy_revision_accounted(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> impl std::future::Future<
+        Output = Result<Option<(GenerationId, MetadataField<ObjectId>)>, FsError>,
+    > {
+        self.volume
+            .current_access_policy_revision_accounted(accounting, cancellation)
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     pub(crate) async fn current_access_policy_revision_accounted(
         &self,
         accounting: &mut KernelAccounting<'_>,
@@ -199,7 +212,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
     ) -> Result<Option<(GenerationId, MetadataField<ObjectId>)>, FsError> {
         let before = readonly_standalone_live(accounting);
         let result = async {
-            let volume = &self.volume;
+            let volume = self;
             let (generation, observed) = volume
                 .resolve_head_generation(accounting, cancellation)
                 .await?;

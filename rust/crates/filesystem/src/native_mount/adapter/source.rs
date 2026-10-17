@@ -112,14 +112,17 @@ impl<A, O> CheckoutMountSource<A, O> {
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
         let permissions = self.require_access(&path, action, &work).await?;
-        let mut inspector = checkout.inspector(
-            &mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation),
-            &cancellation,
-        )?;
-        self.require_snapshot(permissions.policy_view(), &mut inspector, &work)
-            .await?;
-        self.read_lookup(&mut inspector, &path, &mut inputs, &cancellation)
-            .await
+        self.disclose(permissions.policy_view(), &work, async {
+            let mut inspector = checkout.inspector(
+                &mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation),
+                &cancellation,
+            )?;
+            self.require_snapshot(permissions.policy_view(), &mut inspector, &work)
+                .await?;
+            self.read_lookup(&mut inspector, &path, &mut inputs, &cancellation)
+                .await
+        })
+        .await
     }
 
     async fn change_attribute(
@@ -211,46 +214,49 @@ impl<A, O> CheckoutMountSource<A, O> {
         let permissions = self
             .require_access(&path, crate::access::Action::Read, &work)
             .await?;
-        let observation = self
-            .checkout
-            .observe(
-                owner,
-                inputs.carrier,
+        self.disclose(permissions.policy_view(), &work, async {
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    inputs.carrier,
+                    &cancellation,
+                    Some(&self.cancellation),
+                )
+                .await?;
+            let original =
+                inputs
+                    .carrier
+                    .original_native_work()
+                    .ok_or(MountSourceError::NativeWork(
+                        crate::NativeTreeMaterializationError::InvalidLayout,
+                    ))?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
                 &cancellation,
-                Some(&self.cancellation),
-            )
-            .await?;
-        let original =
+            )?;
+            self.require_snapshot(permissions.policy_view(), &mut checkout, &work)
+                .await?;
+            let chunk = match range {
+                Some(range) => {
+                    let read = checkout
+                        .read_file_range(&path, range, &original, &cancellation)
+                        .await?;
+                    let bytes = read.logical_owned_bytes();
+                    crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, bytes)
+                }
+                None => {
+                    checkout
+                        .read_symbolic_link(&path, &original, &cancellation)
+                        .await?
+                }
+            };
             inputs
                 .carrier
-                .original_native_work()
-                .ok_or(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ))?;
-        let mut checkout = observation.observer(
-            &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
-            &cancellation,
-        )?;
-        self.require_snapshot(permissions.policy_view(), &mut checkout, &work)
-            .await?;
-        let chunk = match range {
-            Some(range) => {
-                let read = checkout
-                    .read_file_range(&path, range, &original, &cancellation)
-                    .await?;
-                let bytes = read.logical_owned_bytes();
-                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, bytes)
-            }
-            None => {
-                checkout
-                    .read_symbolic_link(&path, &original, &cancellation)
-                    .await?
-            }
-        };
-        inputs
-            .carrier
-            .check(&cancellation, Some(&self.cancellation))?;
-        Ok(chunk)
+                .check(&cancellation, Some(&self.cancellation))?;
+            Ok(chunk)
+        })
+        .await
     }
 
     pub(super) async fn lookup_async(
@@ -293,30 +299,33 @@ impl<A, O> CheckoutMountSource<A, O> {
         {
             return Ok(None);
         }
-        let observation = self
-            .checkout
-            .observe(
-                owner,
-                inputs.carrier,
+        self.disclose(access.policy_view(), &work, async {
+            let observation = self
+                .checkout
+                .observe(
+                    owner,
+                    inputs.carrier,
+                    &cancellation,
+                    Some(&self.cancellation),
+                )
+                .await?;
+            let original =
+                inputs
+                    .carrier
+                    .original_native_work()
+                    .ok_or(MountSourceError::NativeWork(
+                        crate::NativeTreeMaterializationError::InvalidLayout,
+                    ))?;
+            let mut checkout = observation.observer(
+                &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
                 &cancellation,
-                Some(&self.cancellation),
-            )
-            .await?;
-        let original =
-            inputs
-                .carrier
-                .original_native_work()
-                .ok_or(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ))?;
-        let mut checkout = observation.observer(
-            &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
-            &cancellation,
-        )?;
-        self.require_snapshot(access.policy_view(), &mut checkout, &work)
-            .await?;
-        self.read_lookup(&mut checkout, &path, &mut inputs, &cancellation)
-            .await
+            )?;
+            self.require_snapshot(access.policy_view(), &mut checkout, &work)
+                .await?;
+            self.read_lookup(&mut checkout, &path, &mut inputs, &cancellation)
+                .await
+        })
+        .await
     }
 
     async fn read_lookup(

@@ -25,15 +25,10 @@ where
             crate::access::Action::Create,
             access::access_time()?,
         )?;
-        authorize_file(
-            wrap(
-                self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?,
-            )?,
-            permissions,
-            created.node.file_id,
-            true,
-            work,
-        )
+        let file =
+            wrap(self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?);
+        let file = self.disclose_result(permissions.policy_view(), file, work)?;
+        authorize_file(file, permissions, created.node.file_id, true, work)
     }
 
     pub(super) fn seek_extent(
@@ -50,43 +45,49 @@ where
             let permissions = self
                 .require_access(&path, crate::access::Action::Read, work)
                 .await?;
-            let observation = self
-                .checkout
-                .observe(
-                    ViewGate::callback_owner()?,
-                    inputs.carrier,
+            self.disclose(permissions.policy_view(), work, async {
+                let observation = self
+                    .checkout
+                    .observe(
+                        ViewGate::callback_owner()?,
+                        inputs.carrier,
+                        work.cancellation(),
+                        Some(&self.cancellation),
+                    )
+                    .await?;
+                let mut checkout = observation.observer(
+                    &mut crate::kernel::allocation::KernelAccounting::native(
+                        work,
+                        work.cancellation(),
+                    ),
                     work.cancellation(),
-                    Some(&self.cancellation),
-                )
-                .await?;
-            let mut checkout = observation.observer(
-                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
-                work.cancellation(),
-            )?;
-            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
-                .await?;
-            let file_id = checkout
-                .lookup_no_follow(&path, work, work.cancellation())
-                .await?
-                .record
-                .ok_or(MountSourceError::NotFound)?
-                .file_id;
-            let result = checkout
-                .seek_file_extent(
-                    file_id,
-                    offset,
-                    match target {
-                        MountSeekTarget::Data => ExtentSeekTarget::Data,
-                        MountSeekTarget::Hole => ExtentSeekTarget::Hole,
-                    },
-                    work,
-                    work.cancellation(),
-                )
-                .await?;
-            inputs
-                .carrier
-                .check(work.cancellation(), Some(&self.cancellation))?;
-            Ok(result)
+                )?;
+                self.require_snapshot(permissions.policy_view(), &mut checkout, work)
+                    .await?;
+                let file_id = checkout
+                    .lookup_no_follow(&path, work, work.cancellation())
+                    .await?
+                    .record
+                    .ok_or(MountSourceError::NotFound)?
+                    .file_id;
+                let result = checkout
+                    .seek_file_extent(
+                        file_id,
+                        offset,
+                        match target {
+                            MountSeekTarget::Data => ExtentSeekTarget::Data,
+                            MountSeekTarget::Hole => ExtentSeekTarget::Hole,
+                        },
+                        work,
+                        work.cancellation(),
+                    )
+                    .await?;
+                inputs
+                    .carrier
+                    .check(work.cancellation(), Some(&self.cancellation))?;
+                Ok(result)
+            })
+            .await
         })
     }
 
@@ -103,30 +104,35 @@ where
             let permissions = self.pin_access(&namespace, work).await?;
             access::require_open(&permissions, access)?;
 
-            let observation = self
-                .checkout
-                .observe(
-                    ViewGate::callback_owner()?,
-                    inputs.carrier,
-                    work.cancellation(),
-                    Some(&self.cancellation),
-                )
-                .await?;
-            let mut observer = observation.observer(
-                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
-                work.cancellation(),
-            )?;
-            self.require_snapshot(permissions.policy_view(), &mut observer, work)
-                .await?;
             let lookup = self
-                .read_lookup(&mut observer, &namespace, &mut inputs, work.cancellation())
-                .await?
-                .ok_or(MountSourceError::NotFound)?;
-            if lookup.node.kind != MountNodeKind::Regular {
-                return Err(MountSourceError::Invalid(
-                    "only regular files can own native handles".into(),
-                ));
-            }
+                .disclose(permissions.policy_view(), work, async {
+                    let observation = self
+                        .checkout
+                        .observe(
+                            ViewGate::callback_owner()?,
+                            inputs.carrier,
+                            work.cancellation(),
+                            Some(&self.cancellation),
+                        )
+                        .await?;
+                    let mut observer = observation.observer(
+                        &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                        work.cancellation(),
+                    )?;
+                    self.require_snapshot(permissions.policy_view(), &mut observer, work)
+                        .await?;
+                    let lookup = self
+                        .read_lookup(&mut observer, &namespace, &mut inputs, work.cancellation())
+                        .await?
+                        .ok_or(MountSourceError::NotFound)?;
+                    if lookup.node.kind != MountNodeKind::Regular {
+                        return Err(MountSourceError::Invalid(
+                            "only regular files can own native handles".into(),
+                        ));
+                    }
+                    Ok(lookup)
+                })
+                .await?;
             let raw = self.attached_file(lookup.node.file_id, inputs.carrier)?;
             let (file, bytes) = authorize_file(raw, permissions, lookup.node.file_id, false, work)?;
             Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
@@ -180,39 +186,45 @@ where
             let path = self.namespace_inputs(path, &mut inputs)?;
             let permissions = self.pin_access(&path, work).await?;
             access::require_open(&permissions, None)?;
-            let observation = self
-                .checkout
-                .observe(
-                    ViewGate::callback_owner()?,
-                    inputs.carrier,
-                    work.cancellation(),
-                    Some(&self.cancellation),
-                )
+            let (file, file_id) = self
+                .disclose(permissions.policy_view(), work, async {
+                    let observation = self
+                        .checkout
+                        .observe(
+                            ViewGate::callback_owner()?,
+                            inputs.carrier,
+                            work.cancellation(),
+                            Some(&self.cancellation),
+                        )
+                        .await?;
+                    let mut checkout = observation.observer(
+                        &mut crate::kernel::allocation::KernelAccounting::native(
+                            work,
+                            work.cancellation(),
+                        ),
+                        work.cancellation(),
+                    )?;
+                    self.require_snapshot(permissions.policy_view(), &mut checkout, work)
+                        .await?;
+                    let lookup = checkout
+                        .lookup_no_follow_with_metadata(&path, work, work.cancellation())
+                        .await?
+                        .ok_or(MountSourceError::NotFound)?;
+                    if lookup.record.kind != FileKind::Regular {
+                        return Err(MountSourceError::Invalid(
+                            "only regular files can own detached handles".into(),
+                        ));
+                    }
+                    let file: Arc<dyn MountOpenFile> = self.detached_from_checkout(
+                        &checkout,
+                        lookup.record,
+                        lookup.metadata,
+                        work,
+                    )?;
+                    Ok((file, lookup.record.file_id))
+                })
                 .await?;
-            let mut checkout = observation.observer(
-                &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
-                work.cancellation(),
-            )?;
-            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
-                .await?;
-            let lookup = checkout
-                .lookup_no_follow_with_metadata(&path, work, work.cancellation())
-                .await?
-                .ok_or(MountSourceError::NotFound)?;
-            if lookup.record.kind != FileKind::Regular {
-                return Err(MountSourceError::Invalid(
-                    "only regular files can own detached handles".into(),
-                ));
-            }
-            let file: Arc<dyn MountOpenFile> =
-                self.detached_from_checkout(&checkout, lookup.record, lookup.metadata, work)?;
-            authorize_file(
-                wrap((file, 0))?,
-                permissions,
-                lookup.record.file_id,
-                false,
-                work,
-            )
+            authorize_file(wrap((file, 0))?, permissions, file_id, false, work)
         })
     }
 }

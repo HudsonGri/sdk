@@ -94,6 +94,7 @@ fn mount_source(
 include!("runtime.rs");
 mod leases;
 mod policy_refresh;
+pub(in crate::native_mount) mod return_fence;
 include!("namespace.rs");
 include!("lifecycle.rs");
 include!("platform.rs");

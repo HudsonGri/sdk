@@ -19,6 +19,10 @@ fn revision(head: Head) -> MetadataField<ObjectId> {
 }
 
 fn view(head: Head, allowed: bool) -> PathTrie {
+    view_with_expiry(head, allowed, None)
+}
+
+fn view_with_expiry(head: Head, allowed: bool, expires_at: Option<u64>) -> PathTrie {
     let mut policy: Policy = serde_json::from_slice(crate::access::INITIAL_POLICY).unwrap();
     policy.version = head.sequence.get();
     if !allowed {
@@ -43,7 +47,7 @@ fn view(head: Head, allowed: bool) -> PathTrie {
                 path: "**".into(),
             },
         }]],
-        expires_at: None,
+        expires_at,
     };
     PathTrie::compile(
         &policy,
@@ -194,4 +198,60 @@ fn policy_metadata_io_cannot_outlive_its_authority_observation() {
 #[should_panic(expected = "stale policy observation returned")]
 fn missing_policy_head_confirmation_negative_control() {
     policy_observation_model(false);
+}
+
+fn native_return_model(fence: bool) {
+    for now in 0..=1 {
+        loom::model(move || {
+            let store = Arc::new(MemoryAuthorityStore::default());
+            let cancel = CancellationToken::new();
+            let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+            ready(|| store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>))
+                .unwrap();
+            assert!(publish(&store, head(&store), 1));
+            let initial = head(&store);
+            let published = Arc::new(AccessView::new(view_with_expiry(initial, true, Some(1))));
+            let selected = published.current().unwrap();
+            // Authority and compiled-view locks are terminal; neither guard
+            // survives a backend call or another lock acquisition.
+            let writer = loom::thread::spawn({
+                let store = store.clone();
+                let published = published.clone();
+                move || {
+                    assert!(publish(&store, initial, 2));
+                    published
+                        .publish(view_with_expiry(head(&store), false, Some(1)))
+                        .unwrap();
+                }
+            });
+            let observed = head(&store);
+            let current_view = published.current().unwrap();
+            let valid = published
+                .confirms_disclosure(
+                    &selected,
+                    Some((GenerationId::new(observed.digest), revision(observed))),
+                    now,
+                )
+                .unwrap();
+            let returned = !fence || valid;
+            writer.join().unwrap();
+            if returned {
+                assert!(
+                    observed == initial && Arc::ptr_eq(&selected, &current_view) && now < 1,
+                    "native result escaped current authority"
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn native_return_confirms_policy_view_and_expiry() {
+    native_return_model(true);
+}
+
+#[test]
+#[should_panic(expected = "native result escaped current authority")]
+fn missing_native_return_fence_negative_control() {
+    native_return_model(false);
 }

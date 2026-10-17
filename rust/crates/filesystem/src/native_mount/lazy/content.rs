@@ -28,7 +28,22 @@ where
     ) -> Result<(crate::native_mount::MountOpenClaim, Option<MountLookup>), MountSourceError> {
         let permissions = self.authored.permissions_for_path(path, work)?;
         adapter::access::require_open(&permissions, access)?;
-        let (file, lookup, file_id) = self.open_proven(path, work)?;
+        let (file, lookup, file_id) = self.authored.disclose_result(
+            permissions.policy_view(),
+            (|| {
+                let (file, lookup, file_id) = self.open_proven(path, work)?;
+                let lookup = if access.is_some() {
+                    Some(match lookup {
+                        Some(lookup) => lookup,
+                        None => file.file.lookup_with_meter(work)?,
+                    })
+                } else {
+                    lookup
+                };
+                Ok((file, lookup, file_id))
+            })(),
+            work,
+        )?;
         let (file, bytes) =
             adapter::authorize_file((file.file, file.bytes), permissions, file_id, false, work)?;
         Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
@@ -384,82 +399,101 @@ where
         sink: &mut crate::native_mount::NativeMountContentSink<'_>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.require_path(path, crate::access::Action::Read, work)?;
-        let crate::ByteRange { offset, length } = range;
-        let end = offset
-            .checked_add(length)
-            .ok_or(MountSourceError::Invalid("content range overflows".into()))?;
-        let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner()?;
-        let mut carrier = adapter::NativeDemandCarrier::Native(work);
-        let (_lease, resolution, source_file) =
-            with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
-                self.runtime.wait_prepared(prepared, || async {
-                    let lease = self
-                        .source_view
-                        .read_for_callback_with_carrier(
-                            owner,
-                            None,
-                            carrier,
-                            work.cancellation(),
-                            Some(self.authored.cancellation()),
-                        )
-                        .await?;
-                    let (resolution, source_file) =
-                        self.resolve_opened(path, &text, owner, work).await?;
-                    Ok((lease, resolution, source_file))
-                })
-            })?;
-        let (lookup, allocation) = match resolution {
-            Resolution::Absent => return Err(MountSourceError::NotFound),
-            Resolution::Authored(lookup) => {
-                let detached = self.detached_by_id(lookup.node.file_id)?;
-                return stream_pieces(offset, end, piece, sink, |offset, length| match &detached {
-                    Some(file) => file.read_range_with_meter(offset, length, work),
-                    None => self
-                        .authored
-                        .read_range_with_meter(path, offset, length, work),
+        let permissions = self.authored.permissions_for_path(path, work)?;
+        adapter::access::require(
+            &permissions,
+            crate::access::Action::Read,
+            adapter::access::access_time()?,
+        )?;
+        let mut checked_sink = |offset, packet| {
+            let packet =
+                self.authored
+                    .disclose_result(permissions.policy_view(), Ok(packet), work)?;
+            sink(offset, packet)
+        };
+        let sink: &mut crate::native_mount::NativeMountContentSink<'_> = &mut checked_sink;
+        let result = (|| {
+            let crate::ByteRange { offset, length } = range;
+            let end = offset
+                .checked_add(length)
+                .ok_or(MountSourceError::Invalid("content range overflows".into()))?;
+            let (text, _allocation) = self.path(path, work)?;
+            let owner = ViewGate::callback_owner()?;
+            let mut carrier = adapter::NativeDemandCarrier::Native(work);
+            let (_lease, resolution, source_file) =
+                with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
+                    self.runtime.wait_prepared(prepared, || async {
+                        let lease = self
+                            .source_view
+                            .read_for_callback_with_carrier(
+                                owner,
+                                None,
+                                carrier,
+                                work.cancellation(),
+                                Some(self.authored.cancellation()),
+                            )
+                            .await?;
+                        let (resolution, source_file) =
+                            self.resolve_opened(path, &text, owner, work).await?;
+                        Ok((lease, resolution, source_file))
+                    })
+                })?;
+            let (lookup, allocation) =
+                match resolution {
+                    Resolution::Absent => return Err(MountSourceError::NotFound),
+                    Resolution::Authored(lookup) => {
+                        let detached = self.detached_by_id(lookup.node.file_id)?;
+                        return stream_pieces(offset, end, piece, sink, |offset, length| {
+                            match &detached {
+                                Some(file) => file.read_range_with_meter(offset, length, work),
+                                None => self
+                                    .authored
+                                    .read_range_with_meter(path, offset, length, work),
+                            }
+                        });
+                    }
+                    Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
+                };
+            let _allocation = allocation;
+            let id = self
+                .runtime
+                .wait(|| async { file_id(&self.lazy, &text, &lookup, work).await })?;
+            if let Some(detached) = self.detached_by_id(id)? {
+                return stream_pieces(offset, end, piece, sink, |offset, length| {
+                    detached.read_range_with_meter(offset, length, work)
                 });
             }
-            Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
-        };
-        let _allocation = allocation;
-        let id = self
-            .runtime
-            .wait(|| async { file_id(&self.lazy, &text, &lookup, work).await })?;
-        if let Some(detached) = self.detached_by_id(id)? {
-            return stream_pieces(offset, end, piece, sink, |offset, length| {
-                detached.read_range_with_meter(offset, length, work)
-            });
-        }
-        if let LazyLookup::Source { node, source } = &lookup
-            && pin.is_some_and(|pin| pin != source_content_pin(*source, node))
-        {
-            return Err(MountSourceError::Stale);
-        }
-        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
-        stream_pieces(offset, end, piece, sink, |offset, length| {
-            if let Some(file) = &source_file {
-                return file
-                    .read_range(offset, u64::from(length), &mut accounting)
-                    .map_err(MountSourceError::from);
+            if let LazyLookup::Source { node, source } = &lookup
+                && pin.is_some_and(|pin| pin != source_content_pin(*source, node))
+            {
+                return Err(MountSourceError::Stale);
             }
-            self.runtime.wait(|| async {
-                self.lazy
-                    .read_resolved(
-                        &lookup,
-                        &text,
-                        Some(crate::ByteRange {
-                            offset,
-                            length: u64::from(length),
-                        }),
-                        u64::from(length),
-                        &mut accounting,
-                    )
-                    .await
-                    .map_err(lazy_error)
+            let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+            stream_pieces(offset, end, piece, sink, |offset, length| {
+                if let Some(file) = &source_file {
+                    return file
+                        .read_range(offset, u64::from(length), &mut accounting)
+                        .map_err(MountSourceError::from);
+                }
+                self.runtime.wait(|| async {
+                    self.lazy
+                        .read_resolved(
+                            &lookup,
+                            &text,
+                            Some(crate::ByteRange {
+                                offset,
+                                length: u64::from(length),
+                            }),
+                            u64::from(length),
+                            &mut accounting,
+                        )
+                        .await
+                        .map_err(lazy_error)
+                })
             })
-        })
+        })();
+        self.authored
+            .disclose_result(permissions.policy_view(), result, work)
     }
 }
 

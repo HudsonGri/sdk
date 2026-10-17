@@ -25,103 +25,106 @@ where
         if !access.decide(crate::access::Action::List, now).allowed {
             return Err(MountSourceError::AccessDenied);
         }
-        let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner()?;
-        let mut carrier = adapter::NativeDemandCarrier::Native(work);
-        with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
-            self.runtime.wait_prepared(prepared, || async {
-                let lease = self
-                    .source_view
-                    .read_for_callback_with_carrier(
-                        owner,
-                        None,
-                        carrier,
-                        work.cancellation(),
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?;
-                let (removed, opaque, epoch) = self.removal_snapshot(&text)?;
-                if opaque
-                    && self
+        let result = (|| {
+            let (text, _allocation) = self.path(path, work)?;
+            let owner = ViewGate::callback_owner()?;
+            let mut carrier = adapter::NativeDemandCarrier::Native(work);
+            with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
+                self.runtime.wait_prepared(prepared, || async {
+                    let lease = self
+                        .source_view
+                        .read_for_callback_with_carrier(
+                            owner,
+                            None,
+                            carrier,
+                            work.cancellation(),
+                            Some(self.authored.cancellation()),
+                        )
+                        .await?;
+                    let (removed, opaque, epoch) = self.removal_snapshot(&text)?;
+                    if opaque
+                        && self
+                            .authored
+                            .lookup_async(path, owner, carrier)
+                            .await?
+                            .is_none()
+                    {
+                        return Err(MountSourceError::NotFound);
+                    }
+                    let generation = (lease.generation, epoch);
+                    let (stamp, cursor) = match self.cursors.take(generation, cursor)? {
+                        Some((stamp, cursor)) => (stamp, Some(cursor)),
+                        None => (ViewStamp::current(), None),
+                    };
+                    if !self
                         .authored
-                        .lookup_async(path, owner, carrier)
-                        .await?
-                        .is_none()
-                {
-                    return Err(MountSourceError::NotFound);
-                }
-                let generation = (lease.generation, epoch);
-                let (stamp, cursor) = match self.cursors.take(generation, cursor)? {
-                    Some((stamp, cursor)) => (stamp, Some(cursor)),
-                    None => (ViewStamp::current(), None),
-                };
-                if !self
-                    .authored
-                    .unchanged_since_with_meter(path, None, stamp, work)?
-                {
-                    return Err(MountSourceError::Stale);
-                }
-                let mut accounting =
-                    crate::kernel::KernelAccounting::native(work, work.cancellation());
-                let observation = self
-                    .authored
-                    .shared_checkout()
-                    .observe(
-                        owner,
-                        carrier,
-                        work.cancellation(),
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?;
-                observation.ensure_publication_resolved()?;
-                let mut checkout = observation
-                    .observer(&mut accounting, work.cancellation())
-                    .map_err(mount_engine_error)?;
-                let (mut page, state, _page_allocation) = self
-                    .lazy
-                    .list_directory_in_checkout(
-                        &mut checkout,
-                        &text,
-                        cursor,
-                        maximum_entries,
-                        Some((&removed, opaque)),
-                        &mut accounting,
-                    )
-                    .await
-                    .map_err(lazy_error)?;
-                let (entries, mut output_allocation) = self
-                    .directory_entries(path, &page, &mut checkout, &state, carrier, access)
-                    .await?;
-                if !self
-                    .authored
-                    .unchanged_since_with_meter(path, None, stamp, work)?
-                    || self.removal_snapshot(&text)?.2 != epoch
-                {
-                    return Err(MountSourceError::Stale);
-                }
-                let mut output_carrier = adapter::NativeDemandCarrier::Native(work);
-                let next_cursor = if let Some(cursor) = page.next.take() {
-                    let token = self.cursors.remember(generation, (stamp, cursor))?;
-                    let mut continuation = adapter::InputBuffers::new(&mut output_carrier)?;
-                    let mut bytes = continuation.vec(8)?;
-                    let mut allocation = continuation
-                        .retain()
-                        .ok_or(MountSourceError::NativeUnsupported)?;
-                    output_allocation
-                        .absorb(&mut allocation)
-                        .map_err(MountSourceError::NativeWork)?;
-                    bytes.extend_from_slice(&token);
-                    Some(bytes)
-                } else {
-                    None
-                };
-                Ok(MountDirectoryPage::new(
-                    entries,
-                    next_cursor,
-                    Some(output_allocation),
-                ))
+                        .unchanged_since_with_meter(path, None, stamp, work)?
+                    {
+                        return Err(MountSourceError::Stale);
+                    }
+                    let mut accounting =
+                        crate::kernel::KernelAccounting::native(work, work.cancellation());
+                    let observation = self
+                        .authored
+                        .shared_checkout()
+                        .observe(
+                            owner,
+                            carrier,
+                            work.cancellation(),
+                            Some(self.authored.cancellation()),
+                        )
+                        .await?;
+                    observation.ensure_publication_resolved()?;
+                    let mut checkout = observation
+                        .observer(&mut accounting, work.cancellation())
+                        .map_err(mount_engine_error)?;
+                    let (mut page, state, _page_allocation) = self
+                        .lazy
+                        .list_directory_in_checkout(
+                            &mut checkout,
+                            &text,
+                            cursor,
+                            maximum_entries,
+                            Some((&removed, opaque)),
+                            &mut accounting,
+                        )
+                        .await
+                        .map_err(lazy_error)?;
+                    let (entries, mut output_allocation) = self
+                        .directory_entries(path, &page, &mut checkout, &state, carrier, access)
+                        .await?;
+                    if !self
+                        .authored
+                        .unchanged_since_with_meter(path, None, stamp, work)?
+                        || self.removal_snapshot(&text)?.2 != epoch
+                    {
+                        return Err(MountSourceError::Stale);
+                    }
+                    let mut output_carrier = adapter::NativeDemandCarrier::Native(work);
+                    let next_cursor = if let Some(cursor) = page.next.take() {
+                        let token = self.cursors.remember(generation, (stamp, cursor))?;
+                        let mut continuation = adapter::InputBuffers::new(&mut output_carrier)?;
+                        let mut bytes = continuation.vec(8)?;
+                        let mut allocation = continuation
+                            .retain()
+                            .ok_or(MountSourceError::NativeUnsupported)?;
+                        output_allocation
+                            .absorb(&mut allocation)
+                            .map_err(MountSourceError::NativeWork)?;
+                        bytes.extend_from_slice(&token);
+                        Some(bytes)
+                    } else {
+                        None
+                    };
+                    Ok(MountDirectoryPage::new(
+                        entries,
+                        next_cursor,
+                        Some(output_allocation),
+                    ))
+                })
             })
-        })
+        })();
+        self.authored.disclose_result(&view, result, work)
     }
 
     async fn directory_entries(

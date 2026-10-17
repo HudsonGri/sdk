@@ -2,6 +2,52 @@ use super::*;
 use crate::access::Action;
 use adapter::tests::access::{deny, publish_test_access};
 
+async fn revoked_chunk(broken: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("file"), b"abcdefgh")?;
+    let view = mounted_view(root.path(), "access-chunks").await?;
+    let path = mounted(&["file"]);
+    let (_, pin) = view.lookup_pinned(&path)?.ok_or("missing source file")?;
+    let mut chunks = Vec::new();
+    let result = adapter::tests::return_fence::with_omitted(broken, || {
+        view.read_pinned(
+            &path,
+            pin.ok_or(MountSourceError::Stale)?,
+            0,
+            8,
+            4,
+            &mut |offset, bytes| {
+                chunks.push(bytes.to_vec());
+                if offset == 0 {
+                    publish_test_access(
+                        &view.authored,
+                        vec![deny("revoked", &[Action::Read], "file")],
+                    )
+                    .map_err(|error| MountSourceError::Engine(error.to_string().into()))?;
+                }
+                Ok(())
+            },
+        )
+    });
+    assert!(
+        matches!(result, Err(MountSourceError::AccessDenied)) && chunks == [b"abcd".to_vec()],
+        "lazy chunk escaped its revoked cut: {result:?} {chunks:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lazy_chunks_confirm_authority_before_each_sink_call()
+-> Result<(), Box<dyn std::error::Error>> {
+    revoked_chunk(false).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "lazy chunk escaped its revoked cut")]
+async fn missing_chunk_fence_negative_control() {
+    revoked_chunk(true).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn native_access_lazy_hides_source_entries_without_truncating_pages()
 -> Result<(), Box<dyn std::error::Error>> {

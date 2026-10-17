@@ -299,32 +299,36 @@ where
         {
             return Ok(None);
         }
-        let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner()?;
-        let mut carrier = adapter::NativeDemandCarrier::Native(work);
-        with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
-            self.runtime.wait_prepared(prepared, || async {
-                let _lease = self
-                    .source_view
-                    .read_for_callback_with_carrier(
-                        owner,
-                        None,
-                        carrier,
-                        work.cancellation(),
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?;
-                match self.resolve(path, &text, owner, work).await? {
-                    Resolution::Authored(lookup) => {
-                        Ok(Some((self.project_authored(lookup, work).await?, None)))
+        let result = (|| {
+            let (text, _allocation) = self.path(path, work)?;
+            let owner = ViewGate::callback_owner()?;
+            let mut carrier = adapter::NativeDemandCarrier::Native(work);
+            with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
+                self.runtime.wait_prepared(prepared, || async {
+                    let _lease = self
+                        .source_view
+                        .read_for_callback_with_carrier(
+                            owner,
+                            None,
+                            carrier,
+                            work.cancellation(),
+                            Some(self.authored.cancellation()),
+                        )
+                        .await?;
+                    match self.resolve(path, &text, owner, work).await? {
+                        Resolution::Authored(lookup) => {
+                            Ok(Some((self.project_authored(lookup, work).await?, None)))
+                        }
+                        Resolution::Absent => Ok(None),
+                        Resolution::Unauthored(lookup, _allocation) => {
+                            self.project_unauthored(&text, lookup, work).await.map(Some)
+                        }
                     }
-                    Resolution::Absent => Ok(None),
-                    Resolution::Unauthored(lookup, _allocation) => {
-                        self.project_unauthored(&text, lookup, work).await.map(Some)
-                    }
-                }
+                })
             })
-        })
+        })();
+        self.authored
+            .disclose_result(permissions.policy_view(), result, work)
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
@@ -357,10 +361,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
         let (file, proven) = self.open_authorized(path, Some(access), work)?;
-        let lookup = match proven {
-            Some(lookup) => lookup,
-            None => file.file.lookup_with_meter(work)?,
-        };
+        let lookup = proven.ok_or(MountSourceError::Stale)?;
         Ok((file, lookup))
     }
 
@@ -387,36 +388,45 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.require_path(path, crate::access::Action::Read, work)?;
-        let (text, _allocation) = self.path(path, work)?;
-        let owner = ViewGate::callback_owner()?;
-        let mut carrier = adapter::NativeDemandCarrier::Native(work);
-        with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
-            self.runtime.wait_prepared(prepared, || async {
-                let _lease = self
-                    .source_view
-                    .read_for_callback_with_carrier(
-                        owner,
-                        None,
-                        carrier,
-                        work.cancellation(),
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?;
-                match self.resolve(path, &text, owner, work).await? {
-                    Resolution::Absent => Err(MountSourceError::NotFound),
-                    Resolution::Authored(_) => self.authored.read_link(path, work),
-                    Resolution::Unauthored(lookup, _allocation) => {
-                        let mut accounting =
-                            crate::kernel::KernelAccounting::native(work, work.cancellation());
-                        self.lazy
-                            .read_resolved(&lookup, &text, None, u64::MAX, &mut accounting)
-                            .await
-                            .map_err(lazy_error)
+        let permissions = self.authored.permissions_for_path(path, work)?;
+        adapter::access::require(
+            &permissions,
+            crate::access::Action::Read,
+            adapter::access::access_time()?,
+        )?;
+        let result = (|| {
+            let (text, _allocation) = self.path(path, work)?;
+            let owner = ViewGate::callback_owner()?;
+            let mut carrier = adapter::NativeDemandCarrier::Native(work);
+            with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
+                self.runtime.wait_prepared(prepared, || async {
+                    let _lease = self
+                        .source_view
+                        .read_for_callback_with_carrier(
+                            owner,
+                            None,
+                            carrier,
+                            work.cancellation(),
+                            Some(self.authored.cancellation()),
+                        )
+                        .await?;
+                    match self.resolve(path, &text, owner, work).await? {
+                        Resolution::Absent => Err(MountSourceError::NotFound),
+                        Resolution::Authored(_) => self.authored.read_link(path, work),
+                        Resolution::Unauthored(lookup, _allocation) => {
+                            let mut accounting =
+                                crate::kernel::KernelAccounting::native(work, work.cancellation());
+                            self.lazy
+                                .read_resolved(&lookup, &text, None, u64::MAX, &mut accounting)
+                                .await
+                                .map_err(lazy_error)
+                        }
                     }
-                }
+                })
             })
-        })
+        })();
+        self.authored
+            .disclose_result(permissions.policy_view(), result, work)
     }
 
     fn read_range(
@@ -501,7 +511,14 @@ where
         offset: u64,
         target: MountSeekTarget,
     ) -> Result<Option<u64>, MountSourceError> {
-        self.open_file(path)?.seek(offset, target)
+        adapter::boundary(self.authored.cancellation(), |work| {
+            let permissions = self.authored.permissions_for_path(path, work)?;
+            let result = self
+                .open_file(path)
+                .and_then(|file| file.seek(offset, target));
+            self.authored
+                .disclose_result(permissions.policy_view(), result, work)
+        })
     }
 
     fn read_directory(
@@ -582,15 +599,24 @@ where
         name: &[u8],
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
-        self.require_path(path, crate::access::Action::Read, work)?;
-        let _lease = self.view_lease(None, Some(work))?;
-        if let Some(file) = self.detached_for_path(path, work)? {
-            return file.read_attribute(name, work);
-        }
-        if self.is_source_projection(path, work)? {
-            return Ok(None);
-        }
-        self.authored.read_attribute(path, name, work)
+        let permissions = self.authored.permissions_for_path(path, work)?;
+        adapter::access::require(
+            &permissions,
+            crate::access::Action::Read,
+            adapter::access::access_time()?,
+        )?;
+        let result = (|| {
+            let _lease = self.view_lease(None, Some(work))?;
+            if let Some(file) = self.detached_for_path(path, work)? {
+                return file.read_attribute(name, work);
+            }
+            if self.is_source_projection(path, work)? {
+                return Ok(None);
+            }
+            self.authored.read_attribute(path, name, work)
+        })();
+        self.authored
+            .disclose_result(permissions.policy_view(), result, work)
     }
 
     fn list_attributes(
@@ -612,23 +638,32 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
-        self.require_path(path, crate::access::Action::List, work)?;
-        let _lease = self.view_lease(None, Some(work))?;
-        if let Some(file) = self.detached_for_path(path, work)? {
-            return file.list_attributes_with_meter(cursor, maximum_entries, work);
-        }
-        if self.is_source_projection(path, work)? {
-            return Ok((
-                MountAttributePage {
-                    names: Vec::new(),
-                    next_cursor: None,
-                },
-                work.claim(0, 0, crate::WorkCounters::UNCHARGED)
-                    .map_err(MountSourceError::NativeWork)?,
-            ));
-        }
+        let permissions = self.authored.permissions_for_path(path, work)?;
+        adapter::access::require(
+            &permissions,
+            crate::access::Action::List,
+            adapter::access::access_time()?,
+        )?;
+        let result = (|| {
+            let _lease = self.view_lease(None, Some(work))?;
+            if let Some(file) = self.detached_for_path(path, work)? {
+                return file.list_attributes_with_meter(cursor, maximum_entries, work);
+            }
+            if self.is_source_projection(path, work)? {
+                return Ok((
+                    MountAttributePage {
+                        names: Vec::new(),
+                        next_cursor: None,
+                    },
+                    work.claim(0, 0, crate::WorkCounters::UNCHARGED)
+                        .map_err(MountSourceError::NativeWork)?,
+                ));
+            }
+            self.authored
+                .list_attributes_with_meter(path, cursor, maximum_entries, work)
+        })();
         self.authored
-            .list_attributes_with_meter(path, cursor, maximum_entries, work)
+            .disclose_result(permissions.policy_view(), result, work)
     }
 
     fn capture_host_path(
