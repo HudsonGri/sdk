@@ -5,6 +5,16 @@ import { tmpdir } from "node:os";
 import { test } from "bun:test";
 import { installedNativeFixture } from "./pi-native-fixture.ts";
 
+async function project(fixture: Awaited<ReturnType<typeof installedNativeFixture>>, toolCallId: string) {
+  const answer=JSON.parse((await fixture.command(["__hook","pi","tool_call"],JSON.stringify({
+    sessionId:fixture.manager.getSessionId(),toolCallId,toolName:"bash",
+    input:{command:"printf owner-projection"},
+  }))).stdout);
+  assert.equal(answer.isError,false);
+  if (process.platform === "linux") assert.ok(fixture.resources().mounts.length > 0,
+    "the shutdown probe must own a real lazy volume projection");
+}
+
 test("the installed Pi fixture reconnects through task files and awaits owner shutdown",async () => {
   const directory=mkdtempSync(join(tmpdir(),"acyclic-pi-owner-"));
   let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
@@ -22,6 +32,8 @@ test("the installed Pi fixture reconnects through task files and awaits owner sh
     const first=JSON.parse((await fixture.command(["__hook","pi","tool_call"],input)).stdout);
     assert.equal(first.isError,false);
     assert.equal(readFileSync(join(fixture.project,"written.txt"),"utf8"),"original contents");
+    phase="project before crash";
+    await project(fixture,"project-before-crash");
     phase="crash";
     await fixture.kill();
     crashed=fixture.resources();
@@ -32,6 +44,8 @@ test("the installed Pi fixture reconnects through task files and awaits owner sh
     phase="retry";
     assert.deepEqual(JSON.parse((await fixture.command(["__hook","pi","tool_call"],input)).stdout),first);
     assert.equal(readFileSync(join(fixture.project,"written.txt"),"utf8"),"later user contents");
+    phase="project before shutdown";
+    await project(fixture,"project-before-shutdown");
     phase="shutdown";
     await fixture.close();
     assert.deepEqual(fixture.resources(),{mounts:[],processes:[]},"shutdown must release native mounts and child processes");
