@@ -258,7 +258,11 @@ mod tests {
         let fs = crate::Fs::memory();
         let workspace = fs
             .create_workspace(
-                "selection-publication",
+                if omit_lease {
+                    "selection-unfenced"
+                } else {
+                    "selection-fenced"
+                },
                 crate::WorkBudget::UNBOUNDED,
                 &cancel,
             )

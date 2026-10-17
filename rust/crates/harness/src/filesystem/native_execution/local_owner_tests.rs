@@ -428,10 +428,11 @@ where
 async fn preparation_disclosure(bytes: &[u8], foreign: bool, bypass: bool) -> TestResult {
     initialize()?;
     let fs = acyclic_fs::Fs::memory();
-    let first = local_owner_workspace(&fs, "first").await?;
+    let identity = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes());
+    let first = local_owner_workspace(&fs, &format!("preparation-{identity}")).await?;
     first.write_text("/secret", "first secret").await?;
     let target = if foreign {
-        local_owner_workspace(&fs, "second").await?
+        local_owner_workspace(&fs, &format!("preparation-{identity}-foreign")).await?
     } else {
         first.clone()
     };
