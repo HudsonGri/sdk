@@ -136,6 +136,7 @@ async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() 
     drop(publisher);
     let mut workspace = Arc::try_unwrap(fixture.workspace.take().expect("fixture workspace"))
         .map_err(|_| Error::Conflict("fixture workspace is still shared".into()))?;
+    workspace.mount_authority = None;
     assert!(matches!(
         workspace.mount_options(workspace.view().workspace()).await,
         Err(Error::FilesystemAccessConfiguration("native mount owner"))
