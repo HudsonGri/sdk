@@ -1,5 +1,11 @@
 use super::*;
 
+fn settlement_property(ready: bool, assert_property: bool) {
+    if assert_property {
+        assert!(ready, "retained history blocked a settled child");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
@@ -28,21 +34,26 @@ async fn retained_bodies_cannot_block_wait_control_or_archive() {
     .unwrap();
     acknowledge_answer(&files, &reference, ChildState::Running, &"a".repeat(3072)).await;
     // Negative control: the former full-history query rejects this valid child.
-    assert!(
-        files
-            .observe_files(
-                Query::Child(reference.clone()),
-                None,
-                limits().attachments,
-                limits().render_bytes as usize
-            )
-            .await
-            .is_err()
-    );
+    let broken = files
+        .observe_files(
+            Query::Child(reference.clone()),
+            None,
+            limits().attachments,
+            limits().render_bytes as usize,
+        )
+        .await;
+    assert!(matches!(
+        broken,
+        Err(crate::task_volume::Error::LimitExceeded)
+    ));
+    std::panic::catch_unwind(|| settlement_property(broken.is_ok(), true))
+        .expect_err("the full-history query was not detected");
+    settlement_property(false, false);
     let result = super::super::files::follow(&files, &reference, limits(), false, true)
         .await
         .unwrap()
         .unwrap();
+    settlement_property(result["settled"] == true, true);
     assert_eq!(
         result["result"]["outcome"]["Succeeded"]["text"]
             .as_str()
