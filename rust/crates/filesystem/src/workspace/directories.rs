@@ -30,18 +30,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         if depth == 0 {
             return Ok(());
         }
-        let config = self.checkout.volume_config();
-        if config.profile == crate::model::FilesystemProfile::Windows
-            || config.case_sensitivity != crate::model::CaseSensitivity::Sensitive
-            || depth <= 1
-        {
-            return self
-                .create_dirs_individually(path, accounting, cancellation)
-                .await;
-        }
+        let folded = self.checkout.volume_config().case_sensitivity
+            == crate::model::CaseSensitivity::ProfileFolded;
         let mut parsed = Some(self.mutation_path(path, accounting, cancellation)?);
         let result = async {
-            let lookup = self
+            let (lookup, reached) = self
                 .checkout
                 .directory_prefix_with_accounting(
                     &parsed.as_ref().ok_or(FsError::InvalidDiff)?.value,
@@ -56,22 +49,52 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                     Err(WorkspaceError::NotDirectory)
                 };
             }
-            // Retain the full parsed path for the final mutation instead of
-            // validating and allocating its names again after the lookup.
-            for prefix in prefixes(path)
-                .take(depth - 1)
-                .skip(usize::from(lookup.resolved_components))
-            {
-                let prefix = self.mutation_path(prefix, accounting, cancellation)?;
+            let first = usize::from(lookup.resolved_components) + 1;
+            let mut names = prefixes(path).skip(first - 1);
+            for index in first..=depth {
+                let name = names.next().ok_or(FsError::InvalidDiff)?;
+                // Retain the full parsed path for the final mutation instead of
+                // validating and allocating its names again after the lookup.
+                let prefix = if index == depth {
+                    parsed.take().ok_or(FsError::InvalidDiff)?
+                } else {
+                    self.mutation_path(name, accounting, cancellation)?
+                };
+                // The walk observed every prefix up to the first missing one.
+                // Folded retries, and base directories below a pending removal,
+                // keep the observations of a separate lookup per prefix.
+                if folded || (index > first && index <= reached) {
+                    match self
+                        .checkout
+                        .lookup_no_follow_with_accounting(
+                            &prefix.value,
+                            accounting,
+                            cancellation,
+                            true,
+                        )
+                        .await
+                    {
+                        Ok((lookup, _)) => match lookup.record {
+                            Some(record) if record.kind == FileKind::Directory => {
+                                prefix.retire(accounting)?;
+                                continue;
+                            }
+                            Some(_) => {
+                                prefix.retire(accounting)?;
+                                return Err(WorkspaceError::NotDirectory);
+                            }
+                            None => {}
+                        },
+                        Err(error) => {
+                            prefix.retire(accounting)?;
+                            return Err(error.into());
+                        }
+                    }
+                }
                 self.create_directory_path(prefix, accounting, cancellation)
                     .await?;
             }
-            self.create_directory_path(
-                parsed.take().ok_or(FsError::InvalidDiff)?,
-                accounting,
-                cancellation,
-            )
-            .await
+            Ok(())
         }
         .await;
         if let Some(parsed) = parsed {
@@ -80,7 +103,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         result
     }
 
-    async fn create_directory_path(
+    pub(crate) async fn create_directory_path(
         &mut self,
         path: crate::kernel::Owned<NamespacePath>,
         accounting: &mut KernelAccounting<'_>,
@@ -101,41 +124,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         )?;
         self.apply_authored(operations, accounting, cancellation)
             .await
-    }
-
-    pub(crate) async fn create_dirs_individually(
-        &mut self,
-        path: &str,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(), WorkspaceError> {
-        for end in path
-            .match_indices('/')
-            .skip(1)
-            .map(|(index, _)| index)
-            .chain(std::iter::once(path.len()))
-        {
-            let prefix = path.get(..end).ok_or(crate::FsError::InvalidDiff)?;
-            let path = self.mutation_path(prefix, accounting, cancellation)?;
-            match self
-                .checkout
-                .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
-                .await?
-                .0
-                .record
-            {
-                Some(record) if record.kind == FileKind::Directory => path.retire(accounting)?,
-                Some(_) => {
-                    path.retire(accounting)?;
-                    return Err(WorkspaceError::NotDirectory);
-                }
-                None => {
-                    self.create_directory_path(path, accounting, cancellation)
-                        .await?
-                }
-            }
-        }
-        Ok(())
     }
 }
 

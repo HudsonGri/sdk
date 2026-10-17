@@ -147,6 +147,154 @@
       }
     }
   ],
+  "folded4": [
+    {
+      "allocation": [
+        122,
+        18,
+        31,
+        71559,
+        8042,
+        16007
+      ],
+      "work": {
+        "allocationOperations": 99,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 863,
+        "bytesEncoded": 870,
+        "bytesHashed": 2152,
+        "durabilityOperations": 0,
+        "itemsExamined": 155,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 662,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 24,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67118723,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 10
+      }
+    },
+    {
+      "allocation": [
+        68,
+        18,
+        27,
+        42393,
+        8042,
+        14691
+      ],
+      "work": {
+        "allocationOperations": 48,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 695,
+        "bytesEncoded": 600,
+        "bytesHashed": 1618,
+        "durabilityOperations": 0,
+        "itemsExamined": 78,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 662,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 9,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67119596,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 4
+      }
+    }
+  ],
+  "folded8": [
+    {
+      "allocation": [
+        306,
+        20,
+        43,
+        134525,
+        6890,
+        20583
+      ],
+      "work": {
+        "allocationOperations": 279,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 1911,
+        "bytesEncoded": 2460,
+        "bytesHashed": 5426,
+        "durabilityOperations": 0,
+        "itemsExamined": 500,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 1022,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 80,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67119135,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 36
+      }
+    },
+    {
+      "allocation": [
+        97,
+        21,
+        34,
+        50033,
+        7962,
+        17235
+      ],
+      "work": {
+        "allocationOperations": 76,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 1127,
+        "bytesEncoded": 1200,
+        "bytesHashed": 2934,
+        "durabilityOperations": 0,
+        "itemsExamined": 143,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 1022,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 17,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67120884,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 8
+      }
+    }
+  ],
   "missing4": [
     {
       "allocation": [
@@ -292,6 +440,154 @@
         "sourceBytesRead": 0,
         "sourceEntriesVisited": 0,
         "sourcePathComponents": 7
+      }
+    }
+  ],
+  "windows4": [
+    {
+      "allocation": [
+        122,
+        18,
+        31,
+        71559,
+        8042,
+        16007
+      ],
+      "work": {
+        "allocationOperations": 99,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 863,
+        "bytesEncoded": 870,
+        "bytesHashed": 2152,
+        "durabilityOperations": 0,
+        "itemsExamined": 155,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 662,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 24,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67118723,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 10
+      }
+    },
+    {
+      "allocation": [
+        68,
+        18,
+        27,
+        42393,
+        8042,
+        14691
+      ],
+      "work": {
+        "allocationOperations": 48,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 695,
+        "bytesEncoded": 600,
+        "bytesHashed": 1618,
+        "durabilityOperations": 0,
+        "itemsExamined": 78,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 662,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 9,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67119596,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 4
+      }
+    }
+  ],
+  "windows8": [
+    {
+      "allocation": [
+        306,
+        20,
+        43,
+        134525,
+        6890,
+        20583
+      ],
+      "work": {
+        "allocationOperations": 279,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 1911,
+        "bytesEncoded": 2460,
+        "bytesHashed": 5426,
+        "durabilityOperations": 0,
+        "itemsExamined": 500,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 1022,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 80,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67119135,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 36
+      }
+    },
+    {
+      "allocation": [
+        97,
+        21,
+        34,
+        50033,
+        7962,
+        17235
+      ],
+      "work": {
+        "allocationOperations": 76,
+        "authorityBytesRead": 0,
+        "authorityBytesWritten": 0,
+        "authorityRecordsAppended": 0,
+        "authorityRecordsRead": 0,
+        "backendReadOperations": 3,
+        "backendWriteOperations": 0,
+        "bytesCopied": 1127,
+        "bytesEncoded": 1200,
+        "bytesHashed": 2934,
+        "durabilityOperations": 0,
+        "itemsExamined": 143,
+        "itemsReturned": 0,
+        "materializations": 0,
+        "objectBytesRead": 1022,
+        "objectBytesWritten": 0,
+        "objectProbes": 3,
+        "outputBytes": 0,
+        "pageReads": 17,
+        "pageWrites": 0,
+        "peakAllocationBytes": 67120884,
+        "sourceBytesRead": 0,
+        "sourceEntriesVisited": 0,
+        "sourcePathComponents": 8
       }
     }
   ]
