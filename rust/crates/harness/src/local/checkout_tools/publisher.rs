@@ -93,7 +93,11 @@ impl CheckoutPublisher {
             }
             let State { active, watcher, .. } = &mut *state;
             let view = active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
-            let native = mount.view.source.as_ref().and_then(|source| source.native.as_ref());
+            let native = match &mount.view.source {
+                Some(source) => Some(source.native().await),
+                None => None,
+            };
+            let native = native.as_ref().and_then(|guard| guard.as_ref());
             let workspace = mount.view.source.as_ref()
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
             self.tools.require_volume_access(workspace, &mount.view.volume, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
@@ -108,7 +112,7 @@ impl CheckoutPublisher {
             if original.is_none() {
                 if let Some(native) = native {
                     native.sync().await?;
-                } else {
+                } else if mount.view.source.is_none() {
                     self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
                 }
             }
@@ -123,7 +127,7 @@ impl CheckoutPublisher {
             };
             if let Some(native) = native {
                 native.advance_to_head().await?;
-            } else {
+            } else if mount.view.source.is_none() {
                 self.materialize(view, operation, &file).await?;
             }
             Ok(file)
@@ -323,13 +327,11 @@ impl ContentPublisher for CheckoutPublisher {
                             file.path(),
                             self.tools.clock.now_unix_millis() / 1000,
                         )?;
-                        if let Some(native) = mount
-                            .view
-                            .source
-                            .as_ref()
-                            .and_then(|source| source.native.as_ref())
-                        {
-                            native.advance_to_head().await?;
+                        if let Some(source) = &mount.view.source {
+                            let native = source.native().await;
+                            if let Some(native) = native.as_ref() {
+                                native.advance_to_head().await?;
+                            }
                         } else {
                             self.materialize(view, operation, &file).await?;
                         }

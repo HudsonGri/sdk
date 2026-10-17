@@ -30,6 +30,7 @@ mod checkout_tools;
 mod command_machine;
 mod command_views;
 mod commands;
+mod compact;
 mod compaction;
 mod config;
 mod context;
@@ -71,9 +72,8 @@ pub struct LocalHarness {
     #[cfg(feature = "hooks")]
     hooks: crate::hooks::Hooks,
     #[cfg(test)]
-    context_read_observer: Option<
-        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
-    >,
+    context_read_observer:
+        Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -95,13 +95,11 @@ impl LocalHarness {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             for (_, mount) in workspace.mounts.mounts() {
-                if let Some(native) = mount
-                    .view
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.native.as_ref())
-                {
-                    native.unmount().await?;
+                if let Some(source) = &mount.view.source {
+                    let native = source.native().await;
+                    if let Some(native) = native.as_ref() {
+                        native.unmount().await?;
+                    }
                 }
             }
         }
@@ -222,6 +220,12 @@ impl LocalHarness {
             files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            // This standalone composition owns its private companion namespace.
+            // Retain the existing owned WAL instead of reopening/checkpointing it
+            // for every transaction. Embedded bind() retains shared-store semantics.
+            #[cfg(feature = "native-execution")]
+            let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+                .map_err(storage)?;
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
@@ -235,6 +239,7 @@ impl LocalHarness {
                         workspace::attach_operation(owner.task),
                         false,
                         native_mounts,
+                        store,
                         Some((&issuer, owner.agent)),
                     )
                     .await?,
@@ -247,6 +252,7 @@ impl LocalHarness {
                         &directory,
                         workspace::attach_operation(owner.task),
                         native_mounts,
+                        store,
                         Some((&issuer, owner.agent)),
                     )
                     .await?,
