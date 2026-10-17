@@ -148,13 +148,15 @@ test("coordinator qualification instruments real Stream locks and rejects skippe
     ["external_executor::task_bindings::model::tests::", 3],
     ["external_executor::local_owner::registry::model::tests::", 2],
     ["local::command_views::models::", 1],
+    ["local::children::preparation::models::", 1],
   ];
-  for (const broken of [-1, 0, 1, 2, 3]) {
+  for (const broken of [-1, 0, 1, 2, 3, 4]) {
     const calls = [];
     const run = (command, args, options) => {
       calls.push([command, args]);
       if (command === "cargo") {
         assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom(?: |$)/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom(?: |$)/);
         assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
         assert.ok(args.includes("--lib"));
         assert.ok(args.includes("filesystem-local,native-execution,terminal,mcp-http,grpc,test-support"));
@@ -167,7 +169,7 @@ test("coordinator qualification instruments real Stream locks and rejects skippe
     if (broken === -1) qualifyCoordinatorOriginsLoom(undefined, run);
     else assert.throws(() => qualifyCoordinatorOriginsLoom(undefined, run), /requires a nonzero/);
     assert.equal(calls.filter(([command]) => command === "cargo").length, 1);
-    assert.deepEqual(calls.slice(1), suites.slice(0, broken === -1 ? 4 : broken + 1)
+    assert.deepEqual(calls.slice(1), suites.slice(0, broken === -1 ? suites.length : broken + 1)
       .map(([filter], index) => ["model-binary", [filter, ...(index === 0 ? ["--exact"] : [])]]));
   }
 });

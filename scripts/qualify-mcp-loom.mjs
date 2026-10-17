@@ -15,8 +15,9 @@ export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesys
       { filter: "external_executor::task_bindings::model::tests::", exact: false, expected: 3, timeout: 9500 },
       { filter: "external_executor::local_owner::registry::model::tests::", exact: false, expected: 2, timeout: 9500 },
       { filter: "local::command_views::models::", exact: false, expected: 1, timeout: 9500 },
+      { filter: "local::children::preparation::models::", exact: false, expected: 1, timeout: 9500 },
     ],
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_fs_loom --cfg acyclic_loom` }, targetCfg: [],
   });
 }
 
