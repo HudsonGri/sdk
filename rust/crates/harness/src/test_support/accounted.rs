@@ -72,7 +72,7 @@ pub(crate) async fn observe_chunk<F: std::future::Future>(
     future: F,
     io: Option<&PreparationIo>,
 ) -> F::Output {
-    if !TRACE.with_borrow(|trace| trace.is_some()) {
+    if acyclic_test_support::differential::reserve::<(&'static str, u64)>(0).is_none() {
         return future.await;
     }
     let before = io.map(PreparationIo::receipt).unwrap_or_default();
@@ -84,7 +84,7 @@ pub(crate) async fn observe_chunk<F: std::future::Future>(
 }
 
 pub(crate) fn observe_chunk_sync<R>(run: impl FnOnce() -> R, io: Option<&PreparationIo>) -> R {
-    if !TRACE.with_borrow(|trace| trace.is_some()) {
+    if acyclic_test_support::differential::reserve::<(&'static str, u64)>(0).is_none() {
         return run();
     }
     let before = io.map(PreparationIo::receipt).unwrap_or_default();
@@ -94,23 +94,23 @@ pub(crate) fn observe_chunk_sync<R>(run: impl FnOnce() -> R, io: Option<&Prepara
 }
 
 fn observe_chunk_poll<R>(run: impl FnOnce() -> R) -> R {
-    let capacity = TRACE.with_borrow_mut(|trace| {
-        let trace = trace.as_mut().unwrap();
-        trace.reserve(64);
-        trace.capacity()
-    });
+    let capacity = acyclic_test_support::differential::reserve::<(&'static str, u64)>(64).unwrap();
     let mut output = None;
     let (_, items) = super::measure_task_volume_work(|| {
         let allocations = acyclic_test_support::measure(|| output = Some(run()));
         assert_eq!(
-            TRACE.with_borrow(|trace| trace.as_ref().unwrap().capacity()),
-            capacity
+            acyclic_test_support::differential::reserve::<(&'static str, u64)>(0),
+            Some(capacity)
         );
         record("chunk.allocations", allocations.count_total);
         record("chunk.allocated-bytes", allocations.bytes_total);
     });
     record("chunk.items", items);
     output.unwrap()
+}
+
+fn record(name: &'static str, value: u64) {
+    acyclic_test_support::differential::record((name, value));
 }
 
 fn record_chunk_native(before: WorkCounters, after: WorkCounters) {

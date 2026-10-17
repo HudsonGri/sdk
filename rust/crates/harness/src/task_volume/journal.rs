@@ -25,7 +25,7 @@ impl<P: StreamProvider> TaskVolume<P> {
             return Err(Error::Unauthorized.into());
         }
         #[cfg(all(test, not(target_arch = "wasm32")))]
-        if crate::test_support::differential::chunk_scan_enabled() {
+        if crate::test_support::accounted::chunk_scan_enabled() {
             let _ = self.snapshot(&Query::Root, 1024).await?;
         }
         #[cfg(not(target_arch = "wasm32"))]

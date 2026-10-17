@@ -371,7 +371,7 @@ where
             let preparing =
                 self.prepare_chunk(operation_id, summary.tail, event, model.as_ref(), io);
             #[cfg(all(test, not(target_arch = "wasm32")))]
-            let chunk = crate::test_support::differential::observe_chunk(preparing, io).await?;
+            let chunk = crate::test_support::accounted::observe_chunk(preparing, io).await?;
             #[cfg(not(all(test, not(target_arch = "wasm32"))))]
             let chunk = preparing.await?;
             let committed = if let Some(owner) = owner {

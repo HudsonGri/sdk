@@ -666,7 +666,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 )
             };
             #[cfg(all(test, not(target_arch = "wasm32")))]
-            crate::test_support::differential::observe_chunk(adding, measuring.as_ref()).await?;
+            crate::test_support::accounted::observe_chunk(adding, measuring.as_ref()).await?;
             #[cfg(not(all(test, not(target_arch = "wasm32"))))]
             adding.await?;
         }

@@ -100,7 +100,7 @@ async fn commit_journal_impl<P: StreamProvider, const FINALIZE: bool>(
                 .map(crate::filesystem::PreparationIo::from_native_work)
                 .transpose()?;
             if request.0.mutations.len() == 2 {
-                crate::test_support::differential::observe_chunk_sync(
+                crate::test_support::accounted::observe_chunk_sync(
                     || finalize_journal_request(&mut request, previous_key_bytes),
                     measuring.as_ref(),
                 )?;

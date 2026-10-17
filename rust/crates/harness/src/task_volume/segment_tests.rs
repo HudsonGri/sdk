@@ -113,7 +113,7 @@ fn borrowed_chunk_packing_has_exact_allocations_with_copy_negative_control() {
     let payload = b"authenticated delta";
     for native in [false, true] {
         let run = |copy: bool| {
-            crate::test_support::differential::accounted(native, 1 << 24, false, |io| {
+            crate::test_support::accounted::accounted(native, 1 << 24, false, |io| {
                 let before = io.receipt();
                 let mut output = None;
                 let allocations = acyclic_test_support::measure(|| {

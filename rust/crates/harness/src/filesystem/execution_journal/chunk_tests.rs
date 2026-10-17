@@ -2,12 +2,13 @@
 use super::*;
 use crate::runtime::DurableTaskHost;
 use crate::test_stream::{ExecutionFaultMode, LostSessionAck};
-use crate::test_support::differential;
+use crate::test_support::accounted;
 use crate::{
     durable_host::tests::fixture::Fixture,
     task_volume::{Query, TaskFiles},
 };
 use acyclic_stream::MemoryStream;
+use acyclic_test_support::differential;
 use std::sync::atomic::Ordering::SeqCst;
 
 type Provider = LostSessionAck<MemoryStream>;
@@ -266,7 +267,7 @@ async fn deltas(
     // and payload-copy control must use only original native provider calls.
     f.stream
         .native_only
-        .store(io.is_some() && !differential::chunk_scan_enabled(), SeqCst);
+        .store(io.is_some() && !accounted::chunk_scan_enabled(), SeqCst);
     for index in 101..101 + count {
         let key = format!("event:{index}");
         journal.append(OP, &key, &event, io)?.await?;
@@ -348,9 +349,9 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
             let [baseline, candidate] = differential::pair(
                 || runtime.block_on(warm()).unwrap(),
                 |state, old| {
-                    differential::with_chunk_scan(old, || {
+                    accounted::with_chunk_scan(old, || {
                         if native {
-                            differential::accounted(true, 1 << 28, false, |io| {
+                            accounted::accounted(true, 1 << 28, false, |io| {
                                 runtime.block_on(deltas(state, count, Some(io))).unwrap()
                             })
                             .unwrap()
@@ -435,9 +436,9 @@ fn projection_payload_copy_negative_control_has_exact_extra_allocations() {
         let [baseline, candidate] = differential::pair(
             || runtime.block_on(warm()).unwrap(),
             |state, copied| {
-                differential::with_chunk_copy(copied, || {
+                accounted::with_chunk_copy(copied, || {
                     if native {
-                        differential::accounted(true, 1 << 28, false, |io| {
+                        accounted::accounted(true, 1 << 28, false, |io| {
                             runtime.block_on(deltas(state, 8, Some(io))).unwrap()
                         })
                         .unwrap()
@@ -488,7 +489,7 @@ fn chunk_projection_preserves_the_bound_on_its_authorized_task_files() {
             journal.task_files = Some(limited.clone());
             let before = runtime.block_on(files.inner.head()).unwrap();
             let appended = if native {
-                differential::accounted(true, 1 << 28, false, |io| {
+                accounted::accounted(true, 1 << 28, false, |io| {
                     runtime.block_on(async {
                         let journal = f
                             .native_execution(1, OP, io)

@@ -40,7 +40,7 @@ where
             ));
         }
         #[cfg(all(test, not(target_arch = "wasm32")))]
-        let copied = if crate::test_support::differential::chunk_copy_enabled() {
+        let copied = if crate::test_support::accounted::chunk_copy_enabled() {
             Some(crate::executor::with_history_io(io, |work| {
                 crate::wire_codec::CodecQuota::produce(work, |quota| {
                     crate::core::copy_copy_vector(delta.as_bytes(), quota)
