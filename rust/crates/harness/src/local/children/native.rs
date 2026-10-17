@@ -47,7 +47,6 @@ impl ChildAdmission for LocalHarness {
                 },
             )
             .await
-            .map(|(task, _view)| task)
         })
     }
 }

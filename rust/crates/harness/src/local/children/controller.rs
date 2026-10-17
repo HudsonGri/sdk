@@ -4,169 +4,26 @@ use crate::{
     runtime::TaskStateProvider,
     task_volume::{
         Change, ChildFile, ChildRequest, ChildState, ChildStatus, Component, Control, FileKey,
-        FileQuerySource, FileValue, Generation, Query, TaskFiles,
+        FileValue, Generation, Query, TaskFiles,
     },
 };
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
-use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use std::collections::{BTreeMap, BTreeSet};
 
-type Files = TaskFiles<dyn StreamProvider>;
+type Files = TaskFiles<acyclic_stream::LocalStream>;
 
+mod delivery;
+mod draining;
+mod drive;
+pub(super) mod follow;
+mod inputs;
+mod lease;
+mod result_slot;
 mod results;
 mod stopping;
 
 impl LocalHarness {
-    pub(in crate::local) fn advance_with_children<'a>(
-        &'a self,
-        task: TaskId,
-        commands: &'a dyn TaskCommandHost,
-        files: Arc<Files>,
-        control: Option<(Arc<Files>, Component)>,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let mut observation = files
-                .observe_files(
-                    Query::Children,
-                    None,
-                    self.limits.attachments,
-                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                )
-                .await
-                .map_err(storage)?;
-            let snapshot = observation
-                .snapshot
-                .take()
-                .ok_or_else(|| Error::Conflict("child folder snapshot missing".into()))?;
-            let mut generation = snapshot.generation;
-            let mut values: BTreeMap<_, _> = snapshot
-                .files
-                .into_iter()
-                .map(|file| (file.key.clone(), file))
-                .collect();
-            let mut active = BTreeSet::new();
-            let mut completions = BTreeMap::new();
-            let mut jobs = FuturesUnordered::new();
-            let inherited = commands.invocation_cancellation().cloned();
-            let mut inherited_stopped = false;
-            for request in values.values().filter(|file| {
-                matches!(
-                    file.key,
-                    FileKey::Child {
-                        file: ChildFile::Request,
-                        ..
-                    }
-                )
-            }) {
-                let FileKey::Child { reference, .. } = &request.key else {
-                    unreachable!()
-                };
-                if needs_work(reference, &values, false)? {
-                    active.insert(reference.clone());
-                    jobs.push(self.service_child(
-                        files.clone(),
-                        reference.clone(),
-                        request.clone(),
-                        inherited.clone(),
-                    ));
-                }
-            }
-            let parent = self.advance_while(task, commands, || async {
-                if commands
-                    .invocation_cancellation()
-                    .is_some_and(|token| token.is_cancelled())
-                {
-                    return Ok(false);
-                }
-                match &control {
-                    None => Ok(true),
-                    Some((files, reference)) => Ok(super::commands::state(
-                        files,
-                        reference,
-                        usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                    )
-                    .await?
-                        == ChildState::Running),
-                }
-            });
-            futures::pin_mut!(parent);
-            let mut parent_done = false;
-            loop {
-                if !inherited_stopped
-                    && inherited.as_ref().is_some_and(|token| token.is_cancelled())
-                {
-                    inherited_stopped = true;
-                    for request in values.values().filter(|file| {
-                        matches!(
-                            file.key,
-                            FileKey::Child {
-                                file: ChildFile::Request,
-                                ..
-                            }
-                        )
-                    }) {
-                        let FileKey::Child { reference, .. } = &request.key else {
-                            unreachable!()
-                        };
-                        if !active.contains(reference)
-                            && !matches!(
-                                desired(reference, &values)?,
-                                ChildState::Cancelled | ChildState::Archived
-                            )
-                        {
-                            active.insert(reference.clone());
-                            jobs.push(self.service_child(
-                                files.clone(),
-                                reference.clone(),
-                                request.clone(),
-                                inherited.clone(),
-                            ));
-                        }
-                    }
-                }
-                if parent_done && jobs.is_empty() && completions.is_empty() {
-                    return Ok(());
-                }
-                tokio::select! {
-                    biased;
-                    change = observation.changes.next() => {
-                        let change = change.ok_or_else(|| Error::Conflict("child folder follow ended".into()))?.map_err(storage)?;
-                        let mut changed = BTreeSet::new();
-                        for file in change.file.iter().chain(&change.files) {
-                            if let FileKey::Child { reference, file: ChildFile::Request | ChildFile::Inbox(_) | ChildFile::Control } = &file.key {
-                                changed.insert(reference.clone());
-                            }
-                        }
-                        advance_fold(&mut values, &mut generation, change);
-                        changed.extend(release_completed(generation.position, &mut active, &mut completions));
-                        for reference in changed {
-                            if active.contains(&reference) || !needs_work(&reference, &values, inherited_stopped)? { continue; }
-                            let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
-                            let request = values.get(&key).ok_or_else(|| Error::Conflict("child input has no request".into()))?.clone();
-                            active.insert(reference.clone());
-                            jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
-                        }
-                    }
-                    result = jobs.next(), if !jobs.is_empty() => {
-                        let (reference, position) = result.ok_or_else(|| Error::Conflict("child worker disappeared".into()))??;
-                        completions.insert(reference, position);
-                        for reference in release_completed(generation.position, &mut active, &mut completions) {
-                        if needs_work(&reference, &values, inherited_stopped)? {
-                            let key = FileKey::Child { reference: reference.clone(), file: ChildFile::Request };
-                            let request = values.get(&key).ok_or_else(|| Error::Conflict("child has no request".into()))?.clone();
-                            active.insert(reference.clone());
-                            jobs.push(self.service_child(files.clone(), reference, request, inherited.clone()));
-                        }
-                        }
-                    }
-                    _ = async { inherited.as_ref().unwrap().cancelled().await },
-                        if inherited.is_some() && !inherited_stopped => {}
-                    result = &mut parent, if !parent_done => { result?; parent_done = true; }
-                }
-            }
-        })
-    }
-
     pub(super) fn service_child<'a>(
         &'a self,
         files: Arc<Files>,
@@ -175,19 +32,12 @@ impl LocalHarness {
         inherited: Option<acyclic_fs::CancellationToken>,
     ) -> BoxProviderFuture<'a, Result<(Component, u64)>> {
         Box::pin(async move {
-            let mut observation = files
-                .observe_files(
-                    Query::Child(reference.clone()),
-                    None,
-                    self.limits.attachments,
-                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                )
+            let snapshot = files
+                .inner
+                .child_lifecycle(Some(&reference))
                 .await
                 .map_err(storage)?;
-            let snapshot = observation
-                .snapshot
-                .take()
-                .ok_or_else(|| Error::Conflict("child snapshot missing".into()))?;
+            let mut cursor = snapshot.cursor;
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
                 .files
@@ -200,16 +50,25 @@ impl LocalHarness {
                 stopping::cancel(
                     files.as_ref(),
                     &reference,
-                    &mut observation,
+                    &mut cursor,
                     &mut values,
                     &mut generation,
                 )
                 .await?;
             }
-            if !needs_work(&reference, &values, inherited_stopped)? {
+            if !needs_work_count(
+                &reference,
+                &values,
+                inherited_stopped,
+                files
+                    .inner
+                    .child_input_count(&reference)
+                    .await
+                    .map_err(storage)?,
+            )? {
                 return Ok((reference, generation.position));
             }
-            let (child, _view) = self.admit_child_request(files.as_ref(), &request).await?;
+            let child = self.admit_child_task(files.as_ref(), &request).await?;
             let parsed = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?;
             let (model, provider) = self.model_binding()?;
             let mut model = model.clone();
@@ -224,15 +83,18 @@ impl LocalHarness {
                 None,
             )?;
             loop {
-                while let Some(next) = observation.changes.next().now_or_never() {
-                    let change = next
-                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                        .map_err(storage)?;
-                    advance_fold(&mut values, &mut generation, change);
-                }
+                // A pending follow may own a queued publication read permit.
+                // Never leave it parked while awaiting a write to the same stream.
+                // Generation conflicts below consume the accepted control prefix.
+                #[cfg(all(test, not(acyclic_harness_loom)))]
+                super::cuts::follow_probe(files.as_ref(), &reference, &mut cursor).await?;
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
-                let inputs = input_count(&reference, &values);
+                let inputs = files
+                    .inner
+                    .child_input_count(&reference)
+                    .await
+                    .map_err(storage)?;
                 let cancelled = matches!(state, ChildState::Cancelled | ChildState::Archived)
                     && matches!(
                         self.runtime.task_host().outcome(child).await?,
@@ -268,12 +130,14 @@ impl LocalHarness {
                     // result prefix before deciding whether the receive cut agrees.
                     let head = files.inner.head().await.map_err(storage)?;
                     while generation.position < head.position {
-                        let change = observation
-                            .changes
-                            .next()
-                            .await
-                            .ok_or_else(|| Error::Conflict("cancelled child follow ended".into()))?
-                            .map_err(storage)?;
+                        let change = follow::next(
+                            files.as_ref(),
+                            Query::Child(reference.clone()),
+                            &mut cursor,
+                        )
+                        .await
+                        .ok_or_else(|| Error::Conflict("cancelled child follow ended".into()))?
+                        .map_err(storage)?;
                         advance_fold(&mut values, &mut generation, change);
                     }
                     if !stopping::cancelled_turn_is_quiet(
@@ -339,17 +203,16 @@ impl LocalHarness {
                     {
                         return Ok((reference, generation.position));
                     }
-                    let change = observation
-                        .changes
-                        .next()
-                        .await
-                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                        .map_err(storage)?;
+                    let change =
+                        follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
+                            .await
+                            .ok_or_else(|| Error::Conflict("child follow ended".into()))?
+                            .map_err(storage)?;
                     advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
                 if state == ChildState::Running {
-                    self.deliver_child_inputs(files.as_ref(), &reference, child, &request, &values)
+                    self.deliver_child_inputs(files.as_ref(), &reference, child, &request, inputs)
                         .await?;
                 }
                 let status = ChildStatus {
@@ -368,12 +231,11 @@ impl LocalHarness {
                     )
                     .await?
                 {
-                    let change = observation
-                        .changes
-                        .next()
-                        .await
-                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                        .map_err(storage)?;
+                    let change =
+                        follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
+                            .await
+                            .ok_or_else(|| Error::Conflict("child follow ended".into()))?
+                            .map_err(storage)?;
                     advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
@@ -404,19 +266,35 @@ impl LocalHarness {
                         loop {
                             tokio::select! {
                                 biased;
-                                change = observation.changes.next() => {
+                                change = follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor) => {
                                     let change = change.ok_or_else(|| Error::Conflict("child follow ended".into()))?.map_err(storage)?;
                                     let input = change.file.iter().chain(&change.files).any(|file| matches!(file.key,
                                         FileKey::Child { file: ChildFile::Request | ChildFile::Inbox(_), .. }));
                                     advance_fold(&mut values, &mut generation, change);
                                     let state = desired(&reference, &values)?;
                                     if stopping::requested(state) { cancellation.cancel(); }
-                                    if input && state == ChildState::Running { self.deliver_child_inputs(files.as_ref(), &reference, child, &request, &values).await?; }
+                                    if input {
+                                        loop {
+                                            let state = desired(&reference, &values)?;
+                                            if stopping::requested(state) { cancellation.cancel(); }
+                                            if state != ChildState::Running { break; }
+                                            let status = ChildStatus { task: child, state, settled: false,
+                                                inputs: files.inner.child_input_count(&reference).await.map_err(storage)? };
+                                            if inputs::publish(files.as_ref(), &reference, status, &mut values, &mut generation).await? {
+                                                self.deliver_child_inputs(files.as_ref(), &reference, child, &request, status.inputs).await?;
+                                                break;
+                                            }
+                                            let change = follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor).await
+                                                .ok_or_else(|| Error::Conflict("child input fence follow ended".into()))?
+                                                .map_err(storage)?;
+                                            advance_fold(&mut values, &mut generation, change);
+                                        }
+                                    }
                                 }
                                 _ = async { inherited.as_ref().unwrap().cancelled().await },
                                     if inherited.is_some() && !inherited_stopped => {
                                     cancellation.cancel();
-                                    stopping::cancel(files.as_ref(), &reference, &mut observation, &mut values, &mut generation).await?;
+                                    stopping::cancel(files.as_ref(), &reference, &mut cursor, &mut values, &mut generation).await?;
                                     inherited_stopped = true;
                                 }
                             }
@@ -439,14 +317,14 @@ impl LocalHarness {
                                 break;
                             }
                             Err(crate::task_volume::Error::Conflict(_)) => {
-                                let change = observation
-                                    .changes
-                                    .next()
-                                    .await
-                                    .ok_or_else(|| {
-                                        Error::Conflict("child result follow ended".into())
-                                    })?
-                                    .map_err(storage)?;
+                                let change = follow::next(
+                                    files.as_ref(),
+                                    Query::Child(reference.clone()),
+                                    &mut cursor,
+                                )
+                                .await
+                                .ok_or_else(|| Error::Conflict("child result follow ended".into()))?
+                                .map_err(storage)?;
                                 advance_fold(&mut values, &mut generation, change);
                             }
                             Err(error) => return Err(storage(error)),
@@ -454,7 +332,14 @@ impl LocalHarness {
                     }
                 }
                 let state = desired(&reference, &values)?;
-                if state == ChildState::Running && processed < input_count(&reference, &values) {
+                if state == ChildState::Running
+                    && processed
+                        < files
+                            .inner
+                            .child_input_count(&reference)
+                            .await
+                            .map_err(storage)?
+                {
                     continue;
                 }
                 if matches!(state, ChildState::Cancelled | ChildState::Archived) {
@@ -475,7 +360,9 @@ impl LocalHarness {
                     inputs: if state == ChildState::Running {
                         processed
                     } else {
-                        previous.map_or(inputs, |status| status.inputs)
+                        execution(&reference, &values)?
+                            .map_or(inputs, |status| status.inputs)
+                            .max(processed)
                     },
                 };
                 if publish(
@@ -489,88 +376,14 @@ impl LocalHarness {
                 {
                     return Ok((reference, generation.position));
                 }
-                let change = observation
-                    .changes
-                    .next()
-                    .await
-                    .ok_or_else(|| Error::Conflict("child follow ended".into()))?
-                    .map_err(storage)?;
+                let change =
+                    follow::next(files.as_ref(), Query::Child(reference.clone()), &mut cursor)
+                        .await
+                        .ok_or_else(|| Error::Conflict("child follow ended".into()))?
+                        .map_err(storage)?;
                 advance_fold(&mut values, &mut generation, change);
             }
         })
-    }
-
-    async fn deliver_child_inputs(
-        &self,
-        files: &Files,
-        reference: &Component,
-        child: TaskId,
-        request: &FileValue,
-        values: &BTreeMap<FileKey, FileValue>,
-    ) -> Result<()> {
-        let sender = request
-            .requester
-            .ok_or_else(|| Error::Unauthorized("child request has no sender".into()))?;
-        let publisher = self.input_publisher_with_limit(self.limits.file_bytes)?;
-        let prompt = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?.prompt;
-        for file in std::iter::once(request).chain(values.values().filter(|file| matches!(&file.key,
-            FileKey::Child { reference: candidate, file: ChildFile::Inbox(_) } if candidate == reference))) {
-            let operation = admission::child_operation(files.volume(), &file.key.path(), b"mail")?;
-            let body = if file.key == request.key { prompt.as_bytes() } else { file.bytes.as_ref() };
-            let (payload, _) = publisher.stage_once(operation, &format!("inputs/agents/{child}/{operation}.md"),
-                body, "text/plain", "message.md", None)?.await?;
-            self.runtime.task_host().send(sender, child, operation, payload).await?;
-        }
-        Ok(())
-    }
-
-    async fn child_files(
-        &self,
-        child: TaskId,
-        parent: &Files,
-    ) -> Result<(Arc<Files>, crate::runtime::TaskContext)> {
-        use crate::distributed::{WorkPull, Worker};
-        let host = self.runtime.task_host();
-        let lease = match host.recover_work(child, &mut None).await? {
-            WorkPull::Claimed(lease) => lease,
-            WorkPull::Idle => {
-                if !self.runtime.poll_task_wake(child, None).await? {
-                    if let Some(slot) = host.workflow_suspension(child, &mut None).await?
-                        && let Some(waiting) = slot.waiting_command
-                    {
-                        host.wake_command(child, slot.revision, waiting, &mut None)
-                            .await?;
-                    }
-                }
-                let worker = Worker {
-                    id: "child-file-controller".into(),
-                    available: Default::default(),
-                    labels: Default::default(),
-                };
-                let WorkPull::Claimed(lease) = host
-                    .pull_work(
-                        &worker,
-                        Some(OperationId::from_bytes(child.into_bytes())),
-                        &mut None,
-                    )
-                    .await?
-                else {
-                    return Err(Error::Indeterminate(OperationId::from_bytes(
-                        child.into_bytes(),
-                    )));
-                };
-                lease
-            }
-            WorkPull::Unresolved { error, .. } => return Err(error),
-        };
-        host.start_task(&lease, &mut None).await?;
-        let fence = LeaseFence::from(&lease.reservation);
-        let context = self.runtime.task_context(child, fence.clone()).await?;
-        let files = parent
-            .for_created_task(&context, context.scope())
-            .await?
-            .ok_or_else(|| Error::Unauthorized("child has no created private files".into()))?;
-        Ok((Arc::new(files), context))
     }
 }
 
@@ -579,6 +392,22 @@ fn fold(values: &mut BTreeMap<FileKey, FileValue>, change: Change) {
         values.remove(&key);
     }
     for file in change.file.into_iter().chain(change.files) {
+        if matches!(
+            file.key,
+            FileKey::Child {
+                file: ChildFile::Request | ChildFile::Inbox(_),
+                ..
+            }
+        ) {
+            continue;
+        }
+        if let FileKey::Child {
+            reference,
+            file: ChildFile::Result(turn),
+        } = &file.key
+        {
+            result_slot::evict(values, reference, *turn);
+        }
         values.insert(file.key.clone(), file);
     }
 }
@@ -628,6 +457,7 @@ fn execution(
         .transpose()
 }
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
 fn input_count(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> u64 {
     values
         .keys()
@@ -661,10 +491,20 @@ fn settled_turn(
     })
 }
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
 fn needs_work(
     reference: &Component,
     values: &BTreeMap<FileKey, FileValue>,
     stopping: bool,
+) -> Result<bool> {
+    needs_work_count(reference, values, stopping, input_count(reference, values))
+}
+
+fn needs_work_count(
+    reference: &Component,
+    values: &BTreeMap<FileKey, FileValue>,
+    stopping: bool,
+    inputs: u64,
 ) -> Result<bool> {
     let state = desired(reference, values)?;
     if stopping && !matches!(state, ChildState::Cancelled | ChildState::Archived) {
@@ -674,7 +514,7 @@ fn needs_work(
         !status.settled
             || status.state != state
             || state == ChildState::Running
-                && (status.inputs != input_count(reference, values)
+                && (status.inputs != inputs
                     || !values.contains_key(&FileKey::Child {
                         reference: reference.clone(),
                         file: ChildFile::Result(status.inputs),
@@ -705,8 +545,8 @@ fn release_completed(
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
-async fn publish(
-    files: &Files,
+async fn publish<P: StreamProvider + ?Sized>(
+    files: &TaskFiles<P>,
     reference: &Component,
     status: ChildStatus,
     values: &mut BTreeMap<FileKey, FileValue>,

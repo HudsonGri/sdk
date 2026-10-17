@@ -168,6 +168,7 @@ impl ChildRequest {
 /// Files owned by a parent below `agents/<ref>/`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum ChildFile {
     /// Immutable spawn prompt with optional model and tool frontmatter.
     Request,
@@ -177,6 +178,8 @@ pub enum ChildFile {
     Control,
     /// Harness-owned execution status, followed by the parent and UI.
     Status,
+    /// Authenticated delivered-input frontier, advanced after mailbox acceptance.
+    Delivered,
     /// Immutable outcome of one completed mailbox input.
     Result(u64),
 }
@@ -190,6 +193,7 @@ impl ChildFile {
             )?)),
             ["control"] => Ok(Self::Control),
             ["status.json"] => Ok(Self::Status),
+            ["delivered.json"] => Ok(Self::Delivered),
             ["results", name] => {
                 let number = name.strip_suffix(".json").ok_or(Error::InvalidPath)?;
                 let turn: u64 = number.parse().map_err(|_| Error::InvalidPath)?;
@@ -208,6 +212,7 @@ impl ChildFile {
             Self::Inbox(id) => format!("inbox/{}.md", id.as_str()),
             Self::Control => "control".into(),
             Self::Status => "status.json".into(),
+            Self::Delivered => "delivered.json".into(),
             Self::Result(turn) => format!("results/{turn}.json"),
         }
     }

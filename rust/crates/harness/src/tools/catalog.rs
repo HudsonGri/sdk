@@ -172,7 +172,7 @@ static SPAWN: ToolSpec = ToolSpec {
     revision: "1",
     description: "Create a child in a lazy fork and return its reference",
     hook_names: &[],
-    binding: ToolBinding::Volume,
+    binding: ToolBinding::Workspace,
     input: || {
         Ok(
             json!({"type":"object","required":["task"],"additionalProperties":false,
@@ -192,7 +192,7 @@ static SEND: ToolSpec = ToolSpec {
     revision: "1",
     description: "Queue a message to a child",
     hook_names: &[],
-    binding: ToolBinding::Volume,
+    binding: ToolBinding::Workspace,
     input: || {
         Ok(
             json!({"type":"object","required":["agent","message"],"additionalProperties":false,
@@ -210,7 +210,7 @@ static WAIT: ToolSpec = ToolSpec {
     revision: "1",
     description: "Wait for all children (mode:any for the first) and return bounded answer or failure references",
     hook_names: &[],
-    binding: ToolBinding::Volume,
+    binding: ToolBinding::Workspace,
     input: || {
         Ok(
             json!({"type":"object","required":["agents"],"additionalProperties":false,
@@ -229,7 +229,7 @@ static ARCHIVE: ToolSpec = ToolSpec {
     revision: "1",
     description: "Cancel and drain a child and its descendants, then archive its readable history",
     hook_names: &[],
-    binding: ToolBinding::Volume,
+    binding: ToolBinding::Workspace,
     input: || {
         Ok(
             json!({"type":"object","required":["agent"],"additionalProperties":false,

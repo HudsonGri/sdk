@@ -28,7 +28,7 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    task_files: Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -91,7 +91,7 @@ impl CheckoutTools {
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        task_files: Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Self> {
         if workspace
             .filesystem
@@ -184,16 +184,8 @@ impl ToolExecutor for CheckoutTools {
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             if let Some(project) = self.child_project(original)? {
-                if invocation.name != "fs" {
-                    let selected = self.child_checkout(original, project).await?;
-                    return selected.execute(invocation, context).await;
-                }
-                let command = invocation
-                    .arguments
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| Error::Invalid("checkout command must be text".into()))?;
-                return self.child_fs(command, original, project).await;
+                let selected = self.child_checkout(original, project).await?;
+                return selected.execute(invocation, context).await;
             }
             if !self.selected
                 && let Some(selected) = self

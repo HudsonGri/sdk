@@ -24,11 +24,11 @@ pub(super) enum ChildInput<'a> {
 }
 
 impl LocalHarness {
-    pub(in crate::local) async fn admit_child_request(
+    pub(in crate::local) async fn admit_child_task<P: StreamProvider + ?Sized>(
         &self,
-        files: &TaskFiles<dyn StreamProvider>,
+        files: &TaskFiles<P>,
         file: &FileValue,
-    ) -> Result<(TaskId, workspace::View)> {
+    ) -> Result<TaskId> {
         let FileKey::Child {
             reference,
             file: ChildFile::Request,
@@ -39,11 +39,10 @@ impl LocalHarness {
             ));
         };
         let observed = files
-            .observe(Query::File(file.key.clone()), None, 1)
+            .inner
+            .snapshot_files(&[file.key.clone()], &Query::File(file.key.clone()))
             .await
-            .map_err(storage)?
-            .snapshot
-            .ok_or_else(|| Error::Conflict("child request snapshot missing".into()))?;
+            .map_err(storage)?;
         if observed.files.as_slice() != std::slice::from_ref(file) {
             return Err(Error::Conflict(
                 "child request differs from its accepted file".into(),
@@ -56,23 +55,23 @@ impl LocalHarness {
             .await
     }
 
-    pub(super) fn admit_child<'a>(
+    pub(super) fn admit_child<'a, P: StreamProvider + ?Sized>(
         &'a self,
-        files: &'a TaskFiles<dyn StreamProvider>,
+        files: &'a TaskFiles<P>,
         reference: &'a Component,
         parent: TaskId,
         input: ChildInput<'a>,
-    ) -> impl Future<Output = Result<(TaskId, workspace::View)>> + Send + 'a {
+    ) -> impl Future<Output = Result<TaskId>> + Send + 'a {
         Box::pin(self.prepare_child_admission(files, reference, parent, input))
     }
 
-    async fn prepare_child_admission(
+    async fn prepare_child_admission<P: StreamProvider + ?Sized>(
         &self,
-        files: &TaskFiles<dyn StreamProvider>,
+        files: &TaskFiles<P>,
         reference: &Component,
         parent: TaskId,
         input: ChildInput<'_>,
-    ) -> Result<(TaskId, workspace::View)> {
+    ) -> Result<TaskId> {
         let (bound, mut template, file) = match input {
             ChildInput::Request(file) => (None, None, Some(file)),
             ChildInput::Native {
@@ -118,18 +117,6 @@ impl LocalHarness {
             VolumeOwner::Agent(child_agent),
             &mut None,
         )?;
-        let workspace = self
-            .workspace
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("child agents require a lazy workspace".into()))?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let _invocation = crate::filesystem::InvocationCancellation(cancellation.clone());
-        let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
-            &cancellation,
-        )?;
-
-        let io_ref = &io;
         let admitted = match self
             .runtime
             .task_host()
@@ -171,18 +158,20 @@ impl LocalHarness {
             if admitted.parent != Some(parent) {
                 return Err(Error::Conflict("child parent changed".into()));
             }
-            let child = io.sdk(
-                workspace
-                    .filesystem
-                    .open_workspace(project.storage_name(&mut None)?, &io, &cancellation)
-                    .await,
-            )?;
-            let mut accounting = io_ref.accounting(&cancellation);
-            let opened = workspace.view().open_related(child, &mut accounting).await;
-            let view = io.sdk(io_ref.finish(opened, &accounting))?;
-            return Ok((admitted.task_id(), view));
+            return Ok(admitted.task_id());
         }
 
+        let workspace = self
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("child agents require a lazy workspace".into()))?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let _invocation = crate::filesystem::InvocationCancellation(cancellation.clone());
+        let io = PreparationIo::from_budget(
+            acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
+            &cancellation,
+        )?;
+        let io_ref = &io;
         let host = self.runtime.task_host();
         let recovered;
         let (context, fence) = if let Some((context, fence, _)) = bound {
@@ -569,16 +558,47 @@ impl LocalHarness {
         };
         #[cfg(all(test, not(acyclic_harness_loom)))]
         super::cuts::stop("admitted", operation)?;
+        Ok(task)
+    }
+    #[cfg(test)]
+    pub(in crate::local) async fn admit_child_request<P: StreamProvider + ?Sized>(
+        &self,
+        files: &TaskFiles<P>,
+        file: &FileValue,
+    ) -> Result<(TaskId, workspace::View)> {
+        let task = self.admit_child_task(files, file).await?;
+        Ok((task, self.child_project_view(task).await?))
+    }
+
+    #[cfg(test)]
+    pub(super) async fn child_project_view(&self, task: TaskId) -> Result<workspace::View> {
+        let workspace = self.workspace.as_ref().unwrap();
+        let project = VolumeRef::new(
+            self.project.provider().clone(),
+            format!("agent-project-{task}"),
+            VolumeClass::Project,
+            self.project.owner().clone(),
+            &mut None,
+        )?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::from_budget(
+            acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
+            &cancellation,
+        )?;
         let child = io.sdk(
             workspace
                 .filesystem
                 .open_workspace(project.storage_name(&mut None)?, &io, &cancellation)
                 .await,
         )?;
+        let io_ref = &io;
         let mut accounting = io_ref.accounting(&cancellation);
-        let view = source.open_related(child, &mut accounting).await;
-        let view = io.sdk(io_ref.finish(view, &accounting))?;
-        Ok((task, view))
+        let opened = workspace.view().open_related(child, &mut accounting).await;
+        let view = io.sdk(io_ref.finish(opened, &accounting))?;
+        let work = io.receipt();
+        crate::test_support::differential::record("view-items", work.items_examined);
+        crate::test_support::differential::record("view-allocations", work.allocation_operations);
+        Ok(view)
     }
 }
 
@@ -674,3 +694,5 @@ pub(super) fn child_grants(
             ),
     ))
 }
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod work_tests;

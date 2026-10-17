@@ -1,5 +1,5 @@
 use super::*;
-use crate::task_volume::{ChildState, ChildStatus};
+use crate::task_volume::{ChildState, ChildStatus, FileQuerySource};
 use crate::{
     AgentId, Capabilities, OperationId, TaskId,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
@@ -10,7 +10,30 @@ use acyclic_stream::MemoryStream;
 use proptest::prelude::*;
 use std::sync::Arc;
 
+async fn wait<P: StreamProvider + ?Sized>(
+    files: &TaskFiles<P>,
+    input: WaitInput,
+    limits: Limits,
+    operation: OperationId,
+    block: bool,
+) -> Result<Option<Value>> {
+    super::wait(
+        files,
+        input,
+        limits,
+        operation,
+        block,
+        TaskId::from_bytes([2; 16]),
+        None,
+    )
+    .await
+}
+
 async fn files() -> TaskFiles<MemoryStream> {
+    files_with(Arc::new(MemoryStream::default())).await
+}
+
+async fn files_with(provider: Arc<MemoryStream>) -> TaskFiles<MemoryStream> {
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
@@ -40,7 +63,7 @@ async fn files() -> TaskFiles<MemoryStream> {
         )
         .unwrap();
     TaskFiles::open(
-        Arc::new(MemoryStream::default()),
+        provider,
         &volume,
         &issuer.verifier(&mut None).unwrap(),
         &scope,
@@ -60,6 +83,15 @@ fn limits() -> Limits {
 }
 
 async fn acknowledge(files: &TaskFiles<MemoryStream>, reference: &Component, state: ChildState) {
+    acknowledge_answer(files, reference, state, "child answer").await
+}
+
+async fn acknowledge_answer(
+    files: &TaskFiles<MemoryStream>,
+    reference: &Component,
+    state: ChildState,
+    answer: &str,
+) {
     let snapshot = files
         .observe(Query::Child(reference.clone()), None, 16)
         .await
@@ -130,7 +162,7 @@ async fn acknowledge(files: &TaskFiles<MemoryStream>, reference: &Component, sta
             }
             generation = files.inner.append(generation, &FileValue::new(key,
                 serde_json::to_vec(&json!({"task":status.task,"turn":turn,
-                    "outcome":{"Succeeded":{"text":"child answer","metadata":null,"steps":1,"attachments":[]}}})).unwrap(),
+                    "outcome":{"Succeeded":{"text":answer,"metadata":null,"steps":1,"attachments":[]}}})).unwrap(),
             )).await.unwrap();
         }
     }
@@ -531,3 +563,5 @@ proptest! {
         round_trip!(ArchiveInput { agent }, ArchiveInput);
     }
 }
+
+mod review;

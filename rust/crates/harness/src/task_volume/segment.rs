@@ -24,6 +24,7 @@ pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
     let metadata = serde_json::to_vec(&Entry {
         key: file.key.clone(),
         channel: file.channel,
+        requester: file.requester,
         publication: file.publication,
     })
     .map_err(|_| Error::InvalidSegment)?;

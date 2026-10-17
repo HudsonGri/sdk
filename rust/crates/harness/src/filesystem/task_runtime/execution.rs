@@ -115,9 +115,17 @@ where
         let limits = scope.limits();
         let run_limits = scope.run_limits();
         let operation_id = execution_operation(task, turn, None)?;
+        let task_files = match &self.task_files {
+            Some(files) => match files.for_created_task(&task_context, &scope).await? {
+                Some(created) => Some(Arc::new(created)),
+                None => Some(files.clone()),
+            },
+            None => None,
+        };
         let journal = self
             .open_execution_journal(task, fence.clone(), turn, &admission)
             .await?
+            .with_task_files(task_files)
             .with_input_verifier(task_context.clone());
         let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)

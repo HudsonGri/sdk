@@ -131,8 +131,19 @@ async fn default_spawn_dispatch_writes_the_bound_private_volume() -> Result<()> 
         .map_err(super::super::storage)?
         .snapshot
         .unwrap();
-    assert_eq!(snapshot.files.len(), 3);
-    assert_eq!(snapshot.files[0].key.path(), "agents/worker/request.md");
+    assert_eq!(
+        snapshot
+            .files
+            .iter()
+            .map(|file| file.key.path())
+            .collect::<Vec<_>>(),
+        [
+            "agents/worker/request.md",
+            "agents/worker/status.json",
+            "agents/worker/delivered.json",
+            "agents/worker/results/1.json",
+        ]
+    );
     assert_eq!(snapshot.files[0].requester(), Some(task_id));
     let result = snapshot
         .files
@@ -142,6 +153,14 @@ async fn default_spawn_dispatch_writes_the_bound_private_volume() -> Result<()> 
     let result =
         crate::task_volume::ChildTurnResult::parse(&result.bytes).map_err(super::super::storage)?;
     assert_eq!(result.turn, 1);
+    let delivered = snapshot
+        .files
+        .iter()
+        .find(|file| file.key.path() == "agents/worker/delivered.json")
+        .unwrap();
+    let frontier: (crate::TaskId, u64) =
+        serde_json::from_slice(&delivered.bytes).map_err(super::super::storage)?;
+    assert_eq!(frontier, (result.task, 1));
     assert!(matches!(result.outcome, crate::Outcome::Succeeded(_)));
     assert!(
         std::str::from_utf8(&snapshot.files[0].bytes)

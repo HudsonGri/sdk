@@ -255,6 +255,51 @@ proptest! {
 }
 
 #[tokio::test]
+async fn authorized_queries_bound_snapshot_and_follow_content() {
+    use futures::StreamExt as _;
+    let agent = AgentId::from_bytes([4; 16]);
+    let volume = volume(agent);
+    let (verifier, scope) = authority(
+        Some(agent),
+        &volume,
+        &[VolumeOperation::Read, VolumeOperation::Write],
+    );
+    let files = TaskFiles::open(
+        Arc::new(MemoryStream::default()),
+        &volume,
+        &verifier,
+        &scope,
+        4096,
+    )
+    .await
+    .unwrap();
+    let generation = files.snapshot(&Query::Root, 8).await.unwrap().generation;
+    files
+        .write(generation, &FileValue::new(FileKey::Goal, b"one".to_vec()))
+        .await
+        .unwrap();
+    let query = Query::File(FileKey::Goal);
+    assert!(matches!(
+        files.observe_files(query.clone(), None, 1, 2).await,
+        Err(Error::LimitExceeded)
+    ));
+    let mut selected = files.observe_files(query, None, 1, 3).await.unwrap();
+    let snapshot = selected.snapshot.take().unwrap();
+    assert_eq!(snapshot.files[0].bytes.as_ref(), b"one");
+    files
+        .write(
+            snapshot.generation,
+            &FileValue::new(FileKey::Goal, b"four".to_vec()),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        selected.changes.next().await,
+        Some(Err(Error::LimitExceeded))
+    ));
+}
+
+#[tokio::test]
 async fn terminal_child_is_read_only_and_stale_controls_cannot_replace_it() {
     use crate::task_volume::{ChildFile, ChildState, ChildStatus, Component, Control};
     let agent = AgentId::from_bytes([1; 16]);

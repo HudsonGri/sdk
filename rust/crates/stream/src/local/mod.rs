@@ -127,3 +127,6 @@ include!("frames.rs");
 include!("snapshot.rs");
 
 include!("frame_checksum.rs");
+
+#[cfg(all(feature = "test-support", not(acyclic_loom)))]
+mod publication_barrier;

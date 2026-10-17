@@ -100,15 +100,12 @@ pub(super) async fn inspect(
     }))
 }
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
 pub(super) fn status(
     reference: &Component,
     files: &[FileValue],
     maximum_bytes: usize,
 ) -> Result<Value> {
-    let mut state = ChildState::Running;
-    let mut execution = None;
-    // Requests and inbox files are immutable and cannot be deleted. Their
-    // cardinality therefore detects every input accepted since a settled turn.
     let inputs = files
         .iter()
         .filter(|file| {
@@ -121,6 +118,17 @@ pub(super) fn status(
             )
         })
         .count() as u64;
+    status_at(reference, files, maximum_bytes, inputs)
+}
+
+pub(super) fn status_at(
+    reference: &Component,
+    files: &[FileValue],
+    maximum_bytes: usize,
+    inputs: u64,
+) -> Result<Value> {
+    let mut state = ChildState::Running;
+    let mut execution = None;
     for file in files {
         match &file.key {
             FileKey::Child {

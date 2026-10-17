@@ -1,5 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
 mod child;
+mod child_queries;
 mod child_result;
 pub(crate) use child::child_scope;
 pub use child::{ChildFile, ChildRequest, ChildState, ChildStatus, Control};
@@ -256,6 +257,7 @@ struct Index {
     view_order: BTreeMap<(Component, u8, u64), FileKey>,
     view_revisions: BTreeMap<FileKey, (u8, u64)>,
     overviews: BTreeMap<Component, FileKey>,
+    child_inputs: BTreeMap<Component, Vec<FileKey>>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -575,6 +577,21 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
         file: child_file,
     } = &file.key
     {
+        if matches!(child_file, ChildFile::Delivered) {
+            let (task, delivered): (crate::TaskId, u64) =
+                serde_json::from_slice(&file.bytes).map_err(|_| Error::InvalidSegment)?;
+            let count = index.child_inputs.get(reference).map_or(0, Vec::len) as u64;
+            if delivered == 0 || delivered > count {
+                return Err(Error::InvalidSegment);
+            }
+            if let Some(old) = index.files.get(&file.key) {
+                let (previous_task, previous): (crate::TaskId, u64) =
+                    serde_json::from_slice(&old.file.bytes).map_err(|_| Error::InvalidSegment)?;
+                if previous_task != task || previous > delivered {
+                    return Err(Error::InvalidSegment);
+                }
+            }
+        }
         let control_key = FileKey::Child {
             reference: reference.clone(),
             file: ChildFile::Control,
@@ -610,7 +627,7 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
                 }
             }
         } else if terminal && control != Some(file) {
-            let draining_result = matches!(child_file, ChildFile::Result(_))
+            let draining_result = matches!(child_file, ChildFile::Result(_) | ChildFile::Delivered)
                 && index
                     .files
                     .get(&FileKey::Child {
@@ -677,6 +694,18 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {
+    if let FileKey::Child {
+        reference,
+        file: ChildFile::Request | ChildFile::Inbox(_),
+    } = &file.key
+        && !index.files.contains_key(&file.key)
+    {
+        index
+            .child_inputs
+            .entry(reference.clone())
+            .or_default()
+            .push(file.key.clone());
+    }
     recent::record(index, &file, position);
     let owner = command_query::owner(&file.key);
     if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {

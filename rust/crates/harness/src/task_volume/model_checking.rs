@@ -25,6 +25,10 @@ pub enum Fault {
     DropActiveChild,
     /// Admit child preparation before its staged inputs are durable.
     SkipChildInputFence,
+    /// Send live child mail without acknowledging its result bound.
+    SkipChildInputAck,
+    /// Return a controller error while sibling effect futures are live.
+    DropSiblingEffects,
 }
 
 loom::thread_local! {
@@ -61,3 +65,6 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
         "acknowledgement overwrote rebuilt files"
     );
 }
+
+#[cfg(test)]
+pub(crate) use super::files::model_files as files;

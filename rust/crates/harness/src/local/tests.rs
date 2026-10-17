@@ -17,9 +17,9 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+mod compact;
 mod compaction;
 mod context;
-mod compact;
 mod goals;
 #[cfg(feature = "hooks")]
 mod hook_configuration;
@@ -765,7 +765,6 @@ mod volume_tools;
 mod children;
 #[cfg(all(feature = "native-execution", unix))]
 mod reconciliation_interruptions;
-mod task_files;
 
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;

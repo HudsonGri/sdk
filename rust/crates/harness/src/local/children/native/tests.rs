@@ -185,7 +185,7 @@ async fn native_preparation_reconciles_its_staged_cut_before_admission() -> Resu
             .0,
         Some(checkpoint)
     );
-    let (task, view) = harness
+    let task = harness
         .admit_child(
             &harness.task_files,
             &reference,
@@ -200,6 +200,7 @@ async fn native_preparation_reconciles_its_staged_cut_before_admission() -> Resu
         )
         .await?;
     assert_eq!(task, child.task_id());
+    let view = harness.child_project_view(task).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut work = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
     assert_eq!(

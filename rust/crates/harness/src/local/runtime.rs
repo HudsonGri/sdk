@@ -27,7 +27,7 @@ pub(super) async fn open(
 ) -> Result<(
     Arc<LocalTaskRuntime>,
     Scope,
-    Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+    Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
 )> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
@@ -156,7 +156,7 @@ pub(super) async fn open(
     .with_output_volume(config.project, None)?
     .with_private_volume(config.scratch, None)?
     .with_task_files(task_files.clone())?;
-    runtime.bind_task_files(Some(projection_files));
+    runtime.bind_task_files(Some(projection_files.clone()));
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
         Some(workspace) => {
@@ -165,7 +165,7 @@ pub(super) async fn open(
                     workspace,
                     config.project,
                     config.clock,
-                    Arc::clone(&task_files),
+                    Arc::clone(&projection_files),
                 )
                 .await?,
             );
@@ -183,5 +183,5 @@ pub(super) async fn open(
         }
         None => runtime,
     };
-    Ok((Arc::new(runtime), signed, task_files))
+    Ok((Arc::new(runtime), signed, projection_files))
 }

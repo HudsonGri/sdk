@@ -72,6 +72,7 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
             view_order: source.view_order.clone(),
             view_revisions: source.view_revisions.clone(),
             overviews: source.overviews.clone(),
+            child_inputs: source.child_inputs.clone(),
         }),
     };
     Arc::new(TaskFiles {
@@ -261,13 +262,24 @@ fn competing_appends(
 
 fn ordered_preparations() {
     use crate::task_volume::{ChildFile, ChildStatus, Control};
-    for completion in [false, true] {
+    for completion in 0..3 {
         for reverse in [false, true] {
-            let (files, cut, running) = running_child(false);
+            let (files, mut cut, running) = running_child(false);
+            if completion == 2 {
+                cut = loom::future::block_on(Box::pin(files.write(
+                    cut,
+                    &child_file(
+                        ChildFile::Inbox(Component::new("next").unwrap()),
+                        b"next".to_vec(),
+                    ),
+                )))
+                .unwrap();
+            }
             let other = reopen(&files);
-            let left = if completion {
+            let left = if completion != 0 {
                 child_status(ChildStatus {
-                    settled: true,
+                    settled: completion == 1,
+                    inputs: if completion == 2 { 2 } else { running.inputs },
                     ..running
                 })
             } else {
@@ -389,20 +401,37 @@ fn running_child(
 }
 
 fn child_completion_race(broken: bool) {
+    child_status_race(broken, false, true);
+}
+
+fn child_status_race(broken: bool, input_ack: bool, assert_property: bool) {
     use crate::task_volume::{ChildFile, ChildStatus, Control};
-    let (files, cut, running) = running_child(false);
+    let (files, mut cut, running) = running_child(false);
+    if input_ack {
+        cut = loom::future::block_on(Box::pin(files.write(
+            cut,
+            &child_file(
+                ChildFile::Inbox(Component::new("next").unwrap()),
+                b"next".to_vec(),
+            ),
+        )))
+        .unwrap();
+    }
     let cancelled = child_file(ChildFile::Control, Control::Cancel.bytes().to_vec());
     let writer = reopen(&files);
     let completion = child_status(ChildStatus {
-        settled: true,
+        settled: !input_ack,
+        inputs: if input_ack { 2 } else { running.inputs },
         ..running
     });
     let (completed, cancelled) =
         competing_appends(&files, &writer, cut, &completion, &cancelled, broken);
-    assert_ne!(
-        cancelled, completed,
-        "conflicting child completion and control both committed"
-    );
+    if assert_property {
+        assert_ne!(
+            cancelled, completed,
+            "conflicting child acknowledgement and control both committed"
+        );
+    }
     let snapshot =
         loom::future::block_on(Box::pin(files.inner.snapshot(&Query::Children, 8))).unwrap();
     let observed = snapshot
@@ -426,6 +455,26 @@ fn child_completion_race(broken: bool) {
             child_status(running)
         }
     );
+}
+
+// Preparation before either accept is the concurrent commit model. Preparation
+// after an accept is checked separately by ordered_preparations; result ordering
+// is checked by the controller's real input-publisher model.
+#[test]
+fn child_input_acknowledgement_and_control_share_the_original_publication_cut() {
+    loom::model(|| child_status_race(false, true, true));
+    let error = std::panic::catch_unwind(|| loom::model(|| child_status_race(true, true, true)))
+        .expect_err("a resampled input acknowledgement fence was not detected");
+    let diagnostic = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        diagnostic.contains("conflicting child acknowledgement and control both committed"),
+        "unexpected negative control: {diagnostic}"
+    );
+    loom::model(|| child_status_race(true, true, false));
 }
 
 fn child_terminal_freeze(broken: bool) {
@@ -479,7 +528,7 @@ fn child_terminal_freeze(broken: bool) {
 fn child_completion_is_fenced_by_control_until_a_frozen_quiescent_acknowledgement() {
     check(
         child_completion_race,
-        "conflicting child completion and control both committed",
+        "conflicting child acknowledgement and control both committed",
     );
     check(
         child_terminal_freeze,

@@ -15,6 +15,14 @@ thread_local! {
     pub(super) static CUT: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
+pub(super) fn arm(point: &'static str) {
+    CUT.with(|cut| cut.set(Some(point)));
+}
+
+pub(super) fn armed() -> bool {
+    CUT.with(|cut| cut.get().is_some())
+}
+
 pub(super) fn stop(point: &'static str, operation: OperationId) -> Result<()> {
     if CUT.with(|cut| cut.get() == Some(point)) {
         CUT.with(|cut| cut.set(None));
@@ -26,7 +34,7 @@ pub(super) fn stop(point: &'static str, operation: OperationId) -> Result<()> {
 #[tokio::test]
 async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before_merge()
 -> Result<()> {
-    for point in ["prepared", "admitted", "status"] {
+    for point in ["prepared", "admitted", "input-sent", "status"] {
         let directory = tempfile::tempdir().map_err(storage)?;
         let provider = Arc::new(
             ScriptedModelProvider::new([ScriptedTurn::Text("retained answer".into())])
@@ -109,7 +117,7 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
         assert!(provider.requests().is_empty());
         drop(context);
         drop(files);
-        harness.close().await?;
+        harness.disconnect().await?;
 
         let reopened = LocalHarness::open(config()?).await?;
         let files = Arc::clone(&reopened.task_files);
@@ -252,7 +260,7 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
                 .as_ref(),
             b"retained change"
         );
-        reopened.close().await?;
+        reopened.disconnect().await?;
     }
     Ok(())
 }
@@ -283,3 +291,6 @@ async fn write_source(
         .await?;
     Ok(())
 }
+
+mod follow_probe;
+pub(super) use follow_probe::probe as follow_probe;

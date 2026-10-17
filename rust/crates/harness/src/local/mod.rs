@@ -65,7 +65,7 @@ pub type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
-    task_files: Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     external_bindings:
         crate::external_executor::task_bindings::TaskBindings<Option<Arc<external::Volumes>>>,
     project: VolumeRef,
@@ -362,9 +362,7 @@ impl LocalHarness {
     }
 
     /// Trusted host's task-file volume; clients render its bounded live queries.
-    pub fn task_files(
-        &self,
-    ) -> &Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>> {
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>> {
         &self.task_files
     }
 
