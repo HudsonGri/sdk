@@ -1,5 +1,6 @@
 use super::*;
 use crate::AgentId;
+use crate::task_volume::FileQuerySource;
 use acyclic_stream::{MemoryStream, StreamError};
 use proptest::prelude::*;
 
@@ -143,11 +144,14 @@ async fn every_owner_scope_pair_is_checked_before_storage() {
 }
 
 fn files() -> Vec<(FileKey, bool)> {
-    use crate::task_volume::{Channel, Component, InputPath, PlanName, TaskFile, ToolFile};
+    use crate::task_volume::{Channel, Component, InputPath, TaskFile, ToolFile};
     let id = Component::new("id").unwrap();
     let mut files = vec![
         (FileKey::Goal, true),
-        (FileKey::Plan(PlanName::new("id").unwrap()), true),
+        (
+            FileKey::Plan(crate::task_volume::PlanName::new(id.as_str()).unwrap()),
+            true,
+        ),
         (
             FileKey::Input(InputPath::try_from("workspace/note.txt".to_owned()).unwrap()),
             true,
@@ -252,6 +256,51 @@ proptest! {
             if !caller_owned { prop_assert!(matches!(result, Err(Error::Unauthorized))); }
         }
     }
+}
+
+#[tokio::test]
+async fn authorized_queries_bound_snapshot_and_follow_content() {
+    use futures::StreamExt as _;
+    let agent = AgentId::from_bytes([4; 16]);
+    let volume = volume(agent);
+    let (verifier, scope) = authority(
+        Some(agent),
+        &volume,
+        &[VolumeOperation::Read, VolumeOperation::Write],
+    );
+    let files = TaskFiles::open(
+        Arc::new(MemoryStream::default()),
+        &volume,
+        &verifier,
+        &scope,
+        4096,
+    )
+    .await
+    .unwrap();
+    let generation = files.snapshot(&Query::Root, 8).await.unwrap().generation;
+    files
+        .write(generation, &FileValue::new(FileKey::Goal, b"one".to_vec()))
+        .await
+        .unwrap();
+    let query = Query::File(FileKey::Goal);
+    assert!(matches!(
+        files.observe_files(query.clone(), None, 1, 2).await,
+        Err(Error::LimitExceeded)
+    ));
+    let mut selected = files.observe_files(query, None, 1, 3).await.unwrap();
+    let snapshot = selected.snapshot.take().unwrap();
+    assert_eq!(snapshot.files[0].bytes.as_ref(), b"one");
+    files
+        .write(
+            snapshot.generation,
+            &FileValue::new(FileKey::Goal, b"four".to_vec()),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        selected.changes.next().await,
+        Some(Err(Error::LimitExceeded))
+    ));
 }
 
 #[tokio::test]

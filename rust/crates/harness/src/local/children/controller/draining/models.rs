@@ -1,11 +1,16 @@
 use super::*;
 use loom::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
 };
 
 fn effects(broken: bool, assert_property: bool, concurrent: bool) {
-    let signal = acyclic_fs::CancellationToken::new();
+    // External I/O is a future completion, not another controller cancellation
+    // tree. This single leaf lock is never held while waking or running code.
+    let signal = Arc::new(Mutex::new((false, None::<std::task::Waker>)));
     let cancellation = acyclic_fs::CancellationToken::new();
     let drained = acyclic_fs::CancellationToken::new();
     let first = AtomicBool::new(false);
@@ -16,7 +21,16 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
     let saved = &first;
     jobs.push(Box::pin(async move {
         if concurrent {
-            wake.cancelled().await;
+            futures::future::poll_fn(|cx| {
+                let mut state = wake.lock().unwrap();
+                if state.0 {
+                    std::task::Poll::Ready(())
+                } else {
+                    state.1 = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
         }
         saved.store(true, Ordering::Release);
         Ok(())
@@ -60,7 +74,18 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
         );
         Ok(())
     };
-    let publisher = concurrent.then(|| thread::spawn(move || signal.cancel()));
+    let publisher = concurrent.then(|| {
+        thread::spawn(move || {
+            let waiter = {
+                let mut state = signal.lock().unwrap();
+                state.0 = true;
+                state.1.take()
+            };
+            if let Some(waiter) = waiter {
+                waiter.wake();
+            }
+        })
+    });
     if broken {
         crate::task_volume::model_checking::set_fault(
             crate::task_volume::model_checking::Fault::DropSiblingEffects,
