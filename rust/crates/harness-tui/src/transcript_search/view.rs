@@ -19,6 +19,8 @@ pub(crate) fn charge(bytes: usize, background: bool) {
     let _ = (bytes, background);
 }
 
+type ViewportCut = (u64, (u64, Option<u64>), usize, usize);
+
 /// Cancellable query fold over the transcript's maintained folded-text index.
 #[derive(Default)]
 pub struct TranscriptSearch {
@@ -34,7 +36,7 @@ pub struct TranscriptSearch {
     refine: bool,
     complete: bool,
     generation: u64,
-    viewport: Option<(u64, (u64, Option<u64>), usize, usize)>,
+    viewport: Option<ViewportCut>,
     nearest: Option<Range<usize>>,
     probe: Option<Range<usize>>,
     index: i64,
@@ -93,14 +95,21 @@ impl TranscriptSearch {
         self.prefix.clear();
         self.prefix.resize(self.needle.len(), 0);
         for end in 1..self.needle.len() {
-            let mut length = self.prefix[end - 1];
-            while length != 0 && self.needle.as_bytes()[length] != self.needle.as_bytes()[end] {
+            let mut length = self.prefix.get(end - 1).copied().unwrap_or(0);
+            while length != 0
+                && self.needle.as_bytes().get(length) != self.needle.as_bytes().get(end)
+            {
                 charge(1, false);
-                length = self.prefix[length - 1];
+                length = self.prefix.get(length - 1).copied().unwrap_or(0);
             }
             charge(1, false);
-            self.prefix[end] =
-                length + usize::from(self.needle.as_bytes()[length] == self.needle.as_bytes()[end]);
+            let next = length
+                + usize::from(
+                    self.needle.as_bytes().get(length) == self.needle.as_bytes().get(end),
+                );
+            if let Some(slot) = self.prefix.get_mut(end) {
+                *slot = next;
+            }
         }
     }
 
@@ -194,39 +203,18 @@ impl TranscriptSearch {
         }
         self.navigate(projection, budget);
         let budget = budget.max(self.needle.len()).max(1);
-        if self.local.is_empty() && self.nearest.is_none() {
-            if let Some(probe) = &mut self.probe {
-                let range = if self.index < 0 {
-                    probe.end.saturating_sub(budget).max(probe.start)..probe.end
-                } else {
-                    probe.start..probe.end.min(probe.start.saturating_add(budget))
-                };
-                scan(
-                    projection,
-                    &self.needle,
-                    &self.prefix,
-                    range.clone(),
-                    true,
-                    |at| {
-                        if self.nearest.is_none() || self.index < 0 {
-                            self.nearest = Some(projection.source(at, self.needle.len()));
-                        }
-                    },
-                );
-                if self.index < 0 {
-                    probe.end = range.start;
-                } else {
-                    probe.start = range.end;
-                }
-            }
-        }
+        self.probe_nearest(projection, budget);
         if self.refine {
-            let extension = &self.needle.as_bytes()[self.previous_needle.len()..];
+            let extension = self
+                .needle
+                .as_bytes()
+                .get(self.previous_needle.len()..)
+                .unwrap_or_default();
             let end = self.previous.len().min(
                 self.cursor
                     .saturating_add((budget / extension.len()).max(1)),
             );
-            for &at in &self.previous[self.cursor..end] {
+            for &at in self.previous.get(self.cursor..end).unwrap_or_default() {
                 charge(extension.len(), true);
                 if at + self.needle.len() <= projection.folded_len()
                     && projection.matches(
@@ -271,16 +259,12 @@ impl TranscriptSearch {
                     .ok()
             });
             if self.selected_rank.is_none() && !self.matches.is_empty() {
-                self.selected_rank =
-                    Some(self.index.rem_euclid(self.matches.len() as i64) as usize);
+                self.selected_rank = Some(cyclic_rank(0, self.index, self.matches.len()));
                 // Without an anchor, index already includes all queued navigation.
                 self.steps = 0;
             }
             if let Some(rank) = self.selected_rank {
-                self.selected_rank = Some(
-                    (rank as i64 + self.steps.rem_euclid(self.matches.len() as i64))
-                        .rem_euclid(self.matches.len() as i64) as usize,
-                );
+                self.selected_rank = Some(cyclic_rank(rank, self.steps, self.matches.len()));
                 self.steps = 0;
                 self.navigation = None;
             }
@@ -294,6 +278,36 @@ impl TranscriptSearch {
         self.pending()
     }
 
+    fn probe_nearest(&mut self, projection: TranscriptRows<'_>, budget: usize) {
+        if self.local.is_empty()
+            && self.nearest.is_none()
+            && let Some(probe) = &mut self.probe
+        {
+            let range = if self.index < 0 {
+                probe.end.saturating_sub(budget).max(probe.start)..probe.end
+            } else {
+                probe.start..probe.end.min(probe.start.saturating_add(budget))
+            };
+            scan(
+                projection,
+                &self.needle,
+                &self.prefix,
+                range.clone(),
+                true,
+                |at| {
+                    if self.nearest.is_none() || self.index < 0 {
+                        self.nearest = Some(projection.source(at, self.needle.len()));
+                    }
+                },
+            );
+            if self.index < 0 {
+                probe.end = range.start;
+            } else {
+                probe.start = range.end;
+            }
+        }
+    }
+
     /// True while a cancellable full-count fold remains.
     pub fn pending(&self) -> bool {
         !self.complete
@@ -305,7 +319,7 @@ impl TranscriptSearch {
         } else if !self.local.is_empty() {
             &self.local
         } else {
-            self.nearest.as_ref().map_or(&[], std::slice::from_ref)
+            self.nearest.as_slice()
         }
     }
 
@@ -320,24 +334,25 @@ impl TranscriptSearch {
         let range = projection.range(row);
         let matches = &self.local;
         let first = matches.partition_point(|matched| matched.end <= range.start);
-        let end = first + matches[first..].partition_point(|matched| matched.start < range.end);
+        let tail = matches.get(first..).unwrap_or_default();
+        let end = tail.partition_point(|matched| matched.start < range.end);
         SearchRow {
             projection,
             row,
-            matches: &matches[first..end],
+            matches: tail.get(..end).unwrap_or_default(),
             selected,
             style: self.style,
         }
     }
 
-    /// Known match count; pending() distinguishes a partial viewport count.
+    /// Known match count; `pending()` distinguishes a partial viewport count.
     pub fn count(&self) -> usize {
         self.active().len()
     }
 
     fn select_initial(&mut self) {
         if self.selected.is_none() && !self.active().is_empty() {
-            let rank = self.index.rem_euclid(self.active().len() as i64) as usize;
+            let rank = cyclic_rank(0, self.index, self.active().len());
             self.selected = self.active().get(rank).cloned();
             // The initial rank already includes every move queued without an anchor.
             self.steps = 0;
@@ -373,9 +388,7 @@ impl TranscriptSearch {
         } else {
             index
         };
-        (rank.unwrap_or(0) as i64 + offset.rem_euclid(count as i64)).rem_euclid(count as i64)
-            as usize
-            + 1
+        cyclic_rank(rank.unwrap_or(0), offset, count) + 1
     }
 
     /// Project the stable source-byte match identity to its current row.
@@ -436,17 +449,17 @@ fn scan(
         // Borderful needles need overlapping matches; prefix links bound work.
         let mut length = 0;
         for (offset, byte) in projection.bytes(from..end).enumerate() {
-            while length != 0 && needle.as_bytes()[length] != byte {
+            while length != 0 && needle.as_bytes().get(length) != Some(&byte) {
                 charge(1, background);
-                length = prefix[length - 1];
+                length = prefix.get(length - 1).copied().unwrap_or(0);
             }
-            length += usize::from(needle.as_bytes()[length] == byte);
+            length += usize::from(needle.as_bytes().get(length) == Some(&byte));
             if length == needle.len() {
                 let at = from + offset + 1 - needle.len();
                 if at < starts.end && at + needle.len() > starts.start {
                     found(at);
                 }
-                length = prefix[length - 1];
+                length = prefix.get(length - 1).copied().unwrap_or(0);
             }
         }
     }
@@ -481,3 +494,19 @@ mod tests;
 mod memory_tests;
 
 mod navigation;
+
+fn cyclic_rank(rank: usize, steps: i64, count: usize) -> usize {
+    let modulus = u64::try_from(count).unwrap_or(u64::MAX);
+    let offset = usize::try_from(steps.unsigned_abs() % modulus).unwrap_or(0);
+    if steps < 0 {
+        if rank >= offset {
+            rank - offset
+        } else {
+            count - (offset - rank)
+        }
+    } else if offset >= count - rank {
+        offset - (count - rank)
+    } else {
+        rank + offset
+    }
+}

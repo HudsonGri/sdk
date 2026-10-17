@@ -285,14 +285,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "journal_decode"
-path = "fuzz_targets/journal_decode.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "scheduler_intents"
 path = "fuzz_targets/scheduler_intents.rs"
 required-features = ["runtime"]

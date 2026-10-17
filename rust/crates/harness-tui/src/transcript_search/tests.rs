@@ -22,7 +22,7 @@ fn painted(
         .iter()
         .enumerate()
         .map(|(row, line)| {
-            let width = line.width() as u16;
+            let width = u16::try_from(line.width()).unwrap();
             if width == 0 {
                 return Line::default();
             }
@@ -77,7 +77,8 @@ fn reference(text: &str, query: &str) -> Vec<Range<usize>> {
     let mut found = Vec::new();
     for (at, window) in folded.windows(needle.len()).enumerate() {
         if window == needle {
-            let range = origins[at].start..origins[at + needle.len() - 1].end;
+            let range =
+                origins.get(at).unwrap().start..origins.get(at + needle.len() - 1).unwrap().end;
             if found.last() != Some(&range) {
                 found.push(range);
             }
@@ -113,7 +114,7 @@ proptest! {
     ) {
         use ratatui::text::{Line,Span};
         let at = text.char_indices().nth(split).map_or(text.len(), |(at,_)|at);
-        let source = [Line::from(vec![Span::raw(text[..at].to_owned()),Span::raw(text[at..].to_owned())])];
+        let source = [Line::from(vec![Span::raw(text.get(..at).unwrap().to_owned()),Span::raw(text.get(at..).unwrap().to_owned())])];
         let mut view = TranscriptSearch::default();
         let mut wrapped=crate::WrappedLines::default();
         wrapped.update(&source,0,width);
@@ -165,7 +166,12 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
     assert_eq!(view.selected_row(&wrapped, -1), 1);
     assert_eq!(view.selected_row(&wrapped, 2), 0);
     assert!(
-        painted_rows[0].spans[0]
+        painted_rows
+            .first()
+            .unwrap()
+            .spans
+            .first()
+            .unwrap()
             .style
             .add_modifier
             .contains(Modifier::BOLD | Modifier::UNDERLINED)
@@ -268,7 +274,7 @@ fn partial_matches_preserve_every_style_boundary() {
     search.update(&wrapped, "bc", 0, selection());
     settle(&mut search, &wrapped);
     let rows = painted(&search, &wrapped);
-    let spans = &rows[0].spans;
+    let spans = &rows.first().unwrap().spans;
     assert_eq!(
         spans
             .iter()
@@ -276,16 +282,20 @@ fn partial_matches_preserve_every_style_boundary() {
             .collect::<Vec<_>>(),
         ["a", "b", "c", "d"]
     );
-    assert_eq!(spans[0].style, bold);
-    assert_eq!(spans[3].style, italic);
+    assert_eq!(spans.first().unwrap().style, bold);
+    assert_eq!(spans.get(3).unwrap().style, italic);
     assert!(
-        spans[1]
+        spans
+            .get(1)
+            .unwrap()
             .style
             .add_modifier
             .contains(Modifier::BOLD | Modifier::UNDERLINED)
     );
     assert!(
-        spans[2]
+        spans
+            .get(2)
+            .unwrap()
             .style
             .add_modifier
             .contains(Modifier::ITALIC | Modifier::UNDERLINED)
@@ -305,7 +315,12 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     settle(&mut search, &wrapped);
     assert_eq!(search.position(0), 1);
     assert!(
-        painted(&search, &wrapped)[0].spans[0]
+        painted(&search, &wrapped)
+            .first()
+            .unwrap()
+            .spans
+            .first()
+            .unwrap()
             .style
             .add_modifier
             .contains(Modifier::REVERSED)
@@ -313,14 +328,21 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     search.update(&wrapped, "one", if INDEX { 1 } else { 0 }, red);
     settle(&mut search, &wrapped);
     assert!(
-        !painted(&search, &wrapped)[0].spans[0]
+        !painted(&search, &wrapped)
+            .first()
+            .unwrap()
+            .spans
+            .first()
+            .unwrap()
             .style
             .add_modifier
             .contains(Modifier::REVERSED),
         "selected occurrence must change within the same row"
     );
     assert!(
-        painted(&search, &wrapped)[0]
+        painted(&search, &wrapped)
+            .first()
+            .unwrap()
             .spans
             .last()
             .unwrap()
@@ -337,12 +359,26 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     search.update(&wrapped, "one", 1, if THEME { blue } else { red });
     settle(&mut search, &wrapped);
     assert_eq!(
-        painted(&search, &wrapped)[0].spans[0].style.fg,
+        painted(&search, &wrapped)
+            .first()
+            .unwrap()
+            .spans
+            .first()
+            .unwrap()
+            .style
+            .fg,
         Some(Color::Blue),
         "resolved selection color must change"
     );
     assert_eq!(
-        painted(&search, &wrapped)[0].spans.last().unwrap().style.bg,
+        painted(&search, &wrapped)
+            .first()
+            .unwrap()
+            .spans
+            .last()
+            .unwrap()
+            .style
+            .bg,
         Some(Color::Yellow)
     );
 }
