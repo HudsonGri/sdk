@@ -191,7 +191,10 @@ pub(super) fn samples(case: &Cycle, counts: &[usize]) -> Run {
             let unmeasured = totals(&markdown, replay);
             let previous: Vec<Line> = markdown.lines().iter().cloned().collect();
             let measured = totals(&markdown, replay);
-            harness = std::array::from_fn(|i| harness[i] + measured[i] - unmeasured[i]);
+            for ((total, measured), unmeasured) in harness.iter_mut().zip(measured).zip(unmeasured)
+            {
+                *total += measured - unmeasured;
+            }
             let open = open(&markdown);
             let before = totals(&markdown, replay);
             let growth = work::source_growth();
@@ -214,12 +217,14 @@ pub(super) fn samples(case: &Cycle, counts: &[usize]) -> Run {
                 .count();
             output += lines.len() - same;
             let compared = totals(&markdown, replay);
-            harness = std::array::from_fn(|i| harness[i] + compared[i] - after[i]);
+            for ((total, compared), after) in harness.iter_mut().zip(compared).zip(after) {
+                *total += compared - after;
+            }
         }
         if counts.contains(&(index + 1)) {
             let now = totals(&markdown, replay);
             run.snapshots
-                .push(std::array::from_fn(|i| now[i] - start[i] - harness[i]));
+                .push(difference(difference(now, start), harness));
             run.output.push(output);
             let block = if markdown.inline.is_some() {
                 0
@@ -242,6 +247,14 @@ fn sum(work: &[usize; CATEGORIES]) -> usize {
     work.iter().sum()
 }
 
+fn difference(a: [usize; CATEGORIES], b: [usize; CATEGORIES]) -> [usize; CATEGORIES] {
+    let mut result = a;
+    for (value, before) in result.iter_mut().zip(b) {
+        *value -= before;
+    }
+    result
+}
+
 /// Linear work doubles its increment from [n, 2n] to [2n, 4n]. Allow a
 /// quarter of the first increment for amortized buffer growth, which is
 /// geometric and therefore lands unevenly across the two windows.
@@ -250,27 +263,32 @@ pub(super) fn superlinear(case: &Cycle, n: usize) -> Option<String> {
     // An open block that the engine reparses whole, or a nesting whose every
     // line repeats its container prefix, is bounded per push above; it cannot
     // also be linear in total while it keeps growing.
-    if run.unretained[2] > run.unretained[1] {
+    let [_, previous_open, next_open]: [usize; 3] =
+        run.unretained.try_into().expect("three snapshots");
+    if next_open > previous_open {
         return None;
     }
-    let [a, b, c] = [run.snapshots[0], run.snapshots[1], run.snapshots[2]];
+    let [a, b, c]: [[usize; CATEGORIES]; 3] = run.snapshots.try_into().expect("three snapshots");
     let over = |first: usize, second: usize| second > 2 * first + first / 4 + 512;
     // Changed output lines are counted exactly, so they need no slack.
     let quadratic = |first: usize, second: usize| first > 0 && second > 2 * first + first / 4;
-    let first: [usize; CATEGORIES] = std::array::from_fn(|i| b[i] - a[i]);
-    let second: [usize; CATEGORIES] = std::array::from_fn(|i| c[i] - b[i]);
+    let first = difference(b, a);
+    let second = difference(c, b);
     // Output that itself changes superlinearly, as when each setext underline
     // restyles a growing paragraph, must be redrawn by any renderer that
     // matches every prefix; the per-push bound above still holds. This counts
     // lines that really differ, not lines the engine reports as changed.
-    let [x, y, z] = [run.output[0], run.output[1], run.output[2]];
+    let [x, y, z]: [usize; 3] = run.output.try_into().expect("three snapshots");
     if quadratic(y - x, z - y) {
         return None;
     }
     let total = over(sum(&first), sum(&second));
-    let categories: Vec<_> = (0..CATEGORIES)
-        .filter(|&i| over(first[i], second[i]))
-        .map(|i| format!("{} {} -> {}", NAMES[i], first[i], second[i]))
+    let categories: Vec<_> = NAMES
+        .into_iter()
+        .zip(first)
+        .zip(second)
+        .filter(|&((_, first), second)| over(first, second))
+        .map(|((name, first), second)| format!("{name} {first} -> {second}"))
         .collect();
     (total || !categories.is_empty()).then(|| {
         format!(
@@ -281,16 +299,18 @@ pub(super) fn superlinear(case: &Cycle, n: usize) -> Option<String> {
     })
 }
 
-fn search(cases: u32, threads: u64) {
+fn search(cases: u32, threads: u32) {
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads)
             .map(|thread| {
                 scope.spawn(move || {
                     let mut seed = [0u8; 32];
-                    seed[..8].copy_from_slice(&(thread + 1).to_le_bytes());
+                    seed.get_mut(..8)
+                        .expect("seed header")
+                        .copy_from_slice(&(u64::from(thread) + 1).to_le_bytes());
                     let mut runner = TestRunner::new_with_rng(
                         Config {
-                            cases: cases.div_ceil(threads as u32),
+                            cases: cases.div_ceil(threads),
                             failure_persistence: None,
                             max_shrink_iters: 256,
                             ..Config::default()
@@ -352,7 +372,7 @@ const FOUND: &[(&str, &[&str], &str)] = &[
 ];
 
 fn found(index: usize) -> Cycle {
-    let (prefix, parts, separator) = FOUND[index];
+    let &(prefix, parts, separator) = FOUND.get(index).expect("known regression");
     Cycle {
         prefix,
         parts: parts.to_vec(),

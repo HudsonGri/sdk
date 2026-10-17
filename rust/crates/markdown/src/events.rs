@@ -33,10 +33,9 @@ pub(crate) fn scoped<'a>(
     };
     let events = Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
         .into_offset_iter()
-        .map(|(event, range)| {
+        .inspect(|(_event, _)| {
             #[cfg(test)]
-            crate::work::event(&event);
-            (event, range)
+            crate::work::event(_event);
         })
         .collect();
     #[cfg(test)]
@@ -167,7 +166,9 @@ impl crate::Markdown {
             while end < events.len() {
                 #[cfg(test)]
                 crate::work::scan(1);
-                if matches!(&events[end].0, Event::End(tag) if crate::is_leaf_end(*tag)) {
+                if events.get(end).is_some_and(
+                    |(event, _)| matches!(event, Event::End(tag) if crate::is_leaf_end(*tag)),
+                ) {
                     break;
                 }
                 end += 1;

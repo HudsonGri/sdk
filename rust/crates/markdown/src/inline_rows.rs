@@ -98,20 +98,20 @@ impl Rows {
     }
 
     pub(super) fn concat(self, other: Self) -> Self {
-        if self.len() == 0 {
+        let Some(left) = self.root.as_ref() else {
             return other;
-        }
-        if other.len() == 0 {
+        };
+        let Some(right) = other.root.as_ref() else {
             return self;
-        }
+        };
         #[cfg(test)]
         crate::work::scan(1);
         Self {
             root: Some(Arc::new(Node {
                 count: self.len() + other.len(),
                 displayed: self.displayed() + other.displayed(),
-                first: self.root.as_ref().expect("nonempty prefix").first.clone(),
-                last: other.root.as_ref().expect("nonempty suffix").last.clone(),
+                first: left.first.clone(),
+                last: right.last.clone(),
                 visible: other
                     .last_visible()
                     .map(|index| self.displayed() + index)
@@ -122,9 +122,12 @@ impl Rows {
     }
 
     pub(super) fn masked(self, style: Style, link: Option<Arc<str>>) -> Self {
-        if self.len() == 0 || style == Style::default() && link.is_none() {
+        if style == Style::default() && link.is_none() {
             return self;
         }
+        let Some(root) = self.root.as_ref() else {
+            return self;
+        };
         #[cfg(test)]
         crate::work::scan(1);
         Self {
@@ -133,11 +136,11 @@ impl Rows {
                 displayed: self.displayed(),
                 visible: self.last_visible(),
                 first: {
-                    let (spans, required) = &self.root.as_ref().expect("nonempty rows").first;
+                    let (spans, required) = &root.first;
                     (spans.clone().masked(style, link.clone()), *required)
                 },
                 last: {
-                    let (spans, required) = &self.root.as_ref().expect("nonempty rows").last;
+                    let (spans, required) = &root.last;
                     (spans.clone().masked(style, link.clone()), *required)
                 },
                 kind: Kind::Mask(self, style, link),
@@ -558,14 +561,15 @@ impl Output {
             tail,
             required,
         } = other;
-        if let Some(last) = &mut self.tail {
+        if let Some(mut last) = self.tail.take() {
             last.concat(head);
             last.freeze();
             if let Some(tail) = tail {
-                let joined = self.tail.take().expect("existing final row");
-                let row = Rows::line(joined, required);
+                let row = Rows::line(last, required);
                 self.middle = std::mem::take(&mut self.middle).concat(row).concat(middle);
                 self.tail = Some(tail);
+            } else {
+                self.tail = Some(last);
             }
         } else {
             self.head.concat(head);
