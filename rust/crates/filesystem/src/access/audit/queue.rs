@@ -95,11 +95,6 @@ impl<T> Queue<T> {
             Ok(())
         }
     }
-    pub(super) fn close_and_flush(&self) -> Result<(), super::AuditError> {
-        self.close(false);
-        self.flush()
-    }
-
     pub(super) fn close(&self, failed: bool) {
         let (mut state, poisoned) = match self.state.lock() {
             Ok(state) => (state, false),

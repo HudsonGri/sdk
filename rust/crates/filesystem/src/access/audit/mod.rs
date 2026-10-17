@@ -25,7 +25,7 @@ pub(crate) struct AuditLog {
 }
 impl Drop for AuditLog {
     fn drop(&mut self) {
-        let _ = self.queue.close_and_flush();
+        self.queue.close(false);
     }
 }
 impl AuditLog {
@@ -176,9 +176,7 @@ impl Binding {
             generation: view.generation,
             head: view.head_position(),
             policy_revision: view.policy_revision.map(|(generation, _)| generation),
-            data_revision: view
-                .data_generation()
-                .or_else(|| view.policy_revision.map(|(generation, _)| generation)),
+            data_revision: view.data_generation(),
             rule,
             denial: decision.denial,
         })

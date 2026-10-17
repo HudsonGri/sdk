@@ -28,7 +28,7 @@ fn run(omit_wakeup: bool) {
 #[test]
 fn bounded_queue_has_no_lost_wakeup_or_record() {
     match std::env::var("ACYCLIC_AUDIT_BROKEN_QUEUE").as_deref() {
-        Ok("commit") => shutdown(true),
+        Ok("retire") => retirement(true),
         Ok(_) => run(true),
         Err(_) => run(false),
     }
@@ -156,32 +156,41 @@ fn poisoning_cannot_strand_a_backpressured_producer() {
     });
 }
 
-fn shutdown(omit_commit: bool) {
+fn retirement(wait_in_drop: bool) {
     loom::model(move || {
+        // A caller may drop its final view while retaining a backend guard.
+        // Retirement must not wait for the worker to acquire that guard.
+        let backend = Arc::new(loom::sync::Mutex::new(()));
+        let held = backend.lock().unwrap();
         let queue = Arc::new(Queue::new(1));
         queue.push(1).unwrap();
         let consumer = loom::thread::spawn({
             let queue = queue.clone();
+            let backend = backend.clone();
             move || {
                 let mut batch = Vec::new();
                 assert!(queue.take(&mut batch, 1).unwrap());
+                let _io = backend.lock().unwrap();
                 assert_eq!(batch, [1]);
-                if !omit_commit {
-                    queue.committed(batch.len()).unwrap();
-                }
+                queue.committed(batch.len()).unwrap();
             }
         });
-        queue.close_and_flush().unwrap();
+        queue.close(false);
+        if wait_in_drop {
+            queue.flush().unwrap();
+        }
+        drop(held);
+        queue.flush().unwrap();
         consumer.join().unwrap();
     });
 }
 
 #[test]
-fn final_owner_waits_for_admitted_records() {
-    shutdown(false);
+fn retirement_never_waits_while_a_backend_guard_can_be_held() {
+    retirement(false);
 }
 
 #[test]
-fn missing_commit_negative_control() {
-    negative_control("commit");
+fn blocking_retirement_negative_control() {
+    negative_control("retire");
 }
