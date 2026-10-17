@@ -97,25 +97,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let operation = fork_preparer_io::operation_key(key, Some(io))?;
         let forked = workspace
             .with_stable_policy(|| async {
-                let access = self
-                    .volume_copy_access(
-                        &workspace,
-                        grant,
-                        Some(pinned.id()),
-                        VolumeOperation::Read,
-                        &[
-                            acyclic_fs::access::Action::Read,
-                            acyclic_fs::access::Action::List,
-                            acyclic_fs::access::Action::Fork,
-                        ],
-                        io,
-                    )
-                    .await?;
-                if access.0.valid_until().is_some() {
-                    return Err(Error::FilesystemAccessConfiguration(
-                        "volume fork requires non-expiring authority",
-                    ));
-                }
+                let access = super::volume_access::compile(
+                    &workspace,
+                    grant,
+                    Some(pinned.id()),
+                    VolumeOperation::Read,
+                    &[
+                        acyclic_fs::access::Action::Read,
+                        acyclic_fs::access::Action::List,
+                        acyclic_fs::access::Action::Fork,
+                    ],
+                    io,
+                )
+                .await?;
                 super::super::access::require_current(&workspace, &access.0, io).await?;
                 drop(access);
                 let options = acyclic_fs::ForkOptions::from_generation(pinned, operation);
@@ -190,14 +184,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     /// Plans a destination-authorized volume import.
-    pub async fn prepare_volume_import(
+    pub async fn prepare_volume_import<'a>(
         &self,
         source: &VolumeRef,
-        source_grant: &ContentGrant,
+        source_grant: &'a ContentGrant,
         generation: &GenerationRef,
         destination: &VolumeRef,
-        destination_grant: &ContentGrant,
-    ) -> Result<JoinPlan<A, O>> {
+        destination_grant: &'a ContentGrant,
+    ) -> Result<VolumeImportPlan<'a, A, O>> {
         source_grant.require(source, VolumeOperation::Read, None)?;
         destination_grant.require(destination, VolumeOperation::Write, None)?;
         source.validate(&mut None)?;
@@ -226,29 +220,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map(|receipt| receipt.value)
             .map_err(|failure| map_error(failure.error))?;
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        let source_access = self
-            .volume_copy_access(
-                &source_workspace,
-                source_grant,
-                Some(source_generation.id()),
-                VolumeOperation::Read,
-                &[
-                    acyclic_fs::access::Action::Read,
-                    acyclic_fs::access::Action::List,
-                ],
-                &io,
-            )
-            .await?;
-        let destination_access = self
-            .volume_copy_access(
-                &destination_workspace,
-                destination_grant,
-                None,
-                VolumeOperation::Write,
-                &[acyclic_fs::access::Action::MergeInto],
-                &io,
-            )
-            .await?;
+        let source_access = super::volume_access::compile(
+            &source_workspace,
+            source_grant,
+            Some(source_generation.id()),
+            VolumeOperation::Read,
+            &[
+                acyclic_fs::access::Action::Read,
+                acyclic_fs::access::Action::List,
+            ],
+            &io,
+        )
+        .await?;
+        let destination_access = super::volume_access::compile(
+            &destination_workspace,
+            destination_grant,
+            None,
+            VolumeOperation::Write,
+            &[acyclic_fs::access::Action::MergeInto],
+            &io,
+        )
+        .await?;
         let plan = source_workspace
             .join_into(&destination_workspace)
             .plan_at(
@@ -263,7 +255,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         super::super::access::require_current(&source_workspace, &source_access.0, &io).await?;
         super::super::access::require_current(&destination_workspace, &destination_access.0, &io)
             .await?;
-        Ok(plan)
+        Ok(VolumeImportPlan::new(plan, source_grant, destination_grant))
     }
 
     /// Creates the unique physical workspace for a logical volume.

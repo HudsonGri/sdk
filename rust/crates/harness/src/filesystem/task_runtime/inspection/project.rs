@@ -54,7 +54,10 @@ where
             .generation(&workspace, &authorization.generation, Some(&io))
             .await?;
         Self::verify_owner(&owner, &io).await?;
-        Self::require_unrestricted(&workspace, &handle, &owner, generation.id(), &io).await?;
+        let view =
+            Self::require_unrestricted(&workspace, &handle, &owner, generation.id(), &io).await?;
+        Self::finish_verification(&workspace, &owner, &view.0, &io).await?;
+        drop(view);
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         Ok(Box::new(Self {
@@ -116,7 +119,7 @@ where
         self.owner
             .verify_project_source_read(&self.handle, Some(work))
             .await?;
-        Self::require_unrestricted(
+        let view = Self::require_unrestricted(
             &self.workspace,
             &self.handle,
             &self.owner,
@@ -165,6 +168,7 @@ where
         self.owner
             .verify_project_source_read(&self.handle, Some(work))
             .await?;
+        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io).await?;
         original.remaining()?;
         self.io
             .cancellation()
@@ -174,13 +178,13 @@ where
         Ok(())
     }
 
-    async fn require_unrestricted(
+    async fn require_unrestricted<'a>(
         workspace: &acyclic_fs::Workspace<A, O>,
         handle: &ProjectSourceReadHandle,
         owner: &TaskJournalOwner<P>,
         generation: acyclic_fs::GenerationId,
-        io: &PreparationIo,
-    ) -> Result<()> {
+        io: &'a PreparationIo,
+    ) -> Result<crate::filesystem::access::CompiledAccess<'a>> {
         use crate::filesystem::access;
         use acyclic_fs::access::Action;
         access::require_directory_ceiling(
@@ -207,12 +211,23 @@ where
             &view.0,
             &[Action::List, Action::Read],
             "selected-project queries",
-        )
+        )?;
+        Ok(view)
+    }
+
+    async fn finish_verification(
+        workspace: &acyclic_fs::Workspace<A, O>,
+        owner: &TaskJournalOwner<P>,
+        view: &acyclic_fs::access::PathTrie,
+        io: &PreparationIo,
+    ) -> Result<()> {
+        Self::verify_owner(owner, io).await?;
+        crate::filesystem::access::require_current(workspace, view, io).await
     }
 
     async fn verify(&self) -> Result<()> {
         Self::verify_owner(&self.owner, &self.io).await?;
-        Self::require_unrestricted(
+        let view = Self::require_unrestricted(
             &self.workspace,
             &self.handle,
             &self.owner,
@@ -220,7 +235,7 @@ where
             &self.io,
         )
         .await?;
-        Self::verify_owner(&self.owner, &self.io).await
+        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io).await
     }
 
     async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {

@@ -299,6 +299,48 @@ impl Source {
     }
 }
 
+async fn late_selected_verification(protected: bool) -> TestResult {
+    let mut source = Source::new("verify-cut.txt").await?;
+    let (reader, _) = source.reader(0).await?;
+    let view = Reader::require_unrestricted(
+        &reader.workspace,
+        &reader.handle,
+        &reader.owner,
+        reader.generation.id(),
+        &reader.io,
+    )
+    .await?;
+    // Policy publication completes while the final task-owner verification is
+    // still outstanding. Its journal remains valid; only the volume cut changed.
+    source.deny_secret().await?;
+    let result = if protected {
+        Reader::finish_verification(&reader.workspace, &reader.owner, &view.0, &reader.io).await
+    } else {
+        Reader::verify_owner(&reader.owner, &reader.io).await?;
+        crate::filesystem::access::require_unrestricted(
+            &view.0,
+            &[Action::List, Action::Read],
+            "selected-project queries",
+        )
+    };
+    assert!(
+        matches!(result, Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized),
+        "stale selected verification accepted a revoked volume cut"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_selected_verification_confirms_volume_after_task_owner() -> TestResult {
+    late_selected_verification(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "stale selected verification accepted")]
+async fn task_owner_only_verification_negative_control() {
+    late_selected_verification(false).await.unwrap();
+}
+
 #[tokio::test]
 async fn selected_raw_reads_reject_restrictions_and_observe_revocation() -> TestResult {
     let mut source = Source::new("public.txt").await?;

@@ -21,6 +21,8 @@ mod coarse;
 mod copies;
 #[path = "filesystem_access_fork_fence.rs"]
 mod fork_fence;
+#[path = "filesystem_access_imports.rs"]
+mod imports;
 #[path = "file_query/objects.rs"]
 mod objects;
 #[path = "filesystem_access_ranges.rs"]

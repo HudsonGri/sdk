@@ -201,7 +201,7 @@ async fn expiring_fork(offset: u64) -> Result<(), Box<dyn Error>> {
     assert!(matches!(
         result,
         Err(acyclic_harness::Error::FilesystemAccessConfiguration(
-            "volume fork requires non-expiring authority"
+            "whole-volume copy requires non-expiring authority"
         ))
     ));
     assert!(

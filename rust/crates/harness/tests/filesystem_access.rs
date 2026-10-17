@@ -1,4 +1,6 @@
 //! Signed filesystem delegation boundaries.
+#[path = "volume_composition.rs"]
+mod volume_composition;
 #[path = "filesystem_access_compilation.rs"]
 mod compilation;
 #[cfg(feature = "filesystem")]
