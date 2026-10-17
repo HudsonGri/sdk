@@ -98,6 +98,39 @@ async fn recreating_an_existing_owner_is_detected() {
     recovery("previous-creation", true, true).await.unwrap();
 }
 
+#[tokio::test]
+async fn new_owner_creation_is_atomic_and_recovery_keeps_its_policy() -> TestResult {
+    initialize()?;
+    let directory = tempfile::tempdir()?;
+    let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
+    let first = local_owner_workspace(&filesystem, "new-owner").await?;
+    let reopened = local_owner_workspace(&filesystem, "new-owner").await?;
+    assert_eq!(first.id(), reopened.id());
+    assert_eq!(first.volume_config(), reopened.volume_config());
+    let cancel = CancellationToken::new();
+    let mut checkout = reopened
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::read_only_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await?
+        .value;
+    let (policy, _) = checkout
+        .read_access_policy(WorkBudget::UNBOUNDED, &cancel)
+        .await?
+        .value;
+    assert_eq!(
+        policy
+            .ok_or("new owner omitted its initial policy")?
+            .bytes
+            .as_ref(),
+        acyclic_fs::access::INITIAL_POLICY
+    );
+    Ok(())
+}
+
 async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: bool) -> TestResult {
     use acyclic_fs::demand::native::NativeDemandSource;
     use acyclic_fs::{
