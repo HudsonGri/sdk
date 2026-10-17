@@ -88,7 +88,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
-    let output = harness.resume(task_id).await;
+    let output = super::profile::turn(harness.resume(task_id)).await;
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     match (case.expect.outcome, output) {
         (ExpectedOutcome::Succeeded, Ok(output))

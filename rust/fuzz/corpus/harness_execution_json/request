@@ -1,0 +1,1 @@
+{"max_output_tokens":null,"messages":[{"content":"prompt","role":"user"}],"model":{"name":"model","options":null,"provider":"test","revision":"1"},"tools":[]}

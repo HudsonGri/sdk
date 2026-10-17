@@ -17,6 +17,7 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+mod profile;
 mod provider_case;
 mod provider_http;
 mod provider_tests;
@@ -230,6 +231,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 
 #[test]
 fn scenarios() -> TestResult {
+    profile::install()?;
     let started = Instant::now();
     scenario_runtime()?.block_on(run_scenarios(started))
 }

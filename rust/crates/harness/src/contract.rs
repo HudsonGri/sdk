@@ -72,6 +72,16 @@ pub(crate) fn canonical_json_matches<T: Serialize + ?Sized>(
     value: &T,
     bytes: &[u8],
 ) -> Result<bool> {
+    let mut value =
+        serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    canonical_json_value_matches(&mut value, bytes)
+}
+
+// Compare an already resident JSON tree without cloning it or encoding a Vec.
+pub(crate) fn canonical_json_value_matches(
+    value: &mut serde_json::Value,
+    bytes: &[u8],
+) -> Result<bool> {
     struct Compare<'a> {
         remaining: &'a [u8],
         matches: bool,
@@ -108,15 +118,12 @@ pub(crate) fn canonical_json_matches<T: Serialize + ?Sized>(
             Ok(())
         }
     }
-    let mut value =
-        serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     value.sort_all_objects();
     let mut writer = Compare {
         remaining: bytes,
         matches: true,
     };
-    serde_json::to_writer(&mut writer, &value)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    serde_json::to_writer(&mut writer, value).map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(writer.matches && writer.remaining.is_empty())
 }
 

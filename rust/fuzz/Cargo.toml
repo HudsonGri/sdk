@@ -70,3 +70,11 @@ path = "fuzz_targets/harness_memory_paths.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "harness_execution_json"
+required-features = ["native"]
+path = "fuzz_targets/harness_execution_json.rs"
+test = false
+doc = false
+bench = false

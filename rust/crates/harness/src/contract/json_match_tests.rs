@@ -220,3 +220,39 @@ fn comparison_cost(observing: bool) -> Result<()> {
     }
     Ok(())
 }
+
+proptest! {
+    // For every candidate, borrowed matching has the materialized encoder's
+    // exact result/error, including serde's private marker-map behavior.
+    #[test]
+    fn resident_matching_preserves_bytes_errors_and_round_trips(
+        value in values(), arbitrary in prop::collection::vec(any::<u8>(), 0..1024),
+        marker in prop_oneof![Just("$serde_json::private::RawValue"), Just("$serde_json::private::Number")],
+    ) {
+        let encoded = canonical_json_bytes(&value)?;
+        let restored: Value = crate::contract::json_from_slice(&encoded)?;
+        let mut round_trip = restored;
+        prop_assert!(canonical_json_value_matches(&mut round_trip, &encoded)?);
+        for value in [&value, &serde_json::json!({(marker): value}), &serde_json::json!({"nested": [{(marker): value}]})] {
+            for candidate in [&encoded[..], &arbitrary[..], b"wrong"] {
+                let expected = canonical_json_bytes(value).map(|bytes| bytes == candidate).map_err(|e| (e.kind(), e.to_string()));
+                let actual = canonical_json_value_matches(&mut value.clone(), candidate).map_err(|e| (e.kind(), e.to_string()));
+                prop_assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn resident_matching_allocates_nothing(length in 0usize..65537) {
+        for value in [Value::String("x".repeat(length)), serde_json::json!({"z": ["\0\n\"\\é".repeat(length / 8), true], "a": {"n": length}})] {
+            let bytes = canonical_json_bytes(&value)?;
+            let mut resident = value.clone();
+            let mut matched = Ok(false);
+            let after = acyclic_test_support::measure(|| matched = canonical_json_value_matches(&mut resident, &bytes));
+            prop_assert!(matched?);
+            prop_assert_eq!((after.count_total, after.bytes_total, after.bytes_max), (0,0,0));
+            let before = acyclic_test_support::measure(|| { std::hint::black_box(canonical_json_bytes(&value).unwrap()); });
+            prop_assert_ne!((before.count_total, before.bytes_total), (0,0), "materialized control passed the same zero-allocation bound");
+        }
+    }
+}

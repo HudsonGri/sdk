@@ -154,7 +154,7 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     let stream = local_task_stream(&harness);
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let mut frames = stream.follow(path.clone(), 0).await?;
-    let output = harness.resume(task_id).await?;
+    let output = super::profile::turn(harness.resume(task_id)).await?;
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     if output.text != case.expect.text || output.steps as usize != case.responses.len() {
         return Err(format!("provider task output differs: {output:?}").into());

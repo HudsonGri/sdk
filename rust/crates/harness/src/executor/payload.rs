@@ -125,13 +125,14 @@ pub(crate) fn decode_json<'a, T: PreparationRecord>(
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    let parsed: Value = crate::contract::json_from_slice(bytes)
+    let mut parsed: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
-    if crate::contract::canonical_json_bytes(&parsed)? != bytes {
+    if !crate::contract::canonical_json_value_matches(&mut parsed, bytes)? {
         return Err(Error::Storage(
             "execution journal JSON is not canonical".into(),
         ));
     }
+    drop(parsed);
     let value = crate::contract::json_from_slice(bytes).map_err(|error| {
         Error::Storage(format!("execution journal content is invalid: {error}"))
     })?;
