@@ -25,3 +25,11 @@ pub async fn task_overview_files(
     views.query_snapshot(Query::TaskOverviews, snapshot, maximum_files, maximum_bytes)?;
     Ok(observation.changes)
 }
+
+#[cfg(all(
+    test,
+    feature = "test-support",
+    not(acyclic_harness_loom),
+    not(target_arch = "wasm32")
+))]
+mod tests;

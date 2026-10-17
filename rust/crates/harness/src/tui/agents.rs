@@ -7,18 +7,9 @@ use super::{
 use crate::{
     Error, Result, TaskId,
     client::{ClientViews, CommandFileRoot, CommandSession},
-    task_volume::{FileKey, Query, TaskFile},
+    task_volume::{FileKey, Query, TaskFile, TaskState, TaskStatus},
 };
 use acyclic_stream::StreamProvider;
-
-/// The owner-written status file, reduced to what navigation displays.
-#[derive(serde::Deserialize)]
-struct Status {
-    parent: Option<TaskId>,
-    state: String,
-    #[serde(default)]
-    attention: bool,
-}
 
 /// Disposable panel state. The status files and the session layout stay
 /// authoritative; the tree is rebuilt only when the status query advances.
@@ -71,15 +62,20 @@ impl AgentPanel {
                         .collect(),
                 ),
             };
-            let status: Status = serde_json::from_slice(&bytes)
+            let status = TaskStatus::parse(&bytes)
                 .map_err(|error| Error::Invalid(format!("task status: {error}")))?;
-            let state = match status.state.as_str() {
-                "pending" => AgentState::Busy,
-                "completed" => AgentState::Idle,
-                "cancelled" => AgentState::Stopped,
-                "failed" | "indeterminate" => AgentState::Failed,
-                "deleted" => continue,
-                other => return Err(Error::Invalid(format!("unknown task state {other:?}"))),
+            if status.task != id {
+                return Err(Error::Invalid(format!(
+                    "task status for {} under {id}",
+                    status.task
+                )));
+            }
+            let state = match status.state {
+                TaskState::Pending => AgentState::Busy,
+                TaskState::Completed => AgentState::Idle,
+                TaskState::Cancelled => AgentState::Stopped,
+                TaskState::Failed | TaskState::Indeterminate => AgentState::Failed,
+                TaskState::Deleted => continue,
             };
             agents.push((
                 id.to_string(),
