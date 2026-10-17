@@ -14,6 +14,7 @@ mod registry;
 mod request_feed;
 mod response;
 mod server;
+mod workers;
 
 pub(super) use bootstrap::{binding, existing_binding};
 pub use server::{run_local_owner, stop_local_owner};

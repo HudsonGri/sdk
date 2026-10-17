@@ -14,6 +14,7 @@ export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesys
     suites: [
       { filter: "external_executor::task_bindings::model::tests::", exact: false, expected: 3, timeout: 9500 },
       { filter: "external_executor::local_owner::registry::model::tests::", exact: false, expected: 2, timeout: 9500 },
+      { filter: "external_executor::local_owner::workers::model::tests::", exact: false, expected: 2, timeout: 9500 },
       { filter: "local::command_views::models::", exact: false, expected: 1, timeout: 9500 },
       { filter: "local::children::preparation::models::", exact: false, expected: 1, timeout: 9500 },
       { filter: "external_executor::local_owner::response::model::tests::", exact: false, expected: 2, timeout: 9500 },

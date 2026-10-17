@@ -275,7 +275,7 @@ pub(super) async fn drive(
         tokio::select! {
             biased;
             result = &mut stopping => break result,
-            _ = tasks.next(), if !tasks.is_empty() => {}
+            _ = workers::completed(&mut tasks), if !tasks.is_empty() => {}
             child = children.next() => {
                 let path = match child {
                     Some(Ok(child)) => child.path,
@@ -288,7 +288,7 @@ pub(super) async fn drive(
                         let stop = Arc::clone(&stop);
                         // A task failure cannot select the owner's stop path:
                         // each isolated attempt completes with (), after its effects settle.
-                        tasks.push(Box::pin(async move {
+                        tasks.push(workers::start(async move {
                             if let Err(error) = drive_task(harness, task, stop, instance).await {
                                 tracing::warn!(%task, %error, "request task quarantined");
                             }
@@ -307,7 +307,7 @@ pub(super) async fn drive(
             .await
             .map_err(storage)?;
     }
-    while tasks.next().await.is_some() {}
+    workers::drain(&mut tasks).await;
     result
 }
 

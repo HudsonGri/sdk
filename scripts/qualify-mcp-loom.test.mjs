@@ -183,6 +183,7 @@ test("coordinator qualification instruments real Stream locks and rejects skippe
     ["distributed::tests::model_checking::origin_publication_fences_competing_writers", 1],
     ["external_executor::task_bindings::model::tests::", 3],
     ["external_executor::local_owner::registry::model::tests::", 2],
+    ["external_executor::local_owner::workers::model::tests::", 2],
     ["local::command_views::models::", 1],
     ["local::children::preparation::models::", 1],
     ["external_executor::local_owner::response::model::tests::", 2],
