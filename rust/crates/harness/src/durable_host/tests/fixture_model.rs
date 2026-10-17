@@ -30,7 +30,13 @@ impl<P: StreamProvider + 'static> Fixture<P> {
             ]),
             Limits::default(),
         )?;
-        let signed = issuer.issue("owner", scope.grants(), None, None, &mut None)?;
+        let signed = issuer.issue(
+            "owner",
+            scope.grants(),
+            Some(AgentId::from_bytes([1; 16])),
+            None,
+            &mut None,
+        )?;
         let verifier = issuer.verifier(&mut None)?;
         // These production adapters are bound but never resolve a workspace:
         // the Started event contains no content references or payload writes.
@@ -101,7 +107,7 @@ impl<P: StreamProvider + 'static> Fixture<P> {
                 },
             },
             admission: Arc::new(admission),
-            input_agent: None,
+            input_agent: Some(AgentId::from_bytes([1; 16])),
             created: None,
             read_proof: None,
             tool_output_schema: None,
