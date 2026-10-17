@@ -67,7 +67,7 @@ impl LocalHarness {
             )? {
                 return Ok((reference, generation.position));
             }
-            let (child, _view) = self.admit_child_request(files.as_ref(), &request).await?;
+            let child = self.admit_child_task(files.as_ref(), &request).await?;
             let parsed = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?;
             let mut model = self.model.clone();
             if let Some(name) = parsed.model {
