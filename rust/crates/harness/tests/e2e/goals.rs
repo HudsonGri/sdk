@@ -79,7 +79,3 @@ impl GoalCase {
         Ok(case)
     }
 }
-
-#[cfg(test)]
-#[path = "goals_tests.rs"]
-mod tests;

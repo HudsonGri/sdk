@@ -1,8 +1,8 @@
-use super::*;
+use super::goals::*;
 use crate::{TestResult, goals};
 use acyclic_harness::{
     OperationId, TaskId,
-    goal::{GoalContinuation, GoalStatus, GoalView},
+    goal::{GoalContinuation, GoalContinuationPolicy, GoalStatus, GoalView},
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};

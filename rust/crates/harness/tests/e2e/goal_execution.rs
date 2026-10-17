@@ -57,17 +57,6 @@ async fn goal(harness: &LocalHarness) -> acyclic_harness::Result<GoalView> {
 }
 
 pub(super) async fn run(mut case: GoalCase) -> TestResult {
-    let profile = std::env::var_os("E2E_GOAL_PROFILE").is_some();
-    let started = std::time::Instant::now();
-    let steps = case.turns.len();
-    let trace = |phase: &str| {
-        if profile {
-            eprintln!(
-                "goal steps={steps} phase={phase} elapsed={:?}",
-                started.elapsed()
-            );
-        }
-    };
     let temporary = super::local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
@@ -91,7 +80,6 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     })
     .goal_continuations(case.policy);
     let harness = LocalHarness::open(config).await?;
-    trace("open");
     let workspace = workspace_ref(
         harness.scratch().provider().clone(),
         &harness.scratch().storage_name(&mut None)?,
@@ -122,7 +110,6 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let (operation, task_id, status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
-    trace("admitted");
     let mut followed = stream.follow(path.clone(), 0).await?;
     let mut frames = Vec::new();
     let result = {
@@ -133,17 +120,11 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
                 output = &mut execution => break output,
                 record = followed.try_next() => {
                     let event = frame(record?.ok_or("goal follow ended")?, frames.len())?;
-                    if let Some(kind @ ("declared" | "model_dispatch_claimed" | "completed")) =
-                        event["canonical_event_json"]["kind"].as_str()
-                    {
-                        trace(kind);
-                    }
                     frames.push(event);
                 },
             }
         }
     };
-    trace("execution-settled");
     // Settle supplies a finite accepted cut. Drain that exact follow prefix;
     // never wait for an expected task count (disabled admission must fail fast).
     let accepted = stream.watermarks(path).await?.accepted;
@@ -232,7 +213,6 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
         matchers::ordered(expected, &requests, "goal model requests")?;
     }
     check_files(&harness, &case.expect.files).await?;
-    trace("files-verified");
     if let Some(generation) = seeded {
         for mutation in mutations {
             if let WorkspaceMutation::PutFile { path, bytes } = mutation {
@@ -251,7 +231,6 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     drop(followed);
     drop(stream);
     drop(harness);
-    trace("closed");
     let config = local_harness_config(
         &directory,
         (
@@ -268,7 +247,6 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     })
     .goal_continuations(None);
     let reopened = LocalHarness::open(config).await?;
-    trace("cold-open");
     if reopened.resume(task_id).await?.text != case.expect.text {
         return Err("reopened goal task changed its settled result".into());
     }
@@ -276,7 +254,6 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
         return Err("reopening a goal task redispatched the model".into());
     }
     check_files(&reopened, &case.expect.files).await?;
-    trace("replayed");
     Ok(())
 }
 
