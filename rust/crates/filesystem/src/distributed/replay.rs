@@ -1,5 +1,28 @@
 use super::*;
 
+pub(super) fn operation_key(
+    authority: AuthorityId,
+    operation: OperationId,
+    attempt: u64,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    if attempt == 0 {
+        work.key(
+            b"operation\0",
+            &[&authority.into_bytes(), &operation.into_bytes()],
+        )
+    } else {
+        work.key(
+            b"operation-retry\0",
+            &[
+                &authority.into_bytes(),
+                &operation.into_bytes(),
+                &attempt.to_le_bytes(),
+            ],
+        )
+    }
+}
+
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     pub(super) async fn read_records(
         &self,
@@ -173,31 +196,68 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
+        self.operation_slot(authority, operation, work)
+            .await
+            .map(|(_, record)| record)
+    }
+
+    pub(super) async fn operation_slot(
+        &self,
+        authority: AuthorityId,
+        operation: OperationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(acyclic_stream::IdempotencyKey, Option<DurableCommit>), AuthorityStoreError> {
         work.check()?;
         self.authority_require_live(authority, work).await?;
-        let key = work.key(
-            b"operation\0",
-            &[&authority.into_bytes(), &operation.into_bytes()],
-        )?;
-        let observed = self.authority_inspect(key, work).await;
-        if !work.is_native() {
+        let mut attempt = 0_u64;
+        let (key, observation) = loop {
             work.check()?;
-        }
-        let observation = observed?;
-        if work.is_native() {
+            let key = operation_key(authority, operation, attempt, work)?;
+            let key_bytes = key.as_bytes().len() as u64;
+            let observation = self.authority_inspect(key.clone(), work).await?;
             work.check()?;
-        }
-        let Some(observation) = &observation.0 else {
-            return Ok(None);
+            let Some(observed) = &observation.0 else {
+                return Ok((key, None));
+            };
+            if observed.idempotency_key != key {
+                return Err(authority_corrupt(
+                    "operation observation names another retry key",
+                    work,
+                ));
+            }
+            match &observed.outcome {
+                acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Committed(_)) => {
+                    break (key, observation);
+                }
+                acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Conflict(conflicts))
+                    if !conflicts.is_empty() =>
+                {
+                    // A rejected proposal is an immutable terminal fact. Only
+                    // it permits advancing: a committed slot ends this chain,
+                    // so concurrent retries cannot publish the operation twice.
+                    #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+                    if super::append_loom_tests::legacy_key() {
+                        return Ok((key, None));
+                    }
+                    drop(observation);
+                    drop(key);
+                    work.release(key_bytes)?;
+                    attempt = attempt.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+                }
+                _ => {
+                    return Err(authority_corrupt(
+                        "operation identity retained another Stream mutation family",
+                        work,
+                    ));
+                }
+            }
         };
-        let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
-            return Err(authority_corrupt(
-                "operation identity retained another Stream mutation family",
-                work,
-            ));
-        };
-        let CommitOutcome::Committed(envelope) = outcome else {
-            return Ok(None);
+        let Some(acyclic_stream::IdempotencyObservation {
+            outcome: acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)),
+            ..
+        }) = &observation.0
+        else {
+            unreachable!("the operation slot loop admits only a committed envelope");
         };
         let path = work.path(authority, "/records", None)?;
         let mut output = None;
@@ -245,6 +305,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ));
         }
         work.check()?;
-        Ok(output)
+        Ok((key, output))
     }
 }
