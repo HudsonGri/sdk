@@ -62,7 +62,7 @@ fn name(entry: &HostListedEntry) -> String {
 #[cfg(unix)]
 fn facts(stat: &HostStat) -> Vec<i128> {
     let raw = &stat.raw;
-    let mut facts = vec![
+    let facts = vec![
         i128::from(raw.st_dev),
         i128::from(raw.st_ino),
         i128::from(raw.st_mode),
@@ -79,11 +79,15 @@ fn facts(stat: &HostStat) -> Vec<i128> {
         i128::from(raw.st_ctime_nsec),
     ];
     #[cfg(target_os = "macos")]
-    facts.extend([
-        i128::from(raw.st_birthtime),
-        i128::from(raw.st_birthtime_nsec),
-        i128::from(raw.st_flags),
-    ]);
+    let facts = {
+        let mut facts = facts;
+        facts.extend([
+            i128::from(raw.st_birthtime),
+            i128::from(raw.st_birthtime_nsec),
+            i128::from(raw.st_flags),
+        ]);
+        facts
+    };
     facts
 }
 /// The same fields from `lstat`, through the standard library.
@@ -91,7 +95,7 @@ fn facts(stat: &HostStat) -> Vec<i128> {
 fn baseline(path: &std::path::Path) -> std::io::Result<Vec<i128>> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::symlink_metadata(path)?;
-    let mut facts = vec![
+    let facts = vec![
         i128::from(meta.dev()),
         i128::from(meta.ino()),
         i128::from(meta.mode()),
@@ -108,14 +112,16 @@ fn baseline(path: &std::path::Path) -> std::io::Result<Vec<i128>> {
         i128::from(meta.ctime_nsec()),
     ];
     #[cfg(target_os = "macos")]
-    {
+    let facts = {
+        let mut facts = facts;
         use std::os::macos::fs::MetadataExt as _;
         facts.extend([
             i128::from(meta.st_birthtime()),
             i128::from(meta.st_birthtime_nsec()),
             i128::from(meta.st_flags()),
         ]);
-    }
+        facts
+    };
     Ok(facts)
 }
 #[cfg(windows)]
@@ -170,13 +176,17 @@ fn baseline(path: &std::path::Path) -> std::io::Result<Vec<i128>> {
 /// directories.
 fn expected_work(entries: &[(u8, usize)], listed: &[String], old: bool) -> Vec<Event> {
     let bytes = HostStatReader::BUFFER_BYTES as u64;
-    let mut work = vec![("storage", if old { bytes } else { 0 }, bytes)];
+    let work = vec![("storage", if old { bytes } else { 0 }, bytes)];
     #[cfg(target_os = "macos")]
-    for name in listed {
-        let index: usize = name["entry-".len()..].parse().unwrap();
-        let bulk = !old && entries[index].0 != 1;
-        work.push((if bulk { "bulk" } else { "fstatat" }, 1, 0));
-    }
+    let work = {
+        let mut work = work;
+        for name in listed {
+            let index: usize = name["entry-".len()..].parse().unwrap();
+            let bulk = !old && entries[index].0 != 1;
+            work.push((if bulk { "bulk" } else { "fstatat" }, 1, 0));
+        }
+        work
+    };
     #[cfg(not(target_os = "macos"))]
     let _ = (entries, listed);
     work
