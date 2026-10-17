@@ -27,7 +27,7 @@ pub fn stdin_jsonl() -> Result<BoxStream<'static, Result<String>>> {
 #[cfg(unix)]
 mod stdin {
     use std::fs::File;
-    use std::io::{self, Read, Write};
+    use std::io::{self, Read};
     use std::os::fd::{AsFd, AsRawFd, RawFd};
     use std::pin::Pin;
     use std::task::{Context, Poll, ready};
@@ -253,7 +253,7 @@ mod reader {
         fn drop(&mut self) {
             self.batches.close();
             // Exactly one write to an otherwise empty private pipe.
-            let _ = self.cancel.write_all(&[0]);
+            let _ = io::Write::write_all(&mut self.cancel, &[0]);
         }
     }
 }
