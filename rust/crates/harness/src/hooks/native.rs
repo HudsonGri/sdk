@@ -30,6 +30,7 @@ impl Hooks {
             (workspace, cwd),
             input,
             registry,
+            65_536,
             Arc::new(|| Ok(())),
         )
         .await
@@ -41,6 +42,7 @@ impl Hooks {
         paths: (&Path, &Path),
         mut input: Value,
         registry: &ToolRegistry,
+        maximum_bytes: u64,
         check: HookCheck,
     ) -> Result<HookOutput> {
         let (workspace, cwd) = paths;
@@ -59,8 +61,13 @@ impl Hooks {
             serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
         bytes.push(b'\n');
         let request = Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes));
-        self.run_commands(event, &input, registry, |hook| {
-            run_hook(Arc::clone(hook), Arc::clone(&request), Arc::clone(&check))
+        self.run_commands(event, &input, registry, maximum_bytes, |hook, quota| {
+            run_hook(
+                Arc::clone(hook),
+                Arc::clone(&request),
+                Arc::clone(&check),
+                quota,
+            )
         })
         .await
     }
@@ -70,12 +77,20 @@ pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
     owner_check: HookCheck,
+    maximum_bytes: usize,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = HookCancellation::new();
     let cancelled = Arc::clone(&cancellation.0);
     run_blocking_io(
         move || {
+            if maximum_bytes == 0 {
+                return Err(Error::Process {
+                    kind: "output_limit",
+                    exit_code: None,
+                    message: "hook capture budget exhausted".into(),
+                });
+            }
             let check = || {
                 check_cancelled(&cancelled)?;
                 owner_check()
@@ -93,14 +108,20 @@ pub(super) async fn run_hook(
             let output = tree
                 .wait_with_output(
                     Duration::from_millis(hook.timeout_ms),
-                    65_536,
+                    maximum_bytes,
                     Some(CaptureInput::Literal(&request.2)),
                     check,
                     |_| Ok(ProcessInput::default()),
                     None,
                     None,
                 )
-                .map_err(|failure| Error::process_io(failure.error))?;
+                .map_err(|failure| {
+                    let mut error = Error::process_io(failure.error);
+                    if let Error::Process { exit_code, .. } = &mut error {
+                        *exit_code = failure.status.and_then(|status| status.code());
+                    }
+                    error
+                })?;
             Ok((output.status.code(), output.stdout, output.stderr))
         },
         None,

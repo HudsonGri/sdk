@@ -15,17 +15,127 @@ pub struct HookOutput {
     /// Replacement arguments returned by a pre-tool hook.
     pub updated_input: Option<Value>,
     /// Command failures, including explicit failure-policy blocks.
-    pub diagnostics: Vec<String>,
+    pub diagnostics: Vec<HookDiagnostic>,
+}
+
+/// Platform-neutral failure data retained with the effect, without parsing prose.
+#[derive(Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDiagnostic {
+    /// Failure classification from process capture or output validation.
+    pub kind: HookErrorKind,
+    /// Exit code observed before capture stopped, if any.
+    pub exit_code: Option<i32>,
+    /// The configured failure policy blocks this event.
+    pub blocking: bool,
+    /// Bounded diagnostic for display.
+    pub message: String,
+}
+
+/// Stable failure classifications shared by retention and the public error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookErrorKind {
+    /// Executable was absent.
+    NotFound,
+    /// The process exceeded its deadline.
+    Timeout,
+    /// Host permissions prevented execution or capture.
+    PermissionDenied,
+    /// Other process IO failed.
+    Io,
+    /// The process exited unsuccessfully.
+    Exit,
+    /// Structured stdout failed validation.
+    InvalidOutput,
+    /// Aggregate capture or retained output exhausted its byte budget.
+    OutputLimit,
+}
+
+impl HookErrorKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::Timeout => "timeout",
+            Self::PermissionDenied => "permission_denied",
+            Self::Io => "io",
+            Self::Exit => "exit",
+            Self::InvalidOutput => "invalid_output",
+            Self::OutputLimit => "output_limit",
+        }
+    }
+}
+
+impl HookDiagnostic {
+    fn from_error(error: Error, blocking: bool) -> Self {
+        let (kind, exit_code, message) = match error {
+            Error::Process {
+                kind,
+                exit_code,
+                message,
+            } => (
+                match kind {
+                    "not_found" => HookErrorKind::NotFound,
+                    "timeout" => HookErrorKind::Timeout,
+                    "permission_denied" => HookErrorKind::PermissionDenied,
+                    "exit" => HookErrorKind::Exit,
+                    "output_limit" => HookErrorKind::OutputLimit,
+                    _ => HookErrorKind::Io,
+                },
+                exit_code,
+                message,
+            ),
+            Error::Invalid(message) => (HookErrorKind::InvalidOutput, None, message),
+            error => (HookErrorKind::Io, None, error.to_string()),
+        };
+        Self {
+            kind,
+            exit_code,
+            message,
+            blocking,
+        }
+    }
 }
 
 impl HookOutput {
+    /// Whether an explicit decision or a configured failure policy blocks.
+    pub fn blocks(&self) -> bool {
+        self.blocked.is_some() || self.diagnostics.iter().any(|failure| failure.blocking)
+    }
+
+    /// Propagates a blocking process/output failure with its retained kind/code.
+    /// Explicit permission decisions remain distinct from failed guard commands.
+    pub fn into_result(mut self) -> Result<Self> {
+        if let Some(index) = self.diagnostics.iter().position(|failure| failure.blocking) {
+            let failure = self.diagnostics.remove(index);
+            return Err(Error::Process {
+                kind: failure.kind.name(),
+                exit_code: failure.exit_code,
+                message: failure.message,
+            });
+        }
+        Ok(self)
+    }
+
+    pub(crate) fn output_limit(blocking: bool) -> Self {
+        Self {
+            diagnostics: vec![HookDiagnostic {
+                kind: HookErrorKind::OutputLimit,
+                exit_code: None,
+                blocking,
+                message: "aggregate hook output limit exceeded".into(),
+            }],
+            ..Default::default()
+        }
+    }
     pub(super) fn apply(
         &mut self,
         event: HookEvent,
         policy: HookFailure,
         result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
-    ) {
+    ) -> bool {
         let block_failure = policy == HookFailure::Block && event != HookEvent::Stop;
+        let observed_code = result.as_ref().ok().and_then(|(code, _, _)| *code);
         let observed = match result {
             Ok((code, _, stderr)) if code != Some(0) && (code != Some(2) || block_failure) => {
                 Err(exit_error(code, &stderr))
@@ -33,12 +143,16 @@ impl HookOutput {
             Ok((code, stdout, stderr)) => self.observe(event, code, &stdout, &stderr),
             Err(error) => Err(error),
         };
-        if let Err(error) = observed {
-            let diagnostic = format!("{} hook failed: {error}", event.name());
-            if block_failure {
-                self.blocked.get_or_insert_with(|| diagnostic.clone());
+        match observed {
+            Ok(updated) => updated,
+            Err(error) => {
+                let mut failure = HookDiagnostic::from_error(error, block_failure);
+                if failure.exit_code.is_none() {
+                    failure.exit_code = observed_code;
+                }
+                self.diagnostics.push(failure);
+                false
             }
-            self.diagnostics.push(diagnostic);
         }
     }
 
@@ -48,7 +162,7 @@ impl HookOutput {
         code: Option<i32>,
         stdout: &[u8],
         stderr: &[u8],
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if code == Some(2) {
             if matches!(event, HookEvent::PreToolUse | HookEvent::Stop) {
                 self.blocked
@@ -59,13 +173,13 @@ impl HookOutput {
             } else {
                 return Err(exit_error(code, stderr));
             }
-            return Ok(());
+            return Ok(false);
         }
         let text = std::str::from_utf8(stdout)
             .map_err(|error| Error::Invalid(error.to_string()))?
             .trim();
         if text.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let mut value = match serde_json::from_str::<Value>(text) {
             Ok(value) => value,
@@ -80,7 +194,7 @@ impl HookOutput {
                 if event == HookEvent::SessionStart {
                     self.additional_context.push(text.into());
                 }
-                return Ok(());
+                return Ok(false);
             }
         };
         validate_output(&value, event)?;
@@ -134,14 +248,16 @@ impl HookOutput {
                 .and_then(|fields| fields.remove("updatedInput"))
         {
             self.updated_input = Some(input);
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 }
 
 fn exit_error(code: Option<i32>, stderr: &[u8]) -> Error {
     Error::Process {
         kind: "exit",
+        exit_code: code,
         message: format!("exit {code:?}: {}", String::from_utf8_lossy(stderr)),
     }
 }

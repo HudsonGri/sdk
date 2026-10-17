@@ -160,6 +160,7 @@ impl McpConfig {
 fn startup_timeout() -> Error {
     Error::Process {
         kind: "timeout",
+        exit_code: None,
         message: "MCP startup deadline elapsed".into(),
     }
 }

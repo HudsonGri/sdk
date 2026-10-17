@@ -25,6 +25,7 @@ pub(super) fn check_cancelled(flag: &AtomicBool) -> Result<()> {
     if flag.load(Ordering::Acquire) {
         Err(Error::Process {
             kind: "cancelled",
+            exit_code: None,
             message: "MCP registration cancelled".into(),
         })
     } else {

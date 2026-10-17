@@ -1,4 +1,5 @@
 use super::*;
+use crate::hooks::{HookDiagnostic, HookErrorKind};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -42,7 +43,7 @@ proptest! {
         ),
     ) {
         let output = HookOutput { blocked, approval, additional_context: context,
-            updated_input, diagnostics };
+            updated_input, diagnostics: diagnostics.into_iter().map(|message| HookDiagnostic { kind: HookErrorKind::Io, exit_code: None, blocking: false, message }).collect() };
         let bytes = serde_json::to_vec(&output)?;
         let decoded: HookOutput = serde_json::from_slice(&bytes)?;
         prop_assert_eq!(&decoded, &output);
@@ -183,7 +184,7 @@ proptest! {
             let mut output = HookOutput::default();
             output.apply(event, policy, Ok((Some(0), bytes.clone(), vec![])));
             prop_assert_eq!(output.diagnostics.len(), 1);
-            prop_assert_eq!(output.blocked.is_some(), policy == HookFailure::Block && event != HookEvent::Stop);
+            prop_assert_eq!(output.blocks(), policy == HookFailure::Block && event != HookEvent::Stop);
             prop_assert!(output.approval.is_none());
             prop_assert!(output.updated_input.is_none());
             prop_assert!(output.additional_context.is_empty());

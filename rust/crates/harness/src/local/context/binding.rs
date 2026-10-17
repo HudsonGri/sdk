@@ -33,26 +33,38 @@ pub(in crate::local) async fn retain<P: StreamProvider + ?Sized>(
     Ok(())
 }
 
-pub(in crate::local) async fn authorize<P: StreamProvider + ?Sized>(
+pub(in crate::local) async fn authorize<P, F, FF>(
     volume: &TaskVolume<P>,
     task: TaskId,
     digest: &[u8; 32],
     maximum: u64,
-) -> Result<()> {
+    admitted: F,
+) -> Result<()>
+where
+    P: StreamProvider + ?Sized,
+    F: FnOnce() -> FF,
+    FF: Future<Output = Result<FileRef>>,
+{
     let snapshot = volume.snapshot(&Query::File(key(task)?), 1).await?;
-    let file = snapshot.files.first().ok_or_else(|| {
-        Error::Unauthorized("hook task has no retained configuration manifest".into())
-    })?;
-    if file.bytes.len() as u64 > maximum {
-        return Err(Error::Invalid(
-            "manifest reference exceeds file bound".into(),
-        ));
-    }
-    let manifest: FileRef = serde_json::from_slice(&file.bytes).map_err(storage)?;
+    let missing = snapshot.files.is_empty();
+    let manifest: FileRef = match snapshot.files.first() {
+        Some(file) => {
+            if file.bytes.len() as u64 > maximum {
+                return Err(Error::Invalid(
+                    "manifest reference exceeds file bound".into(),
+                ));
+            }
+            serde_json::from_slice(&file.bytes).map_err(storage)?
+        }
+        None => admitted().await?,
+    };
     if manifest.descriptor().sha256() != digest {
         return Err(Error::Unauthorized(
             "hooks differ from the admitted manifest".into(),
         ));
+    }
+    if missing {
+        retain(volume, task, &manifest, maximum).await?;
     }
     Ok(())
 }

@@ -71,6 +71,12 @@ where
                 reconcile_only,
             )
             .await?;
+        for failure in &output.diagnostics {
+            tracing::warn!(hook_event = event.name(), kind = ?failure.kind,
+                exit_code = failure.exit_code, blocking = failure.blocking,
+                error = %failure.message, "configured hook failed");
+        }
+        let output = output.into_result()?;
         if let Some(reason) = output.blocked {
             return Err(Error::Unauthorized(reason));
         }
