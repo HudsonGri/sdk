@@ -2,17 +2,23 @@ use super::*;
 use crate::filesystem::FilesystemWorkflowJournal;
 
 pub(super) fn published(reference: &Component, values: &BTreeMap<FileKey, FileValue>) -> u64 {
+    let key = |turn| FileKey::Child {
+        reference: reference.clone(),
+        file: ChildFile::Result(turn),
+    };
     values
-        .keys()
-        .filter_map(|key| match key {
-            FileKey::Child {
-                reference: candidate,
+        .range(key(0)..=key(u64::MAX))
+        .next_back()
+        .map_or(0, |(key, _)| {
+            let FileKey::Child {
                 file: ChildFile::Result(turn),
-            } if candidate == reference => Some(*turn),
-            _ => None,
+                ..
+            } = key
+            else {
+                unreachable!()
+            };
+            *turn
         })
-        .max()
-        .unwrap_or(0)
 }
 
 impl LocalHarness {

@@ -19,6 +19,7 @@ mod drive;
 pub(super) mod follow;
 mod inputs;
 mod lease;
+mod result_slot;
 mod results;
 mod stopping;
 
@@ -404,7 +405,7 @@ fn fold(values: &mut BTreeMap<FileKey, FileValue>, change: Change) {
             file: ChildFile::Result(turn),
         } = &file.key
         {
-            values.retain(|old, _| !matches!(old, FileKey::Child { reference: r, file: ChildFile::Result(n) } if r == reference && n < turn));
+            result_slot::evict(values, reference, *turn);
         }
         values.insert(file.key.clone(), file);
     }
