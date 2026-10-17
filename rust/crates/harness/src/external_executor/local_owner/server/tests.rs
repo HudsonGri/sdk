@@ -125,6 +125,22 @@ async fn task_stream_drivers_keep_a_parent_wait_and_child_completion_independent
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
+    // Assert the actual OS option, independent of scheduling or latency oracles.
+    #[test]
+    fn every_incoming_socket_disables_nagle(peer_options in prop::collection::vec(any::<bool>(), 1..4)) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut connections = Box::pin(incoming(listener));
+            for option in peer_options {
+                let (peer, accepted) = tokio::join!(tokio::net::TcpStream::connect(address), connections.next());
+                let peer = peer.unwrap();
+                peer.set_nodelay(option).unwrap();
+                assert!(accepted.unwrap().unwrap().nodelay().unwrap());
+            }
+        });
+    }
+
     #[test]
     fn unrelated_publications_never_complete_a_file_wait(identity in any::<[u8;16]>()) {
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();

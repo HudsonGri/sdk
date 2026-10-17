@@ -22,6 +22,18 @@ use tonic::{
 
 const CONTROL: &str = "owner/control";
 
+fn incoming(
+    listener: tokio::net::TcpListener,
+) -> impl futures::Stream<Item = std::io::Result<tokio::net::TcpStream>> {
+    futures::stream::try_unfold(listener, |listener| async move {
+        let (socket, _) = listener.accept().await?;
+        // Tonic cannot configure sockets supplied by a custom incoming stream.
+        // Small TLS/HTTP2 records must not wait for a peer's delayed ACK.
+        socket.set_nodelay(true)?;
+        Ok::<_, std::io::Error>(Some((socket, listener)))
+    })
+}
+
 #[derive(Clone)]
 struct Owner {
     registry: Arc<registry::Registry>,
@@ -192,10 +204,7 @@ async fn serve() -> Result<()> {
         .map_err(storage)?
         .add_service(owner.clone())
         .add_service(Follows(owner));
-    let incoming = futures::stream::try_unfold(listener, |listener| async move {
-        let (socket, _) = listener.accept().await?;
-        Ok::<_, std::io::Error>(Some((socket, listener)))
-    });
+    let incoming = incoming(listener);
     if let Some(ready) = ready {
         let _ = ready.signal();
     }
