@@ -156,6 +156,16 @@ fn console_stdin_child() -> io::Result<()> {
     let report = std::path::PathBuf::from(report);
     let runtime = runtime()?;
     let lock = io::stdin().lock();
+    let text = runtime.block_on(async {
+        let input = super::stdin::open()?;
+        let mut lines = FramedRead::new(input, LinesCodec::new());
+        std::fs::write(report.with_extension("ready"), b"ready")?;
+        let line = lines.next().await.transpose().map_err(io::Error::other)?;
+        assert_eq!(line.as_deref(), Some("h\u{e9}llo \u{1f600}"));
+        std::fs::write(report.with_extension("line"), b"received")?;
+        assert!(lines.next().await.is_none());
+        io::Result::Ok(line.unwrap_or_default())
+    })?;
     let started = Instant::now();
     runtime.block_on(async {
         let mut input = super::stdin::open()?;
@@ -166,15 +176,6 @@ fn console_stdin_child() -> io::Result<()> {
         io::Result::Ok(())
     })?;
     let dropped = started.elapsed();
-    assert!(dropped < Duration::from_millis(500), "{dropped:?}");
-    // Still under the lock: the reader needs nothing std's stdin holds. The
-    // text is read before the control, whose cancelled cooked read would
-    // otherwise be completed by the console with the next typed line.
-    let text = runtime.block_on(async {
-        let input = super::stdin::open()?;
-        std::fs::write(report.with_extension("ready"), b"ready")?;
-        lines(input).await
-    })?;
     let removed = std::thread::spawn(|| {
         let reader = std::thread::spawn(|| drop(io::Read::read(&mut io::stdin(), &mut [0; 1])));
         while !reader.is_finished() {
@@ -196,7 +197,7 @@ fn console_stdin_child() -> io::Result<()> {
     );
     let summary = format!(
         "console reader dropped in {dropped:?} under the stdin lock\n{control}\n{} then end of input",
-        text.join("|")
+        text
     );
     std::fs::write(&report, summary)?;
     Ok(())

@@ -171,3 +171,24 @@ mod model {
         Ok(())
     }
 }
+
+proptest::proptest! {
+    #[test]
+    fn utf16_chunks_match_lossy_decoding_through_eof(
+        units in proptest::collection::vec(proptest::num::u16::ANY, 0..128),
+        chunk in 1usize..16,
+    ) {
+        let units: Vec<_> = units.into_iter().take_while(|unit| *unit != 0x1a).collect();
+        let mut decoder = Utf16::default();
+        let mut output = Vec::new();
+        let mut buffer = [0; 49];
+        for part in units.chunks(chunk) {
+            let count = decoder.decode(part, &mut buffer);
+            output.extend_from_slice(&buffer[..count]);
+        }
+        let count = decoder.decode(&[], &mut buffer);
+        output.extend_from_slice(&buffer[..count]);
+        proptest::prop_assert_eq!(output, String::from_utf16_lossy(&units).into_bytes());
+        proptest::prop_assert!(decoder.ended);
+    }
+}

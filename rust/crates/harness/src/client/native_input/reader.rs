@@ -31,6 +31,7 @@ pub(super) trait Source: Send + 'static {
 
 /// The bounded handoff from the reader thread to the stream.
 pub(super) struct Channel {
+    // The only handoff lock; never held during I/O, cancellation or wake.
     state: SyncMutex<State>,
     /// Signalled when a batch is taken or the channel closes.
     space: SyncCondvar,
@@ -466,61 +467,11 @@ impl Stop {
     }
 }
 
-/// Console UTF-16 to UTF-8, with a high surrogate carried across reads.
-/// Unpaired surrogates become U+FFFD; a Ctrl+Z unit ends the input.
-#[derive(Default)]
 #[cfg(any(windows, test))]
-pub(super) struct Utf16 {
-    high: Option<u16>,
-    pub(super) ended: bool,
-}
-
+#[path = "utf16.rs"]
+mod utf16;
 #[cfg(any(windows, test))]
-impl Utf16 {
-    /// Encode `units` into `out`, which must hold three bytes per unit plus
-    /// one; returns the bytes written.
-    pub(super) fn decode(&mut self, units: &[u16], out: &mut [u8]) -> usize {
-        let mut written = 0;
-        let mut put = |c: char, out: &mut [u8]| {
-            written += c.encode_utf8(&mut out[written..]).len();
-        };
-        for &unit in units {
-            if unit == 0x1a {
-                if self.high.take().is_some() {
-                    put(char::REPLACEMENT_CHARACTER, out);
-                }
-                self.ended = true;
-                break;
-            }
-            match (self.high.take(), unit) {
-                (Some(high), 0xdc00..=0xdfff) => {
-                    let scalar =
-                        0x10000 + ((u32::from(high) - 0xd800) << 10) + (u32::from(unit) - 0xdc00);
-                    put(
-                        char::from_u32(scalar).unwrap_or(char::REPLACEMENT_CHARACTER),
-                        out,
-                    );
-                }
-                (high, 0xd800..=0xdbff) => {
-                    if high.is_some() {
-                        put(char::REPLACEMENT_CHARACTER, out);
-                    }
-                    self.high = Some(unit);
-                }
-                (high, unit) => {
-                    if high.is_some() {
-                        put(char::REPLACEMENT_CHARACTER, out);
-                    }
-                    put(
-                        char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER),
-                        out,
-                    );
-                }
-            }
-        }
-        written
-    }
-}
+use utf16::Utf16;
 
 #[cfg(test)]
 #[path = "reader_tests.rs"]

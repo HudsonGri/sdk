@@ -120,9 +120,11 @@ impl Write for Output {
             .get(..end)
             .ok_or(io::ErrorKind::InvalidInput)?
             .to_vec();
-        Owner::run(&self.console.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.writer().write(&bytes)
-        })
+        Owner::run(
+            &self.console.owner,
+            Instant::now() + PROBE_TIMEOUT,
+            move |guard| guard.writer().write(&bytes),
+        )
     }
     fn flush(&mut self) -> io::Result<()> {
         Owner::run(

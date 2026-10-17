@@ -78,9 +78,12 @@ public static class ConsoleStdinConPty {
             WaitFor(Path.ChangeExtension(report,"ready"),process.process,"console reader");
             // UTF-8 into the pseudoconsole arrives as UTF-16 key events; the
             // emoji is a surrogate pair. Ctrl+Z on its own line ends input.
-            byte[] typed=Encoding.UTF8.GetBytes("h\u00e9llo \U0001F600\r\x1a\r");
+            byte[] typed=Encoding.UTF8.GetBytes("h\u00e9llo \U0001F600\r");
             uint written;
             Require(WriteFile(iw,typed,(uint)typed.Length,out written,IntPtr.Zero)&&written==typed.Length,"typed input write");
+            WaitFor(Path.ChangeExtension(report,"line"),process.process,"decoded line");
+            byte[] eof=new byte[]{0x1a};
+            Require(WriteFile(iw,eof,1,out written,IntPtr.Zero)&&written==1,"console EOF write");
             Require(WaitForSingleObject(process.process,3000)==0,"console child exit deadline");
             string[] lines=File.ReadAllText(report,Encoding.UTF8).Split((char)10);
             Require(lines.Length==3,"console child report: "+String.Join("|",lines));
