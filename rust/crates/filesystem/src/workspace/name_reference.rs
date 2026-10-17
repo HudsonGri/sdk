@@ -4,11 +4,15 @@ use super::*;
 pub(super) fn decode(
     name: &str,
     accounting: &mut KernelAccounting<'_>,
+    project: bool,
+    probe: &mut impl FnMut(u8, u64, u64),
 ) -> Result<WorkspaceName, WorkspaceError> {
     accounting.check()?;
+    let borrowed = project && name.chars().all(|character| (character as u32) < 128);
     let (mut pending, mut maximum_pending, mut maximum_chunk) = (0_u64, 0_u64, 0_u64);
     for character in name.chars() {
         accounting.charge(item_work(1))?;
+        probe(0, character as u64, 0);
         let mut chunk = 0_u64;
         let mut failure = None;
         unicode_normalization::char::decompose_canonical(character, |scalar| {
@@ -16,7 +20,10 @@ pub(super) fn decode(
                 return;
             }
             failure = (|| -> Result<(), WorkspaceError> {
-                accounting.charge(item_work(1))?;
+                if !project || !character.is_ascii() {
+                    accounting.charge(item_work(1))?;
+                    probe(1, character as u64, scalar as u64);
+                }
                 chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
                 if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
                     pending = 0;
@@ -82,10 +89,15 @@ pub(super) fn decode(
             .get_mut(length..end)
             .ok_or(WorkspaceNameError::TooLong)?;
         let copied = copy_work(character.len_utf8() as u64);
-        accounting.admit(copied)?;
+        if !borrowed {
+            accounting.admit(copied)?;
+        }
         character.encode_utf8(slot);
         length = end;
-        accounting.record_completed(copied)?;
+        if !borrowed {
+            probe(2, character as u64, character.len_utf8() as u64);
+            accounting.record_completed(copied)?;
+        }
     }
     drop(normalized);
     let canonical = std::str::from_utf8(output.get(..length).ok_or(WorkspaceNameError::TooLong)?)
@@ -97,7 +109,10 @@ pub(super) fn decode(
         return Err(WorkspaceNameError::Reserved.into());
     }
     for character in canonical.chars() {
-        accounting.check()?;
+        if !borrowed {
+            accounting.check()?;
+            probe(3, character as u64, 0);
+        }
         if character.is_control() || matches!(character, '/' | '\\') {
             return Err(WorkspaceNameError::InvalidCharacter.into());
         }
@@ -106,6 +121,7 @@ pub(super) fn decode(
     accounting.admit(copied)?;
     let mut owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
     owned.value.extend_from_slice(canonical.as_bytes());
+    probe(4, canonical.len() as u64, 0);
     accounting.record_completed(copied)?;
     let name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
     let control = const {

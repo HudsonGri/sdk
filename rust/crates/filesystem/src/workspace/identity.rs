@@ -37,7 +37,7 @@ impl WorkspaceName {
         }
         // No normalization scratch or temporary UTF-8 copy for ASCII. Retain
         // the zero-work admission before reporting canonical-name errors.
-        accounting.admit(crate::WorkCounters::UNCHARGED)?;
+        normalize::admit_scratch(0, accounting)?;
         if name.len() > MAXIMUM_WORKSPACE_NAME_BYTES {
             return Err(WorkspaceNameError::TooLong.into());
         }
@@ -249,3 +249,21 @@ mod tests;
 #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "identity_loom.rs"]
 mod model;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "name_tests.rs"]
+mod name_tests;
+
+#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+#[path = "name_reference.rs"]
+mod reference;
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[path = "name_loom.rs"]
+mod name_model;
+
+#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+#[path = "name_fuzz.rs"]
+mod name_fuzz;
+#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+pub use name_fuzz::check_workspace_name;

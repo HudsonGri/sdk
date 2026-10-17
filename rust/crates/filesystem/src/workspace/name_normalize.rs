@@ -31,18 +31,7 @@ pub(super) fn parse(
             .and_then(|sort| n.checked_add(sort))
     })
     .ok_or(crate::WorkError::Overflow)?;
-    let live = match accounting {
-        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-        KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
-    };
-    accounting.admit(crate::WorkCounters {
-        peak_allocation_bytes: live
-            .checked_add(scratch)
-            .ok_or(crate::WorkError::Overflow)?,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
+    admit_scratch(scratch, accounting)?;
     let mut output = [0_u8; MAXIMUM_WORKSPACE_NAME_BYTES];
     let mut length = 0;
     let mut normalized = name.nfc();
@@ -87,4 +76,21 @@ pub(super) fn encode(
         character.encode_utf8(output);
         probe(2, character as u64, character.len_utf8() as u64);
     })
+}
+
+pub(super) fn admit_scratch(
+    bytes: u64,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), WorkspaceError> {
+    let live = match accounting {
+        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+        KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
+    };
+    accounting.admit(crate::WorkCounters {
+        peak_allocation_bytes: live.checked_add(bytes).ok_or(crate::WorkError::Overflow)?,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
+    Ok(())
 }

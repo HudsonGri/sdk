@@ -40,8 +40,8 @@ mod generation;
 mod handle;
 mod identity;
 mod join;
-mod join_git;
 mod join_apply;
+mod join_git;
 mod join_helpers;
 #[cfg(not(target_arch = "wasm32"))]
 mod join_native;
@@ -73,6 +73,9 @@ pub use extents::{WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan}
 pub use fork_options::ForkOptions;
 pub use generation::Generation;
 pub use handle::Workspace;
+#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub use identity::check_workspace_name;
 pub use identity::{IdempotencyKey, WorkspaceId, WorkspaceName};
 pub use join::{JoinBuilder, JoinHistory, JoinPlan};
 pub use join_apply::DrivenJoinError;
