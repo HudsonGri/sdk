@@ -175,9 +175,15 @@ fn completed_kernel_work_borrows_the_original_budget_without_allocating() {
             }
         });
         assert_eq!(VERIFICATION_PASSES.with(std::cell::Cell::get), 1);
-        let borrowed = VERIFICATION_BUDGET.with(std::cell::Cell::get) == original;
+        let bound = || {
+            assert_eq!(
+                VERIFICATION_BUDGET.with(std::cell::Cell::get),
+                original,
+                "verification copied the original budget"
+            );
+        };
         assert_eq!(
-            borrowed, !by_value,
+            std::panic::catch_unwind(bound).is_ok(), !by_value,
             "original by-value verification escaped the borrowing invariant"
         );
         assert_eq!(allocations.count_total, 0);

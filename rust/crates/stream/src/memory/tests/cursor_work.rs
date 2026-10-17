@@ -1,4 +1,4 @@
-use super::super::*;
+use super::*;
 use proptest::prelude::*;
 use std::sync::atomic::AtomicU64;
 
