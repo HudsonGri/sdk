@@ -97,13 +97,8 @@ impl LocalHarness {
                 .await?
                 .1
                 .is_some();
-                let settled = matches!(
-                    self.runtime.task_host().outcome(parent).await?,
-                    Some(
-                        crate::Outcome::Succeeded(_)
-                            | crate::Outcome::Failed { .. }
-                            | crate::Outcome::Cancelled
-                    )
+                let settled = super::orphans::settled(
+                    self.runtime.task_host().outcome(parent).await?.as_ref(),
                 );
                 // An ordinary child of a live, unselected parent routes without
                 // its own admission: inheritance preparation checks that, and
@@ -600,20 +595,17 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+        // Claim under the gate: a new prompt never supersedes a driven turn.
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let _driving =
+            super::admission::serialized(&self.admission, async || self.drivers.drive(operation))
+                .await;
         let handle = match self.runtime.harness().attach(task, &definition).await {
             Ok(handle) => handle,
             Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
             Err(error) => return Err(error),
         };
-        let terminal = matches!(
-            self.runtime.task_host().outcome(task).await?,
-            Some(
-                crate::Outcome::Succeeded(_)
-                    | crate::Outcome::Failed { .. }
-                    | crate::Outcome::Cancelled
-            )
-        );
-        if !terminal {
+        if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
             self.advance_with_children(task, &commands, self.task_files.clone(), None)
