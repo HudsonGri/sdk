@@ -174,8 +174,8 @@ test('the required job checks lock consistency, lane artifacts and Loom classifi
    +'fi\n'
    +'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"\n',
   'node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs',
-  'node --test scripts/check-loom-models.test.mjs',
   SCANNER_TEST,
+  'node --test scripts/check-loom-models.test.mjs',
   'node --test scripts/local-cloud.test.mjs',
   'cargo update --workspace --locked',
  ]);
