@@ -35,6 +35,20 @@ fn list(root: &std::path::Path) -> Result<Vec<HostListedEntry>, Box<dyn std::err
     Ok(entries)
 }
 
+fn old_list(root: &std::path::Path) -> Result<Vec<HostListedEntry>, Box<dyn std::error::Error>> {
+    let directory = Dir::open_ambient_dir(root, cap_std::ambient_authority())?;
+    let work =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .map_err(|(cause, _)| cause)?;
+    let (mut reader, _allocation) =
+        listing_baseline::baseline_read_dir_held(&directory, &mut &work)?;
+    let mut entries = Vec::new();
+    while let Some((entry, _allocation)) = reader.next(&mut &work)? {
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
 #[cfg(unix)]
 fn name(entry: &HostListedEntry) -> String {
     entry.name.to_string_lossy().into_owned()
@@ -168,6 +182,28 @@ fn check(entries: &[(u8, usize)], old: bool) -> Result<bool, Box<dyn std::error:
         .collect::<Result<_, _>>()?;
     expected.sort();
     assert_eq!(sorted, expected);
+    let old_directory = tempfile::tempdir()?;
+    populate(old_directory.path(), entries)?;
+    let (old_listed, old_trace) =
+        observe::<_, _, Event>(|| (), |()| old_list(old_directory.path()));
+    let old_listed = old_listed?;
+    let mut old_names: Vec<_> = old_listed.iter().map(name).collect();
+    old_names.sort();
+    assert_eq!(sorted, old_names);
+    assert_eq!(
+        old_trace,
+        expected_work(
+            entries,
+            &old_listed.iter().map(name).collect::<Vec<_>>(),
+            true
+        )
+    );
+    for entry in &old_listed {
+        assert_eq!(
+            facts(entry.stat.as_ref().expect("old entry exists")),
+            baseline(&old_directory.path().join(name(entry)))?
+        );
+    }
     for entry in &listed {
         let stat = entry.stat.as_ref().expect("entry exists");
         let path = temporary.path().join(name(entry));
@@ -201,5 +237,37 @@ fn a_listing_larger_than_one_refill_matches_lstat() -> Result<(), Box<dyn std::e
 fn restored_zero_fill_and_file_examinations_are_detected() -> Result<(), Box<dyn std::error::Error>>
 {
     assert!(!check(&[(0, 3), (1, 0), (2, 4)], true)?);
+    Ok(())
+}
+
+#[test]
+#[ignore = "measurement"]
+fn measure_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
+    let entries: Vec<_> = (0..1000).map(|n| (u8::from(n % 10 == 0), n % 64)).collect();
+    let old_directory = tempfile::tempdir()?;
+    let directory = tempfile::tempdir()?;
+    populate(old_directory.path(), &entries)?;
+    populate(directory.path(), &entries)?;
+    for old in [true, false] {
+        let run = || {
+            if old {
+                old_list(old_directory.path())
+            } else {
+                list(directory.path())
+            }
+        };
+        for _ in 0..5 {
+            assert_eq!(run()?.len(), entries.len());
+        }
+        let start = std::time::Instant::now();
+        for _ in 0..40 {
+            assert_eq!(run()?.len(), entries.len());
+        }
+        eprintln!(
+            "directory 1000 entries {}: {} ns/list",
+            if old { "baseline" } else { "candidate" },
+            start.elapsed().as_nanos() / 40
+        );
+    }
     Ok(())
 }
