@@ -141,15 +141,28 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
             policy.layers[0].push(deny);
         }
         fixture.publish_policy(policy).await?;
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
-        let result = writer
-            .observe_staged_once(operation, 4096, None, Some(&io))?
-            .await;
-        assert_eq!(result.is_ok(), !denied);
-        drop(result);
-        drop(io);
-        let _ = work.receipt();
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        let mut retained = None;
+        for _ in 0..2 {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+            let result = writer
+                .observe_staged_once(operation, 4096, None, Some(&io))?
+                .await;
+            assert_eq!(result.is_ok(), !denied);
+            drop(result);
+            drop(io);
+            let _ = work.receipt();
+            if let Some(previous) = retained.replace(work.live_allocation_bytes()) {
+                assert_eq!(
+                    work.live_allocation_bytes(),
+                    previous,
+                    "warm metadata retains no request storage"
+                );
+            }
+        }
     }
+    drop(writer);
+    drop(fixture);
+    let _ = work.receipt();
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }

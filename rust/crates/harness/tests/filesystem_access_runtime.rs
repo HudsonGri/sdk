@@ -172,43 +172,59 @@ async fn caller_ceiling_and_its_storage_use_the_original_native_ledger()
             allowed,
             false,
         )?;
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
-        let result = reader
-            .read(&fixture.file, 4096, Some(caller.capabilities()), Some(&io))?
-            .await;
-        assert_eq!(result.is_ok(), allowed);
-        drop(result);
-        let selected = fixture.generation()?;
-        let prefix = reader
-            .read_private_prefix(
-                &fixture.volume,
-                "secrets",
-                "secrets/key",
-                &selected,
-                2,
-                Some(caller.capabilities()),
-                Some(&io),
-            )?
-            .await;
-        assert_eq!(prefix.is_ok(), allowed);
-        drop(prefix);
-        let resolved = reader
-            .read_private_path(
-                &fixture.volume,
-                "secrets",
-                "secrets/key",
-                Some(&selected),
-                4096,
-                Some(caller.capabilities()),
-                Some(&io),
-            )?
-            .await;
-        assert_eq!(resolved.is_ok(), allowed);
-        drop(resolved);
-        drop(io);
-        let _ = work.receipt();
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        let mut retained = None;
+        for _ in 0..2 {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+            let result = reader
+                .read(&fixture.file, 4096, Some(caller.capabilities()), Some(&io))?
+                .await;
+            assert_eq!(result.is_ok(), allowed);
+            drop(result);
+            let selected = fixture.generation()?;
+            let prefix = reader
+                .read_private_prefix(
+                    &fixture.volume,
+                    "secrets",
+                    "secrets/key",
+                    &selected,
+                    2,
+                    Some(caller.capabilities()),
+                    Some(&io),
+                )?
+                .await;
+            assert_eq!(prefix.is_ok(), allowed);
+            drop(prefix);
+            let resolved = reader
+                .read_private_path(
+                    &fixture.volume,
+                    "secrets",
+                    "secrets/key",
+                    Some(&selected),
+                    4096,
+                    Some(caller.capabilities()),
+                    Some(&io),
+                )?
+                .await;
+            assert_eq!(resolved.is_ok(), allowed);
+            drop(resolved);
+            drop(io);
+            let _ = work.receipt();
+            if let Some(previous) = retained.replace(work.live_allocation_bytes()) {
+                assert_eq!(
+                    work.live_allocation_bytes(),
+                    previous,
+                    "warm reads retain no request storage"
+                );
+            }
+        }
     }
+    // Decoded pages legitimately retain their birth ledger until the cache
+    // owner retires. Request allocations must plateau above and all cache
+    // custody must return to the exact baseline when that owner is dropped.
+    drop(reader);
+    drop(fixture);
+    let _ = work.receipt();
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 
