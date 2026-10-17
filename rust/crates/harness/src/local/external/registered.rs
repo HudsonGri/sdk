@@ -82,8 +82,12 @@ impl LocalHarness {
         Box::pin(async move {
             let (revision, terminal) = {
                 let (_binding, _) = self.binding(task).await?;
-                let revision = self.runtime.task_host().workflow_revision(task).await?;
-                if previous == Some(revision) {
+                let revision = self
+                    .runtime
+                    .task_host()
+                    .idle_workflow_revision(task)
+                    .await?;
+                if revision.is_some() && previous == revision {
                     return Ok((previous, None));
                 }
                 let (cursor, terminal) =

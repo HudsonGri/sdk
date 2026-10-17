@@ -1,6 +1,9 @@
 //! Main durable task operations.
 use super::*;
 
+#[cfg(feature = "filesystem")]
+mod idle;
+
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Suspends the exact lease with optional atomic execution and workflow guards.
     pub async fn suspend_workflow<'a, 'w: 'a>(
@@ -223,20 +226,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator.lock().await.changes().await
     }
 
-    /// Authenticated task revision after folding the accepted scheduler prefix.
+    /// Authenticated revision only while no retained command or input can run.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn workflow_revision(&self, task: TaskId) -> Result<u64> {
+    pub(crate) async fn idle_workflow_revision(&self, task: TaskId) -> Result<Option<u64>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
-        Ok(coordinator
-            .observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                OperationId::from_bytes(task.into_bytes()),
-                &mut None,
-            )?
-            .revision)
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+            &mut None,
+        )?;
+        Ok(idle::revision(operation))
     }
 
     /// Wakes the exact command wait with its stable null input.

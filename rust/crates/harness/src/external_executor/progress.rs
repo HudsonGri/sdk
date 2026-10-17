@@ -41,14 +41,14 @@ pub(crate) async fn follow<
 // the await must remain unprocessed, even if the work reads some newer state.
 pub(crate) async fn at_revision<T, F: Future<Output = Result<Option<T>>>>(
     previous: Option<u64>,
-    observed: u64,
+    observed: Option<u64>,
     advance: impl FnOnce() -> F,
 ) -> Result<(Option<u64>, Option<T>)> {
-    if previous == Some(observed) {
+    if observed.is_some() && previous == observed {
         return Ok((previous, None));
     }
     let result = advance().await?;
-    Ok((Some(observed), result))
+    Ok((observed, result))
 }
 
 #[cfg(all(test, not(acyclic_harness_loom)))]

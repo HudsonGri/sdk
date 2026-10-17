@@ -162,7 +162,7 @@ fn revision_model(broken: bool) {
                     let state = &state;
                     async move {
                         let revision = state.lock().unwrap().revision;
-                        let (cursor, result) = at_revision(previous, revision, || async {
+                        let (cursor, result) = at_revision(previous, Some(revision), || async {
                             let ready = state.lock().unwrap().ready;
                             future::yield_now().await;
                             Ok(ready.then_some(7))
@@ -217,22 +217,23 @@ proptest::proptest! {
     #[test]
     fn only_the_processed_revision_can_skip_work(
         previous in proptest::option::of(proptest::prelude::any::<u64>()),
-        observed in proptest::prelude::any::<u64>(), same in proptest::prelude::any::<bool>(),
+        observed in proptest::option::of(proptest::prelude::any::<u64>()), same in proptest::prelude::any::<bool>(),
     ) {
-        let observed = if same { previous.unwrap_or(observed) } else { observed };
+        let observed = if same { previous } else { observed };
+        let advance = observed.is_none() || previous != observed;
         let called = std::cell::Cell::new(0);
         let result = futures::executor::block_on(at_revision(previous, observed, || async {
             called.set(called.get() + 1);
             Ok(Some(7))
         })).unwrap();
-        proptest::prop_assert_eq!(called.get(), usize::from(previous != Some(observed)));
-        proptest::prop_assert_eq!(result, (Some(observed), (previous != Some(observed)).then_some(7)));
+        proptest::prop_assert_eq!(called.get(), usize::from(advance));
+        proptest::prop_assert_eq!(result, (observed, advance.then_some(7)));
         let result = futures::executor::block_on(at_revision(previous, observed, || async {
             Err::<Option<()>, _>(crate::Error::Conflict("retained failure".into()))
         }));
         proptest::prop_assert!(match result {
-            Ok((cursor,None)) => previous == Some(observed) && cursor == previous,
-            Err(crate::Error::Conflict(message)) => previous != Some(observed) && message == "retained failure",
+            Ok((cursor,None)) => !advance && cursor == previous,
+            Err(crate::Error::Conflict(message)) => advance && message == "retained failure",
             _ => false,
         });
     }
