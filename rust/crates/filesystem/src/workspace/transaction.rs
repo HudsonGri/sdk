@@ -81,15 +81,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), WorkspaceError> {
         let copied = copy_work(std::mem::size_of::<T>() as u64);
-        accounting.admit(copied)?;
-        operations.allocation.absorb(&mut operation.allocation)?;
-        operations.bytes = operations
-            .bytes
-            .checked_add(operation.bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        operations.value.push(operation.value);
-        accounting.record_completed(copied)?;
-        Ok(())
+        // Funding moves with the value inside the reserved copy, so a failed
+        // transfer never leaves a pushed value detached from its allocation.
+        accounting.perform(copied, || {
+            operations.allocation.absorb(&mut operation.allocation)?;
+            operations.bytes = operations
+                .bytes
+                .checked_add(operation.bytes)
+                .ok_or(crate::WorkError::Overflow)?;
+            operations.value.push(operation.value);
+            Ok::<_, WorkspaceError>(())
+        })?
     }
 
     pub(crate) async fn apply_authored(
