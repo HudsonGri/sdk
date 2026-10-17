@@ -5,10 +5,18 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 const installed = process.env.FS_INSTALLED_PACKAGE_ROOT ?? process.argv[2];
-assert.ok(installed, "pass the installed @acyclic-labs/fs package root");
-const native = await import(pathToFileURL(join(resolve(installed), "dist/native.js")).href);
+assert.ok(installed, "pass the installed package root or the native .node binding");
+const native = installed.endsWith(".node") ? {
+  openNativeFs: ({ root, objectCache }) => createRequire(import.meta.url)(resolve(installed))
+    .NativeFs.open(root, objectCache),
+  DEFAULT_OBJECT_CACHE_OPTIONS: {
+    maximumEntries: 8, maximumBytes: 1_048_576n,
+    maximumInFlight: 2, maximumWaitersPerObject: 2,
+  },
+} : await import(pathToFileURL(join(resolve(installed), "dist/native.js")).href);
 const child = promisify(execFile);
 const read = (path) => child(process.execPath, ["-e",
   "process.stdout.write(require('node:fs').readFileSync(process.argv[1]))", path,
@@ -22,7 +30,7 @@ const engine = await native.openNativeFs({
 });
 try {
   const workspace = await engine.createWorkspace("authenticated-mount");
-  await workspace.write("/content", new TextEncoder().encode("original"));
+  await workspace.write("/content", Buffer.from("original"));
   for (const writable of [false, true]) {
     const destination = await mkdtemp(join(root, writable ? "write-" : "read-"));
     const mount = await workspace.mount(destination, {
