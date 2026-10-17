@@ -168,7 +168,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
         )
         .await;
         assert!(admitted.is_ok(), "{admitted:?}");
-        let read_only = Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]);
+        let read_only = crate::Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]);
         let denied = super::super::checkout_tools::access::require_mount_access(
             view.workspace(),
             &mounts,
