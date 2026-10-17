@@ -1,13 +1,11 @@
 use super::{TestResult, goals::GoalCase, matchers};
 use acyclic_harness::{
-    Admission, IdempotencyKey, LocalHarness, OperationId,
+    IdempotencyKey, LocalHarness,
     context::CompactionPolicy,
-    conversation::{FileDescriptor, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
-    filesystem::{FilesystemHost, WorkspaceMutation, workspace_ref},
+    conversation::{FileDescriptor, FileRef, Limits},
+    filesystem::{WorkspaceMutation, workspace_ref},
     goal::GoalView,
     model::{Model, ModelContent, ModelRole},
-    resources::ProviderRef,
-    runtime::RuntimeTask,
     test_support::{ScriptedModelProvider, local_harness_config, local_task_stream},
 };
 use acyclic_stream::{Record, StreamPath, StreamProvider};
@@ -59,34 +57,21 @@ async fn goal(harness: &LocalHarness) -> acyclic_harness::Result<GoalView> {
 }
 
 pub(super) async fn run(mut case: GoalCase) -> TestResult {
-    let directory = super::diff_workspace::temporary()?;
-    acyclic_native_runtime::initialize_native_io_services().map_err(|error| error.to_string())?;
-    let files = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
-    let provider_ref = ProviderRef::new(
-        "e2e-goal".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let project = VolumeRef::new(
-        provider_ref.clone(),
-        "project".into(),
-        VolumeClass::Project,
-        VolumeOwner::Project("e2e".into()),
-        &mut None,
-    )?;
-    FilesystemHost::new(files, &provider_ref, None)?
-        .create_volume(&project)
-        .await?;
+    let temporary = super::local_workspace::temporary()?;
+    let directory = temporary.path().join("filesystem");
+    std::fs::create_dir(&directory)?;
+    let state = temporary.path().join("state");
+    let (_, project, _, reader) =
+        super::local_workspace::seed(&directory, &Default::default()).await?;
     let provider = Arc::new(ScriptedModelProvider::new(std::mem::take(&mut case.turns)));
     let config = local_harness_config(
-        directory.path(),
+        &directory,
         (
             Model::new("scripted".into(), "goal".into(), "1".into(), Value::Null)?,
             provider.clone(),
         ),
     )?
-    .state_directory(directory.path().join("state"))
+    .state_directory(&state)
     .volume(project.clone())
     .compaction(CompactionPolicy::Disabled)
     .limits(Limits {
@@ -123,12 +108,8 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     };
     let stream = local_task_stream(&harness);
     let path = StreamPath::new("harness/v3/coordinator/events")?;
-    let operation = OperationId::new();
-    let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
-        harness.submit(operation, &case.prompt).await?
-    else {
-        return Err("goal task was not durably admitted".into());
-    };
+    let (operation, task_id, status) =
+        super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
     let mut followed = stream.follow(path.clone(), 0).await?;
     let mut frames = Vec::new();
     let result = {
@@ -158,6 +139,7 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
         (Some(expected), Err(error)) if error.to_string().contains(expected) => {}
         _ => return Err(format!("unexpected goal runtime result: {result:?}").into()),
     }
+    super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     matchers::ordered(&case.expect.frames, &frames, "goal wire frames")?;
     let mut declared = Vec::new();
     let mut completed = Vec::new();
@@ -221,21 +203,7 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
             .collect::<Result<Vec<_>, _>>()?;
         matchers::ordered(expected, &requests, "goal model requests")?;
     }
-    for (path, expected) in &case.expect.files {
-        let actual = harness
-            .filesystem()
-            .read(&workspace, None, &format!("/{path}"), 4096, None)
-            .await;
-        match (expected, actual) {
-            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
-            (expected, actual) => {
-                return Err(
-                    format!("goal file {path}: expected {expected:?}, got {actual:?}").into(),
-                );
-            }
-        }
-    }
+    check_files(&harness, &case.expect.files).await?;
     if let Some(generation) = seeded {
         for mutation in mutations {
             if let WorkspaceMutation::PutFile { path, bytes } = mutation {
@@ -255,13 +223,13 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     drop(stream);
     drop(harness);
     let config = local_harness_config(
-        directory.path(),
+        &directory,
         (
             Model::new("scripted".into(), "goal".into(), "1".into(), Value::Null)?,
             provider.clone(),
         ),
     )?
-    .state_directory(directory.path().join("state"))
+    .state_directory(&state)
     .volume(project.clone())
     .compaction(CompactionPolicy::Disabled)
     .limits(Limits {
@@ -275,6 +243,33 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     }
     if provider.requests().len() != count {
         return Err("reopening a goal task redispatched the model".into());
+    }
+    check_files(&reopened, &case.expect.files).await?;
+    Ok(())
+}
+
+async fn check_files(
+    harness: &LocalHarness,
+    expected: &std::collections::BTreeMap<String, Option<String>>,
+) -> TestResult {
+    let workspace = workspace_ref(
+        harness.scratch().provider().clone(),
+        &harness.scratch().storage_name(&mut None)?,
+    )?;
+    for (path, expected) in expected {
+        let actual = harness
+            .filesystem()
+            .read(&workspace, None, &format!("/{path}"), 4096, None)
+            .await;
+        match (expected, actual) {
+            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
+            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (expected, actual) => {
+                return Err(
+                    format!("goal file {path}: expected {expected:?}, got {actual:?}").into(),
+                );
+            }
+        }
     }
     Ok(())
 }

@@ -35,6 +35,7 @@ pub(super) struct Expectations {
     pub view: Option<Value>,
     pub view_error: Option<String>,
     pub frames: Vec<Value>,
+    pub statuses: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
     pub requests: Option<Vec<Value>>,
 }
@@ -60,6 +61,7 @@ impl GoalCase {
             return Err("assert final GOAL.md bytes or absence".into());
         }
         if case.max_steps == 0
+            || case.expect.statuses.len() < 2
             || case.expect.frames.is_empty()
             || case
                 .expect
