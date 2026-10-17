@@ -17,9 +17,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .authority_head
                 .ok_or(FsError::InvalidAuthorityHistory)?
                 .sequence;
-            if let Some(position) = self.observed_generation.position(generation) {
-                return Ok((position, head));
-            }
             let positions = &self.volume.fs.inner.generation_positions;
             let key = (self.volume.id, generation);
             accounting.charge(WorkCounters {
