@@ -100,11 +100,10 @@ impl<'a> TranscriptRows<'a> {
         } else if self.separator() && at == end {
             self.answer.text().len()..self.source_offset()
         } else {
-            let range = self
-                .tools
-                .expect("tool source")
-                .index
-                .source(at - self.folded_offset(), 1);
+            assert!(self.tools.is_some(), "tool source");
+            let range = self.tools.map_or(0..0, |tools| {
+                tools.index.source(at - self.folded_offset(), 1)
+            });
             self.source_offset() + range.start..self.source_offset() + range.end
         }
     }
@@ -154,10 +153,13 @@ impl<'a> TranscriptRows<'a> {
 
     pub(crate) fn range(self, row: usize) -> Range<usize> {
         if row < self.answer.rows().len() {
-            self.answer.ranges()[row].clone()
+            self.answer.ranges().get(row).cloned().unwrap_or(0..0)
         } else {
-            let range = &self.tools.expect("tool source").ranges()[row - self.answer.rows().len()];
-            self.source_offset() + range.start..self.source_offset() + range.end
+            self.tools
+                .and_then(|tools| tools.ranges().get(row - self.answer.rows().len()))
+                .map_or(0..0, |range| {
+                    self.source_offset() + range.start..self.source_offset() + range.end
+                })
         }
     }
 
@@ -173,12 +175,11 @@ impl<'a> TranscriptRows<'a> {
         let (source, row, offset) = if row < self.answer.rows().len() {
             (self.answer, row, 0)
         } else {
-            (
-                self.tools.expect("tool source"),
-                row - self.answer.rows().len(),
-                self.source_offset(),
-            )
+            let Some(tools) = self.tools else {
+                return;
+            };
+            (tools, row - self.answer.rows().len(), self.source_offset())
         };
-        source.render_ranges(row, offset, matches, selected, style, area, buffer);
+        source.render_ranges((row, offset), matches, selected, style, area, buffer);
     }
 }
