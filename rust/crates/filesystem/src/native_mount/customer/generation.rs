@@ -43,7 +43,7 @@ where
             .require_access_view()?
             .current()
             .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
-        let now = super::super::adapter::access_time()?;
+        let now = super::super::adapter::access::access_time()?;
         if !view.allows_every_path(
             &[crate::access::Action::List, crate::access::Action::Read],
             now,
