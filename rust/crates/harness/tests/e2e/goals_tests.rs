@@ -188,6 +188,8 @@ fn goal_schema_rejects_unknown_fields_and_vacuous_assertions() {
         ("view_error", json!("error")),
         ("statuses", json!([])),
         ("statuses", json!([{}])),
+        ("statuses", json!([{}, {}])),
+        ("statuses", json!([{"state":true}, {"state":"completed"}])),
         ("frames", json!([])),
         ("frames", json!([{}])),
         ("frames", json!(true)),

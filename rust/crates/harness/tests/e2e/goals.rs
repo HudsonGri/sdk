@@ -62,6 +62,11 @@ impl GoalCase {
         }
         if case.max_steps == 0
             || case.expect.statuses.len() < 2
+            || case
+                .expect
+                .statuses
+                .iter()
+                .any(|status| status.get("state").and_then(Value::as_str).is_none())
             || case.expect.frames.is_empty()
             || case
                 .expect
