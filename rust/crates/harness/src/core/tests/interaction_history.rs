@@ -26,7 +26,13 @@ struct History {
 
 impl History {
     fn new(index: u8) -> Self {
-        let request = Interaction::approval("approve".into(), operation(12), [3; 32]).unwrap();
+        let request = Interaction::approval(
+            "approve".into(),
+            operation(12),
+            [3; 32],
+            crate::interaction::ApprovalSubject::Opaque {},
+        )
+        .unwrap();
         let bytes = serde_json::to_vec(&request).unwrap();
         let mut id = [5; 16];
         id[0] = index;

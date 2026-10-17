@@ -27,7 +27,7 @@ pub use resolution::InteractionResolution;
 mod receipt;
 pub use receipt::ResolutionReceipt;
 mod request;
-pub use request::{ChoiceOption, Interaction};
+pub use request::{ApprovalSubject, ChoiceOption, Interaction};
 mod response;
 pub use response::InteractionResponse;
 mod codec;

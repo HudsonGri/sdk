@@ -132,6 +132,7 @@ pub(crate) fn open_prepared_approval<'a>(
             prompt: prompt.0,
             operation_id: descriptor.operation,
             action_digest: pi_operator::parse_digest(descriptor.approval_digest)?,
+            subject: acyclic_harness::interaction::ApprovalSubject::Opaque {},
         };
         let id = acyclic_harness::durable_host::task_interaction_id(
             task,

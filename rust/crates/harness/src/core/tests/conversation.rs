@@ -4,7 +4,12 @@ use super::*;
 fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
     use crate::interaction::{ApprovalBinding, Interaction, InteractionKind};
     let mut reducer = reducer_fixture();
-    let request = Interaction::approval("approve exact effect".into(), operation(12), [3; 32])?;
+    let request = Interaction::approval(
+        "approve exact effect".into(),
+        operation(12),
+        [3; 32],
+        crate::interaction::ApprovalSubject::Opaque {},
+    )?;
     let bytes = serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     let ticket = InteractionTicket {
         id: uuid::Uuid::from_bytes([5; 16]),

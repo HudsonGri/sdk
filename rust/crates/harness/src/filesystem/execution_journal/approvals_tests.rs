@@ -6,7 +6,7 @@ use crate::{
     conversation::FileDescriptor,
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command},
     durable_host::tests::fixture::Fixture,
-    interaction::{ApprovalDecisionFile, ApprovalVerdict, InteractionResolution},
+    interaction::{ApprovalDecisionFile, ApprovalSubject, ApprovalVerdict, InteractionResolution},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskFiles},
 };
 use acyclic_fs::{MemoryAuthorityBackend, MemoryObjectBackend};
@@ -124,6 +124,14 @@ async fn owner_scope(fixture: &Fixture) -> Result<Scope> {
         .clone())
 }
 
+fn tool_subject() -> ApprovalSubject {
+    ApprovalSubject::Tool {
+        tool: "bash".into(),
+        call_id: "call-1".into(),
+        arguments: serde_json::json!({"command": "rm -rf build"}),
+    }
+}
+
 async fn approvals(files: &TaskFiles<MemoryStream>) -> Result<Vec<FileValue>> {
     Ok(files.snapshot(&Query::Approvals(task()), 16).await?.files)
 }
@@ -204,6 +212,7 @@ async fn approval_files_are_owner_copies_published_before_execution_sees_a_decis
         "Run the exact tool".into(),
         OperationId::from_bytes([81; 16]),
         [5; 32],
+        tool_subject(),
     )?;
 
     // Cut 1: the request is admitted but its file is lost; reopening republishes it.
@@ -425,6 +434,7 @@ async fn a_submitted_decision_settles_only_its_own_version() -> Result<()> {
         "Run the exact tool".into(),
         OperationId::from_bytes([81; 16]),
         [5; 32],
+        tool_subject(),
     )?;
     trail.open_interaction(id, &request, None)?.await?;
     let opened = approvals(&files).await?;

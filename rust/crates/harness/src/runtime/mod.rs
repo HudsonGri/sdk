@@ -14,7 +14,7 @@ use crate::{
     executor::ModelEventAdmission,
     extension::ExtensionRuntime,
     interaction::{
-        Interaction, InteractionOutcome, InteractionResolution, InteractionResponse,
+        ApprovalSubject, Interaction, InteractionOutcome, InteractionResolution, InteractionResponse,
         InteractionTicket, ResolutionReceipt,
     },
     live::{TaskGroup, TaskHandle},

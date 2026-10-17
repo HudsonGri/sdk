@@ -27,7 +27,12 @@ async fn initialized(reason: &str) -> Result<(Journal, InteractionId, OperationI
     let journal = journal(&fixture, &conversation, files.clone()).await?;
     let id = InteractionId::from_bytes([86; 16]);
     let operation = OperationId::from_bytes([TASK; 16]);
-    let request = Interaction::approval("Install".into(), operation, [5; 32])?;
+    let request = Interaction::approval(
+        "Install".into(),
+        operation,
+        [5; 32],
+        ApprovalSubject::Opaque {},
+    )?;
     journal.open_interaction(id, &request, None)?.await?;
     let request = approvals(&files).await?.remove(0).bytes;
     let sha = FileDescriptor::from_bytes(&request, "application/json", &mut None)?;

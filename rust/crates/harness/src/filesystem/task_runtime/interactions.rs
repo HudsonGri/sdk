@@ -128,8 +128,18 @@ where
             Some(Interaction::Approval {
                 operation_id,
                 action_digest,
+                subject:
+                    crate::interaction::ApprovalSubject::Tool {
+                        tool,
+                        call_id,
+                        arguments,
+                    },
                 ..
-            }) if operation_id == invocation.operation_id && action_digest == digest => {}
+            }) if operation_id == invocation.operation_id
+                && action_digest == digest
+                && tool == invocation.name
+                && call_id == invocation.call_id
+                && arguments == invocation.arguments => {}
             Some(_) => {
                 return Err(observed::boundary(
                     io,

@@ -166,6 +166,22 @@ pub(super) fn interaction_request_owned_bytes(
             }
             Ok(owned)
         }
-        Interaction::Approval { prompt, .. } => Ok(prompt.capacity() as u64),
+        Interaction::Approval {
+            prompt, subject, ..
+        } => match subject {
+            ApprovalSubject::Tool {
+                tool,
+                call_id,
+                arguments,
+            } => (prompt.capacity() as u64)
+                .checked_add(tool.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(call_id.capacity() as u64))
+                .ok_or_else(overflow)?
+                .checked_add(crate::executor::json::json_value_logical_owned_bytes(
+                    arguments,
+                )?)
+                .ok_or_else(overflow),
+            ApprovalSubject::Opaque {} => Ok(prompt.capacity() as u64),
+        },
     }
 }

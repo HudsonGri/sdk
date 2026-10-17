@@ -1,11 +1,23 @@
 #![no_main]
 
-use acyclic_harness::interaction::ApprovalDecisionFile;
+use acyclic_harness::{
+    executor::json::{JsonBounds, JsonValueSchema, json_from_slice_bounded},
+    interaction::{ApprovalDecisionFile, Interaction},
+};
 use libfuzzer_sys::fuzz_target;
 
-// The approver-written decision body is the only parser on the approval file
-// surface. Accepted bodies are canonical, bounded and bind exactly one cut.
+// Both approval file bodies use their production parsers. Accepted request
+// arguments survive the native schema and serialization without substitution.
 fuzz_target!(|bytes: &[u8]| {
+    if bytes.len() > 4096 {
+        return;
+    }
+    if let Ok(request @ Interaction::Approval { .. }) = request(bytes) {
+        if request.validate(&mut None).is_ok() {
+            let encoded = serde_json::to_vec(&request).unwrap();
+            assert_eq!(self::request(&encoded).unwrap(), request);
+        }
+    }
     let Ok(decision) = ApprovalDecisionFile::decode(bytes, 4096) else {
         return;
     };
@@ -28,3 +40,19 @@ fuzz_target!(|bytes: &[u8]| {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     );
 });
+
+fn request(bytes: &[u8]) -> acyclic_harness::Result<Interaction> {
+    json_from_slice_bounded(
+        std::marker::PhantomData::<Interaction>,
+        bytes,
+        JsonBounds {
+            maximum_bytes: bytes.len() as u64,
+            maximum_items: bytes.len() as u64,
+            maximum_depth: 256,
+        },
+        bytes.len() as u64,
+        Some(acyclic_harness::wire::ErrorCode::Invalid),
+        Some(JsonValueSchema::Interaction),
+        &mut |_| Ok(()),
+    )
+}

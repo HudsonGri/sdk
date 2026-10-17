@@ -185,7 +185,12 @@ fn native_answer_error_retains_original_response_cause_after_request_drop() -> R
 fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
     let operation_id = OperationId::from_bytes([4; 16]);
-    let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
+    let request = Interaction::approval(
+        "Proceed?".into(),
+        operation_id,
+        [5; 32],
+        ApprovalSubject::Opaque {},
+    )?;
     let request_bytes =
         serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     let ticket = InteractionTicket {
@@ -309,7 +314,12 @@ fn staged_question_and_answer_are_schema_validated_before_ref_publication() -> R
 #[test]
 fn approval_binding_cannot_change_with_display_json() -> Result<()> {
     let operation_id = OperationId::from_bytes([4; 16]);
-    let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
+    let request = Interaction::approval(
+        "Proceed?".into(),
+        operation_id,
+        [5; 32],
+        ApprovalSubject::Opaque {},
+    )?;
     let request_bytes =
         serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
     let mut ticket = InteractionTicket {
@@ -399,5 +409,78 @@ fn decision_file_rejects_unbound_bodies() {
             ApprovalDecisionFile::decode(invalid.as_bytes(), 4096).is_err(),
             "{invalid}"
         );
+    }
+}
+
+#[test]
+fn approval_subject_names_the_exact_tool_call() -> Result<()> {
+    let tool = |tool: &str, call_id: &str| ApprovalSubject::Tool {
+        tool: tool.into(),
+        call_id: call_id.into(),
+        arguments: json!({"command": "rm -rf build", "timeout": 30}),
+    };
+    let approval = |subject| {
+        Interaction::approval(
+            "Run?".into(),
+            OperationId::from_bytes([1; 16]),
+            [2; 32],
+            subject,
+        )
+    };
+    let request = approval(tool("bash", "call-1"))?;
+    let value = serde_json::to_value(&request).unwrap();
+    assert_eq!(value["subject"]["arguments"]["command"], "rm -rf build");
+    assert_eq!(
+        serde_json::from_value::<Interaction>(value.clone()).unwrap(),
+        request
+    );
+    // The exact arguments are retained, and accounted, by the request.
+    let opaque = approval(ApprovalSubject::Opaque {})?;
+    assert!(request.owned_bytes()? > opaque.owned_bytes()?);
+    // A tool subject must name its call.
+    for (name, call) in [("", "call-1"), ("bash", "")] {
+        assert!(approval(tool(name, call)).is_err());
+    }
+    // Unknown subject kinds, extra fields and a missing subject never decode.
+    let mut unknown = value.clone();
+    unknown["subject"]["kind"] = json!("shell");
+    let mut extra = value.clone();
+    extra["subject"]["extra"] = json!(1);
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("subject");
+    for invalid in [unknown, extra, missing] {
+        assert!(serde_json::from_value::<Interaction>(invalid).is_err());
+    }
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+    #[test]
+    fn approval_subject_round_trips_exact_arguments_and_rejects_substitution(
+        strings in proptest::collection::vec(".{0,24}", 0..6),
+        number in proptest::prelude::any::<i32>(),
+        flag in proptest::prelude::any::<bool>(),
+    ) {
+        let arguments = json!({"strings": strings, "number": number, "flag": flag,
+            "$serde_json::private::RawValue": ["literal", false]});
+        let request = Interaction::approval("Run?".into(), OperationId::from_bytes([1;16]), [2;32],
+            ApprovalSubject::Tool { tool: "tool".into(), call_id: "call".into(), arguments: arguments.clone() }).unwrap();
+        let bytes = serde_json::to_vec(&request).unwrap();
+        let ticket = InteractionTicket { id: Uuid::from_bytes([3;16]), kind: InteractionKind::Approval,
+            request: file("approval.json", &bytes).unwrap(), deadline_unix_ms: None,
+            approval: Some(ApprovalBinding { operation_id: OperationId::from_bytes([1;16]), action_digest: [2;32] }) };
+        proptest::prop_assert_eq!(ticket.validate_request_bytes(&bytes, &mut None).unwrap().0, request.clone());
+        let native = crate::executor::json::json_from_slice_bounded(
+            std::marker::PhantomData::<Interaction>, &bytes,
+            crate::executor::json::JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 },
+            bytes.len() as u64, Some(crate::wire::ErrorCode::Invalid),
+            Some(crate::executor::json::JsonValueSchema::Interaction), &mut |_| Ok(()),
+        ).unwrap();
+        proptest::prop_assert_eq!(native, request.clone());
+        let mut substituted = serde_json::to_value(&request).unwrap();
+        substituted["subject"]["arguments"] = serde_json::Value::Null;
+        let altered = serde_json::to_vec(&substituted).unwrap();
+        proptest::prop_assert!(ticket.validate_request_bytes(&altered, &mut None).is_err());
     }
 }
