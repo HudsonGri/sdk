@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc};
 
 type ServiceFs<P, O> = Fs<StreamAuthorityStore<P>, LogicalObjectStore<O>>;
 
-async fn filesystem<P: StreamProvider, O: ObjectsProvider>(
+async fn filesystem<P: StreamProvider, O: ObjectsProvider + 'static>(
     stream: Arc<P>,
     objects: Arc<O>,
     durable: bool,
@@ -55,7 +55,7 @@ fn cases() -> TestResult<Vec<(PathBuf, Value)>> {
     Ok(cases)
 }
 
-async fn compare<P: StreamProvider, O: ObjectsProvider>(
+async fn compare<P: StreamProvider, O: ObjectsProvider + 'static>(
     stream: Arc<P>,
     filesystem: ServiceFs<P, O>,
 ) -> TestResult<usize> {
