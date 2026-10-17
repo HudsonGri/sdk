@@ -168,9 +168,11 @@ async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) 
     )
     .await?
     .value;
+    let identity = uuid::Uuid::from_bytes(acyclic_fs::OperationId::new().into_bytes());
+    let name = format!("readonly-import-{identity}");
     let lazy = LazyWorkspace::attach(
         &acyclic_fs::Fs::memory(),
-        "readonly-import",
+        &name,
         Arc::new(demand),
         MemoryLazyWorkspaceStore::default(),
         acyclic_fs::VolumeInitialization {
