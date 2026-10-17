@@ -167,7 +167,7 @@ impl LocalHarness {
         })
     }
 
-    fn service_child<'a>(
+    pub(super) fn service_child<'a>(
         &'a self,
         files: Arc<Files>,
         reference: Component,
@@ -376,6 +376,8 @@ impl LocalHarness {
                     advance_fold(&mut values, &mut generation, change);
                     continue;
                 }
+                #[cfg(all(test, not(acyclic_harness_loom)))]
+                super::cuts::stop("status", OperationId::from_bytes(child.into_bytes()))?;
                 let (child_files, context) = self.child_files(child, files.as_ref()).await?;
                 let journal = self.runtime.workflow_journal_with_context(&context)?;
                 drop(context);

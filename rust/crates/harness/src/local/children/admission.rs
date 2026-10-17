@@ -436,6 +436,8 @@ impl LocalHarness {
         ) {
             return Err(Error::Indeterminate(preparation_operation));
         }
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        super::cuts::stop("prepared", operation)?;
         let child_id = workspace
             .filesystem
             .workspace_id(project.storage_name(&mut None)?)
@@ -456,6 +458,8 @@ impl LocalHarness {
                 return Err(Error::Indeterminate(operation_id));
             }
         };
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        super::cuts::stop("admitted", operation)?;
         let child = io.sdk(
             workspace
                 .filesystem

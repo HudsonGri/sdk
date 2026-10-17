@@ -3,6 +3,8 @@ use crate::{executor::TurnOutput, runtime::TaskSpawner, scheduler::LeaseFence};
 
 #[cfg(feature = "native-execution")]
 mod admission;
+#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+mod cuts;
 #[cfg(feature = "native-execution")]
 mod commands;
 #[cfg(feature = "native-execution")]
