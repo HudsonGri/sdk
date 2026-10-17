@@ -24,10 +24,10 @@ proptest! {
         prop_assert_eq!(name(parsed, FIXED).unwrap().to_bytes(), value.as_slice());
         prop_assert_eq!(parsed.len(), bytes.len());
         for at in [32, 36, 104, 108, 112, 116, 128, 132] {
-            prop_assert_eq!(super::macos_record::u32_at(parsed, at).unwrap().to_ne_bytes(), facts[at - 32..at - 28]);
+            prop_assert_eq!(super::macos_record::u32_at(parsed, at).unwrap().to_ne_bytes(), <[u8; 4]>::try_from(&facts[at - 32..at - 28]).unwrap());
         }
         for at in [40, 48, 56, 64, 72, 80, 88, 96, 120, 136] {
-            prop_assert_eq!(super::macos_record::i64_at(parsed, at).unwrap().to_ne_bytes(), facts[at - 32..at - 24]);
+            prop_assert_eq!(super::macos_record::i64_at(parsed, at).unwrap().to_ne_bytes(), <[u8; 8]>::try_from(&facts[at - 32..at - 24]).unwrap());
         }
         // Negative control: an offset into the fixed metadata cannot name an entry.
         let mut broken = bytes.clone();
