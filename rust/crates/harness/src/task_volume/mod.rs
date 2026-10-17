@@ -379,8 +379,28 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// Creates one file only if absent at the exact query generation. Unlike an
     /// idempotent append, an existing identical file is still a failed creation.
     pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.publish(expected, write, Vec::new(), None, true, None)
+        self.create_if(expected, write, Vec::new(), None, None)
             .await
+    }
+
+    /// Creates an absent file under the same owner and deadline conditions as append.
+    pub async fn create_if(
+        &self,
+        expected: Generation,
+        write: &Write,
+        conditions: Vec<CommitCondition>,
+        deadline_unix_millis: Option<u64>,
+        work: NativeWork<'_>,
+    ) -> Result<Generation> {
+        self.publish(
+            expected,
+            write,
+            conditions,
+            deadline_unix_millis,
+            true,
+            work,
+        )
+        .await
     }
 
     async fn publish(

@@ -5,6 +5,7 @@ use crate::{
     filesystem::FilesystemContentVerifier,
 };
 
+pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
 
@@ -97,7 +98,7 @@ impl LocalHarness {
         let hook_configuration = if self.hooks.is_empty() {
             None
         } else {
-            Some(settings::capture_hooks(&self.hooks, publisher, self.limits).await?)
+            Some(self.hooks.publish(publisher, self.limits).await?)
         };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();

@@ -28,6 +28,27 @@ fn json_value() -> impl Strategy<Value = Value> {
 }
 
 proptest! {
+    // Property: retaining a decision as an outcome file preserves every field,
+    // including nested replacement arguments, escaped text and empty contexts.
+    #[test]
+    fn retained_output_round_trip(
+        blocked in prop::option::of(".{0,48}"),
+        approval in prop::option::of(".{0,48}"),
+        context in prop::collection::vec(".{0,48}", 0..5),
+        diagnostics in prop::collection::vec(".{0,48}", 0..5),
+        updated_input in prop::option::of(
+            prop::collection::btree_map("[a-z]{1,8}", json_value(), 0..5)
+                .prop_map(|fields| Value::Object(fields.into_iter().collect())),
+        ),
+    ) {
+        let output = HookOutput { blocked, approval, additional_context: context,
+            updated_input, diagnostics };
+        let bytes = serde_json::to_vec(&output)?;
+        let decoded: HookOutput = serde_json::from_slice(&bytes)?;
+        prop_assert_eq!(&decoded, &output);
+        prop_assert_eq!(serde_json::to_vec(&decoded)?, bytes);
+    }
+
     // Property: once an earlier hook supplies approval, a block-plus-ask reply
     // moves its denial reason without allocating beyond JSON decoding.
     #[test]

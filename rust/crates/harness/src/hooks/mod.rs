@@ -6,7 +6,9 @@ use serde_json::Value;
 use std::{future::Future, sync::Arc};
 
 pub(crate) mod imports;
-use imports::Document;
+pub(crate) use imports::Document;
+#[cfg(feature = "filesystem")]
+pub(crate) mod effects;
 mod snapshot;
 mod spec;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
@@ -38,6 +40,9 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    pub(crate) fn append(&mut self, other: Self) {
+        self.bindings.extend(other.bindings);
+    }
     /// Media type for normalized rules retained as a configuration file.
     pub const MEDIA_TYPE: &'static str = "application/vnd.acyclic.hooks+json";
 
@@ -106,7 +111,7 @@ impl Hooks {
         Ok(())
     }
 
-    fn commands<'a>(
+    pub(crate) fn commands<'a>(
         &'a self,
         event: HookEvent,
         input: &'a Value,

@@ -12,6 +12,8 @@ use std::{
     time::Duration,
 };
 
+pub(crate) type HookCheck = Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+
 impl Hooks {
     /// Runs matching hooks concurrently, merging decisions in configuration order.
     /// `workspace` is the project root; `cwd` is the individual tool's directory.
@@ -20,9 +22,28 @@ impl Hooks {
         event: HookEvent,
         workspace: &Path,
         cwd: &Path,
-        mut input: Value,
+        input: Value,
         registry: &ToolRegistry,
     ) -> Result<HookOutput> {
+        self.run_checked(
+            event,
+            (workspace, cwd),
+            input,
+            registry,
+            Arc::new(|| Ok(())),
+        )
+        .await
+    }
+
+    pub(crate) async fn run_checked(
+        &self,
+        event: HookEvent,
+        paths: (&Path, &Path),
+        mut input: Value,
+        registry: &ToolRegistry,
+        check: HookCheck,
+    ) -> Result<HookOutput> {
+        let (workspace, cwd) = paths;
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
@@ -39,7 +60,7 @@ impl Hooks {
         bytes.push(b'\n');
         let request = Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes));
         self.run_commands(event, &input, registry, |hook| {
-            run_hook(Arc::clone(hook), Arc::clone(&request))
+            run_hook(Arc::clone(hook), Arc::clone(&request), Arc::clone(&check))
         })
         .await
     }
@@ -48,13 +69,17 @@ impl Hooks {
 pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
+    owner_check: HookCheck,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = HookCancellation::new();
     let cancelled = Arc::clone(&cancellation.0);
     run_blocking_io(
         move || {
-            let check = || check_cancelled(&cancelled);
+            let check = || {
+                check_cancelled(&cancelled)?;
+                owner_check()
+            };
             check().map_err(Error::process_io)?;
             let mut command = hook_command(&hook, &request.0)?;
             command

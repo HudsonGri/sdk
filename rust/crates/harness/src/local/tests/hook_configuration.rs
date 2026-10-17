@@ -130,14 +130,11 @@ async fn queued_prompts_keep_normalized_user_hooks_after_settings_change_and_reo
             ..harness.limits
         },
     ] {
-        let error = super::super::settings::capture_hooks(
-            &hooks,
-            harness.input_publisher()?.as_ref(),
-            limits,
-        )
-        .await
-        .err()
-        .expect("out-of-bounds hook file was accepted");
+        let error = hooks
+            .publish(harness.input_publisher()?.as_ref(), limits)
+            .await
+            .err()
+            .expect("out-of-bounds hook file was accepted");
         assert!(matches!(error, Error::Invalid(_)), "{error:?}");
         assert_eq!(
             harness.files.resolve(&journal, None).await?.generation,
