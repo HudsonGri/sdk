@@ -63,12 +63,11 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
                 None,
             )?
             .0;
-            let grant = ContentGrant::verify(
+            let grant = ContentGrant::verify_directory_read(
                 &fixture.issuer.verifier(&mut None)?,
                 &scope,
                 &fixture.volume,
-                VolumeOperation::Read,
-                65536,
+                "",
                 &mut None,
             )?;
             let (entered, release) = objects.pause(if kind == 4 {
@@ -132,22 +131,29 @@ async fn every_reader_refuses_disclosure_when_policy_changes_during_storage()
                         .map(|_| ()),
                 }
             };
-            let publish = async {
-                entered.await?;
+            futures::pin_mut!(read);
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                let pending = match futures::future::select(read, entered).await {
+                    futures::future::Either::Left((result, _)) => {
+                        return Err(format!(
+                            "reader {kind}, revoke={revoke} completed before storage: {result:?}"
+                        )
+                        .into());
+                    }
+                    futures::future::Either::Right((entered, pending)) => {
+                        entered?;
+                        pending
+                    }
+                };
                 if revoke {
                     access::publish_policy(&fixture, kind != 4, kind == 4).await?;
                 }
                 release
                     .send(())
                     .map_err(|_| "reader abandoned the pending payload")?;
-                Ok::<_, Box<dyn std::error::Error>>(())
-            };
-            let (result, published) =
-                tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                    futures::join!(read, publish)
-                })
-                .await?;
-            published?;
+                Ok::<_, Box<dyn std::error::Error>>(pending.await)
+            })
+            .await??;
             if revoke {
                 assert_eq!(
                     result.unwrap_err().code(),
