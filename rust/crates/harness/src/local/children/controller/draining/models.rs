@@ -1,9 +1,6 @@
 use super::*;
 use loom::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     thread,
 };
 
@@ -11,13 +8,12 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
     let signal = acyclic_fs::CancellationToken::new();
     let cancellation = acyclic_fs::CancellationToken::new();
     let drained = acyclic_fs::CancellationToken::new();
-    let first = Arc::new(AtomicBool::new(false));
-    let second = (!concurrent).then(|| Arc::new(AtomicBool::new(false)));
-    let parent_done = Arc::new(AtomicBool::new(false));
-    let mut jobs: FuturesUnordered<BoxProviderFuture<'static, Result<()>>> =
-        FuturesUnordered::new();
+    let first = AtomicBool::new(false);
+    let second = (!concurrent).then(|| AtomicBool::new(false));
+    let parent_done = AtomicBool::new(false);
+    let mut jobs: FuturesUnordered<BoxProviderFuture<'_, Result<()>>> = FuturesUnordered::new();
     let wake = signal.clone();
-    let saved = first.clone();
+    let saved = &first;
     jobs.push(Box::pin(async move {
         if concurrent {
             wake.cancelled().await;
@@ -25,7 +21,7 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
         saved.store(true, Ordering::Release);
         Ok(())
     }));
-    if let Some(saved) = second.clone() {
+    if let Some(saved) = second.as_ref() {
         jobs.push(Box::pin(async move {
             saved.store(true, Ordering::Release);
             Ok(())
@@ -33,7 +29,7 @@ fn effects(broken: bool, assert_property: bool, concurrent: bool) {
     }
     let stop = cancellation.clone();
     let fence = drained.clone();
-    let finished = parent_done.clone();
+    let finished = &parent_done;
     let parent = async move {
         // finish cancels this private token before polling the parent. The
         // passive wait's already-cancelled branch is independent of the effect
