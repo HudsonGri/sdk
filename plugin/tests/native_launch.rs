@@ -241,7 +241,7 @@ async fn selected_task_files_seed_the_native_child_and_pin_provenance_without_pa
         args["context"]=json!("native_cut");
         args["executor"]["context"]=json!({"manifest":path,"head":"invoking","sha256":digest});
         let mut rejected=args.clone();
-        rejected["executor"]["context"]["sha256"]=json!([0;32]);
+        rejected["executor"]["context"]["sha256"]=serde_json::to_value([0_u8;32])?;
         let refused=parent.reject("invalid-native-source","acyclic_spawn",rejected).await?;
         assert!(refused["Failed"]["message"].as_str().unwrap().contains("native context"));
         let operation=acyclic_harness::external_executor::request(acyclic_harness::external_executor::ExternalHost::Pi,"tool_call",
