@@ -235,6 +235,6 @@ proptest::proptest! {
             Ok((cursor,None)) => !advance && cursor == previous,
             Err(crate::Error::Conflict(message)) => advance && message == "retained failure",
             _ => false,
-        });
+        }, "revision shortcut changed the retained error or cursor");
     }
 }
