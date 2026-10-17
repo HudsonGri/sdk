@@ -31,15 +31,15 @@ pub(crate) fn enter(volume: crate::VolumeId, projection: bool) -> Result<Lease, 
     let policies = POLICIES.get_or_init(|| Arc::new(ProjectionPolicies::default()));
     #[cfg(acyclic_fs_loom)]
     let policies = &*POLICIES;
-    policies.enter(volume, projection)
+    ProjectionPolicies::enter(policies, volume, projection)
 }
 impl ProjectionPolicies {
     fn enter(
-        self: &Arc<Self>,
+        owner: &Arc<Self>,
         volume: crate::VolumeId,
         projection: bool,
     ) -> Result<Lease, crate::FsError> {
-        let mut entries = self
+        let mut entries = owner
             .entries
             .lock()
             .map_err(|_| crate::FsError::MutationNotAllowed)?;
@@ -60,7 +60,7 @@ impl ProjectionPolicies {
         };
         *count = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
         Ok(Lease {
-            owner: Arc::clone(self),
+            owner: Arc::clone(owner),
             volume,
             projection,
         })
@@ -162,7 +162,7 @@ mod properties {
                     0 | 1 => {
                         let projection = step == 0;
                         let allowed = if projection { editors.is_empty() } else { projections.is_empty() };
-                        let entered = policies.enter(volume, projection);
+                        let entered = ProjectionPolicies::enter(&policies, volume, projection);
                         prop_assert_eq!(entered.is_ok(), allowed);
                         if let Ok(lease) = entered { if projection { projections.push(lease); } else { editors.push(lease); } }
                     }
@@ -172,7 +172,7 @@ mod properties {
             }
             drop(projections); drop(editors);
             prop_assert!(policies.entries.lock().unwrap().is_empty());
-            prop_assert!(policies.enter(volume, false).is_ok());
+            prop_assert!(ProjectionPolicies::enter(&policies, volume, false).is_ok());
         }
     }
 }
