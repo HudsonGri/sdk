@@ -413,60 +413,188 @@ async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits
     Ok(())
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
-    #[test]
-    fn checkout_publication_preserves_caller_ceilings(path in "file-[a-z]{1,8}\\.txt", allowed in proptest::bool::ANY) {
-        tokio::runtime::Builder::new_current_thread().enable_all().build()
-            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?.block_on(async {
-            let (_directory, harness, publisher) = fixture().await?;
-            let ceiling = if allowed { harness.signed.capabilities().clone() } else { crate::Capabilities::default() };
-            let operation = OperationId::new();
-            let (source, _) = publisher.stage_once(operation, &path, b"original", "text/plain", &path, None, None)?.await?;
-            // Capture a real unrelated edit before obtaining the immutable
-            // replacement reference. stage_at must reject the earlier head.
-            std::fs::write(_directory.path().join("user-sibling.txt"), b"user edit").map_err(storage)?;
-            let fresh = serialized(&publisher.tools.state, async |mut state| {
-                let State { active, watcher, .. } = &mut *state;
-                let view = active.as_ref().unwrap_or_else(|| publisher.tools.workspace.view());
-                publisher.tools.capture((&publisher.tools.workspace, view), watcher, OperationId::new(), 0, PublicationPermit::Unrestricted, None).await?;
-                let host = harness.files.for_workspace(&harness.project, view.workspace().clone())?;
-                let grant = crate::conversation::ContentGrant::verify_directory_read(&harness.verifier, &harness.signed,
-                    &harness.project, "", &mut None)?;
-                let (fresh, bytes) = host.read_private_path(&harness.project, &grant, source.path(), None, 1024, None, None).await?;
-                assert_eq!(bytes.as_ref(), b"original");
-                Ok::<_, Error>(fresh)
-            }).await?;
-            assert_ne!(source.version(), fresh.version());
-            assert!(matches!(publisher.stage_at(OperationId::new(), &source, b"stale", None, None)?.await,
-                Err(Error::Conflict(_))));
-            let replacement = publisher.stage_at(OperationId::new(), &fresh, b"replaced", Some(&ceiling), None)?.await;
-            assert_eq!(replacement.is_ok(), allowed, "{:?}", replacement.as_ref().err());
-            let observed = publisher.observe_staged_once(operation, 1024, Some(&ceiling), None)?.await;
-            assert_eq!(observed.is_ok(), allowed, "{:?}", observed.as_ref().err());
-            for once in [false, true] {
-                let target = format!("{once}-{path}");
-                let operation = OperationId::new();
-                let result = if once {
-                    publisher.stage_once(operation, &target, b"new", "text/plain", &target, Some(&ceiling), None)?.await
-                } else {
-                    publisher.stage(operation, &target, b"new", "text/plain", &target, Some(&ceiling), None)?.await
-                };
-                assert_eq!(result.is_ok(), allowed, "{:?}", result.as_ref().err());
-                if allowed {
-                    // A committed reply still needs the current caller's ceiling.
-                    let empty = crate::Capabilities::default();
-                    let replay = if once {
-                        publisher.stage_once(operation, &target, b"new", "text/plain", &target, Some(&empty), None)?.await
-                    } else {
-                        publisher.stage(operation, &target, b"new", "text/plain", &target, Some(&empty), None)?.await
-                    };
-                    assert!(replay.is_err(), "cached publication bypassed the caller ceiling");
-                }
-            }
-            Ok::<_, crate::Error>(())
-        }).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-    }
+#[test]
+fn checkout_publication_preserves_caller_ceilings() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (_directory, harness, publisher) = runtime.block_on(fixture()).expect("publisher fixture");
+    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        cases: 8,
+        source_file: Some(file!()),
+        ..Default::default()
+    });
+    runner
+        .run(
+            &("file-[a-z]{1,8}\\.txt", proptest::bool::ANY),
+            |(path, allowed)| {
+                runtime
+                    .block_on(async {
+                        let ceiling = if allowed {
+                            harness.signed.capabilities().clone()
+                        } else {
+                            crate::Capabilities::default()
+                        };
+                        let operation = OperationId::new();
+                        let (source, _) = publisher
+                            .stage_once(
+                                operation,
+                                &path,
+                                b"original",
+                                "text/plain",
+                                &path,
+                                None,
+                                None,
+                            )?
+                            .await?;
+                        // Capture a real unrelated edit before obtaining the immutable
+                        // replacement reference. stage_at must reject the earlier head.
+                        std::fs::write(
+                            _directory
+                                .path()
+                                .join(format!("user-sibling-{operation}.txt")),
+                            b"user edit",
+                        )
+                        .map_err(storage)?;
+                        let fresh = serialized(&publisher.tools.state, async |mut state| {
+                            let State {
+                                active, watcher, ..
+                            } = &mut *state;
+                            let view = active
+                                .as_ref()
+                                .unwrap_or_else(|| publisher.tools.workspace.view());
+                            publisher
+                                .tools
+                                .capture(
+                                    (&publisher.tools.workspace, view),
+                                    watcher,
+                                    OperationId::new(),
+                                    0,
+                                    PublicationPermit::Unrestricted,
+                                    None,
+                                )
+                                .await?;
+                            let host = harness
+                                .files
+                                .for_workspace(&harness.project, view.workspace().clone())?;
+                            let grant = crate::conversation::ContentGrant::verify_directory_read(
+                                &harness.verifier,
+                                &harness.signed,
+                                &harness.project,
+                                "",
+                                &mut None,
+                            )?;
+                            let (fresh, bytes) = host
+                                .read_private_path(
+                                    &harness.project,
+                                    &grant,
+                                    source.path(),
+                                    None,
+                                    1024,
+                                    None,
+                                    None,
+                                )
+                                .await?;
+                            assert_eq!(bytes.as_ref(), b"original");
+                            Ok::<_, Error>(fresh)
+                        })
+                        .await?;
+                        assert_ne!(source.version(), fresh.version());
+                        assert!(matches!(
+                            publisher
+                                .stage_at(OperationId::new(), &source, b"stale", None, None)?
+                                .await,
+                            Err(Error::Conflict(_))
+                        ));
+                        let replacement = publisher
+                            .stage_at(
+                                OperationId::new(),
+                                &fresh,
+                                b"replaced",
+                                Some(&ceiling),
+                                None,
+                            )?
+                            .await;
+                        assert_eq!(
+                            replacement.is_ok(),
+                            allowed,
+                            "{:?}",
+                            replacement.as_ref().err()
+                        );
+                        let observed = publisher
+                            .observe_staged_once(operation, 1024, Some(&ceiling), None)?
+                            .await;
+                        assert_eq!(observed.is_ok(), allowed, "{:?}", observed.as_ref().err());
+                        for once in [false, true] {
+                            let target = format!("{once}-{path}");
+                            let operation = OperationId::new();
+                            let result = if once {
+                                publisher
+                                    .stage_once(
+                                        operation,
+                                        &target,
+                                        b"new",
+                                        "text/plain",
+                                        &target,
+                                        Some(&ceiling),
+                                        None,
+                                    )?
+                                    .await
+                            } else {
+                                publisher
+                                    .stage(
+                                        operation,
+                                        &target,
+                                        b"new",
+                                        "text/plain",
+                                        &target,
+                                        Some(&ceiling),
+                                        None,
+                                    )?
+                                    .await
+                            };
+                            assert_eq!(result.is_ok(), allowed, "{:?}", result.as_ref().err());
+                            if allowed {
+                                // A committed reply still needs the current caller's ceiling.
+                                let empty = crate::Capabilities::default();
+                                let replay = if once {
+                                    publisher
+                                        .stage_once(
+                                            operation,
+                                            &target,
+                                            b"new",
+                                            "text/plain",
+                                            &target,
+                                            Some(&empty),
+                                            None,
+                                        )?
+                                        .await
+                                } else {
+                                    publisher
+                                        .stage(
+                                            operation,
+                                            &target,
+                                            b"new",
+                                            "text/plain",
+                                            &target,
+                                            Some(&empty),
+                                            None,
+                                        )?
+                                        .await
+                                };
+                                assert!(
+                                    replay.is_err(),
+                                    "cached publication bypassed the caller ceiling"
+                                );
+                            }
+                        }
+                        Ok::<_, crate::Error>(())
+                    })
+                    .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))
+            },
+        )
+        .expect("caller ceiling property");
 }
 
 proptest::proptest! {
