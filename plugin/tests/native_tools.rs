@@ -24,8 +24,11 @@ struct ResultClient {
 }
 
 impl ResultClient {
-    async fn open(directory: &Path, host: &str) -> Result<Self> {
+    async fn open(directory: &Path, host: &str, binding: Option<&Path>) -> Result<Self> {
         let mut launch = command(directory);
+        if let Some(binding) = binding {
+            launch.env("ACYCLIC_HARNESS_BINDING", binding);
+        }
         if host == "codex" {
             // Codex gives MCP a small standard environment plus the manifest's
             // explicit env_vars. Hooks inherit the calling host's environment.
@@ -134,14 +137,21 @@ async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> R
                 // of the user's selected checkout. The file names its binding.
                 let mcp = directory.path().parent().unwrap().join("mcp");
                 std::fs::create_dir(&mcp)?;
-                let mut results = ResultClient::open(&mcp, host).await?;
-                let first = results.result(arguments.clone()).await?;
-                assert!(first["structuredContent"]["file"].is_object(),"{first}");
-                assert_eq!(results.result(arguments.clone()).await?,first);
-                let mut changed = arguments;
-                changed["text"] = json!("forged");
-                assert_eq!(results.result(changed).await?["isError"],true);
-                results.close().await?;
+                let binding = directory.path().parent().unwrap().join("binding.json");
+                std::fs::write(&binding,serde_json::to_vec(&json!({"provider":"local","workspace":directory.path()}))?)?;
+                let mut original = None;
+                for binding in [None, Some(binding.as_path())] {
+                    let mut results = ResultClient::open(&mcp, host, binding).await?;
+                    let first = results.result(arguments.clone()).await?;
+                    assert!(first["structuredContent"]["file"].is_object(),"{first}");
+                    if let Some(original) = &original { assert_eq!(&first,original); }
+                    assert_eq!(results.result(arguments.clone()).await?,first);
+                    let mut changed = arguments.clone();
+                    changed["text"] = json!("forged");
+                    assert_eq!(results.result(changed).await?["isError"],true);
+                    results.close().await?;
+                    original = Some(first);
+                }
                 assert_eq!(std::fs::read_dir(directory.path().parent().unwrap().join("owner/workspaces"))?.count(),1);
             }
             assert_eq!(hook(directory.path(),host,if pi {"tool_call"} else {"PreToolUse"},request).await?,answer);

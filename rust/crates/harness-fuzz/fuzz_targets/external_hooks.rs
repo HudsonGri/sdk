@@ -121,9 +121,10 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(binding) = HookBinding::from_bytes(input) {
         let encoded = serde_json::to_vec(&binding)?;
         let decoded = HookBinding::from_bytes(&encoded)?;
-        assert_eq!(decoded.requests, binding.requests);
-        assert_eq!(decoded.results, binding.results);
-        assert_ne!(decoded.requests, decoded.results);
+        assert_eq!(decoded, binding);
+        if let HookBinding::Platform {requests,results,..} = decoded {
+            assert_ne!(requests,results);
+        }
     }
     if let Ok(path) = std::str::from_utf8(input)
         && let Ok(key) = FileKey::parse(path)

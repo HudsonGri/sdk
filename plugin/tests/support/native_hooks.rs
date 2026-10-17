@@ -80,7 +80,11 @@ pub fn command(directory: &Path) -> Command {
 }
 
 pub async fn hook(directory: &Path, host: &str, event: &str, input: Value) -> Result<Value> {
-    let child = start_hook(directory, host, event, input).await?;
+    hook_using(command(directory), host, event, input).await
+}
+
+pub async fn hook_using(command: Command, host: &str, event: &str, input: Value) -> Result<Value> {
+    let child = start_hook_using(command, host, event, input).await?;
     let output = child.wait_with_output().await?;
     if !output.status.success() {
         return Err(format!(
@@ -98,7 +102,16 @@ pub async fn start_hook(
     event: &str,
     input: Value,
 ) -> Result<tokio::process::Child> {
-    let mut child = command(directory).args(["__hook", host, event]).spawn()?;
+    start_hook_using(command(directory), host, event, input).await
+}
+
+async fn start_hook_using(
+    mut command: Command,
+    host: &str,
+    event: &str,
+    input: Value,
+) -> Result<tokio::process::Child> {
+    let mut child = command.args(["__hook", host, event]).spawn()?;
     child
         .stdin
         .take()

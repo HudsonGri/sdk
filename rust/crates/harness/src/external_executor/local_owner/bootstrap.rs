@@ -75,7 +75,9 @@ pub(super) fn secret(root: &Path) -> Result<[u8; 32]> {
     }
 }
 
-pub(in crate::external_executor) async fn binding(workspace: &Path) -> Result<(Client, String)> {
+pub(in crate::external_executor) async fn binding(
+    workspace: &Path,
+) -> Result<(Client, String, PathBuf)> {
     let root = directory()?;
     let (workspace, path) = credential::workspace(workspace)?;
     let configurations = crate::local::private_directory(&root.join("workspaces"))?;
@@ -84,7 +86,8 @@ pub(in crate::external_executor) async fn binding(workspace: &Path) -> Result<(C
         &serde_json::to_vec(&path).map_err(storage)?,
         false,
     )?;
-    connect_workspace(root, workspace).await
+    let (client, workspace) = connect_workspace(root, workspace).await?;
+    Ok((client, workspace, path))
 }
 
 pub(in crate::external_executor) async fn existing_binding(

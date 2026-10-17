@@ -176,12 +176,17 @@ proptest! {
     // shared write/read path; the client cannot treat caller files as answers.
     #[test]
     fn platform_bindings_preserve_separate_owner_paths(part in "[a-zA-Z0-9_-]{1,24}") {
-        let mut input = json!({"endpoint":"https://example.test", "bearer_file":"token",
+        let mut input = json!({"provider":"platform", "endpoint":"https://example.test", "bearer_file":"token",
             "requests":format!("{part}/requests"), "results":format!("{part}/results"), "task":part});
         let binding = HookBinding::from_bytes(&serde_json::to_vec(&input)?)?;
         let round_trip = HookBinding::from_bytes(&serde_json::to_vec(&binding)?)?;
-        prop_assert_eq!(round_trip.requests, binding.requests);
-        prop_assert_eq!(round_trip.results, binding.results);
+        prop_assert_eq!(round_trip, binding);
+        input.as_object_mut().unwrap().remove("provider");
+        prop_assert!(HookBinding::from_bytes(&serde_json::to_vec(&input)?).is_err());
+        input["provider"] = json!("platform");
+        input["workspace"] = json!("/another-provider");
+        prop_assert!(HookBinding::from_bytes(&serde_json::to_vec(&input)?).is_err());
+        input.as_object_mut().unwrap().remove("workspace");
         input["results"] = input["requests"].clone();
         prop_assert!(HookBinding::from_bytes(&serde_json::to_vec(&input)?).is_err());
     }
