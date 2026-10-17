@@ -114,56 +114,134 @@ impl ResultClient {
 
 #[tokio::test]
 async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> Result {
-    tokio::time::timeout(std::time::Duration::from_secs(8),async {
-        for host in ["codex","claude-code","pi"] {
-            let directory = Fixture::new()?;
-            let session = uuid::Uuid::new_v4().to_string();
-            let cwd = directory.path().to_str().ok_or("non-UTF8 test directory")?;
-            let pi = host == "pi";
-            hook(directory.path(),host,if pi {"session_start"} else {"SessionStart"},json!({"session_id":session,"cwd":cwd})).await?;
-            let arguments = json!({"path":"native.txt","text":"one harness write","media_type":"text/plain","display_name":"native.txt"});
-            let request = json!({"session_id":session,"cwd":cwd,"tool_use_id":"call","tool_name":if pi {"write"} else {"mcp__acyclic__write"},"tool_input":arguments});
-            let answer = hook(directory.path(),host,if pi {"tool_call"} else {"PreToolUse"},request.clone()).await?;
-            assert_eq!(std::fs::read_to_string(directory.path().join("native.txt"))?,"one harness write");
-            let published = std::fs::metadata(directory.path().join("native.txt"))?.modified()?;
-            if pi {
-                assert_eq!(answer["isError"],false);
-                assert!(answer["details"]["file"].is_object());
-            } else {
-                assert_eq!(answer["hookSpecificOutput"]["permissionDecision"],"allow");
-                let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
-                assert!(arguments["_acyclic"].is_string());
-                // Standard plugins start MCP at the package root, independent
-                // of the user's selected checkout. The file names its binding.
-                let mcp = directory.path().parent().unwrap().join("mcp");
-                std::fs::create_dir(&mcp)?;
-                let binding = directory.path().parent().unwrap().join("binding.json");
-                std::fs::write(&binding,serde_json::to_vec(&json!({"provider":"local","workspace":directory.path()}))?)?;
-                let mut original = None;
-                for binding in [None, Some(binding.as_path())] {
-                    let mut results = ResultClient::open(&mcp, host, binding).await?;
-                    let first = results.result(arguments.clone()).await?;
-                    assert!(first["structuredContent"]["file"].is_object(),"{first}");
-                    if let Some(original) = &original { assert_eq!(&first,original); }
-                    assert_eq!(results.result(arguments.clone()).await?,first);
-                    let mut changed = arguments.clone();
-                    changed["text"] = json!("forged");
-                    assert_eq!(results.result(changed).await?["isError"],true);
-                    if let Some(binding) = binding {
-                        std::fs::write(binding,serde_json::to_vec(&json!({"provider":"local","workspace":mcp}))?)?;
-                        assert_eq!(results.result(arguments.clone()).await?["isError"],true);
-                    }
-                    results.close().await?;
-                    original = Some(first);
-                }
-                assert_eq!(std::fs::read_dir(directory.path().parent().unwrap().join("owner/workspaces"))?.count(),1);
-            }
-            assert_eq!(hook(directory.path(),host,if pi {"tool_call"} else {"PreToolUse"},request).await?,answer);
-            assert_eq!(std::fs::metadata(directory.path().join("native.txt"))?.modified()?,published);
-            hook(directory.path(),host,if pi {"session_shutdown"} else {"SessionEnd"},json!({"session_id":session,"cwd":cwd})).await?;
-            directory.close().await?;
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        let fixture = Fixture::new()?;
+        let owner = fixture.start_owner().await?;
+        let root = fixture.path().parent().unwrap();
+        let address = root.join("owner/address.json");
+        let instance: Value = serde_json::from_slice(&std::fs::read(&address)?)?;
+        let mut projects = Vec::new();
+        for host in ["codex", "claude-code", "pi"] {
+            let project = root.join(host);
+            std::fs::create_dir(&project)?;
+            projects.push((host, project));
         }
-        Ok::<_,Box<dyn std::error::Error>>(())
-    }).await??;
+        let results =
+            futures::future::join_all(projects.iter().map(|(host, project)| async move {
+                let started = std::time::Instant::now();
+                let result = host_result_client(project, host).await;
+                eprintln!("{host} hook/MCP case: {:?}", started.elapsed());
+                result
+            }))
+            .await;
+        let retained: Value = serde_json::from_slice(&std::fs::read(&address)?)?;
+        assert_eq!(retained["instance"], instance["instance"]);
+        let registrations = std::fs::read_dir(root.join("owner/workspaces"))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(registrations.len(), projects.len());
+        for (_, project) in &projects {
+            let canonical = std::fs::canonicalize(project)?;
+            let principal = blake3::hash(canonical.as_os_str().as_encoded_bytes()).to_hex();
+            assert!(registrations.contains(&std::ffi::OsString::from(format!("{principal}.json"))));
+        }
+        let stopped = fixture.close_owner(owner).await;
+        for result in results {
+            result?;
+        }
+        stopped
+    })
+    .await??;
+    Ok(())
+}
+
+async fn host_result_client(directory: &Path, host: &str) -> Result {
+    let session = uuid::Uuid::new_v4().to_string();
+    let cwd = directory.to_str().ok_or("non-UTF8 test directory")?;
+    let pi = host == "pi";
+    hook(
+        directory,
+        host,
+        if pi { "session_start" } else { "SessionStart" },
+        json!({"session_id":session,"cwd":cwd}),
+    )
+    .await?;
+    let arguments = json!({"path":"native.txt","text":"one harness write","media_type":"text/plain","display_name":"native.txt"});
+    let request = json!({"session_id":session,"cwd":cwd,"tool_use_id":"call","tool_name":if pi {"write"} else {"mcp__acyclic__write"},"tool_input":arguments});
+    let answer = hook(
+        directory,
+        host,
+        if pi { "tool_call" } else { "PreToolUse" },
+        request.clone(),
+    )
+    .await?;
+    assert_eq!(
+        std::fs::read_to_string(directory.join("native.txt"))?,
+        "one harness write"
+    );
+    let published = std::fs::metadata(directory.join("native.txt"))?.modified()?;
+    if pi {
+        assert_eq!(answer["isError"], false);
+        assert!(answer["details"]["file"].is_object());
+    } else {
+        assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "allow");
+        let arguments = answer["hookSpecificOutput"]["updatedInput"].clone();
+        assert!(arguments["_acyclic"].is_string());
+        // Standard plugins start MCP at the package root, independent
+        // of the user's selected checkout. The file names its binding.
+        let mcp = directory.parent().unwrap().join(format!("mcp-{host}"));
+        std::fs::create_dir(&mcp)?;
+        let binding = directory
+            .parent()
+            .unwrap()
+            .join(format!("binding-{host}.json"));
+        std::fs::write(
+            &binding,
+            serde_json::to_vec(&json!({"provider":"local","workspace":directory}))?,
+        )?;
+        let mut original = None;
+        for binding in [None, Some(binding.as_path())] {
+            let mut results = ResultClient::open(&mcp, host, binding).await?;
+            let first = results.result(arguments.clone()).await?;
+            assert!(first["structuredContent"]["file"].is_object(), "{first}");
+            if let Some(original) = &original {
+                assert_eq!(&first, original);
+            }
+            assert_eq!(results.result(arguments.clone()).await?, first);
+            let mut changed = arguments.clone();
+            changed["text"] = json!("forged");
+            assert_eq!(results.result(changed).await?["isError"], true);
+            if let Some(binding) = binding {
+                std::fs::write(
+                    binding,
+                    serde_json::to_vec(&json!({"provider":"local","workspace":mcp}))?,
+                )?;
+                assert_eq!(results.result(arguments.clone()).await?["isError"], true);
+            }
+            results.close().await?;
+            original = Some(first);
+        }
+    }
+    assert_eq!(
+        hook(
+            directory,
+            host,
+            if pi { "tool_call" } else { "PreToolUse" },
+            request
+        )
+        .await?,
+        answer
+    );
+    assert_eq!(
+        std::fs::metadata(directory.join("native.txt"))?.modified()?,
+        published
+    );
+    hook(
+        directory,
+        host,
+        if pi { "session_shutdown" } else { "SessionEnd" },
+        json!({"session_id":session,"cwd":cwd}),
+    )
+    .await?;
     Ok(())
 }
