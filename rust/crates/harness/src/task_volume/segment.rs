@@ -32,8 +32,37 @@ pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
 }
 
 pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, FileValue)> {
-    let entry = Entry {
-        key: write.key.clone(),
+    let ((bytes, offset), entry) = {
+        let encoded = encode_record(write, work)?;
+        (
+            encoded,
+            Entry {
+                key: write.key.clone(),
+                channel: write.channel,
+                publication: write.publication,
+            },
+        )
+    };
+    let file = FileValue {
+        key: entry.key,
+        channel: entry.channel,
+        publication: entry.publication,
+        bytes: bytes.slice(offset..),
+    };
+    Ok((bytes, file))
+}
+
+#[derive(Serialize)]
+struct BorrowedEntry<'a> {
+    key: &'a FileKey,
+    channel: Option<Channel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publication: Option<crate::OperationId>,
+}
+
+pub(super) fn encode_record(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, usize)> {
+    let entry = BorrowedEntry {
+        key: &write.key,
         channel: write.channel,
         publication: write.publication,
     };
@@ -100,15 +129,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
     })?;
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let bytes: OwnedBytes = bytes.into();
-    // The input was already validated. Reuse its typed metadata rather than
-    // serializing and decoding another owned copy before publication.
-    let file = FileValue {
-        key: entry.key,
-        channel: entry.channel,
-        publication: entry.publication,
-        bytes: bytes.slice(PREFIX + metadata.len()..),
-    };
-    Ok((bytes, file))
+    Ok((bytes, PREFIX + metadata.len()))
 }
 
 pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {

@@ -24,7 +24,9 @@ async fn scenario(acknowledge_chunks: bool) {
     let release = Arc::new(Notify::new());
     let provider_release = release.clone();
     let (records, mut recorded) = tokio::sync::mpsc::unbounded_channel();
-    let (progress, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let (acknowledged, mut acknowledgements) = tokio::sync::mpsc::unbounded_channel();
+    let ready = Arc::new(Notify::new());
+    let provider_ready = ready.clone();
     let app = Router::new()
         .route(
             "/count",
@@ -34,16 +36,13 @@ async fn scenario(acknowledge_chunks: bool) {
             "/responses",
             post(move |Json(body): Json<Value>| {
                 let release = provider_release.clone();
-                let progress = progress.clone();
+                let ready = provider_ready.clone();
                 records.send(body).unwrap();
                 async move {
                     let initial = futures::stream::once(async { Ok::<_, Infallible>(DELTAS) });
                     let terminal = futures::stream::once(async move {
-                        let visible =
-                            tokio::time::timeout(Duration::from_secs(1), release.notified())
-                                .await
-                                .is_ok();
-                        progress.send(visible).unwrap();
+                        ready.notify_one();
+                        release.notified().await;
                         Ok::<_, Infallible>(COMPLETED)
                     });
                     Response::builder()
@@ -74,10 +73,15 @@ async fn scenario(acknowledge_chunks: bool) {
         "max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
-    let output = tokio::task::spawn_blocking(move || {
+    let process = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::initialize_native_io_services().unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
         command
+            .env("CODEX_HOME", &settings)
+            .env("LOCALAPPDATA", &settings)
+            .env("XDG_DATA_HOME", &settings)
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("LOOPBACK_API_KEY")
             .arg("--workspace")
             .arg(&workspace)
             .arg("--settings-root")
@@ -127,7 +131,7 @@ async fn scenario(acknowledge_chunks: bool) {
                             }
                         }
                         if acknowledge_chunks && seen == (true, true) {
-                            release.notify_one();
+                            let _ = acknowledged.send(());
                         }
                     }
                     Ok(ProcessInput::default())
@@ -144,19 +148,31 @@ async fn scenario(acknowledge_chunks: bool) {
             });
         assert_eq!(seen, (true, true));
         output
-    })
-    .await
-    .unwrap();
+    });
+    // Completion is controlled by observation, with the process timeout only a
+    // watchdog. The final-only observer is explicitly released by this driver.
+    ready.notified().await;
+    if acknowledge_chunks {
+        tokio::time::timeout(Duration::from_secs(6), acknowledgements.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    } else {
+        assert!(acknowledgements.try_recv().is_err());
+    }
+    release.notify_one();
+    let output = process.await.unwrap();
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        observed.recv().await.unwrap(),
-        acknowledge_chunks,
-        "terminal SSE must wait until both chunk files have escaped stdout"
-    );
+    if !acknowledge_chunks {
+        assert!(
+            acknowledgements.try_recv().is_err(),
+            "a final-output-only observer acknowledged live chunks"
+        );
+    }
     let request = recorded.recv().await.unwrap();
     assert_eq!(request["model"], "tiny");
     assert_eq!(request["store"], false);
@@ -170,10 +186,14 @@ async fn scenario(acknowledge_chunks: bool) {
 
 #[tokio::test]
 async fn text_and_reasoning_are_visible_before_the_provider_completes() {
-    scenario(true).await;
+    tokio::time::timeout(Duration::from_secs(8), scenario(true))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn negative_control_final_output_cannot_acknowledge_live_chunks() {
-    scenario(false).await;
+    tokio::time::timeout(Duration::from_secs(8), scenario(false))
+        .await
+        .unwrap();
 }

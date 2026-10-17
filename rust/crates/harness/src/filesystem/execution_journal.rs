@@ -33,6 +33,8 @@ mod conversation;
 
 mod cancellation;
 mod canonical;
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+mod chunk_tests;
 mod chunks;
 mod configuration;
 mod content;

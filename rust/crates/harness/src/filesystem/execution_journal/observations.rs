@@ -368,6 +368,11 @@ where
                 return Ok(false);
             }
             summary.validate_next(event, model.as_ref(), limits, io)?;
+            let preparing = self.prepare_chunk(summary.tail, event, model.as_ref(), io);
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            let chunk = crate::test_support::differential::observe_chunk(preparing, io).await?;
+            #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+            let chunk = preparing.await?;
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
@@ -377,6 +382,7 @@ where
                         &key,
                         bytes.clone(),
                         event,
+                        chunk,
                         &mut borrowed
                             .as_mut()
                             .map(|io| io as &mut dyn crate::store::history::HistoryIo),

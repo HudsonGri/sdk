@@ -81,3 +81,71 @@ pub(crate) fn accounted<R>(
             .map_or(0, NativeMaterializationWork::live_allocation_bytes),
     ))
 }
+
+thread_local! {
+    static CHUNK_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn chunk_scan_enabled() -> bool {
+    CHUNK_SCAN.get()
+}
+
+pub(crate) fn with_chunk_scan<R>(enabled: bool, run: impl FnOnce() -> R) -> R {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CHUNK_SCAN.set(self.0);
+        }
+    }
+    let _reset = Reset(CHUNK_SCAN.replace(enabled));
+    run()
+}
+
+// Measure the real projection future, including every poll's SDK work. The
+// transcript and canonical admission are intentionally outside this scope.
+pub(crate) async fn observe_chunk<F: std::future::Future>(
+    future: F,
+    io: Option<&PreparationIo>,
+) -> F::Output {
+    if !TRACE.with_borrow(|trace| trace.is_some()) {
+        return future.await;
+    }
+    let before = io.map(PreparationIo::receipt).unwrap_or_default();
+    let mut future = std::pin::pin!(future);
+    let output = futures::future::poll_fn(|cx| {
+        // Observer storage must never contaminate the allocator measurement.
+        let capacity = TRACE.with_borrow_mut(|trace| {
+            let trace = trace.as_mut().unwrap();
+            trace.reserve(64);
+            trace.capacity()
+        });
+        let mut result = None;
+        let (_, items) = super::measure_task_volume_work(|| {
+            let allocations =
+                acyclic_test_support::measure(|| result = Some(future.as_mut().poll(cx)));
+            assert_eq!(
+                TRACE.with_borrow(|trace| trace.as_ref().unwrap().capacity()),
+                capacity
+            );
+            record("chunk.allocations", allocations.count_total);
+            record("chunk.allocated-bytes", allocations.bytes_total);
+        });
+        record("chunk.items", items);
+        result.unwrap()
+    })
+    .await;
+    let after = io.map(PreparationIo::receipt).unwrap_or_default();
+    record(
+        "chunk.native-allocations",
+        after.allocation_operations - before.allocation_operations,
+    );
+    record(
+        "chunk.native-copy",
+        after.bytes_copied - before.bytes_copied,
+    );
+    record(
+        "chunk.native-encoding",
+        after.bytes_encoded - before.bytes_encoded,
+    );
+    output
+}

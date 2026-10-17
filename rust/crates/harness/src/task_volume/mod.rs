@@ -7,6 +7,10 @@ mod durability;
 mod files;
 mod follow;
 mod heads;
+#[cfg(feature = "filesystem")]
+mod journal;
+#[cfg(feature = "filesystem")]
+pub(crate) use journal::JournalFile;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
 mod page;
