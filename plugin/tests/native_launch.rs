@@ -240,12 +240,17 @@ async fn selected_task_files_seed_the_native_child_and_pin_provenance_without_pa
         let mut args=native_spawn("selected-child","selected_native_process");
         args["context"]=json!("native_cut");
         args["executor"]["context"]=json!({"manifest":path,"head":"invoking","sha256":digest});
+        let operation=acyclic_harness::external_executor::request(acyclic_harness::external_executor::ExternalHost::Pi,"tool_call",
+            json!({"sessionId":parent.session,"toolCallId":"selected-spawn","toolName":"acyclic_spawn","input":args.clone()}))?.operation_id;
         let child=parent.call("selected-spawn","acyclic_spawn",args).await?;
         let outcome=parent.call("selected-wait","acyclic_wait",json!({"child":child})).await?;
         assert_eq!(outcome["success"],true,"{outcome}");
         assert!(!fixture.path().join("leaf.txt").exists());
         let results=TaskVolume::open_existing(parent.provider.clone(),StreamPath::new(format!("external/results/{}",parent.task))?).await?;
-        let manifest=results.snapshot(&Query::Task(acyclic_harness::task_volume::Component::new(parent.task.to_string())?),128).await?.files.into_iter().find(|file|matches!(&file.key,FileKey::Task {file:TaskFile::Context(name),..} if name.as_str().starts_with("native-"))).ok_or("selected context manifest missing")?;
+        let key=FileKey::Task {task:acyclic_harness::task_volume::Component::new(parent.task.to_string())?,file:TaskFile::Context(acyclic_harness::task_volume::Component::new(format!("native-{operation}"))?)};
+        let mut selected=results.snapshot(&Query::File(key),1).await?.files;
+        assert_eq!(selected.len(),1,"selected context manifest missing");
+        let manifest=selected.pop().unwrap();
         let manifest:Value=serde_json::from_slice(&manifest.bytes)?;
         assert_eq!(manifest["cut"]["session"],parent.session);
         assert_eq!(manifest["cut"]["through"],"completed-result");
