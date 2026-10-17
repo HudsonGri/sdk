@@ -1,21 +1,5 @@
-//! Lock construction, decided on types. A lock value comes into existence
-//! only through
-//!
-//! - an associated function named on a lock type (`Lock::new`,
-//!   `<Lock<T>>::default`, `Self::new` in an impl for a lock, ...), or
-//! - a context-typed constructor whose type is inferred from where its value
-//!   goes: `Default::default()`, `From::from`, `Into::into`, `TryFrom`,
-//!   `TryInto`, `.into()`, `.try_into()`, `<_>::default()` and associated
-//!   constructors of a generic parameter.
-//!
-//! The first is found by name. For the second, the expected type is carried
-//! from its context through parentheses, blocks, `unsafe`, `if`, `match`,
-//! tuples, arrays and references: typed `let`s, statics, consts, function
-//! returns and arguments of functions in the file, closures with a return
-//! type, and fields of structs in the file. An expected type holding a lock
-//! is a construction; an unresolved expected type is indeterminate.
-//! Independently, a binding, static, const or field declared with a lock type
-//! is a construction whatever its initializer.
+//! Lock construction over parsed source. Known constructors use resolved
+//! owners and expected types; unresolved constructions remain indeterminate.
 use crate::{Names, macros::indeterminate};
 use quote::ToTokens;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -606,7 +590,17 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
                 self.judge(expr);
             }
             Expr::MethodCall(_) => self.unresolved.push(expr.to_token_stream().to_string()),
+            Expr::Verbatim(_) => self.unresolved.push(expr.to_token_stream().to_string()),
             Expr::Path(path) => {
+                if !self.callees.contains(&key(expr))
+                    && self
+                        .names
+                        .path(&path.path)
+                        .is_some_and(|path| path.segments.len() > 1)
+                    && !self.inferred(path)
+                {
+                    self.unresolved.push(expr.to_token_stream().to_string());
+                }
                 match self.constructor(path) {
                     Some(found) => self.found |= found,
                     None if self.names.path(&path.path).is_none() || !self.inferred(path) => {
@@ -626,6 +620,14 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
                 }
             }
             Expr::Struct(literal) => {
+                let ty = Type::Path(syn::TypePath {
+                    qself: literal.qself.clone(),
+                    path: literal.path.clone(),
+                });
+                match self.is_lock(&ty) {
+                    Some(found) => self.found |= found,
+                    None => self.unresolved.push(expr.to_token_stream().to_string()),
+                }
                 if let Some(fields) = self.fields(&literal.path) {
                     let types = self.field_types(fields);
                     for value in &literal.fields {

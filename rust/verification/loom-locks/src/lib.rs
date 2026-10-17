@@ -205,7 +205,14 @@ impl<'ast> Names<'ast> {
                 self.loom_import |= loom && LOOM_LOCKS.contains(&target.as_str());
                 self.bind(prefix, &target, &crate::name(&rename.rename));
             }
-            UseTree::Glob(_) => self.loom_import |= loom,
+            UseTree::Glob(_) => {
+                self.loom_import |= loom;
+                self.error.get_or_insert_with(|| {
+                    macros::indeterminate(
+                        "glob imports leave value and constructor bindings unresolved",
+                    )
+                });
+            }
             UseTree::Group(group) => {
                 for tree in &group.items {
                     self.walk(tree, prefix);
