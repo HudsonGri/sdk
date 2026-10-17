@@ -163,7 +163,7 @@ jobs:
         shell: bash
         run: |
           build_status=0
-          cargo test -p acyclic-plugin --test qualification --no-run --locked --message-format=json \
+          cargo test -p acyclic-plugin --bin acyclic --test qualification --no-run --locked --message-format=json \
             > "$RUNNER_TEMP/host-build.jsonl" || build_status=$?
           export ACYCLIC_HOST_BUILD_STATUS="$build_status"
           node --input-type=module <<'JS'
@@ -185,8 +185,15 @@ jobs:
           const binary = executable("acyclic", false);
           appendFileSync(process.env.GITHUB_ENV,
             `ACYCLIC_BINARY=${binary}\nACYCLIC_TEST_EXECUTABLE=${binary}\n` +
-            `ACYCLIC_QUALIFICATION_BINARY=${executable("qualification", true)}\n`);
+            `ACYCLIC_QUALIFICATION_BINARY=${executable("qualification", true)}\n` +
+            `ACYCLIC_PLUGIN_UNIT_BINARY=${executable("acyclic", true)}\n`);
           JS
+
+      - name: Qualify native manifest selection
+        shell: bash
+        run: |
+          "$ACYCLIC_PLUGIN_UNIT_BINARY" tests::manifests::host_manifests_route_every_event_to_the_common_client --exact
+          "$ACYCLIC_PLUGIN_UNIT_BINARY" tests::installation::codex_root_discovery_requires_the_manifest_that_loads_local_hooks --exact
 
       - name: Qualify Pi hook clients and owner lifecycle
         shell: bash
