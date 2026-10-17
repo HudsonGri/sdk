@@ -23,6 +23,7 @@ mod provider_tests;
 mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
+mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
@@ -237,9 +238,25 @@ fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
         return Err("scenario services must start before the async runtime".into());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
-    Ok(tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?)
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    Ok(scenario_builder(available).build()?)
+}
+
+fn scenario_builder(available: usize) -> tokio::runtime::Builder {
+    let workers = runtime_workers(available);
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder
+        .worker_threads(workers)
+        .max_blocking_threads(workers)
+        .enable_all();
+    builder
+}
+
+fn runtime_workers(available: usize) -> usize {
+    // Three concurrent suites share the host. Their async and blocking pools
+    // share that budget too; bounding only the async pool still spawns hundreds
+    // of filesystem workers. All scenario futures remain admitted in parallel.
+    (available / (3 * 2)).max(1)
 }
 
 #[tokio::test]
