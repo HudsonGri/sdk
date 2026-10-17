@@ -2,6 +2,8 @@
 use super::*;
 use proptest::prelude::*;
 
+mod dispatch;
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
     #[test]

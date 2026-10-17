@@ -57,11 +57,6 @@ where
         payload: Value,
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
-        let context = if io.is_none() {
-            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
-        } else {
-            Arc::clone(context)
-        };
         let turn = command.operation_id;
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self
@@ -76,9 +71,7 @@ where
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let work = None;
-        let (journal, operation) = self
-            .command_journal(task, fence, turn, &context, io)
-            .await?;
+        let (journal, operation) = self.command_journal(task, fence, turn, context, io).await?;
         if reconciliation_only
             && !was_dispatched(journal.as_ref(), operation, TOOL_TASK_COMMAND_KIND, io).await?
         {
@@ -87,7 +80,7 @@ where
         let invocation =
             tool_invocation(context.as_ref(), operation, definition, input.arguments, io)?;
         let limits = context.as_ref().scope().limits();
-        let context = ToolContext::new(context, operation, &invocation.call_id, io)?;
+        let context = ToolContext::new(Arc::clone(context), operation, &invocation.call_id, io)?;
         let context = 'context: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
