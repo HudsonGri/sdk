@@ -130,6 +130,7 @@ impl LocalHarness {
             journal: volume.clone(),
             verifier: verifier.clone(),
             issuer: None,
+            interaction_issuer: None,
             signed: signed.clone(),
             model,
             provider,

@@ -1,9 +1,39 @@
 use super::*;
 use crate::{
-    IdempotencyKey,
+    IdempotencyKey, InteractionId,
     core::{Action, Command, SchemaRegistry},
     store::StreamAggregate,
 };
+
+impl LocalHarness {
+    /// Principal authenticated by the standalone local host.
+    pub const APPROVAL_PRINCIPAL: &str = "local-user";
+
+    /// Writes a decision as the authenticated user of this local composition.
+    pub async fn write_approval_decision(
+        &self,
+        task: TaskId,
+        id: InteractionId,
+        file: &crate::task_volume::FileValue,
+    ) -> Result<()> {
+        let issuer = self.interaction_issuer.as_ref().ok_or_else(|| {
+            Error::Unsupported("embedded runtimes supply their own responder authority".into())
+        })?;
+        let responder = issuer.issue(
+            Self::APPROVAL_PRINCIPAL,
+            &Capabilities::new([
+                crate::contract::capability::INTERACTION_RESOLVE.to_owned(),
+                crate::contract::capability::interaction_respond(id),
+            ]),
+            self.signed.agent(),
+            None,
+            &mut None,
+        )?;
+        self.runtime
+            .write_approval_decision(task, file, &responder)
+            .await
+    }
+}
 
 pub(super) async fn open(
     stream: &Arc<LocalStream>,

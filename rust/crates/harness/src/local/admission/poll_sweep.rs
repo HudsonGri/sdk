@@ -229,6 +229,7 @@ impl Fixture {
         let compact = matches!(self.scenario, Scenario::Compaction);
         Ok(LocalHarness {
             issuer: Some(self.issuer.clone()),
+            interaction_issuer: Some(interactions),
             task_files,
             files: files.clone(),
             runtime,

@@ -6,6 +6,64 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Admits a principal's decision file while the task is passively waiting.
+    pub async fn write_approval_decision(
+        &self,
+        task: TaskId,
+        file: &crate::task_volume::FileValue,
+        responder: &Scope,
+    ) -> Result<()> {
+        use crate::task_volume::{Component, FileKey, Query, TaskFile};
+
+        let admission = self.admission_observed(task, None).await?;
+        let maximum_bytes = self.maximum_payload_bytes.min(admission.limits.file_bytes);
+        let (id, decision) = super::super::interaction_host::approval_submission(
+            task,
+            file,
+            responder.id(),
+            maximum_bytes,
+        )?;
+        if !admission
+            .grants
+            .contains(crate::contract::capability::INTERACTION_ROUTE)
+        {
+            return Err(Error::Unauthorized("task cannot route approvals".into()));
+        }
+        let files = self.task_files.as_deref().ok_or_else(|| {
+            Error::Unsupported("approval decisions require private task files".into())
+        })?;
+        let snapshot = files
+            .inner
+            .snapshot(
+                &Query::File(FileKey::Task {
+                    task: Component::new(task.to_string())?,
+                    file: TaskFile::ApprovalRequest(Component::new(id.to_string())?),
+                }),
+                1,
+            )
+            .await?;
+        let request = snapshot
+            .files
+            .first()
+            .ok_or_else(|| Error::NotFound("approval was not published for this task".into()))?;
+        if request.bytes.len() as u64 > maximum_bytes {
+            return Err(Error::Invalid(
+                "approval request exceeds its file bound".into(),
+            ));
+        }
+        let host = self.interaction_host_with_limit(maximum_bytes, None)?;
+        let (ticket, _) = host
+            .read(id, None)
+            .await?
+            .ok_or_else(|| Error::NotFound("approval interaction is missing".into()))?;
+        ticket.validate_request_bytes(&request.bytes, &mut None)?;
+        host.resolve_decision(id, decision, responder, None).await?;
+        host.published_decision(id, None, Some((files, task)), None)
+            .await?;
+        self.poll_task_wake(task, None).await?;
+        Ok(())
+    }
+
     /// Binds the existing conversation owner for task approval/question tickets.
     pub fn with_interaction_owner(
         mut self,
@@ -37,6 +95,14 @@ where
         &self,
         io: Option<&super::super::PreparationIo>,
     ) -> Result<FilesystemInteractionHost<P, A, O>> {
+        self.interaction_host_with_limit(self.maximum_payload_bytes, io)
+    }
+
+    fn interaction_host_with_limit(
+        &self,
+        maximum_bytes: u64,
+        io: Option<&super::super::PreparationIo>,
+    ) -> Result<FilesystemInteractionHost<P, A, O>> {
         let owner = self.interaction_owner.as_ref().ok_or_else(|| {
             observed::boundary(
                 io,
@@ -53,7 +119,7 @@ where
                 volume: &owner.volume,
                 verifier: &owner.verifier,
                 scope: &owner.scope,
-                maximum_bytes: self.maximum_payload_bytes,
+                maximum_bytes,
                 io,
             },
         )

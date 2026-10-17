@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    ComponentIdentity,
+    registry::ComponentIdentity,
     runtime::{RuntimeScope, ToolPolicy, ToolPolicyDecision},
     store::{HistoryContentFuture, history::HistoryIo},
     task_volume::{Component, Query, TaskFile},
@@ -242,5 +242,136 @@ async fn approval_case(gated: bool) -> Result<()> {
     assert_eq!(after.files, before.files);
     assert_eq!(provider.requests().len(), if gated { 1 } else { 2 });
     assert_eq!(calls.load(Ordering::SeqCst), usize::from(!gated));
+    if gated {
+        use crate::interaction::ApprovalDecisionFile;
+        use crate::task_volume::{FileKey, FileValue};
+        use sha2::Digest as _;
+
+        let FileKey::Task {
+            file: TaskFile::ApprovalRequest(request),
+            ..
+        } = &before.files[0].key
+        else {
+            panic!("approval request required");
+        };
+        let id = crate::InteractionId::from_bytes(
+            request.as_str().parse::<uuid::Uuid>().unwrap().into_bytes(),
+        );
+        let digest = sha2::Sha256::digest(&before.files[0].bytes).into();
+        let body = ApprovalDecisionFile::new(
+            LocalHarness::APPROVAL_PRINCIPAL,
+            &digest,
+            1,
+            true,
+            Some("Reviewed the arguments".into()),
+        )?;
+        let file = FileValue::new(
+            FileKey::Task {
+                task: Component::new(task_id.to_string())?,
+                file: TaskFile::ApprovalDecision {
+                    request: request.clone(),
+                    principal: Component::new(ApprovalDecisionFile::principal_file(
+                        LocalHarness::APPROVAL_PRINCIPAL,
+                    ))?,
+                },
+            },
+            serde_json::to_vec(&body).map_err(super::super::storage)?,
+        );
+        let mut wrong_task = file.clone();
+        let mut other_task = task_id.into_bytes();
+        other_task[0] ^= 1;
+        if let FileKey::Task { task, .. } = &mut wrong_task.key {
+            *task = Component::new(crate::TaskId::from_bytes(other_task).to_string())?;
+        }
+        assert!(matches!(
+            reopened
+                .write_approval_decision(task_id, id, &wrong_task)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let fixture = config()?;
+        let owner = super::super::owner::Owner::open(
+            fixture
+                .state_directory
+                .as_deref()
+                .expect("explicit test state directory"),
+            &fixture.project,
+        )?;
+        let mut foreign_key = owner.key;
+        foreign_key[0] ^= 1;
+        let forged = crate::core::AuthorityIssuer::new(
+            "acyclic.local",
+            foreign_key,
+            reopened
+                .interaction_issuer
+                .as_ref()
+                .unwrap()
+                .verifier(&mut None)?
+                .audience()
+                .clone(),
+        )
+        .issue(
+            LocalHarness::APPROVAL_PRINCIPAL,
+            &crate::Capabilities::new([
+                crate::contract::capability::INTERACTION_RESOLVE.to_owned(),
+                crate::contract::capability::interaction_respond(id),
+            ]),
+            reopened.signed.agent(),
+            None,
+            &mut None,
+        )?;
+        assert!(matches!(
+            reopened
+                .runtime
+                .write_approval_decision(task_id, &file, &forged)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let mut other_id = id.into_bytes();
+        other_id[0] ^= 1;
+        assert!(matches!(
+            reopened
+                .write_approval_decision(task_id, crate::InteractionId::from_bytes(other_id), &file)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let mut wrong = body.clone();
+        let different = if wrong.request_sha256.starts_with('0') {
+            "1"
+        } else {
+            "0"
+        };
+        wrong.request_sha256.replace_range(..1, different);
+        let mut wrong_file = file.clone();
+        wrong_file.bytes = serde_json::to_vec(&wrong)
+            .map_err(super::super::storage)?
+            .into();
+        assert!(matches!(
+            reopened
+                .write_approval_decision(task_id, id, &wrong_file)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let unchanged = reopened.task_files.inner.snapshot(&query, 8).await?;
+        assert_eq!(unchanged.files, before.files);
+        reopened.write_approval_decision(task_id, id, &file).await?;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let decided = reopened.task_files.inner.snapshot(&query, 8).await?;
+        assert_eq!(decided.files.len(), 2);
+        assert!(
+            decided
+                .files
+                .iter()
+                .any(|value| value.key == file.key && value.bytes == file.bytes)
+        );
+        assert_eq!(reopened.resume(task_id).await?.text, "done");
+        reopened.write_approval_decision(task_id, id, &file).await?;
+        drop(reopened);
+        let completed = LocalHarness::open(config()?).await?;
+        assert_eq!(completed.resume(task_id).await?.text, "done");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.requests().len(), 2);
+    }
     Ok(())
 }

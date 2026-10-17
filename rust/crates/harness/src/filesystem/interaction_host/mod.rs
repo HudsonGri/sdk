@@ -37,6 +37,8 @@ pub struct FilesystemInteractionHost<P, A, O> {
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
+mod approvals;
+pub(in crate::filesystem) use approvals::{PublishedDecision, approval_submission};
 mod content;
 pub(in crate::filesystem) use content::admit_interaction;
 mod publication;
