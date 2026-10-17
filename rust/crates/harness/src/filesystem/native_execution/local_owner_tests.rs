@@ -239,9 +239,15 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
     };
     if pinned_capability {
         assert!(
-            prepared.is_err(),
-            "exactification widened a pinned capability"
+            matches!(
+                prepared,
+                Err(acyclic_fs::MountLifecycleError::NativePolicy(
+                    "materialized working sets require unrestricted disclosure"
+                ))
+            ),
+            "exactification widened a pinned capability or failed outside authorization"
         );
+        assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
         return Ok(());
     }
     let prepared = prepared.expect("read-only exactification must retain authorization");
