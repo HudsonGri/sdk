@@ -106,6 +106,24 @@ async fn scenario<const BOUND: bool>() {
             })
             .unwrap();
     }
+    let release = InputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: areas.scrollbar.x,
+        row: areas.scrollbar.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(
+        areas
+            .event(&mut input, release, &mut viewport, 3)
+            .is_empty()
+    );
+    let drag = InputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: areas.scrollbar.x,
+        row: areas.scrollbar.bottom() - 1,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(areas.event(&mut input, drag, &mut viewport, 4).is_empty());
     let reopened = CommandSession::open(volume, id, 65_536, 128).await.unwrap();
     assert_eq!(tui_scroll(&reopened).unwrap(), maximum);
     let text: String = terminal
