@@ -394,6 +394,9 @@ mod tests {
             );
             assert!(start.elapsed() < Duration::from_millis(50));
         }
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("latency") {
+            return measure_latency(tty, &path);
+        }
         std::fs::write(path.with_extension("ready"), b"ready")?;
         if blocked {
             // Windows routes GenerateConsoleCtrlEvent through the same server
@@ -420,5 +423,50 @@ mod tests {
         loop {
             std::thread::park();
         }
+    }
+
+    /// Records when each key the ConPTY host typed reached the stream
+    /// consumer, in system-precise-time ticks the host compares with its own
+    /// send times. The host owns the statistics; nothing here is asserted
+    /// about time.
+    fn measure_latency(tty: Tty, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::key_event::{InputEvent, KeyEventKind};
+        use futures_core::Stream;
+        use std::time::SystemTime;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+        let mut events = std::pin::pin!(tty.events()?);
+        let count: usize = std::fs::read_to_string(path.with_extension("latency-count"))?
+            .trim()
+            .parse()?;
+        let mut received = Vec::with_capacity(count);
+        std::fs::write(path.with_extension("ready"), b"ready")?;
+        runtime.block_on(std::future::poll_fn(|cx| {
+            while received.len() < count {
+                match events.as_mut().poll_next(cx) {
+                    std::task::Poll::Ready(Some(Ok(InputEvent::Key(key))))
+                        if key.kind == KeyEventKind::Press =>
+                    {
+                        let ticks = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map_or(0, |since| since.as_nanos() / 100);
+                        received.push(ticks);
+                    }
+                    std::task::Poll::Ready(Some(Ok(_))) => {}
+                    std::task::Poll::Ready(Some(Err(error))) => {
+                        return std::task::Poll::Ready(Err(error));
+                    }
+                    std::task::Poll::Ready(None) => {
+                        return std::task::Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
+                    }
+                    std::task::Poll::Pending => return std::task::Poll::Pending,
+                }
+            }
+            std::task::Poll::Ready(Ok(()))
+        }))?;
+        let lines: Vec<String> = received.iter().map(u128::to_string).collect();
+        std::fs::write(path.with_extension("latency-child"), lines.join("\n"))?;
+        Ok(())
     }
 }
