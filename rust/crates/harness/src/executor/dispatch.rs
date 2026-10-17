@@ -162,10 +162,23 @@ impl StockExecution<'_> {
         let (_, records) = self
             .model_records(journal, input.operation_id, step, purpose)
             .await?;
-        Ok(retain_preparation(
-            retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
-        )?
-        .events)
+        let (retained, hold) =
+            retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?;
+        let RetainedModelStep {
+            request,
+            admission,
+            events,
+        } = retained;
+        drop(request);
+        drop(admission);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(mut hold) = hold {
+            hold.substitute(native_events_owned_bytes(&events)?)?;
+            hold.into_retained()?;
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = hold;
+        Ok(events)
     }
 
     async fn resolve_model_request(

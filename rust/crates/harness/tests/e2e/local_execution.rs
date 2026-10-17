@@ -130,7 +130,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         drop(task_files.take());
         drop(status);
         drop(stream);
-        drop(harness);
+        harness.close().await?;
         drop(observation);
         drop(source);
         drop(reader);
@@ -196,9 +196,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
+    let mut interruptions = Vec::new();
     for expected in &case.interruptions {
         match (expected.as_str(), harness.resume(task_id).await) {
-            ("indeterminate", Err(acyclic_harness::Error::Indeterminate(_))) => {}
+            ("indeterminate", Err(acyclic_harness::Error::Indeterminate(operation))) => {
+                interruptions.push(operation);
+            }
             (_, actual) => return Err(format!("interrupted resume differs: {actual:?}").into()),
         }
     }
@@ -276,11 +279,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         &wire_frames,
         operation,
         case.expect.error.is_none(),
+        &interruptions,
     )?;
     let root = serde_json::to_value(operation)?;
     let terminal = wire_frames
         .iter()
-        .position(|frame| frame["kind"] == "completed" && frame["operation_id"] == root)
+        .rposition(|frame| frame["kind"] == "completed" && frame["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire_frames.remove(terminal);
     if check_terminal_frames(
@@ -288,6 +292,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         &wire_frames,
         operation,
         case.expect.error.is_none(),
+        &interruptions,
     )
     .is_ok()
     {
@@ -510,27 +515,38 @@ pub(super) fn check_frames(
     frames: &[Value],
     operation: OperationId,
 ) -> TestResult {
-    check_terminal_frames(expected, frames, operation, true)
+    check_terminal_frames(expected, frames, operation, true, &[])
 }
 
-fn check_terminal_frames(
+pub(super) fn check_terminal_frames(
     expected: &[Value],
     frames: &[Value],
     operation: OperationId,
     success: bool,
+    interruptions: &[OperationId],
 ) -> TestResult {
     let operation = serde_json::to_value(operation)?;
-    let mut terminal = None;
-    for frame in frames
+    let terminals: Vec<_> = frames
         .iter()
         .filter(|frame| frame["kind"] == "completed" && frame["operation_id"] == operation)
-    {
-        if terminal.replace(frame).is_some() {
-            return Err("local task has duplicate root terminal frames".into());
-        }
+        .collect();
+    if terminals.len() != interruptions.len() + 1 {
+        return Err("local task has missing or duplicate root terminal frames".into());
     }
     use serde::Deserialize as _;
-    let terminal = terminal.ok_or("local task has no root terminal frame")?;
+    for (frame, expected) in terminals.iter().zip(interruptions) {
+        let event = acyclic_harness::scheduler::SchedulerEvent::deserialize(*frame)?;
+        if !matches!(event,
+            acyclic_harness::scheduler::SchedulerEvent::Completed {
+                outcome: acyclic_harness::Outcome::Indeterminate { operation_id }, ..
+            } if operation_id == *expected)
+        {
+            return Err("local task wire lost its interrupted operation".into());
+        }
+    }
+    let terminal = *terminals
+        .last()
+        .ok_or("local task has no root terminal frame")?;
     let event = acyclic_harness::scheduler::SchedulerEvent::deserialize(terminal)?;
     let valid = match event {
         acyclic_harness::scheduler::SchedulerEvent::Completed { outcome, .. } => matches!(

@@ -203,6 +203,10 @@ pub(super) async fn open(
     native_mounts: bool,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
+    #[cfg(target_os = "linux")]
+    if native_mounts {
+        volumes::recover_after_crash(&path)?;
+    }
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

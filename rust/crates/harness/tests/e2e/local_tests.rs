@@ -138,6 +138,16 @@ proptest::proptest! {
         proptest::prop_assert!(error.to_string().contains("did not succeed"));
         let mut foreign = id;foreign[0]^=1;
         proptest::prop_assert!(super::local_execution::check_frames(&expected,&frames,acyclic_harness::OperationId::from_bytes(foreign)).is_err());
+        let interrupted = acyclic_harness::OperationId::from_bytes(foreign);
+        let mut resumed = frames.clone();
+        resumed.insert(2, json!({"kind":"completed","operation_id":operation,"outcome":{"Indeterminate":{"operation_id":interrupted}},"fence":null}));
+        proptest::prop_assert!(super::local_execution::check_terminal_frames(&expected,&resumed,operation,true,&[interrupted]).is_ok());
+        proptest::prop_assert!(super::local_execution::check_frames(&expected,&resumed,operation).is_err());
+        proptest::prop_assert!(super::local_execution::check_terminal_frames(&expected,&frames,operation,true,&[interrupted]).is_err());
+        let mut wrong = resumed.clone();wrong[2]["outcome"]["Indeterminate"]["operation_id"] = json!(operation);
+        proptest::prop_assert!(super::local_execution::check_terminal_frames(&expected,&wrong,operation,true,&[interrupted]).is_err());
+        let mut wrong = resumed;wrong.swap(2,3);
+        proptest::prop_assert!(super::local_execution::check_terminal_frames(&expected,&wrong,operation,true,&[interrupted]).is_err());
         let mut reordered = frames;reordered.swap(0,1);
         proptest::prop_assert!(super::local_execution::check_frames(&expected,&reordered,operation).is_err());
     }

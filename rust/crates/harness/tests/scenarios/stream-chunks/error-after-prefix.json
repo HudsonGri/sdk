@@ -53,6 +53,23 @@
         "text": "{\"metadata\":null}",
         "path": "turns/0/completion.json"
       }
+    ],
+    "statuses": [
+      {
+        "state": "pending",
+        "attention": false,
+        "parent": null
+      },
+      {
+        "state": "indeterminate",
+        "attention": true,
+        "parent": null
+      },
+      {
+        "state": "completed",
+        "attention": true,
+        "parent": null
+      }
     ]
   },
   "interruptions": [
