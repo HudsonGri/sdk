@@ -76,7 +76,7 @@ pub(super) fn cancelled_turn_is_quiet(
 pub(in crate::local::children) async fn cancel(
     files: &Files,
     reference: &Component,
-    cursor: &mut crate::task_volume::Cursor,
+    cursor: &mut follow::Follow,
     values: &mut BTreeMap<FileKey, FileValue>,
     generation: &mut Generation,
 ) -> Result<()> {

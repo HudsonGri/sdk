@@ -11,7 +11,7 @@ impl LocalHarness {
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             let snapshot = files.inner.child_lifecycle(None).await.map_err(storage)?;
-            let mut cursor = snapshot.cursor;
+            let mut cursor = follow::Follow::new(snapshot.cursor);
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
                 .files

@@ -37,7 +37,7 @@ impl LocalHarness {
                 .child_lifecycle(Some(&reference))
                 .await
                 .map_err(storage)?;
-            let mut cursor = snapshot.cursor;
+            let mut cursor = follow::Follow::new(snapshot.cursor);
             let mut generation = snapshot.generation;
             let mut values: BTreeMap<_, _> = snapshot
                 .files
