@@ -45,6 +45,25 @@ mod tests {
     use std::io::Write as _;
 
     #[test]
+    fn native_dispatch_preserves_closed_session_admission() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut output = Vec::new();
+        let error = runtime
+            .block_on(execute(
+                "/outcome",
+                &mut None,
+                &mut None,
+                &mut tokio::task::JoinSet::new(),
+                &mut output,
+            ))
+            .unwrap_err();
+        assert!(matches!(error, Error::Conflict(message) if message == "session is closed"));
+        assert!(output.is_empty());
+    }
+
+    #[test]
     fn arguments_preserve_field_order_and_reject_ambiguous_json() -> Result<()> {
         for (body, accepted) in [
             (
@@ -118,7 +137,11 @@ macro_rules! dispatch {
         match $name {
             $( $(#[$attr])* $($verb)|+ => {
                 dispatch!(@bind $path, $fields);
-                $body
+                // Erase each selected command separately, so adding an SDK await
+                // cannot grow the layout of every command and its caller.
+                let command: futures::future::LocalBoxFuture<'_, Result<String>> =
+                    Box::pin(async move $body);
+                command.await
             },)*
             _ => Err(Error::Unsupported("unknown native command".into())),
         }
