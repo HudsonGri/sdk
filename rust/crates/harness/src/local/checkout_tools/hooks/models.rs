@@ -21,16 +21,16 @@ fn schedule<const RETAIN: bool>() {
     let completed = StateArc::clone(&cleaned);
     let mut worker = None;
     let mut command = Box::pin(serialized(&state, async |guard| {
-        with_workers::<_, _, RETAIN>(
+        with_workers::<_, _, _, _, RETAIN>(
             guard,
             || Ok(()),
-            async |check| {
+            |check| {
                 worker = Some(thread::spawn(move || {
                     thread::yield_now();
                     check().unwrap();
                     completed.store(true, Ordering::SeqCst);
                 }));
-                std::future::pending::<()>().await;
+                std::future::pending::<()>()
             },
         )
         .await

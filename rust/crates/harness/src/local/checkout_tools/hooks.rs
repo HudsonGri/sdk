@@ -131,16 +131,14 @@ impl CheckoutTools {
                     .map_err(std::io::Error::other)
                 })
             };
-            let (result, mut state) = with_workers::<_, _, true>(state, check, async |check| {
-                hooks
-                    .run_checked(
-                        event,
-                        (&workspace.path, &workspace.path),
-                        input,
-                        registry,
-                        check,
-                    )
-                    .await
+            let (result, mut state) = with_workers::<_, _, _, _, true>(state, check, |check| {
+                hooks.run_checked(
+                    event,
+                    (&workspace.path, &workspace.path),
+                    input,
+                    registry,
+                    check,
+                )
             })
             .await?;
             workspace::volumes::sync(&state.mounts).await?;
@@ -166,11 +164,15 @@ impl CheckoutTools {
 
 // The native runner and model share this whole ownership boundary. Only the
 // caller can recover the guard, after all workers have released their checks.
-async fn with_workers<T: Send + Sync + 'static, R, const RETAIN: bool>(
+async fn with_workers<T: Send + Sync + 'static, R, F, FF, const RETAIN: bool>(
     state: OwnedMutexGuard<T>,
     check: impl Fn() -> std::io::Result<()> + Send + Sync + 'static,
-    execute: impl AsyncFnOnce(crate::hooks::HookCheck) -> R,
-) -> Result<(R, OwnedMutexGuard<T>)> {
+    execute: F,
+) -> Result<(R, OwnedMutexGuard<T>)>
+where
+    F: FnOnce(crate::hooks::HookCheck) -> FF + Send,
+    FF: std::future::Future<Output = R> + Send,
+{
     let held = StateArc::new(state);
     let worker = StateArc::clone(&held);
     let check: crate::hooks::HookCheck = if RETAIN {
