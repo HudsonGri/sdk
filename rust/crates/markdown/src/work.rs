@@ -1,5 +1,6 @@
 use std::cell::Cell;
 thread_local! {
+    pub(crate) static QUADRUPLE_TOKEN_PAGE: Cell<bool> = const { Cell::new(false) };
     pub(crate) static EAGER_RENDER_PAGE: Cell<bool> = const { Cell::new(false) };
     static SOURCE_GROWTH: Cell<usize> = const { Cell::new(0) };
     static SCAN: Cell<usize> = const { Cell::new(0) };

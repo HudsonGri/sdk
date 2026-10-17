@@ -46,6 +46,21 @@ fn units(chunks: &[String], count: usize) -> (usize, usize, [usize; 5]) {
     )
 }
 
+#[test]
+fn mixed_links_keep_inline_work_linear() {
+    let chunks = ["[x](u)", "[x][r]", "[x](u)"].map(str::to_owned);
+    for count in [64, 128, 256, 512, 1024] {
+        let (used, bytes, parts) = units(&chunks, count);
+        if std::env::var_os("GC_WORK_REPORT").is_some() {
+            eprintln!("{count} chunks {used}/{bytes} {parts:?}");
+        }
+        assert!(
+            used <= 128 * bytes + 4096,
+            "{count}: {used} units for {bytes} bytes"
+        );
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(

@@ -84,6 +84,9 @@ impl Codes {
                 if self.nodes.len() == self.nodes.capacity() {
                     crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Code>>());
                 }
+                if self.nodes.is_empty() {
+                    self.nodes.reserve_exact(1);
+                }
                 self.nodes.push(new_page(page));
             } else {
                 self.nodes[page].clear();
@@ -93,14 +96,17 @@ impl Codes {
             .classification_start()
             .map_or(opening.start, |first| first.min(opening.start));
         let width = opening.len();
-        push_page(&mut self.nodes[page], Code {
-            opening,
-            before,
-            previous: self.head,
-            depth,
-            earliest,
-            first,
-        });
+        push_page(
+            &mut self.nodes[page],
+            Code {
+                opening,
+                before,
+                previous: self.head,
+                depth,
+                earliest,
+                first,
+            },
+        );
         self.length += 1;
         self.head = self.length;
         self.insert(width, self.head);

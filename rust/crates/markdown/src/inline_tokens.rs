@@ -84,21 +84,28 @@ impl Queue {
         if index >= self.length {
             return None;
         }
-        let at = self.start + index;
-        self.pages
-            .get(at / super::forest::PAGE)?
-            .get(at % super::forest::PAGE)
+        let (page, offset) = super::forest::slot(self.start + index);
+        let first = super::forest::slot(self.start).0;
+        self.pages.get(page.checked_sub(first)?)?.get(offset)
     }
     fn front(&self) -> Option<&Token> {
         self.get(0)
     }
     fn front_mut(&mut self) -> Option<&mut Token> {
-        self.pages.front_mut()?.get_mut(self.start)
+        self.pages
+            .front_mut()?
+            .get_mut(super::forest::slot(self.start).1)
     }
     pub(super) fn back(&self) -> Option<&Token> {
+        if self.length == 0 {
+            return None;
+        }
         self.pages.back()?.last()
     }
     fn back_mut(&mut self) -> Option<&mut Token> {
+        if self.length == 0 {
+            return None;
+        }
         self.pages.back_mut()?.last_mut()
     }
     #[cfg(test)]
@@ -107,56 +114,57 @@ impl Queue {
             .iter()
             .enumerate()
             .flat_map(move |(index, page)| {
-                page.iter().skip(if index == 0 { self.start } else { 0 })
+                page.iter().skip(if index == 0 {
+                    super::forest::slot(self.start).1
+                } else {
+                    0
+                })
             })
     }
     pub(super) fn pop_front(&mut self) -> Option<Token> {
         let token = self.front()?.clone();
         self.start += 1;
         self.length -= 1;
-        if self
-            .pages
-            .front()
-            .is_some_and(|page| self.start == page.len())
-        {
+        if super::forest::slot(self.start).1 == 0 {
             self.pages.pop_front();
-            self.start = 0;
         }
         Some(token)
     }
     fn push_back(&mut self, token: Token) {
-        if self
-            .pages
-            .back()
-            .is_none_or(|page| page.len() == super::forest::PAGE)
-        {
+        #[cfg(test)]
+        if MOVE_QUEUE.get() {
+            let moved = self.pages.iter().cloned().collect();
+            self.pages = moved;
+        }
+        // Use the same immutable page addressing as the forest. Advancing the
+        // queue never copies its live tokens or resets the page geometry.
+        let (page, offset) = super::forest::slot(self.start + self.length);
+        if offset == 0 {
             #[cfg(test)]
             if self.pages.len() == self.pages.capacity() {
                 crate::work::copy(self.pages.len() * std::mem::size_of::<Vec<Token>>());
             }
-            let capacity = if self.pages.is_empty() {
-                4
-            } else {
-                super::forest::PAGE
-            };
+            if self.pages.len() == self.pages.capacity() {
+                self.pages.reserve_exact(self.pages.len().max(1));
+            }
+            let tokens = super::forest::new_page(page);
             #[cfg(test)]
-            let capacity = if crate::work::EAGER_RENDER_PAGE.get() {
-                super::forest::PAGE
+            let tokens = if crate::work::QUADRUPLE_TOKEN_PAGE.get() {
+                Vec::with_capacity(super::forest::PAGE)
             } else {
-                capacity
+                tokens
             };
-            self.pages.push_back(Vec::with_capacity(capacity));
+            self.pages.push_back(tokens);
         }
         let page = self.pages.back_mut().expect("token page");
-        if page.len() == page.capacity() {
-            #[cfg(test)]
-            crate::work::copy(page.len() * std::mem::size_of::<Token>());
-            page.reserve_exact(super::forest::PAGE - page.len());
-        }
+        debug_assert_eq!(offset, page.len());
         page.push(token);
         self.length += 1;
     }
 }
+
+#[cfg(test)]
+thread_local! { static MOVE_QUEUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 #[cfg(test)]
 impl PartialEq for Queue {

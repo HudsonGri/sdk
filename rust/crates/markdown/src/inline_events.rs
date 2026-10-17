@@ -541,7 +541,7 @@ impl Cache {
             }
         }
         for output in self.nodes.iter().flat_map(|page| page.iter()) {
-            for spans in std::iter::once(&output.head).chain(&output.tail) {
+            for spans in output.spans() {
                 let (bytes, size) = spans.retained(nodes, texts, links);
                 payload += bytes;
                 metadata += size;

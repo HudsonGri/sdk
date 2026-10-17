@@ -1,6 +1,57 @@
 use super::*;
 use proptest::prelude::*;
 
+fn queue_model(operations: &[bool]) -> Result<(), TestCaseError> {
+    let mut queue = Queue::default();
+    let mut model = VecDeque::new();
+    let mut addresses = VecDeque::new();
+    for (index, push) in operations.iter().enumerate() {
+        if *push {
+            let token = Token {
+                range: index..index + 1,
+                kind: Kind::Text,
+            };
+            queue.push_back(token.clone());
+            model.push_back(token);
+            addresses.push_back(std::ptr::from_ref(queue.back().expect("pushed token")));
+        } else {
+            prop_assert_eq!(queue.pop_front(), model.pop_front());
+            addresses.pop_front();
+        }
+        prop_assert_eq!(queue.len(), model.len());
+        prop_assert_eq!(queue.front(), model.front());
+        prop_assert_eq!(queue.back(), model.back());
+        let front = queue.front_mut();
+        prop_assert_eq!(front.as_deref(), model.front());
+        let back = queue.back_mut();
+        prop_assert_eq!(back.as_deref(), model.back());
+        prop_assert!(queue.iter().eq(&model));
+        for (at, (expected, address)) in model.iter().zip(&addresses).enumerate() {
+            let token = queue.get(at).expect("live token");
+            prop_assert_eq!(token, expected);
+            prop_assert_eq!(std::ptr::from_ref(token), *address);
+        }
+        prop_assert_eq!(queue.get(model.len()), None);
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn queue_preserves_values_and_addresses(operations in prop::collection::vec(any::<bool>(), 0..512)) {
+        queue_model(&operations)?;
+    }
+}
+
+#[test]
+fn queue_property_detects_moving_live_tokens() {
+    MOVE_QUEUE.set(true);
+    let result = queue_model(&[true, true]);
+    MOVE_QUEUE.set(false);
+    assert!(result.is_err());
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]

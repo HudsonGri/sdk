@@ -146,6 +146,22 @@ fn measure(
     )
 }
 
+#[test]
+fn fence_followed_by_paragraph_has_linear_storage() {
+    let (small, large) = measure_pair(&[7], 1, "unused", 1, &[3]);
+    assert!(
+        large.1 <= 2 * small.1 + 1024,
+        "storage {small:?} -> {large:?}"
+    );
+    work::QUADRUPLE_TOKEN_PAGE.set(true);
+    let (small, large) = measure_pair(&[7], 1, "unused", 1, &[3]);
+    work::QUADRUPLE_TOKEN_PAGE.set(false);
+    assert!(
+        large.1 > 2 * small.1 + 1024,
+        "control {small:?} -> {large:?}"
+    );
+}
+
 fn measure_with(
     actions: &[u8],
     count: usize,
