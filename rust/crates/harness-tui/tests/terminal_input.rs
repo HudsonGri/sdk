@@ -93,15 +93,20 @@ fn dropping_a_waiting_stream_releases_the_terminal_without_a_thread() -> io::Res
 #[test]
 fn negative_control_detects_spawn_blocking_reader_left_blocked() -> io::Result<()> {
     let _serial = serial();
-    let (mut master, user) = pty()?;
+    let (master, user) = pty()?;
     let runtime = runtime("tui-input-neg")?;
     let tty = Tty::from_file(user.try_clone()?)?;
     // The removed path: the terminal moves into a blocking task per batch,
     // waiting on a 24-hour deadline.
+    let (started, entered) = std::sync::mpsc::sync_channel(0);
     let mut read = runtime.spawn_blocking(move || {
         let mut tty = tty;
+        let _ = started.send(());
         tty.receive(&mut [0; 1024], Instant::now() + Duration::from_secs(86_400))
     });
+    // Release the blocked read on assertion unwind before the runtime joins it.
+    let mut master = master;
+    entered.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
     poll_pending(&runtime, &mut read);
     drop(read);
     #[cfg(target_os = "linux")]
