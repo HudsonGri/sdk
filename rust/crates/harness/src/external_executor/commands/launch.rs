@@ -89,7 +89,7 @@ where
             let operation = super::super::launch::process_operation(owner.task_id());
             let command = WorkflowCommand {
                 operation_id: operation,
-                kind: crate::filesystem::NATIVE_PROCESS_EFFECT_KIND.into(),
+                kind: super::super::launch::PROCESS_COMMAND.into(),
                 payload: executor.clone(),
             };
             let admission = self

@@ -75,6 +75,18 @@ fn native_decoder_rejects_unknown_fields_and_duplicate_headers() {
 }
 
 #[test]
+fn custody_dispatch_uses_a_workflow_label_instead_of_an_effect_uri() {
+    assert!(crate::contract::is_valid_component_label(PROCESS_COMMAND));
+    assert_ne!(
+        PROCESS_COMMAND,
+        crate::filesystem::NATIVE_PROCESS_EFFECT_KIND
+    );
+    assert!(!crate::contract::is_valid_component_label(
+        crate::filesystem::NATIVE_PROCESS_EFFECT_KIND
+    ));
+}
+
+#[test]
 fn checked_native_launch_seeds_reach_the_executor_and_header_decoders() -> Result<()> {
     for (seed, valid) in [
         (

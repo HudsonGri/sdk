@@ -4,6 +4,10 @@ use crate::{Error, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+// Workflow command kinds are component labels; the existing process effect URI
+// is not a valid command label. Both dispatch and detection use this one tag.
+pub(crate) const PROCESS_COMMAND: &str = "acyclic.native_process.v1";
+
 // The retained file contains one already-bounded request plus its fixed parent
 // envelope. It is not a transport frame and must not reuse the record bound.
 const BOUNDS: crate::JsonBounds = crate::JsonBounds {

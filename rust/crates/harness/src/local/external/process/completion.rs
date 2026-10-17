@@ -18,7 +18,7 @@ impl LocalHarness {
                 .input
                 .pointer("/command/kind")
                 .and_then(Value::as_str)
-                != Some(NATIVE_PROCESS_EFFECT_KIND)
+                != Some(PROCESS_COMMAND)
             || process.input.pointer("/command/operation_id") != Some(&json!(process.operation_id))
             || process.operation_id != launch::process_operation(parent)
             || attached.input.get("executor") != process.input.pointer("/command/payload")

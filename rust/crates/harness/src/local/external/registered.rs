@@ -78,7 +78,7 @@ impl LocalHarness {
                 .input
                 .pointer("/command/kind")
                 .and_then(Value::as_str)
-                == Some(crate::filesystem::NATIVE_PROCESS_EFFECT_KIND)
+                == Some(crate::external_executor::launch::PROCESS_COMMAND)
             {
                 Some(self.native_parent(&admission).await?)
             } else {

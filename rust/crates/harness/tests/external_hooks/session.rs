@@ -172,7 +172,7 @@ proptest! {
             prop_assert!(machine.transition(&idle.state,&invalid).is_err());
         }
         let mut command=command;
-        command.kind=acyclic_harness::filesystem::NATIVE_PROCESS_EFFECT_KIND.into();
+        command.kind="acyclic.native_process.v1".into();
         let ready=machine.initialize(&json!({"command":command,"terminal":true}))?;
         let waiting=machine.transition(&ready,&Value::Null)?;
         let value=json!({"success":true,"exit_code":0});

@@ -1,8 +1,8 @@
 //! A native program is a separate durable child; its hook slot stays free.
 use super::*;
 use crate::{
-    external_executor::launch::{self, Launch},
-    filesystem::{NATIVE_PROCESS_EFFECT_KIND, TaskCommandHost, TaskCommandProgress},
+    external_executor::launch::{self, Launch, PROCESS_COMMAND},
+    filesystem::{TaskCommandHost, TaskCommandProgress},
     runtime::{TaskContext, TaskStateProvider},
     scheduler::LeaseFence,
     task_volume::ToolFile,
@@ -54,7 +54,7 @@ impl Commands<'_> {
             let task = context
                 .durable_task_id()
                 .ok_or_else(|| Error::Unauthorized("native process has no task".into()))?;
-            if command.kind != NATIVE_PROCESS_EFFECT_KIND
+            if command.kind != PROCESS_COMMAND
                 || command.operation_id.into_bytes() != task.into_bytes()
             {
                 return Err(Error::Unauthorized(

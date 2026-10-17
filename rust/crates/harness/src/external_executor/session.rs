@@ -167,7 +167,7 @@ fn dispatch(input: Input, commands: &mut Vec<WorkflowCommand>) -> Result<State> 
     let state = State::Waiting {
         operation_id: input.command.operation_id,
         terminal: input.terminal,
-        native_process: input.command.kind == crate::filesystem::NATIVE_PROCESS_EFFECT_KIND,
+        native_process: input.command.kind == super::launch::PROCESS_COMMAND,
     };
     commands.push(input.command);
     Ok(state)
