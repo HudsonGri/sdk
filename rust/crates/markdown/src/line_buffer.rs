@@ -32,7 +32,7 @@ impl Buffer {
         let index = self.length.checked_sub(1)?;
         let (page, _) = Self::location(index);
         self.length -= 1;
-        self.pages[page].pop()
+        self.pages.get_mut(page)?.pop()
     }
     pub(crate) fn capacity(&self) -> usize {
         self.capacity
@@ -67,8 +67,11 @@ impl Buffer {
         }
         self.reserve(1);
         let (page, offset) = Self::location(self.length);
-        debug_assert_eq!(offset, self.pages[page].len());
-        self.pages[page].push(line);
+        let Some(page) = self.pages.get_mut(page) else {
+            return;
+        };
+        debug_assert_eq!(offset, page.len());
+        page.push(line);
         self.length += 1;
     }
     pub(crate) fn get(&self, index: usize) -> Option<&Line> {
@@ -101,7 +104,9 @@ impl Buffer {
     pub(crate) fn truncate(&mut self, length: usize) {
         while self.length > length {
             let (page, _) = Self::location(self.length - 1);
-            self.pages[page].pop();
+            if let Some(page) = self.pages.get_mut(page) {
+                page.pop();
+            }
             self.length -= 1;
         }
     }
@@ -111,7 +116,9 @@ impl Buffer {
     pub(crate) fn split_off(&mut self, first: usize) -> Self {
         let mut suffix = Self::with_capacity(self.length - first);
         for index in first..self.length {
-            suffix.push(std::mem::take(&mut self[index]));
+            if let Some(line) = self.get_mut(index) {
+                suffix.push(std::mem::take(line));
+            }
         }
         self.truncate(first);
         suffix
@@ -119,13 +126,19 @@ impl Buffer {
     pub(crate) fn retain_suffix(&mut self, first: usize, mut keep: impl FnMut(&mut Line) -> bool) {
         let mut write = first;
         for read in first..self.length {
-            if keep(&mut self[read]) {
+            let Some(line) = self.get_mut(read) else {
+                break;
+            };
+            if keep(line) {
                 if write != read {
-                    self[write] = std::mem::take(&mut self[read]);
+                    let moved = std::mem::take(line);
+                    if let Some(target) = self.get_mut(write) {
+                        *target = moved;
+                    }
                 }
                 write += 1;
             } else {
-                self[read] = Line::default();
+                *line = Line::default();
             }
         }
         self.truncate(write);
@@ -140,13 +153,13 @@ impl Index<usize> for Buffer {
     type Output = Line;
     fn index(&self, index: usize) -> &Line {
         let (page, offset) = Self::location(index);
-        &self.pages[page][offset]
+        self.pages.index(page).index(offset)
     }
 }
 impl IndexMut<usize> for Buffer {
     fn index_mut(&mut self, index: usize) -> &mut Line {
         let (page, offset) = Self::location(index);
-        &mut self.pages[page][offset]
+        self.pages.index_mut(page).index_mut(offset)
     }
 }
 impl Extend<Line> for Buffer {
@@ -347,17 +360,29 @@ mod tests {
         let mut addresses = Vec::new();
         for index in 0..4096 {
             buffer.push(Line::plain(&index.to_string(), crate::Style::default()));
-            addresses.push(&buffer[index] as *const Line);
+            addresses.push(std::ptr::from_ref(buffer.get(index).expect("existing row")));
         }
         for (index, address) in addresses.into_iter().enumerate() {
-            assert_eq!(&buffer[index] as *const Line, address);
             assert_eq!(
-                buffer[index].spans.first().unwrap().text.as_str(),
+                std::ptr::from_ref(buffer.get(index).expect("existing row")),
+                address
+            );
+            assert_eq!(
+                buffer
+                    .get(index)
+                    .expect("existing row")
+                    .spans
+                    .first()
+                    .unwrap()
+                    .text
+                    .as_str(),
                 index.to_string()
             );
         }
         let prefix = buffer.view(..64).unwrap().to_vec();
-        buffer[4095]
+        buffer
+            .get_mut(4095)
+            .expect("last row")
             .spans
             .last_mut()
             .unwrap()

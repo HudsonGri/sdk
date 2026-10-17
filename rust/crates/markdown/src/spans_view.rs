@@ -224,7 +224,7 @@ impl<'a> Iter<'a> {
                     }
                 }
                 Task::Part(Part::Span(span, forced), style, link) => {
-                    self.push(Task::Tail(span, *forced, style, link))
+                    self.push(Task::Tail(span, *forced, style, link));
                 }
                 Task::Part(Part::Group(child, mask, target, forced), style, link) => {
                     if target.is_some() {

@@ -41,13 +41,17 @@ fn missed(source: &str) -> Option<(usize, usize)> {
         if !source.is_char_boundary(end) {
             continue;
         }
-        let reported = angles.feed(&source[..end]);
-        let missed = source[..end]
+        let reported = angles.feed(source.get(..end)?);
+        let missed = source
+            .get(..end)?
             .match_indices('<')
             .map(|(start, _)| start)
             // An escaped `<` opens nothing.
             .filter(|&start| {
-                source.as_bytes()[..start]
+                source
+                    .as_bytes()
+                    .get(..start)
+                    .expect("before opener")
                     .iter()
                     .rev()
                     .take_while(|&&byte| byte == b'\\')
@@ -56,7 +60,8 @@ fn missed(source: &str) -> Option<(usize, usize)> {
                     == 0
             })
             .find(|&start| {
-                complete(&source[start..end]) && reported.is_none_or(|opener| opener > start)
+                complete(source.get(start..end).expect("construct boundaries"))
+                    && reported.is_none_or(|opener| opener > start)
             });
         if let Some(start) = missed {
             return Some((start, end));

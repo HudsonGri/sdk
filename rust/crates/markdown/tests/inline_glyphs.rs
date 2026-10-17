@@ -190,7 +190,11 @@ fn code_and_paragraph_boundaries_match_event_rendering() {
         let mut markdown = crate::Markdown::default();
         let mut consumer = Vec::new();
         for (at, character) in source.char_indices() {
-            let changed = markdown.push(&source[at..at + character.len_utf8()]);
+            let changed = markdown.push(
+                source
+                    .get(at..at + character.len_utf8())
+                    .expect("character boundaries"),
+            );
             consumer.truncate(changed);
             consumer.extend(
                 (markdown.lines().slice(changed..).unwrap_or_default())
@@ -199,7 +203,11 @@ fn code_and_paragraph_boundaries_match_event_rendering() {
             );
             assert_eq!(
                 consumer,
-                crate::tests::full_parse(&source[..at + character.len_utf8()]),
+                crate::tests::full_parse(
+                    source
+                        .get(..at + character.len_utf8())
+                        .expect("prefix boundary")
+                ),
                 "body {body:?}, prefix {at}"
             );
         }
@@ -211,10 +219,18 @@ fn retained_prefix_preserves_deferred_row_indentation() {
     for source in ["¡\n\t&", "x\n\t&", "¡\n\t!", "hello world\tfoo*x*"] {
         let mut markdown = crate::Markdown::default();
         for (at, character) in source.char_indices() {
-            markdown.push(&source[at..at + character.len_utf8()]);
+            markdown.push(
+                source
+                    .get(at..at + character.len_utf8())
+                    .expect("character boundaries"),
+            );
             assert_eq!(
                 markdown.lines(),
-                crate::tests::full_parse(&source[..at + character.len_utf8()]),
+                crate::tests::full_parse(
+                    source
+                        .get(..at + character.len_utf8())
+                        .expect("prefix boundary")
+                ),
                 "source {source:?}, prefix {at}"
             );
         }

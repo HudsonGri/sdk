@@ -133,7 +133,10 @@ impl Entry {
         if slot == own || slot == 3 && !self.both {
             id
         } else {
-            self.candidates[slot - usize::from(slot > own)]
+            self.candidates
+                .get(slot - usize::from(slot > own))
+                .copied()
+                .unwrap_or_default()
         }
     }
 }
@@ -147,7 +150,7 @@ pub(super) struct Delimiters {
     scan: bool,
 }
 
-fn group(byte: u8) -> usize {
+fn group(byte: u8) -> u8 {
     match byte {
         b'*' => 0,
         b'_' => 1,
@@ -175,7 +178,9 @@ impl Delimiters {
                 heads: entry.before,
                 tilde_floor: 0,
             };
-            heads.heads[usize::from(entry.class)] = snapshot.head;
+            if let Some(head) = heads.heads.get_mut(usize::from(entry.class)) {
+                *head = snapshot.head;
+            }
             heads
         } else {
             Heads::default()
@@ -205,7 +210,12 @@ impl Delimiters {
 
     fn push(&mut self, range: Range<usize>, original: usize, byte: u8, both: bool, cursor: usize) {
         let class = group(byte);
-        let head = self.heads.heads.get(class).copied().unwrap_or_default();
+        let head = self
+            .heads
+            .heads
+            .get(usize::from(class))
+            .copied()
+            .unwrap_or_default();
         let inherited: [usize; 4] = self.entry(head).map_or([0; 4], |entry| {
             std::array::from_fn(|slot| entry.candidate(head, slot))
         });
@@ -215,7 +225,12 @@ impl Delimiters {
         } else {
             original % 3
         };
-        let candidates = std::array::from_fn(|slot| inherited[slot + usize::from(slot >= own)]);
+        let candidates = std::array::from_fn(|slot| {
+            inherited
+                .get(slot + usize::from(slot >= own))
+                .copied()
+                .unwrap_or_default()
+        });
         let first = self.first().unwrap_or(range.start);
         #[cfg(test)]
         {
@@ -227,11 +242,15 @@ impl Delimiters {
             if self.entries.len() == self.entries.capacity() {
                 crate::work::copy(self.entries.len() * std::mem::size_of::<Vec<Entry>>());
             }
-            self.entries.push(super::forest::new_page(self.entries.len()));
+            self.entries
+                .push(super::forest::new_page(self.entries.len()));
         }
+        let Some(page) = self.entries.last_mut() else {
+            return;
+        };
         self.length += 1;
         super::forest::push_page(
-            self.entries.last_mut().expect("delimiter page"),
+            page,
             Entry {
                 before: self.heads.heads,
                 candidates,
@@ -239,13 +258,13 @@ impl Delimiters {
                 original,
                 first,
                 both,
-                class: class as u8,
+                class,
                 cursor,
                 #[cfg(test)]
                 byte,
             },
         );
-        if let Some(head) = self.heads.heads.get_mut(class) {
+        if let Some(head) = self.heads.heads.get_mut(usize::from(class)) {
             *head = id;
         }
     }
@@ -261,7 +280,9 @@ impl Delimiters {
                         || entry.original == count
                             && entry.before.into_iter().max().unwrap_or(0)
                                 >= self.heads.tilde_floor)
-                    && (!both && !entry.both || (entry.original + count) % 3 != 0 || count % 3 == 0)
+                    && (!both && !entry.both
+                        || !(entry.original + count).is_multiple_of(3)
+                        || count.is_multiple_of(3))
                 {
                     return Some(cursor);
                 }
@@ -269,7 +290,7 @@ impl Delimiters {
             }
             return None;
         }
-        let head = self.heads.heads.get(group(byte)).copied()?;
+        let head = self.heads.heads.get(usize::from(group(byte))).copied()?;
         let entry = self.entry(head)?;
         if byte == b'~' {
             #[cfg(test)]
@@ -285,7 +306,7 @@ impl Delimiters {
             let id = entry.candidate(head, residue);
             #[cfg(test)]
             crate::work::scan(1);
-            if count % 3 == 0 || (count + residue) % 3 != 0 {
+            if count.is_multiple_of(3) || !(count + residue).is_multiple_of(3) {
                 latest = latest.max(id);
             }
         }

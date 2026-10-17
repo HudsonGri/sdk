@@ -145,12 +145,46 @@ impl Inline {
                 + self.charges.capacity() * std::mem::size_of::<(usize, usize, Range<usize>)>(),
         )
     }
+    fn update_code(
+        &mut self,
+        source: &str,
+        events: &[(Event<'_>, Range<usize>)],
+        base: usize,
+        sentinel: usize,
+    ) {
+        let code = events
+            .iter()
+            .filter(|(event, range)| matches!(event, Event::Code(_)) && range.start >= sentinel)
+            .map(|(_, range)| base + range.start - sentinel..base + range.end - sentinel)
+            .next_back()
+            .filter(|range| {
+                #[cfg(test)]
+                work::scan(range.len());
+                source
+                    .get(range.clone())
+                    .is_some_and(|code| code.contains('\n'))
+            });
+        self.code = code.or(self.code.take().filter(|code| code.start < base));
+    }
+
     pub(super) fn plain(&self) -> bool {
         self.held.is_none() && self.scanner.plain()
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
         (stable, fallback)
     }
+}
+
+fn inline_paragraph(source: &str, events: &[(Event<'_>, Range<usize>)], sentinel: usize) -> bool {
+    events
+        .first()
+        .is_none_or(|(_, range)| range.start <= sentinel)
+        && paragraph(source, events)
+        && !events.iter().any(|(event, range)| {
+            matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
+                && range.start < sentinel
+                && range.end > sentinel
+        })
 }
 
 impl Markdown {
@@ -253,33 +287,11 @@ impl Markdown {
                 std::borrow::Cow::Borrowed(&[][..]),
             )
         };
-        if classify
-            && (events
-                .first()
-                .is_some_and(|(_, range)| range.start > sentinel)
-                || !paragraph(&source, &events)
-                || events.iter().any(|(event, range)| {
-                    matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
-                        && range.start < sentinel
-                        && range.end > sentinel
-                }))
-        {
+        if classify && !inline_paragraph(&source, &events, sentinel) {
             return None;
         }
         if classify {
-            let code = events
-                .iter()
-                .filter(|(event, range)| matches!(event, Event::Code(_)) && range.start >= sentinel)
-                .map(|(_, range)| base + range.start - sentinel..base + range.end - sentinel)
-                .next_back()
-                .filter(|range| {
-                    #[cfg(test)]
-                    work::scan(range.len());
-                    self.source
-                        .get(range.clone())
-                        .is_some_and(|code| code.contains('\n'))
-                });
-            inline.code = code.or(inline.code.take().filter(|code| code.start < base));
+            inline.update_code(&self.source, &events, base, sentinel);
         }
         inline.scanner.frontier(
             inline_scan::Slice {

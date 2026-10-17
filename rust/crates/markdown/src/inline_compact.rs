@@ -30,7 +30,7 @@ impl Scanner {
         let Some(output) = self.render.freeze_prefix(
             &mut self.state.forest,
             root,
-            forest::glyphs::events::projection::Projection {
+            &forest::glyphs::events::projection::Projection {
                 source: source.original,
                 visible: self.origin..position,
                 hard_breaks: breaks,

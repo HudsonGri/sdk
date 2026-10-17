@@ -1,5 +1,26 @@
 use super::*;
 
+type ResumeCode = (usize, usize, (usize, usize, usize));
+
+fn truncate_codes(
+    codes: &[ResumeCode],
+    widths: &mut HashMap<usize, usize>,
+    head: &mut usize,
+    parent: usize,
+) -> bool {
+    while *head != parent {
+        let Some(&(width, previous, _)) = head.checked_sub(1).and_then(|index| codes.get(index))
+        else {
+            return false;
+        };
+        widths.remove(&width);
+        *head = previous;
+        #[cfg(test)]
+        work::scan(1);
+    }
+    true
+}
+
 impl Scanner {
     pub(crate) fn classification_resume(&self, end: usize, reopen: Option<usize>) -> usize {
         let destination = self
@@ -11,12 +32,16 @@ impl Scanner {
         if let Some(closed) = reopen {
             base = base.min(self.reopen_start(end, closed));
         }
+        self.resume_tokens(base)
+    }
+
+    fn resume_tokens(&self, mut base: usize) -> usize {
         let mut depth = 0usize;
         let mut old = self.state.resume_bracket();
         let mut old_depth = self.state.resume_code_depth();
         // A code closer restores the bracket cursor from its opener. The
         // retained code prefix is read-only; only this chunk needs scratch nodes.
-        let mut codes = Vec::<(usize, usize, (usize, usize, usize))>::new();
+        let mut codes = Vec::<ResumeCode>::new();
         let mut head = 0usize;
         let mut widths = HashMap::<usize, usize>::new();
         let ready =
@@ -54,13 +79,13 @@ impl Scanner {
             #[cfg(test)]
             work::scan(1);
             if let Some(&matched) = widths.get(&physical) {
-                let (_, parent, saved) = codes[matched - 1];
-                while head != parent {
-                    let (width, previous, _) = codes[head - 1];
-                    widths.remove(&width);
-                    head = previous;
-                    #[cfg(test)]
-                    work::scan(1);
+                let Some(&(_, parent, saved)) =
+                    matched.checked_sub(1).and_then(|index| codes.get(index))
+                else {
+                    return base;
+                };
+                if !truncate_codes(&codes, &mut widths, &mut head, parent) {
+                    return base;
                 }
                 (depth, old, old_depth) = saved;
             } else if let Some((_, before, bracket, start)) = self
@@ -68,12 +93,8 @@ impl Scanner {
                 .resume_code(physical)
                 .filter(|(depth, _, _, _)| *depth <= old_depth)
             {
-                while head != 0 {
-                    let (width, previous, _) = codes[head - 1];
-                    widths.remove(&width);
-                    head = previous;
-                    #[cfg(test)]
-                    work::scan(1);
+                if !truncate_codes(&codes, &mut widths, &mut head, 0) {
+                    return base;
                 }
                 old = bracket;
                 old_depth = before;
@@ -89,7 +110,7 @@ impl Scanner {
                 #[cfg(test)]
                 {
                     work::copy(
-                        std::mem::size_of::<(usize, usize, (usize, usize, usize))>()
+                        std::mem::size_of::<ResumeCode>()
                             * (1 + if codes.len() == codes.capacity() {
                                 codes.len()
                             } else {

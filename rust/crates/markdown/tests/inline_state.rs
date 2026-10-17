@@ -102,10 +102,10 @@ proptest! {
             let before = state.snapshot();
             let root = state.projection(tokens.preview().as_ref());
             prop_assert_eq!(state.snapshot(), before, "EOF changed settled scanner state");
-            if !prefix.is_empty() {
-                prop_assert_eq!(state.forest.rendered_at(root, prefix), Some(full(prefix)), "prefix {:?}", prefix);
-            } else {
+            if prefix.is_empty() {
                 prop_assert_eq!(root, 0);
+            } else {
+                prop_assert_eq!(state.forest.rendered_at(root, prefix), Some(full(prefix)), "prefix {:?}", prefix);
             }
             replayed.reset();
             let mut fresh = Tokens::default();

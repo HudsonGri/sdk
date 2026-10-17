@@ -72,7 +72,7 @@ pub(super) fn push_page<T>(page: &mut Vec<T>, value: T) {
 
 #[derive(Default)]
 pub(super) struct Forest {
-    nodes: Vec<Box<Vec<Node>>>,
+    nodes: Vec<Vec<Node>>,
     length: usize,
     root: usize,
     structures: usize,
@@ -139,28 +139,32 @@ impl Forest {
             if page == self.nodes.len() {
                 #[cfg(test)]
                 if self.nodes.len() == self.nodes.capacity() {
-                    crate::work::copy(self.nodes.len() * std::mem::size_of::<Box<Vec<Node>>>());
+                    crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Node>>());
                 }
                 if self.nodes.is_empty() {
                     self.nodes.reserve_exact(1);
                 }
-                self.nodes.push(Box::new(new_page(page)));
+                self.nodes.push(new_page(page));
             } else {
-                self.nodes
-                    .get_mut(page)
-                    .expect("existing node page")
-                    .clear();
+                if let Some(page) = self.nodes.get_mut(page) {
+                    page.clear();
+                }
             }
         }
-        let page = self.nodes.get_mut(page).expect("node page allocated");
-        push_page(page, Node {
-            previous: self.root,
-            range,
-            children,
-            stop,
-            kind,
-            output: Rendered::default(),
-        });
+        let Some(page) = self.nodes.get_mut(page) else {
+            return self.root;
+        };
+        push_page(
+            page,
+            Node {
+                previous: self.root,
+                range,
+                children,
+                stop,
+                kind,
+                output: Rendered::default(),
+            },
+        );
         self.length += 1;
         self.structures += usize::from(kind != Kind::Text);
         self.root = self.length;
@@ -171,7 +175,9 @@ impl Forest {
         // A folded prefix is compiled history, not a syntactic inline scope.
         // Block classification may revisit the last physical row inside it.
         self.append(range, 0, output.full, Kind::Prefix);
-        self.node_mut(self.root).expect("prefix node").output = output;
+        if let Some(node) = self.node_mut(self.root) {
+            node.output = output;
+        }
     }
 
     pub(super) fn text(&mut self, range: Range<usize>) -> usize {
@@ -209,7 +215,7 @@ impl Forest {
         );
     }
 
-    pub(super) fn wrap(&mut self, matched: Matched) -> Option<(usize, usize)> {
+    pub(super) fn wrap(&mut self, matched: &Matched) -> Option<(usize, usize)> {
         let opening = self.node(matched.opener_cursor)?;
         let closing = self.node(matched.closer_cursor)?;
         if opening.kind != Kind::Text
@@ -241,7 +247,7 @@ impl Forest {
             }
         }
         let width = matched.opener.len();
-        let kind = match (matched.byte, width >= 2, width % 2 != 0) {
+        let kind = match (matched.byte, width >= 2, !width.is_multiple_of(2)) {
             (b'~', _, _) => Kind::Strike,
             (b'*' | b'_', true, true) => Kind::StrongEmphasis,
             (b'*' | b'_', true, false) => Kind::Strong,
@@ -343,13 +349,11 @@ impl Forest {
 
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
-        self.nodes.capacity() * std::mem::size_of::<Box<Vec<Node>>>()
+        self.nodes.capacity() * std::mem::size_of::<Vec<Node>>()
             + self
                 .nodes
                 .iter()
-                .map(|page| {
-                    std::mem::size_of::<Vec<Node>>() + page.capacity() * std::mem::size_of::<Node>()
-                })
+                .map(|page| page.capacity() * std::mem::size_of::<Node>())
                 .sum::<usize>()
     }
 

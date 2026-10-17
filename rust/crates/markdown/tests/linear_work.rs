@@ -57,7 +57,8 @@ fn work(chunk: usize) -> (usize, usize) {
                 + markdown.boundary_work,
         );
     }
-    (totals[0], totals[1])
+    let [small, large]: [usize; 2] = totals.try_into().expect("paired totals");
+    (small, large)
 }
 
 #[test]

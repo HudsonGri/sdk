@@ -32,7 +32,7 @@ impl Cache {
                     &slice,
                     Style::default(),
                 )?;
-                body = self.join(body, leaf);
+                body = self.join(body, leaf)?;
             }
         }
         Some(body)
@@ -77,7 +77,7 @@ impl Cache {
         &mut self,
         forest: &mut Forest,
         root: usize,
-        projection: Projection<'_, '_>,
+        projection: &Projection<'_, '_>,
     ) -> Option<Rendered> {
         if !self.rendered {
             return None;
@@ -85,14 +85,14 @@ impl Cache {
         #[cfg(test)]
         let rendering = crate::work::rendering(true);
         let result = (|| {
-            let old = self.resolve(forest, root, &projection)?;
+            let old = self.resolve(forest, root, projection)?;
             let ids = [old.full, old.trimmed, old.whitespace, self.last];
             let mut saved: [Option<Output>; 4] = std::array::from_fn(|_| None);
-            for i in 0..4 {
-                if ids[i] != 0 && !ids[..i].contains(&ids[i]) {
-                    let (page, offset) = self.slot(ids[i]);
+            for (i, (&id, slot)) in ids.iter().zip(&mut saved).enumerate() {
+                if id != 0 && !ids.get(..i)?.contains(&id) {
+                    let (page, offset) = self.slot(id);
                     let output = self.nodes.get_mut(page)?.get_mut(offset)?;
-                    saved[i] = Some(std::mem::take(output));
+                    *slot = Some(std::mem::take(output));
                     #[cfg(test)]
                     crate::work::scan(1);
                 }
@@ -110,22 +110,24 @@ impl Cache {
             }
             self.store(Output::default());
             let mut compiled = [0; 4];
-            for i in 0..4 {
-                compiled[i] = if ids[i] == 0 {
+            for (i, (&id, saved)) in ids.iter().zip(&mut saved).enumerate() {
+                let next = if id == 0 {
                     0
-                } else if let Some(previous) = ids[..i].iter().position(|id| *id == ids[i]) {
-                    compiled[previous]
+                } else if let Some(previous) = ids.get(..i)?.iter().position(|old| *old == id) {
+                    *compiled.get(previous)?
                 } else {
-                    self.store(saved[i].take()?)
+                    self.store(saved.take()?)
                 };
+                *compiled.get_mut(i)? = next;
             }
-            self.last = compiled[3];
+            let [full, trimmed, whitespace, last] = compiled;
+            self.last = last;
             self.rendered = true;
             Some(Rendered {
                 epoch: self.epoch,
-                full: compiled[0],
-                trimmed: compiled[1],
-                whitespace: compiled[2],
+                full,
+                trimmed,
+                whitespace,
                 escape: None,
             })
         })();
@@ -165,7 +167,7 @@ impl Cache {
         self.project(
             forest,
             root,
-            Projection {
+            &Projection {
                 source,
                 visible,
                 hard_breaks: &hard_breaks,
@@ -180,7 +182,7 @@ impl Cache {
         &mut self,
         forest: &mut Forest,
         root: usize,
-        projection: Projection<'_, '_>,
+        projection: &Projection<'_, '_>,
         lines: &mut crate::line_buffer::Buffer,
         first: usize,
         spare: Option<&mut crate::inline_views::Spare>,
@@ -189,7 +191,7 @@ impl Cache {
             trimmed: mut current,
             escape,
             ..
-        } = self.resolve(forest, root, &projection)?;
+        } = self.resolve(forest, root, projection)?;
         if let Some((literal, start)) = escape
             && !projection.hard_breaks.contains(&start)
         {
@@ -225,6 +227,131 @@ impl Cache {
         Some((changed, visible))
     }
 
+    fn code_output(
+        &mut self,
+        source: &str,
+        range: Range<usize>,
+        body: Range<usize>,
+    ) -> Option<usize> {
+        Some({
+            let key = Key::Leaf(1, range.start, range.end);
+            if let Some(&(id, _)) = self.keys.get(&key) {
+                id
+            } else {
+                let output = text_output(
+                    self.input.code(body, source)?,
+                    Style {
+                        foreground: Some(crate::style::YELLOW),
+                        ..Style::default()
+                    },
+                );
+                self.insert(key, output)
+            }
+        })
+    }
+
+    fn raw_output(&mut self, source: &str, range: Range<usize>) -> Option<usize> {
+        let key = Key::Leaf(6, range.start, range.end);
+        if let Some(&(id, _)) = self.keys.get(&key) {
+            Some(id)
+        } else {
+            let output = self.raw(source, range, Style::default())?;
+            Some(self.insert(key, output))
+        }
+    }
+
+    fn compile_node(
+        &mut self,
+        forest: &mut Forest,
+        cursor: usize,
+        projection: &Projection<'_, '_>,
+    ) -> Option<()> {
+        let source = projection.source;
+        let visible = &projection.visible;
+        let node = forest.node(cursor)?;
+        let (previous, children, stop, kind, range) = (
+            node.previous,
+            node.children,
+            node.stop,
+            node.kind,
+            node.range.clone(),
+        );
+        #[cfg(test)]
+        crate::work::scan(1);
+        let mut compiled = self.projected(forest, previous)?;
+        let content = match kind {
+            Kind::Text | Kind::Escape => {
+                let range = if kind == Kind::Text {
+                    self.input.literal_range(range)?
+                } else {
+                    range
+                };
+                let left = range.start + usize::from(kind == Kind::Escape);
+                let full = self.raw_output(source, left..range.end)?;
+                let end = range.end.min(visible.end);
+                let right = if range.start < end {
+                    self.input.trim_end(range.start..end)?
+                } else {
+                    end
+                };
+                let left = if right < range.end { range.start } else { left };
+                if range.start < range.end && right == range.start {
+                    compiled.trimmed = compiled.whitespace;
+                }
+                if left < right {
+                    let visible = self.raw_output(source, left..right)?;
+                    compiled.trimmed = self.join(compiled.full, visible)?;
+                    compiled.whitespace = compiled.trimmed;
+                    compiled.escape = None;
+                }
+                full
+            }
+            Kind::Code => self.code_output(source, range, children..stop)?,
+            Kind::Atom | Kind::Prefix => stop,
+            Kind::Entity => self.entity(source, range)?,
+            Kind::Break(escaped) => {
+                let body = self.break_value(source, range.clone(), escaped);
+                if escaped {
+                    let slash = self.raw_output(source, range.start..range.start + 1)?;
+                    compiled.trimmed = self.join(compiled.full, slash)?;
+                    compiled.escape = Some((compiled.trimmed, range.start));
+                } else {
+                    compiled.full = compiled.trimmed;
+                }
+                body
+            }
+            _ => {
+                let children = self.projected(forest, children)?.full;
+                let stop = self.projected(forest, stop)?.full;
+                let body = self.suffix(children, stop)?;
+                self.mask(
+                    body,
+                    Style {
+                        italic: matches!(kind, Kind::Emphasis | Kind::StrongEmphasis),
+                        bold: matches!(kind, Kind::Strong | Kind::StrongEmphasis),
+                        dim: kind == Kind::Strike,
+                        strikethrough: kind == Kind::Strike,
+                        ..Style::default()
+                    },
+                    None,
+                )?
+            }
+        };
+        let full = self.join(compiled.full, content)?;
+        if !matches!(kind, Kind::Text | Kind::Escape | Kind::Break(_)) {
+            compiled.trimmed = full;
+            compiled.whitespace = full;
+            compiled.escape = None;
+        }
+        if matches!(kind, Kind::Break(_)) {
+            compiled.whitespace = full;
+        }
+        compiled.epoch = self.epoch;
+        compiled.full = full;
+        forest.node_mut(cursor)?.output = compiled;
+        Some(())
+    }
+
     pub(super) fn resolve(
         &mut self,
         forest: &mut Forest,
@@ -235,7 +362,7 @@ impl Cache {
         let visible = &projection.visible;
         #[cfg(test)]
         if super::REPLAY.get() {
-            let epoch = self.epoch.checked_add(1).expect("render epoch");
+            let epoch = self.epoch.checked_add(1)?;
             self.input = super::Input::default();
             self.epoch = epoch;
         }
@@ -249,13 +376,8 @@ impl Cache {
                 continue;
             }
             let node = forest.node(cursor)?;
-            let (previous, children, stop, kind, range) = (
-                node.previous,
-                node.children,
-                node.stop,
-                node.kind,
-                node.range.clone(),
-            );
+            let (previous, children, stop, kind) =
+                (node.previous, node.children, node.stop, node.kind);
             let scoped = matches!(
                 kind,
                 Kind::Emphasis | Kind::Strong | Kind::StrongEmphasis | Kind::Strike
@@ -277,122 +399,7 @@ impl Cache {
                 );
                 continue;
             }
-            #[cfg(test)]
-            crate::work::scan(1);
-            let Rendered {
-                full: mut before,
-                mut trimmed,
-                mut whitespace,
-                mut escape,
-                ..
-            } = self.projected(forest, previous)?;
-            let content = match kind {
-                Kind::Text | Kind::Escape => {
-                    let range = if kind == Kind::Text {
-                        self.input.literal_range(range)?
-                    } else {
-                        range
-                    };
-                    let left = range.start + usize::from(kind == Kind::Escape);
-                    let key = Key::Leaf(6, left, range.end);
-                    let full = if let Some(&(id, _)) = self.keys.get(&key) {
-                        id
-                    } else {
-                        let output = self.raw(source, left..range.end, Style::default())?;
-                        self.insert(key, output)
-                    };
-                    let end = range.end.min(visible.end);
-                    let right = if range.start < end {
-                        self.input.trim_end(range.start..end)?
-                    } else {
-                        end
-                    };
-                    let left = if right < range.end { range.start } else { left };
-                    if range.start < range.end && right == range.start {
-                        trimmed = whitespace;
-                    }
-                    if left < right {
-                        let key = Key::Leaf(6, left, right);
-                        let visible = if let Some(&(id, _)) = self.keys.get(&key) {
-                            id
-                        } else {
-                            let output = self.raw(source, left..right, Style::default())?;
-                            self.insert(key, output)
-                        };
-                        trimmed = self.join(before, visible);
-                        whitespace = trimmed;
-                        escape = None;
-                    }
-                    full
-                }
-                Kind::Code => {
-                    let key = Key::Leaf(1, range.start, range.end);
-                    if let Some(&(id, _)) = self.keys.get(&key) {
-                        id
-                    } else {
-                        let output = text_output(
-                            self.input.code(children..stop, source)?,
-                            Style {
-                                foreground: Some(crate::style::YELLOW),
-                                ..Style::default()
-                            },
-                        );
-                        self.insert(key, output)
-                    }
-                }
-                Kind::Atom | Kind::Prefix => stop,
-                Kind::Entity => self.entity(source, range)?,
-                Kind::Break(escaped) => {
-                    let body = self.break_value(source, range.clone(), escaped);
-                    if escaped {
-                        let key = Key::Leaf(6, range.start, range.start + 1);
-                        let slash = if let Some(&(id, _)) = self.keys.get(&key) {
-                            id
-                        } else {
-                            let output =
-                                self.raw(source, range.start..range.start + 1, Style::default())?;
-                            self.insert(key, output)
-                        };
-                        trimmed = self.join(before, slash);
-                        escape = Some((trimmed, range.start));
-                    } else {
-                        before = trimmed;
-                    }
-                    body
-                }
-                _ => {
-                    let children = self.projected(forest, children)?.full;
-                    let stop = self.projected(forest, stop)?.full;
-                    let body = self.suffix(children, stop)?;
-                    self.mask(
-                        body,
-                        Style {
-                            italic: matches!(kind, Kind::Emphasis | Kind::StrongEmphasis),
-                            bold: matches!(kind, Kind::Strong | Kind::StrongEmphasis),
-                            dim: kind == Kind::Strike,
-                            strikethrough: kind == Kind::Strike,
-                            ..Style::default()
-                        },
-                        None,
-                    )
-                }
-            };
-            let full = self.join(before, content);
-            if !matches!(kind, Kind::Text | Kind::Escape | Kind::Break(_)) {
-                trimmed = full;
-                whitespace = full;
-                escape = None;
-            }
-            if matches!(kind, Kind::Break(_)) {
-                whitespace = full;
-            }
-            forest.node_mut(cursor)?.output = Rendered {
-                epoch: self.epoch,
-                full,
-                trimmed,
-                whitespace,
-                escape,
-            };
+            self.compile_node(forest, cursor, projection)?;
         }
         self.projected(forest, root)
     }

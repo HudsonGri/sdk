@@ -30,7 +30,9 @@ impl Bare {
         debug_assert!(self.used == 0 || self.escaped == escaped);
         self.escaped = escaped;
         let slot = (self.head + depth) % LEVELS;
-        let values = &mut self.slots[slot];
+        let Some(values) = self.slots.get_mut(slot) else {
+            return;
+        };
         #[cfg(test)]
         crate::work::copy(
             std::mem::size_of::<usize>()
@@ -47,13 +49,17 @@ impl Bare {
     fn take(&mut self, depth: usize) -> Vec<usize> {
         let slot = (self.head + depth) % LEVELS;
         self.used &= !(1 << slot);
-        std::mem::take(&mut self.slots[slot])
+        self.slots
+            .get_mut(slot)
+            .map_or_else(Vec::new, std::mem::take)
     }
 
     fn clear(&mut self, slot: usize) {
-        #[cfg(test)]
-        crate::work::scan(1 + self.slots[slot].len());
-        self.slots[slot].clear();
+        if let Some(values) = self.slots.get_mut(slot) {
+            #[cfg(test)]
+            crate::work::scan(1 + values.len());
+            values.clear();
+        }
         self.used &= !(1 << slot);
     }
 

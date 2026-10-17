@@ -45,7 +45,7 @@ impl References {
             self.scanned = 0;
             self.colon = false;
         }
-        let appended = &source[self.scanned..];
+        let appended = source.get(self.scanned..).unwrap_or(source);
         if !self.colon {
             #[cfg(test)]
             crate::work::scan(appended.len());

@@ -122,7 +122,7 @@ impl Text {
         *self = Self::default();
     }
 
-    /// Shorten at a UTF-8 character boundary, as with String::truncate.
+    /// Shorten at a UTF-8 character boundary, as with `String::truncate`.
     ///
     /// # Panics
     /// Panics if `length` is inside a UTF-8 code point.

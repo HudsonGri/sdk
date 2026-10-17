@@ -7,6 +7,7 @@ mod events;
 mod inline;
 mod inline_scan;
 mod inline_views;
+mod parse_tail;
 mod reference_render;
 mod references;
 mod render;
@@ -376,189 +377,6 @@ impl Markdown {
         following
     }
 
-    fn parse_tail(&mut self) -> bool {
-        let base = self.offset;
-        let prefix = context_prefix(&self.context);
-        let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
-        let (events, calls, overrides) = self.parse_frontier(&source);
-        let mut overrides = overrides.into_iter().peekable();
-        let mut overridden = false;
-        self.seal_leading_definitions(base, &source, &events);
-        let following_blocks = self.following_blocks(&source, &events, (base, prefix.len()));
-        let mut out = self.state.checkpoint();
-        let mut stack = self.context.clone();
-        let mut candidate = None;
-        let mut leaf = None;
-        let mut caches = Vec::new();
-        let mut synthetic_leaf = false;
-        for (index, (event, range)) in events.iter().enumerate() {
-            if matches!(event, Event::End(TagEnd::Item))
-                && range.end <= prefix.len()
-                && stack
-                    .last()
-                    .is_none_or(|container| container.end != TagEnd::Item)
-            {
-                continue;
-            }
-            let html_end = matches!(event, Event::End(TagEnd::HtmlBlock))
-                && stack
-                    .last()
-                    .is_some_and(|container| container.end == TagEnd::HtmlBlock);
-            if html_end {
-                synthetic_leaf = false;
-            } else if context_event(event, range, prefix.len(), &mut synthetic_leaf) {
-                continue;
-            }
-            if let Event::Start(tag) = event {
-                if is_leaf(tag) {
-                    let closed =
-                        stream_code::closed(&source, events.get(index..).unwrap_or_default());
-                    leaf = Some((
-                        range.start,
-                        self.lines.len() + out.lines.len(),
-                        out.checkpoint(),
-                        index,
-                        closed
-                            && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n'),
-                    ));
-                    if !closed
-                        && self.start_fence(
-                            &source,
-                            (base, prefix.len()),
-                            events.get(index..).unwrap_or_default(),
-                            &mut out,
-                            &stack,
-                        )
-                    {
-                        self.cache_frontier(&source, &events, &calls, caches, (base, prefix.len()));
-                        return self.advance_fence();
-                    }
-                    if overrides.peek().is_some_and(|(begin, _)| *begin == index) {
-                        for event in overrides.next().expect("leaf override").1 {
-                            out.event_in(&event, Some(&self.references));
-                        }
-                        overridden = true;
-                    }
-                }
-                stack.push(container(&source, range.start, tag));
-            }
-            if !overridden {
-                out.event_in(event, Some(&self.references));
-            }
-            if matches!(event, Event::Html(_))
-                && range.end > prefix.len()
-                && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
-                && stack
-                    .last()
-                    .is_some_and(|container| container.end == TagEnd::HtmlBlock)
-            {
-                candidate = Some((
-                    base + range.end - prefix.len(),
-                    self.lines.len() + out.lines.len(),
-                    out.checkpoint(),
-                    stack.clone(),
-                ));
-            }
-            if let Event::End(end) = event {
-                let closing = if stack.last().is_some_and(|container| container.end == *end) {
-                    stack.pop()
-                } else {
-                    None
-                };
-                let leaf_end = is_leaf_end(*end);
-                if leaf_end {
-                    if overridden {
-                        out.flush();
-                    }
-                    overridden = false;
-                }
-                let closed = leaf.as_ref().is_some_and(|leaf| leaf.4);
-                if leaf_end && let Some((start, first, state, begin, _)) = leaf.take() {
-                    caches.push((
-                        start..range.end,
-                        first..self.lines.len() + out.lines.len(),
-                        state,
-                        begin..index + 1,
-                    ));
-                }
-                if stack.is_empty() {
-                    out.lines.push(Line::default());
-                }
-                if inline_end(*end) {
-                    continue;
-                }
-                let sibling = *end == TagEnd::Item
-                    && events.get(index + 1).is_some_and(|(event, next)| {
-                        matches!(event, Event::Start(Tag::Item))
-                            && context::item_marker_complete(&source, next.start)
-                    });
-                if sibling
-                    && let Some(item) = closing
-                    && let Some(list) = stack.last_mut()
-                {
-                    list.opening = item.opening;
-                    list.opening.truncate(list.opening.len().saturating_sub(2));
-                    list.opening.push('\n');
-                }
-                let next_block = following_blocks.get(index).copied().unwrap_or_default();
-                let sealed = sibling
-                    || closed
-                    || sealed(&source, range.end, *end, next_block)
-                    || (*end == TagEnd::HtmlBlock && context::html_closed(&source, range, &stack));
-                if range.end >= prefix.len()
-                    && (leaf_end || sibling || (stack.is_empty() && next_block))
-                    && sealed
-                {
-                    candidate = Some((
-                        base + range.end - prefix.len(),
-                        self.lines.len() + out.lines.len(),
-                        out.checkpoint(),
-                        stack.clone(),
-                    ));
-                }
-            } else if stack.is_empty() {
-                out.flush();
-                out.lines.push(Line::default());
-            }
-            // Standalone block events have no closing tag. A completed rule
-            // line is just as final as a closed paragraph or heading.
-            if matches!(event, Event::Rule) {
-                let end = if source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n') {
-                    Some(range.end)
-                } else {
-                    (source.as_bytes().get(range.end) == Some(&b'\n')).then_some(range.end + 1)
-                };
-                #[cfg(test)]
-                let end = end.filter(|_| !SKIP_RULE_CHECKPOINT.get());
-                if let Some(end) = end.filter(|end| *end >= prefix.len()) {
-                    candidate = Some((
-                        base + end - prefix.len(),
-                        self.lines.len() + out.lines.len(),
-                        out.checkpoint(),
-                        stack.clone(),
-                    ));
-                }
-            }
-        }
-        out.flush();
-        self.lines.extend(out.lines);
-        self.finish_tail(candidate);
-        self.cache_frontier(&source, &events, &calls, caches, (base, prefix.len()));
-        self.finish_definitions(&source, &events, (base, prefix.len()));
-        self.rule = events.last().and_then(|(event, range)| {
-            if !matches!(event, Event::Rule) || !self.context.is_empty() || source.ends_with('\n') {
-                return None;
-            }
-            source
-                .get(range.clone())?
-                .bytes()
-                .find(|byte| matches!(byte, b'*' | b'-' | b'_'))
-        });
-        self.begin_inline(&source, &events, &calls, base);
-        self.begin_table(&source, &events, (base, prefix.len()));
-        false
-    }
-
     fn seal_leading_definitions(
         &mut self,
         base: usize,
@@ -597,7 +415,10 @@ impl Markdown {
         if events.is_empty() && tail.ends_with("\n\n") {
             self.offset = self.source.len();
         } else if events.is_empty() {
-            let sealed = self.context.is_empty().then(|| references::sealed_definitions(tail));
+            let sealed = self
+                .context
+                .is_empty()
+                .then(|| references::sealed_definitions(tail));
             let sealed = sealed.flatten().map_or(0, |row| self.offset + row);
             self.offset = self.references.frontier(self.offset).max(sealed);
         }

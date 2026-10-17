@@ -115,7 +115,7 @@ fn oracle(source: &str, rendered: &mut Vec<(Vec<Event<'static>>, Vec<Line>)>) ->
                 rendered.push(fixture);
             }
         }
-        lines.extend_from_slice(&rendered[count].1);
+        lines.extend_from_slice(&rendered.get(count).expect("oracle block").1);
         lines.push(Line::default());
         count += 1;
     }
@@ -162,6 +162,51 @@ fn fence_followed_by_paragraph_has_linear_storage() {
     );
 }
 
+fn maintenance(markdown: &Markdown) -> [usize; 4] {
+    [
+        markdown.visible_work.get(),
+        markdown.reference_cache_visits,
+        markdown.reference_moved_lines,
+        markdown.boundary_work,
+    ]
+}
+
+fn dependent_bytes(markdown: &Markdown, cached: usize, visits_before: usize) -> usize {
+    if markdown.reference_cache_visits > visits_before {
+        markdown
+            .cached
+            .get(..cached)
+            .expect("retained dependency blocks")
+            .iter()
+            .map(|cache| cache.template.source.len())
+            .sum::<usize>()
+    } else {
+        0
+    }
+}
+
+fn accumulate(
+    breakdown: &mut [usize; 11],
+    parts: ([usize; 5], [usize; 5]),
+    maintenance: ([usize; 4], [usize; 4]),
+    growth: usize,
+    consumer: usize,
+) {
+    for (total, (after, before)) in breakdown.iter_mut().zip(parts.0.into_iter().zip(parts.1)) {
+        *total += after - before;
+    }
+    breakdown[1] -= growth;
+    breakdown[5] += growth;
+    for (total, (after, before)) in breakdown
+        .iter_mut()
+        .skip(6)
+        .zip(maintenance.0.into_iter().zip(maintenance.1))
+    {
+        *total += after - before;
+    }
+    breakdown[10] += consumer;
+}
+
 fn measure_with(
     actions: &[u8],
     count: usize,
@@ -181,30 +226,16 @@ fn measure_with(
     let mut breakdown = [0usize; 11];
     let mut push = |delta: &str, finish: bool| {
         let parts_before = work::parts();
-        let maintenance_before = [
-            markdown.visible_work.get(),
-            markdown.reference_cache_visits,
-            markdown.reference_moved_lines,
-            markdown.boundary_work,
-        ];
+        let maintenance_before = maintenance(&markdown);
         let growth_before = work::source_growth();
-        let before = work::current()
-            + markdown.visible_work.get()
-            + markdown.reference_cache_visits
-            + markdown.reference_moved_lines
-            + markdown.boundary_work;
+        let before = work::current() + maintenance_before.iter().sum::<usize>();
         let open = markdown.source.len() - markdown.offset;
         let visits_before = markdown.reference_cache_visits;
         // Definition updates reopen dependency blocks; ordinary pushes do not.
         let cached = markdown.cached.len();
         let changed = markdown.push(delta);
         let parts_after = work::parts();
-        let maintenance_after = [
-            markdown.visible_work.get(),
-            markdown.reference_cache_visits,
-            markdown.reference_moved_lines,
-            markdown.boundary_work,
-        ];
+        let maintenance_after = maintenance(&markdown);
         let production = work::current() + maintenance_after.iter().sum::<usize>() - before;
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
@@ -213,23 +244,8 @@ fn measure_with(
                 .iter()
                 .cloned(),
         );
-        let used = work::current()
-            + markdown.visible_work.get()
-            + markdown.reference_cache_visits
-            + markdown.reference_moved_lines
-            + markdown.boundary_work
-            - before;
-        let dependent = if markdown.reference_cache_visits > visits_before {
-            markdown
-                .cached
-                .get(..cached)
-                .expect("retained dependency blocks")
-                .iter()
-                .map(|cache| cache.template.source.len())
-                .sum::<usize>()
-        } else {
-            0
-        };
+        let used = work::current() + maintenance_after.iter().sum::<usize>() - before;
+        let dependent = dependent_bytes(&markdown, cached, visits_before);
         let growth = work::source_growth() - growth_before;
         growth_total += growth;
         // Geometric source-buffer growth is prepaid by two copies per input byte.
@@ -241,15 +257,13 @@ fn measure_with(
             delta.len()
         );
         total += used;
-        for index in 0..5 {
-            breakdown[index] += parts_after[index] - parts_before[index];
-        }
-        breakdown[1] -= growth;
-        breakdown[5] += growth;
-        for index in 0..4 {
-            breakdown[index + 6] += maintenance_after[index] - maintenance_before[index];
-        }
-        breakdown[10] += used - production;
+        accumulate(
+            &mut breakdown,
+            (parts_after, parts_before),
+            (maintenance_after, maintenance_before),
+            growth,
+            used - production,
+        );
         let (payload, bytes) = retained(&markdown);
         assert!(payload <= markdown.source.len() * 8 + 1024);
         peak = peak.max(bytes);
@@ -279,30 +293,15 @@ fn measure_with(
             })
             .flatten()
     };
-    for index in 0..count * copies {
-        for (position, action) in actions.iter().enumerate() {
-            production(*action, index, padding, &mut |delta| {
-                push(delta, false);
-            });
-            push(
-                ["", " ", "\n", "!", "x"][separators[position % separators.len()] as usize],
-                false,
-            );
-        }
-    }
-    let definition = actions
-        .iter()
-        .any(|action| matches!(action, 3 | 15))
-        .then(|| format!("\n\n[r]: /{destination}\n\n"));
-    let closing = push(definition.as_deref().unwrap_or("\n\n"), true);
-    // Preserve the original prefix checks, then actually exercise late
-    // resolution even when repetition left the first definition inside code.
-    if let Some(closing) = closing {
-        push(&closing, false);
-        if let Some(definition) = definition {
-            push(&definition, false);
-        }
-    }
+    production_stream(
+        actions,
+        count,
+        destination,
+        padding,
+        separators,
+        copies,
+        &mut push,
+    );
     let (payload, bytes) = retained(&markdown);
     assert!(
         payload <= source.len() * 8 + 1024,
@@ -366,11 +365,52 @@ fn measure_pair(
     (small, large)
 }
 
+fn production_stream(
+    actions: &[u8],
+    count: usize,
+    destination: &str,
+    padding: usize,
+    separators: &[u8],
+    copies: usize,
+    push: &mut impl FnMut(&str, bool) -> Option<String>,
+) {
+    for index in 0..count * copies {
+        for (position, action) in actions.iter().enumerate() {
+            production(*action, index, padding, &mut |delta| {
+                push(delta, false);
+            });
+            push(
+                ["", " ", "\n", "!", "x"]
+                    .get(usize::from(
+                        *separators
+                            .get(position % separators.len())
+                            .expect("separator action"),
+                    ))
+                    .expect("separator"),
+                false,
+            );
+        }
+    }
+    let definition = actions
+        .iter()
+        .any(|action| matches!(action, 3 | 15))
+        .then(|| format!("\n\n[r]: /{destination}\n\n"));
+    let closing = push(definition.as_deref().unwrap_or("\n\n"), true);
+    // Preserve the original prefix checks, then actually exercise late
+    // resolution even when repetition left the first definition inside code.
+    if let Some(closing) = closing {
+        push(&closing, false);
+        if let Some(definition) = definition {
+            push(&definition, false);
+        }
+    }
+}
+
 fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&str)) {
     match action {
         0 => push("word"),
         1 => push("*em* **strong** ~~gone~~"),
-        2 => push("[label](u)"),
+        2 | 12 => push("[label](u)"),
         3 => push("[x][r]"),
         4 => push("![](u)\n\n"),
         5 => {
@@ -390,7 +430,6 @@ fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&s
         9 => push("![alt](u)"),
         10 => push("[outer [inner](u)](v)"),
         11 => push("a &amp; b"),
-        12 => push("[label](u)"),
         13 => push("word\n"),
         14 => {
             if index == 0 {
@@ -542,8 +581,11 @@ fn grammar_property_detects_reclassifying_the_entire_suffix() {
 #[test]
 fn late_reference_definition_closes_the_open_paragraph_once() {
     let input = include_bytes!("../fuzz/corpus/chunk_splits/late-reference-blank-row");
-    let size = u64::from_le_bytes(input[..8].try_into().unwrap()) as usize;
-    let source = std::str::from_utf8(&input[8 + size..]).unwrap();
+    let size = usize::try_from(u64::from_le_bytes(
+        input.get(..8).unwrap().try_into().unwrap(),
+    ))
+    .unwrap();
+    let source = std::str::from_utf8(input.get(8 + size..).unwrap()).unwrap();
     let destination = source.split_once("[r]: /").unwrap().1.trim_end();
     let small = measure(&[3], 42, destination, 4, &[0], 1);
     let large = measure(&[3], 42, destination, 4, &[0], 2);

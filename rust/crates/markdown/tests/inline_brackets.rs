@@ -73,9 +73,9 @@ proptest! {
         cuts.push(source.len()); cuts.sort_unstable(); cuts.dedup();
         let mut state = State::default(); let mut tokens = Tokens::default();
         for end in cuts {
-            feed(&mut state, &mut tokens, &source[..end]);
+            feed(&mut state, &mut tokens, source.get(..end).expect("prefix boundary"));
             let before = state.snapshot();
-            prop_assert_eq!(actual(&state, tokens.preview().as_ref()), expected(&source[..end]), "prefix {:?}", &source[..end]);
+            prop_assert_eq!(actual(&state, tokens.preview().as_ref()), expected(source.get(..end).expect("prefix boundary")), "prefix {:?}", source.get(..end).expect("prefix boundary"));
             prop_assert_eq!(state.snapshot(), before, "EOF labels mutated settled state");
         }
     }

@@ -33,7 +33,9 @@ fn sequence(actions: &[u8]) -> (Output, Vec<Event<'static>>) {
     for action in actions {
         match action {
             0..=3 => {
-                let value = ["a", "界", "❤️", " "][usize::from(*action)];
+                let value = *["a", "界", "❤️", " "]
+                    .get(usize::from(*action))
+                    .expect("text action");
                 output.append(Output::text(text(value)));
                 events.push(Event::Text(value.into()));
             }
@@ -159,7 +161,7 @@ proptest! {
         for action in actions {
             match action {
                 0..=3 => {
-                    let value = ["a", "界", "❤️", " "][usize::from(action)];
+                    let value = *["a", "界", "❤️", " "].get(usize::from(action)).expect("text action");
                     output.append(Output::text(text(value)));
                     events.push(Event::Text(value.into()));
                 }

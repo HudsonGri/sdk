@@ -29,7 +29,13 @@ fn samples(
             snapshots.push((
                 work::rendering_work() - before,
                 bytes,
-                std::array::from_fn(|i| parts_after[i] - parts_before[i]),
+                parts_after
+                    .into_iter()
+                    .zip(parts_before)
+                    .map(|(after, before)| after - before)
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .expect("counter categories"),
             ));
         }
     }
@@ -77,14 +83,14 @@ proptest! {
         let counts = [64, 128, 256, 512, 1024, 2048];
         let snapshots = samples(&parts, separator, &counts, false);
         for count in [64, 128, 256, 1024] {
-            let small = snapshots[counts.iter().position(|n| *n == count).unwrap()];
-            let (used, bytes, breakdown) = snapshots[counts.iter().position(|n| *n == 2 * count).unwrap()];
+            let small = *snapshots.get(counts.iter().position(|n| *n == count).unwrap()).expect("smaller checkpoint");
+            let (used, bytes, breakdown) = *snapshots.get(counts.iter().position(|n| *n == 2 * count).unwrap()).expect("larger checkpoint");
             prop_assert!(used <= 128 * bytes + 4096,
                 "{parts:?} separated by {separator:?}: {} chunks, {used} render units for {bytes} bytes", count * 2);
             prop_assert!(used <= 2 * small.0 + 4096,
                 "{parts:?} separated by {separator:?}: {count} -> {} chunks use {} -> {used} render units; copy/visibility/feed/scan {:?} -> {breakdown:?}", count * 2, small.0, small.2);
             for category in 0..4 {
-                prop_assert!(breakdown[category] <= 2 * small.2[category] + 4096,
+                prop_assert!(*breakdown.get(category).expect("category") <= 2 * *small.2.get(category).expect("category") + 4096,
                     "{parts:?} separated by {separator:?}: category {category}, {count} -> {} chunks use {:?} -> {breakdown:?}", count * 2, small.2);
             }
         }
@@ -112,8 +118,8 @@ fn rendering_work_detects_replaying_completed_rules() {
 #[test]
 fn mixed_link_labels_keep_rendering_work_linear() {
     let snapshots = samples(&["_", "[a *b*](<u> \"t\")", "~"], "x", &[1024, 2048], false);
-    let (small, _, _) = snapshots[0];
-    let (large, bytes, breakdown) = snapshots[1];
+    let (small, _, _) = *snapshots.first().expect("smaller sample");
+    let (large, bytes, breakdown) = *snapshots.get(1).expect("larger sample");
     assert!(large <= 128 * bytes + 4096);
     assert!(
         large <= 2 * small + 4096,
@@ -130,8 +136,16 @@ fn provisional_multiline_previews_reuse_rendered_rows() {
         false,
     );
     for pair in snapshots.windows(2) {
-        assert!(pair[1].0 <= 128 * pair[1].1 + 4096, "{pair:?}");
-        assert!(pair[1].0 <= 2 * pair[0].0 + 4096, "{pair:?}");
+        assert!(
+            pair.get(1).expect("larger sample").0
+                <= 128 * pair.get(1).expect("larger sample").1 + 4096,
+            "{pair:?}"
+        );
+        assert!(
+            pair.get(1).expect("larger sample").0
+                <= 2 * pair.first().expect("smaller sample").0 + 4096,
+            "{pair:?}"
+        );
     }
 }
 
@@ -174,7 +188,11 @@ fn provisional_views_preserve_finalized_prefixes_and_consumer_snapshots() {
 #[test]
 fn escaped_reference_text_does_not_relocate_backing_chunks() {
     let snapshots = samples(&["\\*", "[x][r]", "](u)"], "", &[1024, 2048], false);
-    assert!(snapshots[1].0 <= 2 * snapshots[0].0 + 4096, "{snapshots:?}");
+    assert!(
+        snapshots.get(1).expect("larger sample").0
+            <= 2 * snapshots.first().expect("smaller sample").0 + 4096,
+        "{snapshots:?}"
+    );
 }
 
 #[test]
@@ -189,7 +207,11 @@ fn entity_emphasis_comment_previews_share_committed_rows() {
         println!("entity/emphasis/comment snapshots: {snapshots:?}");
     }
     for pair in snapshots.windows(2) {
-        assert!(pair[1].0 <= 2 * pair[0].0 + 4096, "{pair:?}");
+        assert!(
+            pair.get(1).expect("larger sample").0
+                <= 2 * pair.first().expect("smaller sample").0 + 4096,
+            "{pair:?}"
+        );
     }
 }
 
@@ -206,6 +228,7 @@ fn rendering_property_detects_replaying_row_history_on_append() {
     assert!(
         snapshots
             .windows(2)
-            .any(|pair| pair[1].0 > 2 * pair[0].0 + 4096)
+            .any(|pair| pair.get(1).expect("larger sample").0
+                > 2 * pair.first().expect("smaller sample").0 + 4096)
     );
 }

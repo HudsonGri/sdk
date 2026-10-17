@@ -49,7 +49,9 @@ fn render_work(part: usize, work: usize) {
     if RENDERING.get() {
         RENDER_WORK.set(RENDER_WORK.get() + work);
         let mut parts = RENDER_PARTS.get();
-        parts[part] += work;
+        if let Some(value) = parts.get_mut(part) {
+            *value += work;
+        }
         RENDER_PARTS.set(parts);
     }
 }

@@ -42,7 +42,13 @@ fn units(chunks: &[String], count: usize) -> (usize, usize, [usize; 5]) {
     (
         used,
         markdown.source.len(),
-        std::array::from_fn(|i| parts_after[i] - parts_before[i]),
+        parts_after
+            .into_iter()
+            .zip(parts_before)
+            .map(|(after, before)| after - before)
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("counter categories"),
     )
 }
 
@@ -171,7 +177,8 @@ fn checked_in_chunk_corpus_matches_full_render() {
             .skip(1)
             .enumerate()
             .filter_map(|(index, (offset, _))| {
-                (index < flags && data[8 + index] & 1 != 0).then_some(offset)
+                (index < flags && data.get(8 + index).expect("corpus cut") & 1 != 0)
+                    .then_some(offset)
             })
             .collect();
         replay(source, &cuts);
@@ -311,7 +318,12 @@ fn eof_ticks_decide_a_list_interrupt() {
     // Negative control: classifying the row without its EOF ticks keeps
     // `1. ` as paragraph text.
     crate::inline::SKIP_UNDECIDED.set(true);
-    let broken = std::panic::catch_unwind(|| replay(sources[0], &[1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    let broken = std::panic::catch_unwind(|| {
+        replay(
+            sources.first().expect("regression source"),
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+        );
+    });
     crate::inline::SKIP_UNDECIDED.set(false);
     assert!(broken.is_err());
 }
@@ -330,7 +342,8 @@ fn blank_start_items_reopen_as_items() {
     }
     // Negative control: a marker glued to its placeholder text is no item.
     crate::context::GLUED_MARKER.set(true);
-    let broken = std::panic::catch_unwind(|| replay(sources[0], &[7]));
+    let broken =
+        std::panic::catch_unwind(|| replay(sources.first().expect("regression source"), &[7]));
     crate::context::GLUED_MARKER.set(false);
     assert!(broken.is_err());
 }

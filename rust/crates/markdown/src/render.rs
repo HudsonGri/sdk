@@ -89,9 +89,11 @@ pub(crate) struct Renderer {
     width: u16,
 }
 
+type StyleFrame = (Style, Option<Arc<str>>);
+
 #[derive(Clone, Default)]
 struct Context {
-    styles: Option<Arc<Vec<(Style, Option<Arc<str>>)>>>,
+    styles: Option<Arc<Vec<StyleFrame>>>,
     lists: Option<Arc<Vec<Option<u64>>>>,
     prefixes: Option<Arc<Vec<Arc<str>>>>,
 }
@@ -359,6 +361,50 @@ impl Renderer {
         crate::work::rendering(rendering);
     }
 
+    fn item(&mut self) {
+        self.flush();
+        self.line.push(&self.prefix(), MUTED, None);
+        let (marker, indent) = if let Some(Some(number)) = self
+            .context()
+            .lists
+            .as_ref()
+            .and_then(|lists| lists.last())
+            .copied()
+        {
+            let marker = format!("{number}. ");
+            if let Some(Some(next)) = self
+                .edit_context()
+                .lists
+                .as_mut()
+                .and_then(|lists| edit(lists).last_mut())
+            {
+                *next += 1;
+            }
+            let indent = marker.chars().count();
+            (crate::Text::from(marker), indent)
+        } else {
+            static BULLET: std::sync::OnceLock<crate::Text> = std::sync::OnceLock::new();
+            (BULLET.get_or_init(|| "• ".into()).clone(), 2)
+        };
+        self.line.spans.push_content(
+            crate::Span {
+                text: marker,
+                style: Style {
+                    foreground: Some(MAGENTA),
+                    ..Style::default()
+                },
+                link: None,
+            },
+            false,
+        );
+        edit(
+            self.edit_context()
+                .prefixes
+                .get_or_insert_with(Arc::default),
+        )
+        .push(" ".repeat(indent).into());
+    }
+
     fn start(&mut self, tag: &Tag<'_>, references: Option<&crate::References>) {
         if styled(tag.to_end()) {
             let saved = (self.style, self.link.clone());
@@ -407,53 +453,7 @@ impl Renderer {
                 self.flush();
                 edit(self.edit_context().lists.get_or_insert_with(Arc::default)).push(*start);
             }
-            Tag::Item => {
-                self.flush();
-                self.line.push(&self.prefix(), MUTED, None);
-                let (marker, indent) = match self
-                    .context()
-                    .lists
-                    .as_ref()
-                    .and_then(|lists| lists.last())
-                    .copied()
-                {
-                    Some(Some(number)) => {
-                        let marker = format!("{number}. ");
-                        if let Some(Some(next)) = self
-                            .edit_context()
-                            .lists
-                            .as_mut()
-                            .and_then(|lists| edit(lists).last_mut())
-                        {
-                            *next += 1;
-                        }
-                        let indent = marker.chars().count();
-                        (crate::Text::from(marker), indent)
-                    }
-                    _ => {
-                        static BULLET: std::sync::OnceLock<crate::Text> =
-                            std::sync::OnceLock::new();
-                        (BULLET.get_or_init(|| "• ".into()).clone(), 2)
-                    }
-                };
-                self.line.spans.push_content(
-                    crate::Span {
-                        text: marker,
-                        style: Style {
-                            foreground: Some(MAGENTA),
-                            ..Style::default()
-                        },
-                        link: None,
-                    },
-                    false,
-                );
-                edit(
-                    self.edit_context()
-                        .prefixes
-                        .get_or_insert_with(Arc::default),
-                )
-                .push(" ".repeat(indent).into());
-            }
+            Tag::Item => self.item(),
             Tag::CodeBlock(kind) => {
                 self.flush();
                 let language = match kind {
@@ -539,5 +539,6 @@ mod context_tests;
 /// The rendered thematic break.
 pub(crate) fn rule() -> Line {
     static RULE: std::sync::OnceLock<Line> = std::sync::OnceLock::new();
-    RULE.get_or_init(|| Line::plain(&"─".repeat(40), MUTED)).clone()
+    RULE.get_or_init(|| Line::plain(&"─".repeat(40), MUTED))
+        .clone()
 }

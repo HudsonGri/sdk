@@ -49,10 +49,15 @@ impl State {
             if self.closed_labels.len() == self.closed_labels.capacity() {
                 crate::work::copy(self.closed_labels.len() * std::mem::size_of::<Vec<Closed>>());
             }
-            self.closed_labels.push(super::forest::new_page(self.closed_labels.len()));
+            self.closed_labels
+                .push(super::forest::new_page(self.closed_labels.len()));
         }
+        let Some(page) = self.closed_labels.last_mut() else {
+            self.invalid = true;
+            return self.closed;
+        };
         super::forest::push_page(
-            self.closed_labels.last_mut().expect("closed-label page"),
+            page,
             Closed {
                 previous: self.closed,
                 range,

@@ -36,7 +36,7 @@ proptest! {
         let mut changes = 0;
         for (step, (restore, width, choice)) in actions.iter().copied().enumerate() {
             if restore {
-                let (cursor, target) = &saved[usize::from(choice) % saved.len()];
+                let (cursor, target) = saved.get(usize::from(choice) % saved.len()).expect("saved code context");
                 let common = model.iter().zip(target).take_while(|(a,b)| a.0 == b.0).count();
                 changes += model.len() + target.len() - 2 * common;
                 prop_assert!(codes.restore(*cursor));

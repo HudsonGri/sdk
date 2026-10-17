@@ -172,7 +172,7 @@ fn other_step(state: usize, byte: u8) -> (u64, bool) {
             _ => (0, false),
         },
         BANG_DASH if byte == b'-' => (to(COMMENT_START), false),
-        COMMENT_START => match byte {
+        COMMENT_START | COMMENT_DASHES => match byte {
             b'>' => (0, true),
             b'-' => (to(COMMENT_DASHES), false),
             _ => (to(COMMENT), false),
@@ -186,11 +186,6 @@ fn other_step(state: usize, byte: u8) -> (u64, bool) {
             }),
             false,
         ),
-        COMMENT_DASHES => match byte {
-            b'>' => (0, true),
-            b'-' => (to(COMMENT_DASHES), false),
-            _ => (to(COMMENT), false),
-        },
         CDATA_PREFIX..CDATA if Some(&byte) == b"CDATA[".get(state - CDATA_PREFIX) => {
             (to(state + 1), false)
         }

@@ -23,10 +23,12 @@ impl Input {
             self.leading = true;
         }
         let origin = *self.origin.get_or_insert(start);
-        let source = source.get(origin..).expect("inline source");
-        let delta = source
-            .get(self.raw.len()..)
-            .expect("append-only inline source");
+        let Some(delta) = source
+            .get(origin..)
+            .and_then(|source| source.get(self.raw.len()..))
+        else {
+            return;
+        };
         #[cfg(test)]
         {
             crate::work::render_feed(delta.len());

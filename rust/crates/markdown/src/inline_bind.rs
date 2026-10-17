@@ -121,7 +121,7 @@ impl Scanner {
                     } else if let Some(anchor) = self.tokens.anchor_at(scope.range.start) {
                         self.state.forget(anchor);
                     }
-                    self.state.bind_resume(before)?;
+                    self.state.bind_resume(&before)?;
                     self.state.scope(scope, output, hint, disables);
                     token_index = self.tokens.after(scope.range.end)?;
                     scope_index = scope.next;

@@ -89,15 +89,20 @@ impl Codes {
                 }
                 self.nodes.push(new_page(page));
             } else {
-                self.nodes[page].clear();
+                if let Some(page) = self.nodes.get_mut(page) {
+                    page.clear();
+                }
             }
         }
         let first = self
             .classification_start()
             .map_or(opening.start, |first| first.min(opening.start));
         let width = opening.len();
+        let Some(page) = self.nodes.get_mut(page) else {
+            return;
+        };
         push_page(
-            &mut self.nodes[page],
+            page,
             Code {
                 opening,
                 before,
@@ -136,7 +141,9 @@ impl Codes {
             let depth = self.node(self.head).map_or(0, |node| node.depth);
             let target_depth = self.node(cursor).map_or(0, |node| node.depth);
             if depth >= target_depth {
-                let node = self.node(self.head).expect("active code context");
+                let Some(node) = self.node(self.head) else {
+                    return false;
+                };
                 let (width, previous) = (node.opening.len(), node.previous);
                 self.index.remove(&width);
                 self.head = previous;
@@ -146,15 +153,17 @@ impl Codes {
                     crate::work::copy(pending.len() * std::mem::size_of::<usize>());
                 }
                 pending.push(cursor);
-                cursor = self.node(cursor).expect("retained code context").previous;
+                let Some(node) = self.node(cursor) else {
+                    return false;
+                };
+                cursor = node.previous;
             }
         }
         for cursor in pending.into_iter().rev() {
-            let width = self
-                .node(cursor)
-                .expect("retained code opener")
-                .opening
-                .len();
+            let Some(node) = self.node(cursor) else {
+                return false;
+            };
+            let width = node.opening.len();
             #[cfg(test)]
             let insert = !self.stale;
             #[cfg(not(test))]

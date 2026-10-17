@@ -38,6 +38,75 @@ fn push<T>(values: &mut Vec<T>, value: T) {
     values.push(value);
 }
 
+fn label_state(
+    tokens: &Tokens,
+    begin: usize,
+    atoms: &[Atom],
+    breaks: &std::collections::HashSet<usize>,
+) -> Option<(State, usize)> {
+    let mut token_index = tokens.after(begin)?;
+    let mut position = begin;
+    let mut atom_index = 0;
+    let mut state = State::default();
+    let end = loop {
+        #[cfg(test)]
+        crate::work::scan(1);
+        let token = tokens.ready.get(token_index)?;
+        let start = position.max(token.range.start);
+        if token.range.end <= start {
+            token_index += 1;
+            continue;
+        }
+        if let Some(atom) = atoms
+            .get(atom_index)
+            .filter(|atom| atom.range.start < token.range.end)
+        {
+            if start < atom.range.start {
+                state.feed(start..atom.range.start, token.kind, false);
+                position = atom.range.start;
+                continue;
+            }
+            if start != atom.range.start {
+                return None;
+            }
+            #[cfg(test)]
+            let output = if FORGET_CHILD.get() { 0 } else { atom.output };
+            #[cfg(not(test))]
+            let output = atom.output;
+            state.forest.atom(atom.range.clone(), output);
+            position = atom.range.end;
+            if let Some(after) = tokens.after(position) {
+                token_index = after;
+            } else {
+                while tokens
+                    .ready
+                    .get(token_index)
+                    .is_some_and(|token| token.range.end <= position)
+                {
+                    #[cfg(test)]
+                    crate::work::scan(1);
+                    token_index += 1;
+                }
+            }
+            atom_index += 1;
+            continue;
+        }
+        if token.kind == Kind::Close && state.outside_brackets() {
+            break start;
+        }
+        match token.kind {
+            Kind::Escape('\n') if !breaks.contains(&token.range.end) => {
+                state.feed(start..start + 1, Kind::Text, false);
+            }
+            Kind::Break if !breaks.contains(&token.range.end) => {}
+            _ => state.feed(start..token.range.end, token.kind, false),
+        }
+        position = token.range.end;
+        token_index += 1;
+    };
+    Some((state, end))
+}
+
 impl Cache {
     pub(in crate::inline_scan) fn compile(
         &mut self,
@@ -129,32 +198,14 @@ impl Cache {
             .is_some_and(|(_, independent)| *independent)
     }
 
-    fn label(
+    fn label_atoms(
         &mut self,
         source: &Slice<'_>,
         index: usize,
         scopes: &[Scope],
         events: &[(Event<'_>, Range<usize>)],
-        tokens: &Tokens,
-        references: &References,
-    ) -> Option<(usize, bool)> {
+    ) -> Option<(Vec<Atom>, std::collections::HashSet<usize>, bool)> {
         let scope = scopes.get(index)?;
-        let first = &events.get(scope.events.start)?.0;
-        let (dest_url, id, image, link_type) = match first {
-            Event::Start(Tag::Link {
-                dest_url,
-                id,
-                link_type,
-                ..
-            }) => (dest_url, id, false, link_type),
-            Event::Start(Tag::Image {
-                dest_url,
-                id,
-                link_type,
-                ..
-            }) => (dest_url, id, true, link_type),
-            _ => return None,
-        };
         let mut foreign_child = false;
         let mut atoms = Vec::new();
         let mut breaks = std::collections::HashSet::new();
@@ -208,67 +259,38 @@ impl Cache {
                 event_index += 1;
             }
         }
-        let begin = scope.range.start + 1 + usize::from(image);
-        let mut token_index = tokens.after(begin)?;
-        let mut position = begin;
-        let mut atom_index = 0;
-        let mut state = State::default();
-        let end = loop {
-            #[cfg(test)]
-            crate::work::scan(1);
-            let token = tokens.ready.get(token_index)?;
-            let start = position.max(token.range.start);
-            if token.range.end <= start {
-                token_index += 1;
-                continue;
-            }
-            if let Some(atom) = atoms
-                .get(atom_index)
-                .filter(|atom| atom.range.start < token.range.end)
-            {
-                if start < atom.range.start {
-                    state.feed(start..atom.range.start, token.kind, false);
-                    position = atom.range.start;
-                    continue;
-                }
-                if start != atom.range.start {
-                    return None;
-                }
-                #[cfg(test)]
-                let output = if FORGET_CHILD.get() { 0 } else { atom.output };
-                #[cfg(not(test))]
-                let output = atom.output;
-                state.forest.atom(atom.range.clone(), output);
-                position = atom.range.end;
-                if let Some(after) = tokens.after(position) {
-                    token_index = after;
-                } else {
-                    while tokens
-                        .ready
-                        .get(token_index)
-                        .is_some_and(|token| token.range.end <= position)
-                    {
-                        #[cfg(test)]
-                        crate::work::scan(1);
-                        token_index += 1;
-                    }
-                }
-                atom_index += 1;
-                continue;
-            }
-            if token.kind == Kind::Close && state.outside_brackets() {
-                break start;
-            }
-            match token.kind {
-                Kind::Escape('\n') if !breaks.contains(&token.range.end) => {
-                    state.feed(start..start + 1, Kind::Text, false);
-                }
-                Kind::Break if !breaks.contains(&token.range.end) => {}
-                _ => state.feed(start..token.range.end, token.kind, false),
-            }
-            position = token.range.end;
-            token_index += 1;
+        Some((atoms, breaks, foreign_child))
+    }
+
+    fn label(
+        &mut self,
+        source: &Slice<'_>,
+        index: usize,
+        scopes: &[Scope],
+        events: &[(Event<'_>, Range<usize>)],
+        tokens: &Tokens,
+        references: &References,
+    ) -> Option<(usize, bool)> {
+        let scope = scopes.get(index)?;
+        let first = &events.get(scope.events.start)?.0;
+        let (dest_url, id, image, link_type) = match first {
+            Event::Start(Tag::Link {
+                dest_url,
+                id,
+                link_type,
+                ..
+            }) => (dest_url, id, false, link_type),
+            Event::Start(Tag::Image {
+                dest_url,
+                id,
+                link_type,
+                ..
+            }) => (dest_url, id, true, link_type),
+            _ => return None,
         };
+        let (atoms, breaks, foreign_child) = self.label_atoms(source, index, scopes, events)?;
+        let begin = scope.range.start + 1 + usize::from(image);
+        let (mut state, end) = label_state(tokens, begin, &atoms, &breaks)?;
         if state.invalid {
             return None;
         }
@@ -301,7 +323,7 @@ impl Cache {
                     ..Style::default()
                 },
                 Some(target),
-            ),
+            )?,
             independent,
         ))
     }

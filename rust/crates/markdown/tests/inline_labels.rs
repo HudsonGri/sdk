@@ -16,7 +16,7 @@ fn replay(source: &str, cuts: &[usize]) -> Vec<crate::Line> {
         if end <= start || !source.is_char_boundary(end) {
             continue;
         }
-        let changed = markdown.push(&source[start..end]);
+        let changed = markdown.push(source.get(start..end).expect("chunk boundaries"));
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
         consumer.extend(
@@ -26,7 +26,7 @@ fn replay(source: &str, cuts: &[usize]) -> Vec<crate::Line> {
         );
         assert_eq!(
             consumer,
-            crate::tests::full_parse(&source[..end]),
+            crate::tests::full_parse(source.get(..end).expect("prefix boundary")),
             "prefix {end} of {source:?}"
         );
         start = end;
@@ -63,8 +63,8 @@ fn label_property_detects_dropping_compiled_children() {
     let source = "x ![a ![b](v)c](u) z";
     FORGET_CHILD.set(true);
     let mut markdown = Markdown::default();
-    markdown.push(&source[..source.len() - 1]);
-    markdown.push(&source[source.len() - 1..]);
+    markdown.push(source.get(..source.len() - 1).expect("before ASCII suffix"));
+    markdown.push(source.get(source.len() - 1..).expect("ASCII suffix"));
     FORGET_CHILD.set(false);
     assert_ne!(markdown.lines(), crate::tests::full_parse(source));
 }

@@ -140,14 +140,14 @@ impl State {
         }
     }
 
-    fn restore(&mut self, before: Snapshot) {
+    fn restore(&mut self, before: &Snapshot) {
         let (code, closed, links) = (before.context.code, before.closed(), before.context.links);
-        self.restore_resume(before.resume, code, closed, links);
+        self.restore_resume(&before.resume, code, closed, links);
     }
 
     fn restore_resume(
         &mut self,
-        before: anchors::Anchor,
+        before: &anchors::Anchor,
         code: usize,
         closed: usize,
         links: usize,
@@ -374,6 +374,45 @@ impl State {
         .fold(end, usize::min)
     }
 
+    fn open_bracket(&mut self, image: bool, start: usize) {
+        let frontier = self.earliest(start);
+        if forest::slot(self.bracket_count).1 == 0 {
+            #[cfg(test)]
+            if self.brackets.len() == self.brackets.capacity() {
+                crate::work::copy(self.brackets.len() * std::mem::size_of::<Vec<Bracket>>());
+            }
+            self.brackets.push(forest::new_page(self.brackets.len()));
+        }
+        let image_parent = if image {
+            self.bracket_count + 1
+        } else {
+            self.bracket().map_or(0, |bracket| bracket.image_parent)
+        };
+        let first = self
+            .labels
+            .iter()
+            .find_map(|&id| self.label(id).map(|label| label.range.start))
+            .unwrap_or(start);
+        let Some(page) = self.brackets.last_mut() else {
+            self.invalid = true;
+            return;
+        };
+        forest::push_page(
+            page,
+            Bracket {
+                previous: self.bracket,
+                start,
+                frontier,
+                first,
+                image,
+                image_parent,
+            },
+        );
+        self.bracket_count += 1;
+        self.bracket = self.bracket_count;
+        self.labels = [0, 0];
+    }
+
     pub(super) fn feed(&mut self, range: Range<usize>, kind: Kind, linked: bool) {
         if let Some(eof) = &mut self.eof {
             eof.invalidate();
@@ -416,38 +455,7 @@ impl State {
             self.labels = [0, 0];
         }
         if let Some((image, start)) = opening.filter(|_| !linked) {
-            let frontier = self.earliest(range.start);
-            if forest::slot(self.bracket_count).1 == 0 {
-                #[cfg(test)]
-                if self.brackets.len() == self.brackets.capacity() {
-                    crate::work::copy(self.brackets.len() * std::mem::size_of::<Vec<Bracket>>());
-                }
-                self.brackets.push(forest::new_page(self.brackets.len()));
-            }
-            let image_parent = if image {
-                self.bracket_count + 1
-            } else {
-                self.bracket().map_or(0, |bracket| bracket.image_parent)
-            };
-            let first = self
-                .labels
-                .iter()
-                .find_map(|&id| self.label(id).map(|label| label.range.start))
-                .unwrap_or(start);
-            forest::push_page(
-                self.brackets.last_mut().expect("bracket page"),
-                Bracket {
-                    previous: self.bracket,
-                    start,
-                    frontier,
-                    first,
-                    image,
-                    image_parent,
-                },
-            );
-            self.bracket_count += 1;
-            self.bracket = self.bracket_count;
-            self.labels = [0, 0];
+            self.open_bracket(image, start);
             return;
         }
         match kind {
@@ -486,7 +494,7 @@ impl State {
                 let mut run = Run::new(range, byte, before, after);
                 run.cursor = cursor;
                 self.delimiter.feed(run, |matched| {
-                    let wrapped = self.forest.wrap(matched);
+                    let wrapped = self.forest.wrap(&matched);
                     debug_assert!(wrapped.is_some(), "active delimiter cursors");
                     self.invalid |= wrapped.is_none();
                     wrapped.unwrap_or_default()
@@ -526,7 +534,7 @@ impl State {
             #[cfg(not(test))]
             let restore = true;
             if restore {
-                self.restore(before);
+                self.restore(&before);
             } else {
                 self.codes.restore(before.context.code);
             }

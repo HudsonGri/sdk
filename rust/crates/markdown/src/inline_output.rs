@@ -195,7 +195,9 @@ impl Output {
             lines.truncate(end);
         }
         if self.head_count() != 0 && !self.head.same_snapshot(&previous.head) {
-            lines[first].spans.clone_from(&self.head);
+            if let Some(line) = lines.get_mut(first) {
+                line.spans.clone_from(&self.head);
+            }
             changed = first;
         }
         for (index, row) in self.middle.changed(&previous.middle) {
@@ -205,7 +207,9 @@ impl Output {
             if at == lines.len() {
                 lines.push(row.owned());
             } else {
-                lines[at] = row.owned();
+                if let Some(line) = lines.get_mut(at) {
+                    *line = row.owned();
+                }
             }
             changed = changed.min(at);
         }
@@ -220,7 +224,9 @@ impl Output {
                     spans: next.clone(),
                 });
             } else {
-                lines[at].spans.clone_from(next);
+                if let Some(line) = lines.get_mut(at) {
+                    line.spans.clone_from(next);
+                }
             }
             changed = changed.min(at);
         }

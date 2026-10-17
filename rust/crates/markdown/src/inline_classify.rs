@@ -53,14 +53,11 @@ impl Definition {
         *self = match *self {
             Self::Start if matches!(c, ' ' | '\t') => Self::Start,
             Self::Start if c == '[' => Self::Label(false),
-            Self::Start => Self::Invalid,
-            Self::Label(true) => Self::Label(false),
             Self::Label(false) if c == '\\' => Self::Label(true),
             Self::Label(false) if c == ']' => Self::Colon,
             Self::Label(false) if c == '[' => Self::Invalid,
-            Self::Label(false) => Self::Label(false),
+            Self::Label(_) => Self::Label(false),
             Self::Colon if c == ':' => Self::Leading,
-            Self::Colon => Self::Invalid,
             Self::Leading if c.is_ascii_whitespace() => Self::Leading,
             Self::Leading if c == '<' => Self::Angle(false),
             Self::Leading if c == '(' => Self::Bare(1, false),
@@ -68,15 +65,13 @@ impl Definition {
                 ready = true;
                 Self::Bare(0, false)
             }
-            Self::Angle(true) => Self::Angle(false),
             Self::Angle(false) if c == '\\' => Self::Angle(true),
             Self::Angle(false) if c == '>' => {
                 ready = true;
                 Self::AfterURL
             }
             Self::Angle(false) if matches!(c, '<' | '\n') => Self::Invalid,
-            Self::Angle(false) => Self::Angle(false),
-            Self::Bare(depth, true) => Self::Bare(depth, false),
+            Self::Angle(_) => Self::Angle(false),
             Self::Bare(depth, false) if c == '\\' => Self::Bare(depth, true),
             Self::Bare(depth, false) if c == '(' && depth < 33 => Self::Bare(depth + 1, false),
             Self::Bare(1, false) if c == ')' => {
@@ -85,24 +80,22 @@ impl Definition {
             }
             Self::Bare(0, false) if c == ')' => Self::Invalid,
             Self::Bare(depth, false) if c == ')' => Self::Bare(depth - 1, false),
-            Self::Bare(0, false) if c.is_ascii_whitespace() => Self::AfterURL,
+            Self::Bare(0, false) | Self::AfterURL if c.is_ascii_whitespace() => Self::AfterURL,
             Self::Bare(_, false) if c.is_ascii_whitespace() || c == '(' => Self::Invalid,
-            Self::Bare(depth, false) => Self::Bare(depth, false),
-            Self::AfterURL if c.is_ascii_whitespace() => Self::AfterURL,
+            Self::Bare(depth, _) => Self::Bare(depth, false),
             Self::AfterURL if matches!(c, '\'' | '"' | '(') => {
                 Self::Title(if c == '(' { ')' } else { c }, false)
             }
-            Self::AfterURL => Self::Invalid,
-            Self::Title(close, true) => Self::Title(close, false),
             Self::Title(close, false) if c == '\\' => Self::Title(close, true),
             Self::Title(close, false) if c == close => {
                 ready = true;
                 Self::AfterTitle
             }
-            Self::Title(close, false) => Self::Title(close, false),
+            Self::Title(close, _) => Self::Title(close, false),
             Self::AfterTitle if c.is_ascii_whitespace() => Self::AfterTitle,
-            Self::AfterTitle => Self::Invalid,
-            Self::Invalid => Self::Invalid,
+            Self::Start | Self::Colon | Self::AfterURL | Self::AfterTitle | Self::Invalid => {
+                Self::Invalid
+            }
         };
         ready
     }
@@ -176,7 +169,7 @@ impl Rows {
     }
     pub(super) fn push(&mut self, source: &str) -> Option<usize> {
         let mut probe = None;
-        for (relative, c) in source[self.read..].char_indices() {
+        for (relative, c) in source.get(self.read..)?.char_indices() {
             #[cfg(test)]
             crate::work::scan(c.len_utf8());
             let at = self.read + relative;

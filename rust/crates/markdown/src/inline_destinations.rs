@@ -81,84 +81,87 @@ impl Suffix {
                 self.escaped = true;
                 continue;
             }
-            self.phase = match self.phase {
-                Phase::Open if byte == b'(' => Phase::Leading(false),
-                Phase::Leading(newline) => {
-                    if let Some(next) = self.separator(byte, newline, true) {
-                        next
-                    } else {
-                        match byte {
-                            b'<' => Phase::Angle,
-                            b')' => Phase::Complete(self.offset),
-                            b'(' => Phase::Bare(1),
-                            b'\\' => {
-                                #[cfg(test)]
-                                let escape = !self.forget_escape;
-                                #[cfg(not(test))]
-                                let escape = true;
-                                self.escaped = escape;
-                                Phase::Bare(0)
-                            }
-                            0..=0x20 => Phase::Invalid,
-                            _ => Phase::Bare(0),
-                        }
-                    }
-                }
-                Phase::Bare(depth) => match byte {
-                    b'(' if depth <= 32 => Phase::Bare(depth + 1),
-                    b'(' => Phase::Invalid,
-                    b')' if depth == 0 => Phase::Complete(self.offset),
-                    b')' => Phase::Bare(depth - 1),
-                    0..=0x20 if depth == 0 => {
-                        self.separator(byte, false, false).unwrap_or(Phase::Invalid)
-                    }
-                    0..=0x20 => Phase::Invalid,
-                    _ => Phase::Bare(depth),
-                },
-                Phase::Angle => match byte {
-                    b'>' => Phase::AfterDestination(false),
-                    b'<' | b'\n' | b'\r' => Phase::Invalid,
-                    _ => Phase::Angle,
-                },
-                Phase::AfterDestination(newline) => {
-                    if let Some(next) = self.separator(byte, newline, false) {
-                        next
-                    } else {
-                        match byte {
-                            b')' => Phase::Complete(self.offset),
-                            b'\'' | b'"' | b'(' => Phase::Title(byte),
-                            _ => Phase::Invalid,
-                        }
-                    }
-                }
-                Phase::Title(open) => {
-                    let close = if open == b'(' { b')' } else { open };
-                    if byte == close {
-                        Phase::AfterTitle(false)
-                    } else if byte == open {
-                        Phase::Invalid
-                    } else {
-                        Phase::Title(open)
-                    }
-                }
-                Phase::AfterTitle(newline) => {
-                    if let Some(next) = self.separator(byte, newline, false) {
-                        match next {
-                            Phase::AfterDestination(newline) => Phase::AfterTitle(newline),
-                            _ => next,
-                        }
-                    } else if byte == b')' {
-                        Phase::Complete(self.offset)
-                    } else {
-                        Phase::Invalid
-                    }
-                }
-                _ => Phase::Invalid,
-            };
+            self.phase = self.step(byte);
         }
         match self.phase {
             Phase::Complete(end) => Some(end),
             _ => None,
+        }
+    }
+
+    fn step(&mut self, byte: u8) -> Phase {
+        match self.phase {
+            Phase::Open if byte == b'(' => Phase::Leading(false),
+            Phase::Leading(newline) => {
+                if let Some(next) = self.separator(byte, newline, true) {
+                    next
+                } else {
+                    match byte {
+                        b'<' => Phase::Angle,
+                        b')' => Phase::Complete(self.offset),
+                        b'(' => Phase::Bare(1),
+                        b'\\' => {
+                            #[cfg(test)]
+                            let escape = !self.forget_escape;
+                            #[cfg(not(test))]
+                            let escape = true;
+                            self.escaped = escape;
+                            Phase::Bare(0)
+                        }
+                        0..=0x20 => Phase::Invalid,
+                        _ => Phase::Bare(0),
+                    }
+                }
+            }
+            Phase::Bare(depth) => match byte {
+                b'(' if depth <= 32 => Phase::Bare(depth + 1),
+                b')' if depth == 0 => Phase::Complete(self.offset),
+                b')' => Phase::Bare(depth - 1),
+                0..=0x20 if depth == 0 => {
+                    self.separator(byte, false, false).unwrap_or(Phase::Invalid)
+                }
+                b'(' | 0..=0x20 => Phase::Invalid,
+                _ => Phase::Bare(depth),
+            },
+            Phase::Angle => match byte {
+                b'>' => Phase::AfterDestination(false),
+                b'<' | b'\n' | b'\r' => Phase::Invalid,
+                _ => Phase::Angle,
+            },
+            Phase::AfterDestination(newline) => {
+                if let Some(next) = self.separator(byte, newline, false) {
+                    next
+                } else {
+                    match byte {
+                        b')' => Phase::Complete(self.offset),
+                        b'\'' | b'"' | b'(' => Phase::Title(byte),
+                        _ => Phase::Invalid,
+                    }
+                }
+            }
+            Phase::Title(open) => {
+                let close = if open == b'(' { b')' } else { open };
+                if byte == close {
+                    Phase::AfterTitle(false)
+                } else if byte == open {
+                    Phase::Invalid
+                } else {
+                    Phase::Title(open)
+                }
+            }
+            Phase::AfterTitle(newline) => {
+                if let Some(next) = self.separator(byte, newline, false) {
+                    match next {
+                        Phase::AfterDestination(newline) => Phase::AfterTitle(newline),
+                        _ => next,
+                    }
+                } else if byte == b')' {
+                    Phase::Complete(self.offset)
+                } else {
+                    Phase::Invalid
+                }
+            }
+            _ => Phase::Invalid,
         }
     }
 
@@ -251,11 +254,10 @@ impl Index {
         }
         self.finished.clear();
         let offset = *self.offset.get_or_insert(origin);
-        for (relative, character) in source
-            .get(offset..)
-            .expect("append-only destination input")
-            .char_indices()
-        {
+        let Some(appended) = source.get(offset..) else {
+            return;
+        };
+        for (relative, character) in appended.char_indices() {
             #[cfg(test)]
             crate::work::scan(character.len_utf8());
             let end = offset + relative + character.len_utf8();
@@ -328,8 +330,14 @@ impl Index {
         while next < self.pending.len() {
             #[cfg(test)]
             crate::work::scan(1);
-            let (start, suffix) = &mut self.pending[next];
-            suffix.push(source.get(*start..end).expect("destination suffix"));
+            let Some((start, suffix)) = self.pending.get_mut(next) else {
+                break;
+            };
+            let Some(source) = source.get(*start..end) else {
+                self.pending.swap_remove(next);
+                continue;
+            };
+            suffix.push(source);
             match suffix.phase {
                 Phase::Complete(length) => {
                     let (start, end) = (*start, *start + length);

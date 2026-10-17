@@ -414,7 +414,9 @@ impl Iter<'_> {
 
     fn skip(&mut self, mut count: usize) {
         while count != 0 {
-            let &(node, _) = self.pending.last().expect("row range");
+            let Some(&(node, _)) = self.pending.last() else {
+                return;
+            };
             #[cfg(test)]
             crate::work::scan(1);
             if node.count <= count {
@@ -459,8 +461,7 @@ impl Drop for Rows {
                     current = left.root.take();
                     pending.extend(right.root.take());
                 }
-                Kind::Mask(child, _, _) => current = child.root.take(),
-                Kind::Suffix(child, ..) => current = child.root.take(),
+                Kind::Mask(child, _, _) | Kind::Suffix(child, ..) => current = child.root.take(),
             }
         }
     }

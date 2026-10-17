@@ -135,8 +135,10 @@ impl Cache {
             }
             self.nodes.push(Vec::with_capacity(self.page_size << page));
         }
-        debug_assert_eq!(offset, self.nodes[page].len());
-        self.nodes[page].push(output);
+        if let Some(page) = self.nodes.get_mut(page) {
+            debug_assert_eq!(offset, page.len());
+            page.push(output);
+        }
         self.length += 1;
         id
     }
@@ -149,25 +151,25 @@ impl Cache {
         id
     }
 
-    fn join(&mut self, left: usize, right: usize) -> usize {
+    fn join(&mut self, left: usize, right: usize) -> Option<usize> {
         if left == 0 {
-            return right;
+            return Some(right);
         }
         if right == 0 {
-            return left;
+            return Some(left);
         }
         let key = Key::Join(left, right);
         if let Some(&(id, _)) = self.keys.get(&key) {
-            return id;
+            return Some(id);
         }
-        let mut output = self.output(left).expect("prefix output").clone();
-        output.append(self.output(right).expect("child output").clone());
-        self.insert(key, output)
+        let mut output = self.output(left)?.clone();
+        output.append(self.output(right)?.clone());
+        Some(self.insert(key, output))
     }
 
-    fn mask(&mut self, body: usize, style: Style, link: Option<Arc<str>>) -> usize {
+    fn mask(&mut self, body: usize, style: Style, link: Option<Arc<str>>) -> Option<usize> {
         if style == Style::default() && link.is_none() {
-            return body;
+            return Some(body);
         }
         let key = Key::Mask(
             body,
@@ -176,14 +178,10 @@ impl Cache {
                 .map_or(0, |link| Arc::as_ptr(link).cast::<u8>() as usize),
         );
         if let Some(&(id, _)) = self.keys.get(&key) {
-            return id;
+            return Some(id);
         }
-        let output = self
-            .output(body)
-            .expect("scope body")
-            .clone()
-            .masked(style, link);
-        self.insert(key, output)
+        let output = self.output(body)?.clone().masked(style, link);
+        Some(self.insert(key, output))
     }
 
     pub(in crate::inline_scan) fn freeze(&mut self, position: usize) {
@@ -333,7 +331,7 @@ impl Cache {
     ) -> Option<(usize, usize)> {
         #[cfg(test)]
         if REPLAY.get() {
-            let epoch = self.epoch.checked_add(1).expect("render epoch");
+            let epoch = self.epoch.checked_add(1)?;
             *self = Self::default();
             self.epoch = epoch;
         }
@@ -351,6 +349,90 @@ impl Cache {
         Some((changed, visible))
     }
 
+    fn open_frame(
+        &mut self,
+        tag: &Tag<'_>,
+        range: &Range<usize>,
+        references: &References,
+    ) -> Option<Frame> {
+        let (style, link) = match tag {
+            Tag::Paragraph => (Style::default(), None),
+            Tag::Emphasis => (
+                Style {
+                    italic: true,
+                    ..Style::default()
+                },
+                None,
+            ),
+            Tag::Strong => (
+                Style {
+                    bold: true,
+                    ..Style::default()
+                },
+                None,
+            ),
+            Tag::Strikethrough => (
+                Style {
+                    dim: true,
+                    strikethrough: true,
+                    ..Style::default()
+                },
+                None,
+            ),
+            Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => (
+                Style {
+                    foreground: Some(crate::style::BLUE),
+                    underline: true,
+                    ..Style::default()
+                },
+                Some(self.target(range, dest_url, id, references)),
+            ),
+            _ => return None,
+        };
+        Some(Frame {
+            body: 0,
+            style,
+            link,
+        })
+    }
+
+    fn literal_event(
+        &mut self,
+        event: &Event<'_>,
+        range: Range<usize>,
+        source: &crate::inline_scan::Slice<'_>,
+    ) -> Option<usize> {
+        Some(match event {
+            Event::Code(text) => self.value(
+                1,
+                range,
+                text,
+                source,
+                Style {
+                    foreground: Some(crate::style::YELLOW),
+                    ..Style::default()
+                },
+            )?,
+            Event::InlineHtml(text)
+            | Event::Html(text)
+            | Event::InlineMath(text)
+            | Event::DisplayMath(text) => self.value(2, range, text, source, Style::default())?,
+            Event::SoftBreak => self.value(3, range, " ", source, Style::default())?,
+            Event::HardBreak => {
+                let key = Key::Leaf(4, range.start, range.end);
+                if let Some(&(id, _)) = self.keys.get(&key) {
+                    id
+                } else {
+                    self.insert(key, Output::newline(false))
+                }
+            }
+            Event::FootnoteReference(text) => {
+                self.value(5, range, &format!("[{text}]"), source, Style::default())?
+            }
+            _ => return None,
+        })
+    }
+
     fn reduce(
         &mut self,
         source: &crate::inline_scan::Slice<'_>,
@@ -364,8 +446,7 @@ impl Cache {
             link: None,
         }];
         let mut committed = None;
-        let mut remaining = events.iter();
-        while let Some((event, relative)) = remaining.next() {
+        for (event, relative) in events {
             #[cfg(test)]
             crate::work::scan(1);
             if matches!(
@@ -382,45 +463,7 @@ impl Cache {
                 ..source.base + relative.end.saturating_sub(source.sentinel);
             let leaf = match event {
                 Event::Start(tag) => {
-                    let (style, link) = match tag {
-                        Tag::Paragraph => (Style::default(), None),
-                        Tag::Emphasis => (
-                            Style {
-                                italic: true,
-                                ..Style::default()
-                            },
-                            None,
-                        ),
-                        Tag::Strong => (
-                            Style {
-                                bold: true,
-                                ..Style::default()
-                            },
-                            None,
-                        ),
-                        Tag::Strikethrough => (
-                            Style {
-                                dim: true,
-                                strikethrough: true,
-                                ..Style::default()
-                            },
-                            None,
-                        ),
-                        Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => (
-                            Style {
-                                foreground: Some(crate::style::BLUE),
-                                underline: true,
-                                ..Style::default()
-                            },
-                            Some(self.target(&range, dest_url, id, references)),
-                        ),
-                        _ => return None,
-                    };
-                    frames.push(Frame {
-                        body: 0,
-                        style,
-                        link,
-                    });
+                    frames.push(self.open_frame(tag, &range, references)?);
                     continue;
                 }
                 Event::End(
@@ -435,7 +478,7 @@ impl Cache {
                         return None;
                     }
                     let frame = frames.pop()?;
-                    self.mask(frame.body, frame.style, frame.link)
+                    self.mask(frame.body, frame.style, frame.link)?
                 }
                 Event::Text(text) => {
                     let trim = source.sentinel.saturating_sub(relative.start);
@@ -457,7 +500,7 @@ impl Cache {
                             Style::default(),
                         )?;
                         let frame = frames.last_mut()?;
-                        frame.body = self.join(frame.body, left);
+                        frame.body = self.join(frame.body, left)?;
                         committed = Some(frame.body);
                         self.value(
                             0,
@@ -470,38 +513,10 @@ impl Cache {
                         self.value(0, range, text, source, Style::default())?
                     }
                 }
-                Event::Code(text) => self.value(
-                    1,
-                    range,
-                    text,
-                    source,
-                    Style {
-                        foreground: Some(crate::style::YELLOW),
-                        ..Style::default()
-                    },
-                )?,
-                Event::InlineHtml(text)
-                | Event::Html(text)
-                | Event::InlineMath(text)
-                | Event::DisplayMath(text) => {
-                    self.value(2, range, text, source, Style::default())?
-                }
-                Event::SoftBreak => self.value(3, range, " ", source, Style::default())?,
-                Event::HardBreak => {
-                    let key = Key::Leaf(4, range.start, range.end);
-                    if let Some(&(id, _)) = self.keys.get(&key) {
-                        id
-                    } else {
-                        self.insert(key, Output::newline(false))
-                    }
-                }
-                Event::FootnoteReference(text) => {
-                    self.value(5, range, &format!("[{text}]"), source, Style::default())?
-                }
-                _ => return None,
+                _ => self.literal_event(event, range, source)?,
             };
             let current = frames.last_mut()?;
-            current.body = self.join(current.body, leaf);
+            current.body = self.join(current.body, leaf)?;
             if frames.len() == 1 && relative.end == source.boundary {
                 committed = Some(frames.last()?.body);
             }

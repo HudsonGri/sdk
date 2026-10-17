@@ -127,7 +127,7 @@ impl Projections {
         let cached = if byte == b'~' {
             None
         } else {
-            self.classes[class].take()
+            self.classes.get_mut(class).and_then(Option::take)
         };
         let mut projection = cached.unwrap_or_else(|| {
             if escaped {
@@ -142,7 +142,9 @@ impl Projections {
         });
         projection.extend(state, key, token.range.end, length);
         let root = projection.current.forest;
-        self.classes[class] = Some(projection);
+        if let Some(slot) = self.classes.get_mut(class) {
+            *slot = Some(projection);
+        }
         original.restore(state);
         root
     }
@@ -203,7 +205,7 @@ impl Projection {
                 } else {
                     *invalid = true;
                 }
-                let wrapped = forest.wrap(matched);
+                let wrapped = forest.wrap(&matched);
                 debug_assert!(wrapped.is_some(), "active EOF delimiter cursors");
                 *invalid |= wrapped.is_none();
                 wrapped.unwrap_or_default()

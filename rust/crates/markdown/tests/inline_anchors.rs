@@ -18,7 +18,9 @@ proptest! {
         let context = State::default().resume().context;
         let anchor = Anchor::new(context, values);
         prop_assert_eq!(ordinals(&anchor), values);
-        prop_assert_eq!(ordinals(&anchor.clone()), values);
+        let snapshot = anchor.clone();
+        prop_assert_eq!(ordinals(&snapshot), values);
+        prop_assert_eq!(ordinals(&anchor), ordinals(&snapshot));
     }
 }
 

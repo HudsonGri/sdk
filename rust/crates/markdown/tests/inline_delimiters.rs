@@ -26,8 +26,8 @@ impl Model {
                 entry.byte == run.byte
                     && (run.byte != b'~' || *index >= self.1 && entry.original == original)
                     && (!both && !entry.both
-                        || (entry.original + original) % 3 != 0
-                        || original % 3 == 0)
+                        || !(entry.original + original).is_multiple_of(3)
+                        || original.is_multiple_of(3))
             });
             let Some((index, _)) = candidate else {
                 if run.byte == b'~' {
@@ -86,7 +86,7 @@ proptest! {
                 actual.restore(*snapshot);
                 expected = model.clone();
             }
-            let byte = [b'*', b'_', b'~'].get(usize::from(marker)).copied().expect("marker");
+            let byte = b"*_~".get(usize::from(marker)).copied().expect("marker");
             let run = Run { range: position..position + count, byte, open: flags & 1 != 0, close: flags & 2 != 0, cursor: 0 };
             position += count + 1;
             let mut found = Vec::new();

@@ -38,7 +38,7 @@ impl Rank {
         crate::work::scan(1);
         if bit == 0 && index != 0 {
             let previous = index.checked_sub(1).and_then(|before| {
-                let word = self.word(before).expect("previous rank word");
+                let word = self.word(before)?;
                 if word.bits != 0 {
                     Some(before)
                 } else {
@@ -75,7 +75,9 @@ impl Rank {
                     .pages
                     .get_mut(index / PAGE)
                     .map_or(self.tail.as_mut_slice(), AsMut::as_mut);
-                page[index % PAGE].bits |= 1u64 << bit;
+                if let Some(word) = page.get_mut(index % PAGE) {
+                    word.bits |= 1u64 << bit;
+                }
             }
             self.ones += 1;
         }

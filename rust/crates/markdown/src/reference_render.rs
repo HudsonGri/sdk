@@ -1,12 +1,14 @@
 use super::*;
 
+type Candidate = (Range<usize>, Range<usize>, render::Renderer, Range<usize>);
+
 impl Markdown {
     pub(super) fn cache_frontier(
         &mut self,
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
         calls: &[(usize, usize)],
-        candidates: Vec<(Range<usize>, Range<usize>, render::Renderer, Range<usize>)>,
+        candidates: Vec<Candidate>,
         (base, prefix): (usize, usize),
     ) {
         let mut charges = calls.iter().peekable();
@@ -37,10 +39,11 @@ impl Markdown {
                 std::iter::from_fn(|| {
                     #[cfg(test)]
                     work::scan(1);
-                    charges
-                        .peek()
-                        .is_some_and(|(end, _)| *end <= range.end)
-                        .then(|| charges.next().expect("expansion charge"))
+                    if charges.peek().is_some_and(|(end, _)| *end <= range.end) {
+                        charges.next()
+                    } else {
+                        None
+                    }
                 })
                 .filter(|(end, _)| *end > range.start),
             );
@@ -199,7 +202,9 @@ impl Markdown {
                 }
                 if let Some(cache) = self.cached.get(index) {
                     for (index, line) in cache.lines.clone().zip(lines) {
-                        self.lines[index] = line;
+                        if let Some(row) = self.lines.get_mut(index) {
+                            *row = line;
+                        }
                     }
                     let range = cache.lines.clone();
                     for index in range {
@@ -211,12 +216,13 @@ impl Markdown {
     }
 
     fn compact_reference_lines(&mut self, mut replacements: HashMap<usize, Vec<Line>>) {
-        let first = replacements
-            .keys()
-            .copied()
-            .min()
-            .expect("resized reference");
-        let first_line = self.cached[first].lines.start;
+        let Some(first) = replacements.keys().copied().min() else {
+            return;
+        };
+        let Some(cache) = self.cached.get(first) else {
+            return;
+        };
+        let first_line = cache.lines.start;
         let previous_length = self.lines.len();
         let previous_stable = self.stable_lines;
         let mut caches = self.cached.iter_mut().enumerate().skip(first).peekable();
@@ -231,7 +237,9 @@ impl Markdown {
                 .peek()
                 .is_some_and(|(_, cache)| cache.lines.start <= read)
             {
-                let (index, cache) = caches.next().expect("next cache");
+                let Some((index, cache)) = caches.next() else {
+                    break;
+                };
                 #[cfg(test)]
                 {
                     self.reference_cache_visits += 1;

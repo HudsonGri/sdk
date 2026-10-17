@@ -18,7 +18,7 @@ fn oracle(source: &str) -> Option<(usize, String)> {
 fn compare(source: &str, cuts: &[usize]) {
     let mut suffix = Suffix::default();
     for end in cuts.iter().copied().chain([source.len()]) {
-        let prefix = &source[..end];
+        let prefix = source.get(..end).expect("prefix boundary");
         let actual = suffix
             .push(prefix)
             .and_then(|end| suffix.target(prefix).map(|url| (end, url.to_string())));
@@ -113,12 +113,13 @@ fn compare_index(source: &str, cuts: &[usize]) {
     let mut index = Index::default();
     let mut completed = std::collections::HashMap::new();
     for end in cuts.iter().copied().chain([source.len()]) {
-        let prefix = &source[..end];
+        let prefix = source.get(..end).expect("prefix boundary");
         index.push(prefix, 0);
         completed.extend(index.finished.iter().copied());
         for (at, _) in prefix.match_indices("](") {
             let start = at + 1;
-            let expected = oracle(&prefix[start..]).map(|(end, url)| (start + end, url));
+            let expected = oracle(prefix.get(start..).expect("destination start"))
+                .map(|(end, url)| (start + end, url));
             let actual = completed.get(&start).and_then(|&end| {
                 index
                     .target(prefix, start, end)
@@ -195,7 +196,7 @@ fn index_properties_detect_replay_and_lost_escape_state() {
         ..Index::default()
     };
     for end in 1..=source.len() {
-        index.push(&source[..end], 0);
+        index.push(source.get(..end).expect("prefix boundary"), 0);
     }
     assert_ne!(
         index
@@ -203,6 +204,6 @@ fn index_properties_detect_replay_and_lost_escape_state() {
             .iter()
             .find(|(start, _)| *start == 1)
             .map(|(_, end)| *end),
-        oracle(&source[1..]).map(|(end, _)| 1 + end)
+        oracle(source.get(1..).expect("after bracket")).map(|(end, _)| 1 + end)
     );
 }

@@ -16,7 +16,7 @@ proptest! {
         }
         for (position, expected) in model.iter().enumerate() {
             prop_assert_eq!(rank.before(position), Some(*expected));
-            prop_assert_eq!(rank.last_before(position), last[position]);
+            prop_assert_eq!(rank.last_before(position), *last.get(position).expect("model position"));
         }
         prop_assert_eq!(rank.before(model.len()), None);
         prop_assert_eq!(rank.last_before(model.len()), None);
@@ -33,15 +33,15 @@ proptest! {
         let mut input = super::super::Input::default();
         input.feed("", 0);
         for (offset, character) in source.char_indices() {
-            input.feed(&source[..offset + character.len_utf8()], 0);
+            input.feed(source.get(..offset + character.len_utf8()).expect("character boundary"), 0);
         }
         let cuts: Vec<_> = source.char_indices().map(|(offset, _)| offset).chain([source.len()]).collect();
-        let (left, right) = (cuts[usize::from(left) % cuts.len()], cuts[usize::from(right) % cuts.len()]);
+        let (left, right) = (*cuts.get(usize::from(left) % cuts.len()).expect("left cut"), *cuts.get(usize::from(right) % cuts.len()).expect("right cut"));
         let range = left.min(right)..left.max(right);
-        let normalized = source[range.clone()].replace(['\r', '\n'], " ");
+        let normalized = source.get(range.clone()).expect("selected range").replace(['\r', '\n'], " ");
         let expected = if normalized.starts_with(' ') && normalized.ends_with(' ')
             && normalized.bytes().any(|byte| byte != b' ')
-        { &normalized[1..normalized.len() - 1] } else { &normalized };
+        { normalized.get(1..normalized.len() - 1).expect("space boundaries") } else { &normalized };
         let actual = input.code(range, &source).expect("source view");
         prop_assert_eq!(actual.as_str(), expected);
     }

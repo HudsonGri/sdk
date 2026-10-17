@@ -118,23 +118,28 @@ impl State {
         };
         #[cfg(test)]
         crate::work::scan(6);
-        if self.anchor_context.as_deref() != Some(&context) {
-            #[cfg(test)]
-            crate::work::scan(6);
-            if self.anchor_context_other.as_deref() == Some(&context) {
-                std::mem::swap(&mut self.anchor_context, &mut self.anchor_context_other);
-            } else {
+        let context = match (&self.anchor_context, &self.anchor_context_other) {
+            (Some(current), _) if current.as_ref() == &context => current.clone(),
+            (_, Some(other)) if other.as_ref() == &context => {
                 #[cfg(test)]
-                crate::work::copy(std::mem::size_of::<Context>());
-                self.anchor_context_other =
-                    self.anchor_context.replace(std::sync::Arc::new(context));
+                crate::work::scan(6);
+                let next = other.clone();
+                std::mem::swap(&mut self.anchor_context, &mut self.anchor_context_other);
+                next
             }
-        }
+            _ => {
+                #[cfg(test)]
+                {
+                    crate::work::scan(6);
+                    crate::work::copy(std::mem::size_of::<Context>());
+                }
+                let next = std::sync::Arc::new(context);
+                self.anchor_context_other = self.anchor_context.replace(next.clone());
+                next
+            }
+        };
         #[cfg(test)]
         crate::work::copy(std::mem::size_of::<Anchor>());
-        let Some(context) = self.anchor_context.clone() else {
-            unreachable!("resume initializes the context above");
-        };
         Anchor::new(
             context,
             [delimiter, self.forest.snapshot(), self.bracket, self.closed],
@@ -147,9 +152,10 @@ impl State {
     }
 
     pub(in crate::inline_scan) fn remember_resume(&mut self, ordinal: usize, anchor: Anchor) {
-        let ordinal = ordinal
-            .checked_sub(self.anchor_origin)
-            .expect("mutable opener");
+        let Some(ordinal) = ordinal.checked_sub(self.anchor_origin) else {
+            self.invalid = true;
+            return;
+        };
         #[cfg(test)]
         crate::work::scan(1);
         let mut anchor = Some(anchor);
@@ -171,16 +177,28 @@ impl State {
                 crate::work::copy(std::mem::size_of::<usize>());
                 None
             };
-            super::forest::push_page(self.anchors.last_mut().expect("resume page"), value);
+            let Some(page) = self.anchors.last_mut() else {
+                self.invalid = true;
+                return;
+            };
+            super::forest::push_page(page, value);
             self.anchor_slots += 1;
         }
         if let Some(anchor) = anchor {
             let (page, offset) = super::forest::slot(ordinal);
-            self.anchors[page][offset] = Some(anchor);
+            if let Some(slot) = self
+                .anchors
+                .get_mut(page)
+                .and_then(|page| page.get_mut(offset))
+            {
+                *slot = Some(anchor);
+            } else {
+                self.invalid = true;
+            }
         }
     }
 
-    pub(in crate::inline_scan) fn bind_resume(&mut self, anchor: Anchor) -> Option<()> {
+    pub(in crate::inline_scan) fn bind_resume(&mut self, anchor: &Anchor) -> Option<()> {
         let (code, closed, links) = (self.codes.head(), self.closed, self.link_floor);
         self.restore_resume(anchor, code, closed, links);
         (!self.invalid).then_some(())
@@ -200,7 +218,7 @@ impl State {
             return None;
         }
         let (code, closed, links) = (anchor.context.code, anchor.closed(), anchor.context.links);
-        self.restore_resume(anchor, code, closed, links);
+        self.restore_resume(&anchor, code, closed, links);
         if let Some(eof) = &mut self.eof {
             eof.invalidate();
         }

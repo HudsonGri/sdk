@@ -87,9 +87,13 @@ fn check_sequence(
             .last();
         let current = leaf.and_then(|(tag, range)| (tag == Tag::Paragraph).then_some(range));
         if origin != current.as_ref().map(|range| range.start)
-            || current
-                .as_ref()
-                .is_some_and(|range| !normalized.source[range.clone()].starts_with(&source))
+            || current.as_ref().is_some_and(|range| {
+                !normalized
+                    .source
+                    .get(range.clone())
+                    .expect("paragraph range")
+                    .starts_with(&source)
+            })
         {
             retained = Scanner::default();
             replay = Scanner {
@@ -101,7 +105,7 @@ fn check_sequence(
         }
         let Some(range) = current else { continue };
         source.clear();
-        source.push_str(&normalized.source[range]);
+        source.push_str(normalized.source.get(range).expect("normalized range"));
         let frontier = advance(&mut retained, &source, base);
         prop_assert_eq!(
             frontier,
@@ -126,14 +130,7 @@ fn check_sequence(
             .state
             .projection(retained.tokens.preview().as_ref());
         let right = replay.state.projection(replay.tokens.preview().as_ref());
-        if !checkpoints {
-            prop_assert_eq!(
-                retained.state.forest.rendered_at(left, &source),
-                replay.state.forest.rendered_at(right, &source),
-                "source {:?}",
-                source
-            );
-        } else {
+        if checkpoints {
             prop_assert_eq!(
                 retained.state.forest.scopes_since(left, base),
                 replay.state.forest.scopes_since(right, base),
@@ -147,6 +144,13 @@ fn check_sequence(
             });
             retained.discard_before(base);
             replay.discard_before(base);
+        } else {
+            prop_assert_eq!(
+                retained.state.forest.rendered_at(left, &source),
+                replay.state.forest.rendered_at(right, &source),
+                "source {:?}",
+                source
+            );
         }
     }
     Ok(())

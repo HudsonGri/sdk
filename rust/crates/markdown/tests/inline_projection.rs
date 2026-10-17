@@ -183,7 +183,7 @@ proptest! {
         forest.text(end..end + 1);
         let closing = end + 1..end + 3;
         let closer_cursor = forest.text(closing.clone());
-        forest.wrap(crate::inline_scan::delimiters::Matched {
+        forest.wrap(&crate::inline_scan::delimiters::Matched {
             opener: opening, closer: closing, byte: b'*', opener_cursor, closer_cursor,
         }).expect("scope cursors");
         forest.text(end + 3..source.len());

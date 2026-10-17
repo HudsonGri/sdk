@@ -26,7 +26,7 @@ fn append(forest: &mut Forest, delimiters: &mut Delimiters, source: &str, offset
             run.cursor = cursor;
             delimiters.feed(run, |matched| {
                 forest
-                    .wrap(matched)
+                    .wrap(&matched)
                     .expect("active opener and closer cursors")
             });
         }
@@ -101,7 +101,7 @@ fn measure(count: usize, scan: bool) -> (usize, usize) {
         let cursor = forest.text(start..start + 1);
         let mut run = Run::new(start..start + 1, b'*', 'z', ' ');
         run.cursor = cursor;
-        delimiters.feed(run, |matched| forest.wrap(matched).expect("shared opener"));
+        delimiters.feed(run, |matched| forest.wrap(&matched).expect("shared opener"));
     }
     (
         crate::work::current() - before,

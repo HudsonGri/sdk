@@ -156,7 +156,9 @@ impl Queue {
             };
             self.pages.push_back(tokens);
         }
-        let page = self.pages.back_mut().expect("token page");
+        let Some(page) = self.pages.back_mut() else {
+            return;
+        };
         debug_assert_eq!(offset, page.len());
         page.push(token);
         self.length += 1;
@@ -238,11 +240,10 @@ impl Tokens {
 
     pub(super) fn push(&mut self, source: &str) {
         let base = self.offset;
-        for (relative, character) in source
-            .get(base..)
-            .expect("append-only UTF-8 source")
-            .char_indices()
-        {
+        let Some(appended) = source.get(base..) else {
+            return;
+        };
+        for (relative, character) in appended.char_indices() {
             let position = base + relative;
             #[cfg(test)]
             crate::work::scan(character.len_utf8());
@@ -286,9 +287,9 @@ impl Tokens {
 
     pub(super) fn expands_after(&self, start: usize) -> bool {
         self.expansion.is_some_and(|at| at >= start)
-            || self.preview().is_some_and(|token| {
-                token.range.start >= start && token.kind.expands(token.range.clone())
-            })
+            || self
+                .preview()
+                .is_some_and(|token| token.range.start >= start && token.kind.expands(token.range))
     }
 
     pub(super) fn covering(&self, position: usize) -> Option<Range<usize>> {

@@ -39,11 +39,13 @@ impl Spare {
             {
                 crate::work::copy((end - start) * std::mem::size_of::<Line>());
             }
-            for index in start..existing {
-                self.lines[index].clone_from(&lines[index]);
+            for (index, original) in lines.iter().enumerate().take(existing).skip(start) {
+                if let Some(row) = self.lines.get_mut(index) {
+                    row.clone_from(original);
+                }
             }
             self.lines
-                .extend((existing..end).map(|index| lines[index].clone()));
+                .extend(lines.iter().skip(existing).take(end - existing).cloned());
             self.valid = end;
         }
     }
@@ -56,7 +58,7 @@ impl Spare {
         }
         self.lines.truncate(start);
         self.lines
-            .extend((start..end).map(|index| lines[index].clone()));
+            .extend(lines.iter().skip(start).take(end - start).cloned());
         self.valid = end;
     }
 
@@ -90,7 +92,8 @@ mod tests {
         let mut spare = Spare::default();
         spare.capture(&lines);
         for index in first..count {
-            lines[index] = Line::plain("resolved", crate::Style::default());
+            *lines.get_mut(index).expect("existing row") =
+                Line::plain("resolved", crate::Style::default());
         }
         let expected = lines.all().to_vec();
         KEEP_STALE_PREFIX.set(stale);

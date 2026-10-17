@@ -238,7 +238,9 @@ impl Spans {
             });
             return;
         }
-        let span = self.edit().tail.take().expect("mutable tail");
+        let Some(span) = self.edit().tail.take() else {
+            return;
+        };
         let runs = self.data().prefix.as_ref().map_or(0, |node| node.runs) + 1;
         #[cfg(test)]
         crate::work::scan(1);

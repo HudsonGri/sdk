@@ -94,14 +94,14 @@ fn frozen_suffix_views_preserve_prefixes_and_mutations() {
     let owned = all.to_vec();
     for (at, cursor) in cursors.iter().enumerate() {
         let mut suffix = all.suffix_after(cursor);
-        assert_eq!(suffix.to_vec(), owned[at..]);
+        assert_eq!(suffix.to_vec(), owned.get(at..).expect("suffix range"));
         if let Some(last) = suffix.last_mut() {
             last.text.push_str("!");
         }
         assert_eq!(all.to_vec(), owned);
         suffix.truncate(1);
         assert!(suffix.len() <= 1);
-        assert_eq!(cursor.to_vec(), owned[..at]);
+        assert_eq!(cursor.to_vec(), owned.get(..at).expect("prefix range"));
     }
 }
 use crate::Line;
@@ -199,7 +199,7 @@ proptest! {
                 }
                 2 => saved.push((actual.clone(), expected.clone())),
                 3 => {
-                    let (snapshot, model) = &saved[usize::from(index) % saved.len()];
+                    let (snapshot, model) = saved.get(usize::from(index) % saved.len()).expect("saved snapshot");
                     actual = snapshot.clone(); expected = model.clone();
                 }
                 4 => {
@@ -223,7 +223,7 @@ proptest! {
                     if let Some(last) = expected.last_mut() { last.style = style; last.link = link; }
                 }
                 _ => {
-                    let (snapshot, model) = &saved[usize::from(index) % saved.len()];
+                    let (snapshot, model) = saved.get(usize::from(index) % saved.len()).expect("saved snapshot");
                     actual.concat(snapshot.clone()); expected.extend(model.iter().cloned());
                 }
             }
@@ -242,7 +242,7 @@ fn measure(count: usize, copy: bool) -> (usize, usize, usize) {
     let mut snapshots = Vec::new();
     let before = crate::work::current();
     for index in 0..count {
-        line.push("x", attributes((index % 2) as u8), None);
+        line.push("x", attributes(u8::from(!index.is_multiple_of(2))), None);
         if snapshots.len() == snapshots.capacity() {
             crate::work::copy(snapshots.len() * std::mem::size_of::<Spans>());
         }
@@ -326,7 +326,14 @@ fn every_line_snapshot_shares_its_complete_contents() {
     }
     line.spans.last_mut().unwrap().text.push_str(" changed");
     assert_eq!(
-        snapshots[0].spans.first().unwrap().text.as_str(),
+        snapshots
+            .first()
+            .expect("first snapshot")
+            .spans
+            .first()
+            .unwrap()
+            .text
+            .as_str(),
         "unfrozen tail"
     );
     assert_eq!(
@@ -369,8 +376,8 @@ proptest! {
         last.style = style;
         last.link = link.clone();
         prop_assert_eq!(before.to_vec(), value(&expected));
-        expected[2].style = style;
-        expected[2].link = link;
+        expected.get_mut(2).expect("last model run").style = style;
+        expected.get_mut(2).expect("last model run").link = link;
         for frozen in [false, true] {
             if frozen { actual.freeze(); }
             let wanted = value(&expected);
@@ -380,7 +387,7 @@ proptest! {
             for keep in 0..=wanted.len()+1 {
                 let mut shortened = actual.clone();
                 shortened.truncate(keep);
-                prop_assert_eq!(shortened.to_vec(), wanted[..keep.min(wanted.len())].to_vec());
+                prop_assert_eq!(shortened.to_vec(), wanted.get(..keep.min(wanted.len())).expect("truncated model").to_vec());
             }
         }
     }
