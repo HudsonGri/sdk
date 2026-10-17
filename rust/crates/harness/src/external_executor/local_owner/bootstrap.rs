@@ -92,6 +92,7 @@ pub(in crate::external_executor) async fn binding(
 
 pub(in crate::external_executor) async fn existing_binding(
     workspace: &str,
+    selected: Option<&Path>,
 ) -> Result<(Client, String)> {
     super::super::handoff::workspace_key(workspace)?;
     let root = directory()?;
@@ -99,11 +100,27 @@ pub(in crate::external_executor) async fn existing_binding(
         &root.join("workspaces").join(format!("{workspace}.json")),
     )?)
     .map_err(storage)?;
-    if credential::workspace(&path)?.0 != workspace {
+    let (key, canonical) = credential::workspace(&path)?;
+    if key != workspace {
         return Err(Error::Unauthorized("workspace binding was replaced".into()));
     }
+    require_selection(&canonical, selected)?;
     connect_workspace(root, workspace.into()).await
 }
+
+fn require_selection(canonical: &Path, selected: Option<&Path>) -> Result<()> {
+    if let Some(selected) = selected {
+        if selected != canonical && std::fs::canonicalize(selected).map_err(storage)? != canonical {
+            return Err(Error::Unauthorized(
+                "native result belongs to another bound workspace".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
 
 async fn connect_workspace(root: PathBuf, workspace: String) -> Result<(Client, String)> {
     if let Ok(bytes) = read(&root.join("credential"))

@@ -253,12 +253,13 @@ fn claude_manifest_drives_catalog_hooks_and_the_result_client() -> Result<()> {
         assert_eq!(handler.get("type").and_then(Value::as_str), Some("command"));
         assert_eq!(
             handler.get("command").and_then(Value::as_str),
-            Some("${CLAUDE_PLUGIN_ROOT}/../bin/acyclic")
+            Some(format!("\"${{CLAUDE_PLUGIN_ROOT}}/../bin/acyclic\" __hook claude-code {}",spec.event).as_str())
         );
         assert_eq!(
-            handler.get("args"),
-            Some(&json!(["__hook", "claude-code", spec.event]))
+            acyclic_harness::tools::parse_command(handler["command"].as_str().unwrap())?,
+            ["${CLAUDE_PLUGIN_ROOT}/../bin/acyclic", "__hook", "claude-code", spec.event]
         );
+        assert!(handler.get("args").is_none());
         assert_eq!(
             handler.get("timeout").and_then(Value::as_u64),
             Some(if spec.action == HookAction::Detach {

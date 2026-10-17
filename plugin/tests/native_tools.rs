@@ -149,6 +149,10 @@ async fn native_hooks_publish_once_and_mcp_only_returns_the_stored_result() -> R
                     let mut changed = arguments.clone();
                     changed["text"] = json!("forged");
                     assert_eq!(results.result(changed).await?["isError"],true);
+                    if let Some(binding) = binding {
+                        std::fs::write(binding,serde_json::to_vec(&json!({"provider":"local","workspace":mcp}))?)?;
+                        assert_eq!(results.result(arguments.clone()).await?["isError"],true);
+                    }
                     results.close().await?;
                     original = Some(first);
                 }

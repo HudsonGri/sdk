@@ -131,18 +131,7 @@ async fn local_result(name: &str, arguments: Value, selected: Option<&Path>) -> 
         let workspace = super::handoff::reference(&arguments)?.0.ok_or_else(|| {
             Error::Unauthorized("local MCP result has no workspace binding".into())
         })?;
-        let (client, workspace) = match selected {
-            Some(selected) => {
-                let (client, bound, _) = super::local_owner::binding(selected).await?;
-                if bound != workspace {
-                    return Err(Error::Unauthorized(
-                        "native result belongs to another bound workspace".into(),
-                    ));
-                }
-                (client, bound)
-            }
-            None => super::local_owner::existing_binding(workspace).await?,
-        };
+        let (client, workspace) = super::local_owner::existing_binding(workspace, selected).await?;
         let (requests, results) =
             local_hook_volumes(Arc::new(client), crate::TaskId::from_bytes(id.into_bytes()))
                 .await?;
