@@ -39,7 +39,10 @@ impl<A, O> Clone for Fs<A, O> {
 }
 
 impl<A, O> Fs<A, O> {
-    #[cfg(all(not(target_arch = "wasm32"), any(windows, test)))]
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "native-mount", windows, test)
+    ))]
     pub(crate) fn has_process_policy_owner(&self) -> bool
     where
         A: 'static,
