@@ -43,15 +43,7 @@ where
             .require_access_view()?
             .current()
             .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
-        let now = super::super::adapter::access::access_time()?;
-        if !view.allows_every_path(
-            &[crate::access::Action::List, crate::access::Action::Read],
-            now,
-        ) {
-            return Err(MountLifecycleError::NativePolicy(
-                "materialized working sets require unrestricted disclosure",
-            ));
-        }
+        options::require_disclosure(&view)?;
         let original = mount.work(capture_budget, cancellation)?;
         let work = &original;
         if let Some(guard) = mount.callback_guard.as_ref() {

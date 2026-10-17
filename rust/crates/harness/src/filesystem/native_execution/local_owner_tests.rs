@@ -131,7 +131,21 @@ async fn new_owner_creation_is_atomic_and_recovery_keeps_its_policy() -> TestRes
     Ok(())
 }
 
-async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: bool) -> TestResult {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Preparation {
+    Authorized,
+    StaleOptions,
+    LateCheck,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReadCeiling {
+    All,
+    Pinned,
+    Path,
+}
+
+async fn readonly_import(bytes: &[u8], flow: Preparation, ceiling: ReadCeiling) -> TestResult {
     use acyclic_fs::demand::native::NativeDemandSource;
     use acyclic_fs::{
         LazyWorkspace, MemoryLazyWorkspaceStore, MountOptions, MountPublication, PublicationPermit,
@@ -171,7 +185,7 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let original = lazy.workspace().head(&work, &cancellation).await?.id();
-    let options = if pinned_capability {
+    let options = if ceiling != ReadCeiling::All {
         use acyclic_fs::access::{
             Action, Capability, GenerationRange, Generations, Grant, ResourcePattern,
         };
@@ -194,8 +208,17 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
                         uuid::Uuid::from_bytes(lazy.workspace().id().volume_id().into_bytes())
                             .to_string(),
                     ),
-                    generations: Generations::Range(GenerationRange { first: 1, last: 1 }),
-                    path: "**".into(),
+                    generations: if ceiling == ReadCeiling::Pinned {
+                        Generations::Range(GenerationRange { first: 1, last: 1 })
+                    } else {
+                        Generations::All
+                    },
+                    path: if ceiling == ReadCeiling::Path {
+                        "hot/**"
+                    } else {
+                        "**"
+                    }
+                    .into(),
                 },
             }]],
             expires_at: None,
@@ -227,6 +250,11 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
         .access_view(view.clone())
         .publication(MountPublication::Manual)
         .subdirectory("/hot");
+    let expected = if ceiling == ReadCeiling::Path {
+        "materialized working sets require unrestricted disclosure"
+    } else {
+        "exactification requires the authenticated selection owner"
+    };
     assert!(matches!(
         lazy.prepare_native_working_set(
             plain,
@@ -236,15 +264,13 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
             PublicationPermit::Unrestricted,
         )
         .await,
-        Err(acyclic_fs::MountLifecycleError::NativePolicy(
-            "exactification requires the authenticated selection owner"
-        ))
+        Err(acyclic_fs::MountLifecycleError::NativePolicy(reason)) if reason == expected
     ));
     assert_eq!(
         lazy.workspace().head(&work, &cancellation).await?.id(),
         original
     );
-    let prepared = if stale_options {
+    let prepared = if flow == Preparation::StaleOptions {
         let exact = lazy
             .exactify(
                 "/hot",
@@ -261,6 +287,14 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
             )
             .await
     } else {
+        if flow == Preparation::LateCheck {
+            lazy.exactify(
+                "/hot",
+                PublicationPermit::Unrestricted,
+                &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+            )
+            .await?;
+        }
         lazy.prepare_native_working_set(
             options,
             &acyclic_fs::MaterializeOptions::native(destination.path()),
@@ -270,7 +304,7 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
         )
         .await
     };
-    if pinned_capability {
+    if ceiling != ReadCeiling::All {
         assert!(
             matches!(
                 prepared,
@@ -281,6 +315,13 @@ async fn readonly_import(bytes: &[u8], stale_options: bool, pinned_capability: b
             "exactification widened a pinned capability or failed outside authorization"
         );
         assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+        if ceiling == ReadCeiling::Path {
+            assert_eq!(
+                lazy.workspace().head(&work, &cancellation).await?.id(),
+                original,
+                "refused preparation imported an unresolved tree"
+            );
+        }
         return Ok(());
     }
     let prepared = prepared.expect("read-only exactification must retain authorization");
@@ -301,7 +342,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(4))]
     #[test]
     fn readonly_import_reauthorizes_the_exact_generation(bytes in prop::collection::vec(any::<u8>(), 1..32)) {
-        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(readonly_import(&bytes, false, false))
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(readonly_import(&bytes, Preparation::Authorized, ReadCeiling::All))
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
@@ -309,10 +350,29 @@ proptest! {
 #[tokio::test]
 #[should_panic(expected = "read-only exactification must retain authorization")]
 async fn unchanged_preimport_options_are_detected() {
-    readonly_import(b"imported", true, false).await.unwrap();
+    readonly_import(b"imported", Preparation::StaleOptions, ReadCeiling::All)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn exactification_cannot_widen_a_pinned_capability() -> TestResult {
-    readonly_import(b"pinned", false, true).await
+    readonly_import(b"pinned", Preparation::Authorized, ReadCeiling::Pinned).await
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(4))]
+    #[test]
+    fn rejected_readonly_preparation_never_imports(bytes in prop::collection::vec(any::<u8>(), 1..32)) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(readonly_import(&bytes, Preparation::Authorized, ReadCeiling::Path))
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+    }
+}
+
+#[tokio::test]
+#[should_panic(expected = "refused preparation imported an unresolved tree")]
+async fn late_preparation_admission_is_detected() {
+    readonly_import(b"late", Preparation::LateCheck, ReadCeiling::Path)
+        .await
+        .unwrap();
 }

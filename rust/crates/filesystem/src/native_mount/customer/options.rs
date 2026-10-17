@@ -55,6 +55,21 @@ pub(super) fn require_selection(
     Ok(())
 }
 
+pub(super) fn require_disclosure(
+    view: &crate::access::PathTrie,
+) -> Result<(), MountLifecycleError> {
+    let now = super::super::adapter::access::access_time()?;
+    if !view.allows_every_path(
+        &[crate::access::Action::List, crate::access::Action::Read],
+        now,
+    ) {
+        return Err(MountLifecycleError::NativePolicy(
+            "materialized working sets require unrestricted disclosure",
+        ));
+    }
+    Ok(())
+}
+
 /// When authored native mutations become a durable workspace generation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MountPublication {

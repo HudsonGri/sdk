@@ -37,6 +37,7 @@ where
             .current()
             .map_err(|_| MountLifecycleError::NativePolicy("access view is unavailable"))?;
         let selected = previous.data_generation();
+        options::require_disclosure(&previous)?;
         if !mount.writable && mount.access_refresh.is_none() {
             return Err(MountLifecycleError::NativePolicy(
                 "exactification requires the authenticated selection owner",
