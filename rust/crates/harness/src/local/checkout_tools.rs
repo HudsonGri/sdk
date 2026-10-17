@@ -8,7 +8,7 @@ use crate::{
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
-mod access;
+pub(super) mod access;
 mod bash;
 mod capture;
 mod children;

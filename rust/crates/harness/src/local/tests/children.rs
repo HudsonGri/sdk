@@ -146,7 +146,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             "child-binding",
             None,
         )?;
-        let (_, signed) = harness
+        let (mounts, signed) = harness
             .workspace()
             .unwrap()
             .created_mounts(&project, &binding_context)
@@ -159,6 +159,36 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             assert_ne!(signed.agent(), harness.signed.agent());
         };
         check_binding(&signed);
+        let admitted = super::super::checkout_tools::access::require_mount_access(
+            view.workspace(),
+            &mounts,
+            &signed,
+            binding_context.effective_scope().grants(),
+            "child checkout",
+        )
+        .await;
+        assert!(admitted.is_ok(), "{admitted:?}");
+        let read_only = Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]);
+        let denied = super::super::checkout_tools::access::require_mount_access(
+            view.workspace(),
+            &mounts,
+            &signed,
+            &read_only,
+            "child checkout",
+        )
+        .await;
+        let check_ceiling = |result: &Result<()>| {
+            assert!(matches!(
+                result,
+                Err(Error::FilesystemAccessConfiguration("child checkout"))
+            ))
+        };
+        check_ceiling(&denied);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_ceiling(&admitted)))
+                .is_err(),
+            "the same checker must detect replacing the caller ceiling with the signed grants"
+        );
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check_binding(
                 &harness.signed

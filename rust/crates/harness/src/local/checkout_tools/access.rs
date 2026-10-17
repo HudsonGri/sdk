@@ -31,51 +31,14 @@ impl CheckoutTools {
         ceiling: &Capabilities,
         surface: &'static str,
     ) -> Result<()> {
-        let (_, primary) = self.workspace.mounts.named(None)?;
-        self.require_volume_access(workspace, &primary.view.volume, ceiling, surface)
-            .await?;
-        for (_, mount) in self.workspace.mounts.mounts() {
-            if let Some(source) = &mount.view.source {
-                self.require_volume_access(
-                    source.workspace.workspace(),
-                    &mount.view.volume,
-                    ceiling,
-                    surface,
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) async fn require_volume_access(
-        &self,
-        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
-        volume: &VolumeRef,
-        ceiling: &Capabilities,
-        surface: &'static str,
-    ) -> Result<()> {
-        use crate::filesystem::{PreparationIo, access};
-        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        for grants in [ceiling, self.signed.capabilities()] {
-            if crate::core::filesystem_scope_label(grants, &mut None)?.is_none()
-                && (!grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
-                    || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?))
-            {
-                return Err(Error::FilesystemAccessConfiguration(surface));
-            }
-        }
-        let label = crate::core::filesystem_scope_label(self.signed.capabilities(), &mut None)?;
-        let payload = match label {
-            Some(_) => access::capability_payload(label, VolumeOperation::Read, &io)?,
-            None => include_bytes!("../../filesystem/access/legacy-checkout.json"),
-        };
-        let compiled =
-            access::access_view(workspace, &self.signed, None, payload, Some(ceiling), &io).await?;
-        if compiled.0.generation_sensitive() || compiled.0.valid_until().is_some() {
-            return Err(Error::FilesystemAccessConfiguration(surface));
-        }
-        access::require_unrestricted(&compiled.0, &acyclic_fs::access::Action::ALL, surface)
+        require_mount_access(
+            workspace,
+            &self.workspace.mounts,
+            &self.signed,
+            ceiling,
+            surface,
+        )
+        .await
     }
 
     pub(super) async fn require_repository_access(
@@ -132,4 +95,58 @@ impl CheckoutTools {
         }
         Ok(())
     }
+}
+
+pub(in crate::local) async fn require_mount_access(
+    workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    mounts: &workspace::Mounts,
+    signed: &Scope,
+    ceiling: &Capabilities,
+    surface: &'static str,
+) -> Result<()> {
+    let (_, primary) = mounts.named(None)?;
+    require_volume_access(workspace, &primary.view.volume, signed, ceiling, surface).await?;
+    for (_, mount) in mounts.mounts() {
+        if let Some(source) = &mount.view.source {
+            require_volume_access(
+                source.workspace.workspace(),
+                &mount.view.volume,
+                signed,
+                ceiling,
+                surface,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn require_volume_access(
+    workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    volume: &VolumeRef,
+    signed: &Scope,
+    ceiling: &Capabilities,
+    surface: &'static str,
+) -> Result<()> {
+    use crate::filesystem::{PreparationIo, access};
+    let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+    for grants in [ceiling, signed.capabilities()] {
+        if crate::core::filesystem_scope_label(grants, &mut None)?.is_none()
+            && (!grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?)
+                || !grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?))
+        {
+            return Err(Error::FilesystemAccessConfiguration(surface));
+        }
+    }
+    let label = crate::core::filesystem_scope_label(signed.capabilities(), &mut None)?;
+    let payload = match label {
+        Some(_) => access::capability_payload(label, VolumeOperation::Read, &io)?,
+        None => include_bytes!("../../filesystem/access/legacy-checkout.json"),
+    };
+    let compiled =
+        access::access_view(workspace, signed, None, payload, Some(ceiling), &io).await?;
+    if compiled.0.generation_sensitive() || compiled.0.valid_until().is_some() {
+        return Err(Error::FilesystemAccessConfiguration(surface));
+    }
+    access::require_unrestricted(&compiled.0, &acyclic_fs::access::Action::ALL, surface)
 }

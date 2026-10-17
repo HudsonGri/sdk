@@ -100,7 +100,7 @@ impl CheckoutPublisher {
             let native = native.as_ref().and_then(|guard| guard.as_ref());
             let workspace = mount.view.source.as_ref()
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
-            self.tools.require_volume_access(workspace, &mount.view.volume, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
+            access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
             let writer = self.writer_for(&mount.view.volume, workspace)?;
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
@@ -308,14 +308,14 @@ impl ContentPublisher for CheckoutPublisher {
                         .source
                         .as_ref()
                         .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
-                    self.tools
-                        .require_volume_access(
-                            workspace,
-                            &mount.view.volume,
-                            ceiling.unwrap_or(self.tools.signed.capabilities()),
-                            "local checkout publication",
-                        )
-                        .await?;
+                    access::require_volume_access(
+                        workspace,
+                        &mount.view.volume,
+                        &self.tools.signed,
+                        ceiling.unwrap_or(self.tools.signed.capabilities()),
+                        "local checkout publication",
+                    )
+                    .await?;
                     let file = self
                         .writer_for(&mount.view.volume, workspace)?
                         .observe_staged_once(operation, maximum, ceiling, None)?
