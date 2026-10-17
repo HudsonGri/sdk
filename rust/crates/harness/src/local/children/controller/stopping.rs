@@ -28,6 +28,8 @@ pub(super) async fn drain(
     }
 }
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod checkpoints;
 #[cfg(all(test, acyclic_harness_loom, acyclic_fs_loom))]
 mod models;
 
@@ -36,6 +38,30 @@ pub(in crate::local::children) fn requested(state: ChildState) -> bool {
         state,
         ChildState::Interrupted | ChildState::Cancelled | ChildState::Archived
     )
+}
+
+// A cancelled host has released its execution reservation. Its retained receive
+// slot and immutable results prove the cut before a lost status acknowledgement;
+// recovery must never claim a new execution lease merely to publish that ack.
+pub(super) fn cancelled_turn_is_quiet(
+    previous: Option<ChildStatus>,
+    child: TaskId,
+    published: u64,
+    suspension: Option<&crate::scheduler::WorkflowSuspension>,
+) -> bool {
+    if previous.is_some_and(|status| {
+        status.task != child || status.inputs == 0 || published > status.inputs
+    }) || (previous.is_none() && published != 0)
+    {
+        return false;
+    }
+    match suspension {
+        None => previous.is_none() && published == 0,
+        Some(slot) => {
+            slot.waiting_command.is_some()
+                && published.checked_mul(2).and_then(|n| n.checked_add(1)) == Some(slot.revision)
+        }
+    }
 }
 
 // Parent cancellation is another file write. Retry only after the existing

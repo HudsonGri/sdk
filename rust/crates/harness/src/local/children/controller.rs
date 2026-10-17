@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    filesystem::{FilesystemWorkflowJournal, TaskCommandHost},
+    filesystem::TaskCommandHost,
     runtime::TaskStateProvider,
     task_volume::{
         Change, ChildFile, ChildRequest, ChildState, ChildStatus, Component, Control, FileKey,
@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Files = TaskFiles<dyn StreamProvider>;
 
+mod results;
 mod stopping;
 
 impl LocalHarness {
@@ -231,10 +232,16 @@ impl LocalHarness {
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
                 let inputs = input_count(&reference, &values);
-                let suspension = if state == ChildState::Running
-                    && previous.is_some_and(|status| {
-                        status.settled && status.inputs == inputs && status.task == child
-                    }) {
+                let cancelled = matches!(state, ChildState::Cancelled | ChildState::Archived)
+                    && matches!(
+                        self.runtime.task_host().outcome(child).await?,
+                        Some(crate::Outcome::Cancelled)
+                    );
+                let suspension = if cancelled
+                    || (state == ChildState::Running
+                        && previous.is_some_and(|status| {
+                            status.settled && status.inputs == inputs && status.task == child
+                        })) {
                     self.runtime
                         .task_host()
                         .workflow_suspension(child, &mut None)
@@ -243,9 +250,43 @@ impl LocalHarness {
                     None
                 };
                 let idle_revision = suspension
+                    .as_ref()
                     .filter(|slot| slot.waiting_command.is_some() && slot.input.is_none())
                     .map(|slot| slot.revision);
-                let passive_control = state != ChildState::Running
+                let cancelled_checkpoint = cancelled
+                    && stopping::cancelled_turn_is_quiet(
+                        previous,
+                        child,
+                        results::published(&reference, &values),
+                        suspension.as_ref(),
+                    );
+                if cancelled && !cancelled_checkpoint {
+                    // The host may be newer than this follow. Consume its accepted
+                    // result prefix before deciding whether the receive cut agrees.
+                    let head = files.inner.head().await.map_err(storage)?;
+                    while generation.position < head.position {
+                        let change = observation
+                            .changes
+                            .next()
+                            .await
+                            .ok_or_else(|| Error::Conflict("cancelled child follow ended".into()))?
+                            .map_err(storage)?;
+                        advance_fold(&mut values, &mut generation, change);
+                    }
+                    if !stopping::cancelled_turn_is_quiet(
+                        execution(&reference, &values)?,
+                        child,
+                        results::published(&reference, &values),
+                        suspension.as_ref(),
+                    ) {
+                        return Err(Error::Indeterminate(OperationId::from_bytes(
+                            child.into_bytes(),
+                        )));
+                    }
+                    continue;
+                }
+                let passive_control = !cancelled
+                    && state != ChildState::Running
                     && (previous.is_none() || !stopping::requested(state))
                     && previous.is_none_or(|status| status.settled)
                     && matches!(
@@ -255,7 +296,8 @@ impl LocalHarness {
                             .await?,
                         crate::distributed::WorkPull::Idle
                     );
-                if passive_control
+                if cancelled_checkpoint
+                    || passive_control
                     || (settled_turn(previous, child, inputs, idle_revision)
                         && values.contains_key(&FileKey::Child {
                             reference: reference.clone(),
@@ -263,7 +305,9 @@ impl LocalHarness {
                         }))
                 {
                     if state != ChildState::Running {
-                        if matches!(state, ChildState::Cancelled | ChildState::Archived) {
+                        if !cancelled
+                            && matches!(state, ChildState::Cancelled | ChildState::Archived)
+                        {
                             self.runtime.task_host().cancel(child).await?;
                             if !matches!(
                                 self.runtime.task_host().outcome(child).await?,
@@ -522,93 +566,6 @@ impl LocalHarness {
             .await?
             .ok_or_else(|| Error::Unauthorized("child has no created private files".into()))?;
         Ok((Arc::new(files), context))
-    }
-
-    async fn child_processed(
-        &self,
-        child: TaskId,
-        journal: &FilesystemWorkflowJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
-        reference: &Component,
-        values: &BTreeMap<FileKey, FileValue>,
-    ) -> Result<(u64, Vec<FileValue>)> {
-        if self.runtime.task_host().outcome(child).await?.is_some() {
-            return Err(Error::Indeterminate(OperationId::from_bytes(
-                child.into_bytes(),
-            )));
-        }
-        // The worker has released its live lease at the receive checkpoint.
-        // Bounded observation verifies the retained original reservation proof
-        // rather than trying to publish under that released execution fence.
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let io = crate::filesystem::PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
-            &cancellation,
-        )?;
-        let record = journal
-            .observe_latest_record(Some(&io))
-            .await?
-            .ok_or_else(|| Error::Conflict("child checkpoint missing".into()))?;
-        if record.transition.state["stage"].as_str() != Some("receive") {
-            return Err(Error::Indeterminate(OperationId::from_bytes(
-                child.into_bytes(),
-            )));
-        }
-        let processed = record.transition.state["mail"]["sequence"]
-            .as_u64()
-            .unwrap_or(0);
-        let published = values
-            .keys()
-            .filter_map(|key| match key {
-                FileKey::Child {
-                    reference: candidate,
-                    file: ChildFile::Result(turn),
-                } if candidate == reference => Some(*turn),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
-        if published > processed {
-            return Err(Error::Conflict(
-                "child result cursor exceeds its checkpoint".into(),
-            ));
-        }
-        let mut results = Vec::new();
-        if published == processed {
-            return Ok((processed, results));
-        }
-        for turn in (published + 1)..=processed {
-            let earlier;
-            let committed = if turn == processed {
-                &record
-            } else {
-                let revision = turn
-                    .checked_mul(2)
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or_else(|| Error::Invalid("child result revision overflow".into()))?;
-                earlier = journal.observe_transition(revision, Some(&io)).await?;
-                &earlier
-            };
-            let result = crate::filesystem::child_agent::completed_turn(child, committed)?;
-            if result.turn != turn {
-                return Err(Error::Conflict(
-                    "child result turn differs from its checkpoint".into(),
-                ));
-            }
-            let bytes = serde_json::to_vec(&result).map_err(storage)?;
-            if bytes.len() as u64 > self.limits.file_bytes {
-                return Err(Error::Invalid(
-                    "child result exceeds the original file bound".into(),
-                ));
-            }
-            results.push(FileValue::new(
-                FileKey::Child {
-                    reference: reference.clone(),
-                    file: ChildFile::Result(turn),
-                },
-                bytes,
-            ));
-        }
-        Ok((processed, results))
     }
 }
 

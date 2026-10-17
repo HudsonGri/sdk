@@ -86,6 +86,11 @@ impl LocalHarness {
             Err(error) => return Err(error),
         };
         if let Some(admitted) = admitted {
+            if !crate::filesystem::child_agent::is_child(&admitted) {
+                return Err(Error::Conflict(
+                    "child request task definition changed".into(),
+                ));
+            }
             if admitted.parent != Some(parent) {
                 return Err(Error::Conflict("child parent changed".into()));
             }
