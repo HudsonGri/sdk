@@ -450,3 +450,89 @@ fn measure_sparse_reads() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+/// Native accounting has an additional ownership-header allocation on the old
+/// per-span path. Exercise the same production append path with original custody.
+#[cfg(not(target_arch = "wasm32"))]
+fn original_read(
+    file: Sparse,
+    range: ByteRange,
+    old: bool,
+) -> (Result<Vec<u8>, String>, WorkCounters) {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)
+        .unwrap();
+    let baseline = crate::NativeMaterializationWork::accounting_state_bytes();
+    let request = FileRangeRequest {
+        record: file.record,
+        range,
+        maximum_spans: 16,
+        limits: DecodeLimits::default(),
+        budget: WorkBudget::UNBOUNDED,
+    };
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let result = if old {
+        futures::executor::block_on(baseline::read(
+            &file.store,
+            request,
+            &mut accounting,
+            &cancellation,
+        ))
+    } else {
+        futures::executor::block_on(read_file_range_with_accounting(
+            &file.store,
+            request,
+            &mut accounting,
+            &cancellation,
+        ))
+    };
+    let spent = original.receipt();
+    let bytes = result
+        .map(|read| read.bytes.as_ref().to_vec())
+        .map_err(|error| format!("{error:?}"));
+    drop(file);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    (bytes, spent)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+    #[test]
+    fn original_reads_match_the_old_bytes_errors_and_exact_allocation_delta(
+        (content, chunk_bytes, shapes, extra) in prop::collection::vec(any::<u8>(), 1..=32)
+            .prop_flat_map(|content| {
+                let length = content.len();
+                (Just(content), 1_u32..=9, shapes(length), 0_u64..=1)
+            })
+    ) {
+        let length: u64 = shapes.iter().map(|shape| shape.1).sum();
+        let range = ByteRange { offset: 0, length: length + extra };
+        let [((old, old_work), old_trace), ((current, current_work), current_trace)] =
+            acyclic_test_support::differential::pair(
+                || sparse(&content, chunk_bytes, &shapes).unwrap(),
+                |file, old| original_read(file, range, old),
+            );
+        prop_assert_eq!(&current, &old);
+        let chunks = |trace: &[Work]| trace.iter().copied()
+            .filter(|(op, ..)| matches!(*op, "chunk" | "batch")).collect::<Vec<_>>();
+        prop_assert_eq!(chunks(&current_trace), chunks(&old_trace));
+        if extra == 0 {
+            let content_spans = shapes.iter().filter(|shape| shape.0.is_some()).count() as u64;
+            let content_bytes: u64 = shapes.iter().filter(|shape| shape.0.is_some()).map(|shape| shape.1).sum();
+            prop_assert_eq!(old_work.allocation_operations, current_work.allocation_operations + 2 * content_spans);
+            prop_assert_eq!(old_work.bytes_copied, current_work.bytes_copied + 2 * content_bytes);
+            prop_assert_eq!(old_work.backend_read_operations, current_work.backend_read_operations);
+            prop_assert_eq!(old_work.object_bytes_read, current_work.object_bytes_read);
+            prop_assert_eq!(old_work.bytes_hashed, current_work.bytes_hashed);
+            prop_assert_eq!(old_work.output_bytes, current_work.output_bytes);
+            if content_spans > 0 {
+                // The independently executed old path restores the redundant
+                // allocation/copy and must fail the candidate's exact contract.
+                prop_assert_ne!(old_work.allocation_operations,
+                    current_work.allocation_operations);
+            }
+        }
+    }
+}
