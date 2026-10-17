@@ -21,10 +21,14 @@ proptest! {
             prop_assert_eq!(&restored, &pending);
             let other = repository.restore_paths_from(tree(3), vec!["/other".into()], tree(1), &failed).await;
             prop_assert!(matches!(other, Err(GitCompatRunError::Compat(GitCompatError::TransitionPending(_)))));
-            prop_assert_eq!(repository.pending_transition().await.unwrap().as_ref(), Some(&pending));
+            let retained = repository.pending_transition().await.unwrap();
+            prop_assert_eq!(retained.as_ref(), Some(&pending));
             let resumed = TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(2)), tracked_paths: None });
             prop_assert!(repository.resume(&resumed).await.unwrap().is_some());
-            prop_assert_eq!(resumed.operations.lock().unwrap().as_slice(), &[pending.id.operation_id()]);
+            {
+                let operations = resumed.operations.lock().unwrap();
+                prop_assert_eq!(operations.as_slice(), &[pending.id.operation_id()]);
+            }
             prop_assert!(repository.pending_transition().await.unwrap().is_none());
             Ok(())
         })?;

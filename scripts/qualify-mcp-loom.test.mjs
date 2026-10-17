@@ -7,7 +7,7 @@ import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoo
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
 
-test("filesystem retry qualification instruments both real lock shims and requires its exact model", () => {
+test("filesystem qualification instruments both real lock shims and requires every restore model", () => {
   for (const [passed, ignored] of [[1, 0], [0, 0], [1, 1], [2, 0]]) {
     const calls = [];
     const run = (command, args, options) => {
@@ -18,17 +18,29 @@ test("filesystem retry qualification instruments both real lock shims and requir
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} }) };
       }
       assert.equal(options.timeout, 9500);
-      return { status: 0, stderr: "", stdout: summary(passed, ignored, 100) };
+      return { status: 0, stderr: "", stdout: summary(calls.length === 3 ? 6 : passed, ignored, 100) };
     };
     if (passed === 1 && ignored === 0) qualifyFsRetryLoom(run);
     else assert.throws(() => qualifyFsRetryLoom(run), /requires a nonzero/);
-    assert.deepEqual(calls, [
+    const expected = [
       ["cargo", ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run", "--features", "default,distributed,local,memory,model-checking,native-mount,native-watch"]],
       ["model-binary", ["distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity", "--exact"]],
-    ]);
+    ];
+    if (passed === 1 && ignored === 0) expected.push(["model-binary", ["git_compat::tests::model::"]]);
+    assert.deepEqual(calls, expected);
   }
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
   assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --fs-retry/);
+});
+
+test("filesystem qualification rejects missing restore models and negative controls", () => {
+  for (const passed of [0, 1, 2, 3, 4, 5]) {
+    assert.throws(() => qualifyFsRetryLoom((command, args) => ({
+      status: 0, stderr: "", stdout: command === "cargo"
+        ? JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} })
+        : summary(args[0] === "git_compat::tests::model::" ? passed : 1, 0, 100),
+    })), /requires a nonzero/);
+  }
 });
 
 test("qualification opts into the crate cfg only for the model build and executes its binary", () => {

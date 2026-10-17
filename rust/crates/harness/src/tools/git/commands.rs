@@ -48,7 +48,7 @@ where
                 patch: patch.to_vec(),
             }
         } else {
-            acyclic_fs::parse_git_argv(argv, author, authored_at_seconds)
+            acyclic_fs::git_compat::parse_git_argv(argv, author, authored_at_seconds)
                 .map_err(super::errors::compat_error)?
         };
         let output = match command {
