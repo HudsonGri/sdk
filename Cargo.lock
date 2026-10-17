@@ -196,6 +196,7 @@ dependencies = [
  "loom",
  "napi",
  "napi-derive",
+ "nix 0.31.3",
  "notify",
  "parking_lot",
  "proptest",
@@ -241,8 +242,10 @@ dependencies = [
  "acyclic-fs",
  "libfuzzer-sys",
  "loom",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
