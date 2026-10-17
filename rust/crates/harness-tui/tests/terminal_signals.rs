@@ -74,10 +74,7 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
             {
                 assert!(!rejected);
                 rejected = true;
-                output.write_all(
-                    b"REJECTED
-",
-                )?;
+                output.write_all(b"REJECTED\n")?;
                 continue;
             }
             event => event?,
@@ -86,10 +83,7 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
             received.push(event.clone());
         }
         if mode == "escape" && matches!(event, InputEvent::Key(key) if key.code == KeyCode::Esc) {
-            output.write_all(
-                b"ESC
-",
-            )?;
+            output.write_all(b"ESC\n")?;
         }
         if matches!(event, InputEvent::Key(key) if key.code == KeyCode::Char('q')) {
             if mode == "rejected-paste" {

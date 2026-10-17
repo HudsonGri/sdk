@@ -63,7 +63,29 @@ impl Events {
         self.escape_armed = false;
         Poll::Ready(())
     }
+
+    /// After a chunk: an Escape still pending waits a full timeout from this
+    /// input. Otherwise the registered deadline moves out of reach instead of
+    /// being dropped: the storage is reused and an idle stream takes no timer
+    /// wakeup.
+    fn rearm_escape(&mut self) {
+        if !self.escape_armed {
+            return;
+        }
+        let Some(timer) = &mut self.escape else {
+            return;
+        };
+        if self.decoder.escape_pending() {
+            timer.as_mut().reset(Instant::now() + ESCAPE_TIMEOUT);
+        } else {
+            timer.as_mut().reset(Instant::now() + DISARMED);
+            self.escape_armed = false;
+        }
+    }
 }
+
+/// Far enough that a disarmed escape timer never fires in a session.
+const DISARMED: std::time::Duration = std::time::Duration::from_secs(86_400 * 365 * 30);
 
 impl Stream for Events {
     type Item = io::Result<InputEvent>;
@@ -77,31 +99,25 @@ impl Stream for Events {
             if this.ended {
                 return Poll::Ready(None);
             }
-            let mut bytes = [0; 1024];
             let decoded = if std::mem::take(&mut this.negotiated) {
                 Ok(())
             } else {
-                match this.source.poll_read(cx, &mut bytes) {
-                    Poll::Ready(Ok(0)) => {
+                match this.source.poll_read(cx) {
+                    Poll::Ready(Ok([])) => {
                         this.ended = true;
                         this.decoder.finish_input()
                     }
-                    Poll::Ready(Ok(count)) => {
-                        this.escape_armed = false;
-                        this.decoder
-                            .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)
-                    }
+                    // The source's own storage, decoded in place.
+                    Poll::Ready(Ok(bytes)) => this.decoder.feed(bytes),
                     Poll::Ready(Err(error)) => return Poll::Ready(Some(Err(error))),
                     Poll::Pending if this.decoder.escape_pending() => {
                         ready!(this.poll_escape(cx));
                         this.decoder.finish_input()
                     }
-                    Poll::Pending => {
-                        this.escape_armed = false;
-                        return Poll::Pending;
-                    }
+                    Poll::Pending => return Poll::Pending,
                 }
             };
+            this.rearm_escape();
             // A rejected unit is reported first; the rest of its chunk is
             // already classified and follows in order.
             let mut intercepted = Ok(());

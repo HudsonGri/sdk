@@ -1,4 +1,5 @@
 use super::console_owner::Owner;
+use super::input_fence::InputFence;
 use super::{
     Capabilities, Decoder, Environment, PROBE_TIMEOUT, ProbeIo, RestoreGuard, ScreenMode, detect,
 };
@@ -43,21 +44,23 @@ impl Write for ConsoleIo {
     }
 }
 
-/// The console owner and the wake event its input waiter includes. Every
-/// close goes through `Console::close`, so a closed console never leaves the
-/// waiter blocked on input.
+/// The console owner, the input fence every console read enters, and the
+/// wake event unbounded input waits include. Every close goes through
+/// `Console::close`, so a closed console never leaves a reader blocked.
 pub(super) struct Console {
     owner: Arc<Owner<ConsoleIo>>,
+    pub(super) input: InputFence,
     pub(super) closed: ffi::ConsoleWake,
 }
 impl Console {
     pub(super) fn close(&self) -> io::Result<()> {
-        // Release the input waiter first: no key is consumed during restoration.
+        // Release a waiting reader, refuse further reads and wait for the
+        // admitted one, then restore: no read runs under restored modes.
         let wake = self.closed.signal();
-        Owner::close(&self.owner, ConsoleIo::restore).and(wake)
-    }
-    pub(super) fn check_open(&self) -> io::Result<()> {
-        self.owner.check_open()
+        let fenced = self.input.close();
+        Owner::close(&self.owner, ConsoleIo::restore)
+            .and(wake)
+            .and(fenced)
     }
 }
 
@@ -136,6 +139,7 @@ impl Tty {
         );
         let console = Arc::new(Console {
             owner: Owner::new(guard, ffi::cancel_thread),
+            input: InputFence::default(),
             closed: ffi::ConsoleWake::new()?,
         });
         CONSOLE
@@ -211,20 +215,20 @@ impl ProbeIo for Tty {
         // Input stays on the caller: a timed-out output worker must never
         // consume bytes whose result could be abandoned at the deadline.
         loop {
-            self.console.check_open()?;
             let now = Instant::now();
             if now >= deadline {
                 return Ok(0);
             }
-            let input = ffi::console_read(
-                self.reader.as_raw_handle() as usize,
-                bytes.len(),
-                Some(deadline.min(now + std::time::Duration::from_millis(1))),
-                None,
-            )?;
-            if !input.is_empty() {
-                bytes[..input.len()].copy_from_slice(&input);
-                return Ok(input.len());
+            let count = self.console.input.read(|| {
+                ffi::console_read(
+                    self.reader.as_raw_handle() as usize,
+                    bytes,
+                    Some(deadline.min(now + std::time::Duration::from_millis(1))),
+                    None,
+                )
+            })?;
+            if count != 0 || bytes.is_empty() {
+                return Ok(count);
             }
         }
     }

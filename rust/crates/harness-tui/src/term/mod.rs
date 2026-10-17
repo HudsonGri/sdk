@@ -4,8 +4,12 @@ mod capabilities;
 #[cfg(any(windows, acyclic_harness_tui_loom))]
 mod console_owner;
 mod decoder;
+#[cfg(any(windows, acyclic_harness_tui_loom))]
+mod handoff;
 #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
 mod input;
+#[cfg(any(windows, acyclic_harness_tui_loom))]
+mod input_fence;
 #[cfg(any(unix, acyclic_harness_tui_loom))]
 mod lifecycle;
 mod probe;

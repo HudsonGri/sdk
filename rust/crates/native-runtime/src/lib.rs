@@ -29,6 +29,8 @@ use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_ba
 use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 #[cfg(windows)]
 pub use windows::terminal;
+#[cfg(target_os = "macos")]
+pub mod terminal;
 #[cfg(windows)]
 use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
