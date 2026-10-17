@@ -24,6 +24,20 @@ use support::{
 const STALLED_PROVIDER_OBSERVATION: Duration = Duration::from_millis(250);
 
 #[test]
+fn native_compiler_runs_after_home_and_rustup_state_are_isolated() {
+    let directory = tempfile::tempdir().expect("compiler fixture");
+    let mut compiler = command("rustc");
+    isolated_state(&mut compiler, directory.path());
+    compiler.env("RUSTUP_HOME", directory.path().join("empty-rustup"));
+    compiler.env_remove("RUSTUP_TOOLCHAIN");
+    support::bind_native_compiler(&mut compiler);
+    let output = compiler.arg("--version").output().expect("execute native compiler");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("rustc "));
+    assert!(!directory.path().join("empty-rustup").exists());
+}
+
+#[test]
 fn owner_fixture_queries_task_files_and_drains_after_success_or_unwind() {
     for unwind in [false, true] {
         let temporary = test_tempdir("provider-owner-");
@@ -87,6 +101,7 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
         "PATH",
         std::env::join_paths(path).expect("packaged Acyclic PATH"),
     );
+    support::bind_native_compiler(&mut host);
     let BoundedOutput {
         output,
         expired,
@@ -96,8 +111,9 @@ fn actual_codex_binary_executes_the_scripted_scenario() {
     let installed_config = fs::read_to_string(temporary.path().join("codex/config.toml"))
         .unwrap_or_else(|error| format!("<unreadable Codex config: {error}>"));
     let installed_debug = format!(
-        "{installed_config}\nprovider fingerprints: {:#?}",
-        provider.semantic_fingerprints(0, Duration::ZERO)
+        "{installed_config}\nprovider fingerprints: {:#?}\nprovider tool results: {:#?}",
+        provider.semantic_fingerprints(0, Duration::ZERO),
+        provider.tool_results(),
     );
     assert_host_success("installed Codex", &output, expired, &installed_debug);
     assert_host_sentinel("installed Codex", &workspace, &output, &installed_debug);
@@ -166,7 +182,11 @@ fn actual_claude_binary_executes_the_scripted_scenario() {
         process_tree,
     } = output_with_timeout(&mut host, Duration::from_secs(30));
     service.attach_process_tree(process_tree);
-    let debug = fs::read_to_string(&debug_log).unwrap_or_default();
+    let debug = format!(
+        "{}\nprovider tool results: {:#?}",
+        fs::read_to_string(&debug_log).unwrap_or_default(),
+        provider.tool_results(),
+    );
     assert_host_success("installed Claude", &output, expired, &debug);
     let sentinel = fs::read_to_string(workspace.join("claude-e2e.txt"));
     assert!(
@@ -487,6 +507,7 @@ fn claude_host_command(
     host.env("ANTHROPIC_BASE_URL", provider.base_url());
     host.env("ACYCLIC_WORKFLOW_TOKEN", "qualified");
     isolated_state(&mut host, home);
+    support::bind_native_compiler(&mut host);
     host
 }
 

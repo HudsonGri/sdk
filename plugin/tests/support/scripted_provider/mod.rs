@@ -134,6 +134,23 @@ impl ScriptedProvider {
             .map(request_fingerprint)
             .collect()
     }
+
+    pub fn tool_results(&self) -> Vec<Value> {
+        self.wait_for_requests(0, Duration::ZERO)
+            .iter()
+            .flat_map(|request| {
+                if let Some(input) = request.get("input").and_then(Value::as_array) {
+                    input.iter().filter(|item| matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("custom_tool_call_output" | "function_call_output" | "apply_patch_call_output")
+                    )).collect::<Vec<_>>()
+                } else {
+                    latest_user_message(request).map(tool_results).unwrap_or_default()
+                }
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 impl Drop for ScriptedProvider {

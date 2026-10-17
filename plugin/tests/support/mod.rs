@@ -1,4 +1,5 @@
 mod artifacts;
+mod compiler;
 mod fixture;
 mod package;
 mod process;
@@ -7,6 +8,7 @@ mod service;
 mod workloads;
 
 pub use artifacts::write_qualification_receipt;
+pub use compiler::bind_native_compiler;
 pub use fixture::test_tempdir;
 pub use package::{
     PackagedPlugin, installed_host_binary, make_read_only, make_writable, package_production_plugin,
