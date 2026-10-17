@@ -1,50 +1,17 @@
 //! Host-managed mounts use the service-authenticated route, never request claims.
 use super::*;
-use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 
 pub(super) async fn root_workspace(fs: &LocalFs, name: &str) -> Result<LocalWorkspace, String> {
-    let mut operation = [0; 16];
-    operation.copy_from_slice(&blake3::hash(name.as_bytes()).as_bytes()[..16]);
-    fs.create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
-        name,
-        acyclic_fs::VolumeInitialization {
-            config: VolumeConfig::native(Lifecycle::Durable),
-            access_policy: Some(acyclic_harness::filesystem::INITIAL_ACCESS_POLICY),
-        },
-        OperationId::from_bytes(operation),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-        None,
-    )
-    .await
-    .map(|receipt| receipt.value.workspace().clone())
-    .map_err(|failure| display(failure.error))
+    acyclic_harness::filesystem::local_owner_workspace(fs, name)
+        .await
+        .map_err(display)
 }
 
 pub(super) async fn mount_options(
     workspace: &LocalWorkspace,
     agent: &str,
 ) -> Result<MountOptions, String> {
-    use ring::rand::SecureRandom as _;
-    acyclic_fs::initialize_native_mount_services().map_err(display)?;
-    acyclic_native_runtime::initialize_native_io_services().map_err(display)?;
-    let cancellation = CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| display(cause))?;
-    let mut key = [0; 32];
-    ring::rand::SystemRandom::new()
-        .fill(&mut key)
-        .map_err(display)?;
-    let issuer = AuthorityIssuer::new(
-        format!("host-managed:{agent}"),
-        key,
-        Authority {
-            kind: AggregateKind::Agent,
-            id: agent.into(),
-        },
-    );
-    key.fill(0);
-    acyclic_harness::filesystem::owner_mount_options(workspace, &issuer, None, true, &work)
+    acyclic_harness::filesystem::local_owner_mount_options(workspace, agent, true)
         .await
         .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
         .map_err(display)

@@ -28,6 +28,7 @@ pub async fn local_owner_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// compiler as task mounts. The returned options retain their refresh owner.
 pub async fn local_owner_mount_options<A, O>(
     workspace: &acyclic_fs::Workspace<A, O>,
+    owner: &str,
     writable: bool,
 ) -> Result<acyclic_fs::MountOptions>
 where
@@ -44,11 +45,11 @@ where
     let mut key = [0; 32];
     getrandom::fill(&mut key).map_err(|error| Error::Invalid(error.to_string()))?;
     let issuer = AuthorityIssuer::new(
-        "embedded-workspace",
+        format!("host-managed:{owner}"),
         key,
         Authority {
             kind: AggregateKind::Agent,
-            id: "embedded-workspace-owner".into(),
+            id: owner.into(),
         },
     );
     key.fill(0);
