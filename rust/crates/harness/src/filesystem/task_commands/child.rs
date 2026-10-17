@@ -58,7 +58,7 @@ where
             }
         }
         #[cfg(target_arch = "wasm32")]
-        let _ = context;
+        let _ = (context, io);
         self.runtime.workflow_journal(task, fence.clone()).await
     }
 }
