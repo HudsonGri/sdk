@@ -333,6 +333,34 @@ fn restored_zero_fill_is_detected() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[test]
+fn redundant_span_allocations_and_copies_fail_the_exact_work_contract()
+-> Result<(), Box<dyn std::error::Error>> {
+    let range = ByteRange {
+        offset: 1,
+        length: 6,
+    };
+    let [old, current] = [true, false].map(|old| {
+        sparse(b"ABCDEFGHIJ", 2, &[(Some(0), 2), (None, 2), (Some(4), 4)])
+            .and_then(|file| file.run(range, old).map_err(Into::into))
+    });
+    let old = old?;
+    let current = current?;
+    let expected = (
+        old.work.bytes_copied - 8,
+        old.work.allocation_operations - 2,
+    );
+    let work = |read: &FileRangeRead| (read.work.bytes_copied, read.work.allocation_operations);
+    assert_eq!(work(&current), expected);
+    assert_eq!(old.bytes, current.bytes);
+    assert_ne!(
+        work(&old),
+        expected,
+        "restoring the old path must fail the same exact contract"
+    );
+    Ok(())
+}
+
 /// Copy and zero sites in the read path: a full-range zero fill or a second
 /// copy of chunk bytes would add one.
 const READ_SOURCES: [(&str, &str); 2] = [
