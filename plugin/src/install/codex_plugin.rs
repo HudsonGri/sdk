@@ -198,7 +198,7 @@ pub(crate) fn discover_plugin_root(executable: &Path, installed: &Path) -> Optio
         .take(4)
         .chain(std::iter::once(installed))
         .find(|root| {
-            root.join("plugin.json").is_file()
+            root.join(".codex-plugin/plugin.json").is_file()
                 && root.join(".agents/plugins/marketplace.json").is_file()
         })
         .map(Path::to_path_buf)

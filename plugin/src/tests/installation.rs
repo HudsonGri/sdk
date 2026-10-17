@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn codex_root_discovery_requires_the_manifest_that_loads_local_hooks() {
+    let fixture = Fixture::new();
+    let root = fixture.data.join("native package");
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::create_dir_all(root.join(".agents/plugins")).unwrap();
+    fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+    fs::write(root.join(".agents/plugins/marketplace.json"), b"{}").unwrap();
+    fs::write(root.join("plugin.json"), b"{}").unwrap();
+    let executable = root.join("bin/acyclic");
+    let absent = fixture.data.join("absent");
+    assert_eq!(discover_plugin_root(&executable, &absent), None);
+    fs::remove_file(root.join("plugin.json")).unwrap();
+    fs::write(root.join(".codex-plugin/plugin.json"), b"{}").unwrap();
+    for (binary, installed) in [(&executable, &absent), (&absent, &root)] {
+        assert_eq!(discover_plugin_root(binary, installed), Some(root.clone()));
+    }
+}
+
+#[test]
 fn claude_tools_use_the_shared_client_and_restore_foreign_entries() {
     let fixture = Fixture::new();
     let path = fixture.data.join(".mcp.json");

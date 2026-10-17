@@ -54,7 +54,6 @@ if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} cha
 }
 const assets = {};
 const hostManifests = [
-  join(plugin, "plugin.json"),
   join(plugin, ".codex-plugin", "plugin.json"),
   join(plugin, "claude", ".claude-plugin", "plugin.json"),
 ];
@@ -78,15 +77,15 @@ for (const path of hostManifests) {
 }
 
 // MCP only substitutes the followed result; it owns no execution or endpoint.
-for (const [manifest, client] of [[hostManifests[1], "./mcp.json"], [hostManifests[2], "./.mcp.json"]]) {
+for (const [manifest, client] of [[hostManifests[0], "./mcp.json"], [hostManifests[1], "./.mcp.json"]]) {
   if (assets[manifest].mcpServers !== client) fail(`missing result client: ${manifest}`);
 }
 const codexMcp = assets[join(plugin, "mcp.json")];
-if (assets[hostManifests[0]].$schema !== "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
-  || codexMcp.$schema !== "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+if (existsSync(join(plugin, "plugin.json"))
+  || assets[hostManifests[0]].hooks !== "./hooks/hooks.json"
   || codexMcp.mcpServers?.acyclic?.type !== "stdio"
-  || codexMcp.mcpServers?.acyclic?.command !== "./bin/acyclic") {
-  fail("Codex must discover the contained standard plugin MCP client");
+  || codexMcp.mcpServers?.acyclic?.command !== "acyclic-plugin") {
+  fail("Codex must load its native hooks and installed MCP result client together");
 }
 for (const path of [join(plugin,"mcp.json"),join(plugin,"claude",".mcp.json")]) {
   const servers = assets[path].mcpServers;

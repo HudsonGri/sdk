@@ -126,11 +126,10 @@ fn invalid_platform_binding_fails_closed_without_starting_a_plugin_host() -> Res
 
 #[test]
 fn host_manifests_route_every_event_to_the_common_client() -> Result {
-    let manifest: Value = serde_json::from_str(include_str!("../plugin.json"))?;
-    assert_eq!(
-        manifest["$schema"],
-        "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
-    );
+    let manifest: Value = serde_json::from_str(include_str!("../.codex-plugin/plugin.json"))?;
+    assert_eq!(manifest["hooks"], "./hooks/hooks.json");
+    assert_eq!(manifest["mcpServers"], "./mcp.json");
+    assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin.json").exists());
     let codex: Value = serde_json::from_str(include_str!("../hooks/hooks.json"))?;
     let pi: Value = serde_json::from_str(include_str!("../pi/package.json"))?;
     let claude: Value = serde_json::from_str(include_str!("../claude/.claude-plugin/plugin.json"))?;
@@ -155,12 +154,8 @@ fn host_manifests_route_every_event_to_the_common_client() -> Result {
         );
     }
     let mcp: Value = serde_json::from_str(include_str!("../mcp.json"))?;
-    assert_eq!(
-        mcp["$schema"],
-        "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
-    );
     assert_eq!(mcp["mcpServers"]["acyclic"]["type"], "stdio");
-    assert_eq!(mcp["mcpServers"]["acyclic"]["command"], "./bin/acyclic");
+    assert_eq!(mcp["mcpServers"]["acyclic"]["command"], "acyclic-plugin");
     assert_eq!(
         mcp["mcpServers"]["acyclic"]["args"],
         serde_json::json!(["__tools"])

@@ -1,9 +1,8 @@
 {
-  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
     "acyclic": {
       "type": "stdio",
-      "command": "./bin/acyclic",
+      "command": "acyclic-plugin",
       "args": ["__tools"]
     }
   }
