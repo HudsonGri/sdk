@@ -11,8 +11,8 @@ const healthy = [
   'const _: fn(crate::sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;',
   'fn production_component() {} fn check() { loom::model(production_component); }',
 ].join('\n');
-const bounded = 'fn bounded() {\nlet mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(2);\n}\n';
-const constant = 'const CAP: usize = 2;\nfn bounded() {\nlet mut builder = loom::model::Builder::new();\nbuilder.preemption_bound = Some(CAP);\n}\n';
+const bounded = 'fn bounded(builder: &mut Builder) {\nbuilder.preemption_bound = Some(2);\n}\n';
+const constant = 'const CAP: usize = 2;\nfn bounded(builder: &mut Builder) {\nbuilder.preemption_bound = Some(CAP);\n}\n';
 // A healthy model whose extra function runs `body`; fixtures are whole Rust files.
 const owning = (body, prefix = '') => `${prefix}${healthy}\nfn extra() { ${body} }`;
 const real = {[path]: {grade: 'real'}};
