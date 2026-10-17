@@ -63,7 +63,7 @@ pub(super) struct DirectoryStream {
 }
 
 impl DirectoryStream {
-    fn needs_page(&self) -> bool {
+    pub(super) fn needs_page(&self) -> bool {
         self.page.as_ref().is_none_or(|page| {
             self.entry_position == page.entries().len() && page.next_cursor().is_some()
         })
@@ -190,6 +190,17 @@ impl DirectoryStreams {
 }
 
 impl ProjectionState {
+    pub(super) fn directory_reply<'a>(
+        &mut self,
+        listing: &'a mut Option<DirectoryReply>,
+    ) -> DirectoryFrame<'a> {
+        self.listing_replies = self.listing_replies.wrapping_add(1);
+        DirectoryFrame {
+            reply: self.listing_replies,
+            listing,
+        }
+    }
+
     pub(super) fn directory_stream(
         &mut self,
         source: &dyn MountFilesystem,
@@ -235,17 +246,16 @@ impl ProjectionState {
         source: &dyn MountFilesystem,
         inode: u64,
         stream: &mut DirectoryStream,
-        listing: &mut Option<DirectoryReply>,
+        frame: &mut DirectoryFrame<'_>,
         mut first: Option<ChildName>,
         work: &crate::NativeMaterializationWork,
     ) -> (Result<(), NativeMountError>, bool) {
         let mut listed = false;
         let mut unlisted_reference = None;
-        self.listing_replies = self.listing_replies.wrapping_add(1);
-        let reply = self.listing_replies;
+        let reply = frame.reply;
+        let listing = &mut *frame.listing;
         let result = (|| -> Result<(), NativeMountError> {
-            let counts_lookups =
-                matches!(listing.as_ref().ok_or(libc::EIO)?, DirectoryReply::Plus(_));
+            let counts_lookups = listing.as_ref().ok_or(libc::EIO)?.counts_lookups();
             if stream.emitted < 2 {
                 let lookup = self.by_inode.get(&inode).ok_or(libc::ESTALE)?.lookup;
                 let attr = self.attr(inode, &lookup)?;
@@ -395,12 +405,32 @@ impl ProjectionState {
     }
 }
 
+// One kernel request owns this identity across every storage page. A page
+// emitter receives the frame and cannot mint a second reply for that request.
+pub(super) struct DirectoryFrame<'a> {
+    reply: u64,
+    listing: &'a mut Option<DirectoryReply>,
+}
+
 pub(super) enum DirectoryReply {
     Basic(ReplyDirectory),
     Plus(ReplyDirectoryPlus),
+    #[cfg(test)]
+    Capture(CapturedDirectory),
 }
 
+#[cfg(test)]
+pub(super) type CapturedDirectory = std::rc::Rc<std::cell::RefCell<Vec<(Vec<u8>, FileAttr)>>>;
+
 impl DirectoryReply {
+    fn counts_lookups(&self) -> bool {
+        match self {
+            Self::Basic(_) => false,
+            Self::Plus(_) => true,
+            #[cfg(test)]
+            Self::Capture(_) => true,
+        }
+    }
     pub(super) fn push(
         &mut self,
         offset: u64,
@@ -411,18 +441,27 @@ impl DirectoryReply {
         match self {
             Self::Basic(reply) => reply.add(attr.ino, offset, attr.kind, name),
             Self::Plus(reply) => reply.add(attr.ino, offset, name, ttl, attr, Generation(0)),
+            #[cfg(test)]
+            Self::Capture(entries) => {
+                entries.borrow_mut().push((name.as_bytes().to_vec(), *attr));
+                false
+            }
         }
     }
     pub(super) fn ok(self) {
         match self {
             Self::Basic(reply) => reply.ok(),
             Self::Plus(reply) => reply.ok(),
+            #[cfg(test)]
+            Self::Capture(_) => (),
         }
     }
     pub(super) fn error(self, error: Errno) {
         match self {
             Self::Basic(reply) => reply.error(error),
             Self::Plus(reply) => reply.error(error),
+            #[cfg(test)]
+            Self::Capture(_) => panic!("unexpected directory error: {error:?}"),
         }
     }
 }
@@ -488,11 +527,12 @@ impl FuseProjection {
             return Err(libc::ESTALE.into());
         }
         let mut state = self.core.state()?;
+        let mut frame = state.directory_reply(listing);
         let parking = state.streams.prepare_park(work)?;
         let started = stream.emitted;
         let (result, partial) = loop {
             let (result, partial) =
-                state.list_directory(source, inode, &mut stream, listing, first.take(), work);
+                state.list_directory(source, inode, &mut stream, &mut frame, first.take(), work);
             let more = result.is_ok() && stream.needs_page();
             if !more {
                 break (result, partial || stream.emitted > started);
@@ -512,7 +552,7 @@ impl FuseProjection {
         state.streams.park(inode, stream, parking);
         drop(state);
         if result.is_ok() || partial {
-            listing.take().ok_or(libc::EIO)?.ok();
+            frame.listing.take().ok_or(libc::EIO)?.ok();
         }
         result
     }

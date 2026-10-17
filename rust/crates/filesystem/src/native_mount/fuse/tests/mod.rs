@@ -55,6 +55,7 @@ pub(super) mod model_checking;
 
 mod cache;
 mod detach;
+mod directory_reply;
 mod disclosure;
 mod folded;
 mod folded_property;

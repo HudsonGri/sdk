@@ -90,9 +90,14 @@ impl MessageContent {
                     .media_type()
                     .starts_with("text/")
                 {
-                    let (bytes, _hold) =
-                        verified_content_bytes(files, &message.content, limits.render_bytes, None)
-                            .await?;
+                    let (bytes, _hold) = verified_content_bytes(
+                        files,
+                        &message.content,
+                        limits.render_bytes,
+                        None,
+                        None,
+                    )
+                    .await?;
                     Some(
                         std::str::from_utf8(&bytes)
                             .map_err(|error| Error::Invalid(error.to_string()))?

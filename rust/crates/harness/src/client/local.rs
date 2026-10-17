@@ -94,6 +94,8 @@ pub async fn local_documents(
     authority: &wire::Authority,
 ) -> Result<acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>> {
     // TODO(#495): obtain document count/content/work bounds from followed settings.
-    let files = local.scratch_files(acyclic_fs::performance::BOUNDARY_BUDGET)?;
+    let files = local
+        .scratch_files(acyclic_fs::performance::BOUNDARY_BUDGET)
+        .await?;
     super::document_files(&files, authority, 4096, 65_536).await
 }
