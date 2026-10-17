@@ -3,8 +3,9 @@ use std::io::{self, Write};
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, ClearType, CrosstermBackend, WindowSize},
-    buffer::{Buffer, Cell},
+    buffer::{Buffer, Cell, CellDiffOption, CellWidth},
     layout::{Position, Size},
+    style::{Color, Modifier},
 };
 
 use super::RegionScroll;
@@ -286,11 +287,74 @@ impl<D: Present> FrameTerminal<D> {
                 terminal.swap_buffers();
             }
         }
-        let completed = self.terminal.draw(render)?;
+        let mut repaired = Vec::new();
+        let shown = &mut self.shown;
+        let completed = self.terminal.draw(|frame| {
+            render(frame);
+            repaired = repair_wide_trails(shown, frame.buffer_mut());
+        })?;
         self.shown.area = completed.buffer.area;
         self.shown.content.clone_from(&completed.buffer.content);
+        if !repaired.is_empty() {
+            // AlwaysUpdate is a one-frame encoding instruction, not displayed
+            // state. Reinstall the clean baseline so repeats remain free.
+            for index in repaired {
+                self.shown.content[index].diff_option = CellDiffOption::None;
+            }
+            self.terminal
+                .current_buffer_mut()
+                .content
+                .clone_from(&self.shown.content);
+            self.terminal.swap_buffers();
+        }
         Ok(())
     }
+}
+
+/// A wide glyph paints its style over trailing cells even though the logical
+/// buffer stores reset cells there. If a new wide glyph covers the old lead,
+/// ratatui skips that lead and can miss its newly uncovered trailing style.
+/// Force those uncovered cells through the diff before cursor placement.
+fn repair_wide_trails(previous: &Buffer, next: &mut Buffer) -> Vec<usize> {
+    let mut repaired = Vec::new();
+    if previous.area != next.area || next.area.width == 0 {
+        return repaired;
+    }
+    let width = usize::from(next.area.width);
+    let visible = Modifier::REVERSED
+        | Modifier::UNDERLINED
+        | Modifier::SLOW_BLINK
+        | Modifier::RAPID_BLINK
+        | Modifier::CROSSED_OUT;
+    for (row, (old, new)) in previous
+        .content
+        .chunks(width)
+        .zip(next.content.chunks_mut(width))
+        .enumerate()
+    {
+        // Ordinary one-cell rows need no width/style walk or scratch storage.
+        if old.iter().all(|cell| {
+            cell.symbol().len() == 1 && !matches!(cell.diff_option, CellDiffOption::ForcedWidth(_))
+        }) {
+            continue;
+        }
+        let (mut covered_until, mut styled_until) = (0, 0);
+        for (column, (old, new)) in old.iter().zip(new.iter_mut()).enumerate() {
+            let covered = column < covered_until;
+            if !covered {
+                covered_until = column + usize::from(new.cell_width().max(1));
+                if column < styled_until && new.diff_option == CellDiffOption::None {
+                    new.diff_option = CellDiffOption::AlwaysUpdate;
+                    repaired.push(row * width + column);
+                }
+            }
+            if old.fg != Color::Reset || old.bg != Color::Reset || old.modifier.intersects(visible)
+            {
+                styled_until = styled_until.max(column + usize::from(old.cell_width()));
+            }
+        }
+    }
+    repaired
 }
 
 #[cfg(test)]

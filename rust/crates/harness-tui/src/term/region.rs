@@ -46,7 +46,7 @@ impl RegionScroll {
     /// are blank, as the device erases them. Returns whether it applied.
     pub(crate) fn apply(
         self,
-        shown: &Buffer,
+        shown: &mut Buffer,
         previous: &mut Buffer,
         out: &mut impl Write,
     ) -> io::Result<bool> {
@@ -58,8 +58,7 @@ impl RegionScroll {
             return Ok(false);
         }
         let width = usize::from(area.width);
-        previous.content.clone_from(&shown.content);
-        let band = &mut previous.content[top * width..bottom * width];
+        let band = &mut shown.content[top * width..bottom * width];
         let moved = distance * width;
         let exposed = if self.rows > 0 {
             band.rotate_left(moved);
@@ -71,6 +70,7 @@ impl RegionScroll {
         for cell in &mut band[exposed] {
             cell.reset();
         }
+        previous.content.clone_from(&shown.content);
         // DECSTBM bounds the scroll to the band, SU/SD scroll it, and the
         // margins are restored at once. Both leave the cursor at the origin.
         let direction = if self.rows > 0 { 'S' } else { 'T' };

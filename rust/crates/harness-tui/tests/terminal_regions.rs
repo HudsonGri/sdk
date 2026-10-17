@@ -16,7 +16,9 @@ use acyclic_harness_tui::ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use acyclic_harness_tui::term::{Capabilities, FrameTerminal, RegionScroll, RestoreGuard};
+use acyclic_harness_tui::term::{
+    Capabilities, FrameEffects, FrameTerminal, Present, RegionScroll, RestoreGuard,
+};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line as Row, Point};
@@ -251,10 +253,46 @@ proptest! {
     #[test]
     fn every_hint_shows_the_per_command_screen(steps in steps()) {
         let scenes: Vec<Scene> = steps.iter().map(|(scene, _)| scene.clone()).collect();
-        let old = screens(&per_command(&scenes));
+        // Fresh per-command frames are the independent screen oracle. The
+        // incremental upstream diff can retain a styled wide trailing cell;
+        // the explicit regression below keeps that defect as a control.
+        let old: Vec<_> = scenes.iter().map(|scene| {
+            screens(&per_command(std::slice::from_ref(scene))).remove(0)
+        }).collect();
         let new = screens(&scrolled(&steps, Size::new(WIDTH, HEIGHT)));
         prop_assert_eq!(new, old);
     }
+}
+
+#[test]
+fn uncovered_wide_trails_lose_the_old_style_with_or_without_a_scroll_hint() {
+    let style = Style::default().fg(Color::Indexed(0)).bg(Color::Indexed(0));
+    let scene = |text: &str| -> Scene {
+        let mut lines = vec![Line::default().style(style); 4];
+        lines.push(Line::styled(text.to_owned(), style));
+        (lines, None)
+    };
+    let first = scene("日 a日");
+    let second = scene("日a日");
+    let expected = screens(&per_command(std::slice::from_ref(&second))).remove(0);
+    for hint in [
+        None,
+        Some(RegionScroll {
+            region: Rect::new(0, 0, WIDTH, HEIGHT - 1),
+            rows: 1,
+        }),
+    ] {
+        let steps = vec![
+            (first.clone(), None),
+            (second.clone(), hint),
+            (second.clone(), None),
+        ];
+        let actual = screens(&scrolled(&steps, Size::new(WIDTH, HEIGHT)));
+        assert_eq!(actual[1], expected);
+        assert_eq!(actual[2], expected);
+    }
+    // The removed incremental reference misses the final background reset.
+    assert_ne!(screens(&per_command(&[first, second]))[1], expected);
 }
 
 /// Rows a frame addresses with cursor moves (`CSI row;col H`).
@@ -420,4 +458,73 @@ fn a_region_scroll_cut_short_at_any_byte_restores_full_margins() {
     assert!(cut > 40, "{cut}");
     // Negative control: margins set and never reset confine the scroll.
     assert!(!scrolls_whole_screen(b"\x1b[3;6r"));
+}
+
+struct PersistentCut {
+    device: Device,
+    at: usize,
+    healed: Rc<std::cell::Cell<bool>>,
+}
+impl Write for PersistentCut {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if !self.healed.get() {
+            let accepted = self
+                .at
+                .saturating_sub(self.device.0.borrow().len())
+                .min(bytes.len());
+            self.device.write_all(&bytes[..accepted])?;
+            if accepted < bytes.len() {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            return Ok(accepted);
+        }
+        self.device.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_later_cursor_frame_cannot_discharge_a_failed_margin_reset() {
+    let scroll = b"\x1b[3;6r\x1b[1S\x1b[r";
+    let mut controls_detected = 0;
+    for at in 0..scroll.len() {
+        let device = Device::default();
+        let healed = Rc::new(std::cell::Cell::new(false));
+        let mut guard = RestoreGuard::new(
+            PersistentCut {
+                device: device.clone(),
+                at,
+                healed: Rc::clone(&healed),
+            },
+            &Capabilities::default(),
+        );
+        let error = guard
+            .present(
+                &mut scroll.to_vec(),
+                FrameEffects {
+                    margins: true,
+                    ..FrameEffects::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        healed.set(true);
+        // Teardown (or a cursor-only draw) succeeds after both the scroll
+        // frame and its abort failed. It never wrote a margin reset.
+        guard
+            .present(&mut b"\x1b[?25h".to_vec(), FrameEffects::default())
+            .unwrap();
+        let before_restore = device.0.borrow().clone();
+        guard.restore().unwrap();
+        assert!(scrolls_whole_screen(&device.take()), "failure at {at}");
+        // Negative control: the former end_frame forgot the pending record,
+        // so restoration emitted nothing after this exact successful frame.
+        controls_detected += usize::from(!scrolls_whole_screen(&before_restore));
+    }
+    assert!(
+        controls_detected > 0,
+        "the old journal loss must be observable"
+    );
 }

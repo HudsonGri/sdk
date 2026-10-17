@@ -180,11 +180,17 @@ impl<W: Write> RestoreGuard<W> {
             .any(|(mode, _)| *mode == END_SYNCHRONIZED.0)
     }
 
-    /// The whole frame reached the device: its update is closed, its margins
-    /// reset, and a shown cursor needs no restoration.
+    /// Retire only postconditions this completed frame established. A frame
+    /// without a region scroll cannot discharge an older pending margin reset.
     pub(crate) fn end_frame(&mut self, effects: super::FrameEffects) {
         self.undo.retain(|(mode, _)| {
-            !FRAME_SCOPED.contains(mode) && (effects.cursor_hidden || *mode != SHOW_CURSOR.0)
+            if *mode == END_SYNCHRONIZED.0 {
+                false
+            } else if *mode == RESET_MARGINS.0 {
+                !effects.margins
+            } else {
+                effects.cursor_hidden || *mode != SHOW_CURSOR.0
+            }
         });
     }
 
