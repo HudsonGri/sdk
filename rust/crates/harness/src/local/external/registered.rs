@@ -27,6 +27,12 @@ impl LocalHarness {
                 "spawn result is not this task's child".into(),
             ));
         }
+        // A replay of the immutable spawn result cannot make a terminal child
+        // accept another attachment. Its request subtree already exists; the
+        // provider's children replay discovers it independently after restart.
+        if self.runtime.task_host().outcome(child).await?.is_some() {
+            return Ok(());
+        }
         // Opening the child's provider-backed task subtree is idempotent. The
         // owner's existing children follow discovers it, including after reopen.
         // No parent task gate is held while acquiring this child's binding.
@@ -115,10 +121,11 @@ impl LocalHarness {
                 }
                 result
             };
-            let progress = crate::external_executor::cancellation::settle(progress, stopped, || {
-                cancellation.cancel();
-            })
-            .await;
+            let progress =
+                crate::external_executor::cancellation::settle(progress, stopped, || {
+                    cancellation.cancel();
+                })
+                .await;
             #[cfg(all(feature = "native-execution", feature = "hooks"))]
             if let Some(parent) = native_parent {
                 self.finish_native_process(task, parent).await?;
