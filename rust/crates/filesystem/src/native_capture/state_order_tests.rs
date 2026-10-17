@@ -283,7 +283,9 @@ proptest! {
         };
         let meter = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
         let mut candidate = states(&kinds, &entries);
-        sort_capture_states(&mut candidate, &meter).unwrap();
+        let heap = acyclic_test_support::measure(|| {
+            sort_capture_states(&mut candidate, &meter).unwrap();
+        });
         prop_assert_eq!(order(&candidate), expected);
         let work = meter.receipt();
         prop_assert!(work.items_examined <= old_items);
@@ -292,6 +294,11 @@ proptest! {
             prop_assert_eq!(work.items_examined, old_items);
             prop_assert_eq!(work.allocation_operations, 0);
             prop_assert_eq!(work.peak_allocation_bytes, 0);
+            prop_assert_eq!(heap.count_total, 0);
+        } else {
+            let requests = u64::from(count > 128) + u64::from(depth + 1 >= 16);
+            prop_assert_eq!(heap.count_total, requests);
+            prop_assert_eq!(work.allocation_operations, requests);
         }
     }
 }
