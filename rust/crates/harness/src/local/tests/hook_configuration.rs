@@ -100,6 +100,9 @@ async fn new_sessions_query_current_settings_without_reopening_the_host() -> Res
     let (original, rules) = pinned(&harness, first).await?;
     guard(&rules, "current-A");
     std::fs::write(&path, settings("current-B")).map_err(super::super::storage)?;
+    // Root admission follows the existing settled-head contract. A was queued
+    // before the edit and must complete from its pinned files on this host.
+    assert_eq!(harness.resume(first_task).await?.text, "A");
     let second = OperationId::new();
     let second_task = super::context::admitted(harness.submit(second, "queued B").await?)?;
     let (current, rules) = pinned(&harness, second).await?;
