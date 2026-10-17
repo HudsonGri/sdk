@@ -1,5 +1,10 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+mod child;
+mod child_result;
+pub(crate) use child::child_scope;
+pub use child::{ChildFile, ChildRequest, ChildState, ChildStatus, Control};
+pub use child_result::ChildTurnResult;
 pub(crate) mod command_query;
 mod durability;
 mod files;
@@ -18,6 +23,7 @@ mod segment;
 mod source;
 mod watermarks;
 pub use files::TaskFiles;
+pub(crate) use files::authorize_write;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
@@ -130,6 +136,8 @@ pub struct FileValue {
     pub key: FileKey,
     /// Assistant channel discriminator, required only for assistant chunks.
     pub channel: Option<Channel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) requester: Option<crate::TaskId>,
     /// Original filesystem write operation, when supplied by a file query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<crate::OperationId>,
@@ -146,6 +154,11 @@ impl FileValue {
     pub fn record_value(&self, work: crate::NativeWork<'_>) -> Result<OwnedBytes> {
         self.validate()?;
         segment::encode(self, work).map(|(bytes, _)| bytes)
+    }
+
+    /// Original requesting task for an owner-published child request.
+    pub fn requester(&self) -> Option<crate::TaskId> {
+        self.requester
     }
 
     /// Decodes a platform inbox/event record for an actor handler. The initial
@@ -168,12 +181,33 @@ impl FileValue {
         Self {
             key,
             channel: None,
+            requester: None,
             publication: None,
             bytes: bytes.into(),
         }
     }
 
     fn validate(&self) -> Result<()> {
+        if matches!(
+            self.key,
+            FileKey::Child {
+                file: ChildFile::Result(0),
+                ..
+            }
+        ) {
+            return Err(Error::InvalidSegment);
+        }
+        if self.requester.is_some()
+            && !matches!(
+                self.key,
+                FileKey::Child {
+                    file: ChildFile::Request,
+                    ..
+                }
+            )
+        {
+            return Err(Error::InvalidSegment);
+        }
         if matches!(
             self.key,
             FileKey::Task {
@@ -391,11 +425,29 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self,
         expected: Generation,
         write: &Write,
-        mut conditions: Vec<CommitCondition>,
+        conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
         create_only: bool,
         work: NativeWork<'_>,
     ) -> Result<Generation> {
+        let Some((request, files, next)) = self
+            .prepare_append(expected, write, conditions, create_only, work)
+            .await?
+        else {
+            return Ok(expected);
+        };
+        self.commit_append(expected, request, files, next, deadline_unix_millis)
+            .await
+    }
+
+    async fn prepare_append(
+        &self,
+        expected: Generation,
+        write: &Write,
+        mut conditions: Vec<CommitCondition>,
+        create_only: bool,
+        work: NativeWork<'_>,
+    ) -> Result<Option<(CommitRequest, FileValue, u64)>> {
         self.refresh().await?;
         let index = self.index.lock().await;
         if expected != self.generation(&index) {
@@ -410,7 +462,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .get(&write.key)
             .is_some_and(|stored| &stored.file == write)
         {
-            return Ok(self.generation(&index));
+            return Ok(None);
         }
         let next = expected
             .position
@@ -447,6 +499,17 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
+        Ok(Some((request, files, next)))
+    }
+
+    async fn commit_append(
+        &self,
+        expected: Generation,
+        request: CommitRequest,
+        files: FileValue,
+        next: u64,
+        deadline_unix_millis: Option<u64>,
+    ) -> Result<Generation> {
         #[cfg(acyclic_harness_loom)]
         let deadline_unix_millis = if model_checking::enabled(model_checking::Fault::IgnoreDeadline)
         {
@@ -493,6 +556,90 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     file.validate()?;
+    if let FileKey::Child {
+        reference,
+        file: child_file,
+    } = &file.key
+    {
+        let control_key = FileKey::Child {
+            reference: reference.clone(),
+            file: ChildFile::Control,
+        };
+        let control = index.files.get(&control_key).map(|stored| &stored.file);
+        let state = match control {
+            Some(control) => ChildState::Running.apply(Control::parse(&control.bytes)?),
+            None => ChildState::Running,
+        };
+        let terminal = matches!(state, ChildState::Archived | ChildState::Cancelled);
+        if matches!(child_file, ChildFile::Status) {
+            let status = ChildStatus::parse(&file.bytes)?;
+            if status.state != state {
+                return Err(Error::ImmutableConflict(control_key));
+            }
+            if let Some(previous) = index.files.get(&file.key).map(|stored| &stored.file) {
+                let previous = ChildStatus::parse(&previous.bytes)?;
+                if status.inputs < previous.inputs
+                    || (terminal
+                        && (status.task != previous.task || status.inputs != previous.inputs))
+                {
+                    return Err(Error::ImmutableConflict(file.key.clone()));
+                }
+                // The first quiescent terminal acknowledgement freezes this
+                // status too. No later result or input binding can replace it.
+                let archival_ack =
+                    previous.state == ChildState::Cancelled && status.state == ChildState::Archived;
+                if matches!(previous.state, ChildState::Archived | ChildState::Cancelled)
+                    && !archival_ack
+                    && index.files.get(&file.key).map(|stored| &stored.file) != Some(file)
+                {
+                    return Err(Error::ImmutableConflict(file.key.clone()));
+                }
+            }
+        } else if terminal && control != Some(file) {
+            let draining_result = matches!(child_file, ChildFile::Result(_))
+                && index
+                    .files
+                    .get(&FileKey::Child {
+                        reference: reference.clone(),
+                        file: ChildFile::Status,
+                    })
+                    .is_some_and(|stored| {
+                        ChildStatus::parse(&stored.file.bytes).is_ok_and(|status| {
+                            !matches!(status.state, ChildState::Cancelled | ChildState::Archived)
+                        })
+                    });
+            let archival_intent = state == ChildState::Cancelled
+                && matches!(child_file, ChildFile::Control)
+                && Control::parse(&file.bytes)? == Control::Archive;
+            if !draining_result && !archival_intent {
+                return Err(Error::ImmutableConflict(control_key));
+            }
+        }
+        if matches!(child_file, ChildFile::Control) {
+            Control::parse(&file.bytes)?;
+        }
+        if let ChildFile::Result(turn) = child_file {
+            let result = ChildTurnResult::parse(&file.bytes)?;
+            let status_key = FileKey::Child {
+                reference: reference.clone(),
+                file: ChildFile::Status,
+            };
+            let status = index.files.get(&status_key).ok_or(Error::InvalidSegment)?;
+            let status = ChildStatus::parse(&status.file.bytes)?;
+            if result.turn != *turn || status.task != result.task || *turn > status.inputs {
+                return Err(Error::InvalidSegment);
+            }
+            if !index.files.contains_key(&file.key)
+                && *turn > 1
+                && !index.files.contains_key(&FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Result(turn - 1),
+                })
+            {
+                return Err(Error::InvalidSegment);
+            }
+        }
+    }
     if !file.key.mutable()
         && index
             .files
@@ -551,5 +698,12 @@ impl<P: StreamProvider + 'static> TaskVolume<P> {
     pub(crate) async fn reopen_erased(&self) -> Result<TaskVolume<dyn StreamProvider>> {
         let provider: Arc<dyn StreamProvider> = self.provider.clone();
         TaskVolume::open(provider, self.path.clone()).await
+    }
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl TaskVolume<dyn StreamProvider> {
+    pub(crate) async fn reopen_erased(&self) -> Result<Self> {
+        Self::open(Arc::clone(&self.provider), self.path.clone()).await
     }
 }

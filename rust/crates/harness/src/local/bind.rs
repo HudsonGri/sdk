@@ -57,6 +57,7 @@ impl LocalHarness {
             None => crate::context::CompactionPolicy::Disabled,
         };
         let (filesystem, stream) = storage;
+        let stream: Arc<dyn acyclic_stream::StreamProvider> = stream;
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(
                 stream,
@@ -128,6 +129,7 @@ impl LocalHarness {
             scratch: volume.clone(),
             journal: volume.clone(),
             verifier: verifier.clone(),
+            issuer: None,
             signed: signed.clone(),
             model: config.model,
             context_manifest: config.context_manifest,

@@ -8,6 +8,9 @@ use crate::{
 use acyclic_stream::{StreamPath, StreamProvider};
 use std::sync::Arc;
 
+#[cfg(feature = "filesystem")]
+mod created;
+
 /// The caller's file writer and live queries for one private task volume.
 /// Execution and approval records can only be published by their internal owners.
 pub struct TaskFiles<P: ?Sized> {
@@ -73,8 +76,38 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
 
     /// Writes a request or editable private file against an exact publication cut.
     pub async fn write(&self, expected: Generation, file: &FileValue) -> super::Result<Generation> {
+        if file.requester.is_some() {
+            return Err(Error::Unauthorized);
+        }
         authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
         self.inner.append(expected, file).await
+    }
+
+    pub(crate) async fn write_if(
+        &self,
+        expected: Generation,
+        file: &FileValue,
+        requester: crate::TaskId,
+        condition: acyclic_stream::CommitCondition,
+        deadline: Option<u64>,
+    ) -> super::Result<Generation> {
+        authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
+        if file.requester.is_some_and(|original| original != requester) {
+            return Err(Error::Unauthorized);
+        }
+        let mut file = file.clone();
+        if matches!(
+            file.key,
+            FileKey::Child {
+                file: super::ChildFile::Request,
+                ..
+            }
+        ) {
+            file.requester = Some(requester);
+        }
+        self.inner
+            .append_if(expected, &file, vec![condition], deadline, None)
+            .await
     }
 
     /// Captures an atomic snapshot and push follow, or resumes a durable cursor.
@@ -110,7 +143,7 @@ fn owns_volume(volume: &VolumeRef, agent: Option<AgentId>) -> bool {
     matches!(volume.owner(), VolumeOwner::Agent(owner) if agent == Some(*owner))
 }
 
-fn authorize_write(key: &FileKey, bytes: u64, maximum: u64) -> super::Result<()> {
+pub(crate) fn authorize_write(key: &FileKey, bytes: u64, maximum: u64) -> super::Result<()> {
     if !matches!(key.owner(), Owner::Caller | Owner::Agent) {
         return Err(Error::Unauthorized);
     }

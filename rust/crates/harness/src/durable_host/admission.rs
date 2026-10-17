@@ -99,11 +99,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .with_run_limits(scope.run_limits(), &mut None)?;
             scope
         };
-        self.validate_parent_scope(parent, &scope, &mut None)
+        self.validate_parent_scope(parent, &scope, Some(&identity), &mut None)
             .await?;
-        if parent.is_some() {
-            require_descendant_grant(scope.grants(), &identity)?;
-        }
         if let Some(extensions) = scope.extensions() {
             extensions.validate(&mut None)?;
         }
@@ -340,6 +337,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self,
         parent: Option<TaskId>,
         scope: &RuntimeScope,
+        descendant: Option<&ComponentIdentity>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(parent) = parent {
@@ -355,6 +353,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let parent = RuntimeScope::new(admitted.grants, admitted.limits)?
                 .with_run_limits(admitted.run_limits, quota.work())?;
+            if let Some(identity) = descendant {
+                require_descendant_grant(parent.grants(), identity)?;
+            }
             #[cfg(feature = "filesystem")]
             let created = scope.created_access();
             #[cfg(feature = "filesystem")]

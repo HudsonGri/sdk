@@ -167,14 +167,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
-        Ok(self
-            .workflow_slot(
-                task,
-                Some(crate::scheduler::OperationPhase::Suspended),
-                work,
-            )
-            .await?
-            .map(|(_, slot)| slot))
+        Ok(self.workflow_slot(task, Some(crate::scheduler::OperationPhase::Suspended), work)
+            .await?.map(|(_, slot)| slot))
+    }
+
+    /// Reads a retained receive cut after cancellation released execution ownership.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn cancelled_workflow_suspension(
+        &self,
+        task: TaskId,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
+        Ok(self.read_workflow_slot(task, None, true, work).await?.map(|(_, slot)| slot))
     }
 
     /// Reads the existing input slot, including an accepted but unclaimed resume.
@@ -184,12 +188,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         required_phase: Option<crate::scheduler::OperationPhase>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<
-        Option<(
-            crate::scheduler::OperationPhase,
-            crate::scheduler::WorkflowSuspension,
-        )>,
-    > {
+    ) -> Result<Option<(crate::scheduler::OperationPhase, crate::scheduler::WorkflowSuspension)>> {
+        self.read_workflow_slot(task, required_phase, false, work).await
+    }
+
+    #[cfg(feature = "filesystem")]
+    async fn read_workflow_slot(
+        &self,
+        task: TaskId,
+        required_phase: Option<crate::scheduler::OperationPhase>,
+        cancelled: bool,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<(crate::scheduler::OperationPhase, crate::scheduler::WorkflowSuspension)>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         let operation = coordinator.observe_operation(
@@ -199,19 +209,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             OperationId::from_bytes(task.into_bytes()),
             work,
         )?;
-        if operation.cancellation_requested
-            || required_phase.is_some_and(|phase| operation.phase != phase)
-        {
+        let readable = if cancelled {
+            operation.phase == crate::scheduler::OperationPhase::Terminal
+                && matches!(operation.outcome, Some(Outcome::Cancelled))
+                && operation.reservation.is_none()
+        } else {
+            !operation.cancellation_requested
+                && required_phase.is_none_or(|phase| operation.phase == phase)
+        };
+        if !readable {
             return Ok(None);
         }
-        operation
-            .workflow
-            .as_ref()
-            .map(|slot| {
-                slot.clone_with_work(work)
-                    .map(|slot| (operation.phase, slot))
-            })
-            .transpose()
+        operation.workflow.as_ref().map(|slot| {
+            slot.clone_with_work(work).map(|slot| (operation.phase, slot))
+        }).transpose()
     }
 
     #[cfg(feature = "filesystem")]
@@ -260,15 +271,31 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .payloads
             .stage_input(operation, &text, b"null", io.as_ref())?
             .await?;
-        self.resume_workflow(
-            task,
-            revision,
-            input,
-            IdempotencyKey::new(text)?,
-            Some(waiting),
-            work,
-        )
-        .await
+        let admission = self.admission(operation, work).await?;
+        admission.limits.validate_file(&input, work)?;
+        if !self.read_json(&input, io.as_ref()).await?.is_null() {
+            return Err(crate::scheduler::diagnostic(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "host command wake is not null",
+            ));
+        }
+        self.coordinator
+            .lock()
+            .await
+            .resume_workflow(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation,
+                revision,
+                input,
+                IdempotencyKey::new(text)?,
+                Some(waiting),
+                work,
+            )
+            .await?;
+        Ok(())
     }
 
     /// Delivers owner-authorized input into the exact retained workflow slot.
@@ -366,15 +393,52 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         admission.limits.validate_file(&input, quota.work())?;
         if !read_granted(&admission.grants, &input)? {
-            return Err(crate::scheduler::diagnostic(
+            require_host_wake(
+                input.descriptor(),
+                slot.waiting_command.is_some(),
                 quota.work(),
-                crate::wire::ErrorCode::Unauthorized,
-                "task cannot read retained workflow input",
-            ));
+            )?;
         }
         let value = self.read_json(&input, io).await?;
         self.verify_owner(task, fence, false, quota.work()).await?;
         drop((admission, input));
         Ok(Some((slot.revision, value)))
+    }
+}
+
+fn require_host_wake(
+    descriptor: &crate::conversation::FileDescriptor,
+    waiting: bool,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
+) -> Result<()> {
+    if !waiting || descriptor.byte_length() != 4 || descriptor.media_type() != "application/json" {
+        return Err(crate::scheduler::diagnostic(
+            work,
+            crate::wire::ErrorCode::Unauthorized,
+            "task cannot read retained workflow input",
+        ));
+    }
+    // Only the fixed public host signal can cross this grant boundary.
+    descriptor.verify(b"null", work)
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        // The exception accepts exactly the public null bytes for a command wait.
+        #[test]
+        fn host_wake_grant_exception_is_only_the_exact_null_signal(
+            bytes in prop_oneof![Just(b"null".to_vec()), proptest::collection::vec(any::<u8>(), 0..17)],
+            json in any::<bool>(), waiting in any::<bool>(),
+        ) {
+            let media = if json { "application/json" } else { "text/plain" };
+            let descriptor = crate::conversation::FileDescriptor::from_bytes(&bytes, media, &mut None).unwrap();
+            prop_assert_eq!(require_host_wake(&descriptor, waiting, &mut None).is_ok(),
+                waiting && json && bytes == b"null");
+        }
     }
 }

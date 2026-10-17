@@ -1,12 +1,15 @@
 //! Standard coding tools and shared host executors.
+pub(crate) mod children;
+pub use children::{ArchiveInput, SendInput, SpawnInput, WaitInput, WaitMode};
+mod agent_files;
 mod bash;
 pub use bash::BashInput;
 mod defaults;
 pub use defaults::defaults;
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
-mod workspace_executor;
 mod command;
+mod workspace_executor;
 pub use command::parse_command;
 pub(crate) use command::{FsCommand, parse_fs_command};
 #[cfg(all(

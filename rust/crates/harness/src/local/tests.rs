@@ -808,8 +808,10 @@ mod checkout_reconciliation;
 #[cfg(all(feature = "native-execution", unix))]
 mod volume_tools;
 
+mod children;
 #[cfg(all(feature = "native-execution", unix))]
 mod reconciliation_interruptions;
+mod task_files;
 
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;

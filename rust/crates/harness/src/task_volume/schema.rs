@@ -1,9 +1,5 @@
-use super::{Error, PlanName, Result};
+use super::{ChildFile, Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
-
-#[cfg(test)]
-#[path = "../../tests/task_volume/ranges.rs"]
-mod tests;
 
 /// Task namespace and packed-segment format revision.
 pub const SCHEMA: u32 = 4;
@@ -104,7 +100,7 @@ pub enum TaskFile {
 }
 
 impl TaskFile {
-    fn turn(&self) -> Option<u64> {
+    pub(super) fn turn(&self) -> Option<u64> {
         match self {
             Self::TurnRequest(n) | Self::Completion(n) => Some(*n),
             Self::Chunk { turn, .. } | Self::TextHead { turn, .. } | Self::Tool { turn, .. } => {
@@ -187,6 +183,13 @@ pub enum FileKey {
     Plan(PlanName),
     /// Child fork mount declaration with lineage and capability references.
     Agent(Component),
+    /// Parent-owned child request, message or lifecycle intent.
+    Child {
+        /// Canonical reference, scoped to this parent volume.
+        reference: Component,
+        /// File below the child directory.
+        file: ChildFile,
+    },
     /// Protected task namespace.
     Task {
         /// Task identity in the private volume.
@@ -281,6 +284,12 @@ impl FileKey {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
+            ["agents", reference, rest @ ..] => {
+                return Ok(Self::Child {
+                    reference: id(reference)?,
+                    file: ChildFile::parse(rest)?,
+                });
+            }
             ["plans", name] => {
                 return Ok(Self::Plan(PlanName::new(
                     name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
@@ -368,6 +377,9 @@ impl FileKey {
             Self::RequestHead => "inputs/current.json".into(),
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
+            Self::Child { reference, file } => {
+                format!("agents/{}/{}", reference.as_str(), file.path())
+            }
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
             Self::Task { task, file } => format!(".tasks/{}/{}", task.as_str(), file.path()),
@@ -383,7 +395,11 @@ impl FileKey {
                 file: TaskFile::Request(_),
                 ..
             } => Owner::Caller,
-            Self::Goal | Self::Plan(_) | Self::Input(_) => Owner::Agent,
+            Self::Child {
+                file: ChildFile::Status | ChildFile::Result(_),
+                ..
+            } => Owner::Harness,
+            Self::Goal | Self::Plan(_) | Self::Input(_) | Self::Child { .. } => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
                 ..
@@ -402,6 +418,14 @@ impl FileKey {
             Self::Ui { .. }
                 | Self::RequestHead
                 | Self::Goal
+                | Self::Child {
+                    file: ChildFile::Control,
+                    ..
+                }
+                | Self::Child {
+                    file: ChildFile::Status,
+                    ..
+                }
                 | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {

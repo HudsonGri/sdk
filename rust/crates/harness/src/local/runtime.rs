@@ -27,12 +27,14 @@ pub(super) async fn open(
 ) -> Result<(
     Arc<LocalTaskRuntime>,
     Scope,
-    Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
 )> {
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let external = Arc::new(crate::external_executor::CommandSessionMachine::new());
+    let child = Arc::new(crate::filesystem::ChildAgentMachine::new());
     let definition = stock.definition()?;
+    let child_definition = child.definition()?;
     let fork = preparation.definition::<crate::resource_preparation::ResourcePreparationRequest, crate::fork::ForkReport>()?;
     let mut grants = vec![
         "task:spawn:acyclic.direct_tool@1".to_owned(),
@@ -49,6 +51,11 @@ pub(super) async fn open(
         "fork:publish".to_owned(),
         "project:merge".to_owned(),
         "task:spawn:acyclic.command_session@1".to_owned(),
+        format!(
+            "task:spawn:{}@{}",
+            child_definition.identity().name,
+            child_definition.identity().version
+        ),
         format!(
             "task:spawn:{}@{}",
             definition.identity().name,
@@ -99,9 +106,10 @@ pub(super) async fn open(
         None,
         &mut None,
     )?;
+    let provider: Arc<dyn acyclic_stream::StreamProvider> = config.stream.clone();
     let task_files = Arc::new(
         crate::task_volume::TaskFiles::open(
-            Arc::clone(&config.stream),
+            provider,
             config.task_volume,
             config.verifier,
             &signed,
@@ -116,11 +124,13 @@ pub(super) async fn open(
     )?);
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
+    tasks.register(child_definition)?;
     tasks.register(fork)?;
     tasks.register(external.definition()?)?;
     let mut machines = MachineRegistry::default();
     LocalHarness::register_commands(&mut tasks, &mut machines)?;
     machines.register(stock, &mut None)?;
+    machines.register(child, &mut None)?;
     machines.register(preparation, &mut None)?;
     machines.register(external, &mut None)?;
     let runtime = LocalTaskRuntime::open(
@@ -144,7 +154,8 @@ pub(super) async fn open(
     )
     .await?
     .with_output_volume(config.project, None)?
-    .with_private_volume(config.scratch, None)?;
+    .with_private_volume(config.scratch, None)?
+    .with_task_files(task_files.clone())?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
         Some(workspace) => {

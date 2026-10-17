@@ -105,6 +105,7 @@ pub use native_contract::{
 pub(crate) use native_directory::NativeDirectory;
 mod configured_recursive_tools;
 mod default_tools;
+pub(crate) use default_tools::InvocationCancellation;
 mod mailbox_machine;
 mod recursive;
 mod task_commands;
@@ -319,6 +320,8 @@ mod tests;
 
 mod stock_turn;
 pub use stock_turn::StockTurnMachine;
+pub(crate) mod child_agent;
+pub use child_agent::ChildAgentMachine;
 
 use crate::executor::{stock_boundary, stock_string_copy};
 

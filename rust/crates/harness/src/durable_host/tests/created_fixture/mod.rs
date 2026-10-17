@@ -40,6 +40,10 @@ pub(crate) struct PreparedFilesystemChild {
 
 mod fixture;
 mod fork;
+#[cfg(not(acyclic_harness_loom))]
+mod task_files;
+#[cfg(not(acyclic_harness_loom))]
+mod task_fork;
 
 pub(crate) fn test_registries(
     machine: Arc<dyn ResumableMachine>,
