@@ -195,3 +195,94 @@ async fn root_admission_preserves_list_only_sparse_mounts() -> TestResult {
     source.cancel();
     Ok(())
 }
+
+async fn tracking_cut(bypass: bool) -> TestResult {
+    crate::initialize_native_mount_services()?;
+    let cancel = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancel)?;
+    let workspace = crate::Fs::memory()
+        .create_workspace(
+            if bypass {
+                "tracking-root-broken"
+            } else {
+                "tracking-root-fenced"
+            },
+            crate::WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await?
+        .value;
+    let mut policy: crate::access::Policy = serde_json::from_slice(crate::access::INITIAL_POLICY)?;
+    policy.layers[0][0].resource.generations = crate::access::Generations::Head;
+    let mut edit =
+        super::super::tests::pending_policy(&workspace, &work, &serde_json::to_vec(&policy)?)
+            .await?;
+    super::super::tests::publish(&mut edit, &work).await?;
+    let selected = head(&workspace, &work).await?;
+    let options = fixture_options(&workspace, MountOptions::read_write()).await?;
+    // This publication is deliberately permitted by the policy lease: policy
+    // itself is unchanged, but a Head-only decision no longer covers selected.
+    workspace.write_text("/new-head", "new data").await?;
+    let result = if bypass {
+        let binding = options
+            .access_refresh
+            .as_ref()
+            .unwrap()
+            .select(selected, &work)?
+            .await?;
+        assert!(
+            binding
+                .require_access_view()?
+                .current()?
+                .decide(Action::List, "", 0)
+                .allowed
+        );
+        let mut checkout = workspace
+            .checkout(
+                GenerationSelector::Exact(selected),
+                CheckoutMode::read_only_pinned(),
+                &work,
+                &cancel,
+            )
+            .await?;
+        let root = crate::workspace::customer_path_with_accounting(
+            "/",
+            workspace.volume_config(),
+            &mut KernelAccounting::native(&work, &cancel),
+            &cancel,
+        )?;
+        assert!(
+            checkout
+                .lookup_no_follow(&root.0, &work, &cancel)
+                .await?
+                .record
+                .is_some()
+        );
+        Ok(())
+    } else {
+        AdmittedRoot::admit(&options, &workspace, selected, &work)
+            .await
+            .map(|_| ())
+    };
+    assert!(
+        matches!(
+            result,
+            Err(MountLifecycleError::NativePolicy(
+                "selection differs from current persisted policy"
+            ))
+        ),
+        "tracking root authorized a different generation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn tracking_root_cannot_authorize_an_older_checkout() -> TestResult {
+    tracking_cut(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "tracking root authorized a different generation")]
+async fn current_head_authorizing_old_root_negative_control() {
+    tracking_cut(true).await.unwrap();
+}

@@ -289,7 +289,11 @@ where
         .current_access_policy_revision(work, work.cancellation())
         .await
         .map_err(MountSourceError::from)?;
-    if !revision.is_some_and(|(head, revision)| view.matches_policy_revision(head, revision)) {
+    if !revision.is_some_and(|(head, revision)| {
+        view.matches_policy_revision(head, revision)
+            && (view.data_generation().is_some()
+                || view.matches_policy_revision(generation, revision))
+    }) {
         return Err(MountLifecycleError::NativePolicy(
             "selection differs from current persisted policy",
         ));
