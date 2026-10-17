@@ -8,7 +8,12 @@ fn probed<T>(
     operation: impl FnOnce() -> T,
 ) -> (T, usize, usize) {
     let before = crate::demand::RECONCILES.with(std::cell::Cell::get);
-    let (result, locks) = root.state.count_locks(operation);
+    let mut observed = None;
+    let heap = acyclic_test_support::measure(|| {
+        observed = Some(root.state.count_locks(operation));
+    });
+    assert_eq!(heap.count_total, 0, "native accounting must not allocate");
+    let (result, locks) = observed.unwrap();
     let reconciles = crate::demand::RECONCILES.with(std::cell::Cell::get) - before;
     (result, locks, reconciles)
 }
@@ -87,18 +92,18 @@ proptest! {
         limits in prop::array::uniform24(amount(96)),
         steps in prop::collection::vec((0_u8..3, prop::array::uniform24(amount(8))), 0..16),
         resource in prop::array::uniform3(amount(64)),
-        scoped in any::<bool>(), invocation in any::<bool>(),
+        scoped in any::<bool>(), invocation in any::<bool>(), recheck in any::<bool>(),
         stop_at in 0_usize..16, failure in 0_u8..4,
     ) {
-        let root_cancel = [crate::CancellationToken::new(), crate::CancellationToken::new()];
-        let caller_cancel = [crate::CancellationToken::new(), crate::CancellationToken::new()];
         let mut budget = WorkBudget::UNBOUNDED;
         budget.items_examined = limits[19].saturating_add(64);
         budget.bytes_copied = limits[13];
         budget.bytes_hashed = limits[12];
         budget.object_probes = limits[4];
-        let roots = [0, 1].map(|i| crate::NativeMaterializationWork::new(budget, &root_cancel[i]).unwrap());
-        let work = roots.each_ref().map(|root| {
+        let [old, new] = acyclic_test_support::differential::pair::<_, _, (u8, WorkCounters)>(|| {
+            let root_cancel = crate::CancellationToken::new();
+            let caller_cancel = crate::CancellationToken::new();
+            let root = crate::NativeMaterializationWork::new(budget, &root_cancel).unwrap();
             let mut work = root.clone();
             if scoped {
                 work = work.native_volume_work(WorkBudget {
@@ -107,26 +112,31 @@ proptest! {
                 }).unwrap();
             }
             if invocation { work = work.invocation_view().unwrap().0; }
-            work
-        });
-        for (step, (operation, delta)) in steps.into_iter().enumerate() {
-            if step == stop_at {
-                for i in [0, 1] {
+            if recheck { work = work.recheck_admitted(); }
+            (root, work, root_cancel, caller_cancel)
+        }, |(root, work, root_cancel, caller_cancel), previous| {
+            let mut outcomes = Vec::new();
+            for (step, &(operation, delta)) in steps.iter().enumerate() {
+                if step == stop_at {
                     match failure {
-                        1 => caller_cancel[i].cancel(),
-                        2 => root_cancel[i].cancel(),
-                        3 => work[i].state(|state| state.poison_native_original_work()),
+                        1 => caller_cancel.cancel(),
+                        2 => root_cancel.cancel(),
+                        3 => work.state(|state| state.poison_native_original_work()),
                         _ => (),
                     }
                 }
+                let delta = counters(delta);
+                acyclic_test_support::differential::record((operation, delta));
+                let result = if previous {
+                    old_call(operation, &work, &caller_cancel, delta)
+                } else {
+                    new_call(operation, &work, &caller_cancel, delta)
+                };
+                outcomes.push((status(result), root.receipt(), root.live_allocation_bytes()));
             }
-            let delta = counters(delta);
-            let old = old_call(operation, &work[0], &caller_cancel[0], delta);
-            let new = new_call(operation, &work[1], &caller_cancel[1], delta);
-            prop_assert_eq!(status(new), status(old));
-            prop_assert_eq!(roots[1].receipt(), roots[0].receipt());
-            prop_assert_eq!(roots[1].live_allocation_bytes(), roots[0].live_allocation_bytes());
-        }
+            outcomes
+        });
+        prop_assert_eq!(new, old);
     }
 }
 

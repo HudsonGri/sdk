@@ -156,10 +156,16 @@ fn nested_baseline(
                                     None
                                 },
                                 |state| {
-                                    *inside.borrow_mut() = Some(seen(state));
-                                    if unwind {
-                                        std::panic::panic_any(());
-                                    }
+                                    state.scope(
+                                        |state| &mut state.recheck_items,
+                                        work.recheck_items,
+                                        |state| {
+                                            *inside.borrow_mut() = Some(seen(state));
+                                            if unwind {
+                                                std::panic::panic_any(());
+                                            }
+                                        },
+                                    )
                                 },
                             )
                         },
@@ -210,8 +216,9 @@ fn one_view_scope_equals_the_nested_field_scopes() {
     let (invoked, _token) = resource.invocation_view().unwrap();
     let custody = CaptureTransientCustody::new_native(&invoked).unwrap();
     let captured = invoked.with_capture_custody(&custody).unwrap();
+    let rechecked = captured.recheck_admitted();
     let idle = root.state.with_original_leaf(|state| seen(state));
-    for work in [&root, &resource, &invoked, &captured] {
+    for work in [&root, &resource, &invoked, &captured, &rechecked] {
         for original in [false, true] {
             for unwind in [false, true] {
                 let expected = nested_baseline(work, original, unwind);
