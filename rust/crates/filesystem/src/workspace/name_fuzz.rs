@@ -28,14 +28,19 @@ pub fn check_workspace_name(data: &[u8]) {
     let mut full = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     if let Ok(name) = WorkspaceName::with_accounting(text, &mut full) {
         let mut again = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        let reparsed = WorkspaceName::with_accounting(name.as_str(), &mut again).unwrap();
+        let reparsed = WorkspaceName::with_accounting(name.as_str(), &mut again);
         assert_eq!(
-            name.as_str(),
-            reparsed.as_str(),
+            Ok(name.as_str().to_owned()),
+            outcome(reparsed),
             "canonical names must round-trip"
         );
     }
 
+    let effects = check_effects(data, text, &cancellation);
+    assert!(effects.is_ok(), "{effects:?}");
+}
+
+fn check_effects(data: &[u8], text: &str, cancellation: &CancellationToken) -> Result<(), FsError> {
     let selector = data.first().copied().unwrap_or(0);
     let limit = WorkBudget {
         items_examined: if selector & 1 == 0 {
@@ -51,17 +56,17 @@ pub fn check_workspace_name(data: &[u8]) {
         ..WorkBudget::UNBOUNDED
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancellation)?;
     #[cfg(not(target_arch = "wasm32"))]
-    let child = root.native_volume_work(limit).unwrap();
+    let child = root.native_volume_work(limit)?;
     #[cfg(not(target_arch = "wasm32"))]
     let mut accounting = if selector & 4 != 0 {
-        KernelAccounting::native(&child, &cancellation)
+        KernelAccounting::native(&child, cancellation)
     } else {
-        KernelAccounting::standalone(limit, &cancellation)
+        KernelAccounting::standalone(limit, cancellation)
     };
     #[cfg(target_arch = "wasm32")]
-    let mut accounting = KernelAccounting::standalone(limit, &cancellation);
+    let mut accounting = KernelAccounting::standalone(limit, cancellation);
     let before = accounting.spent();
     let (mut examined, mut copied) = (0, 0);
     let _ = WorkspaceName::with_probe(
@@ -91,4 +96,5 @@ pub fn check_workspace_name(data: &[u8]) {
         "denied canonical visits cannot execute"
     );
     assert!(copied <= limit.bytes_copied, "denied copies cannot execute");
+    Ok(())
 }

@@ -62,8 +62,10 @@ impl WorkspaceName {
         let copied = copy_work(length as u64);
         accounting.admit(copied)?;
         let mut owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
-        append(canonical, &mut owned.value, accounting, probe)?;
-        let name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
+        // Convert the empty, admitted buffer before copying valid UTF-8; this
+        // keeps String's invariant without validating the copied bytes again.
+        let mut name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
+        append(canonical, &mut name, accounting, probe)?;
         let control = const {
             match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
                 String,
@@ -232,12 +234,12 @@ mod plan;
 
 fn append(
     canonical: &str,
-    output: &mut Vec<u8>,
+    output: &mut String,
     accounting: &mut KernelAccounting<'_>,
     probe: &mut impl FnMut(u8, u64, u64),
 ) -> Result<(), FsError> {
     accounting.perform(copy_work(canonical.len() as u64), || {
-        output.extend_from_slice(canonical.as_bytes());
+        output.push_str(canonical);
         probe(4, canonical.len() as u64, 0);
     })
 }

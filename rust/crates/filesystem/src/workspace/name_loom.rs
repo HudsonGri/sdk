@@ -40,7 +40,7 @@ fn once<const BROKEN: bool>(
         _ => {
             // Storage is admitted separately in the production caller. This
             // model isolates the same real append span with ready capacity.
-            let mut bytes = Vec::with_capacity(2);
+            let mut bytes = String::with_capacity(2);
             let _ = append("xy", &mut bytes, &mut accounting, &mut probe);
         }
     }

@@ -35,7 +35,7 @@ fn delta(case: u8, baseline: u64) -> WorkCounters {
             String,
             acyclic_fs::kernel::KernelOwnedAllocation,
         )>())
-        .unwrap();
+        .unwrap_or_else(fail);
     WorkCounters {
         items_examined: items,
         bytes_copied: length * if legacy || !input.is_ascii() { 2 } else { 1 },

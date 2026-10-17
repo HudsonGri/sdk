@@ -12,7 +12,7 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--baseline', required=True, type=pathlib.Path)
-parser.add_argument('--test-binary', required=True, type=pathlib.Path)
+parser.add_argument('--test-binary', type=pathlib.Path)
 parser.add_argument('--reuse-release-dir', type=pathlib.Path)
 parser.add_argument('--output', type=pathlib.Path, default=pathlib.Path('/work/target/workspace-name-pair'))
 args = parser.parse_args()
@@ -55,7 +55,8 @@ def build(label, command):
 
 # Independently initialized parsers compare full canonical bytes, exact errors,
 # every observed operation/failure prefix, all counters and six heap statistics.
-run('differential-and-physical-controls', [args.test_binary, 'workspace::identity::name_tests::'], timeout=9)
+test = args.test_binary or build('ordinary', ['cargo', 'test'] + base + ['--lib', '--no-run'])['acyclic_fs']
+run('differential-and-physical-controls', [test, 'workspace::identity::name_tests::'], timeout=9)
 if args.reuse_release_dir:
     bins = {stage: {n: args.reuse_release_dir / (stage + '-' + n)
                    for n in ['filesystem', 'filesystem_alloc']} for stage in ['before', 'after']}
