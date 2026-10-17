@@ -225,7 +225,7 @@ proptest! {
     #[test]
     fn constructor_spellings_never_become_a_lock_free_verdict(
         raw_type in any::<bool>(), raw_method in any::<bool>(),
-        aliases in 0usize..5, wrapper in 0usize..6,
+        aliases in 0usize..5, wrapper in 0usize..7,
     ) {
         let lock = if raw_type { "r#Mutex" } else { "Mutex" };
         let method = if raw_method { "r#default" } else { "default" };
@@ -241,6 +241,7 @@ proptest! {
             2 => format!("fn p() {{ serde_json::json!({{ {{ let lock = std::sync::{lock}::new(0u8); \"key\" }}: 0 }}); }}"),
             3 => format!("trait Factory {{ type Lock; }} impl Factory for () {{ type Lock = {ty}; }} fn p() {{ <() as Factory>::Lock::{method}(); }}"),
             4 => format!("proptest::proptest! {{ #[test] fn p(lock: Vec<{ty}>) {{}} }}"),
+            5 => format!("mod a {{ use std::cell::Cell as Value; }} mod b {{ type Value = {ty}; fn p() {{ Value::{method}(); }} }}"),
             _ => format!("use std::mem::take as T0; {} fn make(slot: &mut {ty}) -> {ty} {{ T{aliases}(slot) }}",
                 (0..aliases).map(|index| format!("use T{index} as T{};", index + 1)).collect::<String>()),
         };

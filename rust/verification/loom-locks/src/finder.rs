@@ -1,8 +1,8 @@
 //! Lock construction over parsed source. Known constructors use resolved
 //! owners and expected types; unresolved constructions remain indeterminate.
-use crate::{Names, macros::indeterminate};
+use crate::{Names, items::Items, macros::indeterminate};
 use quote::ToTokens;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use syn::{
     Block, Expr, ExprPath, Fields, FnArg, GenericParam, Generics, Local, Pat, Path, ReturnType,
     Signature, Stmt, Type,
@@ -89,52 +89,6 @@ fn key(expr: &Expr) -> *const Expr {
     expr
 }
 
-/// Free functions, associated functions and structs defined in the file. A
-/// name defined twice is ambiguous and resolves to nothing.
-#[derive(Default)]
-struct Items<'ast> {
-    functions: BTreeMap<String, Option<&'ast Signature>>,
-    structs: BTreeMap<String, Option<&'ast syn::ItemStruct>>,
-    owner: Vec<Option<String>>,
-}
-
-impl<'ast> Items<'ast> {
-    fn function(&mut self, name: String, signature: &'ast Signature) {
-        self.functions
-            .entry(name)
-            .and_modify(|seen| *seen = None)
-            .or_insert(Some(signature));
-    }
-}
-
-impl<'ast> Visit<'ast> for Items<'ast> {
-    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        self.function(crate::name(&item.sig.ident), &item.sig);
-        visit::visit_item_fn(self, item);
-    }
-
-    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
-        self.owner.push(type_name(&item.self_ty));
-        visit::visit_item_impl(self, item);
-        self.owner.pop();
-    }
-
-    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
-        if let Some(Some(owner)) = self.owner.last() {
-            self.function(format!("{owner}::{}", item.sig.ident), &item.sig);
-        }
-        visit::visit_impl_item_fn(self, item);
-    }
-
-    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
-        self.structs
-            .entry(crate::name(&item.ident))
-            .and_modify(|seen| *seen = None)
-            .or_insert(Some(item));
-        visit::visit_item_struct(self, item);
-    }
-}
-
 #[derive(Clone, Copy)]
 enum Expect<'ast> {
     Type(&'ast Type),
@@ -209,7 +163,14 @@ impl<'ast> Finder<'_, 'ast> {
                     }
                 }
             }
-            _ => Some(false),
+            Type::Array(_)
+            | Type::BareFn(_)
+            | Type::Never(_)
+            | Type::Ptr(_)
+            | Type::Reference(_)
+            | Type::Slice(_)
+            | Type::Tuple(_) => Some(false),
+            _ => None,
         }
     }
 
@@ -227,7 +188,16 @@ impl<'ast> Finder<'_, 'ast> {
             Type::Paren(inner) => self.holds(&inner.elem, depth + 1),
             Type::Group(inner) => self.holds(&inner.elem, depth + 1),
             Type::Tuple(tuple) => any(tuple.elems.iter().map(|ty| self.holds(ty, depth + 1))),
-            Type::Array(array) => self.holds(&array.elem, depth + 1),
+            Type::Array(array) => match &array.len {
+                Expr::Lit(literal) => match &literal.lit {
+                    syn::Lit::Int(length) => match length.base10_parse::<usize>().ok()? {
+                        0 => Some(false),
+                        _ => self.holds(&array.elem, depth + 1),
+                    },
+                    _ => None,
+                },
+                _ => None,
+            },
             Type::Path(path) if path.qself.is_none() => {
                 if self.is_lock_at(ty, depth)? {
                     return Some(true);
@@ -675,7 +645,39 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
                 self.returns.pop();
                 return;
             }
-            _ => {}
+            Expr::Array(_)
+            | Expr::Assign(_)
+            | Expr::Await(_)
+            | Expr::Binary(_)
+            | Expr::Block(_)
+            | Expr::Break(_)
+            | Expr::Cast(_)
+            | Expr::Const(_)
+            | Expr::Continue(_)
+            | Expr::Field(_)
+            | Expr::ForLoop(_)
+            | Expr::Group(_)
+            | Expr::If(_)
+            | Expr::Index(_)
+            | Expr::Infer(_)
+            | Expr::Let(_)
+            | Expr::Lit(_)
+            | Expr::Loop(_)
+            | Expr::Macro(_)
+            | Expr::Match(_)
+            | Expr::Paren(_)
+            | Expr::Range(_)
+            | Expr::RawAddr(_)
+            | Expr::Reference(_)
+            | Expr::Repeat(_)
+            | Expr::Try(_)
+            | Expr::TryBlock(_)
+            | Expr::Tuple(_)
+            | Expr::Unary(_)
+            | Expr::Unsafe(_)
+            | Expr::While(_)
+            | Expr::Yield(_) => {}
+            _ => self.unresolved.push(expr.to_token_stream().to_string()),
         }
         visit::visit_expr(self, expr);
     }

@@ -74,13 +74,18 @@ fn aliases_and_loom_imports_are_resolved() {
 
 #[test]
 fn alias_parameters_follow_the_target_container() {
-    for container in ["Option<T>", "Vec<T>", "std::marker::PhantomData<T>"] {
+    for container in [
+        "Option<T>",
+        "Vec<T>",
+        "std::marker::PhantomData<T>",
+        "[T; 0]",
+    ] {
         let source = format!(
             "type Slot<T> = {container}; type Other<U> = Slot<U>; fn p() {{ let _: Other<std::sync::Mutex<u8>> = Default::default(); }}"
         );
         assert_eq!(scan(&source).ok(), Some(false), "{source}");
     }
-    for container in ["(T,)", "std::sync::Arc<T>"] {
+    for container in ["(T,)", "std::sync::Arc<T>", "[T; 1]"] {
         let source = format!(
             "type Slot<T> = {container}; type Other<U> = Slot<U>; fn p() {{ let _: Other<std::sync::Mutex<u8>> = Default::default(); }}"
         );
@@ -125,6 +130,8 @@ fn unknown_explicit_owners_cannot_adopt_an_unrelated_expected_type() {
         "fn plain() { let value = Unknown {}; }",
         "fn plain() { external::VALUE; }",
         "use external::*; fn plain() { VALUE; }",
+        "mod a { use std::cell::Cell as Value; } mod b { type Value = std::sync::Mutex<u8>; fn p() { Value::default(); } }",
+        "mod a { type Value = u8; } mod b { type Value = std::sync::Mutex<u8>; fn p() { Value::default(); } }",
         "fn plain() { production::Component::build(); }",
         "fn plain() { value.unknown_factory(); }",
         "type A = <() as Factory>::Lock; fn plain() { A::default() }",

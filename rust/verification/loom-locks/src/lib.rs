@@ -14,6 +14,7 @@
 //! stdin: records `path\0source\0`. stdout: one `path\t1`, `path\t0` or
 //! `path\t!error` line per record.
 mod finder;
+mod items;
 mod macros;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -105,6 +106,7 @@ pub fn scan(source: &str) -> syn::Result<bool> {
 #[derive(Default)]
 struct Names<'ast> {
     renames: Vec<(String, String)>,
+    declarations: BTreeSet<String>,
     /// `type` items: name, parameters and target.
     aliases: Vec<(String, &'ast syn::Generics, &'ast Type)>,
     loom_import: bool,
@@ -112,6 +114,15 @@ struct Names<'ast> {
 }
 
 impl<'ast> Names<'ast> {
+    fn declare(&mut self, name: &str) {
+        if !self.declarations.insert(name.to_string()) {
+            self.error.get_or_insert_with(|| {
+                macros::indeterminate(&format!(
+                    "multiple bindings of `{name}` require scope resolution"
+                ))
+            });
+        }
+    }
     fn instantiated(&self, ty: &Type) -> Option<Type> {
         let Type::Path(path) = ty else {
             return None;
@@ -222,6 +233,7 @@ impl<'ast> Names<'ast> {
     }
 
     fn bind(&mut self, prefix: &[String], target: &str, name: &str) {
+        self.declare(name);
         let mut path = prefix.to_vec();
         path.push(target.to_string());
         if !prefix.is_empty() || target != name {
@@ -241,7 +253,16 @@ impl<'ast> Visit<'ast> for Names<'ast> {
         self.walk(&item.tree, &mut Vec::new());
     }
 
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        self.declare(&crate::name(&item.ident));
+        visit::visit_item_struct(self, item);
+    }
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        self.declare(&crate::name(&item.ident));
+        visit::visit_item_enum(self, item);
+    }
     fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        self.declare(&crate::name(&item.ident));
         self.aliases
             .push((crate::name(&item.ident), &item.generics, &item.ty));
         visit::visit_item_type(self, item);
