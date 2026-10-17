@@ -200,13 +200,18 @@ impl MemoryStream {
         state: &'a State,
         destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
     ) -> Result<(Vec<(StreamPath, PathState)>, Allocation), StreamError> {
-        let (mut paths, allocation) =
-            self.vector(missing_paths(state, destinations.clone()).count())?;
+        let count = missing_paths(state, destinations.clone()).count();
+        let (mut paths, allocation) = self.vector(count)?;
+        if count == 0 {
+            return Ok((paths, allocation));
+        }
         for (destination, end) in missing_paths(state, destinations) {
             let claim = self.adopt(std::mem::size_of::<(StreamPath, PathState)>())?;
             let (changed, _) = watch::channel(0);
             paths.push((
-                StreamPath(destination.0.slice(..end)),
+                destination
+                    .ancestor(&destination.as_str()[..end])
+                    .ok_or(StreamError::InvalidPath)?,
                 PathState {
                     children: ChildIndex::default(),
                     next_sibling: None,
@@ -389,6 +394,10 @@ impl MemoryStream {
                 Some(CommitConflict::Exists { path: path.clone() })
             }
             CommitCondition::Head { commit_id, .. } => {
+                #[cfg(all(acyclic_loom, feature = "local"))]
+                if crate::verification::fault_is(crate::verification::Fault::IgnoreHead) {
+                    return Ok(None);
+                }
                 let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
                 let actual = self.preceding_commit(stream)?;
                 (actual != *commit_id).then(|| CommitConflict::Head {
@@ -541,7 +550,13 @@ fn publish_fact(
     stream.prefix = prefix;
     stream.history = Some(history);
     stream.tail = tail;
-    stream.changed.send_replace(tail);
+    #[cfg(all(acyclic_loom, feature = "local"))]
+    let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
+    #[cfg(not(all(acyclic_loom, feature = "local")))]
+    let notify = true;
+    if notify {
+        stream.changed.send_replace(tail);
+    }
     state.record_count += fact_records(fact).len();
     state.payload_bytes += fact_records(fact)
         .iter()

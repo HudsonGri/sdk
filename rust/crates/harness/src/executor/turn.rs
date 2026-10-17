@@ -9,6 +9,12 @@ impl StockExecution<'_> {
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;
         self.validate_turn_input(journal, input).await?;
+        if let Some(source) = self.stock.summary_source.as_deref() {
+            return crate::conversation::BoundedContentFuture::new(self.io, || {
+                self.summarize_file(journal, input, source)
+            })?
+            .await;
+        }
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
         let mut text = String::new();
@@ -22,8 +28,13 @@ impl StockExecution<'_> {
                     ModelPurpose::Response,
                 )?
                 .await?;
-            let (calls, metadata) =
-                self.collect_turn_events(input, step, model_events, &mut text)?;
+            let (calls, metadata) = self.collect_turn_events(
+                input,
+                step,
+                model_events,
+                &mut text,
+                &mut prior_messages,
+            )?;
             if calls.is_empty() {
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
@@ -32,23 +43,7 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
-            for (invocation, metadata) in calls {
-                let message = ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall(
-                        crate::model::ToolCall::new(
-                            stock_string_copy(&invocation.call_id, self.io)?,
-                            stock_string_copy(&invocation.name, self.io)?,
-                            crate::model::clone_value(&invocation.arguments, self.io)?,
-                        )
-                        .with_metadata(metadata),
-                    )),
-                };
-                crate::executor::with_history_io(self.io, |work| {
-                    message.content.validate_limits(self.stock.limits, work)
-                })?;
-                let invocation_index = prior_messages.len();
-                stock_vec_push(&mut prior_messages, message, self.io)?;
+            for (invocation, invocation_index) in calls {
                 match self
                     .resolve_tool_call(
                         journal,
@@ -83,7 +78,8 @@ impl StockExecution<'_> {
         step: u32,
         model_events: Vec<ModelEvent>,
         text: &mut String,
-    ) -> Result<(Vec<(ToolInvocation, Value)>, Value)> {
+        prior_messages: &mut Vec<ModelMessage>,
+    ) -> Result<(Vec<(ToolInvocation, usize)>, Value)> {
         let mut calls = Vec::new();
         let mut completed = Value::Null;
         for event in model_events {
@@ -111,12 +107,41 @@ impl StockExecution<'_> {
                         arguments,
                         self.native_work(),
                     )?;
-                    stock_vec_push(&mut calls, (invocation, metadata), self.io)?;
+                    let call = crate::model::ToolCall::new(
+                        stock_string_copy(&invocation.call_id, self.io)?,
+                        stock_string_copy(&invocation.name, self.io)?,
+                        crate::model::clone_value(&invocation.arguments, self.io)?,
+                    )
+                    .with_metadata(metadata);
+                    let index = prior_messages.len();
+                    self.append_assistant_part(prior_messages, ModelContentPart::ToolCall(call))?;
+                    stock_vec_push(&mut calls, (invocation, index), self.io)?;
                 }
                 ModelEvent::Completed { metadata } => completed = metadata,
+                ModelEvent::ReasoningBlock { block } => {
+                    self.append_assistant_part(
+                        prior_messages,
+                        ModelContentPart::Reasoning { block },
+                    )?;
+                }
                 ModelEvent::Reasoning { .. } => {}
             }
         }
         Ok((calls, completed))
+    }
+
+    pub(super) fn append_assistant_part(
+        &self,
+        messages: &mut Vec<ModelMessage>,
+        part: ModelContentPart,
+    ) -> Result<()> {
+        let message = ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(part),
+        };
+        with_history_io(self.io, |work| {
+            message.content.validate_limits(self.stock.limits, work)
+        })?;
+        stock_vec_push(messages, message, self.io)
     }
 }

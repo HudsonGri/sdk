@@ -2,7 +2,6 @@
 
 use crate::{
     Admission, AgentId, Capabilities, Error, OperationId, Result, TaskId,
-    context::ContextPipeline,
     conversation::{
         ContentPublisher, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -25,15 +24,23 @@ use std::{
 };
 
 mod admission;
+mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
+mod command_machine;
+mod command_views;
+mod commands;
+mod compact;
 mod compaction;
 mod config;
-#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-mod mcp;
+mod context;
+mod files;
+mod inheritance;
 mod owner;
 mod owner_record;
 mod runtime;
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+mod settings;
 #[cfg(test)]
 mod tests;
 mod turn;
@@ -47,14 +54,14 @@ pub use workspace::LocalWorkspace;
 /// Local durable filesystem host.
 pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 /// Local durable task host and its execution journals.
-pub(crate) type LocalTaskRuntime =
+pub type LocalTaskRuntime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// A checkout or volume, durable authority, journals and stock executor.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     runtime: Arc<LocalTaskRuntime>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -62,7 +69,12 @@ pub struct LocalHarness {
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context: ContextPipeline,
+    context_manifest: Option<crate::conversation::FileRef>,
+    #[cfg(feature = "hooks")]
+    settings: Arc<crate::native_settings::SettingsConfig>,
+    #[cfg(test)]
+    context_read_observer:
+        Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -73,6 +85,8 @@ pub struct LocalHarness {
     admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
+    #[cfg(feature = "native-execution")]
+    checkout_context: bool,
 }
 
 impl LocalHarness {
@@ -91,22 +105,33 @@ impl LocalHarness {
             }
             let (model, provider) = config.model;
             model.validate()?;
-            let mut tools = if config.default_tools {
-                crate::tools::defaults()?
-            } else {
-                ToolRegistry::default()
-            };
+            let mut tools = ToolRegistry::default();
+            if config.default_tools {
+                crate::tools::bind_defaults(
+                    &mut tools,
+                    &mut Vec::new(),
+                    None,
+                    true,
+                    cfg!(feature = "native-execution"),
+                )?;
+            }
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            let settings_configuration = settings::configuration(&config.project, config.settings)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = mcp::install(
-                &config.project,
-                |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
-                tools,
-                config.mcp_limits,
-            )
+            let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
+                &settings_configuration,
+            ))
             .await?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let mcp_workspace =
+                std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation = mcp
+                .install(tools, &mcp_workspace, config.mcp_limits)
+                .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = compaction::select(
@@ -115,10 +140,16 @@ impl LocalHarness {
                 provider.as_ref(),
                 &tools,
                 config.limits,
-            )?;
+            )
+            .await?;
+            #[cfg(feature = "native-execution")]
+            let native_mounts = tools.get("bash", None, None)?.is_some();
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
             #[cfg(feature = "native-execution")]
-            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            if native_mounts {
+                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+                acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            }
             #[cfg(not(feature = "native-execution"))]
             if matches!(config.project, LocalProject::Workspace(_)) {
                 return Err(Error::Unsupported(
@@ -130,7 +161,11 @@ impl LocalHarness {
                     return Err(Error::Invalid("local workspace is not a directory".into()));
                 }
             }
-            let directory = owner::directory(&owner::state_directory(&config.project)?)?;
+            let directory = match config.state_directory {
+                Some(path) => path,
+                None => owner::state_directory(&config.project)?,
+            };
+            let directory = owner::directory(&directory)?;
             let owner = owner::Owner::open(&directory, &config.project)?;
             let filesystem =
                 acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
@@ -140,49 +175,7 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?;
             let provider_ref = owner.project.provider();
-            #[cfg(feature = "native-execution")]
-            let workspace = match &config.project {
-                LocalProject::Workspace(path) => Some(Arc::new(
-                    workspace::open(
-                        &filesystem,
-                        &owner.project,
-                        path,
-                        &directory,
-                        owner.workspace_identity,
-                        workspace::attach_operation(owner.task),
-                        false,
-                    )
-                    .await?,
-                )),
-                LocalProject::Volume { .. } => Some(Arc::new(
-                    workspace::open_volume(
-                        &filesystem,
-                        &owner.project,
-                        &directory,
-                        workspace::attach_operation(owner.task),
-                    )
-                    .await?,
-                )),
-            };
-            let files = FilesystemHost::new(filesystem, provider_ref, None)?;
-            #[cfg(feature = "native-execution")]
-            let files = match &workspace {
-                Some(workspace) => files.with_project_family(
-                    workspace.view().workspace().id(),
-                    workspace.store.clone(),
-                )?,
-                None => files,
-            };
-            // A configured project is opened, never silently replaced by an empty volume.
-            files
-                .resolve(
-                    &crate::filesystem::workspace_ref(
-                        provider_ref.clone(),
-                        &owner.project.storage_name(&mut None)?,
-                    )?,
-                    None,
-                )
-                .await?;
+            let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
             let scratch = VolumeRef::new(
                 provider_ref.clone(),
                 format!("scratch-{}", owner.agent),
@@ -207,6 +200,63 @@ impl LocalHarness {
             files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            // This standalone composition owns its private companion namespace.
+            // Retain the existing owned WAL instead of reopening/checkpointing it
+            // for every transaction. Embedded bind() retains shared-store semantics.
+            #[cfg(feature = "native-execution")]
+            let store =
+                acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+                    .map_err(storage)?;
+            #[cfg(feature = "native-execution")]
+            let workspace = match &config.project {
+                LocalProject::Workspace(path) => Some(
+                    workspace::open(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        path,
+                        &directory,
+                        owner.workspace_identity,
+                        workspace::attach_operation(owner.task),
+                        false,
+                        native_mounts,
+                        store,
+                    )
+                    .await?,
+                ),
+                LocalProject::Volume { .. } => Some(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &scratch,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                        native_mounts,
+                        store,
+                    )
+                    .await?,
+                ),
+            };
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
+            // A configured project is opened, never silently replaced by an empty volume.
+            files
+                .resolve(
+                    &crate::filesystem::workspace_ref(
+                        provider_ref.clone(),
+                        &owner.project.storage_name(&mut None)?,
+                    )?,
+                    None,
+                )
+                .await?;
+            #[cfg(feature = "native-execution")]
+            let workspace = workspace.map(Arc::new);
             let stream = Arc::new(
                 LocalStream::open(directory.join("stream"), Default::default())
                     .await
@@ -221,11 +271,11 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
-            let (runtime, signed) = runtime::open(runtime::Configuration {
+            let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
                 files: files.clone(),
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
-                stream: stream.clone(),
+                stream,
                 task_volume: &task_volume,
                 issuer: &issuer,
                 verifier: &verifier,
@@ -243,20 +293,10 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            let task_files = Arc::new(
-                crate::task_volume::TaskFiles::open(
-                    stream,
-                    &task_volume,
-                    &verifier,
-                    &signed,
-                    config.limits.file_bytes,
-                )
-                .await?,
-            );
-            Ok(Self {
+            let mut local = Self {
                 files,
-                task_files,
                 runtime,
+                task_files,
                 project: owner.project.clone(),
                 scratch,
                 journal,
@@ -264,7 +304,13 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context: config.context,
+                context_manifest: config.context_manifest,
+                #[cfg(test)]
+                context_read_observer: None,
+                #[cfg(feature = "native-execution")]
+                checkout_context: matches!(config.project, LocalProject::Workspace(_)),
+                #[cfg(feature = "hooks")]
+                settings: settings_configuration,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -273,19 +319,26 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
-            })
+            };
+            if let Some(provider) = local
+                .provider
+                .bind_content(local.context_reader()?, local.limits.file_bytes)
+            {
+                local.provider = provider;
+            }
+            Ok(local)
         })
+    }
+
+    /// Trusted host's task-file volume; clients render its bounded live queries.
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<LocalStream>> {
+        &self.task_files
     }
 
     /// Durable content and project host.
     #[must_use]
     pub const fn filesystem(&self) -> &Arc<LocalFilesystem> {
         &self.files
-    }
-    /// Ordinary private task-file writes and live queries under the owner grants.
-    #[must_use]
-    pub fn task_files(&self) -> &crate::task_volume::TaskFiles<LocalStream> {
-        &self.task_files
     }
     /// Selected project view.
     #[must_use]
@@ -326,8 +379,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub fn workspace(&self) -> Option<&LocalWorkspace> {
-        self.workspace.as_deref()
+    pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
+        self.workspace.as_ref()
     }
 }
 

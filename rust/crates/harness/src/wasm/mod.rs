@@ -45,10 +45,13 @@ use std::collections::BTreeSet;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
+mod bytes;
 mod admission;
 use admission::*;
 mod content;
 use content::*;
+mod reader;
+pub use reader::BrowserContentReader;
 mod context;
 use context::*;
 mod contract;
@@ -63,6 +66,13 @@ mod reducer;
 use reducer::schema_registry;
 mod tool;
 use tool::*;
+#[cfg(target_arch = "wasm32")]
+mod file_client;
+mod file_worker;
+#[cfg(target_arch = "wasm32")]
+mod query;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod swarm;
 mod wire;
 
 #[cfg(target_arch = "wasm32")]

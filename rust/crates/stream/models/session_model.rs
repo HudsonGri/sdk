@@ -1,3 +1,8 @@
+#[cfg(not(acyclic_stream_loom))]
+compile_error!(
+    "stream models require Loom synchronization: run RUSTFLAGS='--cfg acyclic_stream_loom' cargo test --manifest-path rust/crates/stream/models/Cargo.toml --test session_model"
+);
+
 mod error {
     use thiserror::Error;
     include!("../src/lib/error.rs");
@@ -188,4 +193,15 @@ proptest::proptest! {
         let full = policy::room(frames, 4 * largest, frames, 0, largest, true);
         proptest::prop_assert!(!policy::enabled(false, 0, full, true));
     }
+}
+
+#[test]
+fn latest_consumption_and_movement_share_the_production_cursor_model() {
+    progress::verify_latest_progress(false);
+}
+
+#[test]
+#[should_panic(expected = "a stale delivery cannot advance the fenced resume cut")]
+fn latest_negative_control_advances_after_its_generation_was_fenced() {
+    progress::verify_latest_progress(true);
 }

@@ -17,6 +17,7 @@ impl HostRoot {
         self.identity
     }
     #[cfg(unix)]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
         self.directory.as_raw_fd()
     }
@@ -79,6 +80,77 @@ impl HostRoot {
             }
         })
     }
+    #[cfg(all(feature = "native-watch", not(target_os = "linux")))]
+    pub(crate) fn stat_source<W: SourceDemandReadWork>(
+        &self,
+        path: &NativePath,
+        work: &mut W,
+    ) -> Result<HostStat, DemandError> {
+        #[cfg(unix)]
+        return self.stat(path, work);
+        #[cfg(windows)]
+        {
+            if path.is_empty() || path == [46] {
+                return self.stat(path, work);
+            }
+            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+                let volume =
+                    u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?;
+                let name = windows_open_name(leaf, work)?;
+                let fallback = |work: &mut W| {
+                    let file = open_windows_named(
+                        parent,
+                        &name,
+                        fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+                        nt::FILE_OPEN,
+                        nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                        work,
+                    )?;
+                    stat_windows_file(&file, volume, work)
+                };
+                // With two reads left, use the held-leaf route without a speculative query.
+                if name.Length == 0 || work.remaining()?.backend_read_operations == 2 {
+                    return fallback(work);
+                }
+                query_windows_stat(
+                    work,
+                    READ,
+                    || {
+                        let metadata = stat_windows_name(parent, &name, volume, true)?;
+                        // A name query need not enforce the synchronous-open right.
+                        Ok(metadata
+                            .filter(|stat| stat.raw.EffectiveAccess & fs::SYNCHRONIZE.0 != 0))
+                    },
+                    fallback,
+                )
+            })
+        }
+    }
+    #[cfg(feature = "native-watch")]
+    pub(crate) fn stat_source_metadata<W: SourceDemandReadWork>(
+        &self,
+        path: &NativePath,
+        work: &mut W,
+    ) -> Result<HostStat, DemandError> {
+        #[cfg(all(test, windows))]
+        if stat_probe::old() {
+            return self.stat_source(path, work);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if path.as_os_str().is_empty() {
+                return stat_at_metadata(self.directory.as_raw_fd(), c"", work);
+            }
+            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+                stat_at_metadata(parent.as_raw_fd(), leaf, work)
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.stat_source(path, work)
+        }
+    }
+    #[cfg(any(test, feature = "native-mount", not(target_os = "linux")))]
     pub(crate) fn stat_file<W: NativeHostWork>(
         &self,
         file: &File,
@@ -95,6 +167,29 @@ impl HostRoot {
                 u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?,
                 work,
             )
+        }
+    }
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn stat_file_metadata<W: NativeHostWork>(
+        &self,
+        file: &File,
+        work: &mut W,
+    ) -> Result<HostStat, W::Error> {
+        #[cfg(all(test, any(target_os = "linux", windows)))]
+        if stat_probe::duplicate() {
+            self.stat_file(file, work)?;
+        }
+        #[cfg(all(test, windows))]
+        if stat_probe::old() {
+            return self.stat_file(file, work);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            super::stat_file_metadata(file, work)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.stat_file(file, work)
         }
     }
     pub(crate) fn open_file<W: NativeHostWork>(

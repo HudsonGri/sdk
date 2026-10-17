@@ -1,6 +1,8 @@
 use super::*;
 use crate::filesystem::PreparationIo;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::filesystem::task_runtime::observed::boundary;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::wire::ErrorCode;
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
@@ -14,6 +16,7 @@ where
         task: TaskId,
         fence: &LeaseFence,
         turn: OperationId,
+        _native_context: &Arc<TaskContext>,
         io: Option<&PreparationIo>,
     ) -> Result<(
         Arc<super::super::FilesystemExecutionJournal<P, A, O>>,
@@ -23,7 +26,13 @@ where
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             return self
                 .runtime
-                .execution_journal_with_native_work(task, fence, turn, work)
+                .execution_journal_with_native_context(
+                    task,
+                    fence,
+                    turn,
+                    work,
+                    Some(Arc::clone(_native_context)),
+                )
                 .await;
         }
         Ok((
@@ -47,7 +56,11 @@ where
         payload: Value,
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
-        let context = Arc::clone(context);
+        let context = if io.is_none() {
+            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
+        } else {
+            Arc::clone(context)
+        };
         let turn = command.operation_id;
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self
@@ -62,7 +75,9 @@ where
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let work = None;
-        let (journal, operation) = self.command_journal(task, fence, turn, io).await?;
+        let (journal, operation) = self
+            .command_journal(task, fence, turn, &context, io)
+            .await?;
         if reconciliation_only
             && !was_dispatched(journal.as_ref(), operation, TOOL_TASK_COMMAND_KIND, io).await?
         {
@@ -89,7 +104,12 @@ where
                 task,
                 Arc::clone(&journal),
             )?;
-            ToolContext::new(Arc::new(task_context), operation, &invocation.call_id, None)?
+            break 'context ToolContext::new(
+                Arc::new(task_context),
+                operation,
+                &invocation.call_id,
+                None,
+            )?;
         };
         if !reconciliation_only || io.is_none() {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -107,7 +127,7 @@ where
                             .authorize_tool(definition, &invocation, work)
                             .await;
                     }
-                    context.task().authorize_tool(definition, &invocation).await
+                    break 'approval context.task().authorize_tool(definition, &invocation).await;
                 };
                 match approved {
                     Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
@@ -119,7 +139,7 @@ where
         }
         let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, work)?
             .with_limits(limits)?;
-        let (outcome, custody) = runner
+        let (outcome, _native_custody) = runner
             .run(
                 task,
                 definition,
@@ -131,7 +151,7 @@ where
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
-            io.absorb_native_custody(custody.ok_or_else(|| {
+            io.absorb_native_custody(_native_custody.ok_or_else(|| {
                 boundary(
                     Some(io),
                     ErrorCode::Storage,

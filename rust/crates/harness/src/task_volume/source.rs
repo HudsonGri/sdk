@@ -27,6 +27,11 @@ impl<P: StreamProvider + ?Sized> FileQuerySource for TaskVolume<P> {
             if maximum_files == 0 || maximum_bytes == 0 {
                 return Err(Error::LimitExceeded);
             }
+            if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+                let mut observation = self.observe(query.clone(), None, maximum_files).await?;
+                observation.reset = cursor.is_some();
+                return super::recent::observe(observation, &query, maximum_files, maximum_bytes);
+            }
             let mut observation = self
                 .observe(query.clone(), cursor.clone(), maximum_files)
                 .await?;
@@ -113,9 +118,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     for (_, file) in index
                         .files
                         .range(range)
-                        .filter(|(_, file)| query.matches_file(file))
+                        .filter(|(_, file)| query.matches_file(&file.file))
                     {
-                        include(&mut sizes, &mut bytes, file, maximum_files)?;
+                        include(&mut sizes, &mut bytes, &file.file, maximum_files)?;
                     }
                 }
                 return Ok((sizes, bytes));

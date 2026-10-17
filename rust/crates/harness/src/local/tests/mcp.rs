@@ -18,21 +18,17 @@ async fn default_settings_match_original_and_canonical_workspace_keys() -> Resul
         }}}});
         std::fs::write(home.join(".claude.json"), document.to_string())
             .map_err(super::super::storage)?;
-        let installed = super::super::mcp::install(
-            &super::super::LocalProject::Workspace(configured.clone()),
-            |path| {
-                assert_eq!(path, configured);
-                Ok(SettingsConfig::new(path, &home).codex_home(home.join(".codex")))
-            },
-            crate::tool::ToolRegistry::default(),
-            crate::mcp::McpClientLimits::default(),
+        let harness = LocalHarness::open(
+            crate::test_support::local_harness_config(&configured, (model()?, text()))?
+                .settings(SettingsConfig::new(&configured, &home).codex_home(home.join(".codex"))),
         )
         .await?;
-        assert_eq!(installed.diagnostics.len(), 1);
-        assert_eq!(installed.diagnostics[0].server, "selected");
+        let diagnostics = harness.mcp_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].server, "selected");
         assert_eq!(
-            installed.diagnostics[0].message,
-            "process not_found: MCP executable was not found in its configured search path"
+            diagnostics[0].message,
+            "process: MCP executable was not found in its configured search path"
         );
     }
     Ok(())
@@ -58,7 +54,7 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
         let opened = LocalHarness::open(config).await;
         if required {
             assert!(
-                matches!(opened, Err(Error::Process { kind: "not_found", message })
+                matches!(opened, Err(Error::Process(crate::ProcessError::NotFound { message, .. }))
                 if message == "MCP executable was not found in its configured search path")
             );
             assert!(!owner.exists());
@@ -68,7 +64,7 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
             assert_eq!(harness.mcp_diagnostics()[0].server, "missing");
             assert_eq!(
                 harness.mcp_diagnostics()[0].message,
-                "process not_found: MCP executable was not found in its configured search path"
+                "process: MCP executable was not found in its configured search path"
             );
             assert!(harness.tools().get("read", None, None)?.is_some());
         }
@@ -98,7 +94,7 @@ async fn project_servers_require_explicit_settings_trust() -> Result<()> {
             assert_eq!(harness.mcp_diagnostics()[0].server, "project");
             assert_eq!(
                 harness.mcp_diagnostics()[0].message,
-                "process not_found: MCP executable was not found in its configured search path"
+                "process: MCP executable was not found in its configured search path"
             );
         }
     }
@@ -205,6 +201,12 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             } else {
                 ("application/json", result)
             };
+            if step == 4 {
+                assert!(
+                    body.len() > CATALOG_BYTES as usize,
+                    "tool output must exceed the catalog bound"
+                );
+            }
             let session = if step == 0 {
                 "Mcp-Session-Id: configured-session\r\n"
             } else {
@@ -262,12 +264,27 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
     for name in ["mcp.configured.write", "mcp.configured.other"] {
         assert!(harness.tools().get(name, None, None)?.is_none());
     }
-    assert_eq!(
-        harness.run("use configured MCP").await?.text,
-        "configured MCP completed"
-    );
+    let completed = harness.run("use configured MCP").await;
+    if completed.is_err() {
+        eprintln!(
+            "MCP scenario failed: {completed:?}; remaining script={}, server finished={}, requests={:?}",
+            provider.remaining(),
+            service.is_finished(),
+            provider
+                .requests()
+                .iter()
+                .map(|request| (
+                    request.messages.len(),
+                    request.tools.len(),
+                    request.messages.first().map(|message| message.role)
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(completed?.text, "configured MCP completed");
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
+    assert_eq!(provider.remaining(), 0);
     assert!(requests.iter().all(|request| {
         request
             .tools

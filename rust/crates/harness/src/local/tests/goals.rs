@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     TaskId,
     conversation::{ContentGrant, Limits},
-    goal::{GoalBlockedReason, GoalContinuationPolicy},
+    goal::GoalContinuationPolicy,
 };
 use acyclic_stream::{StreamPath, StreamProvider};
 use futures::TryStreamExt as _;
@@ -18,13 +18,12 @@ struct Case {
     tasks: usize,
     calls: usize,
     final_goal: Option<String>,
-    #[serde(default)]
     panel: Vec<String>,
     initial_goal: Option<String>,
+    path: String,
     #[serde(default)]
     unreachable: bool,
-    #[serde(default)]
-    private_output: bool,
+    private_mount: Option<bool>,
 }
 
 #[cfg(feature = "tui")]
@@ -32,57 +31,33 @@ mod rendering;
 
 #[tokio::test]
 async fn local_goal_scenarios_follow_ordinary_frames_and_files() -> Result<()> {
-    let cases: Vec<Case> =
-        serde_json::from_str(include_str!("goals.json")).map_err(super::super::storage)?;
-    assert!(
-        cases.iter().all(|case| !case.panel.is_empty()),
-        "rendering scenarios must declare expectations"
-    );
-    let private: Vec<Case> =
-        serde_json::from_str(include_str!("goals-private.json")).map_err(super::super::storage)?;
-    futures::future::try_join_all(cases.into_iter().chain(private).map(run)).await?;
+    futures::future::try_join_all(cases()?.into_iter().map(run)).await?;
     Ok(())
 }
 
+fn cases() -> Result<Vec<Case>> {
+    let cases: Vec<Case> =
+        serde_json::from_str(include_str!("goals.json")).map_err(super::super::storage)?;
+    #[cfg(feature = "native-execution")]
+    let cases = {
+        let mounted: Vec<Case> = serde_json::from_str(include_str!("goals/mounted.json"))
+            .map_err(super::super::storage)?;
+        cases.into_iter().chain(mounted).collect()
+    };
+    Ok(cases)
+}
+
 async fn run(case: Case) -> Result<()> {
+    assert!(
+        !case.panel.is_empty(),
+        "scenario must declare rendering expectations"
+    );
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
     let script = script(&case);
     let provider = scripted(script);
-    let config = || -> Result<LocalHarnessConfig> {
-        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
-        config.goal_continuations = if case.enabled == Some(false) {
-            None
-        } else {
-            Some(GoalContinuationPolicy {
-                max_continuations: case.cap.unwrap_or(32),
-            })
-        };
-        Ok(config)
-    };
-    let harness = bind_private_output(LocalHarness::open(config()?).await?, &case)?;
-    if case.private_output {
-        // A project goal must not shadow the agent's private goal.
-        use crate::conversation::ContentPublisher as _;
-        let project_goal = b"---\nstatus: done\n---\nProject sentinel";
-        crate::filesystem::FilesystemContentPublisher::new(
-            harness.files.clone(),
-            harness.project(),
-            &harness.verifier,
-            &harness.signed,
-            Limits::default().file_bytes,
-            None,
-        )?
-        .stage_once(
-            OperationId::new(),
-            "GOAL.md",
-            project_goal,
-            "text/markdown",
-            "GOAL.md",
-            None,
-        )?
-        .await?;
-    }
+    let config = || goal_config(&case, directory.path(), project.clone(), provider.clone());
+    let harness = LocalHarness::open(config()?).await?;
     if let Some(initial) = &case.initial_goal {
         write_goal(&harness, initial).await?;
     }
@@ -100,15 +75,12 @@ async fn run(case: Case) -> Result<()> {
         )
         .await
         .map_err(super::super::storage)?;
-    let execution_done = std::cell::Cell::new(false);
-    let progress = std::cell::RefCell::new((0u64, Vec::new(), Vec::new()));
-    let execution = async {
-        let output = harness.resume(task_id).await;
-        execution_done.set(true);
-        check_output(&case, output)
-    };
+    let execution = async { check_output(&case, harness.resume(task_id).await) };
     let frames = async {
-        while progress.borrow().2.len() < case.tasks {
+        let mut admitted = Vec::new();
+        let mut completed = Vec::new();
+        let mut revision = 0;
+        while completed.len() < case.tasks {
             let record = followed
                 .try_next()
                 .await
@@ -116,37 +88,38 @@ async fn run(case: Case) -> Result<()> {
                 .expect("live task frames ended");
             let frame = crate::wire::SchedulerEventEnvelope::decode(record.value.as_ref())
                 .map_err(super::super::storage)?;
-            let mut progress = progress.borrow_mut();
-            assert_eq!(frame.revision, progress.0 + 1, "{}", case.name);
-            progress.0 = frame.revision;
+            assert_eq!(frame.revision, revision + 1, "{}", case.name);
+            revision = frame.revision;
             let event: crate::scheduler::SchedulerEvent =
                 serde_json::from_slice(&frame.canonical_event_json)
                     .map_err(super::super::storage)?;
             match event {
                 crate::scheduler::SchedulerEvent::Declared { spec } => {
-                    progress.1.push(spec.operation_id)
+                    admitted.push(spec.operation_id)
                 }
                 crate::scheduler::SchedulerEvent::Completed { operation_id, .. } => {
-                    progress.2.push(operation_id)
+                    completed.push(operation_id)
                 }
                 _ => {}
             }
         }
-        let progress = progress.borrow();
-        assert_eq!(progress.1.len(), case.tasks, "{}", case.name);
-        assert_eq!(progress.1, progress.2, "{}", case.name);
-        assert_eq!(progress.1[0], operation);
-        Ok::<_, Error>(progress.1.clone())
+        assert_eq!(admitted.len(), case.tasks, "{}", case.name);
+        assert_eq!(admitted, completed, "{}", case.name);
+        assert_eq!(admitted[0], operation);
+        Ok::<_, Error>(admitted)
     };
     let (_, admitted) = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         futures::future::try_join(execution, frames),
     )
     .await
-    .unwrap_or_else(|_| panic!(
-        "goal scenario stalled: case={} task={task_id:?} execution_done={} remaining={} frames={:?}",
-        case.name, execution_done.get(), provider.remaining(), progress.borrow()
-    ))?;
+    .expect("goal scenario stalled")?;
+    #[cfg(feature = "native-execution")]
+    if case.tasks > 1 {
+        let requests =
+            serde_json::to_string(&provider.requests()).map_err(super::super::storage)?;
+        assert!(requests.contains("Continue the active goal in .volumes/scratch/GOAL.md."));
+    }
     assert_eq!(provider.requests().len(), case.calls, "{}", case.name);
     assert_eq!(provider.remaining(), 0, "{}", case.name);
     let grant = ContentGrant::verify_directory_read(
@@ -171,27 +144,7 @@ async fn run(case: Case) -> Result<()> {
         Some(expected) => assert_eq!(read?.1.as_ref(), expected.as_bytes(), "{}", case.name),
         None => assert!(matches!(read, Err(Error::NotFound(_)))),
     }
-    if case.private_output {
-        let project_goal = b"---\nstatus: done\n---\nProject sentinel";
-        let project = harness
-            .files
-            .read_private_path(
-                harness.project(),
-                &ContentGrant::verify_directory_read(
-                    &harness.verifier,
-                    &harness.signed,
-                    harness.project(),
-                    "",
-                    &mut None,
-                )?,
-                "GOAL.md",
-                None,
-                Limits::default().file_bytes,
-                None,
-            )
-            .await?;
-        assert_eq!(project.1.as_ref(), project_goal, "{}", case.name);
-    } else if let Some(Some(expected)) = case.writes.last() {
+    if let Some(Some(expected)) = case.writes.last().filter(|_| case.path == "GOAL.md") {
         let project = crate::filesystem::workspace_ref(
             harness.project.provider().clone(),
             &harness.project.storage_name(&mut None)?,
@@ -213,7 +166,6 @@ async fn run(case: Case) -> Result<()> {
         );
     }
     if case.unreachable {
-        // Replays recover the file-driven typed reason without more model work.
         check_output(&case, harness.resume(task_id).await)?;
         assert_eq!(provider.requests().len(), case.calls);
     }
@@ -221,10 +173,9 @@ async fn run(case: Case) -> Result<()> {
     drop(followed);
     drop(stream);
     drop(harness);
-    let mut reopen_config = config()?;
     // Disabling future automatic admissions does not discard an already
     // published ordinary continuation or change the result of its replay.
-    reopen_config.goal_continuations = None;
+    let reopen_config = config()?.goal_continuations(None);
     let reopened = LocalHarness::open(reopen_config).await?;
     assert_eq!(
         reopened.resume(task_id).await?.text,
@@ -237,28 +188,36 @@ async fn run(case: Case) -> Result<()> {
     Ok(())
 }
 
-fn bind_private_output(mut harness: LocalHarness, case: &Case) -> Result<LocalHarness> {
-    if case.private_output {
-        harness.runtime = Arc::new(
-            Arc::try_unwrap(harness.runtime)
-                .unwrap_or_else(|_| panic!("fresh goal runtime is shared"))
-                .with_output_volume(&harness.scratch, None)?,
-        );
-    }
-    Ok(harness)
+fn goal_config(
+    case: &Case,
+    directory: &Path,
+    project: VolumeRef,
+    provider: Arc<dyn ModelProvider>,
+) -> Result<LocalHarnessConfig> {
+    let policy = (case.enabled != Some(false)).then_some(GoalContinuationPolicy {
+        max_continuations: case.cap.unwrap_or(32),
+    });
+    let config = volume_config(directory, project, provider)?.goal_continuations(policy);
+    // Without bash the local host binds the stock project writer without a
+    // scratch mount. Keep that real unreachable route covered after #503.
+    Ok(if case.private_mount == Some(false) {
+        config
+            .without_default_tools()
+            .tool(crate::tool::files::write()?)
+    } else {
+        config
+    })
 }
 
 fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Result<()> {
     if case.unreachable {
+        let reason = crate::goal::GoalBlockedReason::TaskViewUnreachable;
         assert!(
-            matches!(
-                &output,
-                Err(Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable))
-            ),
+            matches!(&output, Err(Error::GoalBlocked(actual)) if actual == &reason),
             "{}: {output:?}",
             case.name
         );
-        let error = Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable);
+        let error = Error::GoalBlocked(reason);
         assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
         assert!(!error.is_native_failure());
     } else {
@@ -280,7 +239,7 @@ fn script(case: &Case) -> Vec<ScriptedTurn> {
                 ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                     format!("goal-{index}"),
                     "write".into(),
-                    json!({"path":"GOAL.md", "text":text,
+                    json!({"path":case.path, "text":text,
                         "media_type":"text/markdown", "display_name":"GOAL.md"}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
@@ -376,11 +335,13 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
         ScriptedTurn::Text("recovered".into()),
     ]);
     let config = || -> Result<LocalHarnessConfig> {
-        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
-        config.goal_continuations = Some(GoalContinuationPolicy {
-            max_continuations: 1,
-        });
-        Ok(config)
+        Ok(
+            volume_config(directory.path(), project.clone(), provider.clone())?.goal_continuations(
+                Some(GoalContinuationPolicy {
+                    max_continuations: 1,
+                }),
+            ),
+        )
     };
     let harness = LocalHarness::open(config()?).await?;
     let root = OperationId::new();
@@ -435,11 +396,13 @@ async fn local_goal_resuming_an_old_continuation_drives_its_pending_successor() 
         ScriptedTurn::Text("second".into()),
     ]);
     let config = || -> Result<LocalHarnessConfig> {
-        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
-        config.goal_continuations = Some(GoalContinuationPolicy {
-            max_continuations: 2,
-        });
-        Ok(config)
+        Ok(
+            volume_config(directory.path(), project.clone(), provider.clone())?.goal_continuations(
+                Some(GoalContinuationPolicy {
+                    max_continuations: 2,
+                }),
+            ),
+        )
     };
     let harness = LocalHarness::open(config()?).await?;
     let root = OperationId::new();

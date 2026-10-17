@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 
 use crate::OwnedBytes as Bytes;
 use async_trait::async_trait;
@@ -19,7 +19,10 @@ pub mod http_response;
 pub mod persistence;
 pub mod preparation;
 pub mod request;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub mod session;
 // The WASM adapter consumes this module on browser builds; native builds keep
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
@@ -27,32 +30,34 @@ pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
 mod change;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-mod interest;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod http_codec;
 mod http_validation;
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
+mod interest;
 #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
-#[doc(hidden)]
-pub mod query_sync;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
 ))]
 mod obs;
+#[doc(hidden)]
+pub mod query_sync;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmStream;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
@@ -60,6 +65,14 @@ pub mod wire_codec;
 #[path = "memory/recovery_model.rs"]
 /// Bounded schedule verification of production query concurrency paths.
 pub mod verification;
+#[cfg(all(acyclic_loom, feature = "local"))]
+#[doc(hidden)]
+pub use local::replay_model::{
+    negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
+};
+#[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+#[doc(hidden)]
+pub use memory::browser_follow_model as browser_follow_verification;
 #[cfg(all(acyclic_loom, feature = "local"))]
 /// Bounded models of the real child-discovery providers.
 pub use memory::discovery_model as discovery_verification;
@@ -81,11 +94,14 @@ pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
 }
 /// Canonical public descriptor set used by compatibility gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v1/stream_descriptor.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
 };
+#[cfg(all(feature = "local", feature = "test-support"))]
+pub use local::PersistenceCut;
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.
@@ -123,7 +139,9 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
     "list", "read", "follow", "append", "fork", "create", "commit",
 ];
 
-include!("lib/path.rs");
+#[path = "lib/path.rs"]
+mod path;
+pub use path::StreamPath;
 
 include!("lib/domain.rs");
 
@@ -147,5 +165,17 @@ pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
     PreparedNativeCommit,
 };
+#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+mod test_latency;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_meter;
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "grpc", feature = "local")
+))]
+mod test_trace;
+
+#[cfg(test)]
+#[path = "lib/path_text_tests.rs"]
+mod path_text_tests;

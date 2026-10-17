@@ -21,5 +21,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "follow_contract"
+path = "fuzz_targets/follow_contract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path_text"
+path = "fuzz_targets/path_text.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

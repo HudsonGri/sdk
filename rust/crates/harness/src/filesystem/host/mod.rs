@@ -54,7 +54,11 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn for_workspace(
         &self,
         volume: &VolumeRef,
@@ -81,6 +85,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 impl<A, O> FilesystemHost<A, O> {
+    #[cfg(feature = "native-execution")]
     pub(crate) fn with_project_family(
         mut self: Arc<Self>,
         root: acyclic_fs::WorkspaceId,
@@ -97,6 +102,7 @@ mod content;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod family;
 mod keys;
+mod ranges;
 mod reads;
 mod volumes;
 mod workspaces;
@@ -105,6 +111,7 @@ pub(in crate::filesystem) use keys::{
     content_identity_path_io, content_metadata_path_io, project_join_key,
 };
 pub use keys::{filesystem_key, workspace_ref};
+pub(crate) use reads::file_publication;
 pub(in crate::filesystem) use reads::read_generation;
 
 use crate::executor::stock_boundary;

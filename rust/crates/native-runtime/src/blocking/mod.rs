@@ -1,7 +1,6 @@
 use crate::*;
 pub(crate) use wait::{
-    BlockingWaitWake, allocate_blocking_wait_wake, measured_completion_meter,
-    wait_measured_completion,
+    PreparedWake, allocate_blocking_wait_wake, measured_completion_meter, wait_measured_completion,
 };
 
 mod wait;
@@ -78,14 +77,25 @@ pub(crate) fn task_completion<T: Send + 'static>(
         meter.check()?;
     }
     let allocation = allocation_meter
-        .map(|meter| ReadAllocation::new(meter, std::mem::size_of::<Mutex<CompletionState<T>>>()))
+        .map(|meter| {
+            ReadAllocation::new(
+                meter,
+                std::mem::size_of::<CompletionMutex<CompletionState<T>>>(),
+            )
+        })
         .transpose()?;
-    let state = Arc::new(Mutex::new(CompletionState {
+    let state = Arc::new(CompletionMutex::new(CompletionState {
         task_pending: true,
         result: None,
         panic: None,
         waker: None,
         _allocation: allocation,
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        broken_wake: false,
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        broken_accounting: false,
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        broken_charge: false,
     }));
     let completion = Arc::clone(&state);
     let span = if std::ptr::eq(pool, &BLOCKING_WORKERS) {

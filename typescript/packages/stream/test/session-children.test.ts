@@ -3,6 +3,29 @@ import { StreamSessions } from "../src/session.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 
+test("session discovery reads caller fields once and retains the original cancellation", async () => {
+  const peer = new SessionNode();
+  peer.append("agents/child");
+  const client = new StreamSessions(peer.connect);
+  const original = new AbortController();
+  const replacement = new AbortController();
+  let parent = "agents";
+  let signal = original.signal;
+  const reads = { parent: 0, signal: 0, limit: 0 };
+  const children = client.children({
+    get parent() { reads.parent++; return parent; },
+    get signal() { reads.signal++; return signal; },
+    get limit() { reads.limit++; return 1; },
+  });
+  parent = "other"; signal = replacement.signal;
+  expect((await children.next()).value?.path).toBe("agents/child");
+  original.abort();
+  expect((await children.next()).done).toBe(true);
+  await children.return(undefined);
+  expect(reads).toEqual({ parent: 1, signal: 1, limit: 1 });
+  expect(peer.active).toBe(0);
+});
+
 test("a maximum-size child and its opaque cursor fit the advertised credit", async () => {
   const peer = new SessionNode();
   const path = "a".repeat(StreamLimit.MAX_PATH_BYTES);
@@ -68,7 +91,7 @@ test("next immediately after children disconnect recovers instead of terminating
   } finally { await children.return(undefined); }
 });
 
-test("cancelling unread discovery returns credit and its channel reservation", async () => {
+test("cancelling unread discovery closes idle sessions and releases its reservation", async () => {
   const peer = new SessionNode();
   peer.append("agents/m"); peer.append("agents/a"); peer.append("agents/0");
   const client = new StreamSessions(peer.connect);
@@ -77,9 +100,9 @@ test("cancelling unread discovery returns credit and its channel reservation", a
     const children = client.children({ parent: "agents", limit: 1, signal: cancel.signal });
     expect((await children.next()).value?.path).toBe("agents/m");
     cancel.abort();
+    await peer.until(() => peer.active === 0 && peer.outstandingFrames === 0);
     expect(peer.active).toBe(0);
-    await peer.until(() => peer.outstandingFrames === 0);
     expect(peer.outstandingFrames).toBe(0);
   }
-  expect(peer.connections.length).toBe(1);
+  expect(peer.connections.length).toBe(8);
 });

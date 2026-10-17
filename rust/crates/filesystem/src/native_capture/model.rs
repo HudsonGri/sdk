@@ -8,15 +8,19 @@ pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 pub(crate) struct NativeViewBaseline {
     pub(super) root_identity: NativeRootIdentity,
     pub(super) read_only: bool,
+    #[cfg(test)]
+    pub(super) reuse_override: Option<bool>,
 }
 
 impl NativeViewBaseline {
     /// Records the identity and access mode of the materialized view.
-    #[cfg(any(feature = "native-mount", all(test, unix)))]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
         Self {
             root_identity,
             read_only,
+            #[cfg(test)]
+            reuse_override: None,
         }
     }
     pub(super) fn restore_canonical_stamps(

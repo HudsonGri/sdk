@@ -1,7 +1,7 @@
 use super::*;
 use crate::{CommitId, ReadRequest};
 
-async fn anchor(
+pub(super) async fn anchor(
     provider: &MemoryStream,
     path: &str,
     sequence: u64,
@@ -27,6 +27,7 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
+    let mut ordinary = client.follow(path.clone(), 1).await?;
     assert!(matches!(
         client
             .follow_checked(path.clone(), 1, CommitId::from_bytes([42; 32]))
@@ -36,7 +37,6 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
     let mut checked = client
         .follow_checked(path.clone(), 1, anchor(&provider, "events", 0).await?)
         .await?;
-    let mut ordinary = client.follow(path, 1).await?;
     append(&provider, "events", 1).await?;
     assert_eq!(next(&mut checked).await?.sequence, 1);
     assert_eq!(next(&mut ordinary).await?.sequence, 1);
@@ -53,6 +53,7 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
     let fixture = Fixture::configured(Arc::clone(&provider), "legacy", false, false).await?;
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
+    let mut ordinary = client.follow(path.clone(), 3).await?;
     assert!(matches!(
         client
             .follow_checked(path.clone(), 1, anchor(&provider, "events", 0).await?)
@@ -60,8 +61,8 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
         Err(StreamError::Unsupported)
     ));
     assert_eq!(fixture.counts.sent.load(Ordering::Relaxed), 0);
-    let mut ordinary = client.follow(path, 1).await?;
-    assert_eq!(next(&mut ordinary).await?.sequence, 1);
+    append(&provider, "events", 1).await?;
+    assert_eq!(next(&mut ordinary).await?.sequence, 3);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())
 }
@@ -73,13 +74,13 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
     append(&provider, "events", 1).await?;
     let old = Fixture::open(Arc::clone(&provider), "old").await?;
     let new = Fixture::open(Arc::clone(&provider), "new").await?;
-    let destination = new.channel.clone();
+    let destination = new._channel.clone();
     let connect: Connect = Arc::new(move |_| {
         let channel = destination.clone();
         Box::pin(async move { Ok(channel) })
     });
     let client = Client::with_connector(
-        old.channel.clone(),
+        old._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,

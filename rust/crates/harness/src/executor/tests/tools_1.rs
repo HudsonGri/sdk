@@ -16,6 +16,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     assert_ne!(original.id(), replacement.id());
     let tool = Arc::new(ContextOnlyTool {
         admission: original.id(),
+        lost_response: || Error::Storage("response lost after effect".into()),
         calls: AtomicUsize::new(0),
         reconciles: AtomicUsize::new(0),
     });
@@ -322,9 +323,23 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         .await?;
     assert_eq!(first.request().messages.len(), 3);
     assert_eq!(batch.request().messages.len(), 5);
+    assert_eq!(first.request().messages[0], batch.request().messages[0]);
+    assert_eq!(first.request().messages[1], batch.request().messages[1]);
+    assert_eq!(first.request().messages[2], batch.request().messages[3]);
     assert_eq!(
-        batch.request().messages.get(..3),
-        Some(first.request().messages.as_slice())
+        batch
+            .request()
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        [
+            ModelRole::User,
+            ModelRole::Assistant,
+            ModelRole::Assistant,
+            ModelRole::Tool,
+            ModelRole::Tool
+        ]
     );
     let dispatched = model
         .requests()
@@ -357,6 +372,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         Mutex::new(interactions.clone()),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
+        AtomicUsize::new(0),
     );
     assert_eq!(
         executor
@@ -380,6 +396,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
             Mutex::new(partial),
             Mutex::new(artifacts.clone()),
             Mutex::new(interactions.clone()),
+            AtomicUsize::new(0),
             AtomicUsize::new(0),
             AtomicUsize::new(0),
         );
@@ -415,6 +432,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         Mutex::new(records.clone()),
         Mutex::new(missing),
         Mutex::new(interactions),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -528,6 +546,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         Mutex::new(journal.2.lock().unwrap().clone()),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
+        AtomicUsize::new(0),
     );
     assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
     let incomplete = Journal(
@@ -543,6 +562,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         ),
         Mutex::new(reopened.1.lock().unwrap().clone()),
         Mutex::new(reopened.2.lock().unwrap().clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -565,6 +585,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         ),
         Mutex::new(incomplete.1.lock().unwrap().clone()),
         Mutex::new(incomplete.2.lock().unwrap().clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -986,5 +1007,74 @@ async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() 
             Err(Error::Invalid(message)) if message == expected.message()));
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not() -> Result<()> {
+    let outcome =
+        async |lost_response: fn() -> Error| -> Result<(Result<_>, Result<_>, usize, usize)> {
+            let scope = RuntimeScope::new(
+                crate::Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                Limits::default(),
+            )?;
+            let original = capture_admitted_context(scope.clone()).await?;
+            let tool = Arc::new(ContextOnlyTool {
+                admission: original.id(),
+                lost_response,
+                calls: AtomicUsize::new(0),
+                reconciles: AtomicUsize::new(0),
+            });
+            let tools = echo_tools(
+                tool.clone(),
+                json!({"type":"object"}),
+                json!({"type":"object"}),
+                crate::tool::json_projection_schema(json!({"type":"object"})),
+            )?;
+            let model = Arc::new(
+                ScriptedModelProvider::new([
+                    tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
+                        "call-1".into(),
+                        "example.echo".into(),
+                        json!({"value":"hello"}),
+                    ))]),
+                    done_turn(),
+                ])
+                .with_token_counter(fixture_token_count),
+            );
+            let operation = OperationId::new();
+            let executor = StockExecutor::new(
+                Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
+                model,
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(scope, None)?
+            .with_task_context(&original, operation)?;
+            let input = TurnInput {
+                operation_id: operation,
+                input: ModelContent::Text("input".into()),
+                selected_context: None,
+                max_steps: 2,
+            };
+            let journal = Journal::default();
+            let first = executor.execute(input.clone(), &journal).await;
+            let replay = executor.execute(input, &journal).await;
+            Ok((
+                first,
+                replay,
+                tool.calls.load(Ordering::SeqCst),
+                tool.reconciles.load(Ordering::SeqCst),
+            ))
+        };
+    let (cancelled, replay, calls, reconciles) = outcome(|| Error::Cancelled).await?;
+    assert!(matches!(cancelled, Err(Error::Indeterminate(_))));
+    assert!(replay.is_ok());
+    assert_eq!((calls, reconciles), (1, 1));
+    let (rejected, replay, calls, reconciles) =
+        outcome(|| Error::Invalid("tool refused".into())).await?;
+    assert!(matches!(rejected, Err(Error::Invalid(_))));
+    assert!(matches!(replay, Err(Error::Invalid(_))));
+    assert_eq!((calls, reconciles), (1, 0));
     Ok(())
 }

@@ -6,17 +6,19 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolCall {
-    /// Provider-owned call identity, scoped by the executor's dispatch.
+    /// Harness-minted canonical call identity; provider bindings live in metadata.
     #[serde(alias = "callId")]
     pub call_id: String,
     /// Registered tool name.
     pub name: String,
     /// Schema-defined arguments.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub arguments: Value,
     /// Opaque provider continuation data retained for follow-ups and replay.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub metadata: Value,
 }
 

@@ -35,12 +35,11 @@ fn synthetic_token_count(
         })
         .collect::<Result<Vec<_>>>()?;
     let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
-    Ok(crate::context::ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: u32::try_from(fixed)
-            .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+        request.request_digest(),
+        u32::try_from(fixed).map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
         message_tokens,
-    })
+    ))
 }
 
 fn text_model(turns: usize) -> ScriptedModelProvider {
@@ -110,7 +109,7 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             provider.clone(),
         )
-        .tool(storage.list_files_tool(Limits::default())?)?
+        .tool(storage.list_files_tool(Limits::default())?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -558,7 +557,7 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
             model.clone(),
         )
         .grant(capability::MODEL_GENERATE)
-        .tool(storage.list_files_tool(limits)?)?
+        .tool(storage.list_files_tool(limits)?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -575,12 +574,7 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
     );
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
-    assert!(
-        requests[0]
-            .tools
-            .iter()
-            .any(|tool| tool.name == "read")
-    );
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "read"));
     assert!(requests[1].messages.iter().any(|message| matches!(
         &message.content,
         crate::model::ModelContent::Part(crate::model::ModelContentPart::ToolResult { .. })
@@ -598,7 +592,7 @@ async fn memory_prompt_runs_with_attachments() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             provider.clone(),
         )
-        .tool(storage.list_files_tool(Limits::default())?)?
+        .tool(storage.list_files_tool(Limits::default())?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -639,6 +633,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     let provider = Arc::new(text_model(2));
     let bundle = storage
         .builder()
+        .without_default_tools()
         .compaction(crate::context::CompactionPolicy::Disabled)
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
@@ -844,6 +839,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     );
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.tools.is_empty()));
     assert_eq!(requests[0].messages.len(), 1);
     assert_eq!(requests[1].messages.len(), 3);
     Ok(())

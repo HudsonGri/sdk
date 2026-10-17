@@ -1,15 +1,77 @@
 //! Exhaustive models of the production cached binding decision.
+#![cfg(not(target_arch = "wasm32"))]
 
 #[path = "../src/native_mount/cached_binding.rs"]
 mod cached_binding;
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[cfg(all(acyclic_fs_loom, not(kani), target_os = "linux"))]
+#[cfg(acyclic_fs_loom)]
+#[path = "../src/native_mount/projfs/probe_guard.rs"]
+mod probe_guard;
+
+#[cfg(acyclic_fs_loom)]
+mod probe_registration {
+    use super::probe_guard::{ProbeGuard, with_guard};
+    use crate::sync::{Arc, Mutex};
+    use loom::thread;
+    use std::collections::HashMap;
+
+    #[test]
+    fn live_io_retains_its_registration_without_holding_the_map_lock() {
+        check(false);
+    }
+
+    #[test]
+    #[should_panic(expected = "metadata I/O lost its probe registration")]
+    fn dropping_the_registration_before_io_is_detected() {
+        check(true);
+    }
+
+    fn check(drop_early: bool) {
+        for same_path in [false, true] {
+            loom::model(move || {
+                let probes = Arc::new(Mutex::new(HashMap::new()));
+                let mut threads = Vec::new();
+                for index in 0_u8..2 {
+                    let probes = probes.clone();
+                    threads.push(thread::spawn(move || {
+                        let path = if same_path { 0 } else { index };
+                        with_guard(
+                            || {
+                                let guard = ProbeGuard::enter(&probes, &path);
+                                if drop_early {
+                                    drop(guard);
+                                    None
+                                } else {
+                                    Some(guard)
+                                }
+                            },
+                            || {
+                                assert!(
+                                    ProbeGuard::is_active(&probes, &path, u8::eq),
+                                    "metadata I/O lost its probe registration"
+                                );
+                                let active = probes.lock().unwrap();
+                                assert!((1..=2).contains(&active[&path]));
+                            },
+                        );
+                    }));
+                }
+                for thread in threads {
+                    thread.join().unwrap();
+                }
+                assert!(probes.lock().unwrap().is_empty());
+            });
+        }
+    }
+}
+
+#[cfg(all(acyclic_fs_loom, not(kani)))]
 mod interleavings {
     use super::cached_binding::cached_binding_matches;
+    use crate::sync::atomic::{AtomicU8, Ordering};
     use crate::sync::{Arc, Mutex, RwLock};
-    use loom::sync::atomic::{AtomicU8, Ordering};
     use loom::thread;
     use std::cell::Cell;
 
@@ -144,7 +206,7 @@ mod interleavings {
     }
 }
 
-#[cfg(kani)]
+#[cfg(not(acyclic_fs_loom))]
 mod proofs {
     use super::cached_binding::cached_binding_decision;
     use std::cell::Cell;
@@ -157,13 +219,27 @@ mod proofs {
         }
     }
 
+    #[cfg(kani)]
     #[kani::proof]
     #[kani::unwind(1)]
     fn decision_requires_a_binding_and_lease_and_checks_each_path_at_most_once() {
-        let present: bool = kani::any();
-        let admitted: bool = kani::any();
-        let current: bool = kani::any();
-        let unchanged: bool = kani::any();
+        check(kani::any(), kani::any(), kani::any(), kani::any());
+    }
+
+    #[cfg(not(kani))]
+    #[test]
+    fn every_boolean_decision_retains_its_lease_and_bounds_callbacks() {
+        for flags in 0..16 {
+            check(
+                flags & 1 != 0,
+                flags & 2 != 0,
+                flags & 4 != 0,
+                flags & 8 != 0,
+            );
+        }
+    }
+
+    fn check(present: bool, admitted: bool, current: bool, unchanged: bool) {
         let live = Cell::new(false);
         let lease_calls = Cell::new(0_u8);
         let current_calls = Cell::new(0_u8);

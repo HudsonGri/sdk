@@ -10,6 +10,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("read", maximum_bytes));
         let owned;
         let io = if let Some(io) = io {
             io
@@ -124,6 +126,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &WorkspaceRef,
         reference: &GenerationRef,
     ) -> Result<()> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("retain", 0u64));
         let workspace = self.open(workspace, None).await?;
         let generation = self.generation(&workspace, reference, None).await?;
         let identity = format!(
@@ -168,16 +172,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
-        let generation = self
-            .apply_generation(
+        let generation = crate::conversation::BoundedContentFuture::new(None, || {
+            self.apply_generation_unmeasured(
                 workspace,
                 expected_generation,
                 mutations,
-                idempotency_key.clone(),
-                None,
-                None,
-            )?
-            .await?;
+                idempotency_key,
+                true,
+            )
+        })?
+        .await?;
         self.generation_ref_id(generation.id(), None)
     }
 
@@ -187,6 +191,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
+        invalidate_metadata: bool,
     ) -> Result<Generation<A, O>> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
@@ -234,6 +239,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
                         .map_err(map_error)?;
+                }
+            }
+            // Raw mutations do not carry a descriptor or write publication.
+            // Invalidate the old index atomically, including same-byte writes.
+            // The content writer supplies its own metadata in this transaction.
+            if invalidate_metadata
+                && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
+                    mutation
+            {
+                let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                match transaction.remove(&metadata, budget, &cancellation).await {
+                    Ok(_) => {}
+                    Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                    Err(failure) => return Err(map_error(failure.error)),
                 }
             }
         }
@@ -375,7 +394,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
-                self.apply_generation_unmeasured(reference, expected, mutations, &key)
+                self.apply_generation_unmeasured(reference, expected, mutations, &key, false)
                     .await
             });
         };
@@ -453,7 +472,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                             .await?;
                     }
-                    io.receive(
+                    break 'commit io.receive(
                         transaction
                             .commit(
                                 None,
@@ -474,7 +493,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 },
                             )
                             .await,
-                    )?
+                    )?;
                 };
                 Ok(commit)
             })?

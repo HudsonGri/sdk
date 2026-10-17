@@ -1,3 +1,4 @@
+import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
@@ -8,7 +9,7 @@ import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/c
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -39,12 +40,12 @@ type Children = (request: Parameters<Client<typeof StreamService>["children"]>[0
 export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const { client, sessions } = streamGrpc(options);
   const follow: Follow = async function* (request, callOptions) {
+    const { signal, timeoutMs } = callOptions ?? {};
     const path = request.path ?? "";
     const from = request.from ?? 0n;
     await validateWireRequest({ kind: "follow", path, from });
-    const timeoutMs = callOptions?.timeoutMs;
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
-    const controller = createLinkedAbortController(deadline.signal, callOptions?.signal);
+    const controller = createLinkedAbortController(deadline.signal, signal);
     try {
       for await (const record of sessions.follow(path, { from, signal: controller.signal })) {
         const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
@@ -54,12 +55,12 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     } finally { controller.abort(); deadline.cleanup(); }
   };
   const children: Children = async function* (request, callOptions) {
+    const { signal, timeoutMs } = callOptions ?? {};
     const parent = request.parent;
     const limit = request.limit ?? wire.StreamLimit.MAX_ITEMS;
     await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    const timeoutMs = callOptions?.timeoutMs;
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
-    const controller = createLinkedAbortController(deadline.signal, callOptions?.signal);
+    const controller = createLinkedAbortController(deadline.signal, signal);
     try {
       for await (const child of sessions.children({ limit, ...(parent === undefined ? {} : { parent }), signal: controller.signal })) {
         yield create(wire.ChildrenResponseSchema, { child });
@@ -120,7 +121,7 @@ function streamGrpc(options: StreamGrpcOptions) {
       const client = createClient(StreamSessionService, transport);
       const incoming = async function* () {
         try { yield* client.session(input, { signal }); }
-        catch (error) { throw providerError(error, "session"); }
+        catch (error) { throw sessionTransportError(error); }
       };
       return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
     }, acknowledgeDeliveries !== false);
@@ -183,6 +184,12 @@ export class GrpcStreamProvider implements StreamProvider {
       yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
     } finally { controller.abort(); }
   }
+  async *followData(follow: SessionFollow, options: FollowOptions): AsyncIterable<SessionData> {
+    const authored = structuredClone(follow);
+    const { from, signal } = options;
+    await validateWireRequest({ kind: "follow", path: authored.path, from });
+    yield* this.#sessions.followData(authored, { from, ...(signal === undefined ? {} : { signal }) });
+  }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     await validateWireRequest({ kind: "follow", path, from: options.from });
     yield* this.#sessions.follow(path, options);
@@ -210,9 +217,10 @@ export class GrpcStreamProvider implements StreamProvider {
     }
   }
   async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    await validateWireRequest({ kind: "children", limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }) });
-    yield* this.#sessions.children(request);
+    const { parent, signal, limit } = request;
+    await validateWireRequest({ kind: "children", limit,
+      ...(parent === undefined ? {} : { parent }) });
+    yield* this.#sessions.children({ limit, ...(parent === undefined ? {} : { parent }), ...(signal === undefined ? {} : { signal }) });
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const, limit: request.limit,
@@ -260,4 +268,10 @@ function providerError(error: unknown, operation: string): Error {
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, reason);
+}
+
+/** Platform callbacks use Rust codes; public aliases never enter the session engine. */
+function sessionTransportError(error: unknown): unknown {
+  if (!(error instanceof ConnectError)) return error;
+  return Object.assign(new Error(error.rawMessage), { code: grpcErrorCode(error.code, error.rawMessage) });
 }

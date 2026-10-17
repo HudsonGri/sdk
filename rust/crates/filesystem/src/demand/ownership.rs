@@ -6,6 +6,10 @@ use std::sync::Arc;
 #[path = "ownership_accounting.rs"]
 pub(super) mod accounting;
 
+#[cfg(all(test, acyclic_fs_loom))]
+#[path = "ownership_loom_tests.rs"]
+mod loom_tests;
+
 #[cfg(feature = "native-watch")]
 #[derive(Debug, Default)]
 pub(crate) enum SourcePayloadOwnership {
@@ -134,6 +138,7 @@ impl NativeMountAllocationCustody {
             .as_ref()
             .map_or(0, |bytes| bytes.load(Ordering::Acquire))
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(super) fn accounts_for(&self, gauge: &Arc<AtomicU64>) -> bool {
         self.bytes
             .as_ref()
@@ -269,16 +274,12 @@ impl NativeMountAllocationCustody {
     }
     #[cfg(feature = "native-watch")]
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), crate::WorkError> {
-        self.bytes
-            .as_ref()
-            .ok_or(crate::WorkError::Overflow)?
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current
-                    .checked_sub(bytes)
-                    .filter(|current| *current >= std::mem::size_of::<Self>() as u64)
-            })
-            .map_err(|_| crate::WorkError::Overflow)?;
-        accounting::publish(&self.accounting_dirty);
+        accounting::retire_bytes::<true>(
+            &self.accounting_dirty,
+            self.bytes.as_ref().ok_or(crate::WorkError::Overflow)?,
+            bytes,
+            std::mem::size_of::<Self>() as u64,
+        )?;
         self.retire_resource(bytes)
     }
     #[cfg(feature = "native-watch")]

@@ -1,36 +1,49 @@
 //! Multiplexed Streams follows shared by client and node-to-node sessions.
 
-use crate::{StreamError, StreamPath, StreamProvider, wire, wire_codec};
+use crate::StreamProvider;
+use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
-use futures::{
-    StreamExt, future,
-    stream::{self, BoxStream, SelectAll},
-};
+#[cfg(not(target_arch = "wasm32"))]
+use futures::stream::BoxStream;
+use futures::{StreamExt, future, stream};
 use prost::Message as _;
-use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::Arc,
-};
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
-mod admission;
+mod sources;
+#[cfg(acyclic_stream_loom)]
+pub use sources::model::{verify_source_recheck, verify_source_wakes};
 mod children;
 mod client;
+mod connection;
+mod local;
+pub use connection::Connections;
+#[cfg(acyclic_stream_loom)]
+pub use connection::verify_connections;
 mod gate;
 mod interest;
 mod policy;
 mod queue;
+pub mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
 mod service;
 mod signal;
 mod sync;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use client::Cache;
 pub use client::Client;
+pub use client::transport;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
-    verify_abandoned_reconnect, verify_cache, verify_interest_accounting, verify_link_isolation,
-    verify_pool_lifetime,
+    verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_cancel_before_open,
+    verify_discovery_admission, verify_follow_data, verify_initial_retry_yield, verify_interest_accounting,
+    verify_link_isolation, verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
+    verify_terminal_cursor_dial,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
 // Child frames carry both their path and the provider-owned resume anchor.
 const CHILD_FRAME_BYTES: usize = 2 * crate::MAX_PATH_BYTES + 128;
@@ -39,7 +52,9 @@ const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES +
 } else {
     crate::MAX_RECORD_BYTES + 128
 };
-#[cfg(test)]
+#[cfg(acyclic_stream_loom)]
+pub use client::verify_latest_progress;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
 /// Finite session admission independent of the number of stored streams.
@@ -66,13 +81,12 @@ struct Channel {
     generation: u64,
     latest: bool,
     children: bool,
-    pending: usize,
-    enabled: Arc<gate::Gate>,
+    pending: VecDeque<Pending>,
+    indexed: Option<usize>,
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
     ending: Option<StreamError>,
-    cancel: Option<oneshot::Sender<()>>,
 }
 struct Pending {
     frame: wire::SessionFrame,
@@ -83,33 +97,53 @@ enum Event {
     Record(crate::Record),
     Child(crate::Child, wire::SessionCursor),
 }
-type Source = BoxStream<'static, (wire::SessionChannel, Result<Event, StreamError>)>;
+type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
+type Source = crate::BoxProviderStream<'static, SourceItem>;
 
-struct Session<P> {
+struct Session<P: ?Sized> {
     provider: Arc<P>,
+    executor: Arc<dyn runtime::Executor>,
     limits: Limits,
     node: String,
     hello: bool,
     prefer_control: bool,
     revision: u64,
     channels: BTreeMap<u64, Channel>,
-    sources: SelectAll<Source>,
-    incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
+    sources: sources::Sources,
+    incoming: transport::Responses,
     credit: wire::SessionWindow,
     controls: VecDeque<wire::SessionFrame>,
-    pending: VecDeque<Pending>,
+    pending_frames: usize,
     pending_bytes: usize,
-    readiness: (bool, bool, bool),
+    runnable: BTreeSet<(usize, u64)>,
+    ready_after: Option<(usize, u64)>,
+    #[cfg(test)]
+    head_visits: usize,
 }
 
 /// Opens one bidirectional node session over the canonical provider.
 /// Transport authentication and per-path capabilities remain the host's responsibility.
-pub fn serve<P: StreamProvider>(
+pub fn serve<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
     node: String,
     limits: Limits,
-    incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
-) -> Result<BoxStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError> {
+    incoming: transport::Responses,
+) -> Result<transport::Responses, StreamError> {
+    serve_on(
+        provider,
+        node,
+        limits,
+        incoming,
+        Arc::new(runtime::PlatformExecutor),
+    )
+}
+fn serve_on<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+    executor: Arc<dyn runtime::Executor>,
+) -> Result<transport::Responses, StreamError> {
     if node.is_empty()
         || limits.channels == 0
         || limits.pending_frames == 0
@@ -119,60 +153,77 @@ pub fn serve<P: StreamProvider>(
     }
     let session = Session {
         provider,
+        executor,
         node,
         limits,
         hello: false,
         prefer_control: true,
         revision: 0,
         channels: BTreeMap::new(),
-        sources: SelectAll::new(),
+        sources: sources::Sources::new(),
         incoming,
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),
-        pending: VecDeque::new(),
+        pending_frames: 0,
         pending_bytes: 0,
-        readiness: (false, false, false),
+        runnable: BTreeSet::new(),
+        ready_after: None,
+        #[cfg(test)]
+        head_visits: 0,
     };
-    Ok(stream::try_unfold(session, |mut session| async move {
-        loop {
-            if let Some(frame) = session.controls.pop_front() {
-                return Ok(Some((frame, session)));
-            }
-            if let Some(frame) = session.ready()? {
-                return Ok(Some((frame, session)));
-            }
-            if session.sources.is_empty() {
-                let Some(frame) = session.incoming.next().await else {
-                    return Ok(None);
+    Ok(Box::pin(stream::try_unfold(
+        session,
+        |mut session| async move {
+            loop {
+                if let Some(frame) = session.controls.pop_front() {
+                    return Ok(Some((frame, session)));
+                }
+                if let Some(frame) = session.ready()? {
+                    return Ok(Some((frame, session)));
+                }
+                if session.sources.is_empty() {
+                    let Some(frame) = session.incoming.next().await else {
+                        return Ok(None);
+                    };
+                    session.receive(frame?)?;
+                    continue;
+                }
+                // Alternate deterministic priority. This bounds ready-side work
+                // and lets the model explore the actual wakeup path without RNG.
+                let input = session.incoming.next();
+                let room = policy::room(
+                    session.limits.pending_frames,
+                    session.limits.pending_bytes,
+                    session.pending_frames,
+                    session.pending_bytes,
+                    DATA_FRAME_BYTES,
+                    session.credit.frames > 0 && session.credit.bytes > 0,
+                );
+                let source = session.sources.next(room);
+                let event = if session.prefer_control {
+                    match future::select(input, source).await {
+                        future::Either::Left((input, _)) => future::Either::Left(input),
+                        future::Either::Right((source, _)) => future::Either::Right(source),
+                    }
+                } else {
+                    match future::select(source, input).await {
+                        future::Either::Left((source, _)) => future::Either::Right(source),
+                        future::Either::Right((input, _)) => future::Either::Left(input),
+                    }
                 };
-                session.receive(frame?)?;
-                continue;
-            }
-            // Alternate deterministic priority. This bounds ready-side work
-            // and lets the model explore the actual wakeup path without RNG.
-            let input = session.incoming.next();
-            let source = session.sources.next();
-            let event = if session.prefer_control {
-                match future::select(input, source).await {
-                    future::Either::Left((input, _)) => future::Either::Left(input),
-                    future::Either::Right((source, _)) => future::Either::Right(source),
+                session.prefer_control = !session.prefer_control;
+                match event {
+                    future::Either::Left(Some(frame)) => session.receive(frame?)?,
+                    future::Either::Left(None) => return Ok(None),
+                    future::Either::Right(source) => {
+                        if let Some((channel, event)) = source? {
+                            session.record(channel, event)?;
+                        }
+                    }
                 }
-            } else {
-                match future::select(source, input).await {
-                    future::Either::Left((source, _)) => future::Either::Right(source),
-                    future::Either::Right((input, _)) => future::Either::Left(input),
-                }
-            };
-            session.prefer_control = !session.prefer_control;
-            match event {
-                future::Either::Left(Some(frame)) => session.receive(frame?)?,
-                future::Either::Left(None) => return Ok(None),
-                future::Either::Right(Some((channel, event))) => session.record(channel, event)?,
-                future::Either::Right(None) => {}
             }
-        }
-    })
-    .boxed())
+        },
+    )))
 }
 
 fn frame(channel_id: u64, generation: u64, body: Body) -> wire::SessionFrame {
@@ -189,7 +240,7 @@ fn cursor(next: u64) -> wire::SessionCursor {
     }
 }
 
-impl<P: StreamProvider> Session<P> {
+impl<P: StreamProvider + ?Sized> Session<P> {
     fn receive(&mut self, input: wire::SessionFrame) -> Result<(), StreamError> {
         if input.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
@@ -223,7 +274,6 @@ impl<P: StreamProvider> Session<P> {
                         .map_err(|_| StreamError::Capacity)?,
                 }),
             ));
-            self.refresh(None)?;
             return Ok(());
         }
         if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_)) {
@@ -242,13 +292,12 @@ impl<P: StreamProvider> Session<P> {
             }
             Body::Window(grant) if input.channel_id == 0 && input.generation == 0 => {
                 wire_codec::session::grant_credit(&mut self.credit, &grant)?;
-                self.refresh(None)?;
                 Ok(())
             }
             Body::Window(grant) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
                 wire_codec::session::grant_credit(&mut channel.credit, &grant)?;
-                self.refresh(Some(input.channel_id))?;
+                self.refresh_source(input.channel_id);
                 Ok(())
             }
             Body::Ack(ack) => {

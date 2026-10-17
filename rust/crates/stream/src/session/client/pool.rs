@@ -1,18 +1,28 @@
 use super::*;
 
+#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
+pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
+#[cfg(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod ordering;
+#[cfg(acyclic_stream_loom)]
+pub(super) mod retry_model;
+
+#[cfg(acyclic_stream_loom)]
+pub(super) mod discovery_model;
 
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
             self.sync_attempts()?;
+            self.close_idle();
             tokio::select! {
                 changed = self.abandoned.changed(false) => changed?,
                 command = self.commands.recv() => match command { Some(command) => self.command(command)?, None => return Ok(()) },
                 released = self.released.next() => { self.released(released?)?; },
                 id = self.removed.next() => self.remove(id?)?,
-                ready = self.dials.next(), if !self.dials.is_empty() => {
+                ready = future::poll_fn(|cx| poll_dials(&mut self.dials, cx)), if !self.dials.is_empty() => {
                     let (node,epoch,result) = ready.ok_or(StreamError::Unavailable)?;
                     self.dial_ready(node, epoch, result)?;
                 }
@@ -25,8 +35,8 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(error)) if grpc::retryable(&error) => self.reconnect(&node)?,
-                            Some(Err(error)) => self.fail_link(&node,&grpc::status(&error)),
+                            Some(Err(StreamError::Unavailable)) => self.reconnect(&node)?,
+                            Some(Err(error)) => self.fail_link(&node,&error),
                             None => self.reconnect(&node)?,
                         }
                     }
@@ -46,7 +56,6 @@ impl Pool {
         }
         self.dial_epoch = epoch;
         self.dials.clear();
-        self.connecting.clear();
         let stale = self
             .routes
             .iter()
@@ -58,7 +67,7 @@ impl Pool {
         }
         Ok(())
     }
-    fn dial_ready(
+    pub(super) fn dial_ready(
         &mut self,
         node: String,
         epoch: u64,
@@ -70,11 +79,14 @@ impl Pool {
             // Neither its failure nor its success belongs to the successor dial.
             return Ok(());
         }
-        self.connecting.remove(&node);
+        if !self.node_interested(&node) {
+            return Ok(());
+        }
         match result {
             Ok(ready) => {
                 let installed = self.install(ready)?;
                 if node.is_empty() && self.home.is_empty() {
+                    self.admissions.bind_home(&installed)?;
                     self.home = installed.clone();
                     for route in self
                         .routes
@@ -95,20 +107,37 @@ impl Pool {
         }
         Ok(())
     }
-    fn close_idle(&mut self) {
+    pub(super) fn close_idle(&mut self) {
         if self.active.load(Ordering::Acquire) == 0 {
             self.close_links();
+        } else {
+            let idle = self
+                .dials
+                .keys()
+                .filter(|node| !self.node_interested(node))
+                .cloned()
+                .collect::<Vec<_>>();
+            for node in idle {
+                // Dropping the owned future cancels connector/credential/Welcome
+                // work immediately; it cannot later publish a Link or failure.
+                self.dials.remove(&node);
+            }
         }
+    }
+    pub(super) fn node_interested(&self, node: &str) -> bool {
+        self.routes
+            .values()
+            .any(|route| route.node == node && route.live())
+            || self.admissions.interested(node)
     }
     fn close_links(&mut self) {
         self.links.clear();
         self.reads.clear();
         self.dials.clear();
-        self.connecting.clear();
         self.pending.clear();
         self.routes.clear();
     }
-    fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
+    pub(super) fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
         match self.receive(node, value) {
             Ok(()) => true,
             Err(error) => {
@@ -118,10 +147,23 @@ impl Pool {
         }
     }
     pub(super) fn fail_link(&mut self, node: &str, error: &StreamError) {
-        self.links.remove(node);
+        if let Some(mut link) = self.links.remove(node)
+            && let Some(observation) = &mut link.observation
+        {
+            observation.finish(Some(error));
+        }
         self.fail_node(node, error);
     }
     fn command(&mut self, command: Command) -> Result<(), StreamError> {
+        // Cursor drops happen before their owner's replacement Open. Removal
+        // uses a separate wake queue, so dispatch must preserve that ordering
+        // even when select chooses the command first.
+        while let Some(id) = self.removed.try_next()? {
+            self.remove(id)?;
+        }
+        self.apply_command(command)
+    }
+    fn apply_command(&mut self, command: Command) -> Result<(), StreamError> {
         self.sync_attempts()?;
         match command {
             Command::Open {
@@ -129,10 +171,13 @@ impl Pool {
                 attempt_epoch,
                 acknowledge,
                 kind,
+                raw,
                 progress,
                 records,
                 ready,
+                observation,
             } => {
+                self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
                     return Ok(());
@@ -151,6 +196,8 @@ impl Pool {
                         node: self.home.clone(),
                         attempt_epoch,
                         kind,
+                        raw,
+                        watermark: None,
                         generation: 1,
                         placement_epoch: 0,
                         received: from,
@@ -162,6 +209,7 @@ impl Pool {
                         progress,
                         records,
                         ready: Some(ready),
+                        observation,
                     },
                 );
                 if self.links.contains_key(&self.home) {
@@ -188,7 +236,10 @@ impl Pool {
             epoch,
             generation,
         } = released;
-        self.release(&node, epoch, bytes)?;
+        if bytes != 0 {
+            self.release(&node, epoch, bytes)?;
+        }
+        self.flush_watermark(id)?;
         let Some(route) = self.routes.get_mut(&id) else {
             return Ok(());
         };
@@ -241,6 +292,14 @@ impl Pool {
         if matches!(input.body, Some(Body::Data(_))) {
             wire_codec::session::consume_credit(&mut route.credit, &input)?;
         }
+        if matches!(input.body, Some(Body::Closed(_) | Body::Moved(_)))
+            && let Some(link) = self.links.get(node)
+        {
+            link.channel.cancel_channel(wire::SessionChannel {
+                channel_id: id,
+                generation: input.generation,
+            });
+        }
         match input.body {
             Some(Body::Opened(opened)) => {
                 if opened.resume.as_ref().is_none_or(|resume| {
@@ -259,15 +318,16 @@ impl Pool {
                         }
                         let records = route.records.clone();
                         self.remove(id)?;
-                        tokio::spawn(async move {
+                        self.executor.spawn(Box::pin(async move {
                             let _ = records.send(Err(error)).await;
-                        });
+                        }));
                         return Ok(());
                     }
                 }
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Ok(id));
                 }
+                route.observation.record("generation", route.generation);
                 route.opened = true;
                 self.grant(id)
             }
@@ -287,9 +347,9 @@ impl Pool {
                     let _ = ready.send(Ok(id));
                 }
                 let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
-                tokio::spawn(async move {
+                self.executor.spawn(Box::pin(async move {
                     let _ = route.records.send(Err(error)).await;
-                });
+                }));
                 Ok(())
             }
             Some(Body::Moved(moved)) => {
@@ -310,7 +370,14 @@ impl Pool {
                     Ok(())
                 }
             }
-            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => Ok(()),
+            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
+                if route.raw {
+                    route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
+                    self.flush_watermark(id)
+                } else {
+                    Ok(())
+                }
+            }
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -346,35 +413,46 @@ impl Pool {
         epoch: u64,
     ) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let after = data.after.ok_or(StreamError::Unavailable)?;
-        let (item, sequence) = match (&route.kind, data.item) {
-            (Kind::Follow(_), Some(Item::Record(record))) if after.opaque.is_empty() => {
-                let record = wire_codec::record(record)?;
-                let sequence = record.sequence;
-                (Received::Record(record), sequence)
+        let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+        let sequence = match (&route.kind, data.item.as_ref()) {
+            (Kind::Follow(follow), _) => {
+                wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?
             }
             (Kind::Children(request), Some(Item::Child(child))) => {
-                let path = StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?;
-                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref() {
+                let path = StreamPath::new(&child.path).map_err(|_| StreamError::Unavailable)?;
+                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref()
+                    || after.next
+                        != route
+                            .received
+                            .checked_add(1)
+                            .ok_or(StreamError::OutOfRange)?
+                    || data.durable > data.accepted
+                    || data.accepted < after.next
+                {
                     return Err(StreamError::Unavailable);
                 }
-                (Received::Child(crate::Child { path }), route.received)
+                route.received
             }
             _ => return Err(StreamError::Unavailable),
         };
-        if sequence != route.received
-            || after.next != sequence.checked_add(1).ok_or(StreamError::OutOfRange)?
-            || data.durable > data.accepted
-            || data.accepted < after.next
-        {
-            return Err(StreamError::Unavailable);
-        }
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
+        let opaque = after.opaque.clone();
+        let item = if route.raw {
+            Received::Frame(frame(id, generation, Body::Data(data)))
+        } else if matches!(route.kind, Kind::Follow(_)) {
+            Received::Data(data)
+        } else if let Some(Item::Child(child)) = data.item {
+            Received::Child(crate::Child {
+                path: StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?,
+            })
+        } else {
+            return Err(StreamError::Unavailable);
+        };
         let delivery = Delivery {
             item,
             sequence,
-            opaque: after.opaque,
+            opaque,
             generation,
             credit: Credit::new(
                 self.release_sender.clone(),
@@ -394,15 +472,55 @@ impl Pool {
         }
     }
 
+    fn flush_watermark(&mut self, id: u64) -> Result<(), StreamError> {
+        let Some(route) = self.routes.get_mut(&id) else {
+            return Ok(());
+        };
+        // Reserve slots for every data frame already granted to the peer.
+        // Control-only durability updates occupy at most one additional pending value.
+        if route.records.capacity() <= route.credit.frames as usize {
+            return Ok(());
+        }
+        let Some(value) = route.watermark.take() else {
+            return Ok(());
+        };
+        let epoch = self
+            .links
+            .get(&route.node)
+            .ok_or(StreamError::Unavailable)?
+            .epoch;
+        let delivery = Delivery {
+            item: Received::Frame(value),
+            sequence: route.received,
+            opaque: route.received_opaque.clone(),
+            generation: route.generation,
+            credit: Credit::new(
+                self.release_sender.clone(),
+                Released {
+                    id,
+                    node: route.node.clone(),
+                    bytes: 0,
+                    epoch,
+                    generation: route.generation,
+                },
+            ),
+        };
+        match route.records.try_send(Ok(delivery)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => self.remove(id),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(StreamError::Capacity),
+        }
+    }
+
     pub(super) fn reject(&mut self, id: u64, error: StreamError) {
         if let Some(mut route) = self.routes.remove(&id) {
             if let Some(ready) = route.ready.take() {
                 let _ = ready.send(Err(error.clone()));
             }
             let records = route.records;
-            tokio::spawn(async move {
+            self.executor.spawn(Box::pin(async move {
                 let _ = records.send(Err(error)).await;
-            });
+            }));
         }
     }
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
@@ -419,9 +537,9 @@ impl Pool {
                 }
                 let error = error.clone();
                 let records = route.records;
-                tokio::spawn(async move {
+                self.executor.spawn(Box::pin(async move {
                     let _ = records.send(Err(error)).await;
-                });
+                }));
             }
         }
     }
@@ -433,9 +551,23 @@ impl Pool {
             }
             let error = error.clone();
             let records = route.records;
-            tokio::spawn(async move {
+            self.executor.spawn(Box::pin(async move {
                 let _ = records.send(Err(error)).await;
-            });
+            }));
         }
     }
+}
+
+pub(super) fn poll_dials(
+    dials: &mut BTreeMap<String, Dial>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<Option<(String, u64, Result<Ready, StreamError>)>> {
+    for (node, dial) in dials.iter_mut() {
+        if let std::task::Poll::Ready(result) = dial.as_mut().poll(cx) {
+            let node = node.clone();
+            dials.remove(&node);
+            return std::task::Poll::Ready(Some(result));
+        }
+    }
+    std::task::Poll::Pending
 }

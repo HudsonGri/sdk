@@ -6,6 +6,12 @@ pub(crate) struct CompletionState<T> {
     pub(crate) panic: Option<Box<dyn std::any::Any + Send>>,
     pub(crate) waker: Option<Waker>,
     pub(crate) _allocation: Option<ReadAllocation>,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_wake: bool,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_accounting: bool,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_charge: bool,
 }
 
 impl<T> Default for CompletionState<T> {
@@ -16,11 +22,27 @@ impl<T> Default for CompletionState<T> {
             panic: None,
             waker: None,
             _allocation: None,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_wake: false,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_accounting: false,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_charge: false,
         }
     }
 }
 
 impl<T> CompletionState<T> {
+    /// Moves the state's charge to the observer, which retires it after
+    /// releasing the lock.
+    pub(crate) fn take_charge(&mut self) -> Option<ReadAllocation> {
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if self.broken_charge {
+            return None;
+        }
+        self._allocation.take()
+    }
+
     pub(crate) fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
         if !self.task_pending
             && let Some(result) = self.result.take()
@@ -39,11 +61,27 @@ impl<T> CompletionState<T> {
 }
 
 pub(crate) trait TaskTerminal: Send + Sync {
+    #[cfg(feature = "test-support")]
+    fn test_poll_completion(&self, waker: &Waker) -> Poll<()>;
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>);
     fn publish(&self) -> Option<Waker>;
 }
 
-impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
+// Sole completion lock; no queue lock, callback, or wake is held under it.
+impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
+    #[cfg(feature = "test-support")]
+    fn test_poll_completion(&self, waker: &Waker) -> Poll<()> {
+        let mut state = self
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.task_pending && (state.result.is_some() || state.panic.is_some()) {
+            Poll::Ready(())
+        } else {
+            state.waker = Some(waker.clone());
+            Poll::Pending
+        }
+    }
+
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>) {
         self.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -53,7 +91,15 @@ impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
         let mut state = self
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if state.broken_accounting {
+            return state.waker.take();
+        }
         state.task_pending = false;
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if state.broken_wake {
+            state.waker = None;
+        }
         state.waker.take()
     }
 }

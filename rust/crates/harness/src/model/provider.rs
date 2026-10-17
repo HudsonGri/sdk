@@ -16,12 +16,18 @@ pub enum ModelEvent {
         /// Incremental reasoning.
         delta: String,
     },
+    /// Completed canonical reasoning, retained in transcript order.
+    ReasoningBlock {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
+    },
     /// Complete registered tool invocation.
     ToolCall(ToolCall),
     /// Completed model step.
     Completed {
         /// Usage and finish metadata.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+        #[serde(deserialize_with = "crate::deserialize_json_value")]
         metadata: Value,
     },
 }
@@ -88,9 +94,11 @@ impl futures::Stream for NativeModelStream<'_> {
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ModelEvent {
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+    /// Logical retained capacity transferred with a native provider event.
+    pub fn logical_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
+            Self::ReasoningBlock { block } => block.payload_bytes()?,
             Self::ToolCall(call) => call.payload_bytes()?,
             Self::Completed { metadata } => {
                 crate::executor::json::json_value_logical_owned_bytes(metadata)?
@@ -124,17 +132,31 @@ fn unsupported() -> Error {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Binds the composition's authenticated reader for file-backed model input.
+    /// Providers that consume canonical file references directly need no rebinding.
+    fn bind_content(
+        &self,
+        _: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        _: u64,
+    ) -> Option<std::sync::Arc<dyn ModelProvider>> {
+        None
+    }
     /// Capacities of the exact immutable model selection.
     fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
         Err(Error::Unsupported(
             "selected model context capacity is unavailable".into(),
         ))
     }
-    /// Deterministic additive token upper bounds.
-    fn count_tokens(&self, _: &PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
-        Err(Error::Unsupported(
-            "selected model token counting is unavailable".into(),
-        ))
+    /// Verified admission count and per-message compaction planning weights.
+    fn count_tokens<'a>(
+        &'a self,
+        _: &'a PreparedModelRequest,
+    ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "selected model token counting is unavailable".into(),
+            ))
+        })
     }
     /// Starts one request and emits ordered events.
     fn generate<'a>(
@@ -168,11 +190,12 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     }
     /// Paid token DTO for the admitted native request.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn count_tokens_with_native_work(
-        &self,
-        _: &PreparedModelRequest,
-        work: &NativeMaterializationWork,
-    ) -> Result<(crate::context::ModelTokenCount, NativeAllocation)> {
+    fn count_tokens_with_native_work<'a>(
+        &'a self,
+        _: &'a PreparedModelRequest,
+        work: &'a NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
+    {
         work.remaining()?;
         Err(unsupported())
     }

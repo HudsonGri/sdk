@@ -4,13 +4,44 @@ mod discovery;
 mod drivers;
 mod execution;
 mod expectations;
+mod goal_execution;
+mod goals;
+mod goals_tests;
 mod limits_tests;
+mod local_admission;
+mod local_case;
+mod local_cloud;
+mod local_execution;
+mod local_tests;
+mod local_tool_files;
+mod local_tool_files_check;
+mod local_tool_files_tests;
+mod local_workspace;
 mod matchers;
 mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+mod provider_case;
+mod provider_http;
+mod provider_tests;
+mod providers;
+#[path = "../support/quiescent.rs"]
+mod quiescent;
+mod runtime_tests;
 mod scenario;
+#[path = "../support/scenario_data.rs"]
+mod scenario_data;
+mod swarm;
+mod swarm_case;
+mod swarm_provider;
+mod swarm_publish;
+#[path = "../support/swarm_session.rs"]
+mod swarm_runtime;
+mod swarm_scaling;
+mod swarm_tests;
+mod swarm_views;
+mod swarm_wire;
 mod task_queries;
 mod task_query_case;
 mod task_query_tests;
@@ -19,26 +50,11 @@ use drivers::run_execution as run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-fn discover(root: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            discover(&path, paths)?;
-        } else if path.extension().is_some_and(|ext| ext == "json")
-            && path
-                .file_name()
-                .is_some_and(|name| name != "_defaults.json")
-        {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
+use scenario_data::discover;
 
 #[tokio::test]
 async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turns() -> TestResult {
@@ -218,9 +234,54 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn scenarios() -> TestResult {
+#[test]
+fn scenarios() -> TestResult {
     let started = Instant::now();
+    scenario_runtime()?.block_on(run_scenarios(started))
+}
+
+fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err("scenario services must start before the async runtime".into());
+    }
+    acyclic_native_runtime::initialize_native_io_services()?;
+    Ok(scenario_builder().build()?)
+}
+
+const BLOCKING_WORKERS: usize = 16;
+const MAX_ASYNC_WORKERS: usize = 32;
+fn scenario_builder() -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    builder
+        .worker_threads(available.clamp(2, MAX_ASYNC_WORKERS))
+        .max_blocking_threads(BLOCKING_WORKERS)
+        .enable_all();
+    builder
+}
+
+#[tokio::test]
+async fn scenario_bootstrap_rejects_an_already_running_runtime() {
+    let error = scenario_runtime().expect_err("bootstrapped inside the runtime");
+    assert!(
+        error
+            .to_string()
+            .contains("services must start before the async runtime")
+    );
+}
+
+fn scenario_admission<I>(
+    cases: I,
+) -> impl futures::Stream<Item = <I::Item as std::future::Future>::Output>
+where
+    I: ExactSizeIterator,
+    I::Item: std::future::Future,
+{
+    let capacity = runtime_tests::admission_capacity(cases.len());
+    stream::iter(cases).buffer_unordered(capacity)
+}
+
+async fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
@@ -232,7 +293,7 @@ async fn scenarios() -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    let mut results = stream::iter(paths.into_iter().map(|path| {
+    let mut results = scenario_admission(paths.into_iter().map(|path| {
         let root = root.clone();
         async move {
             let case_path = path.clone();
@@ -245,8 +306,7 @@ async fn scenarios() -> TestResult {
             .unwrap_or_else(|error| Err(Box::new(error)));
             (path, result)
         }
-    }))
-    .buffer_unordered(count);
+    }));
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path.strip_prefix(&root)?.display();

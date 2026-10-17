@@ -4,8 +4,31 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageClosure } from "./package-closure.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Manual caller-array copies must stay behind the admitted byte snapshot.
+const assertByteSnapshotBoundary = (file, source) => {
+  // These existing expressions copy Rust-owned digests/requests, never JS arrays.
+  const rustOwned = source
+    .replaceAll("cursor.commit.to_vec()", "")
+    .replaceAll("prepared.bytes().to_vec()", "")
+    .replaceAll(".as_bytes()\n        .to_vec()", "")
+    .replaceAll(".map(|digest| digest.to_vec())", "")
+    .replace(/(canonical_json_digest\([^;]+?)\.to_vec\(\)/g, "$1");
+  if (/\.\s*(?:to_vec|copy_to|copy_to_uninit|raw_copy_to_ptr)\s*\(|Uint8Array::new\s*\(/.test(rustOwned)) {
+    throw new Error(`${file}: copy caller arrays through wasm/bytes.rs`);
+  }
+};
+const checkByteSnapshotBoundary = directory => {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const file = join(directory, entry.name);
+    if (entry.isDirectory()) checkByteSnapshotBoundary(file);
+    else if (entry.name.endsWith(".rs")) assertByteSnapshotBoundary(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n"));
+  }
+};
+checkByteSnapshotBoundary(join(root, "rust/crates/harness/src/wasm"));
+
 const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
 
 const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
@@ -48,8 +71,8 @@ const packages = {
   },
   inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
   harness: {
-    cargo: ["-p", "acyclic-harness", "--features", "browser"],
-    artifact: "acyclic_harness",
+    cargo: ["-p", "acyclic-harness-providers", "--features", "browser"],
+    artifact: "acyclic_harness_providers",
     outName: "acyclic_harness_wasm",
     postprocess: stripHarnessClosureShims,
     targetDirectory: "harness-wasm",
@@ -57,7 +80,8 @@ const packages = {
 };
 
 const [packageArgument, outputArgument, cargoArgument, wasmBindgenArgument, ...unexpected] = process.argv.slice(2);
-if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packageArgument))) {
+if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packageArgument)
+  && (!/^[a-z][a-z-]*$/.test(packageArgument) || !existsSync(join(root, "typescript/packages", packageArgument, "package.json"))))) {
   throw new Error(`${usage}\nPACKAGE is one of: ${Object.keys(packages).join(", ")}`);
 }
 
@@ -97,7 +121,14 @@ const profileDirectory = profile === "dev" ? "debug" : profile;
 
 const script = readFileSync(fileURLToPath(import.meta.url));
 
-for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
+const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
+const targets = grouped ? [packageArgument] : packageArgument
+  ? [...packageClosure(root, packageArgument === "manifest" ? "workers" : packageArgument)]
+    .map(name => name === "workers" ? "manifest" : name).filter(name => Object.hasOwn(packages, name))
+  : Object.keys(packages);
+if (!grouped) run(process.execPath, [join(root, "scripts/generate.mjs"), ...(packageArgument ? [packageArgument === "manifest" ? "workers" : packageArgument] : [])]);
+
+for (const name of targets) {
   let { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = packages[name];
   let family, producer, source, revision;
   if (packages[name].family) {
@@ -113,7 +144,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     if (!/^[0-9a-f]{40,64}$/u.test(revision ?? "") || status !== "") throw new Error("WASM requires a clean source closure");
     source = await producer.sourceSnapshot();
   }
-  const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
+  const output = outputArgument && name === packageArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
   const rustflags = [
     "--remap-path-prefix", `${root}=.`,

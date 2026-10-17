@@ -1,269 +1,72 @@
 use super::*;
+use crate::grpc;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
+use tonic::Request;
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
+mod admissions;
+mod allocations;
 mod checked;
+mod checked_recovery;
+mod connections;
+mod context;
 mod credentials;
+mod data;
 mod isolation;
+mod latest;
+mod lifecycle;
+mod local;
 mod outbound;
+mod recovery;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
-#[derive(Default)]
-struct Counts {
-    connections: AtomicUsize,
-    sessions: AtomicUsize,
-    closed_sessions: AtomicUsize,
-    received_bytes: AtomicUsize,
-    transmitted_bytes: AtomicUsize,
-    sent: AtomicUsize,
-    follows: AtomicUsize,
-    actors: AtomicUsize,
-    acknowledgements: AtomicUsize,
-    windows: AtomicUsize,
-    changed: tokio::sync::Notify,
-    // Fixture-only lock: never nested, and never held across an await.
-    resumes: Mutex<Vec<(u64, u64, u64)>>,
-    guards: Mutex<Vec<(u64, u64, Bytes)>>,
+mod fixture {
+    use crate as acyclic_stream;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/session.rs"
+    ));
 }
-struct CountSessionDrop(Arc<Counts>);
-impl Drop for CountSessionDrop {
-    fn drop(&mut self) {
-        self.0.closed_sessions.fetch_add(1, Ordering::Relaxed);
-        self.0.changed.notify_one();
-    }
-}
-struct Host<P> {
-    provider: Arc<P>,
-    counts: Arc<Counts>,
-    node: String,
-    controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
-    withhold_welcome: bool,
-    confirm_checked: bool,
-}
-#[tonic::async_trait]
-impl<P: StreamProvider> StreamSessionService for Host<P> {
-    type SessionStream = BoxStream<'static, Result<wire::SessionFrame, Status>>;
-    async fn session(
-        &self,
-        request: Request<Streaming<wire::SessionFrame>>,
-    ) -> Result<Reply<Self::SessionStream>, Status> {
-        assert_eq!(
-            request
-                .metadata()
-                .get("authorization")
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer fixture")
-        );
-        self.counts.sessions.fetch_add(1, Ordering::Relaxed);
-        if self.withhold_welcome {
-            let input = request.into_inner();
-            return Ok(Reply::new(
-                stream::unfold(input, |mut input| async move {
-                    while input.message().await.ok().flatten().is_some() {}
-                    None::<(
-                        Result<wire::SessionFrame, Status>,
-                        Streaming<wire::SessionFrame>,
-                    )>
-                })
-                .boxed(),
-            ));
-        }
-        let counts = Arc::clone(&self.counts);
-        let input = request
-            .into_inner()
-            .map(move |input| {
-                if let Ok(frame) = &input {
-                    // Uncompressed gRPC message prefix plus the complete protobuf.
-                    counts
-                        .received_bytes
-                        .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
-                }
-                if let Ok(wire::SessionFrame {
-                    body: Some(Body::Interest(interest)),
-                    ..
-                }) = &input
-                {
-                    for subscription in &interest.upsert {
-                        match subscription.kind {
-                            Some(Kind::Follow(_) | Kind::Children(_)) => {
-                                counts.follows.fetch_add(1, Ordering::Relaxed);
-                                if let (Some(channel), Some(resume)) =
-                                    (subscription.channel, subscription.resume.as_ref())
-                                {
-                                    counts
-                                        .resumes
-                                        .lock()
-                                        .map_err(|_| StreamError::Unavailable)?
-                                        .push((
-                                            channel.channel_id,
-                                            channel.generation,
-                                            resume.next,
-                                        ));
-                                }
-                                counts.changed.notify_one();
-                                if let (Some(channel), Some(Kind::Follow(follow))) =
-                                    (subscription.channel, &subscription.kind)
-                                {
-                                    counts
-                                        .guards
-                                        .lock()
-                                        .map_err(|_| StreamError::Unavailable)?
-                                        .push((
-                                            channel.channel_id,
-                                            channel.generation,
-                                            follow.preceding_commit_id.clone(),
-                                        ));
-                                }
-                            }
-                            Some(Kind::ActorSocket(_) | Kind::ActorCall(_)) => {
-                                counts.actors.fetch_add(1, Ordering::Relaxed);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if matches!(
-                    &input,
-                    Ok(wire::SessionFrame {
-                        body: Some(Body::Ack(_)),
-                        ..
-                    })
-                ) {
-                    counts.acknowledgements.fetch_add(1, Ordering::Relaxed);
-                }
-                if matches!(&input, Ok(wire::SessionFrame {
-                    channel_id, body: Some(Body::Window(_)), ..
-                }) if *channel_id != 0)
-                {
-                    counts.windows.fetch_add(1, Ordering::Relaxed);
-                    counts.changed.notify_one();
-                }
-                input.map_err(|_| StreamError::Unavailable)
-            })
-            .boxed();
-        let output = serve(
-            Arc::clone(&self.provider),
-            self.node.clone(),
-            Limits::default(),
-            input,
-        )
-        .map_err(|error| Status::invalid_argument(error.code()))?;
-        let controls = stream::unfold(self.controls.subscribe(), |mut receiver| async move {
-            receiver.recv().await.ok().map(|frame| (frame, receiver))
-        });
-        let sent = Arc::clone(&self.counts);
-        let confirm_checked = self.confirm_checked;
-        let lifetime = CountSessionDrop(Arc::clone(&self.counts));
-        Ok(Reply::new(
-            stream::select(
-                output.map(move |mut item| {
-                    if !confirm_checked
-                        && let Ok(wire::SessionFrame {
-                            body: Some(Body::Opened(opened)),
-                            ..
-                        }) = &mut item
-                    {
-                        opened.preceding_commit_id = Bytes::new();
-                    }
-                    if item
-                        .as_ref()
-                        .is_ok_and(|value| matches!(value.body, Some(Body::Data(_))))
-                    {
-                        sent.sent.fetch_add(1, Ordering::Relaxed);
-                        sent.changed.notify_one();
-                    }
-                    item.map_err(|error| Status::failed_precondition(error.code()))
-                }),
-                controls,
-            )
-            .inspect(move |item| {
-                if let Ok(frame) = item {
-                    lifetime
-                        .0
-                        .transmitted_bytes
-                        .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
-                    lifetime.0.changed.notify_one();
-                }
-            })
-            .boxed(),
-        ))
-    }
-}
-struct Fixture {
-    controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
-    channel: TransportChannel,
-    counts: Arc<Counts>,
-    server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-}
+use fixture::{Counts, Fixture};
 impl Fixture {
-    async fn open<P: StreamProvider>(
+    pub(super) async fn open<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::configured(provider, node, false, true).await
     }
-    async fn configured<P: StreamProvider>(
+    pub(super) async fn configured<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,
         withhold_welcome: bool,
         confirm_checked: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let endpoint = format!("http://{}", listener.local_addr()?);
-        let counts = Arc::new(Counts::default());
-        let accepted = Arc::clone(&counts);
-        let incoming = stream::try_unfold(listener, move |listener| {
-            let counts = Arc::clone(&accepted);
-            async move {
-                let (socket, _) = listener.accept().await?;
-                socket.set_nodelay(true)?;
-                counts.connections.fetch_add(1, Ordering::Relaxed);
-                Ok::<_, std::io::Error>(Some((socket, listener)))
-            }
-        });
-        let (controls, _) = tokio::sync::broadcast::channel(16);
-        let unary = grpc::Service::new(Arc::clone(&provider));
-        let host = Host {
+        Self::with_options(
             provider,
-            counts: Arc::clone(&counts),
-            node: node.into(),
-            controls: controls.clone(),
-            withhold_welcome,
-            confirm_checked,
-        };
-        let server = tokio::spawn(
-            tonic::transport::Server::builder()
-                .add_service(wire::stream_service_server::StreamServiceServer::new(unary))
-                .add_service(StreamSessionServiceServer::new(host))
-                .serve_with_incoming(incoming),
-        );
-        let channel = Endpoint::from_shared(endpoint)?
-            .tcp_nodelay(true)
-            .connect()
-            .await?;
-        Ok(Self {
-            controls,
-            channel,
-            counts,
-            server,
-        })
+            node,
+            fixture::Options {
+                withhold_welcome,
+                confirm_checked,
+                tls: false,
+            },
+        )
+        .await
     }
     fn client(&self) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(grpc::Client::from_channel(
-            self.channel.clone(),
-            "Bearer fixture".parse()?,
-        ))
+        match &self.tls_client {
+            Some(client) => Ok(client.with_credential("fixture")?),
+            None => Ok(grpc::Client::from_channel(
+                self._channel.clone(),
+                "Bearer fixture".parse()?,
+            )),
+        }
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        self.server.abort();
-    }
-}
+
 async fn append(provider: &MemoryStream, path: &str, count: usize) -> Result<(), StreamError> {
     provider
         .append(AppendRequest {
@@ -363,7 +166,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
     let new = Fixture::open(Arc::clone(&provider), "new").await?;
     let (release, blocked) = oneshot::channel();
     let blocked = Arc::new(Mutex::new(Some(blocked)));
-    let channel = new.channel.clone();
+    let channel = new._channel.clone();
     let dials = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&dials);
     let started = Arc::new(tokio::sync::Notify::new());
@@ -382,7 +185,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         })
     });
     let client = Client::with_connector(
-        old.channel.clone(),
+        old._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,
@@ -408,7 +211,16 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
     append(&provider, "stay", 1).await?;
     assert_eq!(next(&mut staying).await?.sequence, 1);
     release.send(()).map_err(|_| "dial gate dropped")?;
-    tokio::time::timeout(Duration::from_secs(1), new.counts.changed.notified()).await?;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        new.until(|counts| {
+            counts
+                .resumes
+                .lock()
+                .is_ok_and(|resumes| resumes.contains(&(1, 2, 2)))
+        }),
+    )
+    .await?;
     assert_eq!(
         new.counts
             .resumes
@@ -457,16 +269,23 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
     let mut samples = Vec::new();
     for sequence in 1..=144 {
         let started = std::time::Instant::now();
-        provider
-            .append(AppendRequest {
-                path: path.clone(),
-                records: vec![OwnedBytes::from_static(b"delta")],
-                if_tail: None,
-                idempotency_key: None,
-            })
-            .await?;
-        let record = next(&mut follow).await?;
-        let elapsed = started.elapsed().as_nanos();
+        let (_, record, elapsed) = crate::test_latency::sample(
+            async {
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+                    provider
+                        .append(AppendRequest {
+                            path: path.clone(),
+                            records: vec![OwnedBytes::from_static(b"delta")],
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await?,
+                )
+            },
+            next(&mut follow),
+            || started.elapsed().as_nanos(),
+        )
+        .await?;
         assert_eq!(record.sequence, sequence);
         assert_eq!(record.value.as_slice(), b"delta");
         if sequence > 16 {
@@ -498,9 +317,7 @@ async fn transport_reconnect_reopens_all_channels_from_consumed_cursors() -> Tes
     }
     assert_eq!(next(&mut a).await?.sequence, 1);
     assert_eq!(next(&mut b).await?.sequence, 1);
-    fixture
-        .controls
-        .send(Err(Status::unavailable("disconnect")))?;
+    fixture.reset()?;
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             let changed = fixture.counts.changed.notified();
@@ -548,7 +365,7 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
     append(&provider, "a", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = Client::open(
-        fixture.channel.clone(),
+        fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         None,
@@ -637,18 +454,29 @@ async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResul
     let fixture =
         Fixture::configured(Arc::new(MemoryStream::default()), "silent", true, true).await?;
     let client = fixture.client()?;
-    let started = tokio::time::Instant::now();
     let one = StreamPath::new("one")?;
     let two = StreamPath::new("two")?;
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::join!(client.follow(one, 0), client.follow(two, 0))
+        let first = client.follow(one, 0);
+        let second = client.follow(two, 0);
+        futures::pin_mut!(first, second);
+        for attempt in 1..=3 {
+            // Neither logical follow may finish before all physical handshake
+            // attempts have begun. Ordering is independent of elapsed wall time.
+            tokio::select! {
+                biased;
+                _ = fixture.until(|counts| counts.sessions.load(Ordering::Relaxed) >= attempt) => {}
+                _ = &mut first => return Err("first follow ended before the final handshake attempt"),
+                _ = &mut second => return Err("second follow ended before the final handshake attempt"),
+            }
+        }
+        Ok(tokio::join!(first, second))
     })
-    .await?;
+    .await??;
     assert!(matches!(first, Err(StreamError::Unavailable)));
     assert!(matches!(second, Err(StreamError::Unavailable)));
-    assert!(started.elapsed() >= Duration::from_secs(3));
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
-    assert!(fixture.counts.sessions.load(Ordering::Relaxed) >= 3);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 3);
     Ok(())
 }
 
@@ -721,13 +549,13 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
     }
     let old = Fixture::open(Arc::clone(&provider), "old").await?;
     let new = Fixture::open(Arc::clone(&provider), "new").await?;
-    let channel = new.channel.clone();
+    let channel = new._channel.clone();
     let connect: Connect = Arc::new(move |_| {
         let channel = channel.clone();
         Box::pin(async move { Ok(channel) })
     });
     let client = Client::with_connector(
-        old.channel.clone(),
+        old._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,
@@ -755,7 +583,16 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
             resume: Some(cursor(999)),
         }),
     )))?;
-    tokio::time::timeout(Duration::from_secs(1), new.counts.changed.notified()).await?;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        new.until(|counts| {
+            counts
+                .resumes
+                .lock()
+                .is_ok_and(|resumes| resumes.contains(&(1, 2, 1)))
+        }),
+    )
+    .await?;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), children.next())
             .await?

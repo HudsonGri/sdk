@@ -13,12 +13,29 @@ mod tests;
 struct Entry {
     key: FileKey,
     channel: Option<Channel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication: Option<crate::OperationId>,
+}
+
+/// Exact framed size, for rejecting oversized requests before publication.
+pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
+    let metadata = serde_json::to_vec(&Entry {
+        key: file.key.clone(),
+        channel: file.channel,
+        publication: file.publication,
+    })
+    .map_err(|_| Error::InvalidSegment)?;
+    PREFIX
+        .checked_add(metadata.len())
+        .and_then(|size| size.checked_add(file.bytes.len()))
+        .ok_or(Error::LimitExceeded)
 }
 
 pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, FileValue)> {
     let entry = Entry {
         key: write.key.clone(),
         channel: write.channel,
+        publication: write.publication,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let io = work
@@ -88,6 +105,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
     let file = FileValue {
         key: entry.key,
         channel: entry.channel,
+        publication: entry.publication,
         bytes: bytes.slice(PREFIX + metadata.len()..),
     };
     Ok((bytes, file))
@@ -108,6 +126,7 @@ pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
     let file = FileValue {
         key: entry.key,
         channel: entry.channel,
+        publication: entry.publication,
         bytes: bytes.slice(offset..),
     };
     file.validate()?;

@@ -1,11 +1,26 @@
 //! Layout selection from one task-volume snapshot and live query.
 
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 use super::ClientInterests;
-use crate::{
-    Error, Result,
-    task_volume::{ChangeStream, FileKey, Query, TaskVolume},
-};
-use acyclic_stream::{StreamPath, StreamProvider};
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+use crate::task_volume::{ChangeStream, FileKey, Query, TaskVolume};
+use crate::{Error, Result};
+use acyclic_stream::StreamPath;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+use acyclic_stream::StreamProvider;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 
@@ -13,12 +28,15 @@ use serde::{Deserialize, Serialize};
 /// Both files share a schema and are folded through the same live query.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct InterestDocument {
     /// Agents currently rendered.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(type = "string[]"))]
     pub in_view: Vec<StreamPath>,
     /// Agents followed ahead of viewport movement.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(type = "string[]"))]
     pub prefetch: Vec<StreamPath>,
 }
 
@@ -34,6 +52,10 @@ impl InterestDocument {
 }
 
 /// Disposable two-file fold of the user config volume's single live query.
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(super) struct InterestFiles {
     root: StreamPath,
     keys: [FileKey; 2],
@@ -45,6 +67,10 @@ pub(super) struct InterestFiles {
     changes: ChangeStream,
 }
 
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 impl InterestFiles {
     pub(super) async fn observe<P: StreamProvider + ?Sized>(
         volume: &TaskVolume<P>,

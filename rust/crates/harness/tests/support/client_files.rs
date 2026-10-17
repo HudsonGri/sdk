@@ -14,7 +14,8 @@ use acyclic_harness::{
 use std::sync::Arc;
 
 pub struct Fixture {
-    host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
+    pub(super) host:
+        Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     pub root: ContextRoot,
     writer: ContentGrant,
     pub reader: Arc<dyn ContentResidencyVerifier>,
