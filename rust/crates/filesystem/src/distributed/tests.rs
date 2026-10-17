@@ -42,6 +42,8 @@ fn permit(reservation: PublicationReservation) -> PublicationPermit {
 }
 async fn reserved()
 -> Result<(Arc<MemoryStream>, PublicationReservation), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let stream = Arc::new(MemoryStream::default());
     let store = StreamAuthorityStore::new(stream.clone());
     let token = CancellationToken::new();
@@ -139,10 +141,13 @@ async fn original_owner_rejection_limits_and_cancellation_preserve_the_head() ->
                 Some(&mut crate::NativeAuthorityGuard(reject.clone())),
             )
             .await;
-        assert!(matches!(
-            error,
-            Err(AuthorityError::Owner(AuthorityStoreError::Retired))
-        ));
+        assert!(
+            matches!(
+                &error,
+                Err(AuthorityError::Owner(AuthorityStoreError::Retired))
+            ),
+            "guard rejection after committed={committed}: {error:?}"
+        );
         if !committed {
             let mut ordinary = AuthorityWork::new(BUDGET, &token);
             assert_eq!(

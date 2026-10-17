@@ -40,6 +40,7 @@ proptest! {
 }
 
 #[test]
+#[cfg(not(target_arch = "wasm32"))]
 fn the_longest_lease_attempt_keeps_its_original_allocation_custody() {
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
@@ -69,6 +70,7 @@ fn the_longest_lease_attempt_keeps_its_original_allocation_custody() {
         &mut ordinary,
     )
     .unwrap();
+    let before = original.receipt().bytes_copied;
     let actual = append_key(
         authority,
         operation,
@@ -81,5 +83,5 @@ fn the_longest_lease_attempt_keeps_its_original_allocation_custody() {
     .unwrap();
     assert_eq!(actual, expected);
     original.receipt().verify(budget).unwrap();
-    assert!(original.receipt().bytes_copied >= actual.as_bytes().len() as u64);
+    assert!(original.receipt().bytes_copied - before >= actual.as_bytes().len() as u64);
 }
