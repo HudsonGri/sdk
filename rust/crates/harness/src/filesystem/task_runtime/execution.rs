@@ -122,7 +122,7 @@ where
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?
             .with_durable_task(self.host.clone(), task, fence.clone())
-            .with_task_context(&task_context, operation_id)?;
+            .with_shared_task_context(task_context, operation_id)?;
         Ok(FilesystemTaskExecution {
             operation_id,
             executor,
