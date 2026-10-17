@@ -79,6 +79,12 @@ pub fn fuzz_native_child_binding(bytes: &[u8]) {
 pub fn fuzz_native_launch(bytes: &[u8]) {
     crate::external_executor::launch::fuzz(bytes);
 }
+
+/// Exercises native session file parsing and exact context-cut round trips.
+#[cfg(feature = "filesystem")]
+pub fn fuzz_native_context_file(bytes: &[u8]) {
+    crate::external_executor::native_context::fuzz(bytes);
+}
 #[cfg(feature = "test-support")]
 pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,

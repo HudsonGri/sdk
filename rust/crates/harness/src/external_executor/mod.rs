@@ -25,6 +25,8 @@ mod intake;
 #[cfg(feature = "filesystem")]
 pub(crate) mod launch;
 #[cfg(feature = "filesystem")]
+pub mod native_context;
+#[cfg(feature = "filesystem")]
 pub(crate) use intake::LIFECYCLE;
 #[cfg(all(
     feature = "filesystem-local",

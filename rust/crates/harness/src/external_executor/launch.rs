@@ -1,5 +1,5 @@
 //! A native executor declaration retained as an ordinary admitted input file.
-use super::{ChildSession, ExternalAction, ExternalHost, ExternalRequest, normalize, volume};
+use super::{ChildSession, ExternalAction, ExternalHost, ExternalRequest, normalize};
 use crate::{Error, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -58,23 +58,6 @@ pub(crate) struct Launch<T = ExternalRequest> {
     pub request: T,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct PiHeader {
-    #[serde(rename = "type")]
-    kind: String,
-    version: u32,
-    id: String,
-    timestamp: String,
-    cwd: String,
-    #[serde(
-        default,
-        rename = "parentSession",
-        skip_serializing_if = "Option::is_none"
-    )]
-    parent_session: Option<String>,
-}
-
 pub(crate) fn requested(request: &ExternalRequest) -> bool {
     matches!(&request.action, ExternalAction::RunTool {name, arguments, ..}
         if name == "acyclic_spawn" &&
@@ -120,17 +103,11 @@ impl Spawn {
             return Err(invalid());
         }
         if spawn.executor.session.host == ExternalHost::Pi {
-            let header: PiHeader =
-                volume::decode(spawn.executor.session_bytes.as_bytes()).map_err(|_| invalid())?;
-            if header.kind != "session"
-                || header.id != spawn.executor.session.session_id
-                || uuid::Uuid::parse_str(&header.id).is_err()
-                || header.version == 0
-                || !super::request::valid_text(&header.timestamp)
-                || !super::request::valid_text(&header.cwd)
-                || header.parent_session.is_some()
-                || spawn.executor.session.caller.is_some()
-            {
+            super::native_context::fresh(
+                spawn.executor.session_bytes.as_bytes(),
+                &spawn.executor.session.session_id,
+            )?;
+            if spawn.executor.session.caller.is_some() {
                 return Err(invalid());
             }
         }
@@ -185,12 +162,7 @@ impl Spawn {
         if self.executor.session.host != ExternalHost::Pi {
             return Ok(self.executor.session_bytes.as_bytes().to_vec());
         }
-        let mut header: PiHeader =
-            volume::decode(self.executor.session_bytes.as_bytes()).map_err(|_| invalid())?;
-        header.cwd = root.to_str().ok_or_else(invalid)?.into();
-        let mut bytes = volume::encode(&header).map_err(|_| invalid())?;
-        bytes.push(b'\n');
-        Ok(bytes)
+        super::native_context::seed(self.executor.session_bytes.as_bytes(), root)
     }
 }
 
