@@ -30,6 +30,7 @@ mod checkout_tools;
 mod command_machine;
 mod command_views;
 mod commands;
+mod compact;
 mod compaction;
 mod config;
 mod context;
