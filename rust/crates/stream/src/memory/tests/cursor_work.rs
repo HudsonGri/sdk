@@ -2,10 +2,10 @@ use super::super::*;
 use proptest::prelude::*;
 use std::sync::atomic::AtomicU64;
 
-struct BaselineCursor {
-    root: Option<Arc<History>>,
-    windows: VecDeque<HistoryWindow>,
-    next: u64,
+pub(super) struct BaselineCursor {
+    pub(super) root: Option<Arc<History>>,
+    pub(super) windows: VecDeque<HistoryWindow>,
+    pub(super) next: u64,
 }
 impl BaselineCursor {
     fn at(next: u64) -> Self {
@@ -27,7 +27,7 @@ impl BaselineCursor {
         baseline(&mut cursor, path.history.as_ref(), tail);
         cursor
     }
-    fn next_record(&mut self) -> Option<Record> {
+    pub(super) fn next_record(&mut self) -> Option<Record> {
         let window = self.windows.front_mut()?;
         let record = window.records.records.get(window.start)?.clone();
         window.start += 1;
