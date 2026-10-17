@@ -171,8 +171,7 @@ impl Rows {
     // While the current row can still become a block interrupt, its start is
     // reclassified on every push, so no checkpoint may pass it.
     pub(super) fn undecided(&self) -> Option<usize> {
-        (self.first.is_none()
-            || (self.marker && self.significant <= "</blockquote>".len() + 1))
+        (self.first.is_none() || (self.marker && self.significant <= "</blockquote>".len() + 1))
             .then_some(self.row)
     }
     pub(super) fn push(&mut self, source: &str) -> Option<usize> {

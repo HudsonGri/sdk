@@ -116,21 +116,29 @@ impl Held {
     }
 
     // Save the engine's lines from `from` onward.
-    fn save(&mut self, markdown: &Markdown, from: usize) -> Option<()> {
-        let mut saved = markdown.lines.view(from..self.from)?.to_vec();
+    fn save(&mut self, markdown: &mut Markdown, from: usize) -> Option<()> {
+        let mut saved = Vec::with_capacity(self.from.checked_sub(from)?);
+        for index in from..self.from {
+            let line = markdown.lines.get_mut(index)?;
+            saved.push(std::mem::take(line));
+        }
         #[cfg(test)]
         work::copy(saved.len() * std::mem::size_of::<Line>());
+        #[cfg(test)]
+        if saved.capacity() - saved.len() < self.saved.len() {
+            work::copy(saved.len() * std::mem::size_of::<Line>());
+        }
         saved.append(&mut self.saved);
         self.saved = saved;
         self.from = from;
         Some(())
     }
 
-    fn restore(&self, markdown: &mut Markdown) {
+    fn restore(&mut self, markdown: &mut Markdown) {
         markdown.lines.truncate(self.from);
         #[cfg(test)]
         work::copy(self.saved.len() * std::mem::size_of::<Line>());
-        markdown.lines.append(&mut self.saved.clone());
+        markdown.lines.append(&mut self.saved);
         markdown.visible_lines = self.first + self.lines;
     }
 

@@ -29,7 +29,7 @@ fn ordinal_property_detects_truncating_large_paragraphs() {
     let values = [u32::MAX as usize + 1; 4];
     let mut anchor = Anchor::new(context, values);
     assert_eq!(ordinals(&anchor), values);
-    anchor.wide = None;
+    std::sync::Arc::make_mut(&mut anchor.context).wide = None;
     assert_ne!(ordinals(&anchor), values);
 }
 

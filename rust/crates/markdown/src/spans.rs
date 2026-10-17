@@ -188,6 +188,31 @@ impl Spans {
         if self.data().tail.is_none() {
             return;
         }
+        let shared = self
+            .value
+            .as_ref()
+            .is_some_and(|value| Arc::strong_count(value) > 1);
+        #[cfg(test)]
+        let shared = shared && !COPY_SHARED_TAIL.get();
+        if shared {
+            #[cfg(test)]
+            crate::work::scan(1);
+            // A snapshot already owns this tail. Retain its complete contents
+            // as an immutable group instead of cloning them to take the tail.
+            let runs = self.raw_count();
+            let child = std::mem::take(self);
+            *self = Self::from_data(Contents {
+                prefix: Some(Arc::new(Node {
+                    previous: None,
+                    runs,
+                    part: Part::Group(child, Style::default(), None, false),
+                })),
+                stop: None,
+                tail: None,
+                forced: false,
+            });
+            return;
+        }
         let span = self.edit().tail.take().expect("mutable tail");
         let runs = self.data().prefix.as_ref().map_or(0, |node| node.runs) + 1;
         #[cfg(test)]
@@ -573,6 +598,8 @@ fn overlay(inner: Style, outer: Style) -> Style {
 
 #[cfg(test)]
 thread_local! { static STALE_COUNTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; static COPY_PREFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+thread_local! { pub(crate) static COPY_SHARED_TAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 #[cfg(test)]
 #[path = "../tests/spans.rs"]

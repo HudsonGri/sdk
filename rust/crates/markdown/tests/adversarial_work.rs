@@ -385,6 +385,10 @@ fn found_cycles_have_linear_append_work() {
     for index in 0..FOUND.len() {
         let case = found(index);
         assert_eq!(superlinear(&case, 24), None, "{case:?}");
+        if std::env::var_os("GC_WORK_REPORT").is_some() {
+            let run = samples(&case, &[128, 256]);
+            println!("{case:?}: {:?}", run.snapshots);
+        }
     }
 }
 

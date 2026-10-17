@@ -185,6 +185,9 @@ fn entity_emphasis_comment_previews_share_committed_rows() {
         &[64, 128, 256, 512, 1024, 2048],
         false,
     );
+    if std::env::var_os("GC_WORK_REPORT").is_some() {
+        println!("entity/emphasis/comment snapshots: {snapshots:?}");
+    }
     for pair in snapshots.windows(2) {
         assert!(pair[1].0 <= 2 * pair[0].0 + 4096, "{pair:?}");
     }

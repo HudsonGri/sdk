@@ -27,6 +27,109 @@ pub(super) struct Inline {
 }
 
 impl Inline {
+    fn classification(&mut self, source: &str, references: &References) -> Option<(usize, bool)> {
+        let appended = source.get(self.classified..)?;
+        let destination = self.scanner.prepare_classification(source, self.start);
+        // Only a byte that may close an angle opener can reinterpret it.
+        // Openers before the checkpoint are escaped or settled; a live one
+        // holds the checkpoint behind it.
+        let reopen = self
+            .scanner
+            .feed_angles(source)
+            .map(|opener| opener.max(self.checkpoint.offset));
+        let foreign = destination
+            || reopen.is_some()
+            || ((!references.committed.is_empty() || !references.pending.is_empty())
+                && appended.contains(']'));
+        let mut base = if foreign {
+            self.scanner.classification_resume(self.classified, reopen)
+        } else {
+            self.classified
+        };
+        let row = self.rows.push(source);
+        // A blank row ends a paragraph even when an inline construct remains
+        // provisional. Hand it directly to the block parser; classifying it
+        // here would allocate events that the fallback immediately discards.
+        if self.rows.closed() {
+            return None;
+        }
+        let classify = foreign || row.is_some() || appended.contains('\n');
+        #[cfg(test)]
+        let classify = if REPLAY_CLASSIFIER.get() {
+            base = self.start;
+            true
+        } else {
+            classify
+        };
+        if let Some(row) = row {
+            base = base.min(row);
+        }
+        // A row can begin inside a multiline code span; reclassifying the row
+        // can end the paragraph before the span closes, so classify from the
+        // span's start.
+        #[cfg(test)]
+        let skip_code = SKIP_CODE.get();
+        #[cfg(not(test))]
+        let skip_code = false;
+        if let Some(code) = self.code.as_ref().filter(|_| !skip_code)
+            && code.start < base
+            && base < code.end
+        {
+            base = code.start;
+        }
+        if classify {
+            base = self.scanner.classification_boundary(base);
+        }
+        Some((base, classify))
+    }
+
+    fn classification_end(&self, length: usize, base: usize, classify: bool) -> usize {
+        // EOF tick runs remain provisional in the native scanner. Exclude them
+        // from foreign-scope classification so their temporary code projection
+        // cannot hide label syntax needed when the run extends.
+        let end = if classify {
+            self.scanner.classification_end(length).max(base)
+        } else {
+            length
+        };
+        // A row that can still interrupt is decided by all of its bytes: an
+        // EOF tick run is the content that makes `1. ` a list item.
+        let undecided = self.rows.undecided();
+        #[cfg(test)]
+        let undecided = undecided.filter(|_| !SKIP_UNDECIDED.get());
+        if self.rows.inline_at(end) && undecided.is_none() {
+            end
+        } else {
+            length
+        }
+    }
+
+    fn record_charges(
+        &mut self,
+        calls: &[(usize, usize)],
+        base: usize,
+        sentinel: usize,
+        cost: usize,
+        valid: Range<usize>,
+    ) -> (usize, Range<usize>) {
+        let (mut cost, mut valid) = (cost, valid);
+        for (end, charge) in calls.iter().filter(|(end, _)| *end >= sentinel) {
+            (cost, valid) =
+                references::extend_expansion(cost, &valid, std::iter::once(&(*end, *charge)));
+            #[cfg(test)]
+            work::copy(
+                std::mem::size_of::<(usize, usize, Range<usize>)>()
+                    * (1 + if self.charges.len() == self.charges.capacity() {
+                        self.charges.len()
+                    } else {
+                        0
+                    }),
+            );
+            self.charges
+                .push((base + end.saturating_sub(sentinel), cost, valid.clone()));
+        }
+        (cost, valid)
+    }
     #[cfg(test)]
     pub(super) fn retained(
         &self,
@@ -51,100 +154,14 @@ impl Inline {
 }
 
 impl Markdown {
-    fn advance_engine(
-        &mut self,
+    fn inline_source<'a>(
+        &'a self,
+        inline: &Inline,
+        base: usize,
+        end: usize,
         previous: usize,
-        seed: Option<Seed<'_, '_>>,
-    ) -> Option<usize> {
-        let mut inline = self.inline.take()?;
-        let appended = self.source.get(inline.classified..)?;
-        let destination = inline
-            .scanner
-            .prepare_classification(&self.source, inline.start);
-        // Only a byte that may close an angle opener can reinterpret it.
-        // Openers before the checkpoint are escaped or settled; a live one
-        // holds the checkpoint behind it.
-        let reopen = inline
-            .scanner
-            .feed_angles(&self.source)
-            .map(|opener| opener.max(inline.checkpoint.offset));
-        let foreign = destination
-            || reopen.is_some()
-            || ((!self.references.committed.is_empty() || !self.references.pending.is_empty())
-                && appended.contains(']'));
-        let mut base = if foreign {
-            inline
-                .scanner
-                .classification_resume(inline.classified, reopen)
-        } else {
-            inline.classified
-        };
-        let row = inline.rows.push(&self.source);
-        // A blank row ends a paragraph even when an inline construct remains
-        // provisional. Hand it directly to the block parser; classifying it
-        // here would allocate events that the fallback immediately discards.
-        if inline.rows.closed() {
-            return None;
-        }
-        let classify = foreign || row.is_some() || appended.contains('\n');
-        #[cfg(test)]
-        let classify = if REPLAY_CLASSIFIER.get() {
-            base = inline.start;
-            true
-        } else {
-            classify
-        };
-        if let Some(row) = row {
-            base = base.min(row);
-        }
-        // A row can begin inside a multiline code span; reclassifying the row
-        // can end the paragraph before the span closes, so classify from the
-        // span's start.
-        #[cfg(test)]
-        let skip_code = SKIP_CODE.get();
-        #[cfg(not(test))]
-        let skip_code = false;
-        if let Some(code) = inline.code.as_ref().filter(|_| !skip_code)
-            && code.start < base
-            && base < code.end
-        {
-            base = code.start;
-        }
-        if classify {
-            base = inline.scanner.classification_boundary(base);
-        }
-        while inline.charges.last().is_some_and(|(end, _, _)| *end > base) {
-            #[cfg(test)]
-            work::scan(1);
-            inline.charges.pop();
-        }
-        let (cost, interval) = inline
-            .charges
-            .last()
-            .map_or((0, 0..usize::MAX), |(_, cost, valid)| {
-                (*cost, valid.clone())
-            });
-        // EOF tick runs remain provisional in the native scanner. Exclude them
-        // from foreign-scope classification so their temporary code projection
-        // cannot hide label syntax needed when the run extends.
-        let end = if classify {
-            inline
-                .scanner
-                .classification_end(self.source.len())
-                .max(base)
-        } else {
-            self.source.len()
-        };
-        // A row that can still interrupt is decided by all of its bytes: an
-        // EOF tick run is the content that makes `1. ` a list item.
-        let undecided = inline.rows.undecided();
-        #[cfg(test)]
-        let undecided = undecided.filter(|_| !SKIP_UNDECIDED.get());
-        let end = if inline.rows.inline_at(end) && undecided.is_none() {
-            end
-        } else {
-            self.source.len()
-        };
+        classify: bool,
+    ) -> (std::borrow::Cow<'a, str>, usize) {
         let tail = self.source.get(base..end).unwrap_or_default();
 
         let context = if !classify || base == inline.start {
@@ -189,6 +206,24 @@ impl Markdown {
         };
         #[cfg(test)]
         work::copy(prefix.len());
+        (source, sentinel)
+    }
+    fn advance_engine(&mut self, previous: usize, seed: Option<Seed<'_, '_>>) -> Option<usize> {
+        let mut inline = self.inline.take()?;
+        let (base, classify) = inline.classification(&self.source, &self.references)?;
+        while inline.charges.last().is_some_and(|(end, _, _)| *end > base) {
+            #[cfg(test)]
+            work::scan(1);
+            inline.charges.pop();
+        }
+        let (cost, interval) = inline
+            .charges
+            .last()
+            .map_or((0, 0..usize::MAX), |(_, cost, valid)| {
+                (*cost, valid.clone())
+            });
+        let end = inline.classification_end(self.source.len(), base, classify);
+        let (source, sentinel) = self.inline_source(&inline, base, end, previous, classify);
         let seed = seed.filter(|(seed_base, _, _)| *seed_base == base && end == self.source.len());
         let (events, calls) = if classify {
             if let Some((_, events, calls)) = seed {
@@ -240,7 +275,9 @@ impl Markdown {
                 .filter(|range| {
                     #[cfg(test)]
                     work::scan(range.len());
-                    self.source.get(range.clone()).is_some_and(|code| code.contains('\n'))
+                    self.source
+                        .get(range.clone())
+                        .is_some_and(|code| code.contains('\n'))
                 });
             inline.code = code.or(inline.code.take().filter(|code| code.start < base));
         }
@@ -265,23 +302,7 @@ impl Markdown {
             frontier
         };
         let boundary = inline.scanner.checkpoint(boundary);
-        let (mut cost, mut valid) = (cost, interval);
-        for (end, charge) in calls.iter().filter(|(end, _)| *end >= sentinel) {
-            (cost, valid) =
-                references::extend_expansion(cost, &valid, std::iter::once(&(*end, *charge)));
-            #[cfg(test)]
-            work::copy(
-                std::mem::size_of::<(usize, usize, Range<usize>)>()
-                    * (1 + if inline.charges.len() == inline.charges.capacity() {
-                        inline.charges.len()
-                    } else {
-                        0
-                    }),
-            );
-            inline
-                .charges
-                .push((base + end.saturating_sub(sentinel), cost, valid.clone()));
-        }
+        let (cost, valid) = inline.record_charges(&calls, base, sentinel, cost, interval);
         let changed = if previous < self.source.len() {
             let (changed, visible) = inline.scanner.render_tree(
                 &self.source,

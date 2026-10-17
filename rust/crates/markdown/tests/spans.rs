@@ -1,5 +1,41 @@
 use super::*;
 
+fn shared_tail_append(copy: bool) -> (Spans, Spans, usize) {
+    let mut spans = Spans::default();
+    spans.push_content(
+        Span {
+            text: "retained".into(),
+            ..Span::default()
+        },
+        false,
+    );
+    let snapshot = spans.clone();
+    let suffix = Span {
+        text: " suffix".into(),
+        ..Span::default()
+    };
+    COPY_SHARED_TAIL.set(copy);
+    let before = crate::work::parts()[1];
+    spans.push_content(suffix, false);
+    let copied = crate::work::parts()[1] - before;
+    COPY_SHARED_TAIL.set(false);
+    (spans, snapshot, copied)
+}
+
+#[test]
+fn appending_after_a_snapshot_never_copies_the_shared_tail() {
+    let (actual, snapshot, copied) = shared_tail_append(false);
+    let (baseline, previous, redundant) = shared_tail_append(true);
+    assert_eq!(copied, 0);
+    assert_eq!(
+        redundant,
+        std::mem::size_of::<Contents>() + std::mem::size_of::<Span>()
+    );
+    assert_eq!(actual.to_vec(), baseline.to_vec());
+    assert_eq!(snapshot.to_vec(), previous.to_vec());
+    assert_eq!(snapshot.first().unwrap().text.as_str(), "retained");
+}
+
 #[test]
 fn frozen_suffix_views_preserve_prefixes_and_mutations() {
     let mut all = Spans::default();

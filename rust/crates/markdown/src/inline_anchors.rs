@@ -8,6 +8,7 @@ pub(super) struct Context {
     pub(super) hint: bool,
     pub(super) paren: Option<std::num::NonZeroUsize>,
     pub(super) reference: Option<std::num::NonZeroUsize>,
+    wide: Option<std::sync::Arc<[usize; 4]>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -19,18 +20,20 @@ pub(in crate::inline_scan) struct Anchor {
     forest: u32,
     bracket: u32,
     closed: u32,
-    wide: Option<std::sync::Arc<[usize; 4]>>,
 }
 
 impl Anchor {
-    fn new(context: std::sync::Arc<Context>, ordinals: [usize; 4]) -> Self {
+    fn new(mut context: std::sync::Arc<Context>, ordinals: [usize; 4]) -> Self {
         let wide = ordinals
             .iter()
             .any(|&value| u32::try_from(value).is_err())
             .then(|| std::sync::Arc::new(ordinals));
         #[cfg(test)]
         if wide.is_some() {
-            crate::work::copy(std::mem::size_of_val(&ordinals));
+            crate::work::copy(std::mem::size_of_val(&ordinals) + std::mem::size_of::<Context>());
+        }
+        if wide.is_some() {
+            std::sync::Arc::make_mut(&mut context).wide = wide;
         }
         let [delimiter, forest, bracket, closed] =
             ordinals.map(|value| u32::try_from(value).unwrap_or_default());
@@ -40,32 +43,43 @@ impl Anchor {
             forest,
             bracket,
             closed,
-            wide,
         }
     }
     pub(super) fn delimiter(&self) -> usize {
-        self.wide.as_deref().map_or(self.delimiter as usize, |v| {
-            let [value, ..] = v;
-            *value
-        })
+        self.context
+            .wide
+            .as_deref()
+            .map_or(self.delimiter as usize, |v| {
+                let [value, ..] = v;
+                *value
+            })
     }
     pub(in crate::inline_scan) fn forest(&self) -> usize {
-        self.wide.as_deref().map_or(self.forest as usize, |v| {
-            let [_, value, ..] = v;
-            *value
-        })
+        self.context
+            .wide
+            .as_deref()
+            .map_or(self.forest as usize, |v| {
+                let [_, value, ..] = v;
+                *value
+            })
     }
     pub(super) fn bracket(&self) -> usize {
-        self.wide.as_deref().map_or(self.bracket as usize, |v| {
-            let [_, _, value, _] = v;
-            *value
-        })
+        self.context
+            .wide
+            .as_deref()
+            .map_or(self.bracket as usize, |v| {
+                let [_, _, value, _] = v;
+                *value
+            })
     }
     pub(super) fn closed(&self) -> usize {
-        self.wide.as_deref().map_or(self.closed as usize, |v| {
-            let [.., value] = v;
-            *value
-        })
+        self.context
+            .wide
+            .as_deref()
+            .map_or(self.closed as usize, |v| {
+                let [.., value] = v;
+                *value
+            })
     }
 }
 
@@ -90,6 +104,7 @@ impl State {
         debug_assert!(self.labels == [0, 0] || self.labels == [self.closed, 0]);
         let (delimiter, floor) = self.delimiter.snapshot().parts();
         let context = Context {
+            wide: None,
             reference: self
                 .reference
                 .and_then(|position| std::num::NonZeroUsize::new(position + 1)),

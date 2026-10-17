@@ -242,6 +242,22 @@ fn short_paragraphs_stay_within_the_total_work_bound() {
 }
 
 #[test]
+fn short_delimiter_paragraphs_keep_compact_opener_snapshots() {
+    let chunks = ["*".to_owned(), "!".to_owned(), "\n".to_owned()];
+    for count in [128, 256, 512, 1024] {
+        let measured = units(&chunks, count);
+        if std::env::var_os("GC_WORK_REPORT").is_some() {
+            println!("delimiter paragraphs {count}: {measured:?}");
+        }
+        assert!(measured.0 <= 128 * measured.1 + 4096, "{measured:?}");
+    }
+    crate::spans::COPY_SHARED_TAIL.set(true);
+    let copied = units(&chunks, 1024);
+    crate::spans::COPY_SHARED_TAIL.set(false);
+    assert!(copied.0 > 128 * copied.1 + 4096, "{copied:?}");
+}
+
+#[test]
 fn closed_empty_brackets_keep_the_existing_work_bound() {
     for count in [64, 128, 256, 512, 1024] {
         let (used, bytes, parts) = units(&["[]".into()], count);
@@ -266,7 +282,13 @@ fn multiline_code_then_pending_ticks_in_link_labels_match_replay() {
 
 #[test]
 fn eof_ticks_decide_a_list_interrupt() {
-    let sources = ["a  \n1. `c`", "a\n1. `c`", "a\n- `c`", "a\n> `c`", "a\n# `c`"];
+    let sources = [
+        "a  \n1. `c`",
+        "a\n1. `c`",
+        "a\n- `c`",
+        "a\n> `c`",
+        "a\n# `c`",
+    ];
     for source in sources {
         let cuts: Vec<_> = (1..source.len()).collect();
         replay(source, &cuts);
@@ -281,7 +303,12 @@ fn eof_ticks_decide_a_list_interrupt() {
 
 #[test]
 fn blank_start_items_reopen_as_items() {
-    let sources = ["*\n  e\n\n`", "1.\n   e\n\n# h", "-\n  e\n\n```\n", "> -\n>   e\n>\n> x"];
+    let sources = [
+        "*\n  e\n\n`",
+        "1.\n   e\n\n# h",
+        "-\n  e\n\n```\n",
+        "> -\n>   e\n>\n> x",
+    ];
     for source in sources {
         let cuts: Vec<_> = (1..source.len()).collect();
         replay(source, &cuts);
