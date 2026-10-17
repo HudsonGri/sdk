@@ -516,18 +516,20 @@ proptest! {
             })
         });
         prop_assert_eq!(initializations.get(), 2);
+        let mut measured = Vec::new();
         for (mode, (before, after)) in before.into_iter().zip(after).enumerate() {
             prop_assert!(after.0.0.is_err());
             prop_assert_eq!(&before.0.0, &after.0.0);
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Main added chunk publication to the accounted append frame (+64 bytes).
-            let saved = [21200, 21024, 14304, 11840, 14192][mode];
+            // Accounted append now retains fenced summary custody (+128 bytes).
+            let saved = [21328, 21152, 14304, 11840, 14192][mode];
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
-            prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
+            measured.push((before.bytes_total - after.bytes_total, saved));
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
         }
+        for (actual, expected) in measured { prop_assert_eq!(actual, expected); }
     }
 
     // Every old/new factory is compared at its exact admission boundary, after

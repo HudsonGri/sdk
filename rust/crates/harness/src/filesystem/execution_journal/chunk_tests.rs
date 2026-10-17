@@ -272,8 +272,10 @@ async fn deltas(
         let key = format!("event:{index}");
         accounted::observe_append(async { journal.append(OP, &key, &event, io)?.await }, io)
             .await?;
+        differential::record(("commit.accept", f.stream.io_snapshot().writes));
         accounted::observe_append(async { journal.append(OP, &key, &event, io)?.await }, io)
             .await?; // Exact retries do no projection work.
+        differential::record(("commit.retry", f.stream.io_snapshot().writes));
         assert!(
             !accounted::observe_append(
                 async {
@@ -285,6 +287,7 @@ async fn deltas(
             )
             .await?
         );
+        differential::record(("commit.reject", f.stream.io_snapshot().writes));
     }
     let mut invalid = event.clone();
     if let ExecutionEvent::Model { step, .. } = &mut invalid {
@@ -296,6 +299,7 @@ async fn deltas(
     )
     .await
     .unwrap_err();
+    differential::record(("commit.invalid", f.stream.io_snapshot().writes));
     f.stream.native_only.store(false, SeqCst);
     let writes = f.stream.io_snapshot();
     assert_eq!(writes.writes, count as u64);
@@ -382,8 +386,8 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
             eprintln!("chunk native={native} N={count} exact={metric:?}");
             assert_eq!(
                 metric[0],
-                9 * count as u64,
-                "two records and seven index operations per chunk"
+                10 * count as u64,
+                "two records and eight index operations per chunk"
             );
             let key_bytes = if native {
                 32 + std::mem::size_of::<Vec<u8>>()
@@ -395,13 +399,14 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
             } as u64;
             let split = u64::from(count == 16);
             let n = count as u64;
-            let (allocations, bytes) = if native { (31, 2_823) } else { (21, 2_677) };
+            let (allocations, bytes) = if native { (31, 2_821) } else { (21, 2_676) };
+            let wide = 8 * split; // Global sequences 10..17 have one extra digit.
             assert_eq!(metric[1], n * allocations + 6 * split);
-            assert_eq!(metric[2], n * (bytes + key_bytes) + 9_184 * split);
+            assert_eq!(metric[2], n * (bytes + key_bytes) + if native { 2 * wide } else { wide } + 9_184 * split);
             if native {
                 assert_eq!(metric[3], n * 17);
-                assert_eq!(metric[4], n * 659);
-                assert_eq!(metric[5], n * 348);
+                assert_eq!(metric[4], n * 657 + 2 * wide);
+                assert_eq!(metric[5], n * 346 + 2 * wide);
                 assert!(metric[6] > 0);
             } else {
                 assert_eq!(&metric[3..], &[0, 0, 0, 0]);
@@ -419,8 +424,8 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
         for index in 0..7 {
             assert_eq!(
                 measured[1].0[index],
-                2 * measured[0].0[index] + [0, 6, 9_184, 0, 0, 0, 0][index],
-                "native={native}, metric={index}; six B-tree node allocations at the first index split"
+                2 * measured[0].0[index] + [0, 6, if native { 9_200 } else { 9_192 }, 0, if native { 16 } else { 0 }, if native { 16 } else { 0 }, if native { 16 } else { 0 }][index],
+                "native={native}, metric={index}; first index split and eight wider sequence keys"
             );
         }
         assert_ne!(
@@ -550,9 +555,15 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
         "append.native-hash",
         "append.native-items",
     ];
-    let mut all_modes = Vec::new();
+    // Whole-append physical and original-ledger receipts. N/2N includes
+    // fixed initial replay and the real index/map splits; no projection gap.
+    let expected = [
+        [[25, 80, 10830, 3485007, 0, 0, 0, 0, 0], [49, 160, 21054, 6824119, 0, 0, 0, 0, 0]],
+        [[25, 80, 14064, 6214883, 12787, 407874, 305002, 290950, 7075], [49, 160, 24296, 11489989, 22334, 728460, 540802, 523560, 13547]],
+    ];
     for native in [false, true] {
         let mut measured = Vec::new();
+        let mut negatives = Vec::new();
         for count in [8, 16] {
             let [baseline, candidate] = differential::pair(
                 || runtime.block_on(warm()).unwrap(),
@@ -574,6 +585,9 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
                 baseline.0, candidate.0,
                 "full bytes, task files and exact errors changed"
             );
+            let commits = |trace: &Vec<(&'static str, u64)>| trace.iter().copied()
+                .filter(|(name, _)| name.starts_with("commit.")).collect::<Vec<_>>();
+            assert_eq!(commits(&baseline.1), commits(&candidate.1), "committed operation trace changed");
             let sum = |trace: &Vec<(&'static str, u64)>| {
                 names.map(|name| {
                     trace
@@ -591,11 +605,28 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
                 actual, broken,
                 "full prefix replay passed whole-append work detector"
             );
+            negatives.push(broken);
             measured.push(actual);
         }
-        // Development pins: replace with the measured production-path constants
-        // before push; never convert these exact comparisons into tolerances.
-        all_modes.push(measured);
+        let expected = expected[usize::from(native)];
+        assert_eq!(measured.as_slice(), &expected);
+        for metric in 0..9 {
+            assert_eq!(
+                i128::from(measured[1][metric]) - 2 * i128::from(measured[0][metric]),
+                i128::from(expected[1][metric]) - 2 * i128::from(expected[0][metric]),
+            );
+        }
+        // The same N/2N allocation assertion rejects the separately initialized
+        // full-prefix production-path control, even with identical outputs.
+        assert_ne!(
+            i128::from(negatives[1][2]) - 2 * i128::from(negatives[0][2]),
+            i128::from(expected[1][2]) - 2 * i128::from(expected[0][2]),
+        );
+        if native {
+            assert_ne!(
+                i128::from(negatives[1][8]) - 2 * i128::from(negatives[0][8]),
+                i128::from(expected[1][8]) - 2 * i128::from(expected[0][8]),
+            );
+        }
     }
-    assert_eq!(all_modes, vec![vec![[0; 9], [0; 9]], vec![[0; 9], [0; 9]]]);
 }
