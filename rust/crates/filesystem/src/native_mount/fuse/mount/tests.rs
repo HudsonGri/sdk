@@ -6,6 +6,10 @@ use std::{cell::Cell, sync::OnceLock};
 std::thread_local! {
     static FORKS: Cell<usize> = const { Cell::new(0) };
     static FORCE_FORK: Cell<bool> = const { Cell::new(false) };
+    static OLD_UNMOUNT: Cell<bool> = const { Cell::new(false) };
+}
+pub(super) fn old_unmount() -> bool {
+    OLD_UNMOUNT.get()
 }
 pub(super) fn force_fork() -> bool {
     FORCE_FORK.get()
@@ -66,6 +70,41 @@ fn descriptor() -> OwnedFd {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    // Normal unmount happens once; only permission refusal admits the helper.
+    // Preserve the complete errno and ordered calls against the original rule.
+    #[test]
+    fn unmount_policy_preserves_refusal_and_only_delegates_permission(
+        kernel in proptest::option::of(proptest::sample::select(vec![
+            nix::errno::Errno::EPERM, nix::errno::Errno::EBUSY,
+            nix::errno::Errno::EINTR, nix::errno::Errno::EINVAL,
+            nix::errno::Errno::EIO,
+        ])), helper_fails in any::<bool>(),
+    ) {
+        let normalize = |result: io::Result<()>| result.map_err(|error|
+            (error.kind(), error.raw_os_error(), error.to_string()));
+        for broken in [false, true] {
+            let _restore = Restore(&OLD_UNMOUNT, OLD_UNMOUNT.replace(broken));
+            let trace = std::cell::RefCell::new(Vec::new());
+            let actual = unmount_with(|flags| {
+                trace.borrow_mut().push((0, flags.bits()));
+                kernel.map_or(Ok(()), Err)
+            }, || {
+                trace.borrow_mut().push((1, 0));
+                if helper_fails { Err(nix::errno::Errno::EACCES.into()) } else { Ok(()) }
+            });
+            let mut expected_trace = vec![(0, 0)];
+            let expected = match kernel {
+                None => Ok(()),
+                Some(nix::errno::Errno::EPERM) => {
+                    expected_trace.push((1, 0));
+                    if helper_fails { Err(io::Error::from_raw_os_error(libc::EACCES)) } else { Ok(()) }
+                }
+                Some(error) => Err(io::Error::from_raw_os_error(error as i32)),
+            };
+            let equal = normalize(actual) == normalize(expected) && trace.into_inner() == expected_trace;
+            prop_assert_eq!(std::panic::catch_unwind(|| assert!(equal)).is_ok(), !broken);
+        }
+    }
     #[test]
     fn reply_requires_one_descriptor_nonempty_payload_and_complete_control(count in 0usize..5, bytes in 0usize..6, truncated in any::<bool>()) {
         let flags = if truncated { ReturnFlags::CTRUNC } else { ReturnFlags::empty() };

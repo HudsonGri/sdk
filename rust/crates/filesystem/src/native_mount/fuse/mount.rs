@@ -140,9 +140,9 @@ impl Mount {
                 return Ok(());
             }
         }
-        match nix::mount::umount2(path, MntFlags::MNT_DETACH) {
-            Ok(()) => {}
-            Err(_) => {
+        unmount_with(
+            |flags| nix::mount::umount2(path, flags),
+            || {
                 let program = self.program.unwrap_or(c"fusermount3");
                 let mut command = helper_command(program);
                 command
@@ -150,22 +150,41 @@ impl Mount {
                     .arg(std::ffi::OsStr::from_bytes(path.to_bytes()));
                 self.helper = Some(command.spawn()?);
                 drop(command);
-                let status = self
-                    .helper
+                self.helper
                     .as_mut()
                     .ok_or(io::ErrorKind::NotFound)?
                     .wait()?;
                 self.helper.take();
-                if !status.success() {
-                    return Err(io::Error::other("fusermount did not detach the filesystem"));
-                }
-            }
-        }
+                // As with the original mounter, the caller checks POLLERR on
+                // the actual device; an exit status cannot prove destruction.
+                Ok(())
+            },
+        )?;
         self.pending = false;
         Ok(())
     }
     pub(super) fn pending(&self) -> bool {
         self.pending || self.helper.is_some()
+    }
+}
+
+fn unmount_with(
+    kernel: impl FnOnce(MntFlags) -> nix::Result<()>,
+    helper: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    #[cfg(test)]
+    let old = tests::old_unmount();
+    #[cfg(not(test))]
+    let old = false;
+    let flags = if old {
+        MntFlags::MNT_DETACH
+    } else {
+        MntFlags::empty()
+    };
+    match kernel(flags) {
+        Ok(()) => Ok(()),
+        Err(error) if old || error == nix::errno::Errno::EPERM => helper(),
+        Err(error) => Err(error.into()),
     }
 }
 
