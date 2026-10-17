@@ -464,7 +464,7 @@ fn wheel_notches_scroll_the_view_and_a_burst_coalesces_into_one_scroll() {
     assert_eq!(input.editor.text(), "draft");
     assert_eq!(input.editor.selected_text(), "draft");
     // Exact coalescing at N and 2N: one effect out, the net rows.
-    for notches in [16, 32] {
+    for notches in [16usize, 32] {
         let burst: Vec<_> = (0..notches)
             .flat_map(|at| {
                 let event = if at % 4 == 3 {
@@ -472,11 +472,11 @@ fn wheel_notches_scroll_the_view_and_a_burst_coalesces_into_one_scroll() {
                 } else {
                     up.clone()
                 };
-                input.event(event, area, &mut viewport, at)
+                input.event(event, area, &mut viewport, 1)
             })
             .collect();
-        assert_eq!(burst.len(), notches as usize);
-        let net = WHEEL_ROWS * (notches as isize / 2);
+        assert_eq!(burst.len(), notches);
+        let net = WHEEL_ROWS * isize::try_from(notches / 2).unwrap_or(isize::MAX);
         assert_eq!(coalesce_scrolls(burst), vec![InputEffect::Scroll(net)]);
     }
     // Negative control: a non-scroll effect splits runs and keeps its place.

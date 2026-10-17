@@ -53,7 +53,7 @@ fn notch(up: bool) -> InputEvent {
 /// Transcript rows per page in the driven layout.
 const PAGE: usize = 8;
 
-/// Drive the GraphCoder input step over `script`, returning frames drawn,
+/// Drive the input step of the `GraphCoder` loop over `script`, returning frames drawn,
 /// layout positions appended, stream polls and the final offset.
 async fn drive(script: Vec<Option<InputEvent>>, coalesce: bool) -> (usize, u64, usize, usize) {
     use futures::StreamExt;
@@ -193,7 +193,7 @@ proptest::proptest! {
                 };
                 let effects = input.event(event, areas.prompt, &mut Viewport::default(), 1);
                 proptest::prop_assert_eq!(&effects, &vec![effect]);
-                let rows = transcript_motion(&effects[0], page).unwrap();
+                let rows = effects.first().and_then(|effect| transcript_motion(effect, page)).unwrap();
                 let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
                 scroll_tui(&mut files, rows, maximum).await.unwrap();
                 let previous = expected;

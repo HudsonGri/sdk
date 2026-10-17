@@ -71,7 +71,7 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
 }
 
 /// Effects for one input event plus the view motions the stream has already
-/// decoded behind it, without waiting. A wheel flick or held PageUp arrives
+/// decoded behind it, without waiting. A wheel flick or held `PageUp` arrives
 /// as one input batch; its wheel notches and page keys merge into one scroll,
 /// so the caller publishes one layout change and draws one frame for the
 /// whole burst. Draining stops after the first event that is not purely a

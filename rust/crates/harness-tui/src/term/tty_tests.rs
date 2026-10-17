@@ -170,7 +170,9 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
                 Ok(count) => total += count,
             }
         }
-        total
+        // Handed back open: closing the master hangs up the slave, so
+        // restoring it afterwards would fail with EIO on Linux.
+        (total, controller)
     });
     let mut tty = RawTty::from_file(user)?;
     #[cfg(target_vendor = "apple")]
@@ -189,10 +191,11 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
     let restored = tty.restore();
     written?;
     restored?;
-    let drained = drain
+    let (drained, controller) = drain
         .join()
         .map_err(|_| io::Error::other("drain panicked"))?;
     assert_eq!(drained, FRAME);
+    drop(controller);
     Ok(trace)
 }
 
