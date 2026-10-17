@@ -96,6 +96,10 @@ impl Drop for Lease {
 mod model {
     use super::*;
     fn run(omit_editor_lease: bool) {
+        // Collect outcomes only; all schedule-dependent state uses the shim.
+        // Report after Loom retires its lazy registry, including failing schedules.
+        let violated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = std::sync::Arc::clone(&violated);
         loom::model(move || {
             let volume = crate::VolumeId::from_bytes([1; 16]);
             let projecting = Arc::new(crate::sync::atomic::AtomicBool::new(false));
@@ -107,14 +111,12 @@ mod model {
                     } else {
                         match enter(volume, false) {
                             Ok(lease) => Some(lease),
-                            Err(_) => return,
+                            Err(_) => return false,
                         }
                     };
-                    assert!(
-                        !projecting.load(crate::sync::atomic::Ordering::SeqCst),
-                        "policy changed during projection"
-                    );
+                    let overlap = projecting.load(crate::sync::atomic::Ordering::SeqCst);
                     drop(lease);
+                    overlap
                 }
             });
             if let Ok(lease) = enter(volume, true) {
@@ -123,9 +125,15 @@ mod model {
                 projecting.store(false, crate::sync::atomic::Ordering::SeqCst);
                 drop(lease);
             }
-            editor.join().unwrap();
+            if editor.join().unwrap() {
+                observed.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             assert!(enter(volume, false).is_ok());
         });
+        assert!(
+            !violated.load(std::sync::atomic::Ordering::Relaxed),
+            "policy changed during projection"
+        );
     }
     #[test]
     fn policy_publication_and_projection_are_exclusive() {
