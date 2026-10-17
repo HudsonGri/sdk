@@ -121,6 +121,7 @@ fn unknown_explicit_owners_cannot_adopt_an_unrelated_expected_type() {
     for source in [
         "fn plain() { production::Component::new() }",
         "fn plain() { unknown_factory(); }",
+        "const A: SyncMutex<u8> = missing_factory();",
         "fn plain() { production::Component::build(); }",
         "fn plain() { value.unknown_factory(); }",
         "type A = <() as Factory>::Lock; fn plain() { A::default() }",
@@ -225,7 +226,7 @@ fn bindings_declared_as_locks_construct_whatever_the_initializer() {
     }
     for source in [
         "static A: SyncMutex<u8> = SyncMutex::new(0);",
-        "const A: SyncMutex<u8> = make();",
+        "const fn make() -> SyncMutex<u8> { SyncMutex::new(0) } const A: SyncMutex<u8> = make();",
         "struct Holder { lock: SyncMutex<u8> }",
         "fn make() -> SyncMutex<u8> { if a { (Default::default()) } else { 0.into() } }",
         "fn take(_: SyncMutex<u8>) {}\nfn m() { take({ Default::default() }); }",
