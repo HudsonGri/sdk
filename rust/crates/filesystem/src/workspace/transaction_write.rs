@@ -95,72 +95,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         if let Some(original) = accounting.native_work() {
             self.checkout.validate_native_work(original)?;
         }
-        let limits = self.checkout.volume_config().limits;
-        let depth = PortablePath::validate(path, limits).map_err(|error| {
-            WorkspaceError::from(crate::kernel::NamespacePathError::Path(error))
-        })?;
-        if depth == 0 {
+        if PortablePath::validate(path, self.checkout.volume_config().limits)
+            .map_err(|error| WorkspaceError::from(crate::kernel::NamespacePathError::Path(error)))?
+            == 0
+        {
             return Ok(());
         }
-        // One complete lookup validates every ancestor and captures the first
-        // missing edge. Its resolved prefix never needs to be traversed again.
-        let complete = self.mutation_path(path, accounting, cancellation)?;
-        let existing = self
-            .checkout
-            .lookup_no_follow_with_accounting(&complete.value, accounting, cancellation, true)
-            .await;
-        complete.retire(accounting)?;
-        let resolved = match existing {
-            Ok((lookup, _)) => match lookup.record {
-                Some(record) if record.kind == FileKind::Directory => return Ok(()),
-                Some(_) => return Err(WorkspaceError::NotDirectory),
-                None => usize::from(lookup.resolved_components),
-            },
-            Err(FsError::Path(crate::kernel::PathLookupError::NotDirectory)) => {
-                return Err(WorkspaceError::NotDirectory);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let mut ends = path
+        for end in path
             .match_indices('/')
             .skip(1)
             .map(|(index, _)| index)
             .chain(std::iter::once(path.len()))
-            .skip(resolved);
-        let mut remaining = depth
-            .checked_sub(resolved)
-            .ok_or(crate::FsError::InvalidDiff)?;
-        let maximum = limits
-            .maximum_mutations_per_batch
-            .min(limits.maximum_paths_per_batch) as usize;
-        while remaining != 0 {
-            // Descendants of the missing edge are missing too. Share one private
-            // generation rewrite, bounded by both configured transaction limits.
-            let count = remaining.min(maximum);
-            let mut operations = crate::kernel::Owned::allocate(count, accounting)?;
-            for _ in 0..count {
-                let end = ends.next().ok_or(crate::FsError::InvalidDiff)?;
-                let path = self.mutation_path(
-                    path.get(..end).ok_or(crate::FsError::InvalidDiff)?,
-                    accounting,
-                    cancellation,
-                )?;
-                Self::push_mutation(
-                    &mut operations,
-                    crate::kernel::Owned::new(
-                        AuthoredMutation::CreateDirectory {
-                            path: path.value,
-                            metadata: FileMetadata::default(),
-                        },
-                        path.allocation,
-                        path.bytes,
-                    ),
-                    accounting,
-                )?;
+        {
+            let prefix = path.get(..end).ok_or(crate::FsError::InvalidDiff)?;
+            let path = self.mutation_path(prefix, accounting, cancellation)?;
+            match self
+                .checkout
+                .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
+                .await?
+                .0
+                .record
+            {
+                Some(record) if record.kind == FileKind::Directory => path.retire(accounting)?,
+                Some(_) => {
+                    path.retire(accounting)?;
+                    return Err(WorkspaceError::NotDirectory);
+                }
+                None => {
+                    let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
+                    Self::push_mutation(
+                        &mut operations,
+                        crate::kernel::Owned::new(
+                            AuthoredMutation::CreateDirectory {
+                                path: path.value,
+                                metadata: FileMetadata::default(),
+                            },
+                            path.allocation,
+                            path.bytes,
+                        ),
+                        accounting,
+                    )?;
+                    self.apply_authored(operations, accounting, cancellation)
+                        .await?;
+                }
             }
-            self.apply_authored(operations, accounting, cancellation)
-                .await?;
-            remaining -= count;
         }
         Ok(())
     }

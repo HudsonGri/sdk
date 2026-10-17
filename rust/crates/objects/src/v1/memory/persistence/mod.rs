@@ -63,7 +63,6 @@ impl Drop for Journal {
     }
 }
 
-mod body_validation;
 mod checkpoint;
 mod delta;
 mod inline;

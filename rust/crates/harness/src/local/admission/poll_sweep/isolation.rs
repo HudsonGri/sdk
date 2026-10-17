@@ -56,12 +56,28 @@ fn successive_cuts_match_fresh_drivers_in_both_orders() -> Result<()> {
             plan.reverse();
         }
         for (scenario, seed, points, cut) in plan {
-            let mut fresh = tokio::task::LocalSet::new();
-            let expected = replay_case(&runtime, &fresh, scenario, Some(cut), points, Some(seed))?;
-            idle(&runtime, &mut fresh);
-            let observed = replay_case(&runtime, &reused, scenario, Some(cut), points, Some(seed))?;
-            idle(&runtime, &mut reused);
-            equivalent(&expected, &observed);
+            let pair = crate::test_support::differential::pair(
+                tokio::task::LocalSet::new,
+                |mut fresh, independent| {
+                    let driver = if independent { &mut fresh } else { &mut reused };
+                    let result =
+                        replay_case(&runtime, driver, scenario, Some(cut), points, Some(seed));
+                    idle(&runtime, driver);
+                    if let Ok(coverage) = &result {
+                        for point in &coverage.points {
+                            crate::test_support::differential::record(point, 1);
+                        }
+                        crate::test_support::differential::record(
+                            "ready-read",
+                            coverage.ready_reads as u64,
+                        );
+                    }
+                    result
+                },
+            );
+            let [(expected, expected_trace), (observed, observed_trace)] = pair;
+            equivalent(&expected?, &observed?);
+            assert_eq!(expected_trace, observed_trace);
         }
     }
     Ok(())

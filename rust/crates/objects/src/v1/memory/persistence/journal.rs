@@ -6,6 +6,35 @@ impl Journal {
         Ok(tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
             && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
     }
+    pub(in crate::v1::memory) fn validate_bodies(
+        &self,
+        state: &State,
+        pending: Option<&PendingObject>,
+    ) -> Result<(), Error> {
+        let bodies = state
+            .buckets
+            .values()
+            .flat_map(|bucket| bucket.objects.values())
+            .map(|object| &object.body)
+            .chain(
+                state
+                    .uploads
+                    .values()
+                    .flat_map(|upload| upload.parts.values())
+                    .map(|(_, body)| body),
+            );
+        if bodies
+            .chain(
+                pending
+                    .and_then(|change| change.value.as_ref())
+                    .map(|value| &value.body),
+            )
+            .any(|body| body.len() as u64 > self.limits.maximum_object_bytes)
+        {
+            return Err(QuotaExceeded.into());
+        }
+        Ok(())
+    }
     pub(in crate::v1::memory) fn check(&self) -> Result<(), Error> {
         if self.poisoned.load(Ordering::Acquire) {
             Err(Unavailable.into())

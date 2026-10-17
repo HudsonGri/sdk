@@ -103,7 +103,6 @@ mod sibling_directories;
 
 mod sibling_files;
 
-mod existing_directories;
 mod transactions;
 
 fn selected_transaction_budget() -> WorkBudget {
