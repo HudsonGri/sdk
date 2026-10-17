@@ -20,6 +20,7 @@ fn old(
     let mut path = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
     path.value.extend_from_slice(prefix.as_bytes());
     path.value.extend_from_slice(text.as_bytes());
+    observed_copy(path.value.len() as u64);
     let path = crate::kernel::Owned::new(
         String::from_utf8(path.value).map_err(WorkspaceError::engine)?,
         path.allocation,
@@ -94,6 +95,21 @@ fn measured<T>(operation: impl FnOnce() -> T) -> (T, AllocationInfo) {
     (output.unwrap(), heap)
 }
 
+fn observed<T>(operation: impl FnOnce() -> T) -> ((T, AllocationInfo), Vec<u64>) {
+    acyclic_test_support::differential::observe(
+        || ACTUAL_COPY.with(|copied| copied.set(None)),
+        |()| {
+            let result = measured(operation);
+            // Publish outside heap measurement: the observer's own Vec is
+            // independent of the allocation being checked.
+            if let Some(copied) = ACTUAL_COPY.with(|copied| copied.take()) {
+                acyclic_test_support::differential::record(copied);
+            }
+            result
+        },
+    )
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
@@ -140,13 +156,14 @@ proptest! {
             }
         }
         let live_before = [live(&mut accounting[0], &roots[0]), live(&mut accounting[1], &roots[1])];
-        let (before, old_heap) = measured(|| {
+        let ((before, old_heap), old_trace) = observed(|| {
             old(prefix, &text, &mut accounting[0], restore.then_some(&callers[0]))
         });
-        let (after, new_heap) = measured(|| {
+        let ((after, new_heap), new_trace) = observed(|| {
             candidate(label.as_ref(), &text, &mut accounting[1], &callers[1])
         });
         prop_assert_eq!(new_heap, old_heap);
+        prop_assert_eq!(new_trace, old_trace);
         let expected = format!("{prefix}{text}");
         if after.is_ok() {
             // One exactly sized backing allocation and nothing else.
@@ -225,6 +242,11 @@ fn copy_limit_precedes_allocation_and_one_byte_less_has_no_effect() {
 
 std::thread_local! {
     static REDUNDANT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ACTUAL_COPY: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn observed_copy(bytes: u64) {
+    ACTUAL_COPY.with(|copied| copied.set(Some(bytes)));
 }
 
 // Negative control: restores a discarded copy preflight before the claim.

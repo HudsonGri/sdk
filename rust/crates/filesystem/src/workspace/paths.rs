@@ -119,6 +119,8 @@ fn copy_owned_text(
     let fill = |bytes: &mut Vec<u8>| {
         bytes.extend_from_slice(prefix.as_bytes());
         bytes.extend_from_slice(text.as_bytes());
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        tests::observed_copy(bytes.len() as u64);
         #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
         model::completed(bytes.len() as u64);
     };
