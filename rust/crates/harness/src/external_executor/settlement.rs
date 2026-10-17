@@ -9,11 +9,16 @@ pub(crate) enum Slot {
 
 // The session's one driver owns both consuming a retained wake and supplying
 // its next input. Observing only Idle strands an already accepted resume.
-pub(crate) async fn step(
-    advance: impl AsyncFn() -> Result<()>,
-    inspect: impl AsyncFn() -> Result<Slot>,
-    resume: impl AsyncFn(u64) -> Result<()>,
-) -> Result<bool> {
+pub(crate) async fn step<A, I, R>(
+    advance: impl Fn() -> A,
+    inspect: impl Fn() -> I,
+    resume: impl Fn(u64) -> R,
+) -> Result<bool>
+where
+    A: Future<Output = Result<()>> + Send,
+    I: Future<Output = Result<Slot>> + Send,
+    R: Future<Output = Result<()>> + Send,
+{
     advance().await?;
     match inspect().await? {
         Slot::Settled => Ok(true),

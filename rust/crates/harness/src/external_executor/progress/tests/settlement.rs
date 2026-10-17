@@ -28,7 +28,7 @@ fn model(restarted: bool, missing_settlement: bool) {
                         wake.wake();
                     }
                 });
-                let advance = async || {
+                let advance = || async {
                     future::yield_now().await;
                     let mut state = state.lock().unwrap();
                     if state.session_phase == QUEUED {
@@ -36,7 +36,7 @@ fn model(restarted: bool, missing_settlement: bool) {
                     }
                     Ok(())
                 };
-                let inspect = async || {
+                let inspect = || async {
                     future::yield_now().await;
                     Ok(match state.lock().unwrap().session_phase {
                         SETTLED => Slot::Settled,
@@ -45,13 +45,16 @@ fn model(restarted: bool, missing_settlement: bool) {
                         _ => unreachable!(),
                     })
                 };
-                let resume = async |revision| {
-                    assert_eq!(revision, 1);
-                    future::yield_now().await;
-                    let mut state = state.lock().unwrap();
-                    assert_eq!(state.session_phase, IDLE);
-                    state.session_phase = QUEUED;
-                    Ok(())
+                let resume = |revision| {
+                    let state = &state;
+                    async move {
+                        assert_eq!(revision, 1);
+                        future::yield_now().await;
+                        let mut state = state.lock().unwrap();
+                        assert_eq!(state.session_phase, IDLE);
+                        state.session_phase = QUEUED;
+                        Ok(())
+                    }
                 };
                 let result = follow(
                     (),

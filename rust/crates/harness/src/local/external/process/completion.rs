@@ -91,8 +91,8 @@ impl LocalHarness {
                 .with_child_admission(self);
                 use crate::external_executor::settlement::{self, Slot};
                 let settled = settlement::step(
-                    async || Box::pin(self.advance(parent, &commands)).await,
-                    async || {
+                    || Box::pin(self.advance(parent, &commands)),
+                    || async {
                         if self.runtime.task_host().outcome(parent).await?.is_some() {
                             return Ok(Slot::Settled);
                         }
@@ -108,18 +108,23 @@ impl LocalHarness {
                             },
                         )
                     },
-                    async |revision| {
-                        self.runtime
-                            .task_host()
-                            .resume_workflow(
-                                parent,
-                                revision,
-                                payload.clone(),
-                                crate::IdempotencyKey::new(format!("native-finished:{process}"))?,
-                                None,
-                                &mut None,
-                            )
-                            .await
+                    |revision| {
+                        let payload = &payload;
+                        async move {
+                            self.runtime
+                                .task_host()
+                                .resume_workflow(
+                                    parent,
+                                    revision,
+                                    payload.clone(),
+                                    crate::IdempotencyKey::new(format!(
+                                        "native-finished:{process}"
+                                    ))?,
+                                    None,
+                                    &mut None,
+                                )
+                                .await
+                        }
                     },
                 )
                 .await?;
