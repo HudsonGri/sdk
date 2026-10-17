@@ -298,56 +298,6 @@ where
         }
         Ok(ticket)
     }
-
-    pub(in crate::filesystem) async fn verify_approval(
-        &self,
-        id: InteractionId,
-        operation: OperationId,
-        digest: [u8; 32],
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        let aggregate = self.aggregate(io).await?;
-        let Some((ticket, Some(resolution))) = aggregate
-            .0
-            .reducer()
-            .interaction(&Uuid::from_bytes(id.into_bytes()))
-        else {
-            return Err(interaction_boundary(
-                io,
-                ErrorCode::Unauthorized,
-                "tool installation lacks a resolved approval",
-            ));
-        };
-        if resolution.outcome != (InteractionOutcome::Approved {})
-            || !ticket.approval.as_ref().is_some_and(|binding| {
-                binding.operation_id == operation && binding.action_digest == digest
-            })
-        {
-            return Err(interaction_boundary(
-                io,
-                ErrorCode::Unauthorized,
-                "approval does not authorize this definition",
-            ));
-        }
-        let bytes = self.read_file(&ticket.request, io).await?;
-        let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        super::content::admit_interaction(&bytes, io)?;
-        let (request, retained, custody) =
-            with_history_io(io, |work| ticket.validate_request_bytes(&bytes, work))?;
-        let request_hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-        // The validated request stays held while its decision is checked.
-        let _request = (request, custody, request_hold);
-        drop((bytes, hold));
-        if let Some(detail) = &resolution.detail {
-            let bytes = self.read_file(detail, io).await?;
-            let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-            super::content::admit_interaction(&bytes, io)?;
-            with_history_io(io, |work| {
-                ticket.validate_decision_bytes(resolution, None, detail, &bytes, work)
-            })?;
-        }
-        Ok(())
-    }
 }
 
 fn resolve_operation(id: InteractionId, version: u64) -> OperationId {

@@ -156,9 +156,19 @@ where
         id: InteractionId,
         io: Option<&PreparationIo>,
     ) -> Result<PublishedDecision> {
+        self.published_decision_for(id, None, io).await
+    }
+
+    pub(super) async fn published_decision_for(
+        &self,
+        id: InteractionId,
+        binding: Option<(OperationId, [u8; 32])>,
+        io: Option<&PreparationIo>,
+    ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
         let _read;
-        let (read, receipt) = guarded_read!(host.read_durable(id, io), io, _read);
+        let (read, receipt, hold) = host.read_durable(id, binding, io).await?;
+        _read = hold;
         let (ticket, resolution) = admitted(read, io)?;
         let (Some(resolution), InteractionKind::Approval) = (&resolution, ticket.kind) else {
             return Err(canonical_boundary(
@@ -174,8 +184,37 @@ where
                 "approval decision has no decision file",
             )
         })?;
+        let request_bytes = if binding.is_some() || self.owner.is_some() {
+            Some(host.read_file(&ticket.request, io).await?)
+        } else {
+            None
+        };
+        let _request_bytes = request_bytes
+            .as_ref()
+            .map(|bytes| io.map(|io| io.guard_bytes(bytes)).transpose())
+            .transpose()?
+            .flatten()
+            .flatten();
+        let _request = if binding.is_some() {
+            let bytes = request_bytes.as_ref().ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "approval request is missing",
+                )
+            })?;
+            crate::filesystem::interaction_host::admit_interaction(bytes, io)?;
+            let decoded = with_history_io(io, |work| ticket.validate_request_bytes(bytes, work))?;
+            let hold = io.map(|io| io.guard_owned(decoded.1)).transpose()?;
+            Some((decoded, hold))
+        } else {
+            None
+        };
         let bytes = host.read_file(detail, io).await?;
         let _detail = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        if binding.is_some() {
+            crate::filesystem::interaction_host::admit_interaction(&bytes, io)?;
+        }
         let principal = with_history_io(io, |work| {
             ticket.validate_decision_bytes(resolution, None, detail, &bytes, work)
         })?;
@@ -198,11 +237,13 @@ where
         let files = self.approval_files()?;
         let task = Component::new(owner.task_id().to_string())?;
         let request = Component::new(ticket.id.to_string())?;
-        let request_bytes = host.read_file(&ticket.request, io).await?;
-        let _request = io
-            .map(|io| io.guard_bytes(&request_bytes))
-            .transpose()?
-            .flatten();
+        let request_bytes = request_bytes.ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "approval request is missing",
+            )
+        })?;
         let work = native_work(io);
         files
             .publish_durable(

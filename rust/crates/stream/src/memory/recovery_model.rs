@@ -10,6 +10,7 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + 
 pub(crate) enum Fault {
     None,
     MixedReceiptCut,
+    BarrierAsFlushed,
     OmitAppendWake,
     RetainReplacedState,
     IgnoreHead,
@@ -368,4 +369,9 @@ pub fn local_compaction_cut() {
 /// Checks receipts against their own flushed cut while other calls advance it.
 pub fn local_receipt_cuts(broken: bool) {
     crate::local::receipt_model::verify(broken);
+}
+
+/// Checks ordered and device-flushed progress on the production journal locks.
+pub fn local_barrier_receipts(broken: bool) {
+    crate::local::receipt_model::verify_barrier(broken);
 }

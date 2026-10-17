@@ -21,7 +21,12 @@ impl StreamProvider for LocalStream {
             let accepted = self.inner.provider.tail(path.clone()).await?;
             // Both frame counters are published before publication is released.
             // Do not borrow the journal: compaction may hold it during device I/O.
-            let synced = *self.inner.synced.borrow() >= *self.inner.revision.borrow();
+            let synced = self
+                .inner
+                .synced
+                .borrow()
+                .flushed
+                .is_some_and(|cut| cut >= *self.inner.revision.borrow());
             let mut tails = self
                 .inner
                 .durable_tails
@@ -58,8 +63,8 @@ impl StreamProvider for LocalStream {
                 Ok::<_, StreamError>((accepted, *self.inner.revision.borrow()))
             })
             .await??;
-        self.await_durable(revision).await?;
-        self.receipt_for_flushed_snapshot(path, accepted, through)
+        let flushed = self.await_flushed(revision).await?;
+        self.receipt_for_flushed_snapshot(path, accepted, through, flushed)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -358,6 +363,7 @@ impl LocalStream {
         path: StreamPath,
         accepted: u64,
         through: u64,
+        _flushed: DeviceFlushed,
     ) -> Result<Option<crate::DurableReceipt>, StreamError> {
         // No other lock is held here. Watermark reads acquire publication first,
         // then durable_tails; this path never acquires publication afterward.

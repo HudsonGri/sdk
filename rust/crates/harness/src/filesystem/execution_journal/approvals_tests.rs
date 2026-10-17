@@ -12,6 +12,9 @@ use crate::{
 use acyclic_fs::{MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::MemoryStream;
 
+#[path = "approval_install_tests.rs"]
+mod install;
+
 type Journal =
     FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 const TASK: u8 = 80;

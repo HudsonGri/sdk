@@ -38,6 +38,7 @@ pub struct FilesystemInteractionHost<P, A, O> {
 }
 
 mod content;
+pub(in crate::filesystem) use content::admit_interaction;
 mod publication;
 mod resolution;
 
