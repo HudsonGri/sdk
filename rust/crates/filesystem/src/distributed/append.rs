@@ -1,5 +1,13 @@
 use super::*;
 
+pub(super) fn proposal_key(
+    request: &mut CommitRequest,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    let digest = super::reservations::digest(request, work)?;
+    work.key(b"operation-proposal\0", &[&digest])
+}
+
 pub(super) async fn seal<G: AuthorityGuard>(
     work: &mut AuthorityWork<'_>,
     guard: Option<&mut G>,
@@ -210,24 +218,31 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let idempotency_key = work.key(
-            b"operation\0",
-            &[
-                &authority_id.into_bytes(),
-                &commit.operation_id.into_bytes(),
-            ],
-        )?;
-        let result = self
-            .commit(
-                CommitRequest {
-                    conditions,
-                    mutations,
-                    idempotency_key,
-                },
-                deadline,
-                work,
-                guard.as_deref_mut(),
+        let mut request = CommitRequest {
+            conditions,
+            mutations,
+            // The digest excludes the retry key. A static placeholder avoids
+            // allocating a key that would immediately be replaced.
+            idempotency_key: acyclic_stream::IdempotencyKey::new(
+                acyclic_stream::OwnedBytes::from_static(b"authority-request"),
             )
+            .map_err(AuthorityStoreError::from)?,
+        };
+        // Streams retains conflicts too. Bind a retry to the complete proposal,
+        // not merely its operation: a new head/gate/lease is a new attempt.
+        request.idempotency_key = proposal_key(&mut request, work)?;
+        #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+        if super::append_loom_tests::legacy_key() {
+            request.idempotency_key = work.key(
+                b"operation\0",
+                &[
+                    &authority_id.into_bytes(),
+                    &commit.operation_id.into_bytes(),
+                ],
+            )?;
+        }
+        let result = self
+            .commit(request, deadline, work, guard.as_deref_mut())
             .await;
         if work.is_native() && result.is_ok() {
             work.check()?;
