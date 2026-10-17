@@ -18,5 +18,5 @@
     ],
     "defaultPrompt": "Use Acyclic workspaces for parallel, speculative, exploratory, and debugging subagent work."
   },
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./mcp.json"
 }

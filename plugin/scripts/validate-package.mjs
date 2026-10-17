@@ -65,7 +65,7 @@ for (const relativePath of ["pi/index.ts", "pi/README.md"]) {
 for (const path of [
   ...hostManifests,
   join(plugin, "hooks", "hooks.json"),
-  join(plugin, ".mcp.json"),
+  join(plugin, "mcp.json"),
   join(plugin, "claude", ".mcp.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
@@ -78,10 +78,16 @@ for (const path of hostManifests) {
 }
 
 // MCP only substitutes the followed result; it owns no execution or endpoint.
-for (const manifest of hostManifests.slice(1)) {
-  if (assets[manifest].mcpServers !== "./.mcp.json") fail(`missing result client: ${manifest}`);
+for (const [manifest, client] of [[hostManifests[1], "./mcp.json"], [hostManifests[2], "./.mcp.json"]]) {
+  if (assets[manifest].mcpServers !== client) fail(`missing result client: ${manifest}`);
 }
-for (const path of [join(plugin,".mcp.json"),join(plugin,"claude",".mcp.json")]) {
+const codexMcp = assets[join(plugin, "mcp.json")];
+if (codexMcp.$schema !== "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+  || codexMcp.mcpServers?.acyclic?.type !== "stdio"
+  || codexMcp.mcpServers?.acyclic?.command !== "./bin/acyclic") {
+  fail("Codex must discover the contained standard plugin MCP client");
+}
+for (const path of [join(plugin,"mcp.json"),join(plugin,"claude",".mcp.json")]) {
   const servers = assets[path].mcpServers;
   if (Object.keys(servers).length !== 1 || JSON.stringify(servers.acyclic.args) !== '["__tools"]') {
     fail(`result adapter must use the common client: ${path}`);

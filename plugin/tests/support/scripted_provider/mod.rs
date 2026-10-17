@@ -3,8 +3,9 @@ mod http;
 
 use events::{
     anthropic_failed_agent_events, anthropic_lifecycle_events, anthropic_text_events,
-    claude_child_tool_events, responses_root_tool_events, responses_spawn_events,
-    responses_text_events, responses_wait_events, responses_workflow_tool_events,
+    claude_child_tool_events, codex_shell, responses_root_tool_events, responses_search_events,
+    responses_spawn_events, responses_text_events, responses_wait_events,
+    responses_workflow_tool_events,
 };
 use http::{read_request, write_conflict, write_response};
 
@@ -41,6 +42,7 @@ pub enum RequestFingerprint {
     CodexRootSpawnResult,
     CodexRootWaitResult,
     CodexChildPrompt,
+    CodexChildSearchResult,
     CodexChildToolResult,
     ClaudeRootPrompt,
     ClaudeRootContinuation,
@@ -150,6 +152,7 @@ impl ScriptedProvider {
                                     "custom_tool_call_output"
                                         | "function_call_output"
                                         | "apply_patch_call_output"
+                                        | "tool_search_output"
                                 )
                             )
                         })
@@ -218,6 +221,7 @@ fn handle(
         return;
     };
     let fingerprint = request_fingerprint(&request);
+    let codex_shell = codex_shell(&request);
     let spawn_denied = contains_text(&request, ISOLATION_DENIAL);
     let offered_tools = request
         .get("tools")
@@ -314,8 +318,22 @@ fn handle(
         (Scenario::CodexLifecycle { .. }, RequestFingerprint::CodexRootWaitResult) => {
             responses_text_events()
         }
-        (Scenario::CodexLifecycle { child_target, .. }, RequestFingerprint::CodexChildPrompt) => {
-            responses_workflow_tool_events(child_target)
+        (Scenario::CodexLifecycle { .. }, RequestFingerprint::CodexChildPrompt) => {
+            responses_search_events()
+        }
+        (
+            Scenario::CodexLifecycle { child_target, .. },
+            RequestFingerprint::CodexChildSearchResult,
+        ) => {
+            let Some(tool) = codex_shell else {
+                return write_conflict(
+                    &mut stream,
+                    &format!(
+                        "Codex shell discovery returned no Acyclic shell; offered tools: {offered_tools:?}"
+                    ),
+                );
+            };
+            responses_workflow_tool_events(child_target, &tool)
         }
         (Scenario::CodexLifecycle { .. }, RequestFingerprint::CodexChildToolResult) => {
             responses_text_events()
@@ -344,6 +362,8 @@ fn request_fingerprint(request: &Value) -> RequestFingerprint {
                 RequestFingerprint::CodexChildToolResult
             } else if custom_result {
                 RequestFingerprint::InvalidToolResult
+            } else if contains_type(request, "tool_search_output") {
+                RequestFingerprint::CodexChildSearchResult
             } else {
                 RequestFingerprint::CodexChildPrompt
             };
@@ -718,6 +738,33 @@ mod tests {
             request_fingerprint(&root),
             RequestFingerprint::CodexRootWaitResult
         );
+    }
+
+    #[test]
+    fn codex_qualification_uses_the_discovered_shell_identity() {
+        for namespace in ["acyclic", "mcp__acyclic", "mcp__plugin_acyclic_acyclic"] {
+            let request = json!({"input":[
+                {"role":"user","content":CODEX_CHILD_ROLE_MARKER},
+                {"type":"tool_search_output","tools":[
+                    {"type":"namespace","name":"foreign","tools":[{"name":"bash"}]},
+                    {"type":"namespace","name":namespace,"tools":[{"name":"bash"}]}
+                ]}
+            ]});
+            let tool = codex_shell(&request).unwrap();
+            assert_eq!(tool, ("bash".into(), Some(namespace.into())));
+            let events = responses_workflow_tool_events("child.txt", &tool);
+            assert!(events.contains(&format!("\"namespace\":\"{namespace}\"")));
+            assert_eq!(
+                request_fingerprint(&request),
+                RequestFingerprint::CodexChildSearchResult
+            );
+        }
+        let flat = json!({"tools":[{"type":"function","name":"mcp__acyclic__bash"}]});
+        assert_eq!(
+            codex_shell(&flat),
+            Some(("mcp__acyclic__bash".into(), None))
+        );
+        assert!(codex_shell(&json!({"tools":[{"type":"function","name":"bash"}]})).is_none());
     }
 
     #[test]

@@ -126,7 +126,52 @@ pub(super) fn responses_spawn_events() -> String {
     responses_item_events("resp_spawn", &item)
 }
 
-pub(super) fn responses_workflow_tool_events(target: &str) -> String {
+pub(super) fn responses_search_events() -> String {
+    responses_item_events(
+        "resp_search",
+        &json!({
+            "id":"tsc_codex_shell","type":"tool_search_call",
+            "call_id":"call_codex_shell","execution":"client",
+            "arguments":{"query":"acyclic bash command","limit":1},"status":"completed"
+        }),
+    )
+}
+
+pub(super) fn codex_shell(request: &Value) -> Option<(String, Option<String>)> {
+    fn find(tools: &[Value]) -> Option<(String, Option<String>)> {
+        tools.iter().find_map(|tool| {
+            let name = tool.get("name")?.as_str()?;
+            if tool.get("type")?.as_str()? == "namespace" && name.contains("acyclic") {
+                tool.get("tools")?.as_array()?.iter().find_map(|nested| {
+                    (nested.get("name")?.as_str()? == "bash")
+                        .then(|| ("bash".into(), Some(name.into())))
+                })
+            } else {
+                (name.contains("acyclic") && name.ends_with("__bash")).then(|| (name.into(), None))
+            }
+        })
+    }
+    request
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| find(tools))
+        .or_else(|| {
+            request
+                .get("input")?
+                .as_array()?
+                .iter()
+                .rev()
+                .find_map(|item| {
+                    (item.get("type")?.as_str()? == "tool_search_output")
+                        .then(|| find(item.get("tools")?.as_array()?))?
+                })
+        })
+}
+
+pub(super) fn responses_workflow_tool_events(
+    target: &str,
+    tool: &(String, Option<String>),
+) -> String {
     assert!(
         !target.contains(['\r', '\n', '\'', '"']),
         "scripted workflow target must be a simple relative path"
@@ -134,7 +179,7 @@ pub(super) fn responses_workflow_tool_events(target: &str) -> String {
     let command = workflow_command(target);
     let item = json!({
         "id":"fc_codex_workflow","type":"function_call",
-        "call_id":"call_codex_workflow","name":"bash","namespace":"mcp__plugin_acyclic_acyclic",
+        "call_id":"call_codex_workflow","name":tool.0,"namespace":tool.1,
         "arguments":json!({"command":command}).to_string(),"status":"completed"
     });
     responses_item_events("resp_workflow", &item)

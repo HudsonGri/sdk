@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "acyclic": {
-      "command": "${PLUGIN_ROOT}/bin/acyclic",
-      "args": ["__tools"]
-    }
-  }
-}

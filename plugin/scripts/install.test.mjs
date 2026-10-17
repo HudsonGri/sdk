@@ -368,12 +368,16 @@ test("the published package contains only native hook shims", () => {
   for (const path of [".codex-plugin/plugin.json", "claude/.claude-plugin/plugin.json", "pi/index.ts", "pi/package.json", "hooks/hooks.json", "bin/acyclic"]) {
     assert.ok(files.includes(path), `package omits ${path}`);
   }
-  for (const path of [".mcp.json","claude/.mcp.json"]) {
+  for (const path of ["mcp.json","claude/.mcp.json"]) {
     assert.ok(files.includes(path));
     const servers = JSON.parse(readFileSync(join(plugin,path),"utf8")).mcpServers;
     assert.deepEqual(servers.acyclic.args,["__tools"]);
   }
-  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./.mcp.json");
+  const mcp = JSON.parse(readFileSync(join(plugin, "mcp.json"), "utf8"));
+  assert.equal(mcp.$schema, "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json");
+  assert.equal(mcp.mcpServers.acyclic.type, "stdio");
+  assert.equal(mcp.mcpServers.acyclic.command, "./bin/acyclic");
+  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./mcp.json");
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8")).hooks;
   assert.deepEqual(Object.keys(hooks), ["SessionStart", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop", "SessionEnd"]);
   for (const [event, groups] of Object.entries(hooks)) {

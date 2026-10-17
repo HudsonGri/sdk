@@ -625,6 +625,7 @@ fn assert_semantic_provider_exchange(provider: &ScriptedProvider) -> bool {
         RequestFingerprint::CodexRootSpawnResult,
         RequestFingerprint::CodexRootWaitResult,
         RequestFingerprint::CodexChildPrompt,
+        RequestFingerprint::CodexChildSearchResult,
         RequestFingerprint::CodexChildToolResult,
     ];
     success.sort_unstable();

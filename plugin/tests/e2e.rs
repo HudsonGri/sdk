@@ -129,7 +129,10 @@ fn host_manifests_route_every_event_to_the_common_client() -> Result {
     let codex: Value = serde_json::from_str(include_str!("../hooks/hooks.json"))?;
     let pi: Value = serde_json::from_str(include_str!("../pi/package.json"))?;
     let claude: Value = serde_json::from_str(include_str!("../claude/.claude-plugin/plugin.json"))?;
-    assert_eq!(claude, acyclic_harness::external_executor::claude_manifest(env!("CARGO_PKG_VERSION")));
+    assert_eq!(
+        claude,
+        acyclic_harness::external_executor::claude_manifest(env!("CARGO_PKG_VERSION"))
+    );
     for spec in hooks(ExternalHost::Codex) {
         let hook = &codex["hooks"][spec.event][0]["hooks"][0];
         assert_eq!(hook["type"], "command");
@@ -146,7 +149,13 @@ fn host_manifests_route_every_event_to_the_common_client() -> Result {
             serde_json::json!(["__hook", "pi", spec.event])
         );
     }
-    let mcp: Value = serde_json::from_str(include_str!("../.mcp.json"))?;
+    let mcp: Value = serde_json::from_str(include_str!("../mcp.json"))?;
+    assert_eq!(
+        mcp["$schema"],
+        "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    );
+    assert_eq!(mcp["mcpServers"]["acyclic"]["type"], "stdio");
+    assert_eq!(mcp["mcpServers"]["acyclic"]["command"], "./bin/acyclic");
     assert_eq!(
         mcp["mcpServers"]["acyclic"]["args"],
         serde_json::json!(["__tools"])
