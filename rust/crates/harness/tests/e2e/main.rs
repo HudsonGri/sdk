@@ -2,15 +2,16 @@
 #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 mod agents;
 mod composer;
-mod diff_case;
-mod diff_tests;
-mod diff_workspace;
-mod diffs;
 mod discovery;
 mod drivers;
 mod execution;
 mod expectations;
 mod limits_tests;
+mod local_admission;
+mod local_case;
+mod local_execution;
+mod local_tests;
+mod local_workspace;
 mod matchers;
 mod notification_history;
 mod notifications;
