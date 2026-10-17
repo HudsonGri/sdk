@@ -231,6 +231,7 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
             "text/plain",
             "request.md",
             None,
+            None,
         )?
         .await?;
     host.send_mail(parent, &fence, child, message, payload, None)
@@ -331,6 +332,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                     "text/plain",
                     "request.md",
                     None,
+                    None,
                 )?
                 .await?;
             host.send_mail(parent, &fence, child, message, payload, None)
@@ -350,6 +352,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                         b"1",
                         "application/json",
                         "private.json",
+                        None,
                         None,
                     )?
                     .await?;
@@ -373,6 +376,7 @@ async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() ->
                         b"1",
                         "application/json",
                         "readable.json",
+                        None,
                         None,
                     )?
                     .await?;
