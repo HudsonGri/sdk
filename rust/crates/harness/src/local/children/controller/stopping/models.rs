@@ -38,9 +38,11 @@ fn stopping(broken: bool, assert_property: bool) {
     )))
     .unwrap();
     let control = FileValue::new(key(ChildFile::Control), Control::Cancel.bytes().to_vec());
-    let writer = thread::spawn(move || {
-        loom::future::block_on(Box::pin(writer.append(cut, &control))).unwrap()
-    });
+    // Publication/follow registration races are explored independently by the
+    // task-files models. Start this controller model at their accepted cut.
+    loom::future::block_on(Box::pin(writer.append(cut, &control))).unwrap();
+    let signal = cancellation.clone();
+    let writer = thread::spawn(move || signal.cancel());
     let effect = async {
         cancellation.cancelled().await;
         let cut = volume.head().await.map_err(storage)?;
@@ -77,6 +79,10 @@ fn stopping(broken: bool, assert_property: bool) {
         Ok(())
     };
     let controls = async {
+        cancellation.cancelled().await;
+        // Retire the signaler before serial publication and reopen. Only the
+        // real cancel/register/wake interleavings belong to this model.
+        writer.join().unwrap();
         let change = observation.changes.next().await.unwrap().map_err(storage)?;
         // The accepted cancel intent survives the controller's observation error.
         if change
@@ -94,7 +100,6 @@ fn stopping(broken: bool, assert_property: bool) {
         );
     }
     let result = loom::future::block_on(Box::pin(drain(effect, controls, &cancellation)));
-    writer.join().unwrap();
     let reopened =
         loom::future::block_on(Box::pin(TaskVolume::open_existing(provider, path))).unwrap();
     let snapshot = loom::future::block_on(Box::pin(
@@ -124,8 +129,9 @@ fn stopping(broken: bool, assert_property: bool) {
 
 #[test]
 fn control_failure_drains_the_actual_invocation_future() {
-    // One file writer and one worker; all real publication/follow/token locks
-    // are instrumented. Reopen reads the accepted result and settled status.
+    // One cancel signaler and one controller worker. The accepted-file cut is
+    // shared with the independent publication models; cancel/register/wakeup
+    // uses the real filesystem token locks. Reopen verifies serial settlement.
     loom::model(|| stopping(false, true));
     let failure = std::panic::catch_unwind(|| loom::model(|| stopping(true, true)))
         .expect_err("dropping the active child was not detected");
