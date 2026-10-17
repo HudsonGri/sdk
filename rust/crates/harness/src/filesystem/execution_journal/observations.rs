@@ -1,5 +1,20 @@
 use super::*;
 
+// Keep ordinary append allocation shape intact. Only model builds heap-place
+// lazy child futures before polling them on Loom's coroutine stack.
+macro_rules! journal_future {
+    ($make:expr, $ordinary:expr) => {{
+        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+        {
+            super::cache::model_future($make).await
+        }
+        #[cfg(not(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom)))]
+        {
+            $ordinary.await
+        }
+    }};
+}
+
 #[derive(Serialize)]
 struct BorrowedObservation<'a> {
     version: u32,
@@ -64,15 +79,26 @@ where
                         .await?
                     }
                     None => {
-                        self.replay_page_fenced(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            summary.fence,
-                            None,
-                        )
-                        .await?
+                        let tail = summary.tail;
+                        let fence = summary.fence;
+                        journal_future!(
+                            move || self.replay_page_fenced(
+                                operation,
+                                tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                fence,
+                                None,
+                            ),
+                            self.replay_page_fenced(
+                                operation,
+                                tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                fence,
+                                None,
+                            )
+                        )?
                     }
                 };
                 let (page, fence) = page;
@@ -373,19 +399,21 @@ where
         let summary_io = funding.as_ref().or(io);
         let result = async {
             loop {
-                self.refresh_summary(operation_id, summary, summary_io)
-                    .await?;
+                let current = &mut *summary;
+                journal_future!(
+                    move || self.refresh_summary(operation_id, current, summary_io),
+                    self.refresh_summary(operation_id, current, summary_io)
+                )?;
                 if let Some(owner) = owner {
                     let mut borrowed = io.map(PreparationIo::history_io);
-                    owner
-                        .verify_execution(
-                            operation_id,
-                            event,
-                            &mut borrowed
-                                .as_mut()
-                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                        )
-                        .await?;
+                    let mut history = borrowed
+                        .as_mut()
+                        .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+                    let work = &mut history;
+                    journal_future!(
+                        move || owner.verify_execution(operation_id, event, work),
+                        owner.verify_execution(operation_id, event, work)
+                    )?;
                 }
                 if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
                     if *previous != event_digest {
@@ -408,7 +436,13 @@ where
                     return Ok(false);
                 }
                 summary.validate_next(event, model.as_ref(), limits, io)?;
-                let preparing = self.prepare_chunk(operation_id, event, model.as_ref(), io);
+                let model_ref = model.as_ref();
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let preparing = super::cache::model_future(move || {
+                    self.prepare_chunk(operation_id, event, model_ref, io)
+                });
+                #[cfg(not(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom)))]
+                let preparing = self.prepare_chunk(operation_id, event, model_ref, io);
                 #[cfg(all(test, not(target_arch = "wasm32")))]
                 let chunk = crate::test_support::accounted::observe_chunk(preparing, io).await;
                 #[cfg(not(all(test, not(target_arch = "wasm32"))))]
@@ -423,28 +457,42 @@ where
                 };
                 let committed = if let Some(owner) = owner {
                     let mut borrowed = io.map(PreparationIo::history_io);
-                    owner
-                        .append_execution(
+                    let mut history = borrowed
+                        .as_mut()
+                        .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+                    let work = &mut history;
+                    let tail = summary.tail;
+                    let key_ref = &key;
+                    let content = bytes.clone();
+                    journal_future!(
+                        move || owner.append_execution(
                             operation_id,
-                            summary.tail,
-                            &key,
-                            bytes.clone(),
+                            tail,
+                            key_ref,
+                            content,
                             event,
                             chunk,
-                            &mut borrowed
-                                .as_mut()
-                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                            work,
+                        ),
+                        owner.append_execution(
+                            operation_id,
+                            tail,
+                            key_ref,
+                            content,
+                            event,
+                            chunk,
+                            work,
                         )
-                        .await?
+                    )?
                 } else {
-                    self.append_local_with_io(
-                        &observation,
-                        summary.tail,
-                        key.clone(),
-                        bytes.clone(),
-                        io,
-                    )
-                    .await?
+                    let view = &observation;
+                    let tail = summary.tail;
+                    let key = key.clone();
+                    let content = bytes.clone();
+                    journal_future!(
+                        move || self.append_local_with_io(view, tail, key, content, io),
+                        self.append_local_with_io(view, tail, key, content, io)
+                    )?
                 };
                 if committed {
                     drop(key);

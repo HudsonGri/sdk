@@ -56,9 +56,9 @@ pub(super) fn matches_anchor(
 #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
 mod model;
 #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
-pub(super) use model::AppendProbe;
-#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
 pub use model::verify_cached_summary_publication;
+#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+pub(super) use model::{AppendProbe, model_future};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
