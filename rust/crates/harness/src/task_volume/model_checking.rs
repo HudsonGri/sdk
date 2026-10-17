@@ -23,6 +23,8 @@ pub enum Fault {
     StopAfterGenerationConflict,
     /// Return from child control before its live effect future is drained.
     DropActiveChild,
+    /// Admit child preparation before its staged inputs are durable.
+    SkipChildInputFence,
 }
 
 loom::thread_local! {
