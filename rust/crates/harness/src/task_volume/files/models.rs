@@ -72,6 +72,7 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
             view_order: source.view_order.clone(),
             view_revisions: source.view_revisions.clone(),
             overviews: source.overviews.clone(),
+            child_inputs: source.child_inputs.clone(),
         }),
     };
     Arc::new(TaskFiles {
