@@ -39,13 +39,6 @@ impl<A, O> Clone for Fs<A, O> {
 }
 
 impl<A, O> Fs<A, O> {
-    pub(crate) fn projection_policy_fence(
-        &self,
-        volume: crate::VolumeId,
-    ) -> Result<Arc<crate::access::projection::Fence>, FsError> {
-        crate::access::projection::policy_fence(volume)
-    }
-
     #[cfg(all(not(target_arch = "wasm32"), any(windows, test)))]
     pub(crate) fn has_process_policy_owner(&self) -> bool
     where
