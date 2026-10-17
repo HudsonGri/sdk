@@ -232,6 +232,99 @@ pub(super) fn redundant_preflight() -> bool {
     REDUNDANT.with(std::cell::Cell::get)
 }
 
+std::thread_local! {
+    static SKIP_REFUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Negative control: an unsettled copy reservation is never returned.
+pub(super) fn skip_refund() -> bool {
+    SKIP_REFUND.with(std::cell::Cell::get)
+}
+
+// An allocator failure after the combined claim must leave no copy charged,
+// no credit reserved and no storage held, on every scope; a lost refund is
+// caught by the same assertions.
+#[test]
+fn allocator_failure_returns_the_reserved_copy() {
+    let failed = |skip: bool, depth: u8| {
+        let cancellation = CancellationToken::new();
+        let limit = crate::WorkBudget {
+            bytes_copied: 2,
+            ..crate::WorkBudget::UNBOUNDED
+        };
+        let root = crate::NativeMaterializationWork::new(limit, &cancellation).unwrap();
+        let mut work = root.clone();
+        for level in 0..depth {
+            work = work
+                .native_volume_work(crate::WorkBudget {
+                    bytes_copied: 3 - u64::from(level),
+                    ..crate::WorkBudget::UNBOUNDED
+                })
+                .unwrap();
+        }
+        let setup = root.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&work, &cancellation);
+        crate::kernel::FAIL_RESERVE.with(|flag| flag.set(true));
+        SKIP_REFUND.with(|flag| flag.set(skip));
+        let result = restore_absolute_path("x", &mut accounting, &cancellation);
+        crate::kernel::FAIL_RESERVE.with(|flag| flag.set(false));
+        SKIP_REFUND.with(|flag| flag.set(false));
+        let error = format!("{:?}", result.err().unwrap());
+        assert!(error.contains("AllocationFailed"), "{error}");
+        assert_eq!(root.receipt().bytes_copied, 0);
+        assert_eq!(root.live_allocation_bytes(), setup);
+        let root_credit =
+            root.state(|state| state.budget.bytes_copied == state.original_budget().bytes_copied);
+        let scopes = work
+            .resource_chain()
+            .iter()
+            .all(|(local, pending)| local.bytes_copied == 0 && pending.bytes_copied == 0);
+        root_credit && scopes
+    };
+    for depth in [0, 2] {
+        assert!(failed(false, depth), "depth={depth}");
+        assert!(!failed(true, depth), "a lost refund must be caught");
+    }
+}
+
+// Copy limits win over storage limits wherever each is bounded in the chain,
+// and a storage limit alone still reports storage.
+#[test]
+fn copy_limits_precede_storage_limits_across_independent_scopes() {
+    let cancellation = CancellationToken::new();
+    for (root_copy, child_peak, field) in [
+        (0, 0, "bytes_copied"),
+        (2, 0, "peak_allocation_bytes"),
+        (0, 2, "bytes_copied"),
+    ] {
+        let root = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                bytes_copied: root_copy,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .unwrap();
+        let child = root
+            .native_volume_work(crate::WorkBudget {
+                peak_allocation_bytes: child_peak,
+                ..crate::WorkBudget::UNBOUNDED
+            })
+            .unwrap();
+        let before = root.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&child, &cancellation);
+        let error = format!(
+            "{:?}",
+            restore_absolute_path("x", &mut accounting, &cancellation)
+                .err()
+                .unwrap()
+        );
+        assert!(error.contains(field), "{root_copy} {child_peak}: {error}");
+        assert_eq!(root.receipt().bytes_copied, 0);
+        assert_eq!(root.live_allocation_bytes(), before);
+    }
+}
+
 // (original leaf, resource mutex) acquisitions for one successful copy.
 fn trace(
     old_path: bool,
@@ -281,9 +374,10 @@ fn trace(
 }
 
 // Exact lock pins against main's sequence on every native context: the
-// reserved copy takes fewer leaf and resource-mutex passes than check-only
-// admission did, and a single redundant preflight is caught even though it
-// leaves every receipt unchanged.
+// reserved copy takes fewer leaf passes and no more resource-mutex passes
+// than check-only admission did (the refundable reservation and its commit
+// cost one scope pass each, per level), and a single redundant preflight is
+// caught even though it leaves every receipt unchanged.
 #[test]
 fn reserved_copies_take_fewer_locks_than_check_only_admission() {
     // (mode, recheck) -> [main, fused] (leaf, resource) acquisitions. Mode 1
@@ -292,10 +386,10 @@ fn reserved_copies_take_fewer_locks_than_check_only_admission() {
         [
             ((1, false), [(main, 0), (3, 0)]),
             ((1, true), [(main, 0), (3, 0)]),
-            ((2, false), [(main, per_level), (3, 3)]),
-            ((3, false), [(main, 2 * per_level), (3, 6)]),
-            ((3, true), [(main, 2 * per_level), (3, 6)]),
-            ((4, false), [(main, 2 * per_level), (3, 6)]),
+            ((2, false), [(main, per_level), (3, 6)]),
+            ((3, false), [(main, 2 * per_level), (3, 12)]),
+            ((3, true), [(main, 2 * per_level), (3, 12)]),
+            ((4, false), [(main, 2 * per_level), (3, 12)]),
         ]
     };
     for (restore, pins) in [(false, pins(7, 9)), (true, pins(6, 7))] {
@@ -304,6 +398,7 @@ fn reserved_copies_take_fewer_locks_than_check_only_admission() {
             let (main, main_receipt) = trace(true, restore, *mode, *recheck);
             let (fused, receipt) = trace(false, restore, *mode, *recheck);
             *locks = [main, fused];
+            assert!(fused.0 < main.0 && fused.1 <= main.1, "{main:?} {fused:?}");
             assert_eq!(receipt, main_receipt);
             REDUNDANT.with(|flag| flag.set(true));
             let (redundant, redundant_receipt) = trace(false, restore, *mode, *recheck);

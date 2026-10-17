@@ -11,6 +11,12 @@ use crate::storage::ObjectId;
 
 pub(crate) type Failure = OperationFailure<Error>;
 
+#[cfg(all(test, not(acyclic_fs_loom)))]
+std::thread_local! {
+    /// Makes the next exact reservation fail like an exhausted allocator.
+    pub(crate) static FAIL_RESERVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// A value with ownership charged to a kernel accounting context.
 pub struct Owned<T> {
     /// The retained value.
@@ -49,14 +55,15 @@ impl<T> Owned<Vec<T>> {
             count,
             accounting,
             |accounting, requested, operations| accounting.claim_owned(requested, operations),
-            |_| (),
+            |_| Ok(()),
         )
     }
 
     /// Allocates exactly `count` values, claiming their storage through
     /// `claim(accounting, bytes, operations)`; failures release the claim.
-    /// `fill` runs once the capacity exists, before the claim is reconciled,
-    /// so work prepaid by `claim` is performed before any later rejection.
+    /// `fill` runs once the capacity exists and before the claim is
+    /// reconciled, so work it settles is done before any later rejection; a
+    /// fill error retires the storage like a reconciliation error.
     pub(crate) fn allocate_with<'a>(
         count: usize,
         accounting: &mut KernelAccounting<'a>,
@@ -65,7 +72,7 @@ impl<T> Owned<Vec<T>> {
             u64,
             u64,
         ) -> Result<KernelOwnedAllocation, crate::FsError>,
-        fill: impl FnOnce(&mut Vec<T>),
+        fill: impl FnOnce(&mut Vec<T>) -> Result<(), crate::FsError>,
     ) -> Result<Self, crate::FsError> {
         let requested = crate::foundation::usize_to_u64(
             count
@@ -74,6 +81,12 @@ impl<T> Owned<Vec<T>> {
         );
         let mut allocation = claim(accounting, requested, u64::from(requested != 0))?;
         let mut values = Vec::new();
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        let count = if FAIL_RESERVE.with(std::cell::Cell::get) {
+            usize::MAX
+        } else {
+            count
+        };
         if let Err(_error) = values.try_reserve_exact(count) {
             drop(values);
             #[cfg(not(target_arch = "wasm32"))]
@@ -87,9 +100,9 @@ impl<T> Owned<Vec<T>> {
             }
             return Err(super::CanonicalDecodeError::AllocationFailed.into());
         }
-        fill(&mut values);
+        let filled = fill(&mut values);
         let actual = crate::foundation::usize_to_u64(values.capacity() * std::mem::size_of::<T>());
-        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
+        let checked = filled.and(accounting.reconcile_owned(&mut allocation, requested, actual));
         let owned = Self::new(values, allocation, actual);
         if let Err(error) = checked {
             owned.retire(accounting)?;

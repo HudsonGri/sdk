@@ -1,5 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
 use super::*;
-use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 
 std::thread_local! {
     static SKIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -10,8 +10,10 @@ pub(super) fn skip_precheck() -> bool {
     SKIP.with(std::cell::Cell::get)
 }
 
-type Push = Transaction<MemoryAuthorityStore, MemoryObjectStore>;
+#[cfg(not(target_arch = "wasm32"))]
+type Push = Transaction<crate::memory::MemoryAuthorityStore, crate::memory::MemoryObjectStore>;
 
+#[cfg(not(target_arch = "wasm32"))]
 // Funding that cannot move into the list (another ledger) is rejected before
 // the copy is charged, so a failed push records no work and changes nothing.
 fn foreign_push(skip: bool) -> (bool, u64, usize) {
@@ -38,6 +40,7 @@ fn foreign_push(skip: bool) -> (bool, u64, usize) {
     (pushed.is_err(), charged, len)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn untransferable_funding_fails_before_the_copy_is_charged() {
     assert_eq!(foreign_push(false), (true, 0, 0));

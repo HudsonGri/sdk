@@ -167,6 +167,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
 #[path = "transaction_loom.rs"]
 mod model;
 
-#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+// Same predicate as the precheck hook in `push_mutation`; the native-only
+// tests are gated inside the module.
+#[cfg(all(test, not(acyclic_fs_loom)))]
 #[path = "transaction_tests.rs"]
 mod tests;

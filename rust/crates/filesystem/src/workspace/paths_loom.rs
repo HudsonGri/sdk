@@ -25,13 +25,14 @@ pub(super) fn completed(copied: u64) {
 
 // Runs one real caller. Successful owners are retired after the join, so
 // every allocation byte surviving beyond setup is a leak from a failed copy.
-fn once<const OLD: bool>(
+fn once<const OLD: bool, const OMIT: bool>(
     work: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
     label: Option<&WorkspaceName>,
     actual: &Arc<AtomicU64>,
 ) -> Option<crate::kernel::Owned<String>> {
     CHECK_ONLY.with(|flag| flag.set(OLD));
+    crate::materializer::omit_child_debit(OMIT);
     ACTUAL.with(|slot| *slot.borrow_mut() = Some(actual.clone()));
     let mut accounting = KernelAccounting::native(work, cancellation);
     let copied = match label {
@@ -40,12 +41,13 @@ fn once<const OLD: bool>(
     };
     ACTUAL.with(|slot| *slot.borrow_mut() = None);
     CHECK_ONLY.with(|flag| flag.set(false));
+    crate::materializer::omit_child_debit(false);
     let owned = copied.ok()?;
     assert_eq!(owned.value, if label.is_some() { "xy" } else { "/x" });
     Some(owned)
 }
 
-fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
+fn model<const OLD: bool, const CHECK_EFFECTS: bool, const OMIT: bool>(
     copies: u64,
     callers: [bool; 2],
     depth: u8,
@@ -68,11 +70,19 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
             &root_cancel,
         )
         .unwrap();
+        // Unequal bounds: each outer scope allows one more copy than the
+        // next, so an ancestor's credit cannot stand in for a child's.
         let mut work = root.clone();
-        let mut scopes = vec![root.clone()];
-        for _ in 0..depth {
-            work = work.native_volume_work(limit).unwrap();
-            scopes.push(work.clone());
+        let mut scopes = vec![(root.clone(), limit.bytes_copied)];
+        for level in 0..depth {
+            let bound = limit.bytes_copied + COPIED * u64::from(depth - 1 - level);
+            work = work
+                .native_volume_work(crate::WorkBudget {
+                    bytes_copied: bound,
+                    ..crate::WorkBudget::UNBOUNDED
+                })
+                .unwrap();
+            scopes.push((work.clone(), bound));
         }
         if recheck {
             work = work.recheck_admitted();
@@ -92,7 +102,7 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
         let worker_actual = actual.clone();
         let [worker_label, label] = labels;
         let worker = loom::thread::spawn(move || {
-            once::<OLD>(
+            once::<OLD, OMIT>(
                 &worker_work,
                 &worker_cancel,
                 worker_label.as_ref(),
@@ -104,7 +114,7 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
             2 => root_cancel.cancel(),
             _ => (),
         }
-        let owned = once::<OLD>(&work, &caller_cancel, label.as_ref(), &actual);
+        let owned = once::<OLD, OMIT>(&work, &caller_cancel, label.as_ref(), &actual);
         let owners = [worker.join().unwrap(), owned];
         let retiring = CancellationToken::new();
         let mut accounting = KernelAccounting::native(&work, &retiring);
@@ -127,11 +137,19 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
             setup,
             "failed copies retire storage"
         );
+        // Each scope's own counters, not the intersected remaining budget:
+        // every scope records exactly the copies and holds nothing pending.
+        for (local, pending) in work.resource_chain() {
+            assert!(
+                local.bytes_copied == copied && pending == crate::WorkCounters::UNCHARGED,
+                "every scope records its own copy and nothing stays pending"
+            );
+        }
         // Every bounded scope, including a grandparent of the caller, must
         // hold exactly the unspent credit: nothing reserved or stranded.
-        for scope in scopes.iter().skip(usize::from(depth != 0)) {
+        for (scope, bound) in scopes.iter().skip(usize::from(depth != 0)) {
             let remaining = scope.state(|state| state.remaining());
-            match limit.bytes_copied.checked_sub(copied) {
+            match bound.checked_sub(copied) {
                 Some(copy) => assert_eq!(
                     remaining.unwrap().bytes_copied,
                     copy,
@@ -147,11 +165,11 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
 #[test]
 fn concurrent_workspace_text_copies_cannot_share_remaining_credit() {
     for copies in 0..3 {
-        model::<false, true>(copies, [false, true], 0, false, 0);
+        model::<false, true, false>(copies, [false, true], 0, false, 0);
     }
-    model::<false, true>(1, [true, true], 2, true, 0);
-    model::<false, true>(1, [true, false], 2, false, 1);
-    model::<false, true>(1, [false, true], 0, false, 2);
+    model::<false, true, false>(1, [true, true], 2, true, 0);
+    model::<false, true, false>(1, [true, false], 2, false, 1);
+    model::<false, true, false>(1, [false, true], 0, false, 2);
 }
 
 fn message(panic: &(dyn std::any::Any + Send)) -> &str {
@@ -164,8 +182,9 @@ fn message(panic: &(dyn std::any::Any + Send)) -> &str {
 
 #[test]
 fn old_check_only_copy_admission_fails_the_real_effect_assertion_and_needs_it() {
-    let panic = std::panic::catch_unwind(|| model::<true, true>(1, [false, true], 0, false, 0))
-        .expect_err("check-only admission must let both copies spend one allowance");
+    let panic =
+        std::panic::catch_unwind(|| model::<true, true, false>(1, [false, true], 0, false, 0))
+            .expect_err("check-only admission must let both copies spend one allowance");
     assert!(
         message(&*panic).contains("workspace text copies must be admitted before they execute"),
         "{}",
@@ -173,5 +192,19 @@ fn old_check_only_copy_admission_fails_the_real_effect_assertion_and_needs_it() 
     );
     // Delete only the effect-limit assertion: the old path still records
     // every completed byte and retires storage, so the variant passes.
-    model::<true, false>(1, [false, true], 0, false, 0);
+    model::<true, false, false>(1, [false, true], 0, false, 0);
+}
+
+// An intersected remaining budget can let a charged parent mask a child that
+// never recorded its copy; the raw per-scope assertion catches it.
+#[test]
+fn an_omitted_child_debit_fails_the_per_scope_assertion() {
+    let panic =
+        std::panic::catch_unwind(|| model::<false, true, true>(2, [false, true], 2, false, 0))
+            .expect_err("a child scope that skips its debit must be detected");
+    assert!(
+        message(&*panic).contains("every scope records its own copy"),
+        "{}",
+        message(&*panic)
+    );
 }

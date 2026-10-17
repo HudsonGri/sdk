@@ -17,6 +17,17 @@ pub(crate) fn count_resource_locks<T>(operation: impl FnOnce() -> T) -> (T, usiz
     (result, count.unwrap_or(0))
 }
 
+#[cfg(all(test, acyclic_fs_loom))]
+loom::thread_local! {
+    static OMIT_CHILD_DEBIT: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+/// Negative control: completed work skips the scope it was recorded on.
+#[cfg(all(test, acyclic_fs_loom))]
+pub(crate) fn omit_child_debit(omit: bool) {
+    OMIT_CHILD_DEBIT.with(|flag| flag.set(omit));
+}
+
 #[derive(Debug)]
 pub(crate) struct NativeResourceAllowance {
     pub(super) budget: WorkBudget,
@@ -279,9 +290,22 @@ impl NativeResourceAllowance {
     }
     pub(crate) fn completed(&self, delta: WorkCounters, bytes: u64) -> Result<(), DemandError> {
         self.visit(None, &|scope, state| {
+            #[cfg(all(test, acyclic_fs_loom))]
+            if std::ptr::eq(scope, self) && OMIT_CHILD_DEBIT.with(std::cell::Cell::get) {
+                return Ok(Ok(()));
+            }
             state.completed(delta, bytes)?;
             Ok(state.verify(scope.budget))
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn local_chain(&self) -> Vec<(WorkCounters, WorkCounters)> {
+        let state = *self.lock();
+        let mut chain = vec![(state.work, state.pending)];
+        if let Some(parent) = &self.parent {
+            chain.extend(parent.local_chain());
+        }
+        chain
     }
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), DemandError> {
         self.visit(None, &|_, state| {

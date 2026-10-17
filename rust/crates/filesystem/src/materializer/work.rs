@@ -283,6 +283,73 @@ impl NativeMaterializationWork {
             bytes,
         })
     }
+    /// Reserves `copy` across the whole scope chain, then claims `bytes` of
+    /// storage, in one original-leaf pass. Copy limits are therefore
+    /// reported before any storage limit, and a refused claim returns the
+    /// reservation before the leaf is released. The caller settles the
+    /// reservation (returned, item-charged) with `effects::complete` or
+    /// returns it with `effects::refund`.
+    pub(crate) fn reserve_and_claim(
+        &self,
+        cancellation: &crate::CancellationToken,
+        bytes: u64,
+        operations: u64,
+        copy: WorkCounters,
+    ) -> Result<(NativeAllocation, WorkCounters), crate::FsError> {
+        let reserved = self.state(|state| -> Result<WorkCounters, crate::FsError> {
+            // Existing ledger failures on every scope (an earlier overrun),
+            // then caller cancellation, then the proposed copy's limits.
+            state
+                .admit(WorkCounters::UNCHARGED)
+                .map_err(native_materialization_work_error)?;
+            cancellation.check()?;
+            let copy = state.item_charge(copy);
+            state
+                .reserve_reconciled(copy)
+                .map_err(native_materialization_work_error)?;
+            if let Err(error) = state.claim_allocation(bytes, operations, WorkCounters::UNCHARGED) {
+                if state.refund(copy).is_err() {
+                    state.poison_native_original_work();
+                }
+                return Err(native_materialization_work_error(error).into());
+            }
+            Ok(copy)
+        })?;
+        let allocation = NativeAllocation {
+            meter: self.allocation_work(),
+            bytes,
+        };
+        Ok((allocation, reserved))
+    }
+    /// Settles a reservation from `reserve_and_claim` with the work actually
+    /// done, in one leaf pass: the credited part leaves `pending` and the
+    /// actual work is recorded on every scope. The scope passes report
+    /// poisoning, so no separate admission pass follows.
+    pub(crate) fn settle_reserved(
+        &self,
+        cancellation: &crate::CancellationToken,
+        pending: &mut WorkCounters,
+        actual: WorkCounters,
+    ) -> Result<(), crate::FsError> {
+        self.state(|state| {
+            let actual = state.item_charge(actual);
+            let credited = actual.intersect_budget(*pending);
+            *pending = credited
+                .remaining(*pending)
+                .map_err(NativeTreeMaterializationError::from)?;
+            state
+                .complete(credited, actual)
+                .map_err(native_materialization_work_error)?;
+            cancellation.check().map_err(Into::into)
+        })
+    }
+    /// Each resource scope's own (work, pending) counters, innermost first.
+    #[cfg(test)]
+    pub(crate) fn resource_chain(&self) -> Vec<(WorkCounters, WorkCounters)> {
+        self.resource
+            .as_ref()
+            .map_or_else(Vec::new, |resource| resource.local_chain())
+    }
     pub(crate) fn claim_root_metadata(
         &self,
         bytes: u64,

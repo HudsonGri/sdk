@@ -99,12 +99,12 @@ pub(super) fn copy_workspace_label(
 
 /// Copies `prefix` and `text` into one exactly sized accounted string.
 ///
-/// On a native ledger the copy is admitted and recorded together with its
-/// storage in one leaf pass, before the copy: copy limits still fail ahead of
-/// allocation limits and concurrent owners cannot spend the same remaining
-/// credit. The copy fills the new capacity before the claim is reconciled,
-/// so a later cancellation rejects work that was both charged and done.
-/// Standalone contexts have a single owner and keep check, copy, record.
+/// On a native ledger one leaf pass reserves the copy across every scope and
+/// then claims its storage, so copy limits fail ahead of storage limits and
+/// concurrent owners cannot spend the same credit. The reservation settles
+/// once the copy fills the new capacity, before the claim is reconciled; if
+/// the allocator fails first, the guard returns it. Standalone contexts have
+/// a single owner and keep check, copy, record.
 fn copy_owned_text(
     prefix: &str,
     text: &str,
@@ -122,29 +122,37 @@ fn copy_owned_text(
         model::completed(bytes.len() as u64);
     };
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = accounting.native_work() {
-        #[cfg(all(test, acyclic_fs_loom))]
-        let fused = !model::check_only();
-        #[cfg(not(all(test, acyclic_fs_loom)))]
-        let fused = true;
-        if fused {
-            #[cfg(all(test, not(acyclic_fs_loom)))]
-            if tests::redundant_preflight() {
-                accounting.admit(copied)?;
-            }
-            let bytes = crate::kernel::Owned::<Vec<u8>>::allocate_with(
-                length,
-                accounting,
-                |accounting, requested, operations| {
-                    accounting.check()?;
-                    work.claim(requested, operations, copied)
-                        .map(KernelOwnedAllocation::NativeOriginal)
-                        .map_err(Into::into)
-                },
-                fill,
-            )?;
-            return owned_text(bytes);
+    let native = match accounting {
+        KernelAccounting::NativeOriginal { work, cancellation } => Some((*work, *cancellation)),
+        _ => None,
+    };
+    #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+    let native = native.filter(|_| !model::check_only());
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((work, cancellation)) = native {
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        if tests::redundant_preflight() {
+            accounting.admit(copied)?;
         }
+        let reserved = Reserved(work, std::cell::Cell::new(crate::WorkCounters::UNCHARGED));
+        let bytes = crate::kernel::Owned::<Vec<u8>>::allocate_with(
+            length,
+            accounting,
+            |_, requested, operations| {
+                let (allocation, credit) =
+                    work.reserve_and_claim(cancellation, requested, operations, copied)?;
+                reserved.1.set(credit);
+                Ok(KernelOwnedAllocation::NativeOriginal(allocation))
+            },
+            |bytes| {
+                fill(bytes);
+                let mut pending = reserved.1.get();
+                let completed = work.settle_reserved(cancellation, &mut pending, copied);
+                reserved.1.set(pending);
+                completed
+            },
+        )?;
+        return owned_text(bytes);
     }
     accounting.admit(copied)?;
     let mut bytes = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
@@ -154,6 +162,25 @@ fn copy_owned_text(
         return Err(error.into());
     }
     owned_text(bytes)
+}
+
+/// Copy credit reserved for a fill that has not completed; dropping it
+/// returns whatever is still pending.
+#[cfg(not(target_arch = "wasm32"))]
+struct Reserved<'a>(
+    &'a crate::NativeMaterializationWork,
+    std::cell::Cell<crate::WorkCounters>,
+);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        if tests::skip_refund() {
+            return;
+        }
+        crate::kernel::allocation::effects::refund(self.0, self.1.get_mut());
+    }
 }
 
 fn owned_text(
