@@ -28,6 +28,9 @@ const mutants = [
   // Aliases of a lock type still construct a lock.
   ['locks', {[path]: 'use crate::sync::SyncMutex as DataMutex;\n' + healthy + '\nlet head = DataMutex::new(Head::default());'}, {[path]: {grade: 'real'}}],
   ['locks', {[path]: 'type Lock<T> = crate::sync::Mutex<T>;\ntype Cell<T> = Lock<T>;\n' + healthy + '\nlet head = Cell::new(0);'}, {[path]: {grade: 'real'}}],
+  // Nested turbofish generics still construct a lock.
+  ['locks', {[path]: healthy + '\nlet state = SyncMutex::<Vec<u8>>::new(Vec::new());'}, {[path]: {grade: 'real'}}],
+  ['locks', {[path]: healthy + '\nlet state = Mutex::<BTreeMap<u8, Vec<Option<u8>>>>::default();'}, {[path]: {grade: 'real'}}],
   ['bound', {[path]: bounded + healthy}, {[path]: {grade: 'real'}}],
   ['bound', {[path]: healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   // A constant or forwarded bound is still a bound.

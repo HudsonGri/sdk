@@ -138,8 +138,11 @@ export function lockAliases(source) {
   return names;
 }
 
+// Turbofish generics nest (`SyncMutex::<Vec<Option<u8>>>::new`); span any
+// depth up to the constructor so spelling the type out cannot hide it.
+const generics = '<[^;(){}]*>';
 const constructsLock = source =>
-  new RegExp(`\\b(?:${[...lockAliases(source)].join('|')})(?:::<[^>]*>)?::(?:new|default)\\s*\\(`).test(source);
+  new RegExp(`\\b(?:${[...lockAliases(source)].join('|')})(?:::${generics})?::(?:new|default)\\s*\\(`).test(source);
 
 export const rules = {
   unregistered: (path, source, model) => model ? [] : [`${path}: Loom model is not classified in scripts/check-loom-models.mjs`],
