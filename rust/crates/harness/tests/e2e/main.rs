@@ -230,33 +230,36 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 #[test]
 fn scenarios() -> TestResult {
     let started = Instant::now();
-    scenario_runtime()?.block_on(run_scenarios(started))
+    let (runtime, workers) = scenario_runtime()?;
+    runtime.block_on(run_scenarios(started, workers))
 }
 
-fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
+fn scenario_runtime() -> TestResult<(tokio::runtime::Runtime, usize)> {
     if tokio::runtime::Handle::try_current().is_ok() {
         return Err("scenario services must start before the async runtime".into());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
     let available = std::thread::available_parallelism().map_or(1, usize::from);
-    Ok(scenario_builder(available).build()?)
+    let workers = scenario_workers(available);
+    Ok((scenario_builder(workers).build()?, workers))
 }
 
-fn scenario_builder(available: usize) -> tokio::runtime::Builder {
-    let workers = runtime_workers(available);
+const MAX_ASYNC_WORKERS: usize = 8;
+const BLOCKING_WORKERS: usize = 16;
+
+fn scenario_workers(available: usize) -> usize {
+    available.clamp(2, MAX_ASYNC_WORKERS)
+}
+
+fn scenario_builder(workers: usize) -> tokio::runtime::Builder {
+    // All scenarios share one I/O pool. Waiting for a journal/device must not
+    // consume an async worker, or shrink I/O concurrency on a small CPU set.
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder
         .worker_threads(workers)
-        .max_blocking_threads(workers)
+        .max_blocking_threads(BLOCKING_WORKERS)
         .enable_all();
     builder
-}
-
-fn runtime_workers(available: usize) -> usize {
-    // Three concurrent suites share the host. Their async and blocking pools
-    // share that budget too; bounding only the async pool still spawns hundreds
-    // of filesystem workers. All scenario futures remain admitted in parallel.
-    (available / (3 * 2)).max(1)
 }
 
 #[tokio::test]
@@ -269,7 +272,14 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
     );
 }
 
-async fn run_scenarios(started: Instant) -> TestResult {
+fn parallel_cases<F: Future>(
+    cases: impl IntoIterator<Item = F>,
+    workers: usize,
+) -> impl futures::Stream<Item = F::Output> {
+    stream::iter(cases).buffer_unordered(workers)
+}
+
+async fn run_scenarios(started: Instant, workers: usize) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
@@ -281,21 +291,23 @@ async fn run_scenarios(started: Instant) -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    let mut results = stream::iter(paths.into_iter().map(|path| {
-        let root = root.clone();
-        async move {
-            let case_path = path.clone();
-            let result: TestResult = tokio::spawn(async move {
-                let case = scenario::load_value(&root, &case_path)?;
-                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-            })
-            .await
-            .unwrap_or_else(|error| Err(Box::new(error)));
-            (path, result)
-        }
-    }))
-    .buffer_unordered(count);
+    let mut results = parallel_cases(
+        paths.into_iter().map(|path| {
+            let root = root.clone();
+            async move {
+                let case_path = path.clone();
+                let result: TestResult = tokio::spawn(async move {
+                    let case = scenario::load_value(&root, &case_path)?;
+                    tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                })
+                .await
+                .unwrap_or_else(|error| Err(Box::new(error)));
+                (path, result)
+            }
+        }),
+        workers,
+    );
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path.strip_prefix(&root)?.display();
