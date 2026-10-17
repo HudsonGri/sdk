@@ -4,8 +4,8 @@ fn agrees(allowed: bool, succeeded: bool, contents: Option<&[u8]>) -> bool {
     succeeded == allowed && contents == allowed.then_some(b"private".as_slice())
 }
 
-fn legacy(
-    fixture: &Fixture,
+pub(super) fn legacy<O>(
+    fixture: &Fixture<O>,
     volume: &VolumeRef,
     operation: VolumeOperation,
 ) -> Result<ContentGrant, Box<dyn Error>> {

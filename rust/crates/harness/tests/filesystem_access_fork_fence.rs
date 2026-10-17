@@ -27,29 +27,8 @@ async fn racing_fork(protected: bool, action: Action) -> Result<(), Box<dyn Erro
         VolumeOwner::Project("owner".into()),
         &mut None,
     )?;
-    let source = ContentGrant::verify(
-        &fixture.issuer.verifier(&mut None)?,
-        &fixture.scope,
-        &fixture.volume,
-        VolumeOperation::Read,
-        65536,
-        &mut None,
-    )?;
-    let destination_scope = fixture.issuer.issue(
-        "destination",
-        &Capabilities::new([target.capability(VolumeOperation::Write, &mut None)?]),
-        fixture.scope.agent(),
-        None,
-        &mut None,
-    )?;
-    let destination = ContentGrant::verify(
-        &fixture.issuer.verifier(&mut None)?,
-        &destination_scope,
-        &target,
-        VolumeOperation::Write,
-        65536,
-        &mut None,
-    )?;
+    let source = copies::legacy(&fixture, &fixture.volume, VolumeOperation::Read)?;
+    let destination = copies::legacy(&fixture, &target, VolumeOperation::Write)?;
     let workspace = fixture
         .fs
         .open_workspace(
@@ -206,21 +185,7 @@ async fn expiring_fork(offset: u64) -> Result<(), Box<dyn Error>> {
         VolumeOwner::Project("owner".into()),
         &mut None,
     )?;
-    let target_scope = fixture.issuer.issue(
-        "destination",
-        &Capabilities::new([target.capability(VolumeOperation::Write, &mut None)?]),
-        fixture.scope.agent(),
-        None,
-        &mut None,
-    )?;
-    let destination = ContentGrant::verify(
-        &fixture.issuer.verifier(&mut None)?,
-        &target_scope,
-        &target,
-        VolumeOperation::Write,
-        65536,
-        &mut None,
-    )?;
+    let destination = copies::legacy(&fixture, &target, VolumeOperation::Write)?;
     let result = fixture
         .host
         .fork_volume(
