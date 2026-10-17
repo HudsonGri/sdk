@@ -64,7 +64,6 @@ impl Service<http::Request<Body>> for Follows {
         self.0.poll_ready(context)
     }
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        let streaming = response::streaming(request.uri().path());
         self.0.call(request)
     }
 }
@@ -86,6 +85,7 @@ impl Service<http::Request<Body>> for Owner {
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        let streaming = response::streaming(request.uri().path());
         let owner = self.clone();
         let key = request
             .headers()
