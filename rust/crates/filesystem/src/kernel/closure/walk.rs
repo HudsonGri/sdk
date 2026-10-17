@@ -1,4 +1,8 @@
+use super::page::ProvenPage;
 use super::*;
+use crate::kernel::persistent_btree::{Format, Page};
+use crate::kernel::{file_table_mutation::FileTableFormat, tree_mutation::TreeFormat};
+
 type PendingPage<N> = (ObjectId, Option<(N, ProofGuard)>, Option<(N, ProofGuard)>);
 mod incremental;
 
@@ -211,16 +215,20 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 return Err(ClosureError::RoutingAlias.into());
             }
             let bytes = self.read_object(page_id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                crate::kernel::file_table::decode_file_table_page(
-                    &bytes.0.bytes,
-                    self.limits.decode,
-                    &mut |step| observe(step),
-                )
-            })?;
+            let page = super::page::decode::<_, Page<FileTableFormat>>(
+                self.store,
+                page_id,
+                self.limits.decode,
+                &self.meter,
+                |observe| {
+                    FileTableFormat::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
+                        observe(step)
+                    })
+                },
+            )?;
             drop(bytes);
-            match &page.0 {
-                FileTablePage::Leaf(entries) => {
+            match page.page() {
+                Page::Leaf(entries) => {
                     validate_ordered_bounds(
                         entries.iter().map(|record| record.file_id),
                         lower,
@@ -233,7 +241,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                         }
                     }
                 }
-                FileTablePage::Internal(children) => {
+                Page::Internal(children) => {
                     validate_ordered_bounds(
                         children.iter().map(|child| child.first),
                         lower,
@@ -272,7 +280,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     async fn prove_record(
         &mut self,
         record: &FileRecord,
-    ) -> Result<Option<ProofVec<'a, (TreePage, ProofGuard)>>, crate::FsError> {
+    ) -> Result<Option<ProofVec<'a, ProvenPage<Page<TreeFormat>>>>, crate::FsError> {
         if !record.kind.is_supported_by_profile(self.limits.profile)
             || (record.kind == crate::kernel::FileKind::SymbolicLink && !self.limits.symbolic_links)
             || (record.link_count > 1 && !self.limits.hard_links)
@@ -331,7 +339,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     async fn prove_tree(
         &mut self,
         root: ObjectId,
-    ) -> Result<ProofVec<'a, (TreePage, ProofGuard)>, crate::FsError> {
+    ) -> Result<ProofVec<'a, ProvenPage<Page<TreeFormat>>>, crate::FsError> {
         Self::require_kind(root, ObjectKind::TreePage)?;
         let mut leaves = ProofVec::new(&self.meter);
         let mut pending: ProofVec<'a, PendingPage<LogicalName>> = ProofVec::new(&self.meter);
@@ -343,16 +351,20 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 return Err(ClosureError::RoutingAlias.into());
             }
             let bytes = self.read_object(page_id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                crate::kernel::tree::decode_tree_page(
-                    &bytes.0.bytes,
-                    self.limits.decode,
-                    &mut |step| observe(step),
-                )
-            })?;
+            let page = super::page::decode::<_, Page<TreeFormat>>(
+                self.store,
+                page_id,
+                self.limits.decode,
+                &self.meter,
+                |observe| {
+                    TreeFormat::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
+                        observe(step)
+                    })
+                },
+            )?;
             drop(bytes);
-            match &page.0 {
-                TreePage::Leaf(values) => {
+            match page.page() {
+                Page::Leaf(values) => {
                     validate_ordered_bounds(
                         values.iter().map(|entry| &entry.name),
                         lower.as_ref().map(|key| &key.0),
@@ -360,7 +372,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     )?;
                     leaves.push(page)?;
                 }
-                TreePage::Internal(children) => {
+                Page::Internal(children) => {
                     validate_ordered_bounds(
                         children.iter().map(|child| &child.first),
                         lower.as_ref().map(|key| &key.0),
@@ -415,15 +427,21 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 return Err(ClosureError::RoutingAlias.into());
             }
             let bytes = self.read_object(page_id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                crate::kernel::extent::decode_extent_page(
-                    &bytes.0.bytes,
-                    self.limits.decode,
-                    &mut |step| observe(step),
-                )
-            })?;
+            let page = super::page::decode::<_, ExtentPage>(
+                self.store,
+                page_id,
+                self.limits.decode,
+                &self.meter,
+                |observe| {
+                    crate::kernel::extent::decode_extent_page(
+                        &bytes.0.bytes,
+                        self.limits.decode,
+                        &mut |step| observe(step),
+                    )
+                },
+            )?;
             drop(bytes);
-            match &page.0 {
+            match page.page() {
                 ExtentPage::Leaf(extents) => {
                     validate_extent_bounds(extents, first, end)?;
                     for extent in extents {
@@ -479,21 +497,29 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 return Err(ClosureError::RoutingAlias.into());
             }
             let bytes = self.read_object(page_id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                crate::kernel::blob::decode_blob_page(
-                    &bytes.0.bytes,
-                    self.limits.decode,
-                    &mut |step| observe(step),
-                )
-            })?;
+            let page = super::page::decode::<_, crate::kernel::BlobPage>(
+                self.store,
+                page_id,
+                self.limits.decode,
+                &self.meter,
+                |observe| {
+                    crate::kernel::blob::decode_blob_page(
+                        &bytes.0.bytes,
+                        self.limits.decode,
+                        &mut |step| observe(step),
+                    )
+                },
+            )?;
             drop(bytes);
-            if page.0.first_offset != first || end.is_some_and(|value| page.0.end_offset != value) {
+            if page.page().first_offset != first
+                || end.is_some_and(|value| page.page().end_offset != value)
+            {
                 return Err(ClosureError::RoutingBoundsMismatch.into());
             }
             if root_length.is_none() {
-                root_length = Some(page.0.end_offset);
+                root_length = Some(page.page().end_offset);
             }
-            match &page.0.node {
+            match &page.page().node {
                 BlobNode::Internal(children) => {
                     for child in children.iter().rev() {
                         self.examine(1)?;
@@ -587,11 +613,11 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     }
 
     fn tree_entries<'b>(
-        pages: &'b ProofVec<'a, (TreePage, ProofGuard)>,
+        pages: &'b ProofVec<'a, ProvenPage<Page<TreeFormat>>>,
     ) -> impl Iterator<Item = &'b TreeEntry> + 'b {
-        pages.values.iter().flat_map(|page| match &page.0 {
-            TreePage::Leaf(entries) => entries.as_slice(),
-            TreePage::Internal(_) => &[],
+        pages.values.iter().flat_map(|page| match page.page() {
+            Page::Leaf(entries) => entries.as_slice(),
+            Page::Internal(_) => &[],
         })
     }
 
@@ -599,7 +625,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         &self,
         root: FileId,
         records: &ProofVec<'a, (FileId, FileRecord)>,
-        directories: &ProofVec<'a, (FileId, ProofVec<'a, (TreePage, ProofGuard)>)>,
+        directories: &ProofVec<'a, (FileId, ProofVec<'a, ProvenPage<Page<TreeFormat>>>)>,
     ) -> Result<(), crate::FsError> {
         let mut links = ProofVec::new(&self.meter);
         map_insert(&mut links, root, 1_u64)?;

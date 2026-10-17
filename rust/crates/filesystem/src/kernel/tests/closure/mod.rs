@@ -3,9 +3,9 @@ use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent, ExtentChild,
-    FileKind, FileMetadata, InlineFileData, NameEncoding, encode_attribute_page, encode_blob_page,
-    encode_extent_page, encode_file_metadata, encode_file_table_page, encode_generation_root,
-    encode_tree_page,
+    FileKind, FileMetadata, FileTablePage, InlineFileData, NameEncoding, TreePage,
+    encode_attribute_page, encode_blob_page, encode_extent_page, encode_file_metadata,
+    encode_file_table_page, encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
 use crate::storage::object_digest;
