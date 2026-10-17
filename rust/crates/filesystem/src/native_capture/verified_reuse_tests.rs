@@ -58,6 +58,7 @@ struct Fixture {
     setup: NativeMaterializationWork,
     options: CaptureOptions,
     paths: Vec<NamespacePath>,
+    lengths: [u64; 3],
 }
 
 fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
@@ -93,6 +94,11 @@ fn fixture_with_sparse(
     }
     let setup =
         NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+    let lengths = FILES.map(|(name, _)| {
+        std::fs::metadata(source.path().join(name.trim_start_matches('/')))
+            .unwrap()
+            .len()
+    });
     let mut checkout = runtime
         .block_on(super::capture_policy_tests::native_checkout(&setup))
         .unwrap();
@@ -129,6 +135,7 @@ fn fixture_with_sparse(
         setup,
         options,
         paths,
+        lengths,
     }
 }
 
@@ -189,15 +196,12 @@ fn rescan(
     let bytes = fixture
         .paths
         .iter()
-        .zip(FILES)
-        .map(|(path, (_, length))| {
+        .zip(fixture.lengths)
+        .map(|(path, length)| {
             runtime
                 .block_on(fixture.checkout.read_file_range(
                     path,
-                    crate::ByteRange {
-                        offset: 0,
-                        length: length as u64,
-                    },
+                    crate::ByteRange { offset: 0, length },
                     &fixture.setup,
                     fixture.setup.cancellation(),
                 ))
