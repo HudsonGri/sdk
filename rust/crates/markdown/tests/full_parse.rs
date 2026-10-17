@@ -312,6 +312,11 @@ fn check_chunks(source: &str, cuts: &[usize]) {
 }
 
 #[test]
+fn task_reference_frontier_flushes_before_checkpoint() {
+    check_chunks("- [x] task [r]\n\n[r]: /url\n\n", &[8, 2, 12]);
+}
+
+#[test]
 fn review_regressions_match_every_chunk_boundary() {
     check_chunks(LAZY_LIST, &[2, 2, 1, 1]);
     for source in [

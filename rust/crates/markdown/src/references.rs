@@ -19,6 +19,9 @@ pub(crate) fn normalize(label: &str) -> Key {
 pub(crate) struct References {
     pub(super) committed: HashMap<Key, Definition>,
     pub(super) pending: HashMap<Key, Definition>,
+    scanned: usize,
+    scan_base: Option<(usize, usize)>,
+    colon: bool,
     #[cfg(test)]
     pub(crate) work: usize,
 }
@@ -37,6 +40,25 @@ impl References {
     }
 
     pub(crate) fn update(&mut self, source: &str, offset: usize, prefix: usize) -> HashSet<Key> {
+        if self.scan_base != Some((offset, prefix)) || self.scanned > source.len() {
+            self.scan_base = Some((offset, prefix));
+            self.scanned = 0;
+            self.colon = false;
+        }
+        let appended = &source[self.scanned..];
+        if !self.colon {
+            #[cfg(test)]
+            crate::work::scan(appended.len());
+            self.colon = appended.contains(':');
+        }
+        self.scanned = source.len();
+        #[cfg(test)]
+        let colon = self.colon || REPARSE_DEFINITIONS.get();
+        #[cfg(not(test))]
+        let colon = self.colon;
+        if !colon && self.pending.is_empty() {
+            return HashSet::new();
+        }
         #[cfg(test)]
         PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         let parser = Parser::new_ext(source, crate::options());
@@ -155,9 +177,18 @@ impl Template {
         references: &References,
         budget: usize,
     ) -> (Vec<Event<'static>>, usize, std::ops::Range<usize>) {
+        let (events, calls) = self.resolved(references, budget);
+        let (cost, interval) = expansion(calls.iter());
+        (events, cost, interval)
+    }
+
+    pub(crate) fn resolved(
+        &self,
+        references: &References,
+        budget: usize,
+    ) -> (Vec<Event<'static>>, Vec<(usize, usize)>) {
         let (mut events, calls) =
             crate::events::scoped(&self.source, references, options(self.paragraph), budget);
-        let (cost, interval) = expansion(calls.iter());
         if self.task {
             events.drain(..2);
             events.truncate(events.len().saturating_sub(2));
@@ -167,8 +198,7 @@ impl Template {
                 .into_iter()
                 .map(|(event, _)| event.into_static())
                 .collect(),
-            cost,
-            interval,
+            calls,
         )
     }
 }
@@ -216,5 +246,6 @@ fn options(paragraph: bool) -> pulldown_cmark::Options {
 
 #[cfg(test)]
 std::thread_local! {
+    pub(crate) static REPARSE_DEFINITIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

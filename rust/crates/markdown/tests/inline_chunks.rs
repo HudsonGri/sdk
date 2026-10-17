@@ -234,5 +234,5 @@ fn link_and_delimiter_chunks_stay_within_the_absolute_work_bound() {
 fn short_paragraphs_stay_within_the_total_work_bound() {
     let chunks = ["\n".to_owned(), "[]".to_owned(), "\n".to_owned()];
     let measured = units(&chunks, 128);
-    assert!(measured.0 <= 128 * measured.1 + 4096);
+    assert!(measured.0 <= 128 * measured.1 + 4096, "{measured:?}");
 }

@@ -2,6 +2,21 @@ use super::{State, delimiters};
 use crate::inline_scan::tokens::{Kind, Token};
 use std::ops::Range;
 
+pub(super) fn literal(state: &mut State, token: Option<&Token>) -> Option<usize> {
+    let token = token?;
+    if matches!(token.kind, Kind::Run { .. })
+        || matches!(token.kind, Kind::Escape('*' | '_' | '~' | '`'))
+    {
+        return None;
+    }
+    #[cfg(test)]
+    crate::work::scan(1);
+    let previous = state.forest.snapshot();
+    let root = state.forest.text(token.range.clone());
+    state.invalid |= !state.forest.restore(previous);
+    Some(root)
+}
+
 #[derive(Clone, Copy)]
 struct Heads {
     delimiter: delimiters::Snapshot,

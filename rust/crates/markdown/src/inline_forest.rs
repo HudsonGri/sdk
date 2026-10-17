@@ -79,7 +79,25 @@ impl Forest {
             return None;
         }
         let index = cursor.checked_sub(1)?;
-        self.nodes.get(index / PAGE)?.get(index % PAGE)
+        let (page, offset) = self.location(index);
+        self.nodes.get(page)?.get(offset)
+    }
+
+    fn location(&self, index: usize) -> (usize, usize) {
+        let first = self.nodes.first().map_or(2, |page| page.capacity());
+        if index < first {
+            (0, index)
+        } else {
+            (1 + (index - first) / PAGE, (index - first) % PAGE)
+        }
+    }
+
+    fn node_mut(&mut self, cursor: usize) -> Option<&mut Node> {
+        if cursor > self.length {
+            return None;
+        }
+        let (page, offset) = self.location(cursor.checked_sub(1)?);
+        self.nodes.get_mut(page)?.get_mut(offset)
     }
 
     pub(super) fn text_prefix(&self, cursor: usize) -> Option<(usize, Range<usize>)> {
@@ -90,31 +108,40 @@ impl Forest {
     fn append(&mut self, range: Range<usize>, children: usize, stop: usize, kind: Kind) -> usize {
         #[cfg(test)]
         crate::work::scan(1);
-        if self.length.is_multiple_of(PAGE) {
-            if self.length / PAGE == self.nodes.len() {
+        let (page, offset) = self.location(self.length);
+        if offset == 0 {
+            if page == self.nodes.len() {
                 #[cfg(test)]
                 if self.nodes.len() == self.nodes.capacity() {
                     crate::work::copy(self.nodes.len() * std::mem::size_of::<Box<Vec<Node>>>());
                 }
-                self.nodes.push(Box::new(Vec::with_capacity(PAGE)));
+                if self.nodes.is_empty() {
+                    self.nodes.reserve_exact(1);
+                }
+                let capacity = if self.nodes.is_empty() { 2 } else { PAGE };
+                #[cfg(test)]
+                let capacity = if crate::work::EAGER_RENDER_PAGE.get() {
+                    PAGE
+                } else {
+                    capacity
+                };
+                self.nodes.push(Box::new(Vec::with_capacity(capacity)));
             } else {
                 self.nodes
-                    .get_mut(self.length / PAGE)
+                    .get_mut(page)
                     .expect("existing node page")
                     .clear();
             }
         }
-        self.nodes
-            .get_mut(self.length / PAGE)
-            .expect("node page allocated")
-            .push(Node {
-                previous: self.root,
-                range,
-                children,
-                stop,
-                kind,
-                output: Rendered::default(),
-            });
+        let page = self.nodes.get_mut(page).expect("node page allocated");
+        page.push(Node {
+            previous: self.root,
+            range,
+            children,
+            stop,
+            kind,
+            output: Rendered::default(),
+        });
         self.length += 1;
         self.structures += usize::from(kind != Kind::Text);
         self.root = self.length;
@@ -125,8 +152,7 @@ impl Forest {
         // A folded prefix is compiled history, not a syntactic inline scope.
         // Block classification may revisit the last physical row inside it.
         self.append(range, 0, output.full, Kind::Prefix);
-        let index = self.root - 1;
-        self.nodes[index / PAGE][index % PAGE].output = output;
+        self.node_mut(self.root).expect("prefix node").output = output;
     }
 
     pub(super) fn text(&mut self, range: Range<usize>) -> usize {

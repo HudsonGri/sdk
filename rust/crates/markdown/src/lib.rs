@@ -37,6 +37,7 @@ pub use text::Text;
 #[derive(Default)]
 pub struct Markdown {
     source: String,
+    last_newline: Option<usize>,
     offset: usize,
     stable_lines: usize,
     visibility: visibility::Visibility,
@@ -316,7 +317,12 @@ impl Markdown {
     fn append(&mut self, delta: &str) {
         #[cfg(test)]
         work::copy(delta.len());
+        #[cfg(test)]
+        work::scan(delta.len());
         if !self.cr && !delta.contains('\r') {
+            if let Some(newline) = delta.rfind('\n') {
+                self.last_newline = Some(self.source.len() + newline);
+            }
             #[cfg(test)]
             if delta.len() > self.source.capacity() - self.source.len() {
                 work::grow_source(self.source.len());
@@ -330,6 +336,9 @@ impl Markdown {
                 continue;
             }
             self.cr = character == '\r';
+            if matches!(character, '\r' | '\n') {
+                self.last_newline = Some(self.source.len());
+            }
             self.source.push(if self.cr { '\n' } else { character });
         }
     }
@@ -338,13 +347,26 @@ impl Markdown {
         &mut self,
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
+        (base, prefix): (usize, usize),
     ) -> Vec<bool> {
         #[cfg(test)]
         {
-            // Charge the full newline-search input and each reverse-sweep event.
-            self.boundary_work += source.len() + events.len();
+            self.boundary_work += events.len();
         }
-        let newline = source.rfind('\n');
+        let newline = self
+            .last_newline
+            .filter(|newline| *newline >= base)
+            .map(|newline| prefix + newline - base)
+            .or_else(|| prefix.checked_sub(1));
+        #[cfg(test)]
+        let newline = if RESCAN_NEWLINE.get() {
+            self.boundary_work += source.len();
+            source.rfind('\n')
+        } else {
+            newline
+        };
+        #[cfg(not(test))]
+        let _ = source;
         let mut next = false;
         let mut following = vec![false; events.len()];
         for ((event, range), following) in events.iter().rev().zip(following.iter_mut().rev()) {
@@ -360,15 +382,16 @@ impl Markdown {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
-        let (events, calls) = self.parse_frontier(&source);
-        let mut charges = calls.iter().peekable();
+        let (events, calls, overrides) = self.parse_frontier(&source);
+        let mut overrides = overrides.into_iter().peekable();
+        let mut overridden = false;
         self.seal_leading_definitions(base, &source, &events);
-        let following_blocks = self.following_blocks(&source, &events);
+        let following_blocks = self.following_blocks(&source, &events, (base, prefix.len()));
         let mut out = self.state.checkpoint();
         let mut stack = self.context.clone();
         let mut candidate = None;
         let mut leaf = None;
-        let mut caches: Vec<(usize, Cached)> = Vec::new();
+        let mut caches = Vec::new();
         let mut synthetic_leaf = false;
         for (index, (event, range)) in events.iter().enumerate() {
             if matches!(event, Event::End(TagEnd::Item))
@@ -409,17 +432,21 @@ impl Markdown {
                             &stack,
                         )
                     {
-                        for (end, cache) in caches {
-                            if base + end.saturating_sub(prefix.len()) <= self.offset {
-                                self.cache(cache);
-                            }
-                        }
+                        self.cache_frontier(&source, &events, &calls, caches, (base, prefix.len()));
                         return self.advance_fence();
+                    }
+                    if overrides.peek().is_some_and(|(begin, _)| *begin == index) {
+                        for event in overrides.next().expect("leaf override").1 {
+                            out.event_in(&event, Some(&self.references));
+                        }
+                        overridden = true;
                     }
                 }
                 stack.push(container(&source, range.start, tag));
             }
-            out.event_in(event, Some(&self.references));
+            if !overridden {
+                out.event_in(event, Some(&self.references));
+            }
             if matches!(event, Event::Html(_))
                 && range.end > prefix.len()
                 && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
@@ -441,32 +468,20 @@ impl Markdown {
                     None
                 };
                 let leaf_end = is_leaf_end(*end);
+                if leaf_end {
+                    if overridden {
+                        out.flush();
+                    }
+                    overridden = false;
+                }
                 let closed = leaf.as_ref().is_some_and(|leaf| leaf.4);
-                if leaf_end
-                    && let Some((start, first, state, begin, _)) = leaf.take()
-                    && let Some(mut cache) = Cached::new(
-                        &source,
+                if leaf_end && let Some((start, first, state, begin, _)) = leaf.take() {
+                    caches.push((
                         start..range.end,
                         first..self.lines.len() + out.lines.len(),
                         state,
-                        events.get(begin..=index).unwrap_or_default(),
-                    )
-                {
-                    // These events already used the document's remaining
-                    // expansion budget. Retain their attempts instead of
-                    // reparsing and rendering the same leaf a second time.
-                    (cache.cost, cache.budget) = references::expansion(
-                        std::iter::from_fn(|| {
-                            #[cfg(test)]
-                            work::scan(1);
-                            charges
-                                .peek()
-                                .is_some_and(|(end, _)| *end <= range.end)
-                                .then(|| charges.next().expect("expansion charge"))
-                        })
-                        .filter(|(end, _)| *end > start),
-                    );
-                    caches.push((range.end, cache));
+                        begin..index + 1,
+                    ));
                 }
                 if stack.is_empty() {
                     out.lines.push(Line::default());
@@ -529,7 +544,8 @@ impl Markdown {
         }
         out.flush();
         self.lines.extend(out.lines);
-        self.finish_tail(candidate, caches, (base, prefix.len()));
+        self.finish_tail(candidate);
+        self.cache_frontier(&source, &events, &calls, caches, (base, prefix.len()));
         self.finish_definitions(&source, &events, (base, prefix.len()));
         self.rule = events.last().and_then(|(event, range)| {
             if !matches!(event, Event::Rule) || !self.context.is_empty() || source.ends_with('\n') {
@@ -541,7 +557,7 @@ impl Markdown {
                 .find(|byte| matches!(byte, b'*' | b'-' | b'_'))
         });
         self.begin_inline(&source, &events, &calls, base);
-        self.begin_table(&source, &events, base);
+        self.begin_table(&source, &events, (base, prefix.len()));
         false
     }
 
@@ -562,22 +578,12 @@ impl Markdown {
         }
     }
 
-    fn finish_tail(
-        &mut self,
-        candidate: Option<(usize, usize, render::Renderer, Vec<Container>)>,
-        caches: Vec<(usize, Cached)>,
-        (base, prefix): (usize, usize),
-    ) {
+    fn finish_tail(&mut self, candidate: Option<(usize, usize, render::Renderer, Vec<Container>)>) {
         if let Some((offset, lines, state, context)) = candidate {
             self.offset = offset;
             self.set_stable_lines(lines);
             self.state = state;
             self.context = context;
-            for (end, cache) in caches {
-                if base + end.saturating_sub(prefix) <= offset && !cache.template.keys.is_empty() {
-                    self.cache(cache);
-                }
-            }
         }
     }
 
@@ -619,18 +625,17 @@ impl Markdown {
         });
         let last_leaf = leaves.next();
         self.plain_heading = matches!(last_leaf, Some((Tag::Heading { .. }, _)));
-        let link_end = events
-            .iter()
-            .filter_map(|(event, range)| {
-                matches!(event, Event::End(TagEnd::Link | TagEnd::Image)).then_some(range.end)
-            })
-            .max()
-            .unwrap_or(frontier);
-        let inline_tail = source.get(link_end..).unwrap_or_default();
-        self.plain_links = inline_tail.contains('[')
-            && inline_tail
-                .rsplit_once(']')
-                .is_none_or(|(_, rest)| rest.starts_with('('));
+        self.plain_links = events.iter().any(|(event, range)| {
+            if let Event::Text(text) = event
+                && range.end > frontier
+            {
+                #[cfg(test)]
+                work::scan(text.len());
+                text.contains('[')
+            } else {
+                false
+            }
+        });
         self.plain_entity = tail.rsplit_once('&').is_some_and(|(_, suffix)| {
             suffix
                 .chars()
@@ -787,4 +792,7 @@ fn blocks<'a>(
 mod tests;
 
 #[cfg(test)]
-thread_local! { static SKIP_RULE_CHECKPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! {
+    static SKIP_RULE_CHECKPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RESCAN_NEWLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}

@@ -3,6 +3,7 @@ use std::ops::Range;
 
 type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
 type Charges = Vec<(usize, usize)>;
+pub(super) type Overrides = Vec<(usize, Vec<Event<'static>>)>;
 
 // Normalized leaf templates contain no definitions. Charge reference expansion
 // against the document allowance, rather than restarting it for each leaf.
@@ -108,7 +109,7 @@ fn inline(event: &Event<'_>) -> bool {
 }
 
 impl crate::Markdown {
-    pub(super) fn parse_frontier(&mut self, source: &str) -> (OwnedEvents, Charges) {
+    pub(super) fn parse_frontier(&mut self, source: &str) -> (OwnedEvents, Charges, Overrides) {
         #[cfg(test)]
         {
             crate::work::copy(source.len());
@@ -135,6 +136,58 @@ impl crate::Markdown {
         } else {
             events
         };
-        (events, calls)
+        #[cfg(test)]
+        let unchecked = UNCHECKED_LOCAL_BUDGET.get();
+        #[cfg(not(test))]
+        let unchecked = false;
+        if self.references.pending.is_empty() || unchecked {
+            return (events, calls, Vec::new());
+        }
+        // Definitions in this parse bypass the broken-link callback. Resolve
+        // each reference-bearing leaf without definitions so every attempt
+        // consumes the same remaining document allowance as cached history.
+        let mut overrides = Vec::new();
+        let mut charges = Vec::new();
+        let mut budget = self
+            .source
+            .len()
+            .max(100_000)
+            .saturating_sub(self.reference_cost);
+        for (index, (event, range)) in events.iter().enumerate() {
+            let Event::Start(tag) = event else {
+                continue;
+            };
+            if !crate::is_leaf(tag) {
+                continue;
+            }
+            let mut end = index;
+            while end < events.len() {
+                #[cfg(test)]
+                crate::work::scan(1);
+                if matches!(&events[end].0, Event::End(tag) if crate::is_leaf_end(*tag)) {
+                    break;
+                }
+                end += 1;
+            }
+            let Some(cache) = crate::Cached::new(
+                source,
+                range.clone(),
+                0..0,
+                crate::render::Renderer::default(),
+                events.get(index..=end).unwrap_or_default(),
+            ) else {
+                continue;
+            };
+            let (resolved, calls) = cache.template.resolved(&self.references, budget);
+            for (_, cost) in calls {
+                budget = budget.saturating_sub(cost);
+                charges.push((range.end, cost));
+            }
+            overrides.push((index, resolved));
+        }
+        (events, charges, overrides)
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static UNCHECKED_LOCAL_BUDGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

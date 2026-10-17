@@ -64,14 +64,24 @@ fn work(chunk: usize) -> (usize, usize) {
 
 #[test]
 fn mixed_document_total_work_is_linear() {
-    for chunk in [1, 7, 4096] {
-        let (small, large) = work(chunk);
-        println!("chunk {chunk}: 1 MiB / 2 MiB use {small} / {large} units");
-        assert!(
-            large * 10 <= small * 22,
-            "chunk {chunk}: {small} -> {large} work"
-        );
-    }
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = [1, 7, 4096]
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let (small, large) = work(chunk);
+                    println!("chunk {chunk}: 1 MiB / 2 MiB use {small} / {large} units");
+                    assert!(
+                        large * 10 <= small * 22,
+                        "chunk {chunk}: {small} -> {large} work"
+                    );
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("mixed work counter");
+        }
+    });
 }
 
 #[test]

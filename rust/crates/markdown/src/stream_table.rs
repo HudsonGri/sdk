@@ -18,17 +18,31 @@ impl Markdown {
         &mut self,
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
-        base: usize,
+        (base, prefix): (usize, usize),
     ) {
-        if self.offset != base || !self.context.is_empty() || !source.ends_with('\n') {
+        if !self.context.is_empty() || !source.ends_with('\n') {
             return;
         }
+        #[cfg(test)]
+        if REJECT_TABLE_PREFIX.get() && self.offset != base {
+            return;
+        }
+        let frontier = self.offset.saturating_sub(base) + prefix;
+        let Some(source) = source.get(frontier..) else {
+            return;
+        };
         let budget = self
             .source
             .len()
             .max(100_000)
             .saturating_sub(self.reference_cost);
-        if !matches!(events.first(), Some((Event::Start(Tag::Table(_)), _))) {
+        if !events.iter().any(|(event, range)| {
+            matches!(event, Event::Start(Tag::Table(_)))
+                && range.start >= frontier
+                && source
+                    .get(..range.start - frontier)
+                    .is_some_and(|prefix| prefix.trim().is_empty())
+        }) {
             return;
         }
         let (events, calls) = events::scoped(source, &self.references, options(), budget);
@@ -257,7 +271,11 @@ fn parsed_table(
     let Some((Event::Start(Tag::Table(alignments)), start)) = events.first() else {
         return None;
     };
-    if start.start != 0
+    #[cfg(test)]
+    if REJECT_TABLE_PREFIX.get() && start.start != 0 {
+        return None;
+    }
+    if !source.get(..start.start)?.trim().is_empty()
         || !events.last().is_some_and(|(event, range)| {
             matches!(event, Event::End(TagEnd::Table)) && range.end == source.len()
         })
@@ -295,6 +313,9 @@ impl Stream {
         (payload, metadata)
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static REJECT_TABLE_PREFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 #[cfg(test)]
 #[path = "../tests/table_shape.rs"]

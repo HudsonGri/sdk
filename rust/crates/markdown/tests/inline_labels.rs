@@ -2,6 +2,12 @@ use super::*;
 use crate::Markdown;
 use proptest::prelude::*;
 
+#[test]
+fn nested_images_after_lazy_list_match_every_prefix() {
+    let source = "x *[\\\n* 0\n![a *b* ![c](v)](v)](u)* z";
+    replay(source, &(1..source.len()).collect::<Vec<_>>());
+}
+
 fn replay(source: &str, cuts: &[usize]) -> Vec<crate::Line> {
     let mut markdown = Markdown::default();
     let mut consumer = Vec::new();

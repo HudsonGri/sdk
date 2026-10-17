@@ -32,6 +32,7 @@ pub(in crate::inline_scan) struct Cache {
     keys: HashMap<Key, (usize, usize)>,
     first_key_end: Option<usize>,
     nodes: Vec<Vec<Output>>,
+    page_size: usize,
     length: usize,
     targets: HashMap<(usize, usize), Arc<str>>,
     atoms: HashMap<(usize, usize), (usize, bool)>,
@@ -51,6 +52,18 @@ impl Default for Cache {
             keys: HashMap::new(),
             first_key_end: None,
             nodes: Vec::new(),
+            page_size: {
+                #[cfg(test)]
+                if crate::work::EAGER_RENDER_PAGE.get() {
+                    super::super::PAGE
+                } else {
+                    2
+                }
+                #[cfg(not(test))]
+                {
+                    2
+                }
+            },
             length: 0,
             targets: HashMap::new(),
             atoms: HashMap::new(),
@@ -101,14 +114,14 @@ impl Cache {
     // Geometrically sized pages never move stored outputs. The directory has
     // logarithmically many entries, so growing it cannot copy a linear-sized
     // history of page handles at a single push boundary.
-    fn slot(id: usize) -> (usize, usize) {
-        let page = (id / super::super::PAGE + 1).ilog2() as usize;
-        let start = super::super::PAGE * ((1usize << page) - 1);
+    fn slot(&self, id: usize) -> (usize, usize) {
+        let page = (id / self.page_size + 1).ilog2() as usize;
+        let start = self.page_size * ((1usize << page) - 1);
         (page, id - start)
     }
 
     fn output(&self, id: usize) -> Option<&Output> {
-        let (page, offset) = Self::slot(id);
+        let (page, offset) = self.slot(id);
         self.nodes.get(page)?.get(offset)
     }
 
@@ -116,14 +129,13 @@ impl Cache {
         #[cfg(test)]
         crate::work::scan(1);
         let id = self.length;
-        let (page, offset) = Self::slot(id);
+        let (page, offset) = self.slot(id);
         if page == self.nodes.len() {
             #[cfg(test)]
             if self.nodes.len() == self.nodes.capacity() {
                 crate::work::copy(self.nodes.len() * std::mem::size_of::<Vec<Output>>());
             }
-            self.nodes
-                .push(Vec::with_capacity(super::super::PAGE << page));
+            self.nodes.push(Vec::with_capacity(self.page_size << page));
         }
         debug_assert_eq!(offset, self.nodes[page].len());
         self.nodes[page].push(output);

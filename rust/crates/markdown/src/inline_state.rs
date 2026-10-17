@@ -466,6 +466,9 @@ impl State {
         if token.is_none() {
             return self.forest.snapshot();
         }
+        if let Some(root) = eof::literal(self, token) {
+            return root;
+        }
         let mut eof = self.eof.take().unwrap_or_default();
         #[cfg(test)]
         if self.replay_eof {

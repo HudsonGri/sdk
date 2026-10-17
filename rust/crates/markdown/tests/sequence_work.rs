@@ -97,6 +97,34 @@ fn backslash_checkpoint_context_has_linear_work() {
     assert!(large <= 2 * small + 1024, "work {small} -> {large}");
 }
 
+fn oracle(source: &str, rendered: &mut Vec<(Vec<Event<'static>>, Vec<Line>)>) -> Arc<Vec<Line>> {
+    let source = source.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = Vec::new();
+    let mut count = 0;
+    for (_, events) in blocks(Parser::new_ext(&source, options()).into_offset_iter()) {
+        if rendered
+            .get(count)
+            .is_none_or(|(previous, _)| *previous != events)
+        {
+            let lines = render::render_styled(&events, Style::default());
+            let fixture = (events.into_iter().map(Event::into_static).collect(), lines);
+            if let Some(previous) = rendered.get_mut(count) {
+                *previous = fixture;
+            } else {
+                rendered.push(fixture);
+            }
+        }
+        lines.extend_from_slice(&rendered[count].1);
+        lines.push(Line::default());
+        count += 1;
+    }
+    rendered.truncate(count);
+    while lines.last().is_some_and(|line| line.spans.is_empty()) {
+        lines.pop();
+    }
+    Arc::new(lines)
+}
+
 fn measure(
     actions: &[u8],
     count: usize,
@@ -105,6 +133,7 @@ fn measure(
     separators: &[u8],
     copies: usize,
 ) -> (usize, usize) {
+    let mut rendered = Vec::new();
     measure_with(
         actions,
         count,
@@ -112,7 +141,7 @@ fn measure(
         padding,
         separators,
         copies,
-        &mut |_, source| full_parse(source),
+        &mut |_, source| oracle(source, &mut rendered),
     )
 }
 
@@ -123,16 +152,24 @@ fn measure_with(
     padding: usize,
     separators: &[u8],
     copies: usize,
-    oracle: &mut impl FnMut(&str, &str) -> Vec<Line>,
+    oracle: &mut impl FnMut(&str, &str) -> Arc<Vec<Line>>,
 ) -> (usize, usize) {
     let mut markdown = Markdown::default();
     let mut total = 0;
     let mut source = String::new();
     let mut consumer = Vec::new();
-    let mut expected = Vec::new();
+    let mut expected = Arc::new(Vec::new());
     let mut peak = 0;
     let mut growth_total = 0;
+    let mut breakdown = [0usize; 11];
     let mut push = |delta: &str, finish: bool| {
+        let parts_before = work::parts();
+        let maintenance_before = [
+            markdown.visible_work.get(),
+            markdown.reference_cache_visits,
+            markdown.reference_moved_lines,
+            markdown.boundary_work,
+        ];
         let growth_before = work::source_growth();
         let before = work::current()
             + markdown.visible_work.get()
@@ -144,6 +181,14 @@ fn measure_with(
         // Definition updates reopen dependency blocks; ordinary pushes do not.
         let cached = markdown.cached.len();
         let changed = markdown.push(delta);
+        let parts_after = work::parts();
+        let maintenance_after = [
+            markdown.visible_work.get(),
+            markdown.reference_cache_visits,
+            markdown.reference_moved_lines,
+            markdown.boundary_work,
+        ];
+        let production = work::current() + maintenance_after.iter().sum::<usize>() - before;
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
         consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
@@ -175,6 +220,15 @@ fn measure_with(
             delta.len()
         );
         total += used;
+        for index in 0..5 {
+            breakdown[index] += parts_after[index] - parts_before[index];
+        }
+        breakdown[1] -= growth;
+        breakdown[5] += growth;
+        for index in 0..4 {
+            breakdown[index + 6] += maintenance_after[index] - maintenance_before[index];
+        }
+        breakdown[10] += used - production;
         let (payload, bytes) = retained(&markdown);
         assert!(payload <= markdown.source.len() * 8 + 1024);
         peak = peak.max(bytes);
@@ -184,7 +238,7 @@ fn measure_with(
             expected = oracle(delta, &source);
         }
         assert!(
-            consumer == expected,
+            consumer.as_slice() == expected.as_slice(),
             "consumer differs after {delta:?}, source {:?}",
             source.chars().take(256).collect::<String>()
         );
@@ -234,6 +288,13 @@ fn measure_with(
         "{bytes} retained for {} source bytes",
         source.len()
     );
+    assert_eq!(breakdown.iter().sum::<usize>(), total);
+    if std::env::var_os("GC_WORK_REPORT").is_some() {
+        eprintln!(
+            "copies={copies}: scan/copy/visibility/feed/parser/source-growth/visible/cache/moved/boundary/consumer {breakdown:?}; total={total}, retained={}",
+            peak.max(bytes)
+        );
+    }
     (total, peak.max(bytes))
 }
 
@@ -247,6 +308,7 @@ fn measure_pair(
     separators: &[u8],
 ) -> ((usize, usize), (usize, usize)) {
     let mut fixtures = Vec::new();
+    let mut rendered = Vec::new();
     let small = measure_with(
         actions,
         count,
@@ -255,7 +317,7 @@ fn measure_pair(
         separators,
         1,
         &mut |delta, source| {
-            let expected = full_parse(source);
+            let expected = oracle(source, &mut rendered);
             fixtures.push((delta.to_owned(), expected.clone()));
             expected
         },
@@ -276,7 +338,7 @@ fn measure_pair(
             if same {
                 fixture.expect("shared prefix fixture").1.clone()
             } else {
-                full_parse(source)
+                oracle(source, &mut rendered)
             }
         },
     );
@@ -344,16 +406,11 @@ fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&s
     }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig {
-        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/sequence_work.txt")
-        ))),
-        ..ProptestConfig::with_cases(24)
-    })]
-    #[test]
-    fn push_grammar_has_linear_work_and_storage(
-        actions in prop_oneof![
+type Sequence = (Vec<u8>, usize, String, usize, Vec<u8>);
+
+fn sequence() -> impl Strategy<Value = Sequence> {
+    (
+        prop_oneof![
             prop::collection::vec(0u8..4, 1..5),
             prop::collection::vec(prop::sample::select(vec![4u8, 5, 8]), 1..5),
             prop::collection::vec(0u8..16, 1..5),
@@ -362,14 +419,63 @@ proptest! {
             prop::collection::vec(0u8..35, 1..5),
             prop::collection::vec(16u8..35, 1..5),
         ],
-        count in 1usize..65,
-        destination in "[a-z]{64,1024}",
-        padding in 1usize..5,
-        separators in prop::collection::vec(0u8..5, 1..5),
+        1usize..65,
+        "[a-z]{64,1024}",
+        1usize..5,
+        prop::collection::vec(0u8..5, 1..5),
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/sequence_work.txt")
+        ))),
+        ..ProptestConfig::with_cases(24)
+    })]
+    #[test]
+    fn rendered_oracle_fixtures_equal_fresh_full_renders(
+        parts in prop::collection::vec(prop::sample::select(vec![
+            "text", "\r\n", "\n\n", "*em*", "**strong**", "[r]", "![a](u)",
+            "[r]: /url\n\n", "- item\n", "> quote\n", "&amp;", "\0",
+            "```rust\nlet x = 1;\n```\n", "| a | b |\n| - | - |\n",
+        ]), 0..12),
     ) {
-        let (small, large) = measure_pair(&actions, count, &destination, padding, &separators);
-        prop_assert!(large.0 <= 2 * small.0 + 1024, "work {} -> {}", small.0, large.0);
-        prop_assert!(large.1 <= 2 * small.1 + 1024, "storage {} -> {}", small.1, large.1);
+        let mut source = String::new();
+        let mut rendered = Vec::new();
+        for part in parts {
+            source.push_str(part);
+            let cached = oracle(&source, &mut rendered);
+            prop_assert_eq!(cached.as_ref(), &full_parse(&source));
+        }
+    }
+
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        // Keep 24 independently generated streams: eight parallel batches of three.
+        cases: 8,
+        max_shrink_iters: 96,
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/sequence_work.txt")
+        ))),
+        ..ProptestConfig::default()
+    })]
+    #[test]
+    fn push_grammar_has_linear_work_and_storage(sequences in prop::collection::vec(sequence(), 3)) {
+        let results = std::thread::scope(|scope| {
+            let workers: Vec<_> = sequences.into_iter().map(|(actions, count, destination, padding, separators)| {
+                scope.spawn(move || {
+                    let (small, large) = measure_pair(&actions, count, &destination, padding, &separators);
+                    prop_assert!(large.0 <= 2 * small.0 + 1024, "work {} -> {}", small.0, large.0);
+                    prop_assert!(large.1 <= 2 * small.1 + 1024, "storage {} -> {}", small.1, large.1);
+                    Ok(())
+                })
+            }).collect();
+            workers.into_iter().map(|worker| worker.join().expect("grammar worker")).collect::<Vec<_>>()
+        });
+        for result in results { result?; }
     }
 }
 
@@ -445,4 +551,100 @@ fn mixed_styles_and_html_have_linear_total_work() {
     let large = measure(&[17, 28], 57, "unused", 3, &[2, 1], 2);
     assert!(large.0 <= 2 * small.0 + 1024);
     assert!(large.1 <= 2 * small.1 + 1024);
+}
+
+#[test]
+fn image_reference_list_work_is_linear() {
+    let (small, large) = measure_pair(&[9, 5, 6], 13, "unused", 2, &[1, 1, 1, 4]);
+    assert!(large.0 <= 2 * small.0 + 1024, "{} -> {}", small.0, large.0);
+    assert!(large.1 <= 2 * small.1 + 1024);
+}
+
+#[test]
+fn paragraph_and_table_work_is_linear() {
+    let (small, large) = measure_pair(&[13, 14], 1, "unused", 2, &[1]);
+    assert!(large.0 <= 2 * small.0 + 1024, "{} -> {}", small.0, large.0);
+    assert!(large.1 <= 2 * small.1 + 1024);
+    crate::stream_table::REJECT_TABLE_PREFIX.set(true);
+    let (small, large) = measure_pair(&[13, 14], 1, "unused", 2, &[1]);
+    crate::stream_table::REJECT_TABLE_PREFIX.set(false);
+    assert!(large.0 > 2 * small.0 + 1024);
+}
+
+#[test]
+fn empty_reference_context_storage_is_linear() {
+    let (small, large) = measure_pair(&[4, 5, 5, 5], 11, "unused", 1, &[1, 3, 3, 2]);
+    assert!(large.1 <= 2 * small.1 + 1024, "{small:?} -> {large:?}");
+    work::EAGER_RENDER_PAGE.set(true);
+    let (small, large) = measure_pair(&[4, 5, 5, 5], 11, "unused", 1, &[1, 3, 3, 2]);
+    work::EAGER_RENDER_PAGE.set(false);
+    assert!(large.1 > 2 * small.1 + 1024);
+}
+
+#[test]
+fn image_entities_and_list_work_is_linear() {
+    for count in [16, 20] {
+        let (small, large) = measure_pair(&[9, 11, 11, 6], count, "unused", 4, &[1, 4, 2, 1]);
+        assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
+        assert!(large.1 <= 2 * small.1 + 1024);
+    }
+}
+
+#[test]
+fn image_link_entities_and_list_work_is_linear() {
+    let (small, large) = measure_pair(&[9, 12, 11, 6], 5, "unused", 4, &[1, 4, 2, 1]);
+    assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
+    assert!(large.1 <= 2 * small.1 + 1024);
+    crate::reference_render::COMPILE_PROVISIONAL.set(true);
+    crate::references::REPARSE_DEFINITIONS.set(true);
+    crate::render::CLONE_CONTEXT.set(true);
+    crate::RESCAN_NEWLINE.set(true);
+    let (small, large) = measure_pair(&[9, 12, 11, 6], 5, "unused", 4, &[1, 4, 2, 1]);
+    crate::reference_render::COMPILE_PROVISIONAL.set(false);
+    crate::references::REPARSE_DEFINITIONS.set(false);
+    crate::render::CLONE_CONTEXT.set(false);
+    crate::RESCAN_NEWLINE.set(false);
+    assert!(large.0 > 2 * small.0 + 1024, "{small:?} -> {large:?}");
+}
+
+#[test]
+fn entities_and_list_work_is_linear() {
+    for (actions, count) in [
+        ([11, 32, 11, 6], 1),
+        ([11, 32, 11, 6], 11),
+        ([11, 34, 11, 6], 23),
+    ] {
+        let (small, large) = measure_pair(&actions, count, "unused", 4, &[1, 4, 2, 1]);
+        assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
+        assert!(large.1 <= 2 * small.1 + 1024);
+    }
+}
+
+#[test]
+fn code_rule_and_list_work_is_linear() {
+    let (small, large) = measure_pair(&[16, 34, 11, 6], 1, "unused", 4, &[1, 4, 2, 1]);
+    assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
+    assert!(large.1 <= 2 * small.1 + 1024);
+    crate::RESCAN_NEWLINE.set(true);
+    let (small, large) = measure_pair(&[16, 34, 11, 6], 1, "unused", 4, &[1, 4, 2, 1]);
+    crate::RESCAN_NEWLINE.set(false);
+    assert!(large.0 > 2 * small.0 + 1024);
+}
+
+#[test]
+fn local_definitions_share_the_document_expansion_budget() {
+    let (small, large) = measure_pair(&[15, 3], 31, &"x".repeat(880), 1, &[1, 3]);
+    assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
+    assert!(large.1 <= 2 * small.1 + 1024);
+    let prefix = "word ![](u)\n\n![][r]\n\n [x][r]!".repeat(62);
+    let definition = format!("\n\n[r]: /{}\n\n", "x".repeat(880));
+    let expected = full_parse(&format!("{prefix}{definition}"));
+    for unchecked in [false, true] {
+        crate::events::UNCHECKED_LOCAL_BUDGET.set(unchecked);
+        let mut markdown = Markdown::default();
+        markdown.push(&prefix);
+        markdown.push(&definition);
+        crate::events::UNCHECKED_LOCAL_BUDGET.set(false);
+        assert_eq!(markdown.lines() == expected, !unchecked);
+    }
 }

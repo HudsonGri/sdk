@@ -1,6 +1,53 @@
 use super::*;
 
 impl Markdown {
+    pub(super) fn cache_frontier(
+        &mut self,
+        source: &str,
+        events: &[(Event<'_>, Range<usize>)],
+        calls: &[(usize, usize)],
+        candidates: Vec<(Range<usize>, Range<usize>, render::Renderer, Range<usize>)>,
+        (base, prefix): (usize, usize),
+    ) {
+        let mut charges = calls.iter().peekable();
+        for (range, lines, state, window) in candidates {
+            if base + range.end.saturating_sub(prefix) > self.offset {
+                #[cfg(test)]
+                if COMPILE_PROVISIONAL.get() {
+                    Cached::new(
+                        source,
+                        range,
+                        lines,
+                        state,
+                        events.get(window).unwrap_or_default(),
+                    );
+                }
+                break;
+            }
+            let Some(mut cache) = Cached::new(
+                source,
+                range.clone(),
+                lines,
+                state,
+                events.get(window).unwrap_or_default(),
+            ) else {
+                continue;
+            };
+            (cache.cost, cache.budget) = references::expansion(
+                std::iter::from_fn(|| {
+                    #[cfg(test)]
+                    work::scan(1);
+                    charges
+                        .peek()
+                        .is_some_and(|(end, _)| *end <= range.end)
+                        .then(|| charges.next().expect("expansion charge"))
+                })
+                .filter(|(end, _)| *end > range.start),
+            );
+            self.cache(cache);
+        }
+    }
+
     pub(super) fn advance_budget(&mut self) -> usize {
         if self.source.len().max(100_000) == self.reference_limit {
             return self.visible_lines;
@@ -319,6 +366,9 @@ impl Markdown {
         }
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static COMPILE_PROVISIONAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 #[cfg(test)]
 thread_local! { pub(super) static COPY_SUFFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

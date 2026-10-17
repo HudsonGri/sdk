@@ -78,7 +78,7 @@ impl Queue {
     }
     #[cfg(test)]
     fn capacity(&self) -> usize {
-        self.pages.len() * super::forest::PAGE
+        self.pages.iter().map(Vec::capacity).sum()
     }
     pub(super) fn get(&self, index: usize) -> Option<&Token> {
         if index >= self.length {
@@ -134,10 +134,26 @@ impl Queue {
             if self.pages.len() == self.pages.capacity() {
                 crate::work::copy(self.pages.len() * std::mem::size_of::<Vec<Token>>());
             }
-            self.pages
-                .push_back(Vec::with_capacity(super::forest::PAGE));
+            let capacity = if self.pages.is_empty() {
+                4
+            } else {
+                super::forest::PAGE
+            };
+            #[cfg(test)]
+            let capacity = if crate::work::EAGER_RENDER_PAGE.get() {
+                super::forest::PAGE
+            } else {
+                capacity
+            };
+            self.pages.push_back(Vec::with_capacity(capacity));
         }
-        self.pages.back_mut().expect("token page").push(token);
+        let page = self.pages.back_mut().expect("token page");
+        if page.len() == page.capacity() {
+            #[cfg(test)]
+            crate::work::copy(page.len() * std::mem::size_of::<Token>());
+            page.reserve_exact(super::forest::PAGE - page.len());
+        }
+        page.push(token);
         self.length += 1;
     }
 }
@@ -207,6 +223,7 @@ impl Tokens {
     #[cfg(test)]
     pub(super) fn retained(&self) -> usize {
         self.ready.capacity() * std::mem::size_of::<Token>()
+            + self.ready.pages.capacity() * std::mem::size_of::<Vec<Token>>()
             + self.starts.retained()
             + self.openers.retained()
     }

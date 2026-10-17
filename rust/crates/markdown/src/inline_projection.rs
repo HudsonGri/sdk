@@ -1,5 +1,5 @@
 use super::{Cache, Key, Output, text_output};
-use crate::inline_scan::forest::{Forest, Kind, PAGE, Rendered};
+use crate::inline_scan::forest::{Forest, Kind, Rendered};
 use crate::{Line, Range, Style};
 
 pub(in crate::inline_scan) struct Projection<'a, 'b> {
@@ -90,7 +90,7 @@ impl Cache {
             let mut saved: [Option<Output>; 4] = std::array::from_fn(|_| None);
             for i in 0..4 {
                 if ids[i] != 0 && !ids[..i].contains(&ids[i]) {
-                    let (page, offset) = Self::slot(ids[i]);
+                    let (page, offset) = self.slot(ids[i]);
                     let output = self.nodes.get_mut(page)?.get_mut(offset)?;
                     saved[i] = Some(std::mem::take(output));
                     #[cfg(test)]
@@ -386,12 +386,7 @@ impl Cache {
             if matches!(kind, Kind::Break(_)) {
                 whitespace = full;
             }
-            let index = cursor.checked_sub(1)?;
-            forest
-                .nodes
-                .get_mut(index / PAGE)?
-                .get_mut(index % PAGE)?
-                .output = Rendered {
+            forest.node_mut(cursor)?.output = Rendered {
                 epoch: self.epoch,
                 full,
                 trimmed,
