@@ -1,7 +1,7 @@
 //! Push cancellation stops execution and waits for its effects to settle.
 use crate::Result;
 
-pub(super) async fn settle<T, C>(
+pub(crate) async fn settle<T, C>(
     execution: impl Future<Output = Result<T>>,
     cancelled: impl Future<Output = Result<C>>,
     stop: impl FnOnce(),

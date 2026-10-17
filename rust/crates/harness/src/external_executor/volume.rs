@@ -11,7 +11,7 @@ const BOUNDS: JsonBounds = JsonBounds {
     maximum_depth: 256,
 };
 
-pub(super) fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+pub(crate) fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
     crate::json_bytes_bounded(value, BOUNDS, None, &mut |_| Ok(()))
         .map_err(|_| Error::LimitExceeded)
 }
