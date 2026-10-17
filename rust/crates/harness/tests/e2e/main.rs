@@ -265,6 +265,17 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
     );
 }
 
+fn scenario_admission<I>(
+    cases: I,
+) -> impl futures::Stream<Item = <I::Item as std::future::Future>::Output>
+where
+    I: ExactSizeIterator,
+    I::Item: std::future::Future,
+{
+    let capacity = runtime_tests::admission_capacity(cases.len());
+    stream::iter(cases).buffer_unordered(capacity)
+}
+
 async fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
@@ -277,7 +288,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    let mut results = stream::iter(paths.into_iter().map(|path| {
+    let mut results = scenario_admission(paths.into_iter().map(|path| {
         let root = root.clone();
         async move {
             let case_path = path.clone();
@@ -290,8 +301,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
             .unwrap_or_else(|error| Err(Box::new(error)));
             (path, result)
         }
-    }))
-    .buffer_unordered(count);
+    }));
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path.strip_prefix(&root)?.display();
