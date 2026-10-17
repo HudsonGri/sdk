@@ -31,11 +31,19 @@ fn bounded_queue_has_no_lost_wakeup_or_record() {
 }
 #[test]
 fn wakeup_control_process() {
-    run(std::env::var_os("ACYCLIC_AUDIT_OMIT_WAKEUP").is_some());
+    match std::env::var("ACYCLIC_AUDIT_BROKEN_QUEUE").as_deref() {
+        Ok("commit") => shutdown(true),
+        Ok(_) => run(true),
+        Err(_) => run(false),
+    }
 }
 
 #[test]
 fn missing_wakeup_negative_control() {
+    negative_control("wakeup");
+}
+
+fn negative_control(fault: &str) {
     // Loom may abort while unwinding a detected deadlock with live thread Arcs.
     // Isolate that deliberately broken model; assert its actual failure cause.
     let module = module_path!().split_once("::").unwrap().1;
@@ -45,7 +53,7 @@ fn missing_wakeup_negative_control() {
             &format!("{module}::wakeup_control_process"),
             "--nocapture",
         ])
-        .env("ACYCLIC_AUDIT_OMIT_WAKEUP", "1")
+        .env("ACYCLIC_AUDIT_BROKEN_QUEUE", fault)
         .env("RUST_BACKTRACE", "0")
         .output()
         .unwrap();
@@ -150,4 +158,34 @@ fn poisoning_cannot_strand_a_backpressured_producer() {
         queue.close(true);
         assert!(producer.join().unwrap().is_err());
     });
+}
+
+fn shutdown(omit_commit: bool) {
+    loom::model(move || {
+        let queue = Arc::new(Queue::new(1));
+        queue.push(1).unwrap();
+        let consumer = loom::thread::spawn({
+            let queue = queue.clone();
+            move || {
+                let mut batch = Vec::new();
+                assert!(queue.take(&mut batch, 1).unwrap());
+                assert_eq!(batch, [1]);
+                if !omit_commit {
+                    queue.committed(batch.len()).unwrap();
+                }
+            }
+        });
+        queue.close_and_flush().unwrap();
+        consumer.join().unwrap();
+    });
+}
+
+#[test]
+fn final_owner_waits_for_admitted_records() {
+    shutdown(false);
+}
+
+#[test]
+fn missing_commit_negative_control() {
+    negative_control("commit");
 }

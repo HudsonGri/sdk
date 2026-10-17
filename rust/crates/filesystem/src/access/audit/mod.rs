@@ -25,7 +25,7 @@ pub(crate) struct AuditLog {
 }
 impl Drop for AuditLog {
     fn drop(&mut self) {
-        self.queue.close(false);
+        let _ = self.queue.close_and_flush();
     }
 }
 impl AuditLog {
