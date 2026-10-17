@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub enum HookEvent {
     /// A session was opened, resumed, forked, or compacted.
     SessionStart,
+    /// A user prompt was admitted and is about to reach the model.
+    UserPromptSubmit,
     /// A tool is about to execute.
     PreToolUse,
     /// A tool returned successfully.
@@ -15,9 +17,15 @@ pub enum HookEvent {
 }
 
 impl HookEvent {
+    /// Plain, non-JSON stdout is model context for prompt-scoped events.
+    pub(crate) fn plain_context(self) -> bool {
+        matches!(self, Self::SessionStart | Self::UserPromptSubmit)
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::SessionStart => "SessionStart",
+            Self::UserPromptSubmit => "UserPromptSubmit",
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::Stop => "Stop",

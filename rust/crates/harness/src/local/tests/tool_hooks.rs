@@ -152,7 +152,6 @@ async fn guards_use_aliases_revalidate_replacements_and_retain_post_tool_feedbac
     assert_eq!(post["tool_response"], json!({"value":42}));
     assert_eq!(post["tool_use_id"], "call-1");
     let tool_reply = requests[1]
-        .request()
         .messages
         .iter()
         .flat_map(|message| message.content.parts())

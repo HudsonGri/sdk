@@ -9,6 +9,7 @@ fn event(index: usize) -> HookEvent {
         HookEvent::PreToolUse,
         HookEvent::PostToolUse,
         HookEvent::Stop,
+        HookEvent::UserPromptSubmit,
     ][index]
 }
 
@@ -122,7 +123,7 @@ proptest! {
     // including strings requiring escaping and nested replacement tool arguments.
     #[test]
     fn structured_output_round_trip_preserves_decisions(
-        index in 0usize..4,
+        index in 0usize..5,
         continue_run in any::<bool>(),
         deny in any::<bool>(),
         permission in 0usize..3,
@@ -154,8 +155,9 @@ proptest! {
         pretty_output.observe(event, Some(0), &pretty, b"").unwrap();
         prop_assert_eq!(&compact_output, &pretty_output);
         prop_assert!(compact_output.diagnostics.is_empty());
-        if !continue_run || matches!(event, HookEvent::PreToolUse | HookEvent::Stop)
-            && (deny || permission == 2)
+        if !continue_run
+            || matches!(event, HookEvent::PreToolUse | HookEvent::UserPromptSubmit | HookEvent::Stop)
+                && (deny || permission == 2)
         {
             prop_assert_eq!(compact_output.blocked.as_deref(), Some(reason.as_str()));
         } else {
@@ -179,7 +181,7 @@ proptest! {
     // context or argument mutation; apply then implements the failure policy.
     #[test]
     fn invalid_fields_are_atomic_and_obey_failure_policy(
-        index in 0usize..4,
+        index in 0usize..5,
         field in 0usize..11,
         invalid in prop_oneof![Just(Value::Null), any::<bool>().prop_map(Value::Bool), any::<i64>().prop_map(|n| json!(n))],
         reason in ".{0,48}",
@@ -218,7 +220,7 @@ proptest! {
     // first denial. This is the runner's deterministic config-order merge rule.
     #[test]
     fn first_denial_is_monotonic(
-        index in 0usize..4,
+        index in 0usize..5,
         bytes in prop::collection::vec(any::<u8>(), 0..512),
         code in prop::option::of(-3i32..5),
         block_failure in any::<bool>(),

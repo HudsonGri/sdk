@@ -91,7 +91,10 @@ impl Hooks {
         for group in rules {
             let event = group.on;
             let matcher =
-                if group.matcher.is_empty() || group.matcher == "*" || event == HookEvent::Stop {
+                if group.matcher.is_empty()
+                    || group.matcher == "*"
+                    || matches!(event, HookEvent::UserPromptSubmit | HookEvent::Stop)
+                {
                     None
                 } else if group.matcher.chars().any(|character| {
                     matches!(

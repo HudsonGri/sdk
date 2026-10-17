@@ -106,6 +106,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             if Some(&output.text) == case.expect.text.as_ref() => {}
         (ExpectedOutcome::Indeterminate, Err(acyclic_harness::Error::Indeterminate(id)))
             if id == operation => {}
+        (ExpectedOutcome::Failed, Err(error))
+            if case
+                .expect
+                .error
+                .as_deref()
+                .is_some_and(|expected| error.to_string().contains(expected)) => {}
         (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
     }
     if provider.remaining() != 0 {
@@ -338,6 +344,10 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             }
         }
     }
+    if requests.is_empty() {
+        // Only a failed case may stop before dispatch; validate() requires it.
+        return Ok(());
+    }
     if ["bash", "fs", "read", "write", "edit"]
         .iter()
         .any(|name| !requests[0].tools.iter().any(|tool| tool.name == *name))
@@ -432,6 +442,13 @@ pub(super) fn check_frames(
                 ..
             },
         ) if operation_id == identity => {}
+        (
+            ExpectedOutcome::Failed,
+            acyclic_harness::scheduler::SchedulerEvent::Completed {
+                outcome: acyclic_harness::Outcome::Failed { .. },
+                ..
+            },
+        ) => {}
         _ => return Err("local task wire outcome differs".into()),
     }
     matchers::ordered(expected, frames, "scheduler wire frames")?;

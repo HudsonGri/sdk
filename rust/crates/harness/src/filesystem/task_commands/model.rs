@@ -124,22 +124,28 @@ where
             {
                 // Hook dispatch precedes provider dispatch. Cancellation must
                 // retain a claimed hook even when no model request was sent.
-                let issued = ToolContext::new(
-                    Arc::new(self.runtime.task_context(task, fence.clone()).await?),
-                    operation,
-                    "session-start",
-                    None,
-                )?;
-                executor
-                    .run_hooks(
-                        (&crate::hooks::Hooks::default(), [0; 32]),
-                        crate::hooks::HookEvent::SessionStart,
-                        (&Value::Null).into(),
-                        &crate::tool::ToolRegistry::default(),
-                        issued,
-                        true,
-                    )
-                    .await?;
+                let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
+                for event in [
+                    crate::hooks::HookEvent::SessionStart,
+                    crate::hooks::HookEvent::UserPromptSubmit,
+                ] {
+                    let issued = ToolContext::new(
+                        Arc::clone(&owned),
+                        operation,
+                        super::hooks::prompt_hook_call(event),
+                        None,
+                    )?;
+                    executor
+                        .run_hooks(
+                            (&crate::hooks::Hooks::default(), [0; 32]),
+                            event,
+                            (&Value::Null).into(),
+                            &crate::tool::ToolRegistry::default(),
+                            issued,
+                            true,
+                        )
+                        .await?;
+                }
             }
             return mail::reconciled(io);
         }
@@ -179,11 +185,12 @@ where
         #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
         let (pipeline, hooks) = if command.summary_source.is_none() {
             BoundedContentFuture::new(io, || {
-                self.session_start(
+                self.prompt_hooks(
                     pipeline,
                     &tools,
                     Arc::clone(&context),
                     (fence, operation, reconciliation_only, manifest_digest),
+                    &command.input,
                     io,
                 )
             })?

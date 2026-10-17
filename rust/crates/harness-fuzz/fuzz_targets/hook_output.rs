@@ -91,6 +91,7 @@ fuzz_target!(|bytes: &[u8]| {
     }
     for event in [
         HookEvent::SessionStart,
+        HookEvent::UserPromptSubmit,
         HookEvent::PreToolUse,
         HookEvent::PostToolUse,
         HookEvent::Stop,
@@ -166,6 +167,7 @@ fuzz_target!(|bytes: &[u8]| {
     // the retained file bound and keep folding a following explicit denial.
     for event in [
         HookEvent::SessionStart,
+        HookEvent::UserPromptSubmit,
         HookEvent::PreToolUse,
         HookEvent::PostToolUse,
         HookEvent::Stop,

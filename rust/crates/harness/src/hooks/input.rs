@@ -33,7 +33,7 @@ impl<'a> HookInput<'a> {
             Self::Fields(fields) => match event {
                 HookEvent::SessionStart => fields.get("source"),
                 HookEvent::PreToolUse | HookEvent::PostToolUse => fields.get("tool_name"),
-                HookEvent::Stop => None,
+                HookEvent::UserPromptSubmit | HookEvent::Stop => None,
             }
             .and_then(Value::as_str)
             .unwrap_or(""),

@@ -23,6 +23,8 @@ pub(super) struct Expectations {
     pub text: Option<String>,
     #[serde(default)]
     pub outcome: ExpectedOutcome,
+    /// Required substring of the failure, exactly when the outcome is `failed`.
+    pub error: Option<String>,
     pub wire: Vec<Value>,
     pub frames: Vec<Value>,
     pub statuses: Vec<Value>,
@@ -42,12 +44,17 @@ pub(super) enum ExpectedOutcome {
     #[default]
     Succeeded,
     Indeterminate,
+    /// The admitted turn failed before any model request; `error` is a required substring.
+    Failed,
 }
 
 impl LocalCase {
     pub(super) fn validate(&self) -> Result<(), &'static str> {
+        let failed = self.expect.outcome == ExpectedOutcome::Failed;
         if self.prompt.is_empty()
-            || self.turns.is_empty()
+            || self.turns.is_empty() != failed
+            || self.expect.error.as_ref().is_some_and(String::is_empty)
+            || self.expect.error.is_some() != failed
             || self.expect.files.is_empty()
             || self.expect.frames.is_empty()
             || self.expect.statuses.len() < 2
