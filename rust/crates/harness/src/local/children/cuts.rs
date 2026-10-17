@@ -28,7 +28,6 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
 -> Result<()> {
     for point in ["prepared", "admitted", "status"] {
         let directory = tempfile::tempdir().map_err(storage)?;
-        std::fs::write(directory.path().join("source.txt"), "original").map_err(storage)?;
         let provider = Arc::new(
             ScriptedModelProvider::new([ScriptedTurn::Text("retained answer".into())])
                 .with_context_capacity(ModelContextCapacity {
@@ -69,6 +68,18 @@ async fn child_file_recovery_reuses_preparation_admission_and_status_cuts_before
         host.start_task(&lease, &mut None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let context = harness.runtime.task_context(parent, fence.clone()).await?;
+        // Pin authored content. An uncaptured native source is a shared live
+        // capability and is not an authored SDK generation.
+        context
+            .stage_file(
+                Some(harness.project()),
+                OperationId::new(),
+                "source.txt",
+                b"original",
+                "text/plain",
+                "source.txt",
+            )
+            .await?;
         let files = Arc::clone(&harness.task_files);
         let reference = Component::new("worker").map_err(storage)?;
         let mut request = FileValue::new(
