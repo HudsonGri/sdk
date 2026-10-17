@@ -1,0 +1,18 @@
+{
+  "turns": [[
+    {"type":"event","kind":"content","delta":"before"},
+    {"type":"event","kind":"reasoning","delta":"thinking"},
+    {"type":"error","error":"provider stopped"}
+  ]],
+  "expect": {
+    "text":"", "error":"storage failure: provider stopped",
+    "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed","outcome":{"Failed":{"message":"storage failure: provider stopped"}}}],
+    "statuses":[{"state":"pending","attention":false,"parent":null},{"state":"failed","attention":true,"parent":null}],
+    "task_files":[
+      {"path":"turns/0/request.json","model":{"provider":"scripted","name":"local","revision":"1"}},
+      {"path":"turns/0/chunks/0","channel":"Text","text":"before"},
+      {"path":"turns/0/chunks/1","channel":"Reasoning","text":"thinking"},
+      {"path":"turns/0/errors/2.json","channel":null,"text":"{\"error\":\"storage failure: provider stopped\"}"}
+    ]
+  }
+}

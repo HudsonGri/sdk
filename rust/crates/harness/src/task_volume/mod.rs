@@ -253,6 +253,26 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .copied())
     }
 
+    pub(crate) async fn latest_chunk(
+        &self,
+        task: &Component,
+        turn: u64,
+    ) -> Result<Option<FileValue>> {
+        self.refresh().await?;
+        let key = |sequence| FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::Chunk { turn, sequence },
+        };
+        Ok(self
+            .index
+            .lock()
+            .await
+            .files
+            .range(key(0)..=key(u64::MAX))
+            .next_back()
+            .map(|(_, stored)| stored.file.clone()))
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn file_volume(&self, key: &FileKey) -> Result<Self> {
         // A separate file stream cannot contend with unrelated parent-volume writes.
@@ -530,6 +550,7 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     } = &file.key
         && let TaskFile::TurnRequest(turn)
         | TaskFile::Chunk { turn, .. }
+        | TaskFile::Error { turn, .. }
         | TaskFile::Tool { turn, .. } = location
     {
         let completion = FileKey::Task {

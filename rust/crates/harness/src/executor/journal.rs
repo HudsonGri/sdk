@@ -20,6 +20,28 @@ pub(super) fn validate_journal(
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Recovers an accepted file whose referring execution append lost its acknowledgement.
+    fn recover_model_files<'a>(
+        &'a self,
+        _operation: OperationId,
+        _step: u32,
+        _purpose: ModelPurpose,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(()) })
+    }
+
+    /// Publishes a recoverable error or seals a response whose tools have settled.
+    fn publish_model_outcome<'a>(
+        &'a self,
+        _operation: OperationId,
+        _step: u32,
+        _outcome: std::result::Result<&'a Value, (usize, &'a Error)>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(()) })
+    }
+
     /// Stages one model event in this journal's authoritative file namespace.
     fn stage_model_event<'a>(
         &'a self,

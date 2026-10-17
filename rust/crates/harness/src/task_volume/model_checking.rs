@@ -21,6 +21,8 @@ pub enum Fault {
     IgnoreDeadline,
     /// Stop output on an unrelated task-file writer's generation advance.
     StopAfterGenerationConflict,
+    /// Stop an execution append on an unrelated coordinator generation advance.
+    StopExecutionFenceRetry,
 }
 
 loom::thread_local! {
@@ -32,7 +34,7 @@ pub fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
-pub(super) fn enabled(fault: Fault) -> bool {
+pub(crate) fn enabled(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
 

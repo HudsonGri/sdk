@@ -30,6 +30,9 @@ impl StockExecution<'_> {
                 &mut prior_messages,
             )?;
             if calls.is_empty() {
+                journal
+                    .publish_model_outcome(input.operation_id, step, Ok(&metadata), self.io)?
+                    .await?;
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
@@ -58,6 +61,9 @@ impl StockExecution<'_> {
                     }
                 }
             }
+            journal
+                .publish_model_outcome(input.operation_id, step, Ok(&metadata), self.io)?
+                .await?;
         }
         Err(stock_boundary(
             self.io,

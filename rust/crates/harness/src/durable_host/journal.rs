@@ -527,15 +527,43 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if quota.work().is_some() {
             quota.adopt(path.as_str().len() as u64)?;
         }
-        self.append(
-            path,
-            expected_tail,
-            Some(key),
-            bytes,
-            Self::execution_write(operation, event)?,
-            quota.work(),
-        )
-        .await
+        loop {
+            if self
+                .append(
+                    path.clone(),
+                    expected_tail,
+                    Some(key),
+                    bytes.clone(),
+                    Self::execution_write(operation, event)?,
+                    quota.work(),
+                )
+                .await?
+            {
+                return Ok(true);
+            }
+            #[cfg(acyclic_harness_loom)]
+            if crate::task_volume::model_checking::enabled(
+                crate::task_volume::model_checking::Fault::StopExecutionFenceRetry,
+            ) {
+                return Ok(false);
+            }
+            // Other tasks can advance the coordinator fence without changing
+            // this single-writer execution. Revalidate and retry that case;
+            // only a changed execution tail requires rebuilding its summary.
+            match crate::store::operations::bounds_with_work(&self.host.stream, &path, quota.work())
+                .await?
+            {
+                Ok(bounds) if bounds.tail == expected_tail => {}
+                Err(StreamError::NotFound) if expected_tail == 0 => {}
+                Ok(_) => return Ok(false),
+                Err(error) => {
+                    return Err(crate::store::operations::stream_error_with_work(
+                        error,
+                        quota.work(),
+                    ));
+                }
+            }
+        }
     }
 
     pub(crate) async fn append_workflow(

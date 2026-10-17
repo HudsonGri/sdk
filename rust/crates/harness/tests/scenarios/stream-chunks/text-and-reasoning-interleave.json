@@ -28,6 +28,11 @@
         "path": "turns/0/chunks/3",
         "text": "world",
         "channel": "Text"
+      },
+      {
+        "path": "turns/0/completion.json",
+        "text": "{\"metadata\":null}",
+        "channel": null
       }
     ],
     "text": "Hello world"

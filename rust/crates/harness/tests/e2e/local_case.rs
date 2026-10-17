@@ -17,6 +17,7 @@ pub(super) struct LocalCase {
 #[serde(deny_unknown_fields)]
 pub(super) struct Expectations {
     pub text: String,
+    pub error: Option<String>,
     pub wire: Vec<Value>,
     pub frames: Vec<Value>,
     pub statuses: Vec<Value>,

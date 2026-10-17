@@ -14,12 +14,81 @@ struct TurnRequest<'a> {
     request: &'a FileRef,
 }
 
+#[derive(Serialize)]
+#[serde(untagged)]
+enum TurnCompletion<'a> {
+    Completed { metadata: &'a serde_json::Value },
+    Failed { error: &'a str },
+}
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(super) async fn publish_model_outcome_file(
+        &self,
+        operation: OperationId,
+        step: u32,
+        outcome: std::result::Result<&serde_json::Value, (usize, &Error)>,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let Some(files) = &self.task_files else {
+            return Ok(());
+        };
+        self.require_operation(operation, io)?;
+        let turn = <Self as ExecutionJournal>::model_file_turn(self, operation, step, io)?.await?;
+        let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "model completion has no task owner",
+            )
+        })?;
+        let message = outcome
+            .err()
+            .map(|(_, error)| {
+                crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(format_args!("{error}"), work)
+                })
+            })
+            .transpose()?;
+        let _message_hold = io
+            .zip(message.as_ref())
+            .map(|(io, message)| io.guard_owned(message.capacity() as u64))
+            .transpose()?;
+        let file = match outcome {
+            Ok(_) => TaskFile::Completion(turn),
+            Err((sequence, _)) => TaskFile::Error {
+                turn,
+                sequence: sequence as u64,
+            },
+        };
+        let completion = match outcome {
+            Ok(metadata) => TurnCompletion::Completed { metadata },
+            Err(_) => TurnCompletion::Failed {
+                error: message.as_deref().ok_or_else(|| {
+                    canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "model failure lost its diagnostic",
+                    )
+                })?,
+            },
+        };
+        let bytes = match io {
+            Some(io) => io.encode(&completion, files.maximum_bytes(), true)?,
+            None => crate::contract::canonical_json_bytes(&completion)?.into(),
+        };
+        let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        let task = Component::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{}", owner.task_id()), work)
+        })?)?;
+        self.publish_model_file(&Write::new(FileKey::Task { task, file }, bytes), io)
+            .await
+    }
+
     pub(super) fn model_publication(
         operation: OperationId,
         step: u32,
@@ -48,7 +117,9 @@ where
                 "model request has no task owner",
             ));
         };
-        let task = Component::new(owner.task_id().to_string())?;
+        let task = Component::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{}", owner.task_id()), work)
+        })?)?;
         let publication = Self::model_publication(operation, step, io)?;
         let generation = files.inner.head().await?;
         let turn = files
@@ -163,6 +234,25 @@ where
         );
         write.channel = Some(channel);
         self.publish_model_file(&write, io).await?;
+        self.model_delta_reference(&write, io)
+    }
+
+    fn model_delta_reference(&self, write: &Write, io: Option<&PreparationIo>) -> Result<FileRef> {
+        let (
+            Some(files),
+            FileKey::Task {
+                task,
+                file: TaskFile::Chunk { turn, sequence },
+            },
+            Some(channel),
+        ) = (&self.task_files, &write.key, write.channel)
+        else {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "model delta is not a task chunk",
+            ));
+        };
         crate::executor::with_history_io(io, |work| {
             let media = match channel {
                 Channel::Text => crate::executor::TEXT_DELTA,
@@ -191,6 +281,136 @@ where
                 work,
             )
         })
+    }
+
+    pub(super) async fn recover_published_model_delta(
+        &self,
+        operation: OperationId,
+        step: u32,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let Some(files) = &self.task_files else {
+            return Ok(());
+        };
+        self.require_operation(operation, io)?;
+        let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "model recovery has no task owner",
+            )
+        })?;
+        let task = Component::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{}", owner.task_id()), work)
+        })?)?;
+        let Some(turn) = files
+            .inner
+            .published_turn(&task, Self::model_publication(operation, step, io)?)
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(file) = files.inner.latest_chunk(&task, turn).await? else {
+            return Ok(());
+        };
+        let FileKey::Task {
+            file: TaskFile::Chunk { sequence, .. },
+            ..
+        } = &file.key
+        else {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "model recovery selected another file",
+            ));
+        };
+        // The stock producer awaits the referring append before accepting the
+        // next delta, so only its final accepted chunk can lack an observation.
+        // Reading that file repairs the crash boundary without publishing it again.
+        let _hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let reference = self.model_delta_reference(&file, io)?;
+        let key = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("model:{step}:{sequence}"), work)
+        })?;
+        _hold = io
+            .map(|io| io.guard_owned(io.owned_since(before)?))
+            .transpose()?;
+        self.append_validated(
+            operation,
+            None,
+            &key,
+            &ExecutionEvent::Model {
+                step,
+                purpose: crate::executor::ModelPurpose::Response,
+                event: reference,
+            },
+            io,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub(super) async fn validate_model_file_position(
+        &self,
+        operation: OperationId,
+        event: &ExecutionEvent,
+        summary: &ExecutionSummary,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let ExecutionEvent::Model {
+            step,
+            purpose,
+            event: reference,
+        } = event
+        else {
+            return Ok(());
+        };
+        if !matches!(
+            reference.descriptor().media_type(),
+            crate::executor::TEXT_DELTA | crate::executor::REASONING_DELTA
+        ) {
+            return Ok(());
+        }
+        let (Some(files), Some(_)) = (&self.task_files, &self.owner) else {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "model chunk has no task binding",
+            ));
+        };
+        let key = FileKey::parse(reference.path())?;
+        let FileKey::Task {
+            task,
+            file: TaskFile::Chunk { turn, sequence },
+        } = key
+        else {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "model event is not a chunk",
+            ));
+        };
+        let admitted = summary
+            .models
+            .get(&(*step, *purpose))
+            .and_then(Option::as_ref)
+            .map(|admission| admission.count as u64);
+        if *purpose != crate::executor::ModelPurpose::Response
+            || admitted != Some(sequence)
+            || files
+                .inner
+                .published_turn(&task, Self::model_publication(operation, *step, io)?)
+                .await?
+                != Some(turn)
+        {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "model chunk reordered its admitted stream",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) async fn load_task_delta(
@@ -235,10 +455,16 @@ where
             )
         })?;
         let key = FileKey::parse(reference.path())?;
-        let own_task = self
-            .owner
-            .as_ref()
-            .map(|(owner, _)| owner.task_id().to_string());
+        let mut task_id = [0; 36];
+        let own_task = if let Some((owner, _)) = &self.owner {
+            Some(
+                uuid::Uuid::from_bytes(owner.task_id().into_bytes())
+                    .hyphenated()
+                    .encode_lower(&mut task_id),
+            )
+        } else {
+            None
+        };
         if !matches!(&key, FileKey::Task { task, file: TaskFile::Chunk { .. } }
             if Some(task.as_str()) == own_task.as_deref())
         {

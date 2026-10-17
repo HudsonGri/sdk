@@ -104,7 +104,7 @@ where
             .map(|history| history as &mut dyn crate::store::history::HistoryIo);
         owner.verify(true, &mut work).await?;
         let quiescent = {
-            let mut shared = if io.is_none() {
+            let mut shared = if self.can_cache_verified(io) {
                 Some(self.verified.lock().await)
             } else {
                 None
@@ -183,7 +183,7 @@ where
     ) -> Result<()> {
         let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
         traced(span, async {
-            let mut shared = if io.is_none() {
+            let mut shared = if self.can_cache_verified(io) {
                 Some(self.verified.lock().await)
             } else {
                 None
@@ -328,7 +328,7 @@ where
                 work,
             )
         })?;
-        let mut shared = if io.is_none() {
+        let mut shared = if self.can_cache_verified(io) {
             Some(self.verified.lock().await)
         } else {
             None
@@ -367,6 +367,8 @@ where
             if expected_tail.is_some_and(|tail| tail != summary.tail) {
                 return Ok(false);
             }
+            self.validate_model_file_position(operation_id, event, summary, io)
+                .await?;
             summary.validate_next(event, model.as_ref(), limits, io)?;
             if let ExecutionEvent::ModelStarted {
                 step,
@@ -378,12 +380,23 @@ where
                 self.publish_model_request(operation_id, *step, request, io)
                     .await?;
             }
+            let tail = summary.tail;
+            // Admit and retain the candidate while this guard excludes readers.
+            // A successful append needs no historical replay on the next delta.
+            let next = tail.checked_add(1).ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "execution journal sequence overflow",
+                )
+            })?;
+            summary.accept_fields((next, &retry_digest, event), model.as_ref(), limits, io)?;
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
                     .append_execution(
                         operation_id,
-                        summary.tail,
+                        tail,
                         &key,
                         bytes.clone(),
                         event,
@@ -391,18 +404,12 @@ where
                             .as_mut()
                             .map(|io| io as &mut dyn crate::store::history::HistoryIo),
                     )
-                    .await?
+                    .await
             } else {
-                self.append_local_with_io(
-                    &observation,
-                    summary.tail,
-                    key.clone(),
-                    bytes.clone(),
-                    io,
-                )
-                .await?
+                self.append_local_with_io(&observation, tail, key.clone(), bytes.clone(), io)
+                    .await
             };
-            if committed {
+            if matches!(committed, Ok(true)) {
                 drop(key);
                 drop(key_hold);
                 drop(bytes);
@@ -411,6 +418,10 @@ where
                 drop(retry_hold);
                 return Ok(true);
             }
+            // A different execution writer or an indeterminate provider result
+            // invalidates the candidate. Replay the authoritative accepted cut.
+            *summary = ExecutionSummary::default();
+            committed?;
         }
     }
 

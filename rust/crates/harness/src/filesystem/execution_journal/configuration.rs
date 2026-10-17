@@ -6,6 +6,22 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(super) fn can_cache_verified(&self, io: Option<&PreparationIo>) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match io {
+                None => self._native_metadata.is_none(),
+                Some(io) => io
+                    .original_native_work()
+                    .is_some_and(|work| self.original_native_execution_work_matches(work)),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            io.is_none()
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn original_native_execution_work_matches(
         &self,
@@ -240,7 +256,7 @@ where
             owner: None,
             execution: None,
             task_files: None,
-            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            verified: crate::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
             #[cfg(not(target_arch = "wasm32"))]

@@ -208,6 +208,17 @@ impl Query {
                     chunks(task, *turn),
                     range(
                         task,
+                        TaskFile::Error {
+                            turn: *turn,
+                            sequence: 0,
+                        },
+                        TaskFile::Error {
+                            turn: *turn,
+                            sequence: u64::MAX,
+                        },
+                    ),
+                    range(
+                        task,
                         TaskFile::Completion(*turn),
                         TaskFile::Completion(*turn),
                     ),

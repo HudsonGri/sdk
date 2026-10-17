@@ -22,6 +22,35 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn recover_model_files<'a>(
+        &'a self,
+        operation: OperationId,
+        step: u32,
+        purpose: crate::executor::ModelPurpose,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if purpose == crate::executor::ModelPurpose::Response {
+                self.recover_published_model_delta(operation, step, io)
+                    .await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn publish_model_outcome<'a>(
+        &'a self,
+        operation: OperationId,
+        step: u32,
+        outcome: std::result::Result<&'a serde_json::Value, (usize, &'a Error)>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.publish_model_outcome_file(operation, step, outcome, io)
+                .await
+        })
+    }
+
     fn stage_model_event<'a>(
         &'a self,
         operation: OperationId,

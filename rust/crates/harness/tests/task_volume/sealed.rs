@@ -30,6 +30,7 @@ async fn sealed_turn(turn: u64, text: &str, tool: &str) -> Result {
             "{}",
         )?,
         write(&format!(".tasks/t/turns/{turn}/request.json"), "{}")?,
+        write(&format!(".tasks/t/turns/{turn}/errors/1.json"), "{}")?,
     ] {
         if matches!(
             next.key,

@@ -1,5 +1,14 @@
 use super::*;
 
+#[cfg(acyclic_harness_loom)]
+loom::thread_local! {
+    static LOSE_NATIVE_CUSTODY: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "summary_models.rs"]
+mod models;
+
 #[derive(Default)]
 pub(super) struct ExecutionSummary {
     pub(super) operation: Option<OperationId>,
@@ -8,6 +17,8 @@ pub(super) struct ExecutionSummary {
     pub(super) contexts: BTreeMap<u32, bool>,
     pub(super) models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     pub(super) tools: BTreeMap<(u32, [u8; 32]), bool>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) native: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl ExecutionSummary {
@@ -140,9 +151,76 @@ impl ExecutionSummary {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let key = crate::model::hash_bytes(record.idempotency_key.as_bytes(), io)?;
-        if record.sequence != self.tail + 1
-            || record.idempotency_key.is_empty()
+        self.accept_fields(
+            (record.sequence, &record.idempotency_key, &record.event),
+            model,
+            limits,
+            io,
+        )
+    }
+
+    pub(super) fn accept_fields(
+        &mut self,
+        record: (u64, &str, &ExecutionEvent),
+        model: Option<&ModelEvent>,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = io
+            .filter(|io| io.original_native_work().is_some())
+            .map(|io| io.owned_bytes().map(|before| (io, before)))
+            .transpose()?;
+        let result = self.accept_inner(record, model, limits, io);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((io, before)) = native.filter(|_| {
+            #[cfg(acyclic_harness_loom)]
+            {
+                !LOSE_NATIVE_CUSTODY.with(std::cell::Cell::get)
+            }
+            #[cfg(not(acyclic_harness_loom))]
+            {
+                true
+            }
+        }) {
+            let mut incoming = match io
+                .owned_since(before)
+                .and_then(|bytes| io.take_native_custody(bytes))
+            {
+                Ok(incoming) => incoming,
+                Err(error) => {
+                    *self = Self::default();
+                    return Err(error);
+                }
+            };
+            if let Some(custody) = &mut self.native {
+                if let Err(cause) = custody.absorb(&mut incoming) {
+                    *self = Self::default();
+                    return Err(Error::NativeWork {
+                        cause,
+                        custody: Some(incoming),
+                    });
+                }
+            } else {
+                self.native = Some(incoming);
+            }
+        }
+        if result.is_err() {
+            *self = Self::default();
+        }
+        result
+    }
+
+    fn accept_inner(
+        &mut self,
+        (sequence, idempotency_key, event): (u64, &str, &ExecutionEvent),
+        model: Option<&ModelEvent>,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let key = crate::model::hash_bytes(idempotency_key.as_bytes(), io)?;
+        if self.tail.checked_add(1) != Some(sequence)
+            || idempotency_key.is_empty()
             || self.retries.contains_key(&key)
         {
             return Err(canonical_boundary(
@@ -151,7 +229,7 @@ impl ExecutionSummary {
                 "execution journal sequence or retry identity is invalid",
             ));
         }
-        let tool_key = self.require_next(&record.event, io)?;
+        let tool_key = self.require_next(event, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)
@@ -162,10 +240,10 @@ impl ExecutionSummary {
         #[cfg(target_arch = "wasm32")]
         let digest_io = io;
         let digest = crate::executor::with_history_io(digest_io, |work| {
-            crate::executor::json::canonical_json_digest(&record.event, limits.file_bytes, work)
+            crate::executor::json::canonical_json_digest(event, limits.file_bytes, work)
         })?;
         if let Some(io) = io {
-            let extra = match &record.event {
+            let extra = match event {
                 ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
                 ExecutionEvent::ModelStarted { .. } => std::mem::size_of::<(
                     (u32, crate::executor::ModelPurpose),
@@ -178,7 +256,7 @@ impl ExecutionSummary {
             };
             io.retain_owned((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
         }
-        match &record.event {
+        match event {
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.contexts.insert(*step, false);
             }
@@ -233,13 +311,13 @@ impl ExecutionSummary {
                             )
                         })?,
                     ),
-                    !matches!(record.event, ExecutionEvent::ToolStarted { .. }),
+                    !matches!(event, ExecutionEvent::ToolStarted { .. }),
                 );
             }
             ExecutionEvent::Started { .. } => {}
         }
-        self.retries.insert(key, (record.sequence, digest));
-        self.tail = record.sequence;
+        self.retries.insert(key, (sequence, digest));
+        self.tail = sequence;
         Ok(())
     }
 

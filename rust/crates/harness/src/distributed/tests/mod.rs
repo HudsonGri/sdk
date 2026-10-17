@@ -42,6 +42,13 @@ mod model_provider;
 mod native;
 mod observation;
 mod origin_tests;
+#[cfg(all(
+    acyclic_harness_loom,
+    acyclic_loom,
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+mod owner_journal_models;
 mod results;
 #[cfg(all(
     acyclic_harness_loom,

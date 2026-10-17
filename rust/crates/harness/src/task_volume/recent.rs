@@ -23,7 +23,7 @@ pub(super) fn kind(key: &FileKey) -> Option<u8> {
             ..
         } => 5,
         TaskFile::Tool { .. } => 4,
-        TaskFile::ExecutionResult(_) => 6,
+        TaskFile::ExecutionResult(_) | TaskFile::Error { .. } => 6,
         _ => return None,
     })
 }

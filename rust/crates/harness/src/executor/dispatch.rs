@@ -3,6 +3,15 @@ use super::*;
 use crate::wire::ErrorCode::Unsupported;
 use futures::future::Either;
 
+#[cfg(all(
+    test,
+    feature = "filesystem",
+    not(target_arch = "wasm32"),
+    not(acyclic_harness_loom)
+))]
+#[path = "dispatch/delta_work.rs"]
+mod delta_work;
+
 impl StockExecution<'_> {
     /// Replays or resolves one model step.
     pub(super) async fn dispatch_model_step(
@@ -15,9 +24,14 @@ impl StockExecution<'_> {
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
         self.require_model_producer().await?;
+        journal
+            .recover_model_files(input.operation_id, step, purpose, io)?
+            .await?;
         let (_, records) = self
             .model_records(journal, input.operation_id, step, purpose)
             .await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let replayed_hold;
         let RetainedModelStep {
             request: retained_request,
             mut admission,
@@ -25,6 +39,13 @@ impl StockExecution<'_> {
         } = retain_preparation(
             retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
         )?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            replayed_hold = io
+                .filter(|_| stock_is_native(io))
+                .map(|io| io.guard_owned(native_events_owned_bytes(&replayed)?))
+                .transpose()?;
+        }
         let started = retained_request.is_some();
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
@@ -45,6 +66,10 @@ impl StockExecution<'_> {
         self.record_model_phase(&admission, started);
         if admission.completed {
             crate::obs::obs_record!("items" = replayed.len());
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(hold) = replayed_hold {
+                hold.into_retained()?;
+            }
             return Ok(replayed);
         }
         let dispatch = crate::model::ModelDispatch {
@@ -99,18 +124,30 @@ impl StockExecution<'_> {
             let generated = self.stock.provider.generate(request, dispatch);
             Either::Right(generated)
         };
-        let observed = self
-            .record_model_events(
-                journal,
-                input.operation_id,
-                (step, purpose, purpose_key),
-                replayed,
-                &mut admission,
-                stream,
-            )
+        drop(replayed);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        drop(replayed_hold);
+        self.record_model_events(
+            journal,
+            input.operation_id,
+            (step, purpose, purpose_key),
+            &mut admission,
+            stream,
+            started,
+        )
+        .await?;
+        #[cfg(feature = "filesystem")]
+        drop(_continuation_hold);
+        crate::obs::obs_record!("items" = admission.count);
+        // Streaming owns only the current event. Assemble the executor's final
+        // result once, from the same immutable files used by recovery/readers.
+        let (_, records) = self
+            .model_records(journal, input.operation_id, step, purpose)
             .await?;
-        crate::obs::obs_record!("items" = observed.len());
-        Ok(observed)
+        Ok(retain_preparation(
+            retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?,
+        )?
+        .events)
     }
 
     async fn resolve_model_request(
@@ -296,32 +333,87 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         turn: (u32, ModelPurpose, &str),
-        mut observed: Vec<ModelEvent>,
         admission: &mut ModelEventAdmission,
         stream: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
-    ) -> Result<Vec<ModelEvent>> {
+        continued: bool,
+    ) -> Result<()> {
         let (step, purpose, purpose_key) = turn;
         let io = self.io;
         {
             let mut stream = stream;
-            while let Some(event) = stream.next().await {
-                let event = event?;
-                let index = observed.len();
+            while let Some(received) = stream.next().await {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let event_hold;
+                let event = match received {
+                    Ok(event) => event,
+                    Err(error) => {
+                        if purpose == ModelPurpose::Response {
+                            journal
+                                .publish_model_outcome(
+                                    operation_id,
+                                    step,
+                                    Err((admission.count, &error)),
+                                    io,
+                                )?
+                                .await?;
+                        }
+                        return Err(error);
+                    }
+                };
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                {
+                    event_hold = io
+                        .filter(|_| stock_is_native(io))
+                        .map(|io| {
+                            let slots = if continued {
+                                std::mem::size_of::<ModelEvent>() as u64
+                            } else {
+                                0
+                            };
+                            let bytes = event
+                                .logical_owned_bytes()?
+                                .checked_sub(slots)
+                                .ok_or_else(|| {
+                                    stock_boundary(
+                                        Some(io),
+                                        crate::wire::ErrorCode::Storage,
+                                        "model event ownership underflows",
+                                    )
+                                })?;
+                            io.guard_owned(bytes)
+                        })
+                        .transpose()?;
+                }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let _ = continued;
+                let index = admission.count;
+                admission.observe(&event, self.stock.limits, io)?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let reference_hold;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
                 })?;
-                stock_vec_push(&mut observed, event, io)?;
-                let event = observed.last().ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "model observation was not retained",
-                    )
-                })?;
-                admission.observe(event, self.stock.limits, io)?;
                 let reference = journal
-                    .stage_model_event(operation_id, &key, (step, purpose, index), event, io)?
+                    .stage_model_event(operation_id, &key, (step, purpose, index), &event, io)?
                     .await?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                {
+                    reference_hold = io
+                        .filter(|_| stock_is_native(io))
+                        .map(|io| {
+                            let bytes = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
+                                stock_boundary(
+                                    Some(io),
+                                    crate::wire::ErrorCode::Storage,
+                                    "model reference ownership underflows",
+                                )
+                            })?;
+                            io.guard_owned(bytes)
+                        })
+                        .transpose()?;
+                }
                 journal
                     .append(
                         operation_id,
@@ -334,9 +426,16 @@ impl StockExecution<'_> {
                         io,
                     )?
                     .await?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                {
+                    drop(key);
+                    drop(reference_hold);
+                    drop(event);
+                    drop(event_hold);
+                }
             }
         }
-        Ok(observed)
+        Ok(())
     }
 
     async fn require_model_producer(&self) -> Result<()> {

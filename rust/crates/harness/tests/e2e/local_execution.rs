@@ -95,7 +95,14 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
-    let output = harness.resume(task_id).await?;
+    let output = harness.resume(task_id).await;
+    match (&output, &case.expect.error) {
+        (Ok(output), None) if output.text == case.expect.text => {}
+        (Err(acyclic_harness::Error::TaskFailed { message, .. }), Some(expected))
+            if message == expected && case.expect.text.is_empty() => {}
+        (Err(error), None) => return Err(error.to_string().into()),
+        _ => return Err(format!("local turn outcome differs: {output:?}").into()),
+    }
     let task_cursor =
         if let (Some(expected), Some(observation)) = (&case.expect.task_files, task_files) {
             Some(
@@ -106,7 +113,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             None
         };
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
-    if output.text != case.expect.text || provider.remaining() != 0 {
+    if provider.remaining() != 0 {
         return Err("local turn output or model script differs".into());
     }
     let requests = provider.requests();
@@ -146,14 +153,26 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
         wire_frames.push(serde_json::from_slice(&frame.canonical_event_json)?);
     }
-    check_frames(&case.expect.frames, &wire_frames, operation)?;
+    check_terminal_frames(
+        &case.expect.frames,
+        &wire_frames,
+        operation,
+        case.expect.error.is_none(),
+    )?;
     let root = serde_json::to_value(operation)?;
     let terminal = wire_frames
         .iter()
         .position(|frame| frame["kind"] == "completed" && frame["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire_frames.remove(terminal);
-    if check_frames(&case.expect.frames, &wire_frames, operation).is_ok() {
+    if check_terminal_frames(
+        &case.expect.frames,
+        &wire_frames,
+        operation,
+        case.expect.error.is_none(),
+    )
+    .is_ok()
+    {
         return Err("wire oracle accepted a lost root terminal frame".into());
     }
     let target = source
@@ -314,7 +333,19 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             .goal_continuations(None),
         )
         .await?;
-        if recovered.resume(task_id).await? != output || !recovered_provider.requests().is_empty() {
+        let unchanged = match (&output, recovered.resume(task_id).await) {
+            (Ok(original), Ok(recovered)) => original == &recovered,
+            (
+                Err(acyclic_harness::Error::TaskFailed {
+                    message: original, ..
+                }),
+                Err(acyclic_harness::Error::TaskFailed {
+                    message: recovered, ..
+                }),
+            ) => original == &recovered,
+            _ => false,
+        };
+        if !unchanged || !recovered_provider.requests().is_empty() {
             return Err("completed task changed or dispatched a model after cold reopen".into());
         }
         super::local_streams::no_replay(&recovered, task_query, cursor).await?;
@@ -361,6 +392,15 @@ pub(super) fn check_frames(
     frames: &[Value],
     operation: OperationId,
 ) -> TestResult {
+    check_terminal_frames(expected, frames, operation, true)
+}
+
+fn check_terminal_frames(
+    expected: &[Value],
+    frames: &[Value],
+    operation: OperationId,
+    success: bool,
+) -> TestResult {
     let operation = serde_json::to_value(operation)?;
     let mut terminal = None;
     for frame in frames
@@ -374,14 +414,21 @@ pub(super) fn check_frames(
     use serde::Deserialize as _;
     let terminal = terminal.ok_or("local task has no root terminal frame")?;
     let event = acyclic_harness::scheduler::SchedulerEvent::deserialize(terminal)?;
-    if !matches!(
-        event,
-        acyclic_harness::scheduler::SchedulerEvent::Completed {
-            outcome: acyclic_harness::Outcome::Succeeded(_),
-            ..
+    let valid = match event {
+        acyclic_harness::scheduler::SchedulerEvent::Completed { outcome, .. } => matches!(
+            (success, outcome),
+            (true, acyclic_harness::Outcome::Succeeded(_))
+                | (false, acyclic_harness::Outcome::Failed(_))
+        ),
+        _ => false,
+    };
+    if !valid {
+        return Err(if success {
+            "local task wire did not succeed"
+        } else {
+            "local task wire did not fail"
         }
-    ) {
-        return Err("local task wire did not succeed".into());
+        .into());
     }
     matchers::ordered(expected, frames, "scheduler wire frames")?;
     Ok(())

@@ -1,0 +1,32 @@
+{
+  "folder": ".tasks/t/turns/0",
+  "writes": [
+    {
+      "path": ".tasks/t/turns/0/errors/1.json",
+      "text": "{\"error\":\"offline\"}"
+    },
+    {
+      "path": ".tasks/t/turns/0/chunks/1",
+      "text": "resumed",
+      "channel": "Text"
+    }
+  ],
+  "expect": {
+    "files": {
+      ".tasks/t/turns/0/errors/1.json": "{\"error\":\"offline\"}",
+      ".tasks/t/turns/0/chunks/1": "resumed"
+    },
+    "changes": [
+      {
+        "path": ".tasks/t/turns/0/errors/1.json",
+        "text": "{\"error\":\"offline\"}"
+      },
+      {
+        "path": ".tasks/t/turns/0/chunks/1",
+        "text": "resumed",
+        "channel": "Text"
+      }
+    ]
+  },
+  "driver": "task_query"
+}

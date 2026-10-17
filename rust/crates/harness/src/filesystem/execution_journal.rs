@@ -64,9 +64,9 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,
     task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
-    // Lock order: verified precedes the task-volume index or coordinator.
+    // Lock order: verified precedes the task-volume index, coordinator or native ledger.
     // TaskVolume releases its index before owner authorization/provider I/O.
-    verified: tokio::sync::Mutex<ExecutionSummary>,
+    verified: crate::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     #[cfg(not(target_arch = "wasm32"))]

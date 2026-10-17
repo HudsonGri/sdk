@@ -96,7 +96,8 @@ pub(super) async fn no_replay(harness: &LocalHarness, query: Query, cursor: Curs
             matches!(
                 file.key,
                 FileKey::Task {
-                    file: TaskFile::TurnRequest(_)
+                    file: TaskFile::Error { .. }
+                        | TaskFile::TurnRequest(_)
                         | TaskFile::Chunk { .. }
                         | TaskFile::Tool { .. }
                         | TaskFile::Completion(_),
@@ -130,9 +131,10 @@ fn normalize(
                 json!({"path":format!("turns/{turn}/request.json"),"model":header["model"]}),
             ));
         }
-        TaskFile::Chunk { turn, .. } | TaskFile::Completion(turn) | TaskFile::Tool { turn, .. } => {
-            *turn
-        }
+        TaskFile::Chunk { turn, .. }
+        | TaskFile::Completion(turn)
+        | TaskFile::Error { turn, .. }
+        | TaskFile::Tool { turn, .. } => *turn,
         _ => return Ok(None),
     };
     let turn = turns
@@ -141,6 +143,7 @@ fn normalize(
     let path = match kind {
         TaskFile::Chunk { sequence, .. } => format!("turns/{turn}/chunks/{sequence}"),
         TaskFile::Completion(_) => format!("turns/{turn}/completion.json"),
+        TaskFile::Error { sequence, .. } => format!("turns/{turn}/errors/{sequence}.json"),
         TaskFile::Tool { call, .. } => {
             let next = calls.len();
             let call = calls.entry(call.as_str().to_owned()).or_insert(next);

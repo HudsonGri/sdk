@@ -77,6 +77,14 @@ pub enum TaskFile {
         /// Assistant channel represented by this head.
         channel: Channel,
     },
+    /// A recoverable model failure at this event position. Reconciliation may
+    /// append further chunks; only Completion seals the turn.
+    Error {
+        /// Turn/attempt identity.
+        turn: u64,
+        /// Event position at which the failure was observed.
+        sequence: u64,
+    },
     /// Terminal turn outcome. Seals the turn against new chunks and tool files;
     /// identical retries of already published files remain idempotent.
     Completion(u64),
@@ -108,9 +116,10 @@ impl TaskFile {
     fn turn(&self) -> Option<u64> {
         match self {
             Self::TurnRequest(n) | Self::Completion(n) => Some(*n),
-            Self::Chunk { turn, .. } | Self::TextHead { turn, .. } | Self::Tool { turn, .. } => {
-                Some(*turn)
-            }
+            Self::Chunk { turn, .. }
+            | Self::TextHead { turn, .. }
+            | Self::Error { turn, .. }
+            | Self::Tool { turn, .. } => Some(*turn),
             _ => None,
         }
     }
@@ -134,6 +143,7 @@ impl TaskFile {
                 }
             ),
             Self::Completion(n) => format!("turns/{n}/completion.json"),
+            Self::Error { turn, sequence } => format!("turns/{turn}/errors/{sequence}.json"),
             Self::Tool { turn, call, file } => {
                 let leaf = match file {
                     ToolFile::Request => "request.json".into(),
@@ -209,6 +219,17 @@ impl FileKey {
                     sequence: 0,
                 },
                 TaskFile::Chunk {
+                    turn: *turn,
+                    sequence: u64::MAX,
+                },
+                *sequence,
+            ),
+            TaskFile::Error { turn, sequence } => (
+                TaskFile::Error {
+                    turn: *turn,
+                    sequence: 0,
+                },
+                TaskFile::Error {
                     turn: *turn,
                     sequence: u64::MAX,
                 },
@@ -305,6 +326,10 @@ impl FileKey {
             ["executions", request, "result.json"] => TaskFile::ExecutionResult(id(request)?),
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
+            ["turns", n, "errors", sequence] => TaskFile::Error {
+                turn: number(n)?,
+                sequence: number(sequence.strip_suffix(".json").ok_or(Error::InvalidPath)?)?,
+            },
             ["turns", n, "text.md"] => TaskFile::TextHead {
                 turn: number(n)?,
                 channel: Channel::Text,
