@@ -27,7 +27,7 @@ pub fn stdin_jsonl() -> Result<BoxStream<'static, Result<String>>> {
 #[cfg(unix)]
 mod stdin {
     use std::fs::File;
-    use std::io::{self, Read};
+    use std::io::{self, Read, Write};
     use std::os::fd::{AsFd, AsRawFd, RawFd};
     use std::pin::Pin;
     use std::task::{Context, Poll, ready};
@@ -125,9 +125,8 @@ mod stdin {
 /// A dedicated reader for input the reactor cannot wait on. One persistent
 /// thread fills recycled batches and feeds a bounded channel, so a slow or
 /// stalled read never blocks the runtime. The thread waits in poll on the
-/// input and on a cancel pipe whose only writer the stream holds: dropping
-/// the stream hangs that pipe up, so the thread ends without reading again
-/// and releases its input.
+/// input and on a private cancel pipe: dropping the stream writes a cancel
+/// byte, so inherited writer handles cannot delay cancellation.
 #[cfg(unix)]
 mod reader {
     use std::fs::File;
@@ -179,8 +178,9 @@ mod reader {
         spare: mpsc::Sender<Vec<u8>>,
         current: Vec<u8>,
         offset: usize,
-        /// The cancel pipe's only writer; dropping it ends the thread's wait.
-        _cancel: io::PipeWriter,
+        cancel: io::PipeWriter,
+        // A live read peer prevents SIGPIPE even after the worker ended.
+        _cancel_reader: io::PipeReader,
     }
 
     impl Reader {
@@ -188,9 +188,9 @@ mod reader {
             let (send, batches) = tokio::sync::mpsc::channel(2);
             let (spare, recycled) = mpsc::channel::<Vec<u8>>();
             let (cancelled, cancel) = io::pipe()?;
-            // Detached, never joined: dropping the stream hangs up the cancel
-            // pipe (ending a wait) and closes the channel (ending a send), so
-            // the thread ends and closes its input without another read.
+            let cancel_reader = cancelled.try_clone()?;
+            // Detached: an explicit cancel byte ends its wait, while closing
+            // the receiver releases a blocked send.
             std::thread::Builder::new()
                 .name("harness-stdin".into())
                 .spawn(move || {
@@ -217,8 +217,14 @@ mod reader {
                 spare,
                 current: Vec::new(),
                 offset: 0,
-                _cancel: cancel,
+                cancel,
+                _cancel_reader: cancel_reader,
             })
+        }
+
+        #[cfg(test)]
+        pub(super) fn duplicate_cancel_writer(&self) -> io::Result<io::PipeWriter> {
+            self.cancel.try_clone()
         }
 
         pub(super) fn poll_read(
@@ -241,6 +247,13 @@ mod reader {
             buf.put_slice(&self.current[self.offset..self.offset + count]);
             self.offset += count;
             Poll::Ready(Ok(()))
+        }
+    }
+    impl Drop for Reader {
+        fn drop(&mut self) {
+            self.batches.close();
+            // Exactly one write to an otherwise empty private pipe.
+            let _ = self.cancel.write_all(&[0]);
         }
     }
 }
@@ -504,12 +517,28 @@ mod tests {
 
     #[test]
     fn a_dropped_reader_reads_nothing_written_after_it() -> io::Result<()> {
+        let inherited = std::cell::RefCell::new(None);
         let unread = byte_after_drop_unread(|read| {
             let runtime = runtime()?;
             let reader = runtime.block_on(async { super::reader::Reader::spawn(read) })?;
+            *inherited.borrow_mut() = Some(reader.duplicate_cancel_writer()?);
             Ok(Box::new(move || drop((reader, runtime))))
         })?;
         assert!(unread);
+        Ok(())
+    }
+
+    #[test]
+    fn negative_control_detects_hangup_delayed_by_an_inherited_writer() -> io::Result<()> {
+        let (mut read, mut write) = pipe()?;
+        let (cancelled, cancel) = io::pipe()?;
+        let _inherited = cancel.try_clone()?;
+        drop(cancel); // The former cancellation action does not produce HUP.
+        write.write_all(b"x")?;
+        assert_eq!(
+            super::reader::read_until_cancelled(&mut read, &cancelled, &mut [0; 1])?,
+            Some(1),
+        );
         Ok(())
     }
 
