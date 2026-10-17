@@ -63,26 +63,84 @@ impl Credentials {
                 return Ok(Some(key));
             }
         }
-        Ok(present(self.api_keys.get(provider).cloned()))
+        Ok(self
+            .api_keys
+            .get(provider)
+            .map(String::as_str)
+            .filter(|key| usable(key))
+            .map(owned))
     }
 
     /// Reads configured keys from a JSON credential file. Missing files mean no keys.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file(path: &std::path::Path) -> Result<Self> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice::<CredentialFile>(&bytes)
-                .map(|file| Self::explicit(file.api_keys))
-                .map_err(|_| super::invalid("invalid provider credential file")),
+            Ok(bytes) => Self::from_json(&bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(Self::explicit(BTreeMap::new()))
             }
             Err(_) => Err(super::invalid("cannot read provider credential file")),
         }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn from_json(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice::<CredentialFile>(bytes)
+            .map(|file| Self::explicit(file.api_keys))
+            .map_err(|_| super::invalid(INVALID_FILE))
+    }
+
+    /// Fuzz entry: loading any credential file keeps native sources disabled, preserves
+    /// configured keys exactly, round-trips, and never echoes key material in errors.
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+    #[doc(hidden)]
+    pub fn assert_file_invariants(input: &[u8]) {
+        let (secret, document) = oracle::case(input);
+        let vocabulary = super::invalid(INVALID_FILE).to_string();
+        if let Err(violation) = oracle::check(&document, &secret, &[&vocabulary], &load) {
+            panic!("credential file oracle: {violation}");
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const INVALID_FILE: &str = "invalid provider credential file";
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+#[path = "../../harness/src/search/config/credential_oracle.rs"]
+mod oracle;
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+fn load(document: &[u8]) -> std::result::Result<oracle::Loaded, String> {
+    let credentials = Credentials::from_json(document).map_err(|error| error.to_string())?;
+    let resolved = credentials
+        .api_keys
+        .keys()
+        .map(|name| Ok((name.clone(), credentials.api_key(name)?)))
+        .collect::<Result<_>>()
+        .map_err(|error| error.to_string())?;
+    Ok(oracle::Loaded {
+        encoded: serde_json::to_vec(&serde_json::json!({ "api_keys": credentials.api_keys }))
+            .map_err(|error| error.to_string())?,
+        keys: credentials.api_keys.clone(),
+        native: credentials.native.is_some(),
+        resolved,
+    })
 }
 
 fn present(key: Option<String>) -> Option<String> {
-    key.filter(|key| !key.trim().is_empty())
+    key.filter(|key| usable(key))
+}
+
+fn usable(key: &str) -> bool {
+    !key.trim().is_empty()
+}
+
+/// The single copy of a configured key out of its configuration.
+fn owned(key: &str) -> String {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    tests::CONFIGURED_COPIES.with(|copies| copies.set(copies.get() + 1));
+    key.to_owned()
 }
 
 /// The only reader of host credential state. Test builds compile just the isolated

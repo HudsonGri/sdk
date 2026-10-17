@@ -9,4 +9,6 @@ fuzz_target!(|data: &[u8]| {
         .build()
         .unwrap();
     runtime.block_on(support::check(data));
+    // The same bytes also drive the search configuration loader's credential oracle.
+    acyclic_harness::search::SearchConfig::assert_file_invariants(data);
 });

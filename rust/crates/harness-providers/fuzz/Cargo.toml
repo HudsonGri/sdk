@@ -19,3 +19,10 @@ path = "fuzz_targets/provider_stream.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "credential_file"
+path = "fuzz_targets/credential_file.rs"
+test = false
+doc = false
+bench = false

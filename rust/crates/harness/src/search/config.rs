@@ -112,13 +112,30 @@ impl SearchConfig {
     /// Reads configured provider and keys from JSON. Missing configuration means none.
     pub fn from_file(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice::<SearchFile>(&bytes)
-                .map(|file| Self::explicit(file.provider, file.api_keys))
-                .map_err(|_| Error::Invalid("invalid search configuration".into())),
+            Ok(bytes) => Self::from_json(&bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(Self::explicit(SearchBackend::default(), BTreeMap::new()))
             }
             Err(_) => Err(Error::Storage("cannot read search configuration".into())),
+        }
+    }
+
+    fn from_json(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice::<SearchFile>(bytes)
+            .map(|file| Self::explicit(file.provider, file.api_keys))
+            .map_err(|_| Error::Invalid(INVALID_CONFIGURATION.into()))
+    }
+
+    /// Fuzz entry: loading any search configuration keeps native sources disabled, preserves
+    /// configured keys exactly, round-trips, and never echoes key material in errors.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn assert_file_invariants(input: &[u8]) {
+        let (secret, document) = credential_oracle::case(input);
+        let vocabulary = Error::Invalid(INVALID_CONFIGURATION.into()).to_string();
+        if let Err(violation) = credential_oracle::check(&document, &secret, &[&vocabulary], &load)
+        {
+            panic!("search configuration oracle: {violation}");
         }
     }
 
@@ -155,6 +172,31 @@ impl SearchConfig {
         };
         Ok(Some(provider))
     }
+}
+
+const INVALID_CONFIGURATION: &str = "invalid search configuration";
+
+#[cfg(any(test, feature = "test-support"))]
+mod credential_oracle;
+
+#[cfg(any(test, feature = "test-support"))]
+fn load(document: &[u8]) -> std::result::Result<credential_oracle::Loaded, String> {
+    let config = SearchConfig::from_json(document).map_err(|error| error.to_string())?;
+    let id = config.provider.id();
+    let resolved = [(
+        id.to_owned(),
+        config.key().map_err(|error| error.to_string())?,
+    )]
+    .into();
+    Ok(credential_oracle::Loaded {
+        encoded: serde_json::to_vec(
+            &serde_json::json!({ "provider": id, "api_keys": config.api_keys }),
+        )
+        .map_err(|error| error.to_string())?,
+        keys: config.api_keys.clone(),
+        native: config.native.is_some(),
+        resolved,
+    })
 }
 
 #[cfg(not(test))]
