@@ -23,7 +23,7 @@ fn scopes(root: &crate::NativeMaterializationWork, depth: u8) -> crate::NativeMa
     work
 }
 
-fn model<const BROKEN: bool>(depth: u8, cancel: bool) {
+fn model(depth: u8, cancel: bool) {
     loom::model(move || {
         let root_cancel = crate::CancellationToken::new();
         let caller = crate::CancellationToken::new();
@@ -54,9 +54,7 @@ fn model<const BROKEN: bool>(depth: u8, cancel: bool) {
         let worker = loom::thread::spawn(move || {
             let mut accounting = KernelAccounting::native(&worker_work, &worker_caller);
             ready.send(()).unwrap();
-            DROP_UNDER_LEAF.with(|flag| flag.set(BROKEN));
             let owner = accounting.claim_owned(1, 1);
-            DROP_UNDER_LEAF.with(|flag| flag.set(false));
             claimed.send(owner.is_ok()).unwrap();
             let _ = accounting.record_completed(WorkCounters {
                 bytes_copied: 1,
@@ -100,7 +98,7 @@ fn model<const BROKEN: bool>(depth: u8, cancel: bool) {
 fn boundaries_keep_storage_exclusive_snapshots_coherent_and_completed_work_recorded() {
     for depth in [0, 2] {
         for cancel in [false, true] {
-            model::<false>(depth, cancel);
+            model(depth, cancel);
         }
     }
 }
