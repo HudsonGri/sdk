@@ -349,7 +349,18 @@ pub(crate) fn read_dir_held<W: NativeHostWork>(
     )?;
     // The kernel writes each refill into the capacity; records are parsed
     // only from the prefix it wrote, so the storage is never zero-filled.
+    #[cfg(test)]
+    let extra = if super::reader_work::take_extra() {
+        Some(buffer::<u8, _>(17, work)?)
+    } else {
+        None
+    };
     let (buffer, allocation) = buffer::<u64, _>(HostStatReader::BUFFER_BYTES / 8, work)?;
+    #[cfg(test)]
+    if let Some((storage, allocation)) = extra {
+        drop(storage);
+        work.release(allocation)?;
+    }
     #[cfg(test)]
     let buffer = super::reader_work::storage(buffer);
     Ok((

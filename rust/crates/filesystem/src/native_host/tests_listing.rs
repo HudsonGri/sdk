@@ -271,3 +271,59 @@ fn measure_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+#[test]
+fn listing_allocation_count_and_peak_are_exact() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let entries = vec![(0, 3); 10];
+    populate(directory.path(), &entries)?;
+    let held = Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
+    let run = || -> Result<WorkCounters, Box<dyn std::error::Error>> {
+        let work =
+            NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .map_err(|(cause, _)| cause)?;
+        let (mut reader, allocation) = read_dir_held(&held, &mut &work)?;
+        let mut count = 0;
+        while let Some((entry, guard)) = reader.next(&mut &work)? {
+            count += 1;
+            drop(entry);
+            drop(guard);
+        }
+        assert_eq!(count, 10);
+        drop(reader);
+        drop(allocation);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
+        Ok(work.receipt())
+    };
+    let expected_peak = NativeMaterializationWork::accounting_state_bytes()
+        + HostStatReader::BUFFER_BYTES as u64
+        + 7 * std::mem::size_of::<NativeUnit>() as u64;
+    let work = run()?;
+    assert_eq!(work.allocation_operations, 12);
+    assert_eq!(work.peak_allocation_bytes, expected_peak);
+    let broken = reader_work::adding_allocation(run)?;
+    assert_eq!(broken.allocation_operations, 13);
+    // The added buffer is live at the 64 KiB buffer's allocator call, then retired.
+    assert_eq!(
+        broken.peak_allocation_bytes,
+        NativeMaterializationWork::accounting_state_bytes()
+            + HostStatReader::BUFFER_BYTES as u64
+            + 17
+    );
+    assert_ne!(
+        (broken.allocation_operations, broken.peak_allocation_bytes),
+        (12, expected_peak)
+    );
+    Ok(())
+}
+
+#[test]
+fn directory_storage_has_no_zero_fill_site() {
+    let source = include_str!("reader.rs");
+    assert!(!source.contains(".resize("));
+    let broken = format!("{source}\nbuffer.resize(8192, 0);");
+    assert!(broken.contains(".resize("));
+}

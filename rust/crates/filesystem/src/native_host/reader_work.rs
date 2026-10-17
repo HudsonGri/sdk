@@ -53,3 +53,14 @@ pub(crate) fn examined(bulk: bool) {
         0,
     ));
 }
+
+thread_local! { static EXTRA: Cell<bool> = const { Cell::new(false) }; }
+pub(crate) fn take_extra() -> bool {
+    EXTRA.replace(false)
+}
+pub(crate) fn adding_allocation<T>(run: impl FnOnce() -> T) -> T {
+    EXTRA.set(true);
+    let result = run();
+    EXTRA.set(false);
+    result
+}
