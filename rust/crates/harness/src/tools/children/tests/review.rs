@@ -72,6 +72,90 @@ async fn retained_bodies_cannot_block_wait_control_or_archive() {
     assert!(history.files.iter().any(|file| file.bytes.len() == 3072));
 }
 
+#[tokio::test]
+async fn lifecycle_selection_stays_constant_after_more_history_than_the_attachment_bound() {
+    let files = files().await;
+    let reference = Component::new("worker").unwrap();
+    let operation = OperationId::new();
+    let task = TaskId::from_bytes([7; 16]);
+    publish(&files, &reference, ChildFile::Request, b"work", operation)
+        .await
+        .unwrap();
+    for turn in 1..=32 {
+        if turn > 1 {
+            publish(
+                &files,
+                &reference,
+                ChildFile::Inbox(Component::new(format!("input-{turn}")).unwrap()),
+                b"more",
+                operation,
+            )
+            .await
+            .unwrap();
+        }
+        let status = ChildStatus {
+            task,
+            state: ChildState::Running,
+            settled: false,
+            inputs: turn,
+        };
+        for (kind, bytes) in [
+            (ChildFile::Status, serde_json::to_vec(&status).unwrap()),
+            (
+                ChildFile::Result(turn),
+                serde_json::to_vec(&crate::task_volume::ChildTurnResult {
+                    task,
+                    turn,
+                    outcome: crate::Outcome::Cancelled,
+                })
+                .unwrap(),
+            ),
+            (
+                ChildFile::Status,
+                serde_json::to_vec(&ChildStatus {
+                    settled: true,
+                    ..status
+                })
+                .unwrap(),
+            ),
+        ] {
+            let generation = files.inner.head().await.unwrap();
+            files
+                .inner
+                .append(
+                    generation,
+                    &FileValue::new(
+                        FileKey::Child {
+                            reference: reference.clone(),
+                            file: kind,
+                        },
+                        bytes,
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        let head = files.inner.child_lifecycle(Some(&reference)).await.unwrap();
+        assert_eq!(head.files.len(), 2);
+        let result = super::super::files::follow(&files, &reference, limits(), false, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["result"]["turn"], turn);
+    }
+    assert!(matches!(
+        files
+            .observe_files(
+                Query::Child(reference),
+                None,
+                limits().attachments,
+                limits().render_bytes as usize
+            )
+            .await,
+        Err(crate::task_volume::Error::LimitExceeded)
+    ));
+}
+
 async fn recovery(ignore_selection: bool) -> (Value, Value) {
     let provider = Arc::new(MemoryStream::default());
     let files = files_with(provider.clone()).await;
