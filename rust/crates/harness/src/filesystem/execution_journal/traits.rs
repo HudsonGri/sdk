@@ -186,12 +186,15 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_validated(operation, None, key, event, Some(&local))
-                    .await;
+                let result = async {
+                    self.append_validated(operation, None, key, event, Some(&local))
+                        .await?;
+                    Ok(())
+                }
+                .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
-                return result.map(|_| ());
+                return result;
             }
             let span = obs_span!("acyclic.harness.journal.append");
             traced(span, async move {
