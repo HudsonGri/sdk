@@ -10,7 +10,7 @@ use crate::{
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde_json::Value;
 
-type Files = TaskFiles<dyn StreamProvider>;
+type Files = TaskFiles<acyclic_stream::LocalStream>;
 
 pub(super) async fn state(
     files: &Files,

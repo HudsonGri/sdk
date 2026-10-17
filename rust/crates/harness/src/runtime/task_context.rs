@@ -134,6 +134,16 @@ impl TaskContext {
         Ok(())
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn require_ordinary_metadata(&self) -> Result<()> {
+        if self.native_custody.is_some() {
+            return Err(Error::Unsupported(
+                "ordinary task files require ordinary ownership".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn copy_with_scope(&self, scope: RuntimeScope) -> Self {
         Self {
             harness: Arc::clone(&self.harness),

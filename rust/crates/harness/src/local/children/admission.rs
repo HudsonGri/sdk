@@ -13,9 +13,9 @@ use acyclic_fs::facade::FsWork as _;
 use acyclic_stream::StreamProvider;
 
 impl LocalHarness {
-    pub(in crate::local) async fn admit_child_request(
+    pub(in crate::local) async fn admit_child_request<P: StreamProvider + ?Sized>(
         &self,
-        files: &TaskFiles<dyn StreamProvider>,
+        files: &TaskFiles<P>,
         file: &FileValue,
     ) -> Result<(TaskId, workspace::View)> {
         let FileKey::Child {

@@ -35,6 +35,7 @@ mod compact;
 mod compaction;
 mod config;
 mod context;
+mod files;
 mod inheritance;
 mod owner;
 mod owner_record;
@@ -61,7 +62,7 @@ pub type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
-    task_files: Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
@@ -91,22 +92,6 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
-    /// Publishes pending mount writes and awaits physical mount retirement.
-    /// Reopening after this completes can immediately acquire the destination.
-    pub async fn close(self) -> Result<()> {
-        #[cfg(feature = "native-execution")]
-        if let Some(workspace) = &self.workspace {
-            for (_, mount) in workspace.mounts.mounts() {
-                if let Some(source) = &mount.view.source {
-                    let native = source.native().await;
-                    if let Some(native) = native.as_ref() {
-                        native.unmount().await?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
@@ -217,8 +202,9 @@ impl LocalHarness {
             // Retain the existing owned WAL instead of reopening/checkpointing it
             // for every transaction. Embedded bind() retains shared-store semantics.
             #[cfg(feature = "native-execution")]
-            let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
-                .map_err(storage)?;
+            let store =
+                acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+                    .map_err(storage)?;
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
@@ -341,9 +327,7 @@ impl LocalHarness {
     }
 
     /// Trusted host's task-file volume; clients render its bounded live queries.
-    pub fn task_files(
-        &self,
-    ) -> &Arc<crate::task_volume::TaskFiles<dyn acyclic_stream::StreamProvider>> {
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>> {
         &self.task_files
     }
 

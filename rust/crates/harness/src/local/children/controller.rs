@@ -11,7 +11,7 @@ use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use futures::{FutureExt as _, StreamExt as _, stream::FuturesUnordered};
 use std::collections::{BTreeMap, BTreeSet};
 
-type Files = TaskFiles<dyn StreamProvider>;
+type Files = TaskFiles<acyclic_stream::LocalStream>;
 
 mod delivery;
 mod draining;
