@@ -7,27 +7,30 @@ use loom::{
     thread,
 };
 
-fn effects(broken: bool, assert_property: bool) {
+fn effects(broken: bool, assert_property: bool, concurrent: bool) {
     let signal = acyclic_fs::CancellationToken::new();
     let cancellation = acyclic_fs::CancellationToken::new();
     let drained = acyclic_fs::CancellationToken::new();
     let first = Arc::new(AtomicBool::new(false));
-    let second = Arc::new(AtomicBool::new(false));
+    let second = (!concurrent).then(|| Arc::new(AtomicBool::new(false)));
     let parent_done = Arc::new(AtomicBool::new(false));
     let mut jobs: FuturesUnordered<BoxProviderFuture<'static, Result<()>>> =
         FuturesUnordered::new();
     let wake = signal.clone();
     let saved = first.clone();
     jobs.push(Box::pin(async move {
-        wake.cancelled().await;
+        if concurrent {
+            wake.cancelled().await;
+        }
         saved.store(true, Ordering::Release);
         Ok(())
     }));
-    let saved = second.clone();
-    jobs.push(Box::pin(async move {
-        saved.store(true, Ordering::Release);
-        Ok(())
-    }));
+    if let Some(saved) = second.clone() {
+        jobs.push(Box::pin(async move {
+            saved.store(true, Ordering::Release);
+            Ok(())
+        }));
+    }
     let stop = cancellation.clone();
     let fence = drained.clone();
     let finished = parent_done.clone();
@@ -45,18 +48,22 @@ fn effects(broken: bool, assert_property: bool) {
         finished.store(cancelled, Ordering::Release);
         Ok(())
     };
-    let publisher = thread::spawn(move || signal.cancel());
+    let publisher = concurrent.then(|| thread::spawn(move || signal.cancel()));
     if broken {
         crate::task_volume::model_checking::set_fault(
             crate::task_volume::model_checking::Fault::DropSiblingEffects,
         );
     }
     loom::future::block_on(Box::pin(finish(parent, &mut jobs, &cancellation, &drained)));
-    publisher.join().unwrap();
+    if let Some(publisher) = publisher {
+        publisher.join().unwrap();
+    }
     if assert_property {
         assert!(
             first.load(Ordering::Acquire)
-                && second.load(Ordering::Acquire)
+                && second
+                    .as_ref()
+                    .is_none_or(|saved| saved.load(Ordering::Acquire))
                 && parent_done.load(Ordering::Acquire)
                 && jobs.is_empty(),
             "controller returned before sibling effect futures drained"
@@ -64,10 +71,12 @@ fn effects(broken: bool, assert_property: bool) {
     }
 }
 
-#[test]
-fn controller_errors_drain_all_siblings_and_release_the_parent_completion_fence() {
-    loom::model(|| effects(false, true));
-    let failure = std::panic::catch_unwind(|| loom::model(|| effects(true, true)))
+// A ready sibling touches no external state: loop completeness is independent
+// of the pending effect's wakeup. Exhaust them separately instead of multiplying
+// their schedules; both still run the production finish and cancellation paths.
+fn check(concurrent: bool) {
+    loom::model(move || effects(false, true, concurrent));
+    let failure = std::panic::catch_unwind(|| loom::model(move || effects(true, true, concurrent)))
         .expect_err("dropped siblings were not detected");
     let message = failure
         .downcast_ref::<String>()
@@ -78,5 +87,15 @@ fn controller_errors_drain_all_siblings_and_release_the_parent_completion_fence(
         message.contains("controller returned before sibling effect futures drained"),
         "unexpected negative control: {message}"
     );
-    loom::model(|| effects(true, false));
+    loom::model(move || effects(true, false, concurrent));
+}
+
+#[test]
+fn controller_error_waits_for_the_concurrent_effect_and_parent_completion_fence() {
+    check(true);
+}
+
+#[test]
+fn controller_error_drains_every_ready_sibling_before_releasing_the_parent() {
+    check(false);
 }
