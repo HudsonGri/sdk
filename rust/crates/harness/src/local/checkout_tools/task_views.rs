@@ -61,7 +61,10 @@ impl CheckoutTools {
                 let view = self
                     .fork_task(candidate, self.workspace.view(), owner)
                     .await?;
-                let tools = Arc::new(self.mount_task_view(view, owner).await?);
+                let tools = Arc::new(
+                    self.mount_task_view(view, owner, None, &self.signed)
+                        .await?,
+                );
                 state.children.insert(candidate, Arc::clone(&tools));
                 return Ok((candidate, Some(tools)));
             }
@@ -96,7 +99,7 @@ impl CheckoutTools {
         // this durable fork already. Only the winner constructs a native mount.
         serialized(&self.state, async |mut state| {
             cached_task(&mut state.children, task, None, &(), async |_| {
-                self.mount_task_view(view, owner).await
+                self.mount_task_view(view, owner, None, &self.signed).await
             })
             .await
             .map(Some)
@@ -172,10 +175,12 @@ impl CheckoutTools {
         Ok(view)
     }
 
-    async fn mount_task_view(
+    pub(super) async fn mount_task_view(
         &self,
         view: workspace::View,
         owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
+        mounts: Option<Arc<workspace::Mounts>>,
+        signed: &Scope,
     ) -> Result<Self> {
         // Mount retirement may outlive the previous owner. Each
         // live mount needs its own namespace so retiring it cannot
@@ -195,7 +200,7 @@ impl CheckoutTools {
                 view.workspace().id(),
                 Arc::clone(&self.workspace.mounts),
             ))),
-            mounts: Arc::clone(&self.workspace.mounts),
+            mounts: mounts.unwrap_or_else(|| Arc::clone(&self.workspace.mounts)),
             context_line: self.workspace.context_line().into(),
             path: path.clone(),
             fresh: false,
@@ -205,7 +210,11 @@ impl CheckoutTools {
             identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
             filesystem: self.workspace.filesystem.clone(),
             store: self.workspace.store.clone(),
-            mount_authority: self.workspace.mount_authority.clone(),
+            mount_authority: self
+                .workspace
+                .mount_authority
+                .as_ref()
+                .and_then(|(issuer, _)| signed.agent().map(|agent| (Arc::clone(issuer), agent))),
         };
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());
@@ -215,7 +224,7 @@ impl CheckoutTools {
         workspace.path = path;
         workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
         workspace.mounted = Some(mounted);
-        workspace.mounts = self.workspace.mounts_at(&workspace.path).await?;
+        workspace.mounts = workspace.mounts_at(&workspace.path).await?;
         workspace.context_line = workspace.mounts.context_line();
         reconciliation::recover_pending(
             &workspace,
@@ -236,7 +245,7 @@ impl CheckoutTools {
         let workspace = Arc::new(workspace);
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         Ok(Self {
-            signed: self.signed.clone(),
+            signed: signed.clone(),
             workspace: Arc::clone(&workspace),
             read_grant: self.read_grant.clone(),
             write_grant: self.write_grant.clone(),

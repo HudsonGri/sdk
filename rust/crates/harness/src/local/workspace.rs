@@ -125,6 +125,81 @@ impl LocalWorkspace {
         }
         Ok(Arc::new(mounts))
     }
+    pub(super) async fn created_mounts(
+        &self,
+        project: &VolumeRef,
+        context: &crate::runtime::ToolContext,
+    ) -> Result<(Arc<Mounts>, Scope)> {
+        let access = context
+            .task()
+            .scope()
+            .created_access
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Unauthorized("child mounts require authenticated allocations".into())
+            })?;
+        let mut private = None;
+        for binding in &access.content {
+            if binding.volume.class() != VolumeClass::AgentPrivate {
+                continue;
+            }
+            let granted = [VolumeOperation::Read, VolumeOperation::Write]
+                .into_iter()
+                .map(|operation| binding.volume.capability(operation, &mut None))
+                .collect::<Result<Vec<_>>>()?
+                .iter()
+                .all(|grant| context.effective_scope().grants().contains(grant));
+            if granted && private.replace(binding.volume.clone()).is_some() {
+                return Err(Error::Unauthorized(
+                    "child private mount is ambiguous".into(),
+                ));
+            }
+        }
+        let private = private.ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
+        let crate::conversation::VolumeOwner::Agent(agent) = private.owner() else {
+            return Err(Error::FilesystemAccessConfiguration("child mount owner"));
+        };
+        let agent = *agent;
+        let (issuer, _) = self
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?;
+        // The authenticated allocation and live task owner authorize these new
+        // volumes. Retain exactly the caller's ceiling in their signed binding.
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("child mount owner"))?;
+        owner.validate_scope(context.effective_scope(), None)?;
+        let signed = issuer.issue(
+            "child-checkout",
+            context.effective_scope().grants(),
+            Some(agent),
+            None,
+            &mut None,
+        )?;
+        // Bind auxiliary volumes outside the sparse projection. Linux's
+        // elevated mount helper cannot traverse an owner-only FUSE parent.
+        let root = self.mount_directory.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).map_err(storage)?;
+        let mut mounts = mounts::owner(
+            &root,
+            project,
+            None,
+            Some(("scratch".into(), private, None)),
+        )?;
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &root,
+            &mut mounts,
+            (issuer, agent),
+        )
+        .await?;
+        Ok((Arc::new(mounts), signed))
+    }
+
     #[cfg(all(test, feature = "native-execution", unix))]
     pub(super) async fn current(
         &self,
@@ -147,7 +222,7 @@ impl LocalWorkspace {
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
-        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
             super::checkout_tools::CheckoutTools::new(

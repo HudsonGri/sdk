@@ -11,6 +11,7 @@ use acyclic_stream::BoxProviderFuture;
 mod access;
 mod bash;
 mod capture;
+mod children;
 mod git;
 #[cfg(all(test, unix, not(acyclic_harness_loom)))]
 mod git_mount_tests;
@@ -30,7 +31,7 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -83,7 +84,7 @@ impl CheckoutTools {
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
-        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Self> {
         if workspace
             .filesystem
@@ -169,8 +170,9 @@ impl ToolExecutor for CheckoutTools {
         if !matches!(invocation.name.as_str(), "bash" | "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || !scope.grants().contains(&self.read_grant)
-            || !scope.grants().contains(&self.write_grant)
+            || (!(scope.grants().contains(&self.read_grant)
+                && scope.grants().contains(&self.write_grant))
+                && self.child_project(context)?.is_none())
             || !scope.grants().contains(if invocation.name == "bash" {
                 "tool:call:bash"
             } else {
@@ -191,6 +193,13 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
+            let original = context
+                .as_ref()
+                .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            if let Some(project) = self.child_project(original)? {
+                let selected = self.child_checkout(original, project).await?;
+                return selected.execute(invocation, context).await;
+            }
             if !self.selected {
                 let context = context
                     .as_ref()
@@ -296,7 +305,10 @@ impl ToolExecutor for CheckoutTools {
                         invocation.operation_id,
                         0,
                         PublicationPermit::Unrestricted,
-                        Some(Arc::clone(owner)),
+                        Some((
+                            context.task().ordinary_journal_owner::<LocalStream>()?,
+                            false,
+                        )),
                     )
                     .await?;
                     let input =
@@ -306,6 +318,16 @@ impl ToolExecutor for CheckoutTools {
                             .await?;
                     let (result, mut state, mut files) =
                         self.bash(input, maximum, state, files).await?;
+                    if !result.as_ref().is_ok_and(|result| {
+                        result
+                            .value
+                            .get("stop")
+                            .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
+                    }) {
+                        return Err(Error::Indeterminate(invocation.operation_id));
+                    }
+                    let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
+                    publication.verify(true, &mut None).await?;
                     workspace::volumes::sync(&state.mounts).await?;
                     let State {
                         active, watcher, ..
@@ -317,10 +339,10 @@ impl ToolExecutor for CheckoutTools {
                         invocation.operation_id,
                         1,
                         PublicationPermit::Unrestricted,
-                        Some(Arc::clone(owner)),
+                        Some((Arc::clone(&publication), true)),
                     )
                     .await?;
-                    owner.verify_owner(None)?.await?;
+                    publication.verify(true, &mut None).await?;
                     if let Ok(result) = &result {
                         files.finish(result).await?;
                     }

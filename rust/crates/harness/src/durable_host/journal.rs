@@ -406,6 +406,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             | ExecutionEvent::ContextCompacted { .. }
             | ExecutionEvent::ToolStarted { .. } => JournalWrite::Fresh,
             ExecutionEvent::Model { .. }
+            | ExecutionEvent::ModelStopped { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
         })
