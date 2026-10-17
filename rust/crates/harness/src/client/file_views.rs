@@ -24,7 +24,7 @@ pub struct QueryViewLimits {
 }
 
 /// One query's materialized files; snapshots and deltas never concatenate text.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct FileViews {
     pub(super) cursor: Cursor,
     pub(super) files: Files,
@@ -35,6 +35,23 @@ pub struct FileViews {
     segments: usize,
     pub(super) bytes: u64,
     pub(super) window: bool,
+}
+
+impl PartialEq for FileViews {
+    fn eq(&self, other: &Self) -> bool {
+        // A snapshot uses (cut, ordinal), while follow uses (publication, 0).
+        // Compare their observable ordering, retaining both index invariants.
+        self.cursor == other.cursor
+            && self.files == other.files
+            && self.stream_order == other.stream_order
+            && self.limits == other.limits
+            && self.segments == other.segments
+            && self.bytes == other.bytes
+            && self.window == other.window
+            && self.task_streams.values().eq(other.task_streams.values())
+            && self.stream_index_consistent()
+            && other.stream_index_consistent()
+    }
 }
 
 fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> Result<()> {
@@ -50,6 +67,19 @@ fn disposable(key: &FileKey) -> bool {
 }
 
 impl FileViews {
+    fn stream_index_consistent(&self) -> bool {
+        self.stream_positions.len() == self.task_streams.len()
+            && self.stream_positions.len() == self.stream_order.len()
+            && self
+                .task_streams
+                .iter()
+                .all(|((task, position, ordinal), key)| {
+                    matches!(key, FileKey::Task { task: owner, .. } if owner == task)
+                        && stream_key(key)
+                        && self.files.contains_key(key)
+                        && self.stream_positions.get(key) == Some(&(*position, *ordinal))
+                })
+    }
     /// Builds a complete replacement without mutating an existing fold.
     pub fn snapshot(snapshot: HeadSnapshot, limits: QueryViewLimits) -> Result<Self> {
         Self::build(snapshot, limits, true)
@@ -468,3 +498,6 @@ fn stream_key(key: &FileKey) -> bool {
         }
     )
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
