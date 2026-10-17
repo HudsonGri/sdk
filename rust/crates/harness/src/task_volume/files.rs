@@ -77,6 +77,36 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         self.inner.append(expected, file).await
     }
 
+    /// Publishes an owner-produced immutable file at the current head. An
+    /// identical existing file is success, so retries and racing publishers of
+    /// the same owner bytes converge, and a return means the file is visible.
+    pub(crate) async fn publish_owned(
+        &self,
+        file: &FileValue,
+        work: crate::NativeWork<'_>,
+    ) -> super::Result<()> {
+        loop {
+            let head = self.inner.head().await?;
+            match self
+                .inner
+                .append_if(head, file, Vec::new(), None, work)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                #[cfg(acyclic_harness_loom)]
+                Err(Error::Conflict(_))
+                    if super::model_checking::enabled(
+                        super::model_checking::Fault::AbandonConflictedPublication,
+                    ) =>
+                {
+                    return Ok(());
+                }
+                Err(Error::Conflict(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Reads the authorized private volume at one exact query cut.
     pub async fn snapshot(
         &self,

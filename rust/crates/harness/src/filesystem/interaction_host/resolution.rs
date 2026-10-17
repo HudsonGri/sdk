@@ -1,5 +1,6 @@
 use super::*;
 use crate::executor::with_history_io;
+use crate::interaction::ApprovalDecisionFile;
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -87,11 +88,22 @@ where
                 InteractionOutcome::Approved {} | InteractionOutcome::Declined {}
             );
             let stored = self.read_resolution_file(id, detail, None).await?;
-            return if let Some(bytes) = stored
-                && crate::contract::json_from_slice::<InteractionResponse>(&bytes)
-                    .map_err(|error| Error::Storage(error.to_string()))?
-                    == response
-            {
+            let same = match (stored, &response) {
+                (Some(bytes), InteractionResponse::Approval { approved, reason }) if detail => {
+                    let stored: ApprovalDecisionFile = crate::contract::json_from_slice(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    stored.principal == responder.id()
+                        && stored.approved() == *approved
+                        && &stored.reason == reason
+                }
+                (Some(bytes), _) if !detail => {
+                    crate::contract::json_from_slice::<InteractionResponse>(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?
+                        == response
+                }
+                _ => false,
+            };
+            return if same {
                 Ok(())
             } else {
                 Err(Error::Conflict("interaction was already resolved".into()))
@@ -127,19 +139,31 @@ where
             .await?
             .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
         request.validate_response(&response, &mut None)?;
-        let staged = self
-            .stage_answer(id, expected_version, operation_id, &response, None)
-            .await?;
         let (outcome, detail) = match response {
-            InteractionResponse::Approval { approved: true, .. } => {
-                (InteractionOutcome::Approved {}, Some(staged))
+            InteractionResponse::Approval { approved, reason } => {
+                let decision = ApprovalDecisionFile::new(
+                    scope.id(),
+                    ticket.request.descriptor().sha256(),
+                    expected_version,
+                    approved,
+                    reason,
+                )?;
+                let staged = self
+                    .stage_answer(id, expected_version, operation_id, &decision, None)
+                    .await?;
+                let outcome = if approved {
+                    InteractionOutcome::Approved {}
+                } else {
+                    InteractionOutcome::Declined {}
+                };
+                (outcome, Some(staged))
             }
-            InteractionResponse::Approval {
-                approved: false, ..
-            } => (InteractionOutcome::Declined {}, Some(staged)),
-            _ => (
+            response => (
                 InteractionOutcome::Answered {
-                    answer: Box::new(staged),
+                    answer: Box::new(
+                        self.stage_answer(id, expected_version, operation_id, &response, None)
+                            .await?,
+                    ),
                 },
                 None,
             ),
@@ -261,20 +285,15 @@ where
         let (request, retained, custody) =
             with_history_io(io, |work| ticket.validate_request_bytes(&bytes, work))?;
         let request_hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-        let request = (request, custody, request_hold);
+        // The validated request stays held while its decision is checked.
+        let _request = (request, custody, request_hold);
         drop((bytes, hold));
         if let Some(detail) = &resolution.detail {
             let bytes = self.read_file(detail, io).await?;
             let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             super::content::admit_interaction(&bytes, io)?;
             with_history_io(io, |work| {
-                ticket.validate_decision_bytes(
-                    &request.0,
-                    &resolution.outcome,
-                    detail,
-                    &bytes,
-                    work,
-                )
+                ticket.validate_decision_bytes(resolution, None, detail, &bytes, work)
             })?;
         }
         Ok(())

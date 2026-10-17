@@ -45,13 +45,13 @@ where
         Ok(ticket)
     }
 
-    /// Stages an answer against its pinned interaction version.
-    pub async fn stage_answer(
+    /// Stages an answer or approval decision against its pinned interaction version.
+    pub async fn stage_answer<T: serde::Serialize>(
         &self,
         id: InteractionId,
         expected_version: u64,
         operation_id: OperationId,
-        response: &InteractionResponse,
+        response: &T,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
         if expected_version == 0 {
@@ -193,7 +193,7 @@ where
         }
     }
 
-    pub(super) async fn read_file(
+    pub(in crate::filesystem) async fn read_file(
         &self,
         reference: &FileRef,
         io: Option<&PreparationIo>,

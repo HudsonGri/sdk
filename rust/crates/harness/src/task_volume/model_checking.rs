@@ -21,6 +21,8 @@ pub enum Fault {
     IgnoreDeadline,
     /// Stop output on an unrelated task-file writer's generation advance.
     StopAfterGenerationConflict,
+    /// Report an owner publication done after losing its head race.
+    AbandonConflictedPublication,
 }
 
 loom::thread_local! {

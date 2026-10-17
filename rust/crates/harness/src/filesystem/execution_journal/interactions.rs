@@ -19,11 +19,12 @@ where
             owner.require_interaction_grant(&mut None)?;
             owner.verify(true, &mut None).await?;
         }
-        let result = host.resolve_latest(id, response, responder, owner).await;
+        host.resolve_latest(id, response, responder, owner).await?;
+        self.publish_approval_files(id, None).await?;
         if let Some(owner) = owner {
             owner.verify(true, &mut None).await?;
         }
-        result
+        Ok(())
     }
 
     pub(super) async fn open_interaction_with_io(
@@ -64,7 +65,7 @@ where
                     owner.verify(false, &mut work).await?;
                 }
                 return if original == interaction {
-                    Ok(())
+                    self.publish_approval_files(id, io).await
                 } else {
                     Err(reject(
                         crate::wire::ErrorCode::Conflict,
@@ -99,7 +100,7 @@ where
             owner.verify(false, &mut work).await?;
         }
         let result = match publication {
-            Ok(_) => Ok(()),
+            Ok(_) => self.publish_approval_files(id, io).await,
             Err(error)
                 if matches!(
                     error.code(),
@@ -115,7 +116,9 @@ where
                     (request_hold, original)
                 };
                 let result = match &original {
-                    Some(original) if original == interaction => Ok(()),
+                    Some(original) if original == interaction => {
+                        self.publish_approval_files(id, io).await
+                    }
                     Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
                         "interaction identity reused",
@@ -155,6 +158,13 @@ where
             )
         })?;
         let outcome = host.read_outcome(id, io).await?;
+        // A decision is visible to execution only after its file is published.
+        if matches!(
+            outcome,
+            Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {})
+        ) {
+            self.publish_approval_files(id, io).await?;
+        }
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }
