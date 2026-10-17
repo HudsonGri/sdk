@@ -1,7 +1,7 @@
 use acyclic_harness::{
     OperationId,
     client::{
-        TaskFileViews, CommandFileRoot, CommandSession, DEFAULT_COMMANDS_JSON, handle_tui_input,
+        CommandFileRoot, CommandSession, DEFAULT_COMMANDS_JSON, TaskFileViews, handle_tui_input,
     },
     task_volume::TaskVolume,
     tui::{
@@ -130,7 +130,7 @@ async fn help_pages_have_a_separate_followed_offset_from_the_transcript() {
         .iter()
         .map(|span| span.content.as_ref())
         .collect();
-    scroll_tui(&mut files, false, 5, maximum).await.unwrap();
+    scroll_tui(&mut files, -5, maximum).await.unwrap();
     assert_eq!(maximum - tui_scroll(&files).unwrap(), 5);
     let screen = renderer.screen_for(&files).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();

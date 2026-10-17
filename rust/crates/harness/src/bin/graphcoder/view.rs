@@ -90,18 +90,18 @@ pub async fn run(
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let effects = input.event(
-            event,
-            PromptBox::input_area(areas.prompt),
-            &mut viewport,
-            now,
-        );
+        let area = PromptBox::input_area(areas.prompt);
+        let page_rows = usize::from(areas.transcript.height);
+        // A flick or held PageUp is one input batch: one scroll, one frame.
+        let effects = client::input_burst(event, &mut events, page_rows, |event| {
+            input.event(event, area, &mut viewport, now)
+        })?;
         for effect in effects {
             client::file_tui_input(
                 &mut commands,
                 reader.as_ref(),
                 effect,
-                usize::from(areas.transcript.height),
+                page_rows,
                 maximum_scroll,
             )
             .await?;

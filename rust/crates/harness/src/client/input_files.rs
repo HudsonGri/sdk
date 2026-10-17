@@ -199,17 +199,8 @@ pub async fn file_tui_input<P: StreamProvider + ?Sized>(
     page_rows: usize,
     maximum_scroll: usize,
 ) -> Result<()> {
-    if let InputEffect::Host(
-        action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
-    ) = effect
-    {
-        return super::scroll_tui(
-            files,
-            action == crate::tui::Action::TranscriptUp,
-            page_rows,
-            maximum_scroll,
-        )
-        .await;
+    if let Some(rows) = super::transcript_motion(&effect, page_rows) {
+        return super::scroll_tui(files, rows, maximum_scroll).await;
     }
     handle_tui_input(files, reader, effect).await
 }

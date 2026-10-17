@@ -24,6 +24,8 @@ mod history;
 #[cfg(feature = "tui")]
 mod input_events;
 #[cfg(feature = "tui")]
+pub use input_events::{WHEEL_ROWS, coalesce_scrolls};
+#[cfg(feature = "tui")]
 mod input_keymap;
 #[cfg(feature = "tui")]
 mod key_decode;

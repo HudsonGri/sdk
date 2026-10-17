@@ -434,3 +434,67 @@ fn history_reload_invalidates_navigation_saved_by_edit_or_search()
     }
     Ok(())
 }
+
+#[test]
+fn wheel_notches_scroll_the_view_and_a_burst_coalesces_into_one_scroll() {
+    use acyclic_harness_tui::{WHEEL_ROWS, coalesce_scrolls};
+    let mut input = PromptInput::new(Editor::new("draft"));
+    input.editor.select_all();
+    let mut viewport = Viewport::default();
+    let area = Rect::new(0, 0, 8, 1);
+    let wheel = |kind| {
+        InputEvent::Mouse(MouseEvent {
+            kind,
+            column: 1,
+            row: 0,
+            modifiers: M::NONE,
+        })
+    };
+    let up = wheel(MouseEventKind::ScrollUp);
+    let down = wheel(MouseEventKind::ScrollDown);
+    // A notch over the prompt still moves the view, never the editor.
+    assert_eq!(
+        input.event(up.clone(), area, &mut viewport, 0),
+        vec![InputEffect::Scroll(WHEEL_ROWS)]
+    );
+    assert_eq!(
+        input.event(down.clone(), area, &mut viewport, 1),
+        vec![InputEffect::Scroll(-WHEEL_ROWS)]
+    );
+    assert_eq!(input.editor.text(), "draft");
+    assert_eq!(input.editor.selected_text(), "draft");
+    // Exact coalescing at N and 2N: one effect out, the net rows.
+    for notches in [16, 32] {
+        let burst: Vec<_> = (0..notches)
+            .flat_map(|at| {
+                let event = if at % 4 == 3 {
+                    down.clone()
+                } else {
+                    up.clone()
+                };
+                input.event(event, area, &mut viewport, at)
+            })
+            .collect();
+        assert_eq!(burst.len(), notches as usize);
+        let net = WHEEL_ROWS * (notches as isize / 2);
+        assert_eq!(coalesce_scrolls(burst), vec![InputEffect::Scroll(net)]);
+    }
+    // Negative control: a non-scroll effect splits runs and keeps its place.
+    assert_eq!(
+        coalesce_scrolls([
+            InputEffect::Scroll(3),
+            InputEffect::Scroll(3),
+            InputEffect::Quit,
+            InputEffect::Scroll(-3),
+        ]),
+        vec![
+            InputEffect::Scroll(6),
+            InputEffect::Quit,
+            InputEffect::Scroll(-3)
+        ]
+    );
+    assert_eq!(
+        coalesce_scrolls([InputEffect::Scroll(isize::MAX), InputEffect::Scroll(3)]),
+        vec![InputEffect::Scroll(isize::MAX)]
+    );
+}

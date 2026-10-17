@@ -46,7 +46,7 @@ impl Profile {
         if self.kitty {
             bytes.extend_from_slice(b"\x1b[?0u");
         }
-        for mode in [2026, 2027, 1004, 2004, 1049] {
+        for mode in [2026, 2027, 1004, 2004, 1049, 1006, 1002] {
             let state = if self.modes && (mode != 2027 || self.grapheme) {
                 2
             } else {
@@ -169,11 +169,11 @@ fn profile_detection_and_setup_matrix() -> Result<(), Box<dyn std::error::Error>
                 if profile.grapheme {
                     expected.extend_from_slice(b"\x1b[?2027h");
                 }
-                expected.extend_from_slice(b"\x1b[?1049h");
+                expected.extend_from_slice(b"\x1b[?1049h\x1b[?1006h\x1b[?1002h");
             }
             expected.extend_from_slice(b"hello");
             if profile.modes {
-                expected.extend_from_slice(b"\x18\x1b[?1049l");
+                expected.extend_from_slice(b"\x18\x1b[?1002l\x18\x1b[?1006l\x18\x1b[?1049l");
                 if profile.grapheme {
                     expected.extend_from_slice(b"\x18\x1b[?2027l");
                 }
@@ -184,7 +184,11 @@ fn profile_detection_and_setup_matrix() -> Result<(), Box<dyn std::error::Error>
             let mut parser: Processor = Processor::new();
             parser.advance(&mut term, &bytes);
             assert!(!term.mode().intersects(
-                TermMode::ALT_SCREEN | TermMode::FOCUS_IN_OUT | TermMode::BRACKETED_PASTE
+                TermMode::ALT_SCREEN
+                    | TermMode::FOCUS_IN_OUT
+                    | TermMode::BRACKETED_PASTE
+                    | TermMode::MOUSE_MODE
+                    | TermMode::SGR_MOUSE
             ));
             // Alternate-screen contents disappear; inline output remains.
             let first = term.grid()[Point::new(Line(0), Column(0))].c;
@@ -498,6 +502,59 @@ fn restore_is_reusable_and_preserves_permanent_and_unknown_modes() -> io::Result
     Ok(())
 }
 
+#[test]
+fn alternate_screen_reports_sgr_wheel_and_inline_keeps_native_scrolling() -> io::Result<()> {
+    let setup = |screen, modes: &[(u16, ModeState)]| -> io::Result<Vec<u8>> {
+        let mut caps = Capabilities::default();
+        caps.modes.insert(1049, ModeState::Reset);
+        caps.modes.extend(modes.iter().copied());
+        let mut bytes = Vec::new();
+        RestoreGuard::new(&mut bytes, &caps).setup(screen)?;
+        Ok(bytes)
+    };
+    let both = [(1006, ModeState::Reset), (1002, ModeState::Reset)];
+    // Alternate screen: SGR encoding before button-event reports, undone in
+    // reverse, so no legacy X10 report can ever precede the SGR switch.
+    assert_eq!(
+        setup(ScreenMode::Alternate, &both)?,
+        b"\x1b[?1049h\x1b[?1006h\x1b[?1002h\x18\x1b[?1002l\x18\x1b[?1006l\x18\x1b[?1049l"
+    );
+    // Inline: the terminal's own scrollback and selection keep the wheel.
+    assert_eq!(setup(ScreenMode::Inline, &both)?, b"");
+    // Negative controls: either mode alone would emit undecodable legacy
+    // reports or nothing useful, so neither is enabled.
+    for partial in [
+        [(1006, ModeState::Reset), (1002, ModeState::Unsupported)],
+        [(1006, ModeState::Unknown), (1002, ModeState::Reset)],
+    ] {
+        assert_eq!(
+            setup(ScreenMode::Alternate, &partial)?,
+            b"\x1b[?1049h\x18\x1b[?1049l"
+        );
+    }
+    // What the terminal then reports decodes to wheel notches, burst intact.
+    let mut decoder = Decoder::default();
+    decoder.feed(b"\x1b[<64;5;7M\x1b[<64;5;7M\x1b[<65;5;7M")?;
+    let kinds: Vec<_> = decoder
+        .take_events()
+        .into_iter()
+        .map(|event| match event {
+            InputEvent::Mouse(mouse) => Some((mouse.kind, mouse.column, mouse.row)),
+            _ => None,
+        })
+        .collect();
+    use acyclic_harness_tui::key_event::MouseEventKind::{ScrollDown, ScrollUp};
+    assert_eq!(
+        kinds,
+        [
+            Some((ScrollUp, 4, 6)),
+            Some((ScrollUp, 4, 6)),
+            Some((ScrollDown, 4, 6))
+        ]
+    );
+    Ok(())
+}
+
 /// A transient failure after an arbitrary byte, including inside a CSI.
 struct FailOnce {
     bytes: Vec<u8>,
@@ -527,7 +584,7 @@ impl Write for FailOnce {
 fn restored_modes(initial: u8, at: usize) -> (TermMode, TermMode) {
     let mut caps = Capabilities::default();
     let mut original = Vec::new();
-    for (index, mode) in [1004, 2004, 1049].into_iter().enumerate() {
+    for (index, mode) in [1004, 2004, 1049, 1006, 1002].into_iter().enumerate() {
         let set = initial & (1 << index) != 0;
         caps.modes.insert(
             mode,
@@ -562,8 +619,8 @@ fn restored_modes(initial: u8, at: usize) -> (TermMode, TermMode) {
 fn every_mode_subset_and_failure_boundary_restores() {
     // Exhaust every initial subset and byte boundary of setup AND teardown,
     // including a transient failure partway through a restoration sequence.
-    for initial in 0..8 {
-        for at in 0..65 {
+    for initial in 0..32 {
+        for at in 0..90 {
             let (before, after) = restored_modes(initial, at);
             assert_eq!(before, after, "initial={initial} failure_at={at}");
         }
@@ -588,7 +645,7 @@ proptest! {
     }
 
     #[test]
-    fn restore_after_arbitrary_failure(initial in 0u8..8, at in 0usize..65) {
+    fn restore_after_arbitrary_failure(initial in 0u8..32, at in 0usize..90) {
         let (before, after) = restored_modes(initial, at);
         prop_assert_eq!(after, before);
     }

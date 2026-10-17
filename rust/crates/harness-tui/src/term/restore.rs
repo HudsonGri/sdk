@@ -40,6 +40,16 @@ impl<W: Write> RestoreGuard<W> {
         }
         if screen == ScreenMode::Alternate {
             self.enable_mode(1049)?;
+            // The alternate screen has no native scrollback, so it owns the
+            // wheel: button-event reports (1002), SGR-encoded (1006) because
+            // the decoder reads only SGR. Encoding first, so no legacy report
+            // can precede it; neither without the other. Inline keeps the
+            // terminal's own wheel scrolling and selection.
+            let mutable = |mode| self.modes.get(&mode).is_some_and(|state| state.supported());
+            if mutable(1006) && mutable(1002) {
+                self.enable_mode(1006)?;
+                self.enable_mode(1002)?;
+            }
         }
         if let Err(error) = self.writer.flush() {
             let _ = self.restore();
