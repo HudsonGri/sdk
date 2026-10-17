@@ -1,6 +1,6 @@
 use super::*;
 
-fn shared_tail_append(copy: bool) -> (Spans, Spans, usize) {
+fn shared_tail_append(copy: bool, frozen: bool) -> (Spans, Spans, usize) {
     let mut spans = Spans::default();
     spans.push_content(
         Span {
@@ -9,6 +9,9 @@ fn shared_tail_append(copy: bool) -> (Spans, Spans, usize) {
         },
         false,
     );
+    if frozen {
+        spans.freeze();
+    }
     let snapshot = spans.clone();
     let suffix = Span {
         text: " suffix".into(),
@@ -24,16 +27,30 @@ fn shared_tail_append(copy: bool) -> (Spans, Spans, usize) {
 
 #[test]
 fn appending_after_a_snapshot_never_copies_the_shared_tail() {
-    let (actual, snapshot, copied) = shared_tail_append(false);
-    let (baseline, previous, redundant) = shared_tail_append(true);
-    assert_eq!(copied, 0);
-    assert_eq!(
-        redundant,
-        std::mem::size_of::<Contents>() + std::mem::size_of::<Span>()
-    );
-    assert_eq!(actual.to_vec(), baseline.to_vec());
-    assert_eq!(snapshot.to_vec(), previous.to_vec());
-    assert_eq!(snapshot.first().unwrap().text.as_str(), "retained");
+    for frozen in [false, true] {
+        let (actual, snapshot, copied) = shared_tail_append(false, frozen);
+        let (baseline, previous, redundant) = shared_tail_append(true, frozen);
+        assert_eq!(
+            copied,
+            if frozen {
+                std::mem::size_of::<Arc<Node>>()
+            } else {
+                0
+            }
+        );
+        assert_eq!(
+            redundant,
+            std::mem::size_of::<Contents>()
+                + if frozen {
+                    0
+                } else {
+                    std::mem::size_of::<Span>()
+                }
+        );
+        assert_eq!(actual.to_vec(), baseline.to_vec());
+        assert_eq!(snapshot.to_vec(), previous.to_vec());
+        assert_eq!(snapshot.first().unwrap().text.as_str(), "retained");
+    }
 }
 
 #[test]

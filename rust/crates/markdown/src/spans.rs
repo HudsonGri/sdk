@@ -179,6 +179,31 @@ impl Spans {
 
     pub(crate) fn push_content(&mut self, span: Span, forced: bool) {
         self.flush_tail();
+        let shared = self
+            .value
+            .as_ref()
+            .is_some_and(|value| Arc::strong_count(value) > 1);
+        #[cfg(test)]
+        let shared = shared && !COPY_SHARED_TAIL.get();
+        if shared {
+            // Only the immutable cursors survive this append. Construct the
+            // new tail directly instead of copying a Contents value whose
+            // tail and boundary flag would immediately be overwritten.
+            let old = self.data();
+            #[cfg(test)]
+            crate::work::copy(
+                std::mem::size_of::<Arc<Node>>()
+                    * (usize::from(old.prefix.is_some()) + usize::from(old.stop.is_some())),
+            );
+            let data = Contents {
+                prefix: old.prefix.clone(),
+                stop: old.stop.clone(),
+                tail: Some(Box::new(span)),
+                forced,
+            };
+            *self = Self::from_data(data);
+            return;
+        }
         let data = self.edit();
         data.tail = Some(Box::new(span));
         data.forced = forced;
