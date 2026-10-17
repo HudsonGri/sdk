@@ -19,6 +19,7 @@ pub(super) use rows::RESCAN_VISIBLE;
 #[derive(Hash, PartialEq, Eq)]
 enum Key {
     Leaf(u8, usize, usize),
+    #[cfg(test)]
     Join(usize, usize),
     Mask(usize, u64, usize),
     Suffix(usize, usize),
@@ -35,6 +36,7 @@ pub(in crate::inline_scan) struct Cache {
     targets: HashMap<(usize, usize), Arc<str>>,
     atoms: HashMap<(usize, usize), (usize, bool)>,
     last: usize,
+    last_join: Option<(usize, usize, usize)>,
     alternate: Option<(usize, usize)>,
     rendered: bool,
     #[cfg(test)]
@@ -66,6 +68,7 @@ impl Default for Cache {
             targets: HashMap::new(),
             atoms: HashMap::new(),
             last: 0,
+            last_join: None,
             alternate: None,
             rendered: false,
             #[cfg(test)]
@@ -158,13 +161,31 @@ impl Cache {
         if right == 0 {
             return Some(left);
         }
-        let key = Key::Join(left, right);
-        if let Some(&(id, _)) = self.keys.get(&key) {
+        #[cfg(test)]
+        if crate::work::CACHE_JOINS.get()
+            && let Some(&(id, _)) = self.keys.get(&Key::Join(left, right))
+        {
+            return Some(id);
+        }
+        if let Some((old_left, old_right, id)) = self.last_join
+            && (left, right) == (old_left, old_right)
+        {
             return Some(id);
         }
         let mut output = self.output(left)?.clone();
         output.append(self.output(right)?.clone());
-        Some(self.insert(key, output))
+        // The forest already owns every compiled join. Keep only the immediate
+        // full/trimmed repeat, rather than a second index over its whole history.
+        #[cfg(test)]
+        let id = if crate::work::CACHE_JOINS.get() {
+            self.insert(Key::Join(left, right), output)
+        } else {
+            self.store(output)
+        };
+        #[cfg(not(test))]
+        let id = self.store(output);
+        self.last_join = Some((left, right, id));
+        Some(id)
     }
 
     fn mask(&mut self, body: usize, style: Style, link: Option<Arc<str>>) -> Option<usize> {

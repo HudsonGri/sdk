@@ -602,9 +602,12 @@ fn late_reference_definition_closes_the_open_paragraph_once() {
 fn storage_property_detects_retaining_frozen_operation_keys() {
     let pair = |keep| {
         crate::inline_scan::KEEP_KEYS.set(keep);
+        // Restore the historical memo index as well as disabling reclamation.
+        work::CACHE_JOINS.set(keep);
         let small = measure(&[17, 26], 50, "unused", 3, &[2, 1], 1).1;
         let large = measure(&[17, 26], 50, "unused", 3, &[2, 1], 2).1;
         crate::inline_scan::KEEP_KEYS.set(false);
+        work::CACHE_JOINS.set(false);
         (small, large)
     };
     let retained = pair(false);
@@ -739,4 +742,22 @@ fn repeated_references_with_late_definitions_share_snapshot_contents() {
         let (small, large) = measure_pair(&[3], 28, &destination, 4, &[1, 4, 3, 0]);
         assert!(large.0 <= 2 * small.0 + 1024, "{small:?} -> {large:?}");
     }
+}
+
+#[test]
+fn hard_break_emphasis_autolink_storage_stays_linear() {
+    let (small, large) = measure_pair(&[33, 26, 33, 29], 19, "unused", 3, &[0, 4]);
+    eprintln!("owned forest joins: {small:?} -> {large:?}");
+    assert!(
+        large.1 <= 2 * small.1 + 1024,
+        "storage {small:?} -> {large:?}"
+    );
+    work::CACHE_JOINS.set(true);
+    let (small, large) = measure_pair(&[33, 26, 33, 29], 19, "unused", 3, &[0, 4]);
+    work::CACHE_JOINS.set(false);
+    eprintln!("indexed historical joins: {small:?} -> {large:?}");
+    assert!(
+        large.1 > 2 * small.1 + 1024,
+        "control {small:?} -> {large:?}"
+    );
 }
