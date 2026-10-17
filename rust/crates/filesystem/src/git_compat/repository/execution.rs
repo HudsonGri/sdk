@@ -80,15 +80,18 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         }
     }
 
-    // Construct the large settlement state outside the caller's poll frame.
+    // Erase the heap phase so neither construction nor its large poll frame
+    // can be inlined into the awaiting command's poll frame.
     #[inline(never)]
     pub(super) fn finish<'a, E: GitFilesystemExecutor>(
         &'a self,
         transition: GitTransitionId,
         action: &'a GitFilesystemAction,
         executor: &'a E,
-    ) -> impl Future<Output = Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>>> + 'a
-    {
+    ) -> futures::future::BoxFuture<
+        'a,
+        Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>>,
+    > {
         Box::pin(async move {
             let result = self
                 .perform(transition.operation_id(), action, executor)
@@ -210,13 +213,14 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         .await
     }
 
-    // Boxing at construction also keeps poll-time temporary copies in this
-    // factory, rather than in every command that awaits preparation.
+    // Keep construction and polling separate from every awaiting command.
     #[inline(never)]
     pub(super) fn prepare_validated<'a>(
         &'a self,
-        plan: impl Fn(&mut GitCompatState) -> Result<GitCommandOutput, GitCompatError<S::Error>> + 'a,
-    ) -> impl Future<Output = Result<GitCommandOutput, GitCompatError<S::Error>>> + 'a {
+        plan: impl Fn(&mut GitCompatState) -> Result<GitCommandOutput, GitCompatError<S::Error>>
+        + Send
+        + 'a,
+    ) -> futures::future::BoxFuture<'a, Result<GitCommandOutput, GitCompatError<S::Error>>> {
         Box::pin(async move {
             for _ in 0..MAXIMUM_CAS_ATTEMPTS {
                 let mut state = self.load().await?;
