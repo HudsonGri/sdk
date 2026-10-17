@@ -28,11 +28,11 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
-    let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
+    let (host, volume, workspace, reader) = super::phase::run("seed", local_workspace::seed(&directory, &case.seed)).await?;
     let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
-    let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
+    let mut observation = super::phase::run("observe_initial", source.observe_files(Query::Plans, None, 16, 65_536)).await?;
     let initial = observation.snapshot.take().ok_or("missing diff snapshot")?;
-    let base = host.resolve(&workspace, None).await?.generation;
+    let base = super::phase::run("resolve_seed", host.resolve(&workspace, None)).await?.generation;
     let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
     let mut references = std::collections::BTreeMap::new();
     let paths = case
@@ -77,19 +77,19 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None);
-    let harness = LocalHarness::open(config).await?;
+    let harness = super::phase::run("harness_open", LocalHarness::open(config)).await?;
     if !state.join("owner.json").is_file() {
         return Err("harness did not use the fixture-owned state directory".into());
     }
     let stream = local_task_stream(&harness);
     let (operation, task_id, status) =
-        super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
-    let tool_files = super::local_tool_files::observe(&harness, task_id, &scripted_calls).await?;
-    let mut frames = stream
-        .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
+        super::phase::run("submit", super::local_admission::submit(&harness, &case.prompt, reader.as_ref())).await?;
+    let tool_files = super::phase::run("observe_tools", super::local_tool_files::observe(&harness, task_id, &scripted_calls)).await?;
+    let mut frames = super::phase::run("follow_frames", stream
+        .follow(StreamPath::new("harness/v3/coordinator/events")?, 0))
         .await?;
-    let output = harness.resume(task_id).await;
-    super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
+    let output = super::phase::run("resume", harness.resume(task_id)).await;
+    super::phase::run("settled", super::local_admission::settled(&harness, task_id, status, &case.expect.statuses)).await?;
     match (case.expect.outcome, output) {
         (ExpectedOutcome::Succeeded, Ok(output))
             if Some(&output.text) == case.expect.text.as_ref() => {}

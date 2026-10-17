@@ -17,6 +17,7 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+mod phase;
 mod provider_case;
 mod provider_http;
 mod provider_tests;
@@ -272,7 +273,8 @@ async fn run_scenarios(started: Instant) -> TestResult {
             let case_path = path.clone();
             let result: TestResult = tokio::spawn(async move {
                 let case = scenario::load_value(&root, &case_path)?;
-                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
+                let label = case_path.strip_prefix(&root)?.display().to_string();
+                phase::named(label, tokio::time::timeout(Duration::from_secs(5), phase::run("case", drivers::run(case)))).await??;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             })
             .await

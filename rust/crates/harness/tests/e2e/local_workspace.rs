@@ -33,7 +33,7 @@ pub(super) async fn seed(
         &mut None,
     )?;
     let host = FilesystemHost::new(
-        Fs::local(LocalOptions::new(directory)).await?,
+        super::phase::run("seed_open", Fs::local(LocalOptions::new(directory))).await?,
         &provider,
         None,
     )?;
@@ -44,7 +44,7 @@ pub(super) async fn seed(
         VolumeOwner::Project("diff-e2e".into()),
         &mut None,
     )?;
-    let workspace = host.create_volume(&volume).await?.workspace;
+    let workspace = super::phase::run("seed_volume", host.create_volume(&volume)).await?.workspace;
     let mut writes = vec![WorkspaceMutation::CreateDirectory {
         path: "/plans".into(),
     }];
@@ -52,8 +52,7 @@ pub(super) async fn seed(
         path: format!("/{path}"),
         bytes: text.as_bytes().to_vec().into(),
     }));
-    host.apply(&workspace, None, &writes, &IdempotencyKey::new("seed")?)
-        .await?;
+    super::phase::run("seed_apply", host.apply(&workspace, None, &writes, &IdempotencyKey::new("seed")?)).await?;
     let issuer = AuthorityIssuer::new(
         "diff-reader",
         [9; 32],
