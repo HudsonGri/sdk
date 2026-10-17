@@ -218,7 +218,7 @@ pub(super) async fn publish_chunk(
         .and_then(|part| part.parse().ok())
         .ok_or_else(|| Error::Invalid("model event has no canonical ordinal".into()))?;
     let value = FileValue {
-requester: None,
+        requester: None,
         publication: None,
         key: FileKey::Task {
             task: Component::new(owner.task_id().to_string())?,

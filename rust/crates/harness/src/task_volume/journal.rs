@@ -73,36 +73,18 @@ impl<P: StreamProvider> TaskVolume<P> {
         if fresh
             && let FileKey::Task {
                 task,
-                file: TaskFile::Chunk { sequence, .. },
+                file:
+                    TaskFile::Chunk {
+                        execution,
+                        turn,
+                        sequence,
+                    },
             } = &mut key
         {
-            let first = FileKey::Task {
-                task: task.clone(),
-                file: TaskFile::Chunk {
-                    sequence: 0,
-                    turn: 0,
-                    execution: crate::OperationId::from_bytes([0; 16]),
-                },
-            };
-            let last = FileKey::Task {
-                task: task.clone(),
-                file: TaskFile::Chunk {
-                    sequence: u64::MAX,
-                    turn: u64::MAX,
-                    execution: crate::OperationId::from_bytes([255; 16]),
-                },
-            };
-            *sequence = match index
-                .files
-                .range(first..=last)
-                .next_back()
-                .map(|(key, _)| key)
-            {
-                Some(FileKey::Task {
-                    file: TaskFile::Chunk { sequence, .. },
-                    ..
-                }) => sequence.checked_add(1).ok_or(Error::LimitExceeded)?,
-                _ => 0,
+            item_examined();
+            *sequence = match index.chunk_tails.get(&(task.clone(), *execution, *turn)) {
+                Some(previous) => previous.checked_add(1).ok_or(Error::LimitExceeded)?,
+                None => 0,
             };
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -116,6 +98,7 @@ impl<P: StreamProvider> TaskVolume<P> {
             key,
             channel: Some(channel),
             publication: None,
+            requester: None,
             bytes: record.slice(offset..),
         };
         validate_file(&index, &file)?;

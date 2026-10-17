@@ -166,29 +166,37 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
     #[test]
     fn chronological_task_chunks_reopen_identically_across_executions(
-        pieces in prop::collection::vec("[a-zé猫]{1,8}",1..5), crossed_turns in any::<bool>(),
+        pieces in prop::collection::vec("[a-zé猫]{1,8}",2..5), crossed_turns in any::<bool>(),
     ) {
         let runtime=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for unscoped in [false,true] {
         runtime.block_on(async {
             use crate::task_volume::{Component, Query, TaskVolume};
             use acyclic_stream::{CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProvider};
             let provider=std::sync::Arc::new(MemoryStream::default());
             let volume=TaskVolume::open(provider.clone(),StreamPath::new("chronological").unwrap()).await.unwrap();
-            let task=Component::new("active").unwrap();
+            let task_id=crate::TaskId::from_bytes([9;16]);
+            let task=Component::new(task_id.to_string()).unwrap();
+            let owner=crate::wire::Authority {kind:crate::wire::AggregateKind::Task as i32,id:task_id.to_string()};
+            let mut client=crate::client::TaskFileClient::observe(&volume,&owner,32,65536).await.unwrap();
             let mut live=TaskFileViews::default();
             let mut published=Vec::new();
             for (ordinal,execution) in [crate::OperationId::from_bytes([255;16]),crate::OperationId::from_bytes([1;16])].into_iter().enumerate() {
-                let turn=if crossed_turns && ordinal==0 {5} else {0};
+                let turn=if unscoped {ordinal as u64} else if crossed_turns && ordinal==0 {5} else {0};
                 for (part,text) in pieces.iter().enumerate() {
                     let text=format!("{ordinal}:{text}");
-                    let prepared=volume.prepare_next_chunk(task.clone(),execution,turn,Channel::Text,text.as_bytes(),None).await.unwrap().unwrap();
+                    let prepared=if unscoped {
+                        volume.prepare_journal_file(FileKey::parse(&format!(".tasks/{}/turns/{turn}/chunks/{part}", task.as_str())).unwrap(),Channel::Text,text.as_bytes(),None).await
+                    } else { volume.prepare_next_chunk(task.clone(),execution,turn,Channel::Text,text.as_bytes(),None).await }.unwrap().unwrap();
                     let request=CommitRequest { conditions:vec![prepared.condition],mutations:vec![CommitMutation::Append {path:prepared.path,records:vec![prepared.record]}],idempotency_key:IdempotencyKey::new(format!("{ordinal}:{part}").into_bytes()).unwrap() };
                     assert!(matches!(provider.commit(request).await.unwrap(),CommitOutcome::Committed(_)));
+                    client.next_change().await.unwrap();
                     let files=volume.snapshot(&Query::Root,32).await.unwrap().files;
                     let current=files.last().unwrap().clone();
                     let FileKey::Task {file:TaskFile::Chunk {sequence,..},..}=&current.key else {unreachable!()};
-                    assert_eq!(*sequence,published.len() as u64);
+                    assert_eq!(*sequence,part as u64,"ordinals restart; they are not a publication clock");
                     append(&mut live,&current); published.push(current);
+                    assert_eq!(client.views().transcripts,live.transcripts);
                 }
             }
             let reopened_volume=volume.reopen().await.unwrap();
@@ -197,14 +205,53 @@ proptest! {
             let mut reopened=TaskFileViews::default();
             snapshot(&mut reopened,&query);
             assert_eq!(live.transcripts,reopened.transcripts);
+            let public_reopened=crate::client::TaskFileClient::observe(&reopened_volume,&owner,32,65536).await.unwrap();
+            assert_eq!(client.views().transcripts,public_reopened.views().transcripts);
             let heads=reopened_volume.heads(&Query::Root,None,32).await.unwrap();
             let headed=heads.files.iter().map(|head| head.segments.iter().flat_map(|bytes|bytes.iter().copied()).collect::<Vec<_>>()).map(|bytes|String::from_utf8(bytes).unwrap()).collect::<Vec<_>>().join("\n\n");
-            assert_eq!(headed,live.transcripts["AGGREGATE_KIND_TASK:active"].streaming_text);
-            // Restore the old turn/UUID ordering against the same production fold.
-            published.sort_by_key(|file| match file.key {FileKey::Task {file:TaskFile::Chunk {turn,execution,sequence},..}=>(turn,execution,sequence),_=>unreachable!()});
+            assert_eq!(headed,live.transcripts[&format!("AGGREGATE_KIND_TASK:{}", task.as_str())].streaming_text);
+            let modern=crate::client::ClientQuery::open(&reopened_volume,Query::Root,None,crate::client::QueryViewLimits {files:32,segments:32,bytes:65536}).await.unwrap();
+            let modern_text=modern.files().map(|head|head.segments.iter().flat_map(|bytes|bytes.iter().copied()).collect::<Vec<_>>()).map(|bytes|String::from_utf8(bytes).unwrap()).collect::<Vec<_>>().join("\n\n");
+            assert_eq!(headed,modern_text);
+            // Restore the reviewed sequence-first ordering; both public scopes fail.
+            published.sort_by_key(|file| match file.key {FileKey::Task {file:TaskFile::Chunk {turn,execution,sequence},..}=>(sequence,turn,execution),_=>unreachable!()});
             let mut broken=TaskFileViews::default();
             for file in published {append(&mut broken,&file);}
-            assert_ne!(live.transcripts,broken.transcripts,"UUID ordering negative control must reverse the executions");
+            assert_ne!(live.transcripts,broken.transcripts,"per-turn ordinals passed the chronology detector");
+        });
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(6))]
+    #[test]
+    fn reopening_completed_partial_utf8_preserves_the_frozen_tail(
+        reasoning in any::<bool>(), suffix in prop::sample::select(vec![vec![0xe6u8], vec![0xc3], vec![0xf0,0x9f]]),
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use crate::task_volume::{Component, TaskVolume};
+            use acyclic_stream::{MemoryStream, StreamPath};
+            let task_id=crate::TaskId::from_bytes([7;16]);
+            let task=Component::new(task_id.to_string()).unwrap();
+            let owner=crate::wire::Authority {kind:crate::wire::AggregateKind::Task as i32,id:task_id.to_string()};
+            let volume=TaskVolume::open(std::sync::Arc::new(MemoryStream::default()),StreamPath::new("completed").unwrap()).await.unwrap();
+            let mut client=crate::client::TaskFileClient::observe(&volume,&owner,32,4096).await.unwrap();
+            let mut file=FileValue::new(FileKey::Task {task:task.clone(),file:TaskFile::Chunk {turn:0,execution:crate::OperationId::from_bytes([2;16]),sequence:0}},suffix);
+            file.channel=Some(if reasoning {Channel::Reasoning} else {Channel::Text});
+            let cut=volume.append(volume.head().await.unwrap(),&file).await.unwrap();
+            client.next_change().await.unwrap();
+            let complete=FileValue::new(FileKey::Task {task,file:TaskFile::Completion(0)},b"{}".to_vec());
+            volume.append(cut,&complete).await.unwrap();
+            client.next_change().await.unwrap();
+            let reopened=crate::client::TaskFileClient::observe(&volume.reopen().await.unwrap(),&owner,32,4096).await.unwrap();
+            assert_eq!(client.views().transcripts,reopened.views().transcripts);
+            let key=format!("AGGREGATE_KIND_TASK:{task_id}");
+            assert_eq!(reopened.views().transcripts[&key].pending(reasoning),0);
+            let mut broken=TaskFileViews::default();
+            append(&mut broken,&complete); append(&mut broken,&file);
+            assert_eq!(broken.transcripts[&key].pending(reasoning),3);
+            assert_ne!(broken.transcripts,client.views().transcripts);
         });
     }
 }

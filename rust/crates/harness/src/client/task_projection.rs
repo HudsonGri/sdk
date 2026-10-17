@@ -80,9 +80,9 @@ pub(super) fn snapshot(views: &mut TaskFileViews, files: &TaskFileQueryView) {
         views.tools.remove(&key);
         views.task_folds.remove(&key);
     }
-    // Chunk keys are ordered by turn/sequence. Fallback outcomes use committed
-    // order, independent of their request UUID's lexical order.
-    for file in files.files().values().filter(|file| {
+    // The source snapshot/follow order comes from durable publication positions.
+    // File keys identify streams; per-turn ordinals do not order different streams.
+    for file in files.ordered_files().filter(|file| {
         !matches!(
             file.key,
             FileKey::Task {

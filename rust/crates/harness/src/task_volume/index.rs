@@ -150,6 +150,17 @@ pub(super) fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 pub(super) fn apply(index: &mut Index, file: FileValue, position: u64) {
+    if matches!(
+        file.key,
+        FileKey::Task {
+            file: TaskFile::Chunk { .. },
+            ..
+        }
+    ) && index.files.contains_key(&file.key)
+    {
+        return;
+    }
+    scoped_chunks::record(index, &file, position);
     if let FileKey::Task {
         task,
         file:

@@ -187,20 +187,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {
-            let mut files = Vec::new();
-            for range in query.ranges() {
-                for (_, file) in index
-                    .files
-                    .range(range)
-                    .filter(|(_, f)| query.snapshot_matches_file(&f.file))
-                {
-                    if files.len() == maximum_files {
-                        return Err(Error::LimitExceeded);
-                    }
-                    files.push(file.file.clone());
-                }
-            }
-            files
+            index.select::<true>(query, maximum_files)?
         };
         Ok(Snapshot {
             files,

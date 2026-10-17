@@ -26,6 +26,7 @@ mod recent;
 pub(crate) use publication::publish;
 mod refresh;
 mod schema;
+mod scoped_chunks;
 mod segment;
 pub(crate) use segment::record_bytes;
 mod source;
@@ -257,6 +258,7 @@ struct Index {
     next: u64,
     commit: CommitId,
     chunk_tails: BTreeMap<(Component, crate::OperationId, u64), u64>,
+    chunk_positions: BTreeMap<(scoped_chunks::ChunkScope, u64), FileKey>,
     files: FileIndex,
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
     pending_commands: BTreeMap<Option<Component>, BTreeSet<FileKey>>,

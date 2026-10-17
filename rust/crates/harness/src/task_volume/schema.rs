@@ -63,13 +63,13 @@ pub enum TaskFile {
     TurnRequest(u64),
     /// One immutable stream chunk.
     Chunk {
-        /// Durable task-wide publication order, independent of execution UUIDs.
-        sequence: u64,
         /// Turn/attempt identity.
         turn: u64,
         /// Execution journal identity; separates attempts that restart their ordinals.
         #[serde(default = "legacy_execution")]
         execution: crate::OperationId,
+        /// Ordinal within this execution and model step; never a publication clock.
+        sequence: u64,
     },
     /// Read-only materialized text head, assembled from immutable chunk slices.
     TextHead {

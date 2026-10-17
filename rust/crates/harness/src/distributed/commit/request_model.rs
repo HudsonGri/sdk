@@ -111,5 +111,24 @@ pub fn verify_prepared_journal_identity(finalize: bool) {
         peer.join().unwrap();
         let snapshot = volume.snapshot(&Query::Root, 4).await.unwrap();
         assert_eq!(snapshot.files.len(), 2);
+        // The same fenced refresh must install the scoped indexes atomically.
+        for (execution, bytes) in [
+            (operation, b"delta".as_slice()),
+            (OperationId::from_bytes([3; 16]), b"unrelated".as_slice()),
+        ] {
+            let selected = volume
+                .snapshot(
+                    &Query::ExecutionChunks {
+                        task: Component::new("t").unwrap(),
+                        turn: 0,
+                        execution,
+                    },
+                    1,
+                )
+                .await
+                .unwrap();
+            assert_eq!(selected.files.len(), 1);
+            assert_eq!(selected.files[0].bytes.as_ref(), bytes);
+        }
     }));
 }
