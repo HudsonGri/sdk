@@ -56,6 +56,29 @@ where
                             io.invalid("execution replay requires original native work")
                         })?;
                         crate::NativeFutureBundle::new(work, || {
+                            #[cfg(all(
+                                feature = "model-checking",
+                                acyclic_harness_loom,
+                                acyclic_loom
+                            ))]
+                            {
+                                let (tail, fence) = (summary.tail, summary.fence);
+                                return super::cache::model_future(move || {
+                                    self.replay_page_fenced(
+                                        operation,
+                                        tail,
+                                        EXECUTION_REPLAY_PAGE_RECORDS,
+                                        true,
+                                        fence,
+                                        Some(io),
+                                    )
+                                });
+                            }
+                            #[cfg(not(all(
+                                feature = "model-checking",
+                                acyclic_harness_loom,
+                                acyclic_loom
+                            )))]
                             self.replay_page_fenced(
                                 operation,
                                 summary.tail,
@@ -68,15 +91,37 @@ where
                         .await?
                     }
                     Some(io) => {
-                        Box::pin(self.replay_page_fenced(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            summary.fence,
-                            Some(io),
-                        ))
-                        .await?
+                        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                        {
+                            let (tail, fence) = (summary.tail, summary.fence);
+                            super::cache::model_future(move || {
+                                self.replay_page_fenced(
+                                    operation,
+                                    tail,
+                                    EXECUTION_REPLAY_PAGE_RECORDS,
+                                    true,
+                                    fence,
+                                    Some(io),
+                                )
+                            })
+                            .await?
+                        }
+                        #[cfg(not(all(
+                            feature = "model-checking",
+                            acyclic_harness_loom,
+                            acyclic_loom
+                        )))]
+                        {
+                            Box::pin(self.replay_page_fenced(
+                                operation,
+                                summary.tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                summary.fence,
+                                Some(io),
+                            ))
+                            .await?
+                        }
                     }
                     None => {
                         #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
