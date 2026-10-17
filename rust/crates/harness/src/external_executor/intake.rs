@@ -49,6 +49,7 @@ where
     /// delivering the child's terminal request and then the parent's join.
     pub async fn child_completion(
         runtime: &FilesystemTaskRuntime<P, A, O>,
+        results: &TaskVolume<P>,
         parent_task: TaskId,
         request: &ExternalRequest,
     ) -> Result<ExternalRequest> {
@@ -64,6 +65,12 @@ where
                 "native stop does not own this child".into(),
             ));
         }
+        if !results.shares_provider(&runtime.task_host().workflow_stream()) {
+            return Err(Error::Unauthorized(
+                "native child bindings use another task provider".into(),
+            ));
+        }
+        super::child_binding::require(results, parent_task, request).await?;
         Self::authenticate(runtime, completion.task_id(), &child, &completion).await?;
         Ok(completion)
     }

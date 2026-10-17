@@ -6,6 +6,10 @@ mod append;
 pub(crate) mod cancellation;
 mod catalog;
 mod child_session;
+#[cfg(feature = "filesystem")]
+mod child_binding;
+#[cfg(all(feature = "filesystem", feature = "test-support"))]
+pub(crate) use child_binding::fuzz as fuzz_child_binding;
 mod client;
 #[cfg(feature = "filesystem")]
 mod command_catalog;

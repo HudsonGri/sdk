@@ -134,14 +134,23 @@ async fn native_child_hooks_admit_attach_complete_and_join_for_every_host() -> R
                 json!({"sessionId":"session","agentId":"child","parentAgentId":"other"}),
             )?;
             assert!(matches!(
-                RequestConsumer::child_completion(&fixture.runtime, other.task_id(), &wrong_parent)
-                    .await,
+                RequestConsumer::child_completion(
+                    &fixture.runtime,
+                    &fixture.results,
+                    other.task_id(),
+                    &wrong_parent
+                )
+                .await,
                 Err(Error::Unauthorized(_))
             ));
             // SubagentStop supplies the terminal child request; the native
             // executor does not need to emit an additional SessionEnd.
-            let completing =
-                RequestConsumer::child_completion(&fixture.runtime, parent.task_id(), &join);
+            let completing = RequestConsumer::child_completion(
+                &fixture.runtime,
+                &fixture.results,
+                parent.task_id(),
+                &join,
+            );
             let size = std::mem::size_of_val(&completing);
             eprintln!("native child completion future: {size} bytes");
             assert!(
@@ -203,4 +212,78 @@ async fn native_child_hooks_admit_attach_complete_and_join_for_every_host() -> R
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+#[tokio::test]
+async fn stop_cannot_swap_the_sessions_of_two_admitted_child_labels() -> Result<()> {
+    Box::pin(async {
+        let fixture = Fixture::new(VolumeBinding::Recursive).await?;
+        let event = |event, input| request(ExternalHost::Pi, event, input);
+        let parent = event(
+            "session_start",
+            json!({"sessionId":"parent","cwd":"/project"}),
+        )?;
+        let folder = Component::new(parent.task_id().to_string()).map_err(storage)?;
+        deliver(&fixture, &folder, &parent).await?;
+        let identity = |label, session| {
+            json!({"sessionId":"parent","agentId":label,
+            "childSession":{"host":"pi","session_id":session,"caller":null}})
+        };
+        let mut children = Vec::new();
+        for (label, session) in [("a", "native-a"), ("b", "native-b")] {
+            let fork = event("subagent_start", identity(label, session))?;
+            let answer = deliver(&fixture, &folder, &fork).await?;
+            let child: TaskId =
+                serde_json::from_value(answer["Succeeded"].clone()).map_err(storage)?;
+            execute(&fixture, child).await?;
+            children.push(child);
+        }
+        for (label, session) in [("a", "native-b"), ("b", "native-a")] {
+            let stop = event("subagent_stop", identity(label, session))?;
+            assert!(matches!(
+                RequestConsumer::child_completion(
+                    &fixture.runtime,
+                    &fixture.results,
+                    parent.task_id(),
+                    &stop,
+                )
+                .await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        for (index, session) in ["native-a", "native-b"].into_iter().enumerate() {
+            assert_eq!(
+                fixture.runtime.task_host().outcome(children[index]).await?,
+                None
+            );
+            let write = event(
+                "tool_call",
+                json!({"sessionId":session,"toolCallId":"after-swapped-stop",
+                "toolName":"write","input":{"path":format!("{session}.txt"),"content":session}}),
+            )?;
+            let answer = deliver(
+                &fixture,
+                &Component::new(children[index].to_string()).map_err(storage)?,
+                &write,
+            )
+            .await?;
+            assert_eq!(tool_result(answer)?["isError"], false);
+        }
+        for (index, (label, session)) in [("a", "native-a"), ("b", "native-b")]
+            .into_iter()
+            .enumerate()
+        {
+            let stop = event("subagent_stop", identity(label, session))?;
+            let completion = RequestConsumer::child_completion(
+                &fixture.runtime,
+                &fixture.results,
+                parent.task_id(),
+                &stop,
+            )
+            .await?;
+            assert_eq!(completion.task_id(), children[index]);
+        }
+        Ok(())
+    })
+    .await
 }

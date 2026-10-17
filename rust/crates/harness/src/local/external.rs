@@ -115,8 +115,9 @@ impl LocalHarness {
         Box::pin(async move {
             tokio::pin!(stopped);
             if matches!(request.action, ExternalAction::Join { .. }) {
+                let volumes = self.external_volumes(request.task_id()).await?;
                 let completion =
-                    RequestConsumer::child_completion(&self.runtime, request.task_id(), request)
+                    RequestConsumer::child_completion(&self.runtime, &volumes.results, request.task_id(), request)
                         .await?;
                 // No parent task guard is held while its child settles. This
                 // is the same Detach request as a later native SessionEnd.

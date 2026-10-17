@@ -60,6 +60,23 @@ where
                     message: "native child cannot replace its parent".into(),
                 });
             }
+            super::super::child_binding::bind(
+                self.results,
+                owner.task_id(),
+                request,
+                owner
+                    .condition(
+                        if reconcile {
+                            JournalWrite::Settlement
+                        } else {
+                            JournalWrite::Fresh
+                        },
+                        &mut None,
+                    )
+                    .await?,
+                owner.admission().run_limits.deadline_epoch_ms,
+            )
+            .await?;
             let key = format!("external-command:{}", child.operation_id);
             let payload = self
                 .payloads

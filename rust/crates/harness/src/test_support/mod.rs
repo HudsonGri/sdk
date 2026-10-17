@@ -59,6 +59,12 @@ pub fn fuzz_external_command(request: &crate::external_executor::ExternalRequest
     ))]
     crate::external_executor::fuzz_request_record(request);
 }
+
+/// Exercises the immutable native parent/label/child provenance codec.
+#[cfg(feature = "filesystem")]
+pub fn fuzz_native_child_binding(bytes: &[u8]) {
+    crate::external_executor::fuzz_child_binding(bytes);
+}
 #[cfg(feature = "test-support")]
 pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,

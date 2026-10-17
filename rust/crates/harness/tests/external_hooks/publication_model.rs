@@ -63,14 +63,43 @@ fn initial_child_attachment_is_published_under_its_admitted_fence() {
 }
 
 #[test]
+fn native_child_binding_is_published_under_its_parent_fence() {
+    binding_model(false);
+}
+
+#[test]
+#[should_panic(expected = "stale task owner published a result")]
+fn negative_control_detects_an_unfenced_native_child_binding() {
+    binding_model(true);
+}
+
+fn binding_model(broken: bool) {
+    model_file(
+        broken,
+        true,
+        TaskFile::Context(Component::new("native-child-binding").unwrap()),
+    );
+}
+
+#[test]
 #[should_panic(expected = "stale task owner published a result")]
 fn negative_control_detects_an_unfenced_child_attachment() {
     model(true, true, true);
 }
 
 fn model(broken: bool, invalidate_owner: bool, child_attachment: bool) {
+    let file = if child_attachment {
+        TaskFile::Request(Component::new("request").unwrap())
+    } else {
+        TaskFile::RequestResult(Component::new("request").unwrap())
+    };
+    model_file(broken, invalidate_owner, file);
+}
+
+fn model_file(broken: bool, invalidate_owner: bool, file_kind: TaskFile) {
     shuttle::check_dfs(
         move || {
+            let file_kind = file_kind.clone();
             let result: std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> =
                 shuttle::future::block_on(async move {
                     let inner = Arc::new(MemoryStream::default());
@@ -106,11 +135,7 @@ fn model(broken: bool, invalidate_owner: bool, child_attachment: bool) {
                     let file = FileValue::new(
                         FileKey::Task {
                             task: Component::new("task")?,
-                            file: if child_attachment {
-                                TaskFile::Request(Component::new("request")?)
-                            } else {
-                                TaskFile::RequestResult(Component::new("request")?)
-                            },
+                            file: file_kind,
                         },
                         b"{}".to_vec(),
                     );

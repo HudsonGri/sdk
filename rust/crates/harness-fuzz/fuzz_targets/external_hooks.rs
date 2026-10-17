@@ -39,6 +39,7 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     }
     acyclic_harness::test_support::fuzz_local_owner_input(input);
     acyclic_harness::test_support::fuzz_codex_hook_parent(input);
+    acyclic_harness::test_support::fuzz_native_child_binding(input);
     if let Ok(executable) = std::str::from_utf8(input)
         && !executable.contains('\0')
     {
@@ -122,8 +123,11 @@ fn check(input: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let encoded = serde_json::to_vec(&binding)?;
         let decoded = HookBinding::from_bytes(&encoded)?;
         assert_eq!(decoded, binding);
-        if let HookBinding::Platform {requests,results,..} = decoded {
-            assert_ne!(requests,results);
+        if let HookBinding::Platform {
+            requests, results, ..
+        } = decoded
+        {
+            assert_ne!(requests, results);
         }
     }
     if let Ok(path) = std::str::from_utf8(input)

@@ -171,10 +171,31 @@ pub(super) fn operation(
         }
         ExternalAction::CancelTool { call_id } => ("tool-cancel", call_id.as_str()),
         ExternalAction::ToolFinished { call_id, .. } => ("tool-finished", call_id.as_str()),
-        ExternalAction::Fork { child_id, .. } => ("fork", child_id.as_str()),
+        ExternalAction::Fork { child_id, .. } => {
+            return child_start_operation(host, session, caller, child_id);
+        }
         ExternalAction::Join { child_id, .. } => ("join", child_id.as_str()),
         ExternalAction::Detach => ("detach", ""),
     };
+    identity(host, session, caller, kind, invocation)
+}
+
+pub(super) fn child_start_operation(
+    host: ExternalHost,
+    session: &str,
+    caller: &Option<String>,
+    label: &str,
+) -> OperationId {
+    identity(host, session, caller, "fork", label)
+}
+
+fn identity(
+    host: ExternalHost,
+    session: &str,
+    caller: &Option<String>,
+    kind: &str,
+    invocation: &str,
+) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.external-executor.request/v1\0");
     for field in [
