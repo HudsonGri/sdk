@@ -271,7 +271,7 @@ where
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)
             .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
-        let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
+        let _retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(64)?;
             let copying = acyclic_fs::WorkCounters {
@@ -435,8 +435,6 @@ where
                     drop(key_hold);
                     drop(bytes);
                     drop(body_hold);
-                    drop(retry_digest);
-                    drop(retry_hold);
                     return Ok(true);
                 }
             }
