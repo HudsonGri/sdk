@@ -198,6 +198,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = self.open(workspace, None).await?;
         let key = filesystem_key(idempotency_key);
         'stage: loop {
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            publication_cuts::accounting::attempt(None);
             let mut transaction = match expected_generation {
                 Some(reference) => {
                     let generation = self.generation(&workspace, reference, None).await?;
@@ -490,6 +492,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let workspace = self.open(reference, Some(io)).await?;
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
             loop {
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                let replacement = publication_cuts::accounting::replacement(io)?;
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                let io = replacement.as_ref().unwrap_or(io);
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                publication_cuts::accounting::attempt(Some(io));
                 let pinned = match expected {
                     Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
                     None => io.sdk(workspace.head(io, io.cancellation()).await)?,

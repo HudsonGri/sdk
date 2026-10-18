@@ -7,6 +7,7 @@ use acyclic_fs::{
 };
 use std::sync::Mutex;
 use tokio::sync::oneshot;
+pub(super) mod accounting;
 
 thread_local! {
     static RESTORE_CONFLICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -35,9 +36,13 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for ScheduledAuthority<A> {
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> std::result::Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
-        self.inner
+        let before = accounting::provider_before("create", work)?;
+        let result = self
+            .inner
             .create_authority(authority, epoch, work, guard)
-            .await
+            .await;
+        accounting::provider_after(before, work);
+        result
     }
 
     async fn head(
@@ -45,7 +50,10 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for ScheduledAuthority<A> {
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> std::result::Result<Head, AuthorityStoreError> {
-        self.inner.head(authority, work).await
+        let before = accounting::provider_before("head", work)?;
+        let result = self.inner.head(authority, work).await;
+        accounting::provider_after(before, work);
+        result
     }
 
     async fn replay(
@@ -55,7 +63,10 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for ScheduledAuthority<A> {
         limit: ReplayLimit,
         work: &mut AuthorityWork<'_>,
     ) -> std::result::Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
-        self.inner.replay(authority, after, limit, work).await
+        let before = accounting::provider_before("replay", work)?;
+        let result = self.inner.replay(authority, after, limit, work).await;
+        accounting::provider_after(before, work);
+        result
     }
 
     async fn compare_and_append<G: AuthorityGuard>(
@@ -64,12 +75,16 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for ScheduledAuthority<A> {
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> std::result::Result<AppendOutcome, AuthorityError<G::Error>> {
+        let before = accounting::provider_before("append", work)?;
+        accounting::operation(request.commit.operation_id);
         let barrier = self.barrier.lock().unwrap().take();
         if let Some(barrier) = barrier {
             barrier.entered.send(()).unwrap();
             barrier.release.await.unwrap();
         }
-        self.inner.compare_and_append(request, work, guard).await
+        let result = self.inner.compare_and_append(request, work, guard).await;
+        accounting::provider_after(before, work);
+        result
     }
 
     async fn find_operation(
@@ -78,7 +93,10 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for ScheduledAuthority<A> {
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> std::result::Result<Option<DurableCommit>, AuthorityStoreError> {
-        self.inner.find_operation(authority, operation, work).await
+        let before = accounting::provider_before("find", work)?;
+        let result = self.inner.find_operation(authority, operation, work).await;
+        accounting::provider_after(before, work);
+        result
     }
 }
 
@@ -100,39 +118,46 @@ async fn publish<A: AsyncAuthorityStore>(
     key: &IdempotencyKey,
     mode: Mode,
 ) -> Result<GenerationRef> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = accounting::new_io(
+        mode,
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )?;
+    publish_with_io(host, workspace, expected, mutations, key, mode, io.as_ref()).await
+}
+
+async fn publish_with_io<A: AsyncAuthorityStore>(
+    host: &Host<A>,
+    workspace: &WorkspaceRef,
+    expected: Option<&GenerationRef>,
+    mutations: &[WorkspaceMutation],
+    key: &IdempotencyKey,
+    mode: Mode,
+    io: Option<&PreparationIo>,
+) -> Result<GenerationRef> {
     if matches!(mode, Mode::Raw) {
         host.apply(workspace, expected, mutations, key).await
     } else {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let io = match mode {
-            Mode::Measured => Some(PreparationIo::from_budget(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )?),
-            Mode::Native => Some(PreparationIo::from_native_work(
-                &acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
-                    &cancellation,
-                )
-                .unwrap(),
-            )?),
-            Mode::Batched | Mode::Raw => None,
-        };
         let generation = host
-            .apply_generation(
-                workspace,
-                expected,
-                mutations,
-                key.clone(),
-                io.as_ref(),
-                None,
-            )?
+            .apply_generation(workspace, expected, mutations, key.clone(), io, None)?
             .await?;
         host.generation_ref_id(generation.id(), None)
     }
 }
 
 async fn schedule<A: AsyncAuthorityStore>(inner: A, mode: Mode, conditional: bool) -> Result<()> {
+    schedule_accounted(inner, mode, conditional, accounting::Case::default())
+        .await
+        .map(|_| ())
+}
+
+async fn schedule_accounted<A: AsyncAuthorityStore>(
+    inner: A,
+    mode: Mode,
+    conditional: bool,
+    case: accounting::Case,
+) -> Result<accounting::Report> {
     let name = format!("publication-cut-{mode:?}-{conditional}");
     let barrier = Arc::new(Mutex::new(None));
     let authority = ScheduledAuthority {
@@ -191,14 +216,24 @@ async fn schedule<A: AsyncAuthorityStore>(inner: A, mode: Mode, conditional: boo
         },
     ];
     let first_key = IdempotencyKey::new("left")?;
-    let first = publish(
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    if let Some(limit) = case.limit {
+        budget.materializations = limit;
+    }
+    let io = accounting::new_io(mode, budget, &cancellation)?;
+    let audit = accounting::Audit::new(case, cancellation, io.as_ref());
+    let first = publish_with_io(
         &host,
         &workspace,
         conditional.then_some(&expected),
         &left,
         &first_key,
         mode,
+        io.as_ref(),
     );
+    tokio::pin!(first);
+    let first = std::future::poll_fn(|cx| accounting::poll(&audit, || first.as_mut().poll(cx)));
     tokio::pin!(first);
     tokio::select! {
         result = &mut first => panic!("publication finished before its scheduled append: {result:?}"),
@@ -216,6 +251,15 @@ async fn schedule<A: AsyncAuthorityStore>(inner: A, mode: Mode, conditional: boo
     release.send(()).unwrap();
     let first = first.await;
     second?;
+    let report = accounting::verify(&audit, io.as_ref(), &first)?;
+    if case.limit.is_some() || case.cancel {
+        assert!(
+            host.read(&workspace, None, "/shared/left", 16, None)
+                .await
+                .is_err()
+        );
+        return Ok(report);
+    }
     if conditional {
         assert!(
             matches!(
@@ -239,7 +283,7 @@ async fn schedule<A: AsyncAuthorityStore>(inner: A, mode: Mode, conditional: boo
                 .as_ref(),
             b"right"
         );
-        return Ok(());
+        return Ok(report);
     }
     let committed = first?;
     assert_eq!(
@@ -256,7 +300,7 @@ async fn schedule<A: AsyncAuthorityStore>(inner: A, mode: Mode, conditional: boo
             expected
         );
     }
-    Ok(())
+    Ok(report)
 }
 
 #[tokio::test]
@@ -279,7 +323,6 @@ async fn http_publication_retries_the_same_competing_cut() {
 
 #[cfg(feature = "grpc")]
 #[tokio::test]
-#[should_panic(expected = "HTTP publication retry proof")]
 async fn restoring_conflict_instead_of_restage_fails_the_same_http_proof() {
     http_proof(true).await;
 }
@@ -340,7 +383,14 @@ async fn http_proof(restore: bool) {
             // Each schedule owns a separate logical workspace and authority.
             let authority = acyclic_fs::StreamAuthorityStore::new(Arc::new(client.clone()));
             let result = schedule(authority, mode, conditional).await;
-            assert!(result.is_ok(), "HTTP publication retry proof: {result:?}");
+            if restore && !conditional {
+                assert!(result.is_err(), "HTTP conflict control escaped {mode:?}");
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "HTTP publication retry proof {mode:?}: {result:?}"
+                );
+            }
         }
     }
     server.abort();

@@ -51,6 +51,16 @@ export function qualifyFsBindingLoom(features = [], run = spawnSync) {
   });
 }
 
+export function qualifyCoreOwnersLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "acyclic_fs", [
+    "--no-default-features", "--features", "local,memory,model-checking",
+  ], run, {
+    kind: "--lib", filter: "core_state::owners::models::",
+    exact: false, expectedTests: 8, timeout: 9500,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
+}
+
 export function qualifyMemoryAccountingLoom(run = spawnSync) {
   return qualifyLoom("acyclic-harness", "memory-accounting-model", [
     "--features", "filesystem,acyclic-fs/model-checking",
@@ -90,7 +100,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     process.stderr.write(result.stderr ?? "");
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
     const complete = options.exact === false
-      ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
+      ? new RegExp(`^test result: ok\\. ${options.expectedTests ?? 4} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;`, "m")
       : filter
       ? /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
       : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
@@ -107,6 +117,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   else if (features[0] === "--summary-checkpoints") qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
   else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
+  else if (features.length === 1 && features[0] === "--core-owners") qualifyCoreOwnersLoom();
   else if (features.length === 1 && features[0] === "--memory-accounting") qualifyMemoryAccountingLoom();
   else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
   else qualifyMcpLoom(features.length ? features : undefined);
