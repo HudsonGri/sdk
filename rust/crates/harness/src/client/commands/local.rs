@@ -13,9 +13,10 @@ pub async fn consume_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
     let settings = session.request_settings(request).await?;
     let result = session
         .consume(request, |operation, target, resolution| {
-            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> = Box::pin(
-                local.dispatch_configured_command(operation, target, resolution, &settings),
-            );
+            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> =
+                acyclic_fs::in_heap(|| {
+                    local.dispatch_configured_command(operation, target, resolution, &settings)
+                });
             future
         })
         .await?;
@@ -59,11 +60,11 @@ pub async fn run_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
         .consume_with_recovery::<true, _, _, _, _>(
             request,
             |operation, target, resolution| {
-                Box::pin(execute(local, operation, target, resolution, &settings))
+                acyclic_fs::in_heap(|| execute(local, operation, target, resolution, &settings))
             },
             |operation, target, resolution| {
                 let settings = &settings;
-                async move {
+                acyclic_fs::in_heap(|| async move {
                     if !matches!(
                         &resolution,
                         CommandResolution::Prompt { .. }
@@ -82,7 +83,10 @@ pub async fn run_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
                         // No turn or admission was saved after the claim. Replay
                         // only these idempotent admissions from their request.
                         Err(Error::NotFound(_)) => {
-                            Box::pin(execute(local, operation, target, resolution, settings)).await
+                            acyclic_fs::in_heap(|| {
+                                execute(local, operation, target, resolution, settings)
+                            })
+                            .await
                         }
                         output => {
                             let mut value = serde_json::to_value(output?)
@@ -93,7 +97,7 @@ pub async fn run_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
                             Ok(value)
                         }
                     }
-                }
+                })
             },
         )
         .await
@@ -109,10 +113,11 @@ async fn execute(
     let target = target.filter(|task| task.to_string() != local.client_owner().id);
     // The head this command admits is held from before its admission until
     // its driving ends, so no await between them leaves it undriven.
-    let _driving = local.driver_claim(operation).await;
-    let mut result = local
-        .dispatch_configured_command(operation, target, resolution, settings)
-        .await?;
+    let _driving = acyclic_fs::in_heap(|| local.driver_claim(operation)).await;
+    let mut result = acyclic_fs::in_heap(|| {
+        local.dispatch_configured_command(operation, target, resolution, settings)
+    })
+    .await?;
     if result.get("admission_operation").is_some() {
         let task = result
             .get("task")
@@ -136,7 +141,7 @@ async fn execute(
 /// Follows ordinary command files and drives their durable local owner.
 /// Poll this future alongside input/follows; dropping it never resends a claim.
 pub async fn run_local_commands(local: Arc<LocalHarness>, session: OperationId) -> Result<()> {
-    Box::pin(run_local_command_files(local, session, false)).await
+    acyclic_fs::in_heap(|| run_local_command_files(local, session, false)).await
 }
 
 pub(crate) async fn run_local_command_files(
@@ -144,26 +149,31 @@ pub(crate) async fn run_local_command_files(
     session: OperationId,
     only_session: bool,
 ) -> Result<()> {
-    let mut commands = CommandSession::open(
-        Arc::new(
-            local
-                .task_files()
-                .inner
-                .reopen()
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
-        ),
-        uuid::Uuid::from_bytes(session.into_bytes()),
-        65_536,
-        4096,
-    )
+    let mut commands = acyclic_fs::in_heap(|| async {
+        CommandSession::open(
+            Arc::new(
+                local
+                    .task_files()
+                    .inner
+                    .reopen()
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            ),
+            uuid::Uuid::from_bytes(session.into_bytes()),
+            65_536,
+            4096,
+        )
+        .await
+    })
     .await?;
     loop {
         let request = commands.next_request().await?;
         if only_session && !matches!(request.key, crate::task_volume::FileKey::Session { .. }) {
             continue;
         }
-        if let Err(error) = run_local_command(&mut commands, &local, &request).await {
+        if let Err(error) =
+            acyclic_fs::in_heap(|| run_local_command(&mut commands, &local, &request)).await
+        {
             if !only_session && commands.failure_is_saved(&request, &error).await? {
                 continue;
             }

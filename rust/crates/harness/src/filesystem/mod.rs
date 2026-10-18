@@ -324,7 +324,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let generation = (self).generation_ref_id(prior.id(), io)?;
             match io {
                 Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
-                None => self.retain_generation(&workspace, &generation).await?,
+                None => {
+                    acyclic_fs::in_heap(|| self.retain_generation(&workspace, &generation)).await?
+                }
             }
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
             let receipt_path = crate::executor::with_history_io(io, |work| {
@@ -352,13 +354,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .await?
                 }
                 None => {
-                    self.read(
-                        &workspace,
-                        Some(&generation),
-                        &format!("/{metadata_path}"),
-                        metadata_bytes.len() as u64,
-                        None,
-                    )
+                    acyclic_fs::in_heap(|| async {
+                        self.read(
+                            &workspace,
+                            Some(&generation),
+                            &format!("/{metadata_path}"),
+                            metadata_bytes.len() as u64,
+                            None,
+                        )
+                        .await
+                    })
                     .await?
                 }
             };
