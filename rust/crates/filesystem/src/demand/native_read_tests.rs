@@ -585,11 +585,21 @@ fn measure_inline_paired() -> Result<(), Box<dyn Error>> {
             (&second, &first)
         };
         let run = |file: &dyn DemandFile| {
+            let cancellation = CancellationToken::new();
             let before = cycles();
             let started = std::time::Instant::now();
             for round in 0..256 {
-                let (bytes, _, _) = production_read(file, (round % 16) * 4096, 4096);
-                assert_eq!(bytes.unwrap(), contents[..4096]);
+                // Time the public read and its ordinary callback accounting.
+                // Differential capture, an unused native ledger and copying
+                // into the comparison harness's Vec belong outside timing.
+                let mut accounting = crate::kernel::KernelAccounting::standalone(
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                );
+                let chunk = file
+                    .read_range((round % 16) * 4096, 4096, &mut accounting)
+                    .unwrap();
+                assert_eq!(chunk.bytes.as_ref(), &contents[..4096]);
             }
             (started.elapsed().as_nanos(), cycles() - before)
         };
