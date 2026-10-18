@@ -149,7 +149,7 @@ fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Resu
         let (candidate, coordinator) = runtime.block_on(seeded(count))?;
         let reopened = runtime.block_on(open(&candidate))?;
         for key in ["history-00", "history-07", "absent"] {
-            let (after, _) = acyclic_test_support::differential(
+            let (after, costs) = acyclic_test_support::differential(
                 || {
                     runtime
                         .block_on(read_intent(
@@ -165,6 +165,10 @@ fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Resu
                         .block_on(coordinator.read_indexed_intent(key, &mut None))
                         .map_err(|error| format!("{error:?}"))
                 },
+            );
+            eprintln!(
+                "retry pair K={count} key={key}: old={:?} new={:?}",
+                costs[0], costs[1]
             );
             let restored = runtime.block_on(reopened.read_indexed_intent(key, &mut None))?;
             assert_eq!(restored, after.map_err(Error::Storage)?);
