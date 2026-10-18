@@ -14,36 +14,64 @@ pub(super) async fn read_selected<
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
     let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(selector, path, &mut accounting, cancellation)
-            .await?;
-        let lookup = {
-            let (lookup, _allocation) = checkout
-                .value
-                .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
-                .await?;
-            lookup
-        };
-        let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-        if record.kind != FileKind::Regular {
-            return Err(WorkspaceError::NotRegularFile);
+        let mut frame = None;
+        let (mut future, bytes) = crate::heap_future::in_heap_admitted(
+            (&mut accounting, &mut frame),
+            |(accounting, frame), bytes| {
+                **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
+                Ok::<_, WorkspaceError>(())
+            },
+            |(accounting, _)| async move {
+                let (mut checkout, path) = workspace
+                    .open_read_path(selector, path, accounting, cancellation)
+                    .await?;
+                let lookup = {
+                    let (lookup, _allocation) = checkout
+                        .value
+                        .lookup_no_follow_with_accounting(
+                            &path.value,
+                            accounting,
+                            cancellation,
+                            true,
+                        )
+                        .await?;
+                    lookup
+                };
+                let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
+                if record.kind != FileKind::Regular {
+                    return Err(WorkspaceError::NotRegularFile);
+                }
+                let length = regular_file_bytes(record)?;
+                if length > maximum_bytes {
+                    return Err(WorkspaceError::ReadLimitExceeded);
+                }
+                if length > checkout.value.volume_config().limits.maximum_read_bytes {
+                    return Err(crate::FsError::FileRead(
+                        crate::kernel::FileRangeReadError::InvalidRange,
+                    )
+                    .into());
+                }
+                let range = crate::ByteRange { offset: 0, length };
+                checkout
+                    .value
+                    .read_record_range_with_accounting(
+                        record,
+                        range,
+                        range,
+                        accounting,
+                        cancellation,
+                    )
+                    .await
+                    .map(|read| read.bytes)
+                    .map_err(WorkspaceError::from)
+            },
+        )?;
+        let result = future.as_mut().await;
+        drop(future);
+        if let Some(mut frame) = frame {
+            accounting.release_owned(&mut frame, bytes)?;
         }
-        let length = regular_file_bytes(record)?;
-        if length > maximum_bytes {
-            return Err(WorkspaceError::ReadLimitExceeded);
-        }
-        if length > checkout.value.volume_config().limits.maximum_read_bytes {
-            return Err(
-                crate::FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
-            );
-        }
-        let range = crate::ByteRange { offset: 0, length };
-        checkout
-            .value
-            .read_record_range_with_accounting(record, range, range, &mut accounting, cancellation)
-            .await
-            .map(|read| read.bytes)
-            .map_err(WorkspaceError::from)
+        result
     }
     .await;
     work.finish(result, &accounting)
