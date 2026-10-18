@@ -26,7 +26,7 @@ def test_only(path):
 
 def counts(text):
     text = re.sub(r"\b(?:crate|acyclic_native_runtime)\s*::\s*deadline\s*::\s*sleep\b", "virtual_park", text)
-    text = re.sub(r"\b(?:crate|acyclic_native_runtime)\s*::\s*deadline\s*::\s*elapsed\b", "virtual_elapsed", text)
+    text = re.sub(r"\b(?:(?:crate|acyclic_native_runtime)\s*::\s*)?deadline\s*::\s*elapsed\b", "virtual_elapsed", text)
     return {kind: len(re.findall(pattern, text))
             for kind, pattern in PATTERNS.items() if re.search(pattern, text)}
 

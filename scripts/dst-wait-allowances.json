@@ -27,7 +27,7 @@
     "file": "filesystem/src/native_mount/darwin_mount/context.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in filesystem/src/native_mount/darwin_mount/context.rs; retained at this exact count outside the routed wait components."
+    "reason": "Typed simulation Clock::capture handle reads virtual elapsed time for Darwin uptime; replacing that handle with a host source is rejected by the Instant source gate and the revalidation control."
   },
   {
     "file": "filesystem/src/native_mount/darwin_mount/session.rs",
@@ -120,16 +120,10 @@
     "reason": "Async source observer retry timer; Tokio timer integration is separate from synchronous native parking."
   },
   {
-    "file": "filesystem/src/watch/fence.rs",
-    "source": "elapsed",
-    "count": 2,
-    "reason": "Existing elapsed-time capability in filesystem/src/watch/fence.rs; retained at this exact count outside the routed wait components."
-  },
-  {
     "file": "harness/src/bin/graphcoder/view.rs",
     "source": "elapsed",
     "count": 2,
-    "reason": "Existing elapsed-time capability in harness/src/bin/graphcoder/view.rs; retained at this exact count outside the routed wait components."
+    "reason": "CLI rendering/profiling elapsed measurements outside the scoped agent simulation."
   },
   {
     "file": "harness/src/bin/graphcoder/view.rs",
@@ -153,7 +147,7 @@
     "file": "harness/src/client/swarm/driver/snapshots/retirement.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in harness/src/client/swarm/driver/snapshots/retirement.rs; retained at this exact count outside the routed wait components."
+    "reason": "UI snapshot retirement profiling; no scoped turn worker invokes this renderer."
   },
   {
     "file": "harness/src/client/swarm/driver/snapshots/retirement.rs",
@@ -171,7 +165,7 @@
     "file": "harness/src/grpc.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in harness/src/grpc.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline gRPC transport performance test duration measurement."
   },
   {
     "file": "harness/src/grpc.rs",
@@ -189,7 +183,7 @@
     "file": "harness/src/local/admission/poll_sweep.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in harness/src/local/admission/poll_sweep.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline admission replay performance test duration report."
   },
   {
     "file": "harness/src/local/admission/poll_sweep.rs",
@@ -201,7 +195,7 @@
     "file": "harness/src/local/admission/poll_sweep/read_profile.rs",
     "source": "elapsed",
     "count": 2,
-    "reason": "Existing elapsed-time capability in harness/src/local/admission/poll_sweep/read_profile.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline admission read-profile test duration reports."
   },
   {
     "file": "harness/src/local/admission/poll_sweep/read_profile.rs",
@@ -225,7 +219,7 @@
     "file": "harness/src/memory_store/retention_profile.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in harness/src/memory_store/retention_profile.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline memory retention profiling test duration report."
   },
   {
     "file": "harness/src/memory_store/retention_profile.rs",
@@ -243,7 +237,7 @@
     "file": "native-runtime/src/apple.rs",
     "source": "elapsed",
     "count": 2,
-    "reason": "Existing elapsed-time capability in native-runtime/src/apple.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline Apple native-I/O fault tests use the test-only faults::elapsed measurement and its host timer."
   },
   {
     "file": "native-runtime/src/apple.rs",
@@ -285,7 +279,7 @@
     "file": "native-runtime/src/process_tree/windows.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in native-runtime/src/process_tree/windows.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline Windows capture regression asserts its real-OS completion bound; production process deadlines use the seam."
   },
   {
     "file": "native-runtime/src/windows/terminal.rs",
@@ -303,7 +297,7 @@
     "file": "objects/src/v1/upload.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in objects/src/v1/upload.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline object upload performance test duration report."
   },
   {
     "file": "objects/src/v1/upload.rs",
@@ -333,7 +327,7 @@
     "file": "stream/src/local/snapshot_ready.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in stream/src/local/snapshot_ready.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline local Stream snapshot performance test timings."
   },
   {
     "file": "stream/src/local/snapshot_ready.rs",
@@ -363,7 +357,7 @@
     "file": "stream/src/session/client/pool/route_searches.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in stream/src/session/client/pool/route_searches.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline route-search retry performance test timing."
   },
   {
     "file": "stream/src/session/client/pool/route_searches.rs",
@@ -393,7 +387,7 @@
     "file": "stream/src/wire_codec/requests.rs",
     "source": "elapsed",
     "count": 1,
-    "reason": "Existing elapsed-time capability in stream/src/wire_codec/requests.rs; retained at this exact count outside the routed wait components."
+    "reason": "Inline wire-codec performance test duration report."
   },
   {
     "file": "stream/src/wire_codec/requests.rs",
