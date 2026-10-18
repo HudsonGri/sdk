@@ -87,7 +87,13 @@ struct Body<'a, 'tcx> {
 
 impl<'tcx> Body<'_, 'tcx> {
     fn judge(&mut self, ty: rustc_middle::ty::Ty<'tcx>, default: bool) {
-        let found = types::lock(self.tcx, self.owner, ty, default, 0);
+        let found = types::lock(
+            self.tcx,
+            self.owner,
+            rustc_middle::ty::Unnormalized::new_wip(ty),
+            default,
+            0,
+        );
         match found {
             Some(true) => {
                 if let Ok(owned) = self.verdict {

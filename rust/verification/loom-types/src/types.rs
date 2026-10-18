@@ -20,7 +20,7 @@ pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
 pub(super) fn lock<'tcx>(
     tcx: TyCtxt<'tcx>,
     owner: LocalDefId,
-    ty: Ty<'tcx>,
+    ty: ty::Unnormalized<TyCtxt<'tcx>, Ty<'tcx>>,
     default: bool,
     depth: usize,
 ) -> Option<bool> {
@@ -28,10 +28,7 @@ pub(super) fn lock<'tcx>(
         return None;
     }
     let ty = tcx
-        .try_normalize_erasing_regions(
-            TypingEnv::post_analysis(tcx, owner),
-            ty::Unnormalized::new_wip(ty),
-        )
+        .try_normalize_erasing_regions(TypingEnv::post_analysis(tcx, owner), ty)
         .ok()?;
     match ty.kind() {
         ty::Adt(definition, arguments) => {
@@ -64,6 +61,7 @@ pub(super) fn lock<'tcx>(
             }
             any(arguments
                 .types()
+                .map(ty::Unnormalized::new_wip)
                 .chain(
                     definition
                         .all_fields()
@@ -73,10 +71,16 @@ pub(super) fn lock<'tcx>(
         }
         ty::Tuple(elements) if default => any(elements
             .iter()
-            .map(|ty| lock(tcx, owner, ty, true, depth + 1))),
+            .map(|ty| lock(tcx, owner, ty::Unnormalized::new_wip(ty), true, depth + 1))),
         ty::Array(element, length) if default => match length.try_to_target_usize(tcx) {
             Some(0) => Some(false),
-            Some(_) => lock(tcx, owner, *element, true, depth + 1),
+            Some(_) => lock(
+                tcx,
+                owner,
+                ty::Unnormalized::new_wip(*element),
+                true,
+                depth + 1,
+            ),
             None => None,
         },
         ty::Param(_)
