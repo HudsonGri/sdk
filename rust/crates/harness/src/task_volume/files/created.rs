@@ -59,6 +59,8 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
                 .map_err(storage)?,
             volume: binding.volume.clone(),
             maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_custody: None,
         }))
     }
 }
