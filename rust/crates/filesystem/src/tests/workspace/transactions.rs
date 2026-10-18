@@ -321,8 +321,18 @@ proptest::proptest! {
         name in "entry[a-z]{1,4}",
         payload in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..17),
     ) {
+        #[derive(Clone, Copy, Debug)]
+        enum WriteMode {
+            Serial,
+            #[cfg(not(target_arch = "wasm32"))]
+            Batched,
+        }
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
-            for batched in [false, true] {
+            for mode in [
+                WriteMode::Serial,
+                #[cfg(not(target_arch = "wasm32"))]
+                WriteMode::Batched,
+            ] {
             for inside in [false, true] {
             for observe_directory in [false, true] {
                 for replace_prefix in [false, true] {
@@ -349,11 +359,15 @@ proptest::proptest! {
                         )).collect::<Result<_, _>>()?, limits)?;
                         unbounded!(pending.checkout, lookup_no_follow(&path))?;
                     }
-                    if batched {
-                        unbounded!(pending, write_batch(&["/shared/nested"], &[("/shared/nested/local", OwnedBytes::copy_from_slice(b"local"))]))?;
-                    } else {
-                        unbounded!(pending, create_dir_all("/shared/nested"))?;
-                        pending.write_text("/shared/nested/local", "local").await?;
+                    match mode {
+                        WriteMode::Serial => {
+                            unbounded!(pending, create_dir_all("/shared/nested"))?;
+                            pending.write_text("/shared/nested/local", "local").await?;
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        WriteMode::Batched => {
+                            unbounded!(pending, write_batch(&["/shared/nested"], &[("/shared/nested/local", OwnedBytes::copy_from_slice(b"local"))]))?;
+                        }
                     }
                     let mut other = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
                     if replace_prefix {
@@ -371,7 +385,7 @@ proptest::proptest! {
                     } else {
                         assert!(
                             matches!(rebased, TransactionRebase::Rebased(_)),
-                            "batched={batched} inside={inside}"
+                            "mode={mode:?} inside={inside}"
                         );
                         assert!(matches!(commit(&mut pending).await?, TransactionCommit::Committed(_)));
                         assert_eq!(unbounded!(workspace, read("/shared/nested/local", 16))?.as_ref(), b"local");
