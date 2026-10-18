@@ -5,6 +5,8 @@ use serde_json::Value;
 
 mod admission;
 mod arrays;
+#[cfg(test)]
+mod item_budget_tests;
 mod identity;
 mod records;
 pub(crate) use identity::{
