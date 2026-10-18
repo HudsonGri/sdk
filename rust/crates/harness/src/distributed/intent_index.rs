@@ -35,6 +35,10 @@ fn direction(key: &str, bit: usize) -> usize {
 
 impl IntentIndex {
     pub(super) fn get(&self, key: &str) -> Option<u64> {
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        if tests::intent_index::omit_index_lookup() {
+            return None;
+        }
         let mut node = self.root.as_deref()?;
         while node.bit != usize::MAX {
             node = node.children[direction(key, node.bit)].as_deref()?;
@@ -90,6 +94,12 @@ impl IntentIndex {
         } else {
             usize::MAX
         };
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        let early_copy = if tests::intent_index::copy_before_admission() {
+            Some(copy_key(key, quota)?)
+        } else {
+            None
+        };
         let mut portable_bytes = 0;
         let leaf_custody = claim_node(quota, &mut portable_bytes)?;
         let branch_custody = if bit == usize::MAX {
@@ -97,14 +107,13 @@ impl IntentIndex {
         } else {
             Some(claim_node(quota, &mut portable_bytes)?)
         };
-        let copied = match quota.work().as_deref_mut() {
-            Some(io) => {
-                let copied = io.clone_text(key)?;
-                quota.adopt(copied.capacity() as u64)?;
-                copied
-            }
-            None => key.to_owned(),
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        let copied = match early_copy {
+            Some(copied) => copied,
+            None => copy_key(key, quota)?,
         };
+        #[cfg(not(all(test, not(acyclic_harness_loom))))]
+        let copied = copy_key(key, quota)?;
         let key_custody = detach(copied.capacity() as u64, quota, &mut portable_bytes)?;
         let leaf = Box::new(Node {
             bit: usize::MAX,
@@ -152,6 +161,17 @@ impl IntentIndex {
                 return Ok(());
             }
         }
+    }
+}
+
+fn copy_key(key: &str, quota: &mut CodecQuota<'_, '_>) -> Result<String> {
+    match quota.work().as_deref_mut() {
+        Some(io) => {
+            let copied = io.clone_text(key)?;
+            quota.adopt(copied.capacity() as u64)?;
+            Ok(copied)
+        }
+        None => Ok(key.to_owned()),
     }
 }
 

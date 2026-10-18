@@ -3,34 +3,70 @@ use proptest::prelude::*;
 
 thread_local! {
     static RESTORE_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static COPY_BEFORE_ADMISSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static OMIT_INDEX_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 pub(in crate::distributed) fn restore_scan() -> bool {
     RESTORE_SCAN.get()
+}
+pub(in crate::distributed) fn copy_before_admission() -> bool {
+    COPY_BEFORE_ADMISSION.get()
+}
+pub(in crate::distributed) fn omit_index_lookup() -> bool {
+    OMIT_INDEX_LOOKUP.get()
+}
+
+fn assert_index_matches_map(keys: &[String]) {
+    let mut index = super::super::intent_index::IntentIndex::default();
+    let mut oracle = BTreeMap::new();
+    for (sequence, key) in keys.iter().enumerate() {
+        assert_eq!(index.get(key), oracle.get(key).copied());
+        let mut work = None;
+        let mut quota = CodecQuota::new(&mut work, 0).unwrap();
+        if oracle.contains_key(key) {
+            assert!(
+                index
+                    .insert_with(key, sequence as u64, &mut quota, |_| Ok(()))
+                    .is_err()
+            );
+        } else {
+            index
+                .insert_with(key, sequence as u64, &mut quota, |_| Ok(()))
+                .unwrap();
+            oracle.insert(key.clone(), sequence as u64);
+        }
+        for (key, expected) in &oracle {
+            assert_eq!(index.get(key), Some(*expected));
+        }
+    }
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(96))]
     #[test]
     fn compressed_index_matches_independent_map(
-        keys in prop::collection::vec("[a-zA-Z0-9]{0,40}", 0..96)
+        keys in prop::collection::vec(
+            prop::collection::vec(any::<char>(), 0..40)
+                .prop_map(|chars| chars.into_iter().collect::<String>()),
+            0..96,
+        )
     ) {
-        let mut index = super::super::intent_index::IntentIndex::default();
-        let mut oracle = BTreeMap::new();
-        for (sequence, key) in keys.iter().enumerate() {
-            assert_eq!(index.get(key), oracle.get(key).copied());
-            let mut work = None;
-            let mut quota = CodecQuota::new(&mut work, 0).unwrap();
-            if oracle.contains_key(key) {
-                assert!(index.insert_with(key, sequence as u64, &mut quota, |_| Ok(())).is_err());
-            } else {
-                index.insert_with(key, sequence as u64, &mut quota, |_| Ok(())).unwrap();
-                oracle.insert(key.clone(), sequence as u64);
-            }
-            for (key, expected) in &oracle {
-                assert_eq!(index.get(key), Some(*expected));
-            }
+        assert_index_matches_map(&keys);
+    }
+}
+
+#[test]
+#[should_panic(expected = "assertion `left == right` failed")]
+fn omitted_lookup_fails_the_same_independent_map_property() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            OMIT_INDEX_LOOKUP.set(false);
         }
     }
+    let _restore = Restore;
+    OMIT_INDEX_LOOKUP.set(true);
+    assert_index_matches_map(&["".into(), "é".into(), "éx".into()]);
 }
 
 #[test]
@@ -181,4 +217,48 @@ fn index_native_custody_outlives_its_preparation_and_retires_with_the_tree() -> 
     // All native allocations must have returned to this original owner.
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn denied_index_claim_does_not_allocate_or_change_the_tree() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = acyclic_fs::performance::work_budget(1024 * 1024, 1024 * 1024);
+    // The ledger and the leaf are admitted; the key's claim must be denied.
+    budget.allocation_operations = 2;
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&original)?,
+    );
+    let baseline = original.live_allocation_bytes();
+    let mut index = super::super::intent_index::IntentIndex::default();
+    let mut work = Some(&mut observer as &mut dyn HistoryIo);
+    let mut quota = CodecQuota::new(&mut work, 0)?;
+    let mut rejected = None;
+    let cost = acyclic_test_support::measure(|| {
+        rejected = Some(index.insert_with("denied", 0, &mut quota, |_| Ok(())));
+    });
+    assert!(rejected.unwrap().is_err());
+    assert_eq!(index.get("denied"), None);
+    assert_eq!(cost.count_total, 0);
+    assert_eq!(cost.bytes_total, 0);
+    drop(quota);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+#[should_panic(expected = "assertion `left == right` failed")]
+fn copying_before_admission_fails_the_same_denied_claim_pin() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            COPY_BEFORE_ADMISSION.set(false);
+        }
+    }
+    let _restore = Restore;
+    COPY_BEFORE_ADMISSION.set(true);
+    denied_index_claim_does_not_allocate_or_change_the_tree().unwrap();
 }
