@@ -226,6 +226,8 @@ impl PiTaskRuntime {
             stream,
             filesystem,
             journal,
+            // Pi tasks publish into their created scratch volume, never journal storage.
+            None,
             &authority.verifier,
             &authority.signed,
             &authority.scope,

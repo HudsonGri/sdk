@@ -56,16 +56,24 @@ pub fn fail_cut_truncation(fail: bool) {
 impl LocalStream {
     /// Routes every later journal append of this provider through `cut`.
     /// Every frame written so far must already be flushed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a written frame is not yet flushed, when the journal lock
+    /// is poisoned, or when this provider's persistence is already cut.
     pub fn cut_persistence(&self, cut: Arc<dyn PersistenceCut>) {
         {
-            let mut journal = self.inner.journal.lock().expect("journal lock");
-            assert!(
-                journal
-                    .flushed_sequence
-                    .is_some_and(|cut| cut >= journal.appended),
-                "a frame written before the cut is not flushed"
-            );
-            journal.flushed = journal.bytes;
+            let journal = self.inner.journal.lock();
+            assert!(journal.is_ok(), "journal lock poisoned");
+            if let Ok(mut journal) = journal {
+                assert!(
+                    journal
+                        .flushed_sequence
+                        .is_some_and(|cut| cut >= journal.appended),
+                    "a frame written before the cut is not flushed"
+                );
+                journal.flushed = journal.bytes;
+            }
         }
         assert!(
             self.inner.persistence_cut.set(cut).is_ok(),
