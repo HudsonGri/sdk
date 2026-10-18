@@ -439,20 +439,26 @@ proptest! {
     fn refused_work_never_scans_an_uncharged_path_prefix(count in 4usize..257) {
         let kinds = kinds();
         let entries: Vec<_> = (0..count).map(|index| (format!("/p{index:04}"), 3)).collect();
+        for exhausted in [false, true] {
         let work = NativeMaterializationWork::new(WorkBudget {
-            items_examined: 0, ..WorkBudget::UNBOUNDED
+            items_examined: if exhausted { u64::MAX } else { 0 }, ..WorkBudget::UNBOUNDED
         }, &CancellationToken::new()).unwrap();
+        if exhausted {
+            capture_charge(&work, crate::materializer::NativeResourceCredit::Items.delta(u64::MAX)).unwrap();
+        }
+        let before = work.receipt().items_examined;
         let mut input = states(&kinds, &entries);
         PATH_COMPARISONS.set(0);
         prop_assert!(sort_capture_states(&mut input, &work).is_err());
         let oracle = |comparisons, charged| comparisons == 0 && charged == 0;
-        prop_assert!(oracle(PATH_COMPARISONS.get(), work.receipt().items_examined));
+        prop_assert!(oracle(PATH_COMPARISONS.get(), work.receipt().items_examined - before));
         // The rejected selector restores the old uncharged windows scan.
         for pair in input.windows(2) {
             path_comparison();
             prop_assert!(pair[0].1 < pair[1].1);
         }
-        prop_assert!(!oracle(PATH_COMPARISONS.get(), work.receipt().items_examined));
+        prop_assert!(!oracle(PATH_COMPARISONS.get(), work.receipt().items_examined - before));
+        }
     }
 }
 
