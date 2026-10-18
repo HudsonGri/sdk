@@ -36,7 +36,7 @@ struct Trace {
     dispatches: Vec<u8>,
     files: Vec<u8>,
     jsonl: Vec<u8>,
-    durable: Vec<u8>,
+    durable: BTreeMap<String, (bool, Vec<u8>)>,
 }
 
 fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
@@ -96,7 +96,6 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
         ("dispatches", &left.dispatches, &right.dispatches),
         ("files", &left.files, &right.files),
         ("jsonl", &left.jsonl, &right.jsonl),
-        ("durable", &left.durable, &right.durable),
     ] {
         if left != right {
             if name == "files" {
@@ -119,6 +118,21 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
             ));
         }
     }
+    if left.durable != right.durable {
+        for name in left.durable.keys().chain(right.durable.keys()) {
+            match (left.durable.get(name), right.durable.get(name)) {
+                (Some((left_kind, left)), Some((right_kind, right))) => {
+                    if left_kind != right_kind || left != right {
+                        return Err(format!(
+                            "{write_difference:?}; durable {name} (symlink {left_kind}, {right_kind}): {}",
+                            byte_difference(left, right)
+                        ));
+                    }
+                }
+                _ => return Err(format!("{write_difference:?}; durable path {name} missing")),
+            }
+        }
+    }
     write_difference.map_or(Ok(()), Err)
 }
 
@@ -135,7 +149,7 @@ fn byte_difference(left: &[u8], right: &[u8]) -> String {
     format!("byte {offset}: {:?} != {:?}", context(left), context(right))
 }
 
-fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
+fn durable_bytes(directory: &Path) -> Result<BTreeMap<String, (bool, Vec<u8>)>> {
     let mut pending = vec![directory.to_path_buf()];
     let mut files = BTreeMap::new();
     while let Some(path) = pending.pop() {
@@ -166,7 +180,7 @@ fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
             }
         }
     }
-    serde_json::to_vec(&files).map_err(storage)
+    Ok(files)
 }
 
 fn integer_array(root: &serde_json::Value) -> bool {
@@ -367,8 +381,19 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
     runtime.block_on(async {
         tokio::time::pause();
         let first = replay(71, false, false).await?;
-        let second = replay(71, false, false).await?;
+        let mut second = replay(71, false, false).await?;
         same_trace(&first, &second).expect("same seed diverged");
+        // Comparing held bytes must still detect even a one-bit disk mutation.
+        let (_, bytes) = second
+            .durable
+            .values_mut()
+            .find(|(_, bytes)| !bytes.is_empty())
+            .expect("production durable bytes");
+        bytes[0] ^= 1;
+        assert!(
+            same_trace(&first, &second).is_err(),
+            "one-bit durable mutation escaped the replay oracle"
+        );
         assert!(
             !first.boundaries.is_empty(),
             "production boundaries were bypassed"
