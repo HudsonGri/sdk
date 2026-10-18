@@ -152,6 +152,9 @@ impl Schedule {
 
     /// Instruments only this explicitly scoped future and its owned descendants.
     pub async fn scope<F: Future>(&self, future: F) -> F::Output {
+        if let Some(wall) = self.0.state().wall.as_mut() {
+            wall.start();
+        }
         let future = CURRENT.scope(
             Some(Context {
                 schedule: self.clone(),

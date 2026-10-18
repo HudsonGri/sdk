@@ -425,7 +425,8 @@ pub(crate) fn barrier_sync(_file: &File) -> io::Result<()> {
 
 #[cfg(unix)]
 pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
-    sync_file(&File::open(path)?, durability, None)
+    // sync_parent owns the fault boundary; never wrap the flush a second time.
+    sync_file_impl(&File::open(path)?, durability, None)
 }
 
 #[cfg(windows)]
@@ -441,5 +442,5 @@ pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Resul
         .share_mode(FILE_SHARE_READ_WRITE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
-    sync_file(&directory, durability, None)
+    sync_file_impl(&directory, durability, None)
 }

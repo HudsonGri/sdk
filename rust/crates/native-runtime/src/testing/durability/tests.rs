@@ -127,6 +127,74 @@ fn physical_write_accounting_precedes_acknowledgement_loss() {
     }
 }
 
+// The public parent flush must own exactly one boundary, including when reached
+// by namespace publication. An outer After cut must reach the physical flush.
+#[cfg(target_os = "linux")]
+fn parent_flush_cut(fault: Option<DurableFault>, nested: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let (schedule, _) = Schedule::seeded(71);
+    if let Some(fault) = fault {
+        schedule.cut_at(0, fault);
+    }
+    let result = runtime().block_on(schedule.scope(async {
+        let flush = || crate::sync_parent(directory.path(), crate::Durability::Full);
+        if nested {
+            durable_operation("file:sync_parent", flush)
+        } else {
+            flush()
+        }
+    }));
+    let trace = schedule.durable_writes();
+    assert_eq!(trace.len(), 1, "nested parent flush boundary");
+    assert_eq!(trace[0].operation, "file:sync_parent");
+    let completed = fault.is_none() || fault == Some(DurableFault::After);
+    assert_eq!(
+        trace[0].transferred,
+        completed.then_some(0),
+        "parent flush was skipped"
+    );
+    assert_eq!(result.is_ok(), fault.is_none());
+    if let Some(fault) = fault {
+        let error = result.unwrap_err();
+        let cause = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<InjectedStorageFault>()
+            .unwrap();
+        assert_eq!(
+            (cause.ordinal, cause.operation, cause.fault),
+            (0, "file:sync_parent", fault)
+        );
+        // The lost acknowledgement latches the crash for every later entry.
+        runtime().block_on(schedule.scope(async {
+            assert!(crate::sync_parent(directory.path(), crate::Durability::Full).is_err());
+        }));
+        assert_eq!(schedule.durable_writes(), trace);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parent_flush_has_one_boundary_and_keeps_after_cut_physical_completion() {
+    for fault in [
+        None,
+        Some(DurableFault::Before),
+        Some(DurableFault::After),
+        Some(DurableFault::Failed),
+        Some(DurableFault::DiskFull),
+        Some(DurableFault::Torn(0)),
+    ] {
+        parent_flush_cut(fault, false);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[should_panic(expected = "parent flush was skipped")]
+fn nested_parent_flush_negative_control() {
+    parent_flush_cut(Some(DurableFault::After), true);
+}
+
 fn native_control_fault(fault: DurableFault, forget_context: bool) {
     let mut original = tempfile::tempfile().unwrap();
     original.write_all(b"retained").unwrap();
