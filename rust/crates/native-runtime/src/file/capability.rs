@@ -87,6 +87,7 @@ impl NativeFile {
         match result {
             Ok(native) => Ok(Some((native, prepared))),
             Err((error, file)) => {
+                drop(prepared);
                 drop(file);
                 Err(project_error(error))
             }

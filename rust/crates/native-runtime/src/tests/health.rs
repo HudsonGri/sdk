@@ -305,7 +305,7 @@ fn metadata_import_closes_the_file_before_projecting_admission_failure() -> io::
     let result = NativeFile::from_file_with_metadata(
         file,
         Some(NativeFileMeter::Owned(meter)),
-        |_, _| Ok(Some(())),
+        |file, _| Ok(Some(file.try_clone()?)),
         |error| {
             assert!(temporary.reopen().unwrap().try_lock().is_ok());
             projected.set(true);
