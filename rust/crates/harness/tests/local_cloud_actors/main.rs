@@ -2,11 +2,49 @@
 use acyclic_actors::{grpc, wire};
 use acyclic_objects::v1::{ObjectsProvider as _, grpc::GrpcObjects, wire as objects};
 use acyclic_stream::{AppendOutcome, AppendRequest, StreamPath, StreamProvider as _};
+use futures::StreamExt as _;
+use prost::Message as _;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+fn observation_path() -> TestResult<StreamPath> {
+    let scope = serde_json::to_vec(&["staging", "00000000-0000-4000-8000-0000000000e1", ACTOR])?;
+    Ok(StreamPath::new(format!(
+        ".acyclic/actors-observation/{:x}",
+        Sha256::digest(scope)
+    ))?)
+}
+
+async fn followed_observation(
+    streams: &acyclic_stream::grpc::Client,
+    from: u64,
+    accept: impl Fn(&wire::ActorObservation) -> bool,
+) -> TestResult<(wire::ActorObservation, u64)> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let session = streams.session_client()?;
+        let mut follow = session.follow(observation_path()?, from).await?;
+        let mut next = from;
+        while let Some(record) = follow.next().await {
+            let record = record?;
+            assert_eq!(
+                record.sequence, next,
+                "observation sequence gap or duplicate"
+            );
+            next += 1;
+            let actor = wire::ActorObservation::decode(record.value.as_ref())?;
+            assert_eq!(actor.actor_id, ACTOR);
+            eprintln!("Cloud5326 observation {}: {actor:?}", record.sequence);
+            if accept(&actor) {
+                return Ok((actor, next));
+            }
+        }
+        Err("observation Session ended before the required snapshot".into())
+    })
+    .await?
+}
 const ACTOR: &str = "e2e-actor";
 const EVENTS: &str = "e2e-root/actor-events";
 // Exact code/configuration admitted by the cloud gate's locally minted bearer.
@@ -541,7 +579,7 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "needs Cloud request 11: delivery signals"]
+#[ignore = "pre-merge required-pass Cloud request 3: delivery signals"]
 async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> TestResult {
     let endpoints = endpoints()?;
     let mut actors = published_actor(&endpoints).await?;
@@ -570,6 +608,7 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
         2,
     )?;
     subscriptions(&added, &[subscription(start)])?;
+    let boundary = streams.tail(observation_path()?).await?;
     let receipt = append_events(
         &streams,
         vec![
@@ -580,18 +619,14 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
     .await?;
     assert_eq!(receipt.start, start);
     assert_eq!(receipt.end.checked_sub(receipt.start), Some(2));
-    // Request 11 must supply the pushed completion boundary before these
-    // snapshots can be enabled. They are assertions, never readiness polling.
-    let delivered = observation(
-        actors
-            .inspect_actor(wire::InspectActorRequest {
-                actor_id: ACTOR.into(),
-            })
-            .await?
-            .into_inner()
-            .actor,
-        2,
-    )?;
+    let (delivered, next) = followed_observation(&streams, boundary, |actor| {
+        actor
+            .subscriptions
+            .iter()
+            .any(|sub| sub.subscription_id == "events" && sub.completed_cursor >= receipt.end)
+    })
+    .await?;
+    let delivered = observation(Some(delivered), 2)?;
     let mut expected = subscription(receipt.end);
     expected.recoverable_cursor = start;
     subscriptions(&delivered, &[expected])?;
@@ -612,11 +647,19 @@ async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> T
         2,
     )?;
     subscriptions(&saved, &[subscription(receipt.end)])?;
+    let (followed, _) = followed_observation(&streams, next, |actor| actor == &saved).await?;
+    assert_eq!(
+        followed, saved,
+        "checkpoint reply differs from the retained observation"
+    );
+    eprintln!(
+        "Cloud5326 PASS remote Session delivery, ordered events, exact checkpoint observation, and resumed cursor"
+    );
     Ok(())
 }
 
 #[tokio::test]
-#[ignore = "needs Cloud request 11: retired Pause / paused recovery"]
+#[ignore = "pre-merge required-pass Cloud request 3: retired Pause / paused recovery"]
 async fn paused_subscription_resumes_with_exact_cursor_preservation() -> TestResult {
     // Cloud must supply a genuinely failed, paused fixture subscription;
     // its retired Pause mutation cannot currently construct that precondition.
