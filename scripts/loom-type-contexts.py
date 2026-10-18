@@ -178,9 +178,6 @@ def main():
     for name, selection, flags, prefix, check in CONTEXTS:
         selected = [path for path in models if path.startswith(prefix)]
         if selected:
-            if check:
-                run(["rustup", "target", "add", "--toolchain", TOOLCHAIN, "aarch64-apple-darwin"],
-                    environment, stdout=sys.stderr)
             result.update(analyze(name, selection, flags, selected, environment, check))
             print(name + ": " + str(len(selected)) + " model sources analyzed", file=sys.stderr, flush=True)
             for model in selected:
