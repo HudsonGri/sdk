@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import test from "node:test";
 import { artifact, expectedGate, modelResult, verifyGate, verifyModelCalls } from "./qualify-ci-preflight-fixtures.mjs";
 import { gateQualifications, qualificationGatePlans, qualificationPlan } from "./qualify-mcp-loom.mjs";
@@ -12,7 +13,7 @@ test("every production gate step supplies its artifact and complete test selecti
     const built = artifact(plans, plan.args, "/fixtures");
     assert.equal(built.target.name, plan.target);
     const firstBuild = plans.findIndex(other => JSON.stringify(other.args) === JSON.stringify(plan.args));
-    assert.equal(built.executable, `/fixtures/model-${firstBuild}`);
+    assert.equal(built.executable, join("/fixtures", `model-${firstBuild}`));
     assert.ok(plan.tests.length > 0);
     for (const selected of plan.tests) {
       assert.match(modelResult(plan, selected.args), /test result: ok\. [1-9][0-9]* passed;/);
