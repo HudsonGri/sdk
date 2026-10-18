@@ -374,3 +374,40 @@ async fn hook_approvals_use_the_existing_interaction_before_tool_admission() -> 
     assert!(hooks.journal.2.lock().unwrap().is_empty());
     Ok(())
 }
+
+proptest! {
+    // Hook context gathered per call moves after every result of the step, and
+    // each group keeps its order. Negative control: the gathered order puts a
+    // system message between two results whenever a non-final call has context.
+    #[test]
+    fn step_hook_context_follows_every_result(contexts in prop::collection::vec(0usize..3, 1..6)) {
+        let mut step = Vec::new();
+        let (mut results, mut notes) = (Vec::new(), Vec::new());
+        for (call, count) in contexts.iter().enumerate() {
+            let result = ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Text(format!("result {call}")),
+            };
+            results.push(result.clone());
+            step.push(result);
+            for note in 0..*count {
+                let context = ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(format!("context {call}.{note}")),
+                };
+                notes.push(context.clone());
+                step.push(context);
+            }
+        }
+        let interrupted = step
+            .windows(2)
+            .any(|pair| pair[0].role == ModelRole::System && pair[1].role == ModelRole::Tool);
+        prop_assert_eq!(
+            interrupted,
+            contexts[..contexts.len() - 1].iter().any(|count| *count > 0)
+        );
+        super::super::turn::context_after_results(&mut step);
+        results.extend(notes);
+        prop_assert_eq!(step, results);
+    }
+}

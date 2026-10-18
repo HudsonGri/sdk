@@ -449,6 +449,9 @@ impl ModelProvider for MockAdapter {
                                 ToolResultContent::Json { value } => {
                                     parts.push(CapturedPart::Json(value.clone()));
                                 }
+                                ToolResultContent::Refused { reason } => {
+                                    parts.push(CapturedPart::Text(reason.clone()));
+                                }
                                 ToolResultContent::Parts { parts: data } => {
                                     for part in data {
                                         match part {

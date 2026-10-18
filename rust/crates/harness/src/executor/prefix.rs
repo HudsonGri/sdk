@@ -159,6 +159,7 @@ impl StockExecution<'_> {
                 break;
             }
         }
+        super::turn::context_after_results(&mut results);
         for result in results {
             stock_vec_push(&mut request.messages, result, self.io)?;
         }

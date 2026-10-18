@@ -60,6 +60,7 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
+            let results = prior_messages.len();
             for (invocation, invocation_index) in calls {
                 match self
                     .resolve_tool_call(
@@ -81,6 +82,7 @@ impl StockExecution<'_> {
                     }
                 }
             }
+            context_after_results(&mut prior_messages[results..]);
         }
         Err(stock_boundary(
             self.io,
@@ -161,4 +163,11 @@ impl StockExecution<'_> {
         })?;
         stock_vec_push(messages, message, self.io)
     }
+}
+
+/// Hook context gathered while a step's tool calls settle follows every
+/// result of that step: a system message between two results would interrupt
+/// the tool exchange. The sort is stable, so each group keeps its order.
+pub(super) fn context_after_results(step: &mut [ModelMessage]) {
+    step.sort_by_key(|message| message.role != ModelRole::Tool);
 }
