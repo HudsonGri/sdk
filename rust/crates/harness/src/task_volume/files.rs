@@ -10,6 +10,15 @@ use std::sync::Arc;
 
 #[cfg(feature = "filesystem")]
 mod created;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native;
+#[cfg(all(
+    test,
+    feature = "filesystem",
+    not(target_arch = "wasm32"),
+    not(acyclic_harness_loom)
+))]
+mod native_tests;
 
 /// The caller's file writer and live queries for one private task volume.
 /// Execution and approval records can only be published by their internal owners.
@@ -17,6 +26,8 @@ pub struct TaskFiles<P: ?Sized> {
     pub(crate) inner: TaskVolume<P>,
     volume: VolumeRef,
     maximum_bytes: u64,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<P: StreamProvider + ?Sized> TaskFiles<P> {
@@ -61,6 +72,8 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
             inner,
             volume: volume.clone(),
             maximum_bytes,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _native_custody: None,
         })
     }
 
@@ -176,6 +189,7 @@ impl<P: StreamProvider + 'static> TaskFiles<P> {
             inner: self.inner.reopen_erased().await?,
             volume: self.volume.clone(),
             maximum_bytes: self.maximum_bytes,
+            _native_custody: None,
         })
     }
 }
@@ -216,5 +230,7 @@ pub(crate) async fn model_files(
         inner: TaskVolume::open(provider, path).await.unwrap(),
         volume,
         maximum_bytes: 4096,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _native_custody: None,
     }
 }
