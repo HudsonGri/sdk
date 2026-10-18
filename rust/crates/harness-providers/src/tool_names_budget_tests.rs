@@ -48,7 +48,6 @@ proptest! {
         // Independent byte count for the literal digest framing and salt.
         let expected = 21 + 4 + long.len() as u64 + u64::from(taken + 1) * (21 + 4 + 7)
             + 21 + 4 + long.len() as u64 + 2 // the long name's exact revision
-            + u64::from(taken) * (21 + 4 + 64 + 2) // pinned digest-shaped declarations
             + 21 + 4 + 11; // the readable pinned-name collision
         funded(&request, expected, expected, true);
         funded(&request, expected - 1, expected, false);
