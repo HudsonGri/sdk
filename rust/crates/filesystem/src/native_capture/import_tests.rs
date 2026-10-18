@@ -311,7 +311,6 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
                 drop(probe);
                 let result = result.unwrap().map_err(|error| format!("{error:?}"));
                 let receipt = work.receipt();
-                let live_after = work.live_allocation_bytes();
                 let mut bytes = Vec::new();
                 if let Ok(ranges) = &result {
                     for (_, content) in ranges {
@@ -337,6 +336,17 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
                         bytes.extend_from_slice(read.bytes.as_ref());
                     }
                 }
+                let result = result.map(|ranges| {
+                    let output: Vec<_> = ranges
+                        .iter()
+                        .map(|(range, content)| (*range, content.root(), content.logical_bytes()))
+                        .collect();
+                    let owned = vector_bytes(&ranges);
+                    drop(ranges);
+                    scope.native.clone().release(owned).unwrap();
+                    output
+                });
+                let live_after = work.live_allocation_bytes();
                 let mut delta = serde_json::to_value(receipt).unwrap();
                 let initial = serde_json::to_value(before).unwrap();
                 for (name, value) in delta.as_object_mut().unwrap() {
@@ -346,6 +356,11 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
                 }
                 delta["itemsExamined"] =
                     serde_json::json!(delta["itemsExamined"].as_u64().unwrap() - health_items);
+                drop(scope);
+                assert_eq!(
+                    work.live_allocation_bytes(),
+                    NativeMaterializationWork::accounting_state_bytes()
+                );
                 (
                     result,
                     staged,
