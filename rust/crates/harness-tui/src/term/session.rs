@@ -221,7 +221,12 @@ mod tests {
         let pty = rustix_openpty::openpty(None, None)?;
         let mut master = File::from(pty.controller);
         rustix::fs::fcntl_setfl(&master, OFlags::NONBLOCK)?;
-        let (mut tty, output) = Tty::from_file(File::from(pty.user))?.split();
+        let (tty, output) = Tty::from_file(File::from(pty.user))?.split();
+        let state = Arc::clone(&tty.state);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let mut events = runtime.block_on(async { tty.events() })?;
         let size = Size::new(20, 4);
         let mut terminal = FrameTerminal::new(output, size)?;
         let mut draw = || terminal.draw(size, |frame| frame.set_cursor_position((3, 2)));
@@ -244,13 +249,17 @@ mod tests {
                 if tracked_read {
                     // Negative control: the former polling path classified a
                     // read as outside output through the generic writer.
-                    let count = lifecycle::active(&tty.state, |guard| {
+                    let count = lifecycle::active(&state, |guard| {
                         guard.writer().receive(&mut [0; 8], deadline)
                     })?;
                     assert_eq!(count, 1);
                 } else {
-                    let events = tty.read_events(deadline)?;
-                    assert_eq!(events.len(), 1);
+                    let event = runtime.block_on(std::future::poll_fn(|cx| {
+                        futures_core::Stream::poll_next(std::pin::Pin::new(&mut events), cx)
+                    }));
+                    assert!(
+                        matches!(event, Some(Ok(InputEvent::Key(key))) if key.code == KeyCode::Char('x'))
+                    );
                 }
                 draw()?;
                 redundant += drain(&mut master)?.len();
