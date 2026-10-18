@@ -25,7 +25,7 @@ where
                     .ok_or_else(|| Self::error(Error::MutationContract))?,
             ))?;
             result.ensure_for_push(entries.len(), self.accounting)?;
-            let page = self.write_page(&PageRef::<F>::Leaf(chunk)).await?;
+            let page = self.write_page(&PageRef::<F>::Leaf(chunk.into())).await?;
             push_summary(&mut result, first, page, self.accounting)?;
         }
         Ok(result)
@@ -59,7 +59,9 @@ where
                     .ok_or_else(|| Self::error(Error::MutationContract))?
                     .first,
             )?;
-            let page = self.write_page(&PageRef::<F>::Internal(chunk)).await?;
+            let page = self
+                .write_page(&PageRef::<F>::Internal(chunk.into()))
+                .await?;
             push_summary(&mut result, first, page, self.accounting)?;
         }
         Ok(result)
@@ -71,7 +73,7 @@ where
     ) -> Result<ObjectId, crate::FsError> {
         if summaries.value.is_empty() {
             summaries.retire(self.accounting)?;
-            return self.write_page(&PageRef::<F>::Leaf(&[])).await;
+            return self.write_page(&PageRef::<F>::Leaf((&[]).into())).await;
         }
         let mut height = self.maximum_seen_height;
         while summaries.value.len() > 1 {

@@ -89,8 +89,8 @@ impl<F: Format> Clone for Page<F> {
 }
 
 pub(crate) enum PageRef<'a, F: Format> {
-    Leaf(&'a [F::Value]),
-    Internal(&'a [Child<F::Key>]),
+    Leaf(entries::Entries<'a, F::Value>),
+    Internal(entries::Entries<'a, Child<F::Key>>),
 }
 
 pub(crate) trait Mutation<F: Format> {
@@ -769,6 +769,7 @@ pub(crate) fn children_within<K: Ord>(
 #[path = "tests/persistent_btree.rs"]
 mod tests;
 
+pub(crate) mod entries;
 mod leaf;
 mod pages;
 #[cfg(test)]
