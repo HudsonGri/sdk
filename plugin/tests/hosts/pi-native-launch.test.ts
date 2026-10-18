@@ -4,12 +4,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, test } from "bun:test";
 import { installedNativeFixture } from "./pi-native-fixture.ts";
+import { nativePiSession } from "./pi-rpc-fixture.ts";
 
 const provider = `
 import { readFileSync, appendFileSync } from "node:fs";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 export default function(pi) {
-  const trace=record=>appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({at:Date.now(),...record})+"\\n");
+  const trace=record=>appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({at:Date.now(),pid:process.pid,...record})+"\\n");
   const native=Boolean(process.env.ACYCLIC_HARNESS_BINDING);
   const task=native ? JSON.parse(readFileSync(process.env.ACYCLIC_HARNESS_BINDING,"utf8")).task : null;
   let session, descendant=false;
@@ -80,26 +81,31 @@ export default function(pi) {
 
 // Each case keeps its own checkout, SDK session and LocalHarness. Establish
 // authenticated owner readiness once, before the unchanged operation deadlines.
-const fixtures=new Map<boolean,{directory:string,oracle:string,passed:boolean,fixture?:Awaited<ReturnType<typeof installedNativeFixture>>}>();
+const fixtures=new Map<boolean,{directory:string,oracle:string,passed:boolean,fixture?:Awaited<ReturnType<typeof installedNativeFixture>>,native?:ReturnType<typeof nativePiSession>}>();
 beforeAll(async()=>{
   const results=await Promise.allSettled([false,true].map(async selected=>{
     const directory=mkdtempSync(fileURLToPath(new URL(".pi-native-launch-",import.meta.url)));
     const oracle=join(directory,"native-oracle.jsonl");
-    const state={directory,oracle,passed:false,fixture:undefined as Awaited<ReturnType<typeof installedNativeFixture>>|undefined};
+    const state={directory,oracle,passed:false,fixture:undefined as Awaited<ReturnType<typeof installedNativeFixture>>|undefined,native:undefined as ReturnType<typeof nativePiSession>|undefined};
     fixtures.set(selected,state);
     state.fixture=await installedNativeFixture(directory,provider,{ACYCLIC_NATIVE_ORACLE:oracle,...(selected?{ACYCLIC_NATIVE_CUT:"1"}:{})});
     await state.fixture.start();
+    state.native=nativePiSession(state.fixture);
+    await state.native.ready;
   }));
   const errors=results.filter(result=>result.status==="rejected").map(result=>result.reason);
   if(errors.length) throw new AggregateError(errors,"native owner fixture readiness failed");
 });
 afterAll(async()=>{
-  const results=await Promise.allSettled([...fixtures.values()].map(async ({fixture,directory,oracle,passed})=>{
+  const results=await Promise.allSettled([...fixtures.values()].map(async ({fixture,native,directory,oracle,passed})=>{
     // Bun's test deadline does not throw through the pending test promise.
     // Stop writers first, and keep diagnostics from bypassing owned cleanup.
-    await fixture?.close();
+    const failures:unknown[]=[];
+    try {await native?.close();} catch(error) {failures.push(error);}
+    try {await fixture?.close();} catch(error) {failures.push(error);}
     try {
       if(!passed) reportTrace(oracle);
+      if(failures.length) throw new AggregateError(failures,"native CLI and provider shutdown failed");
     } finally {
       rmSync(directory,{recursive:true});
     }
@@ -109,13 +115,17 @@ afterAll(async()=>{
 });
 
 for(const selected of [false,true]) test.concurrent(`the installed Pi spawn tool launches and reaps its own ${selected?"selected":"fresh"} native child`, async () => {
-  const {directory,oracle,fixture}=fixtures.get(selected)!;
-  assert.ok(fixture);
+  const {directory,oracle,fixture,native}=fixtures.get(selected)!;
+  assert.ok(fixture && native);
   try {
-    const answer=await fixture.run("ROOT_ONLY_NATIVE_INSTRUCTION Launch and wait for the automatic native child.");
+    assert.ok(!existsSync(oracle),"native readiness must not run the scripted model early");
+    const answer=await native.run("ROOT_ONLY_NATIVE_INSTRUCTION Launch and wait for the automatic native child.");
     const reported=JSON.parse(answer.stdout.trim());
     assert.equal(reported.marker,"automatic-native-launch");
     const records=readFileSync(oracle,"utf8").trim().split("\n").map(line=>JSON.parse(line));
+    const root=records.filter(record=>record.phase==="root");
+    assert.deepEqual(root.map(record=>record.step),["spawn","wait","diff","complete"]);
+    assert.ok(root.every(record=>record.pid===native.pid),"one native host must own the complete original turn");
     const children=records.filter(record=>record.phase==="start");
     assert.equal(children.length,selected?2:1,"native custody launched a child more than once");
     assert.equal(children[0].task,reported.child);
@@ -152,6 +162,7 @@ for(const selected of [false,true]) test.concurrent(`the installed Pi spawn tool
       assert.equal(readResult.stdout,"automatic native child");
       assert.ok(!existsSync(join(fixture.project,"automatic-grandchild.txt")));
     }
+    await native.close();
     await fixture.close();
     assert.deepEqual(fixture.resources(),{mounts:[],processes:[]});
     fixtures.get(selected)!.passed=true;
