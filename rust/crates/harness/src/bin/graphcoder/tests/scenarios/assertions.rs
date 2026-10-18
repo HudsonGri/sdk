@@ -431,6 +431,7 @@ mod active_tests {
 }
 
 pub fn files(case: &Value, workspace: &Path) -> TestResult {
+    let mut observed = BTreeMap::new();
     for (path, expected) in case["expect"]["files"].as_object().into_iter().flatten() {
         let actual = match std::fs::read(workspace.join(path)) {
             Ok(bytes) => Some(bytes),
@@ -439,6 +440,42 @@ pub fn files(case: &Value, workspace: &Path) -> TestResult {
         };
         if actual.as_deref() != expected.as_str().map(str::as_bytes) {
             return Err(format!("workspace {path}: expected {expected}, got {actual:?}").into());
+        }
+        observed.insert(path.clone(), actual);
+    }
+    if let Some(expected) = case["expect"]["diffs"].as_object() {
+        let mut paths: std::collections::BTreeSet<_> = observed.keys().cloned().collect();
+        paths.extend(
+            case["seed"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(path, _)| path.clone()),
+        );
+        let mut actual = serde_json::Map::new();
+        for path in paths {
+            let base = case["seed"][&path].as_str().map(str::as_bytes);
+            let current = match observed.get(&path) {
+                Some(bytes) => bytes.clone(),
+                None => match std::fs::read(workspace.join(&path)) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                },
+            };
+            if let Some(diff) = acyclic_harness::client::FileDiff::between(
+                base,
+                current.as_deref(),
+                65_536,
+                65_536,
+            )? {
+                actual.insert(path, serde_json::to_value(diff)?);
+            }
+        }
+        if &actual != expected {
+            return Err(
+                format!("checkout diffs differ: expected {expected:?}, got {actual:?}").into(),
+            );
         }
     }
     Ok(())
