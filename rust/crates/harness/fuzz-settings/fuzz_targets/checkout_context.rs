@@ -39,6 +39,7 @@ fuzz_target!(|input: &[u8]| {
         let rendered = catalog::frame(&[skill]).unwrap();
         assert_eq!(rendered.matches('<').count(), 2);
         assert_eq!(rendered.lines().count(), 6);
+        assert!(!rendered.contains(['\u{B}', '\u{C}', '\r', '\u{85}', '\u{2028}', '\u{2029}']));
     }
     assert!(porcelain::summarize(input, true).ends_with("more changes not counted"));
     let _ = porcelain::summarize(input, false);
