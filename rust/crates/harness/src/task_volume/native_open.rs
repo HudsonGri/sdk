@@ -92,6 +92,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             commit: record.commit_id,
             ..Index::default()
         };
+        drop(_header_hold);
+        drop(record);
         // Freeze one admitted tail. Records appended after entry belong to
         // subsequent refreshes, rather than extending this reopen indefinitely.
         let tail = tail.max(1);
@@ -174,7 +176,11 @@ fn replay(
     index.next = next;
     index.commit = record.commit_id;
     let after = slots(index, &key, &owner);
-    io.release(reserved + before - after)?;
+    let unused = reserved
+        .checked_add(before)
+        .and_then(|n| n.checked_sub(after))
+        .ok_or(Error::LimitExceeded)?;
+    io.release(unused)?;
     let retained = metadata.bytes();
     io.absorb_native_custody(metadata)?;
     if let Some(previous) = existing {
