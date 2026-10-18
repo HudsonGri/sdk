@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { qualifyCoreOwnersLoom } from "./qualify-mcp-loom.mjs";
 import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
@@ -199,4 +200,28 @@ test("summary checkpoint qualification instruments real locks and requires both 
     assert.deepEqual(calls[1], ["model-binary", ["local::compact::checkpoints::model::"]]);
   }
   assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /node scripts\/qualify-mcp-loom\.mjs --summary-checkpoints --all-features/);
+});
+
+test("owner qualification requires every real-lock model and control within ten seconds", () => {
+  for (const count of [0, 1, 5, 7, 8, 9]) {
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.deepEqual(args, ["test", "--locked", "--message-format=json", "-p", "acyclic-fs",
+          "--lib", "--no-run", "--no-default-features", "--features", "local,memory,model-checking"]);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
+      }
+      assert.deepEqual(args, ["core_state::owners::models::"]);
+      assert.equal(options.timeout, 9500);
+      return { status: 0, stderr: "", stdout: summary(count, 0, 100) };
+    };
+    if (count === 8) qualifyCoreOwnersLoom(run);
+    else assert.throws(() => qualifyCoreOwnersLoom(run), /requires a nonzero/);
+  }
+  assert.throws(() => qualifyCoreOwnersLoom((command) => command === "cargo"
+    ? { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) }
+    : { error: new Error("model timeout") }), /model timeout/);
+  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --core-owners/);
 });
