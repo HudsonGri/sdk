@@ -196,8 +196,8 @@ def qualify(build_log):
         env_original = env_source.read_bytes()
         env_source.write_bytes(env_original.replace(b"use porcelain::summarize;", b"pub(super) use porcelain::summarize;"))
         try:
-            command = ["cargo", "test", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "--features", FEATURES,
-                       "--lib", "--test", "cli", "--no-run", "--message-format=json-render-diagnostics"]
+            command = ["cargo", "test", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
+                       "--lib", "--test", "cli", "--test", "context-discovery", "--no-run", "--message-format=json-render-diagnostics"]
             start = time.monotonic()
             with build_log.open("w") as output:
                 result = subprocess.run(command, cwd=ROOT, stdout=output)
@@ -219,17 +219,21 @@ def qualify(build_log):
         record = json.loads(line)
         if record.get("reason") == "compiler-artifact" and record.get("executable") and record["profile"]["test"]:
             artifacts[record["target"]["name"]] = record["executable"]
-    for target, test_filter in [("acyclic_harness", "local::context::"),
+    for target, test_filter in [("acyclic_fs", "lazy_workspace::tests::latest::"),
+                                ("acyclic_harness", "executor::composition::"),
+                                ("context-discovery", ""),
+                                ("acyclic_harness", "local::context::"),
                                 ("acyclic_harness", "context::manifest::tests::skill_counts_are_admitted_without_overflow"),
                                 ("acyclic_harness", "context::text::"),
                                 ("acyclic_harness_providers", "tests::admission_tests::byte_model_counter_charges_a_catalog_at_most_its_bytes"),
                                 ("acyclic_harness_providers", "tests::contract_tests::"),
+                                ("acyclic_harness_providers", "codex_count::"),
                                 ("acyclic_harness", "context::discovery::frontmatter::tests::"),
                                 ("acyclic_harness", "context::skill_catalog::"),
                                 ("acyclic_harness", "context::manifest::catalog::"),
                                 ("acyclic_harness", "local::tests::environment::"), ("cli", "")]:
         run([artifacts[target], test_filter], timeout=10, tests=True)
-    run(["cargo", "check", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "--features", FEATURES,
+    run(["cargo", "check", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
          "--lib", "--tests", "--target", "x86_64-pc-windows-gnu"])
     fuzz = ROOT / "rust/crates/harness/fuzz-settings"
     run(["cargo", "+nightly-2026-07-01", "fuzz", "build", "checkout_context", "--dev",

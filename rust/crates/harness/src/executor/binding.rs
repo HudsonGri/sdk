@@ -2,6 +2,18 @@ use super::*;
 
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
+        if self
+            .stock
+            .catalog_policy
+            .as_ref()
+            .is_some_and(|bound| bound != &self.stock.catalog_policy_reserve())
+        {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Conflict,
+                "set compaction policy before binding the context manifest",
+            ));
+        }
         self.verify_summary_destination()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_work().is_some()

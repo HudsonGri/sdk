@@ -459,6 +459,9 @@ pub struct StockExecutor {
     // publish private summaries, and none elsewhere. An explicit policy is
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
+    // Binding freezes catalog sizing. A later builder change must fail before
+    // effects, rather than dispatching a catalog sized for another reserve.
+    catalog_policy: Option<Option<u32>>,
     reconciliation_only: bool,
 }
 

@@ -6,6 +6,7 @@ cargo test -p acyclic-harness --features "$features" --test client-query --test 
 cargo test -p acyclic-harness --features "$features" --test client-commands --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py client_command_session::
 cargo test -p acyclic-harness --features "$features" --test context-discovery manifest::
+cargo test -p acyclic-fs --lib lazy_workspace::tests::latest::
 cargo test -p acyclic-harness --features "$features" --test default_tools
 cargo test -p acyclic-harness --features "$features" --test git_executor facade_commits_branches_merges_and_inspects_managed_files
 cargo test -p acyclic-harness --features "$features" --test main saved_tool_metadata::

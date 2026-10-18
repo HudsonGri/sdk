@@ -1,6 +1,6 @@
-//! Admission is proven against the counting contract, not a tokenizer: for
-//! the same request, every shipping counter reports at least the input tokens
-//! its provider charges. These rows drive each real counter in this crate.
+//! Admission arithmetic under an assumed counting contract. These rows drive
+//! the real adapters with synthetic count routes and usage. They test wiring
+//! and admission boundaries, not live provider tokenization or billing.
 use super::*;
 use crate::counting::wire;
 use acyclic_harness::context::{CatalogSkill, SkillCatalog, ThresholdCompaction};
@@ -81,15 +81,17 @@ fn count(provider: &ResolvedModel, request: &PreparedModelRequest) -> u64 {
         .input_tokens
 }
 
-/// Every shipping counter, each on the requests whose charge is known.
+/// Every shipping counter against the fixture service's synthetic charges.
 fn rows() -> Vec<Row> {
     let mut rows = Vec::new();
     for (adapter, _) in fixtures() {
         let (provider, _) = provider(adapter, 200);
         let (request, dispatch) = request(&provider).unwrap();
-        // Recorded usage: what the provider charged for this exact request.
+        // Synthetic usage from the scripted response (independent of input).
         let events = futures::executor::block_on(
-            provider.generate(request.clone(), dispatch).try_collect::<Vec<_>>(),
+            provider
+                .generate(request.clone(), dispatch)
+                .try_collect::<Vec<_>>(),
         )
         .unwrap();
         let recorded = events
@@ -106,7 +108,7 @@ fn rows() -> Vec<Row> {
             counted: count(&provider, &request),
             charged: recorded,
         });
-        // The provider's own count of each catalog request.
+        // The fixture service's byte-based count of each catalog request.
         for skills in [0, 1, 40, 300] {
             let request = with_system(&request, &catalog(skills));
             rows.push(Row {
@@ -129,7 +131,13 @@ fn recorded_inputs() -> [(&'static str, String, u64, bool); 4] {
     let cjk: String = (0x20000..0x20010).filter_map(char::from_u32).collect();
     let emoji = "\u{1f9d1}\u{200d}\u{1f680}\u{1f469}\u{1f3fd}\u{200d}\u{1f52c}\u{1fae0}\u{1fabf}\u{1f9a9}\u{1f9cc}\u{1faf6}\u{1f3ff}\u{1faac}\u{1f6fb}\u{1f9d1}\u{1f3fb}\u{200d}\u{1f9af}";
     [
-        ("ASCII", "Draft release notes from the merged pull requests and list breaking changes first. ".repeat(4), 57, false),
+        (
+            "ASCII",
+            "Draft release notes from the merged pull requests and list breaking changes first. "
+                .repeat(4),
+            57,
+            false,
+        ),
         ("supplementary CJK", cjk.repeat(2), 96, true),
         ("emoji", emoji.repeat(3), 132, true),
         ("base64", BASE64.into(), 175, true),
@@ -153,11 +161,14 @@ fn codex_rows() -> Vec<(Row, Option<u64>)> {
     let mut rows = Vec::new();
     for skills in [0, 1, 40, 300] {
         let anchor = with_system(&anchor, &catalog(skills));
-        // Usage the response reported for exactly this request.
+        // Synthetic anchor usage; only the delta text counts below are recorded.
         let usage = 5 + 7 * skills as u64;
         let counter = crate::codex_count::Counter::default();
         counter
-            .observe(&anchor, &json!({"usage":{"input_tokens":usage,"output_tokens":3}}))
+            .observe(
+                &anchor,
+                &json!({"usage":{"input_tokens":usage,"output_tokens":3}}),
+            )
             .unwrap();
         rows.push((
             Row {
@@ -173,7 +184,8 @@ fn codex_rows() -> Vec<(Row, Option<u64>)> {
                 role: ModelRole::User,
                 content: ModelContent::Text(text),
             });
-            let extended = PreparedModelRequest::prepare(extended, Limits::default(), None).unwrap();
+            let extended =
+                PreparedModelRequest::prepare(extended, Limits::default(), None).unwrap();
             rows.push((
                 Row {
                     counter: format!("Codex delta, {skills} skills + {name}"),
@@ -190,7 +202,15 @@ fn codex_rows() -> Vec<(Row, Option<u64>)> {
 #[test]
 fn every_counter_admits_only_requests_whose_charge_fits() {
     let rows = rows();
-    assert_eq!(rows.len(), 4 * 5 + if cfg!(target_arch = "wasm32") { 0 } else { 4 * 5 });
+    assert_eq!(
+        rows.len(),
+        4 * 5
+            + if cfg!(target_arch = "wasm32") {
+                0
+            } else {
+                4 * 5
+            }
+    );
     assert_eq!(violations(&rows), Vec::<&str>::new());
     // A counter reporting exactly the charge is admitted at the boundary.
     let exact: Vec<_> = rows
@@ -221,11 +241,13 @@ fn every_counter_admits_only_requests_whose_charge_fits() {
 fn a_third_of_a_token_per_byte_undercounts_dense_input() {
     let dense: Vec<_> = codex_rows()
         .into_iter()
-        .filter_map(|(row, usage)| usage.map(|usage| Row {
-            counter: row.counter,
-            counted: usage + (row.counted - usage).div_ceil(3),
-            charged: row.charged,
-        }))
+        .filter_map(|(row, usage)| {
+            usage.map(|usage| Row {
+                counter: row.counter,
+                counted: usage + (row.counted - usage).div_ceil(3),
+                charged: row.charged,
+            })
+        })
         .collect();
     assert_eq!(dense.len(), 4 * 3);
     assert_eq!(violations(&dense).len(), dense.len());

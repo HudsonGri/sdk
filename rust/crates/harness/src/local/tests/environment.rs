@@ -61,6 +61,60 @@ fn system_text(request: &crate::model::ModelRequest) -> (Vec<String>, Option<usi
 }
 
 #[tokio::test]
+async fn skill_body_size_never_changes_discovery() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let path = ".agents/skills/large/SKILL.md";
+    let header = "---\nname: large\ndescription: metadata only\n---\n";
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, scripted([])))?
+            .state_directory(state.path()),
+    )
+    .await?;
+    let workspace = harness.workspace.as_ref().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work: &work,
+        cancellation: &cancellation,
+    };
+    // Exercise both sides of the bound and a large body. The old whole-file
+    // read is the negative control on the same native view and file.
+    for maximum in [header.len() as u64, 65_536] {
+        for body in [0, 1, 65_536, 131_072] {
+            write(
+                directory.path(),
+                path,
+                &format!("{header}{}", "x".repeat(body)),
+            )?;
+            let skills = harness.checkout_skills(workspace, maximum).await?;
+            assert_eq!(
+                skills,
+                vec![crate::context::CatalogSkill {
+                    name: "large".into(),
+                    description: "metadata only".into(),
+                    path: path.into(),
+                }]
+            );
+            if header.len() as u64 + body as u64 > maximum {
+                assert!(matches!(
+                    workspace
+                        .view()
+                        .read_latest(&format!("/{path}"), maximum, &mut accounting,)
+                        .await,
+                    Err(acyclic_fs::LazyWorkspaceError::TooLarge)
+                ));
+            }
+        }
+    }
+    harness.close().await
+}
+
+#[tokio::test]
 async fn checkout_turns_carry_environment_facts_and_discovered_skills() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
@@ -219,10 +273,8 @@ async fn oversized_skill_catalog_fits_the_model_allowance() -> Result<()> {
         output_tokens: 16_384,
     };
     let provider = Arc::new(
-        ScriptedModelProvider::new([
-            ScriptedTurn::Text("first".into()),
-        ])
-        .with_context_capacity(capacity),
+        ScriptedModelProvider::new([ScriptedTurn::Text("first".into())])
+            .with_context_capacity(capacity),
     );
     let config = || -> Result<LocalHarnessConfig> {
         Ok(

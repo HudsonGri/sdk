@@ -66,14 +66,11 @@ impl LocalHarness {
             for directory in directories {
                 let path = format!("{root}/{directory}/SKILL.md");
                 let bytes = match view
-                    .read_latest(&format!("/{path}"), maximum, &mut accounting)
+                    .read_latest_prefix(&format!("/{path}"), maximum, &mut accounting)
                     .await
                 {
                     Ok(bytes) => bytes,
-                    Err(
-                        acyclic_fs::LazyWorkspaceError::NotRegularFile
-                        | acyclic_fs::LazyWorkspaceError::TooLarge,
-                    ) => continue,
+                    Err(acyclic_fs::LazyWorkspaceError::NotRegularFile) => continue,
                     Err(error) if absent(&error) => continue,
                     Err(error) => return Err(error.into()),
                 };
