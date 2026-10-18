@@ -3,6 +3,15 @@ use acyclic_harness_providers::{HttpRequest, HttpTransport, ReqwestTransport};
 use futures::StreamExt as _;
 use proptest::prelude::*;
 
+fn request(protocol: &str) -> Value {
+    if protocol == "responses" {
+        json!({"model":"parent","stream":true,"input":"HTTP_FAULT_PROBE"})
+    } else {
+        json!({"model":"parent","stream":true,"max_tokens":64,
+            "messages":[{"role":"user","content":"HTTP_FAULT_PROBE"}]})
+    }
+}
+
 proptest! {
     #[test]
     fn status_fault_response_retains_status_and_retry_after(
@@ -67,12 +76,7 @@ async fn a_real_http_fault_consumes_an_attempt_but_preserves_the_model_turn() ->
             "expect":{"request_count":2}});
         let provider = start(&case, protocol, workspace.path()).await?;
         let transport = ReqwestTransport::new()?;
-        let request = if protocol == "responses" {
-            json!({"model":"parent","stream":true,"input":"HTTP_FAULT_PROBE"})
-        } else {
-            json!({"model":"parent","stream":true,"max_tokens":64,
-                "messages":[{"role":"user","content":"HTTP_FAULT_PROBE"}]})
-        };
+        let request = request(protocol);
         let mut bodies = Vec::new();
         for status in [429, 200] {
             let mut response = transport
@@ -110,6 +114,61 @@ async fn a_real_http_fault_consumes_an_attempt_but_preserves_the_model_turn() ->
         lost.injected.clear();
         let error = super::super::assertions::recording(&case, protocol, &lost).unwrap_err();
         assert!(error.to_string().contains("faults were skipped"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reset_is_observable_over_http_and_a_clean_eof_fails_the_same_oracle() -> TestResult {
+    let workspace = tempfile::tempdir()?;
+    for protocol in ["responses", "anthropic"] {
+        for reset in [true, false] {
+            let fault = if reset {
+                Fault::Reset {
+                    prefix: vec!["data: ".into()],
+                }
+            } else {
+                // The old clean-EOF injection must not satisfy the reset oracle.
+                Fault::Malformed {
+                    body: "data: ".into(),
+                }
+            };
+            let case = json!({"turns":[],"faults":[fault],"expect":{"request_count":1}});
+            let provider = start(&case, protocol, workspace.path()).await?;
+            let transport = ReqwestTransport::new()?;
+            let outcome = async {
+                let mut response = transport
+                    .send(HttpRequest {
+                        url: format!(
+                            "{}/{}",
+                            provider.url,
+                            if protocol == "responses" {
+                                "responses"
+                            } else {
+                                "messages"
+                            }
+                        ),
+                        headers: BTreeMap::new(),
+                        body: serde_json::to_vec(&request(protocol))?.into(),
+                    })
+                    .await?;
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.body.next().await {
+                    bytes.extend_from_slice(&chunk?);
+                }
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(bytes)
+            }
+            .await;
+            assert_eq!(outcome.is_err(), reset, "{protocol}: {outcome:?}");
+            if !reset {
+                assert_eq!(outcome?, b"data: ");
+            }
+            let recording = provider.finish().await?;
+            assert_eq!(recording.attempts["parent"], 1);
+            assert_eq!(recording.requests["parent"].len(), 1);
+            assert_eq!(recording.remaining["parent"], 0);
+            super::super::assertions::recording(&case, protocol, &recording)?;
+        }
     }
     Ok(())
 }

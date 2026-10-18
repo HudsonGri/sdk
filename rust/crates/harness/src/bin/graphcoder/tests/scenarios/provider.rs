@@ -203,9 +203,8 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
     let routes = case["routes"].as_object().cloned().unwrap_or_default();
     let protocol = protocol.to_owned();
     let raw = case.get("responses").is_some();
-    let mut faults: VecDeque<Fault> = serde_json::from_value(
-        case.get("faults").cloned().unwrap_or_else(|| json!([])),
-    )?;
+    let mut faults: VecDeque<Fault> =
+        serde_json::from_value(case.get("faults").cloned().unwrap_or_else(|| json!([])))?;
     for fault in &faults {
         fault.validate()?;
     }
@@ -462,7 +461,9 @@ fn fault_response(fault: Fault, width: usize) -> Response<Body> {
             if let Some(seconds) = retry_after {
                 response = response.header("retry-after", seconds);
             }
-            response.body(Body::from("SCRIPTED_HTTP_ERROR_BODY")).unwrap()
+            response
+                .body(Body::from("SCRIPTED_HTTP_ERROR_BODY"))
+                .unwrap()
         }
         Fault::Malformed { body } => Response::builder()
             .header("content-type", "text/event-stream")
@@ -471,11 +472,13 @@ fn fault_response(fault: Fault, width: usize) -> Response<Body> {
         Fault::Reset { prefix } => {
             // A body error terminates the actual HTTP response stream. It is
             // deliberately distinct from a complete response with invalid SSE.
-            let chunks: Vec<_> = prefix.iter()
+            let chunks: Vec<_> = prefix
+                .iter()
                 .flat_map(|part| part.as_bytes().chunks(width))
                 .map(|chunk| Ok::<_, std::io::Error>(chunk.to_vec()))
                 .chain(std::iter::once(Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionReset, "scripted HTTP body reset",
+                    std::io::ErrorKind::ConnectionReset,
+                    "scripted HTTP body reset",
                 ))))
                 .collect();
             Response::builder()
@@ -508,9 +511,18 @@ impl Drop for Provider {
 mod fault_tests;
 
 #[cfg(test)]
+#[path = "inventory.rs"]
+mod inventory;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn enabled_binary_cases_cover_the_current_tool_catalog() -> TestResult {
+        super::inventory::check_catalog()
+    }
 
     proptest! {
         // Routing uses the exact user bytes. A user-role tool result, JSON
