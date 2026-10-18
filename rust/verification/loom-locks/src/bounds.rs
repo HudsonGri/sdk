@@ -92,17 +92,18 @@ fn tokens(stream: TokenStream) -> bool {
                 || ident(Some(token), "assert_negative_control"))
         {
             use syn::parse::Parser;
-            let unbounded = match input.get(index + 1) {
-                Some(TokenTree::Group(arguments))
-                    if arguments.delimiter() == proc_macro2::Delimiter::Parenthesis =>
-                {
-                    syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
-                        .parse2(arguments.stream())
-                        .ok()
-                        .is_some_and(|args| args.first().is_some_and(none))
-                }
-                _ => false,
-            };
+            let unbounded = ident(Some(token), "check_with_bound")
+                && match input.get(index + 1) {
+                    Some(TokenTree::Group(arguments))
+                        if arguments.delimiter() == proc_macro2::Delimiter::Parenthesis =>
+                    {
+                        syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+                            .parse2(arguments.stream())
+                            .ok()
+                            .is_some_and(|args| args.first().is_some_and(none))
+                    }
+                    _ => false,
+                };
             if !unbounded {
                 return true;
             }
