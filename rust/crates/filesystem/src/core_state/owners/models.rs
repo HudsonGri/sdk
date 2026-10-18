@@ -89,13 +89,17 @@ fn concurrent_reopen_preserves_the_joined_owner() {
     });
 }
 
-struct NamespaceLock(Arc<AtomicBool>);
+struct NamespaceLock {
+    locked: Arc<AtomicBool>,
+    tearing_down: Arc<AtomicBool>,
+}
 
 impl Drop for NamespaceLock {
     fn drop(&mut self) {
         // Arc's strong count is already zero when native teardown starts.
+        self.tearing_down.store(true, Ordering::SeqCst);
         loom::thread::yield_now();
-        self.0.store(false, Ordering::SeqCst);
+        self.locked.store(false, Ordering::SeqCst);
     }
 }
 
@@ -103,20 +107,32 @@ fn release_race<const FENCE: bool>() {
     loom::model(|| {
         let registry = Arc::new(Owners::new(BTreeMap::new()));
         let locked = Arc::new(AtomicBool::new(false));
+        let tearing_down = Arc::new(AtomicBool::new(false));
+        let overlap = AtomicBool::new(false);
         let create = || {
-            assert!(
-                !locked.swap(true, Ordering::SeqCst),
-                "owner teardown raced reopen"
-            );
-            Ok(Arc::new(NamespaceLock(locked.clone())))
+            overlap.fetch_or(locked.swap(true, Ordering::SeqCst), Ordering::SeqCst);
+            Ok(Arc::new(NamespaceLock {
+                locked: locked.clone(),
+                tearing_down: tearing_down.clone(),
+            }))
         };
         let first = join::<_, true>(&registry, "namespace".into(), [1; 16], create).unwrap();
         let releasing = {
             let registry = registry.clone();
             loom::thread::spawn(move || release::<_, FENCE>(&registry, &mut Some(first)))
         };
+        // Force the final-strong-count window rather than letting reopen retain
+        // the first owner before its destructor starts. With the fence, reopen
+        // must wait for teardown; without it, loom must find an overlapping lock.
+        while !tearing_down.load(Ordering::SeqCst) {
+            loom::thread::yield_now();
+        }
         let current = join::<_, true>(&registry, "namespace".into(), [1; 16], create).unwrap();
         releasing.join().unwrap();
+        assert!(
+            !overlap.load(Ordering::SeqCst),
+            "owner teardown raced reopen"
+        );
         let again = join::<_, true>(&registry, "namespace".into(), [1; 16], || {
             panic!("reopen lost its owner")
         })
