@@ -82,7 +82,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
 printf '%s\n' "${RUSTFLAGS:-}" >>"${FAKE_RUSTFLAGS_LOG:-/dev/null}"
 if [[ " $* " == *' --message-format=json '* ]]; then
-  exec node "$FAKE_MODEL_FIXTURE" cargo "$FAKE_MODEL_FIXTURE_DIR" "$@"
+  exec "$FAKE_MODEL_FIXTURE_DIR/cargo" "$@"
 elif [[ "$1" == test ]]; then
   case "${FAKE_MODEL_RESULTS:-complete}" in
     missing) ;;
@@ -183,14 +183,35 @@ EOF
 chmod +x "$gate/bin/cargo-nextest"
 export FAKE_MODEL_FIXTURE="$root/scripts/qualify-ci-preflight-fixtures.mjs"
 export FAKE_MODEL_FIXTURE_DIR="$gate"
-node "$FAKE_MODEL_FIXTURE" prepare "$gate"
-(
-  cd "$root"
-  SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-    FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" PATH="$gate/bin:$work/bin:$PATH" \
-    bash scripts/qualify-ci.sh gate
-)
-node "$FAKE_MODEL_FIXTURE" verify "$gate"
+model_gate() {
+  : >"$gate/cargo.log"
+  : >"$gate/flags.log"
+  node "$FAKE_MODEL_FIXTURE" prepare "$gate"
+  (
+    cd "$root"
+    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
+      FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" PATH="$gate/bin:$work/bin:$PATH" \
+      bash "$1" gate
+  ) >"$gate/model-gate.stdout" 2>&1 || return 1
+  node "$FAKE_MODEL_FIXTURE" verify "$gate" 2>"$gate/model-gate.stderr"
+}
+if ! model_gate scripts/qualify-ci.sh; then
+  cat "$gate/model-gate.stdout" "$gate/model-gate.stderr" >&2
+  exit 1
+fi
+# Controls: a flag or a command added only to the shell gate is rejected.
+for mutation in 's/^    nextest --workspace/    RUSTFLAGS="--cfg added" &/' \
+  's/^    node scripts\/qualify-mcp-loom\.mjs --gate$/    cargo check --locked -p added\n&/'; do
+  sed "$mutation" "$root/scripts/qualify-ci.sh" >"$gate/qualify-mutated.sh"
+  if cmp -s "$root/scripts/qualify-ci.sh" "$gate/qualify-mutated.sh"; then
+    echo "gate control did not apply: $mutation" >&2
+    exit 1
+  fi
+  if model_gate "$gate/qualify-mutated.sh"; then
+    echo "model gate accepted: $mutation" >&2
+    exit 1
+  fi
+done
 
 # Independent controls for missing results and a zero-test suite beside a valid one.
 for mode in missing mixed; do

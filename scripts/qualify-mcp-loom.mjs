@@ -171,17 +171,30 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   }
 }
 
-function dispatch(features, run) {
-  if (features.length === 1 && features[0] === "--native-progress") return qualifyNativeProgressLoom(run);
-  if (features[0] === "--e2e-progress") return qualifyE2eProgressLoom(features.length > 1 ? features.slice(1) : undefined, run);
-  if (features[0] === "--hook-lifecycle") return qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined, run);
-  if (features[0] === "--coordinator-origins") return qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined, run);
-  if (features[0] === "--summary-checkpoints") return qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined, run);
-  if (features.length === 1 && features[0] === "--timer") return qualifyTimerLoom(run);
-  if (features.length === 1 && features[0] === "--guest") return qualifyGuestLoom(run);
-  if (features.length === 1 && features[0] === "--memory-accounting") return qualifyMemoryAccountingLoom(run);
-  if (features[0] === "--fs-binding") return qualifyFsBindingLoom(features.slice(1), run);
-  return qualifyMcpLoom(features.length ? features : undefined, run);
+// Every model flag is named here; anything else is a cargo feature selection or an error.
+const fixedModels = {
+  "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
+  "--guest": qualifyGuestLoom, "--memory-accounting": qualifyMemoryAccountingLoom,
+};
+const selectableModels = {
+  "--e2e-progress": qualifyE2eProgressLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
+  "--coordinator-origins": qualifyCoordinatorOriginsLoom, "--summary-checkpoints": qualifySummaryCheckpointsLoom,
+  "--fs-binding": qualifyFsBindingLoom,
+};
+
+function featureSelection(args) {
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--all-features" || args[index] === "--no-default-features") continue;
+    if (args[index] === "--features" && /^[^-]/.test(args[index + 1] ?? "")) { index++; continue; }
+    throw new Error(`unknown qualification argument: ${args[index]}`);
+  }
+  return args.length ? args : undefined;
+}
+
+function dispatch([name, ...rest], run) {
+  if (Object.hasOwn(fixedModels, name) && rest.length === 0) return fixedModels[name](run);
+  if (Object.hasOwn(selectableModels, name)) return selectableModels[name](featureSelection(rest), run);
+  return qualifyMcpLoom(featureSelection(name === undefined ? [] : [name, ...rest]), run);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

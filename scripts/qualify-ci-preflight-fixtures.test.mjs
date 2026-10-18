@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { artifact, modelResult, verifyModelCalls } from "./qualify-ci-preflight-fixtures.mjs";
+import { artifact, expectedGate, modelResult, verifyGate, verifyModelCalls } from "./qualify-ci-preflight-fixtures.mjs";
 import { gateQualifications, qualificationGatePlans, qualificationPlan } from "./qualify-mcp-loom.mjs";
 
 test("every production gate step supplies its artifact and complete test selection", () => {
@@ -48,5 +48,39 @@ test("new qualification steps need no fake cargo mapping", () => {
     const extended = [...plans, added];
     assert.equal(artifact(extended, added.args, "/fixtures").target.name, added.target);
     assert.throws(() => artifact(plans, added.args, "/fixtures"), /unplanned model build/);
+  }
+});
+
+test("an unknown model step or flag in the production plan fails closed", () => {
+  for (const args of [["--new-model"], ["--timer", "--all-features"], ["--guest", "--features", "x"],
+    ["--e2e-progress", "--bogus"], ["--fs-binding", "--features"], ["--features", "--all-features"], ["--release"]]) {
+    assert.throws(() => qualificationPlan(args), /unknown qualification argument/, JSON.stringify(args));
+  }
+  for (const step of [{ args: ["--new-model"] }, { args: ["--memory-accounting", "--all-features"] }]) {
+    gateQualifications.push(step);
+    try { assert.throws(() => qualificationGatePlans(), /unknown qualification argument/); }
+    finally { gateQualifications.pop(); }
+  }
+});
+
+test("a new production step is covered and every gate deviation is rejected", () => {
+  const plans = qualificationGatePlans();
+  const calls = plans.flatMap(plan => plan.tests.map(selected => [plan.args, selected.args]));
+  const log = (expected, models = calls) => [expected.map(([command]) => command), expected.map(([, flags]) => flags), models];
+  verifyGate(plans, ...log(expectedGate(plans)));
+  verifyGate(plans, ...log(expectedGate(plans, "-Cbase")), "-Cbase");
+  gateQualifications.push({ args: ["--e2e-progress", "--all-features"] });
+  let extended;
+  try { extended = qualificationGatePlans(); } finally { gateQualifications.pop(); }
+  const extendedCalls = extended.flatMap(plan => plan.tests.map(selected => [plan.args, selected.args]));
+  verifyGate(extended, ...log(expectedGate(extended), extendedCalls));
+  assert.throws(() => verifyGate(extended, ...log(expectedGate(plans))));
+  const expected = expectedGate(plans);
+  for (const index of expected.keys()) {
+    const flagged = expected.map(([command, flags], at) => [command, at === index ? `${flags} --cfg added`.trim() : flags]);
+    assert.throws(() => verifyGate(plans, ...log(flagged)), undefined, `flag on ${expected[index][0]}`);
+    const extra = [...expected.slice(0, index), ["check --locked -p added", ""], ...expected.slice(index)];
+    assert.throws(() => verifyGate(plans, ...log(extra)), undefined, `command before ${expected[index][0]}`);
+    assert.throws(() => verifyGate(plans, ...log(expected.filter((_, at) => at !== index))));
   }
 });
