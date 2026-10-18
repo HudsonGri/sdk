@@ -107,6 +107,10 @@ pub(crate) fn share_values<T>(
             }
             output.bytes = total;
             logical_bytes = logical_total;
+            accounting.charge(WorkCounters {
+                bytes_copied: usize_to_u64(size_of::<Arc<Entry<T>>>()),
+                ..WorkCounters::UNCHARGED
+            })?;
             output.value.push(entry.value);
         }
         Ok(())
@@ -162,10 +166,9 @@ impl<'a, T> Entries<'a, T> {
         self.len().checked_sub(1).and_then(|index| self.get(index))
     }
     pub(crate) fn iter(self) -> Iter<'a, T> {
-        Iter {
-            entries: self,
-            start: 0,
-            end: self.len(),
+        match self {
+            Self::Plain(values) => Iter::Plain(values.iter()),
+            Self::Shared(values) => Iter::Shared(values.iter()),
         }
     }
     pub(crate) fn search(
@@ -203,45 +206,65 @@ impl<'a, T> Entries<'a, T> {
     }
 }
 
-pub(crate) struct Iter<'a, T> {
-    entries: Entries<'a, T>,
-    start: usize,
-    end: usize,
+pub(crate) enum Iter<'a, T> {
+    Plain(std::slice::Iter<'a, T>),
+    Shared(std::slice::Iter<'a, Arc<Entry<T>>>),
 }
 impl<T> Clone for Iter<'_, T> {
     fn clone(&self) -> Self {
-        Self {
-            entries: self.entries,
-            start: self.start,
-            end: self.end,
+        match self {
+            Self::Plain(values) => Self::Plain(values.clone()),
+            Self::Shared(values) => Self::Shared(values.clone()),
         }
     }
 }
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.start == self.end {
-            return None;
+        match self {
+            Self::Plain(values) => values.next(),
+            Self::Shared(values) => values.next().map(|entry| &entry.value),
         }
-        let value = self.entries.get(self.start);
-        self.start += 1;
-        value
+    }
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        match self {
+            Self::Plain(values) => values.nth(n),
+            Self::Shared(values) => values.nth(n).map(|entry| &entry.value),
+        }
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.end - self.start;
+        let remaining = self.len();
         (remaining, Some(remaining))
+    }
+    fn count(self) -> usize {
+        self.len()
+    }
+    fn last(mut self) -> Option<Self::Item> {
+        self.next_back()
     }
 }
 impl<T> DoubleEndedIterator for Iter<'_, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.start == self.end {
-            return None;
+        match self {
+            Self::Plain(values) => values.next_back(),
+            Self::Shared(values) => values.next_back().map(|entry| &entry.value),
         }
-        self.end -= 1;
-        self.entries.get(self.end)
+    }
+    fn nth_back(&mut self, n: usize) -> Option<Self::Item> {
+        match self {
+            Self::Plain(values) => values.nth_back(n),
+            Self::Shared(values) => values.nth_back(n).map(|entry| &entry.value),
+        }
     }
 }
-impl<T> ExactSizeIterator for Iter<'_, T> {}
+impl<T> ExactSizeIterator for Iter<'_, T> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Plain(values) => values.len(),
+            Self::Shared(values) => values.len(),
+        }
+    }
+}
 impl<T> std::iter::FusedIterator for Iter<'_, T> {}
 
 impl<'a, T> From<&'a Vec<T>> for Entries<'a, T> {
@@ -270,3 +293,7 @@ impl<'a, T> IntoIterator for Entries<'a, T> {
 #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "../tests/persistent_btree/entry_custody.rs"]
 mod custody_models;
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+#[path = "../tests/persistent_btree/entry_views.rs"]
+mod view_properties;
