@@ -73,6 +73,8 @@ async fn commit<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 mod change_sets;
 
+mod content_times;
+
 mod discovery;
 
 mod fork_selection;
