@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::{Mutex, MutexGuard};
 
 pub(super) struct DependencyLedger {
     pub(super) proof: Arc<Mutex<Proof>>,
@@ -181,3 +182,7 @@ impl DependencyLedger {
         )
     }
 }
+
+#[cfg(all(test, acyclic_fs_loom))]
+#[path = "proof_model.rs"]
+mod model_checking;

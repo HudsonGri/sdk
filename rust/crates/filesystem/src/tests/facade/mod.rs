@@ -610,6 +610,7 @@ mod attributes;
 mod content;
 mod creation;
 mod detached;
+mod dependency_delta;
 mod fault_creation;
 mod fault_mutations;
 mod fault_publication;
