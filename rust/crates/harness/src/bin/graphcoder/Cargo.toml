@@ -34,6 +34,14 @@ acyclic-test-support = { path = "../../../../test-support" }
 name = "cli"
 path = "tests/cli.rs"
 
+[[test]]
+name = "scenarios"
+path = "tests/scenarios/main.rs"
+
+[dev-dependencies.tokio]
+workspace = true
+features = ["process", "net", "time", "sync"]
+
 [dev-dependencies.axum]
 workspace = true
 

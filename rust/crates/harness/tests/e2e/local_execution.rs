@@ -28,6 +28,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
+    let settings = temporary.path().join("settings");
+    super::scenario_data::seed_settings(&settings, &case.settings)?;
     let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
     let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
     let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
@@ -74,6 +76,10 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let provider = Arc::new(ScriptedModelProvider::new(turns));
     let config = local_harness_config(&directory, (model, provider.clone()))?
         .state_directory(&state)
+        .settings(
+            acyclic_harness::native_settings::SettingsConfig::new(&directory, &settings)
+                .codex_home(settings.join(".codex")),
+        )
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None);
@@ -92,7 +98,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     match (case.expect.outcome, output) {
         (ExpectedOutcome::Succeeded, Ok(output))
-            if Some(&output.text) == case.expect.text.as_ref() => {}
+            if Some(&output.text) == case.expect.text.as_ref() =>
+        {
+            if case.replay && harness.resume(task_id).await? != output {
+                return Err("replayed local result differs".into());
+            }
+        }
         (ExpectedOutcome::Indeterminate, Err(acyclic_harness::Error::Indeterminate(id)))
             if id == operation => {}
         (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
@@ -101,6 +112,19 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         return Err("local model script was not consumed".into());
     }
     let requests = provider.requests();
+    for text in &case.expect.request_text {
+        if !requests
+            .iter()
+            .any(|request| serde_json::to_string(request).is_ok_and(|body| body.contains(text)))
+        {
+            return Err(format!("model requests omitted {text:?}").into());
+        }
+    }
+    for (path, text) in &case.expect.settings_files {
+        if std::fs::read_to_string(settings.join(path))? != *text {
+            return Err(format!("settings file differs: {path}").into());
+        }
+    }
     if requests.len() != steps {
         return Err("local scenario did not consume exactly its scripted model turns".into());
     }
