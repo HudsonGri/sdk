@@ -347,3 +347,17 @@ fn blank_start_items_reopen_as_items() {
     crate::context::GLUED_MARKER.set(false);
     assert!(broken.is_err());
 }
+
+#[test]
+fn markers_after_escaped_breaks_have_linear_work() {
+    let chunks = ["\n", "*", "\\"].map(str::to_owned);
+    for count in [64, 128, 256, 512, 1024] {
+        let (used, bytes, parts) = units(&chunks, count);
+        assert!(
+            used <= 128 * bytes + 4096,
+            "{count}: {used} / {bytes}: {parts:?}"
+        );
+    }
+    let source = "\n*\\".repeat(86);
+    replay(&source, &(1..source.len()).collect::<Vec<_>>());
+}
