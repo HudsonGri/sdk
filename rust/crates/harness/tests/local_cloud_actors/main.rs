@@ -579,9 +579,6 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
         Some(wire::ErrorCode::ActorNotFound as i32)
     );
     println!("Actors deletion: {:.3}s", phase.elapsed().as_secs_f64());
-    println!(
-        "local cloud: supported Actor lifecycle and exact v2 migration passed; delivery and paused recovery are separate ignored Cloud request 11 checks"
-    );
     Ok(())
 }
 
