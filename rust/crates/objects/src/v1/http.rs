@@ -41,6 +41,51 @@ pub struct HttpObjects {
     maximum: usize,
 }
 impl HttpObjects {
+    /// Sends the canonical header, indexed chunks and completion markers as NDJSON.
+    pub async fn put_objects(
+        &self,
+        frames: impl futures::Stream<Item = wire::PutObjectsRequest> + Send + 'static,
+    ) -> Result<wire::PutObjectsResponse, Error> {
+        let reply = self
+            .post(
+                "objects/put-batch",
+                "application/x-ndjson",
+                Body::wrap_stream(frames.map(|frame| line("PutObjectsRequest", &frame))),
+            )
+            .await?;
+        self.decode("PutObjectsResponse", reply).await
+    }
+
+    /// Returns the bounded canonical indexed download frames in wire order.
+    pub async fn get_objects(
+        &self,
+        query: wire::GetObjectsRequest,
+    ) -> Result<stream::BoxStream<'static, Result<wire::GetObjectsResponse, Error>>, Error> {
+        request::get_batch(&query)?;
+        let bytes = json::encode("GetObjectsRequest", &query)?;
+        if bytes.len() > REQUEST_BYTES {
+            return Err(wire::ErrorCode::QuotaExceeded.into());
+        }
+        let reply = self
+            .post("objects/get-batch", "application/json", bytes.into())
+            .await?;
+        media_type(&reply, "application/x-ndjson")?;
+        let reader = Frames {
+            reply,
+            chunk: Bytes::new(),
+            pending: Vec::new(),
+            total: 0,
+            maximum: self.maximum,
+        };
+        Ok(stream::try_unfold(reader, |mut reader| async move {
+            Ok(reader
+                .next("GetObjectsResponse")
+                .await?
+                .map(|frame| (frame, reader)))
+        })
+        .boxed())
+    }
+
     /// Publishes a header-first streamed value. Source failure aborts the HTTP request.
     pub async fn put_stream(
         &self,
@@ -393,7 +438,10 @@ impl HttpObjects {
                     total: 0,
                     maximum: self.maximum,
                 };
-                let first = reader.next().await?.ok_or_else(response::invalid)?;
+                let first = reader
+                    .next::<wire::GetObjectResponse>("GetObjectResponse")
+                    .await?
+                    .ok_or_else(response::invalid)?;
                 let header = match first.frame {
                     Some(wire::get_object_response::Frame::Header(header)) => header,
                     frame => return Err(response::reject_frame(frame)),
@@ -401,7 +449,10 @@ impl HttpObjects {
                 let remaining = response::get_header(&header, &query.range, maximum_bytes)?;
                 let body =
                     stream::try_unfold((reader, remaining), |(mut reader, remaining)| async move {
-                        let Some(frame) = reader.next().await? else {
+                        let Some(frame) = reader
+                            .next::<wire::GetObjectResponse>("GetObjectResponse")
+                            .await?
+                        else {
                             return if remaining == 0 {
                                 Ok(None)
                             } else {
@@ -455,7 +506,7 @@ struct Frames {
     maximum: usize,
 }
 impl Frames {
-    async fn next(&mut self) -> Result<Option<wire::GetObjectResponse>, Error> {
+    async fn next<T: Message + Default>(&mut self, name: &str) -> Result<Option<T>, Error> {
         loop {
             if self.chunk.is_empty() {
                 let Some(chunk) = self.reply.chunk().await.map_err(|_| response::invalid())? else {
@@ -480,8 +531,8 @@ impl Frames {
             if newline.is_some() {
                 self.pending.pop();
                 let bytes = self.pending.strip_suffix(b"\r").unwrap_or(&self.pending);
-                let frame = json::decode("GetObjectResponse", bytes, JSON_FRAME_BYTES)
-                    .map_err(|_| response::invalid())?;
+                let frame =
+                    json::decode(name, bytes, JSON_FRAME_BYTES).map_err(|_| response::invalid())?;
                 self.pending.clear();
                 return Ok(Some(frame));
             }

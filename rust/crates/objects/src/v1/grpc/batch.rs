@@ -7,8 +7,12 @@ struct PutCodec {
     prepared: Option<reply::Reply>,
     expected: usize,
     meter: Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
+    received: reply::Received,
 }
-struct PutEncoder;
+struct PutEncoder {
+    received: reply::Received,
+    meter: Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
+}
 
 impl tonic::codec::Encoder for PutEncoder {
     type Item = Guarded<wire::PutObjectsRequest>;
@@ -16,24 +20,43 @@ impl tonic::codec::Encoder for PutEncoder {
 
     fn encode(
         &mut self,
-        item: Self::Item,
+        mut item: Self::Item,
         buffer: &mut tonic::codec::EncodeBuf<'_>,
     ) -> Result<(), Self::Error> {
         item.value
             .encode(buffer)
-            .map_err(|_| tonic::Status::internal("batch encoding"))
+            .map_err(|_| tonic::Status::internal("batch encoding"))?;
+        if let (Some(meter), Some(wire::put_objects_request::Frame::Header(header))) =
+            (&self.meter, &mut item.value.frame)
+        {
+            self.received
+                .value
+                .keep_metadata(header, meter)
+                .map_err(|_| tonic::Status::resource_exhausted("batch metadata custody"))?;
+        }
+        Ok(())
     }
 }
 
 impl tonic::codec::Codec for PutCodec {
     type Encode = Guarded<wire::PutObjectsRequest>;
-    type Decode = reply::Reply;
+    type Decode = ();
     type Encoder = PutEncoder;
     type Decoder = reply::Decoder;
 
-    fn encoder(&mut self) -> Self::Encoder { PutEncoder }
+    fn encoder(&mut self) -> Self::Encoder {
+        PutEncoder {
+            received: self.received.clone(),
+            meter: self.meter.clone(),
+        }
+    }
     fn decoder(&mut self) -> Self::Decoder {
-        reply::Decoder { prepared: self.prepared.take(), expected: self.expected, meter: self.meter.clone() }
+        reply::Decoder {
+            prepared: self.prepared.take(),
+            expected: self.expected,
+            meter: self.meter.clone(),
+            received: self.received.clone(),
+        }
     }
 }
 
@@ -45,10 +68,19 @@ struct Completion {
 }
 
 impl Completion {
-    fn new(meter: Option<&std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>) -> Result<Arc<Self>, Error> {
-        let allocation = meter.map(|meter| acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<Self>()))
-            .transpose().map_err(|_| protocol())?;
-        Ok(Arc::new(Self { _allocation: allocation, ..Self::default() }))
+    fn new(
+        meter: Option<&std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
+    ) -> Result<Arc<Self>, Error> {
+        let allocation = meter
+            .map(|meter| {
+                acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<Self>())
+            })
+            .transpose()
+            .map_err(|_| protocol())?;
+        Ok(Arc::new(Self {
+            _allocation: allocation,
+            ..Self::default()
+        }))
     }
 
     fn sent(&self) {
@@ -64,7 +96,11 @@ impl Completion {
     }
 }
 
-fn accepted_upload<S, C>(frames: S, completion: Arc<Completion>, mut check: C) -> impl futures::Stream<Item = S::Item>
+fn accepted_upload<S, C>(
+    frames: S,
+    completion: Arc<Completion>,
+    mut check: C,
+) -> impl futures::Stream<Item = S::Item>
 where
     S: futures::Stream<Item = Guarded<wire::PutObjectsRequest>>,
     C: FnMut() -> bool,
@@ -73,7 +109,10 @@ where
         let accepted = check();
         if !accepted {
             completion.failed.store(true, Ordering::Release);
-        } else if matches!(frame.value.frame, Some(wire::put_objects_request::Frame::Complete(true))) {
+        } else if matches!(
+            frame.value.frame,
+            Some(wire::put_objects_request::Frame::Complete(true))
+        ) {
             completion.sent();
         }
         futures::future::ready(accepted)
@@ -171,7 +210,9 @@ fn put_frames(
             _allocation: None,
         }
     }));
-    accepted_upload(frames, completion, move || admission.as_ref().is_none_or(|meter| meter.check().is_ok()))
+    accepted_upload(frames, completion, move || {
+        admission.as_ref().is_none_or(|meter| meter.check().is_ok())
+    })
 }
 
 impl GrpcObjects {
@@ -180,14 +221,28 @@ impl GrpcObjects {
         requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
     ) -> Vec<Result<wire::ObjectInfo, Error>> {
         let count = requests.len();
-        if count == 0 { return Vec::new(); }
+        if count == 0 {
+            return Vec::new();
+        }
         match self.put_objects_with_custody(requests, (), None).await {
-            Ok(mut reply) if reply.failure.is_none() => reply.response.value.results.drain(..).map(|result| match result.result {
-                Some(wire::put_object_result::Result::Object(object)) => Ok(object),
-                Some(wire::put_object_result::Result::Error(error)) => item_error(&error).and_then(Err),
-                None => Err(protocol()),
-            }).collect(),
-            _ => vec![Err(protocol()); count],
+            Ok(mut reply) => {
+                let mut results: Vec<_> = reply
+                    .response
+                    .value
+                    .results
+                    .drain(..)
+                    .map(|result| match result.result {
+                        Some(wire::put_object_result::Result::Object(object)) => Ok(object),
+                        Some(wire::put_object_result::Result::Error(error)) => {
+                            item_error(&error).and_then(Err)
+                        }
+                        None => Err(protocol()),
+                    })
+                    .collect();
+                results.resize_with(count, || Err(protocol()));
+                results
+            }
+            Err(error) => vec![Err(error); count],
         }
     }
 
@@ -197,13 +252,18 @@ impl GrpcObjects {
         custody: G,
         meter: Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     ) -> Result<reply::Reply, Error> {
-        let count = requests.len();        let result = async {
+        let count = requests.len();
+        let mut sizes = batch_vector(count, meter.as_ref())?;
+        sizes
+            .value
+            .extend(requests.iter().map(|(_, body)| body.len() as u64));
+        let completed = Completion::new(meter.as_ref())?;
+        let received = reply::received(meter.as_ref(), sizes, completed.clone())?;
+        let result = async {
             let mut objects = batch_vector(count, meter.as_ref())?;
             let mut bodies = batch_vector(count, meter.as_ref())?;
-            let mut sizes = batch_vector(count, meter.as_ref())?;
             let mut requests = requests;
             for (header, body) in requests.drain(..) {
-                sizes.value.push(body.len() as u64);
                 objects.value.push(header);
                 bodies.value.push(body);
             }
@@ -211,19 +271,25 @@ impl GrpcObjects {
                 objects: std::mem::take(&mut objects.value),
             };
             request::put_batch(&header)?;
-            for size in &sizes.value {
+            for size in &received.value.sizes.value {
                 request::upload_length(*size)?;
             }
             let response = batch_vector(count, meter.as_ref())?;
             let codec = PutCodec {
                 expected: count,
                 meter: meter.clone(),
-                prepared: Some(reply::Reply { response: Guarded {
-                    value: wire::PutObjectsResponse { results: response.value },
-                    _allocation: response._allocation,
-                }, failure: None }),
-            };            let input_storage = meter.as_ref().map(|_| requests);
-            let completed = Completion::new(meter.as_ref())?;
+                received: received.clone(),
+                prepared: Some(reply::Reply {
+                    response: Guarded {
+                        value: wire::PutObjectsResponse {
+                            results: response.value,
+                        },
+                        _allocation: response._allocation,
+                    },
+                    failure: None,
+                }),
+            };
+            let input_storage = meter.as_ref().map(|_| requests);
             let body_frames = put_frames(
                 std::mem::take(&mut bodies.value),
                 header,
@@ -231,29 +297,36 @@ impl GrpcObjects {
                 meter.clone(),
             );
             let storage = (input_storage, objects, bodies, custody);
-            let frames = body_frames.inspect(move |_| { let _ = &storage; });
+            let frames = body_frames.inspect(move |_| {
+                let _ = &storage;
+            });
             let input = self.authenticated(frames, self.transfer_timeout).await?;
             let (mut client, path) = self
                 .streaming("/acyclic.objects.v1.ObjectsService/PutObjects")
                 .await?;
-            let reply: reply::Reply = client
+            client
                 .client_streaming(input, path, codec)
-                .await.map(ok).map_err(|status| error_from_status(&status))?;
-            completed.validate()?;
-            for (result, size) in reply.response.value.results.iter().zip(sizes.value.iter()) {
-                match &result.result {
-                    Some(wire::put_object_result::Result::Object(object)) => {
-                        info(object)?;
-                        if object.size != *size { return Err(protocol()); }
-                    }
-                    Some(wire::put_object_result::Result::Error(error)) => { item_error(error)?; }
-                    None => return Err(protocol()),
-                }
+                .await
+                .map(|_| ())
+                .map_err(|status| error_from_status(&status))
+        };
+        let outcome = tokio::time::timeout(self.transfer_timeout, result)
+            .await
+            .unwrap_or_else(|_| Err(wire::ErrorCode::Unavailable.into()));
+        if let Some(mut reply) = received
+            .value
+            .reply
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            if reply.failure.is_none() {
+                reply.failure = outcome.err().map(Into::into);
             }
             Ok(reply)
-        };
-        tokio::time::timeout(self.transfer_timeout, result).await
-            .unwrap_or_else(|_| Err(wire::ErrorCode::Unavailable.into()))
+        } else {
+            Err(outcome.err().unwrap_or_else(protocol))
+        }
     }
     pub(super) fn put_objects_native(
         &self,
@@ -295,59 +368,107 @@ impl GrpcObjects {
             })?;
             let mut slots = batch_vector(count, Some(&meter)).map_err(NativeObjectsError::from)?;
             for _ in 0..count {
-                let control = ReadAllocation::new(&meter, std::mem::size_of::<ObjectsPutReceipt>())?;
-                slots.value.push(Box::new(ObjectsPutReceipt::new(wire::ObjectInfo::default(), Some(control))));
+                let control =
+                    ReadAllocation::new(&meter, std::mem::size_of::<ObjectsPutReceipt>())?;
+                slots.value.push(Box::new(ObjectsPutReceipt::new(
+                    wire::ObjectInfo::default(),
+                    Some(control),
+                )));
             }
             let mut failure = super::super::NativeObjectsSharedFailure::prepare(&meter)?;
             let failure_slot = std::sync::Arc::get_mut(&mut failure)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
             meter.admit_write(maximum)?;
             let requests = std::mem::take(&mut input.data);
-            match self.put_objects_with_custody(requests, input, Some(meter.clone())).await {
-                Err(error) => results.extend((0..count).map(|_| Err(NativeObjectsError::from(error)))),
+            match self
+                .put_objects_with_custody(requests, input, Some(meter.clone()))
+                .await
+            {
+                Err(error) => {
+                    results.extend((0..count).map(|_| Err(NativeObjectsError::from(error))))
+                }
                 Ok(mut reply) => {
-                    // No admission or cancellation check may precede accepted-write recording.
-                    let completed = reply.response.value.results.iter().filter_map(|result| match &result.result {
-                        Some(wire::put_object_result::Result::Object(object)) => Some(object.size as usize),
-                        _ => None,
-                    }).sum();
-                    let recorded = meter.record_write(completed);
-                    failure_slot.value = reply.failure.take().or_else(|| recorded.err().map(Into::into));
+                    failure_slot.value = reply.failure.take();
+                    let mut values = reply.response.value.results.drain(..);
                     for mut slot in slots.value.drain(..) {
-                        let value = if reply.response.value.results.is_empty() { None } else { Some(reply.response.value.results.remove(0)) };
+                        let value = values.next();
                         results.push(match value.and_then(|result| result.result) {
                             Some(wire::put_object_result::Result::Object(info)) => {
                                 let retained = info_capacity(&info);
                                 slot.value = info;
-                                let claim = retained.and_then(|bytes| reply.response._allocation.as_mut()
-                                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?.split(bytes))
-                                    .and_then(|mut claim| slot._allocation.as_mut()
-                                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?.absorb(&mut claim));
+                                let claim = retained
+                                    .and_then(|bytes| {
+                                        reply
+                                            .response
+                                            ._allocation
+                                            .as_mut()
+                                            .ok_or_else(|| {
+                                                std::io::Error::from(
+                                                    std::io::ErrorKind::InvalidData,
+                                                )
+                                            })?
+                                            .split(bytes)
+                                    })
+                                    .and_then(|mut claim| {
+                                        slot._allocation
+                                            .as_mut()
+                                            .ok_or_else(|| {
+                                                std::io::Error::from(
+                                                    std::io::ErrorKind::InvalidData,
+                                                )
+                                            })?
+                                            .absorb(&mut claim)
+                                    });
                                 if let Err(error) = claim {
                                     let mut error = NativeObjectsError::from(error);
                                     error.receipt = Some(slot);
                                     Err(error)
                                 } else if failure.value.is_some() {
-                                    let mut error = NativeObjectsError::from(super::super::NativeObjectsCause::SharedFailure(failure.clone()));
+                                    let mut error = NativeObjectsError::from(
+                                        super::super::NativeObjectsCause::SharedFailure(
+                                            failure.clone(),
+                                        ),
+                                    );
                                     error.receipt = Some(slot);
                                     Err(error)
                                 } else {
-                                    let control = slot._allocation.as_mut()
-                                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?
-                                        .split(std::mem::size_of::<ObjectsPutReceipt>())?;
-                                    let receipt = *slot;
-                                    drop(control);
-                                    Ok(receipt)
+                                    match slot
+                                        ._allocation
+                                        .as_mut()
+                                        .ok_or_else(|| {
+                                            std::io::Error::from(std::io::ErrorKind::InvalidData)
+                                        })
+                                        .and_then(|allocation| {
+                                            allocation
+                                                .split(std::mem::size_of::<ObjectsPutReceipt>())
+                                        }) {
+                                        Ok(control) => {
+                                            let receipt = *slot;
+                                            drop(control);
+                                            Ok(receipt)
+                                        }
+                                        Err(error) => {
+                                            let mut error = NativeObjectsError::from(error);
+                                            error.receipt = Some(slot);
+                                            Err(error)
+                                        }
+                                    }
                                 }
                             }
-                            Some(wire::put_object_result::Result::Error(error)) => Err(item_error(&error).unwrap_or_else(|error| error).into()),
+                            Some(wire::put_object_result::Result::Error(error)) => {
+                                Err(item_error(&error).unwrap_or_else(|error| error).into())
+                            }
                             None => Err(if failure.value.is_some() {
-                                super::super::NativeObjectsCause::SharedFailure(failure.clone()).into()
-                            } else { NativeObjectsError::from(protocol()) }),
+                                super::super::NativeObjectsCause::SharedFailure(failure.clone())
+                                    .into()
+                            } else {
+                                NativeObjectsError::from(protocol())
+                            }),
                         });
                     }
                 }
-            }            ObjectsBatch::new(results, allocation)
+            }
+            ObjectsBatch::new(results, allocation)
         })
     }
 
@@ -632,12 +753,18 @@ mod model {
             loom::thread::spawn(move || {
                 let source = stream::once(async move {
                     Guarded {
-                        value: wire::PutObjectsRequest { frame: Some(wire::put_objects_request::Frame::Complete(true)) },
+                        value: wire::PutObjectsRequest {
+                            frame: Some(wire::put_objects_request::Frame::Complete(true)),
+                        },
                         _allocation: None,
                     }
                 });
                 let control = completion.clone();
-                let source = source.inspect(move |_| { if early_completion { control.sent(); } });
+                let source = source.inspect(move |_| {
+                    if early_completion {
+                        control.sent();
+                    }
+                });
                 let frames = accepted_upload(source, completion, move || {
                     let allowed = !cancelled.load(Ordering::Acquire);
                     accepted.store(allowed, Ordering::Release);
@@ -650,7 +777,10 @@ mod model {
         let observer = loom::thread::spawn(move || {
             cancelled.store(true, Ordering::Release);
             if completion.validate().is_ok() {
-                assert!(accepted.load(Ordering::Acquire), "success after the final marker was filtered out");
+                assert!(
+                    accepted.load(Ordering::Acquire),
+                    "success after the final marker was filtered out"
+                );
             }
         });
         writer.join().unwrap();

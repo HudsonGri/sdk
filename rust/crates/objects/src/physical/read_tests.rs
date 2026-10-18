@@ -14,6 +14,9 @@ type Outcome = Result<Vec<u8>, Error>;
 pub(crate) struct CountingMeter {
     counts: Mutex<Counts>,
     retained: std::sync::atomic::AtomicU64,
+    pub(crate) written: std::sync::atomic::AtomicU64,
+    pub(crate) allocations: std::sync::atomic::AtomicU64,
+    pub(crate) allocation_limit: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -67,7 +70,14 @@ impl NativeReadMeter for CountingMeter {
         Ok(())
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-        self.retained.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        use std::sync::atomic::Ordering;
+        let limit = self.allocation_limit.load(Ordering::SeqCst);
+        if limit != 0 && self.allocations.load(Ordering::SeqCst) >= limit {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        self.allocations.fetch_add(1, Ordering::SeqCst);
+        self.retained
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn reserve_allocation(&self, _: u64) -> std::io::Result<()> {
@@ -84,7 +94,9 @@ impl NativeReadMeter for CountingMeter {
         self.allocate(0)
     }
     fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-        self.allocate(bytes)
+        self.retained
+            .fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
         (bytes, self.adopt(bytes))
@@ -105,7 +117,9 @@ impl NativeReadMeter for CountingMeter {
         Ok(())
     }
     fn release(&self, bytes: u64) {
-        let previous = self.retained.fetch_sub(bytes, std::sync::atomic::Ordering::SeqCst);
+        let previous = self
+            .retained
+            .fetch_sub(bytes, std::sync::atomic::Ordering::SeqCst);
         assert!(previous >= bytes, "released unowned capacity");
     }
     fn admit_bytes(&self, _: usize) -> std::io::Result<()> {
@@ -120,7 +134,9 @@ impl NativeReadMeter for CountingMeter {
     fn admit_write(&self, _: usize) -> std::io::Result<()> {
         Ok(())
     }
-    fn record_write(&self, _: usize) -> std::io::Result<()> {
+    fn record_write(&self, bytes: usize) -> std::io::Result<()> {
+        self.written
+            .fetch_add(bytes as u64, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn admit_durability(&self) -> std::io::Result<()> {

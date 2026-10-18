@@ -748,8 +748,12 @@ pub fn metadata(value: &Option<wire::ObjectMetadata>) -> Result<(), Error> {
         return Err(InvalidArgument.into());
     }
     let mut bytes = 0_usize;
-    let mut names = std::collections::BTreeSet::new();
-    for (key, value) in &value.user {
+    const MAX: usize = wire::ObjectsLimit::MaxUserMetadataBytes as usize;
+    let mut names = [""; MAX];
+    if value.user.len() > MAX {
+        return Err(InvalidArgument.into());
+    }
+    for ((key, value), name) in value.user.iter().zip(&mut names) {
         if key.is_empty()
             || !key.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric()
@@ -772,13 +776,25 @@ pub fn metadata(value: &Option<wire::ObjectMetadata>) -> Result<(), Error> {
                     )
             })
             || !header_value(value)
-            || !names.insert(key.to_ascii_lowercase())
         {
             return Err(InvalidArgument.into());
         }
         bytes = bytes.saturating_add(key.len()).saturating_add(value.len());
+        *name = key.as_str();
     }
     if bytes > wire::ObjectsLimit::MaxUserMetadataBytes as usize {
+        return Err(InvalidArgument.into());
+    }
+    let names = &mut names[..value.user.len()];
+    names.sort_unstable_by(|left, right| {
+        left.bytes()
+            .map(|byte| byte.to_ascii_lowercase())
+            .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+    });
+    if names
+        .windows(2)
+        .any(|pair| pair[0].eq_ignore_ascii_case(pair[1]))
+    {
         return Err(InvalidArgument.into());
     }
     Ok(())

@@ -27,14 +27,16 @@ missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject",
 
 for (const [rpc, name] of [["PutObjects", "put_batch"], ["GetObjects", "get_batch"]]) {
   missing(`missing Objects batch gRPC operation ${rpc}`, ObjectsService, rpc, "rust/crates/objects/src/v1/grpc.rs", s => s.replace(`async fn ${name}(`, "async fn removed_batch("), "rustGrpc");
-  test(`${rpc} advertises gRPC without an HTTP provider`, () => {
+  missing(`missing Objects batch Rust HTTP binding ${rpc}`, ObjectsService, rpc, "rust/crates/objects/src/v1/http.rs", s => s.replace(`pub async fn ${rpc === "PutObjects" ? "put_objects" : "get_objects"}(`, "pub async fn removed_batch("), "rustHttp");
+  missing(`missing Objects batch TypeScript HTTP binding ${rpc}`, ObjectsService, rpc, "typescript/packages/objects/src/v1-http.ts", s => s.replace(`async ${rpc === "PutObjects" ? "putBatch" : "getBatch"}(`, "async removedBatch("), "typescriptHttp");
+  test(`${rpc} advertises canonical gRPC and HTTP bindings`, () => {
     const method = ObjectsService.methods.find(method => method.name === rpc);
     assert.ok(method);
     const exposure = createSourceInspector(root)(ObjectsService, method);
     assert.equal(exposure.rustGrpc, true);
     assert.equal(exposure.typescriptGrpcNodeBun, true);
-    assert.equal(exposure.rustHttp, false);
-    assert.equal(exposure.typescriptHttp, false);
+    assert.equal(exposure.rustHttp, true);
+    assert.equal(exposure.typescriptHttp, true);
   });
 }
 

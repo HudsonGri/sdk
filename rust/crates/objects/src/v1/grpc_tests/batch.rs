@@ -61,6 +61,10 @@ pub(super) async fn put(
         }
     }
     framing.finish().map_err(status)?;
+    let invalid_index = header
+        .objects
+        .iter()
+        .position(|object| object.object_key == "invalid-metadata");
     let results = memory
         .put_batch(
             header
@@ -73,9 +77,18 @@ pub(super) async fn put(
     Ok(wire::PutObjectsResponse {
         results: results
             .into_iter()
-            .map(|result| wire::PutObjectResult {
+            .enumerate()
+            .map(|(index, result)| wire::PutObjectResult {
                 result: Some(match result {
-                    Ok(object) => wire::put_object_result::Result::Object(object),
+                    Ok(mut object) => {
+                        if invalid_index == Some(index) {
+                            object.metadata = Some(wire::ObjectMetadata {
+                                content_type: "invalid\r\nmetadata".into(),
+                                ..Default::default()
+                            });
+                        }
+                        wire::put_object_result::Result::Object(object)
+                    }
                     Err(error) => wire::put_object_result::Result::Error(wire::ErrorDetail {
                         code: error.code as i32,
                         request_id: "batch".into(),
@@ -325,6 +338,30 @@ async fn grpc_batch_round_trip_is_ordered_bounded_and_uses_one_credential_per_rp
     assert!(client.put_batch(Vec::new()).await.is_empty());
     assert!(client.get_batch(Vec::new()).await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 7);
+    let oversized = vec![(put("bounded"), Vec::new().into()); 1001];
+    assert!(client.put_batch(oversized).await.iter().all(|result| {
+        result
+            .as_ref()
+            .is_err_and(|error| error.code == wire::ErrorCode::QuotaExceeded)
+    }));
+    let denied = GrpcObjects::connect_with_credential(
+        &endpoint,
+        super::super::grpc::CredentialProvider::new(|| async {
+            Err(acyclic_auth::credential::CredentialError::Invalid)
+        }),
+        Some(pem.as_bytes()),
+        None,
+    )
+    .await?;
+    assert!(
+        denied
+            .put_batch(vec![(put("denied"), Vec::new().into())])
+            .await
+            .iter()
+            .all(|result| result
+                .as_ref()
+                .is_err_and(|error| error.code == wire::ErrorCode::AccessDenied))
+    );
     let methods: Vec<_> = observed
         .lock()
         .unwrap()
@@ -343,6 +380,58 @@ async fn grpc_batch_round_trip_is_ordered_bounded_and_uses_one_credential_per_rp
             "PutObjects"
         ]
     );
+    for invalid_index in 0..3 {
+        let requests = (0..3)
+            .map(|index| {
+                (
+                    put(if index == invalid_index {
+                        "invalid-metadata"
+                    } else {
+                        "valid-receipt"
+                    }),
+                    vec![index as u8; 7].into(),
+                )
+            })
+            .collect();
+        let results = client.put_batch(requests).await;
+        assert_eq!(results.len(), 3);
+        for (index, result) in results.into_iter().enumerate() {
+            assert_eq!(result.is_ok(), index != invalid_index);
+            if let Ok(receipt) = result {
+                assert_eq!(receipt.size, 7);
+            }
+        }
+    }
+    #[cfg(feature = "local")]
+    for invalid_index in 0..3 {
+        use acyclic_native_runtime::NativeReadMeter;
+        let counts = Arc::new(crate::physical::read_tests::CountingMeter::default());
+        let meter: Arc<dyn NativeReadMeter> = counts.clone();
+        let requests = (0..3)
+            .map(|index| {
+                (
+                    put(if index == invalid_index {
+                        "invalid-metadata"
+                    } else {
+                        "valid-receipt"
+                    }),
+                    vec![index as u8; 7].into(),
+                )
+            })
+            .collect();
+        let input = super::super::ObjectsNativeRequest::new(requests, (), &meter)?;
+        let batch = client.put_batch_native(input, meter)?.await?;
+        assert_eq!(batch.len(), 3);
+        for (index, result) in batch.enumerate() {
+            let error = result.expect_err("batch validation must retain its failure");
+            assert_eq!(error.receipt.is_some(), index != invalid_index);
+            if let Some(receipt) = error.receipt {
+                assert_eq!(receipt.info().size, 7);
+            }
+        }
+        assert_eq!(counts.written.load(Ordering::SeqCst), 14);
+        assert_eq!(counts.retained(), 0);
+    }
     let _ = stop.send(());
     server.await??;
     Ok(())
