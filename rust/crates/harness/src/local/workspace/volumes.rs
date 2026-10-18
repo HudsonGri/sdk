@@ -2,6 +2,9 @@ use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
+/// The directory in a checkout holding its incarnation token, outside every
+/// workspace view.
+pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";
 
 mod exclude;
 #[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
@@ -10,14 +13,25 @@ mod publication_tests;
 mod recovery_tests;
 
 #[cfg(target_os = "linux")]
-pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
+pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot) -> Result<()> {
     let relative = Path::new(SCRATCH_PATH);
-    let parent = relative
-        .parent()
-        .ok_or_else(|| Error::Invalid("scratch mount has no parent".into()))?;
-    create_mount_directory(root, parent)?;
-    acyclic_fs::recover_disconnected_native_mount_destination(&root.join(relative))?;
+    let (Some(parent), Some(leaf)) = (relative.parent(), relative.file_name()) else {
+        return Err(Error::Invalid("scratch mount has no parent".into()));
+    };
+    acyclic_fs::recover_disconnected_native_mount_destination_in(
+        &held_directories(root, parent)?,
+        leaf,
+    )?;
     Ok(())
+}
+
+/// The directory at `relative` in a held root, created in held parents and
+/// never through a link.
+pub(in crate::local) fn held_directories(
+    root: &acyclic_fs::HeldRoot,
+    relative: &Path,
+) -> Result<acyclic_fs::HeldRoot> {
+    root.create_directories(relative).map_err(storage)
 }
 
 pub(in crate::local) fn require_available(
@@ -46,28 +60,34 @@ pub(in crate::local) fn excluded(
     std::iter::once(destination.clone())
         .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
         .filter(|path| path.starts_with(root))
-        .map(|path| {
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| Error::Invalid("mount metadata lies outside the task view".into()))?;
-            let relative = relative
-                .to_str()
-                .ok_or_else(|| Error::Invalid("mount path is not UTF-8".into()))?;
-            let path = acyclic_fs::path::PortablePath::parse(
-                &format!("/{}", relative.replace('\\', "/")),
-                config.limits,
-            )
-            .map_err(storage)?;
-            NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
-                .map_err(storage)
-        })
+        .map(|path| namespace(root, config, &path))
         .collect()
+}
+
+/// The namespace path of `path` below `root`.
+pub(in crate::local) fn namespace(
+    root: &Path,
+    config: acyclic_fs::VolumeConfig,
+    path: &Path,
+) -> Result<NamespacePath> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| Error::Invalid("mount metadata lies outside the task view".into()))?;
+    let relative = relative
+        .to_str()
+        .ok_or_else(|| Error::Invalid("mount path is not UTF-8".into()))?;
+    let path = acyclic_fs::path::PortablePath::parse(
+        &format!("/{}", relative.replace('\\', "/")),
+        config.limits,
+    )
+    .map_err(storage)?;
+    NamespacePath::from_portable_in_profile(&path, config.profile, config.limits).map_err(storage)
 }
 
 pub(super) async fn attach(
     filesystem: &acyclic_fs::LocalFs,
     store: &acyclic_fs::LocalCoreStateStore,
-    root: &Path,
+    root: &acyclic_fs::HeldRoot,
     mounts: &mut Mounts,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
@@ -84,12 +104,12 @@ pub(super) async fn attach(
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let destination = root.join(relative);
+        let destination = root.path().join(relative);
         // Bind the namespace before the initial source/watch cut. Creating its
         // parent during the first shell command would author a project change
         // even when that command only reads. The projection itself stays absent.
         if let Some(parent) = Path::new(relative).parent() {
-            create_mount_directory(root, parent)?;
+            held_directories(root, parent)?;
         }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
