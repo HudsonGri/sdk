@@ -11,7 +11,9 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 /// Bound both hostile reply strings and startup input buffering.
 pub const PROBE_LIMIT: usize = 16 * 1024;
 const GRAPHICS_ID: &str = "314159";
-const MODES: [u16; 10] = [2026, 2027, 1004, 2004, 1049, 1000, 1002, 1003, 1006, 1016];
+const MODES: [u16; 14] = [
+    2026, 2027, 1004, 2004, 1049, 9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016,
+];
 
 /// Polling transport; implementations must honor the supplied absolute deadline.
 pub trait ProbeIo {

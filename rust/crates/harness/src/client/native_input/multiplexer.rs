@@ -93,10 +93,11 @@ async fn model<const BROKEN: bool>(motions: usize) {
     .await
     .unwrap()
     .unwrap();
-    let effects = input_burst(&mut batch, 8, |event| {
+    let mut effects = Vec::new();
+    input_burst(&mut batch, 8, &mut effects, |event| {
         prompt.event(event, Rect::new(0, 19, 80, 1), &mut Viewport::default(), 0)
     });
-    file_tui_inputs(&mut commands, &NoFiles, effects, 8, 10000)
+    file_tui_inputs(&mut commands, &NoFiles, effects.drain(..), 8, 10000)
         .await
         .unwrap();
     render(&prompt);

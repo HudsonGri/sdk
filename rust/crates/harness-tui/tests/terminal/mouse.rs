@@ -1,0 +1,153 @@
+use super::*;
+use alacritty_terminal::vte::{Params, Parser, Perform};
+
+const PROTOCOLS: [u16; 5] = [9, 1000, 1001, 1002, 1003];
+const ENCODINGS: [u16; 4] = [1005, 1006, 1015, 1016];
+
+// The xterm spec defines two exclusive selections. Alacritty's model does not
+// implement every encoding, so drive this independent state with its VTE parser.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct Mouse {
+    protocol: u16,
+    encoding: u16,
+}
+impl Perform for Mouse {
+    fn csi_dispatch(&mut self, params: &Params, intermediate: &[u8], ignore: bool, action: char) {
+        if ignore || intermediate != b"?" || !matches!(action, 'h' | 'l') {
+            return;
+        }
+        for parameter in params {
+            let Some(&mode) = parameter.first() else {
+                continue;
+            };
+            let target = if PROTOCOLS.contains(&mode) {
+                &mut self.protocol
+            } else if ENCODINGS.contains(&mode) {
+                &mut self.encoding
+            } else {
+                continue;
+            };
+            if action == 'h' {
+                *target = mode;
+            } else if *target == mode {
+                *target = 0;
+            }
+        }
+    }
+}
+
+fn output(protocol: u16, encoding: u16, fail: usize, nested: bool) -> Vec<u8> {
+    let mut caps = Capabilities::default();
+    for mode in [2027, 1004, 2004, 1049]
+        .into_iter()
+        .chain(PROTOCOLS)
+        .chain(ENCODINGS)
+    {
+        caps.modes.insert(
+            mode,
+            if mode == protocol || mode == encoding {
+                ModeState::Set
+            } else {
+                ModeState::Reset
+            },
+        );
+    }
+    let mut writer = FailOnce {
+        bytes: Vec::new(),
+        at: fail,
+        failed: false,
+    };
+    {
+        let mut guard = RestoreGuard::new(&mut writer, &caps);
+        if guard.setup(ScreenMode::Alternate).is_ok() && nested {
+            for mode in [1003, 1016, 9, 1005, 1001, 1015] {
+                if guard.enable_mode(mode).is_err() {
+                    break;
+                }
+            }
+            if guard.restore().is_ok() {
+                let _ = guard.setup(ScreenMode::Alternate);
+            }
+        }
+    }
+    writer.bytes
+}
+
+fn assert_restored(protocol: u16, encoding: u16, bytes: &[u8]) {
+    let mut state = Mouse { protocol, encoding };
+    let mut parser: Parser = Parser::new();
+    parser.advance(&mut state, bytes);
+    assert_eq!(
+        state,
+        Mouse { protocol, encoding },
+        "both mouse selections must be restored"
+    );
+}
+
+#[test]
+fn every_mouse_selection_and_failure_boundary_restores() {
+    for protocol in std::iter::once(0).chain(PROTOCOLS) {
+        for encoding in std::iter::once(0).chain(ENCODINGS) {
+            for nested in [false, true] {
+                let complete = output(protocol, encoding, usize::MAX, nested);
+                assert_restored(protocol, encoding, &complete);
+                for fail in 0..=complete.len() {
+                    assert_restored(
+                        protocol,
+                        encoding,
+                        &output(protocol, encoding, fail, nested),
+                    );
+                }
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    #[test]
+    fn arbitrary_displaced_selection_and_partial_write_restore(
+        protocol in prop::sample::select(vec![0u16,9,1000,1001,1002,1003]),
+        encoding in prop::sample::select(vec![0u16,1005,1006,1015,1016]),
+        fail in 0usize..256, nested in any::<bool>(),
+    ) {
+        assert_restored(protocol, encoding, &output(protocol, encoding, fail, nested));
+    }
+}
+
+#[test]
+#[should_panic(expected = "both mouse selections must be restored")]
+fn negative_control_resetting_only_sgr_loses_the_displaced_encoding() {
+    let mut bytes = output(1000, 1016, usize::MAX, false);
+    let undo = b"\x1b[?1016h";
+    let at = bytes
+        .windows(undo.len())
+        .position(|bytes| bytes == undo)
+        .unwrap();
+    bytes.splice(at..at + undo.len(), b"\x1b[?1006l".iter().copied());
+    assert_restored(1000, 1016, &bytes);
+}
+
+#[test]
+fn an_unknown_or_permanent_selection_prevents_displacement() {
+    for unknown in PROTOCOLS.into_iter().chain(ENCODINGS) {
+        if [1002, 1006].contains(&unknown) {
+            continue;
+        }
+        for state in [ModeState::Unknown, ModeState::AlwaysSet] {
+            let mut caps = Capabilities::default();
+            for mode in std::iter::once(1049).chain(PROTOCOLS).chain(ENCODINGS) {
+                caps.modes.insert(mode, ModeState::Reset);
+            }
+            caps.modes.insert(unknown, state);
+            let mut bytes = Vec::new();
+            RestoreGuard::new(&mut bytes, &caps)
+                .setup(ScreenMode::Alternate)
+                .unwrap();
+            assert_eq!(
+                bytes, b"\x1b[?1049h\x18\x1b[?1049l",
+                "unknown={unknown} state={state:?}"
+            );
+        }
+    }
+}

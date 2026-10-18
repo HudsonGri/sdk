@@ -150,33 +150,41 @@ fn event_paste_and_ime_commits_preserve_order_and_submission_semantics() {
     let mut input = PromptInput::default();
     let area = Rect::new(0, 0, 80, 4);
     let mut viewport = Viewport::default();
-    input.event(
-        InputEvent::Key(KeyEvent::new(KeyCode::Char('a'), M::NONE)),
-        area,
-        &mut viewport,
-        0,
-    );
-    input.event(
-        InputEvent::CommittedText("界👩‍💻".repeat(200)),
-        area,
-        &mut viewport,
-        1,
-    );
+    input
+        .event(
+            InputEvent::Key(KeyEvent::new(KeyCode::Char('a'), M::NONE)),
+            area,
+            &mut viewport,
+            0,
+        )
+        .for_each(drop);
+    input
+        .event(
+            InputEvent::CommittedText("界👩‍💻".repeat(200)),
+            area,
+            &mut viewport,
+            1,
+        )
+        .for_each(drop);
     assert!(input.editor.text().starts_with('a'));
     assert!(input.editor.collapsed_pastes().is_empty());
     input.question = true;
-    input.event(InputEvent::Paste("x\r\ny".into()), area, &mut viewport, 2);
+    input
+        .event(InputEvent::Paste("x\r\ny".into()), area, &mut viewport, 2)
+        .for_each(drop);
     assert!(input.comment_mode);
     assert!(input.editor.text().ends_with("x\ny"));
     input.busy = true;
     let text = input.editor.text().to_owned();
     assert_eq!(
-        input.event(
-            InputEvent::Key(KeyEvent::new(KeyCode::Enter, M::NONE)),
-            area,
-            &mut viewport,
-            3
-        ),
+        input
+            .event(
+                InputEvent::Key(KeyEvent::new(KeyCode::Enter, M::NONE)),
+                area,
+                &mut viewport,
+                3
+            )
+            .collect::<Vec<_>>(),
         vec![InputEffect::Submit {
             text,
             queued: true,
@@ -454,11 +462,13 @@ fn wheel_notches_scroll_the_view_and_never_the_editor() {
     let down = wheel(MouseEventKind::ScrollDown);
     // A notch over the prompt still moves the view, never the editor.
     assert_eq!(
-        input.event(up, area, &mut viewport, 0),
+        input.event(up, area, &mut viewport, 0).collect::<Vec<_>>(),
         vec![InputEffect::Scroll(WHEEL_ROWS)]
     );
     assert_eq!(
-        input.event(down, area, &mut viewport, 1),
+        input
+            .event(down, area, &mut viewport, 1)
+            .collect::<Vec<_>>(),
         vec![InputEffect::Scroll(-WHEEL_ROWS)]
     );
     assert_eq!(input.editor.text(), "draft");

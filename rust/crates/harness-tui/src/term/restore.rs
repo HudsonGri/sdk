@@ -16,17 +16,16 @@ pub enum ScreenMode {
 /// order. Dropping during unwinding runs the same restoration as normal exit.
 pub struct RestoreGuard<W: Write> {
     writer: W,
-    undo: Vec<(u16, Cow<'static, [u8]>)>,
+    undo: Vec<(u16, Cow<'static, [u8]>, Option<u16>)>,
     modes: std::collections::BTreeMap<u16, ModeState>,
     desired: Vec<u16>,
-    /// The mouse protocol selected before ours displaced it, restored with it.
-    displaced_mouse: Option<u16>,
 }
 
-/// Mouse tracking protocols are one selection: setting one replaces another
-/// (click 1000, button-event 1002, any-event 1003), so restoring ours means
-/// selecting the one it displaced, not only resetting ours.
-const MOUSE_PROTOCOLS: [u16; 3] = [1000, 1002, 1003];
+/// xterm has two independent exclusive selections: reporting protocol and
+/// encoding. Both must restore the selection displaced by the session.
+const MOUSE_PROTOCOLS: [u16; 5] = [9, 1000, 1001, 1002, 1003];
+const MOUSE_ENCODINGS: [u16; 4] = [1005, 1006, 1015, 1016];
+const MOUSE_SELECTIONS: [&[u16]; 2] = [&MOUSE_PROTOCOLS, &MOUSE_ENCODINGS];
 
 impl<W: Write> RestoreGuard<W> {
     /// No terminal changes occur until setup or `enable_mode` is called.
@@ -36,7 +35,6 @@ impl<W: Write> RestoreGuard<W> {
             undo: Vec::new(),
             modes: caps.modes.clone(),
             desired: Vec::new(),
-            displaced_mouse: None,
         }
     }
 
@@ -76,11 +74,22 @@ impl<W: Write> RestoreGuard<W> {
     /// primary screen, whose own wheel scrolling and selection stay native.
     fn report_wheel(&mut self, _screen: OnAlternateScreen) -> io::Result<()> {
         let mutable = |mode| self.modes.get(&mode).is_some_and(|state| state.supported());
-        // Every other protocol's state must be known and changeable, or ours
-        // could displace a selection that restoration cannot select again.
-        let known = |mode| {
+        if mutable(1006)
+            && mutable(1002)
+            && MOUSE_SELECTIONS
+                .iter()
+                .all(|group| self.known_selection(group))
+        {
+            self.enable_mode(1006)?;
+            self.enable_mode(1002)?;
+        }
+        Ok(())
+    }
+
+    fn known_selection(&self, group: &[u16]) -> bool {
+        group.iter().all(|mode| {
             matches!(
-                self.modes.get(&mode),
+                self.modes.get(mode),
                 Some(
                     ModeState::Set
                         | ModeState::Reset
@@ -88,36 +97,49 @@ impl<W: Write> RestoreGuard<W> {
                         | ModeState::AlwaysReset
                 )
             )
-        };
-        if mutable(1006) && mutable(1002) && known(1000) && known(1003) {
-            self.enable_mode(1006)?;
-            self.enable_mode(1002)?;
-        }
-        Ok(())
+        }) && group
+            .iter()
+            .filter(|mode| self.modes.get(*mode) == Some(&ModeState::Set))
+            .count()
+            <= 1
     }
 
-    /// Enable a queried DEC private mode, remembering its exact prior state.
+    /// Enable a queried DEC private mode, remembering its exact prior selection.
     pub fn enable_mode(&mut self, mode: u16) -> io::Result<()> {
         if self.modes.get(&mode) != Some(&ModeState::Reset) {
             return Ok(());
         }
-        let displaced = MOUSE_PROTOCOLS
-            .contains(&mode)
-            .then(|| {
-                MOUSE_PROTOCOLS
-                    .into_iter()
-                    .find(|other| self.modes.get(other) == Some(&ModeState::Set))
-            })
-            .flatten();
-        let undo = match displaced {
+        let group = MOUSE_SELECTIONS.iter().find(|group| group.contains(&mode));
+        if group.is_some_and(|group| !self.known_selection(group)) {
+            return Ok(());
+        }
+        let displaced = group.and_then(|group| {
+            group
+                .iter()
+                .copied()
+                .find(|other| self.modes.get(other) == Some(&ModeState::Set))
+        });
+        let existing = group.and_then(|group| {
+            self.undo
+                .iter()
+                .position(|(journaled, _, _)| group.contains(journaled))
+        });
+        let original = existing.map_or(displaced, |index| self.undo[index].2);
+        let undo = match original {
             Some(previous) => format!("\x1b[?{previous}h"),
             None => format!("\x1b[?{mode}l"),
         };
-        // Journal before writing: write_all can fail after emitting a prefix.
-        self.undo.push((mode, Cow::Owned(undo.into_bytes())));
+        // One record per exclusive selection, installed before writing. Keeping
+        // intermediate switches as separate undos could replay a failed inner
+        // undo AFTER the original selection had already been restored.
+        let record = (mode, Cow::Owned(undo.into_bytes()), original);
+        if let Some(index) = existing {
+            self.undo[index] = record;
+        } else {
+            self.undo.push(record);
+        }
         if let Some(previous) = displaced {
             self.modes.insert(previous, ModeState::Reset);
-            self.displaced_mouse = Some(previous);
         }
         if !self.desired.contains(&mode) {
             self.desired.push(mode);
@@ -156,7 +178,7 @@ impl<W: Write> RestoreGuard<W> {
     pub fn restore(&mut self) -> io::Result<()> {
         let mut first_error = None;
         let mut failed = Vec::new();
-        while let Some((mode, undo)) = self.undo.pop() {
+        while let Some((mode, undo, displaced)) = self.undo.pop() {
             // CAN cancels any partial escape/control string from a failed write.
             if let Err(error) = self
                 .writer
@@ -164,12 +186,10 @@ impl<W: Write> RestoreGuard<W> {
                 .and_then(|()| self.writer.write_all(&undo))
             {
                 first_error.get_or_insert(error);
-                failed.push((mode, undo));
+                failed.push((mode, undo, displaced));
             } else {
                 self.modes.insert(mode, ModeState::Reset);
-                if MOUSE_PROTOCOLS.contains(&mode)
-                    && let Some(previous) = self.displaced_mouse.take()
-                {
+                if let Some(previous) = displaced {
                     self.modes.insert(previous, ModeState::Set);
                 }
             }
@@ -192,8 +212,8 @@ const BEGIN_SYNCHRONIZED: &[u8] = b"[?2026h";
 /// an error, timeout or unwind at any byte is undone by restoration.
 impl<W: Write> RestoreGuard<W> {
     fn journal(&mut self, (mode, undo): (u16, &'static [u8])) {
-        if !self.undo.iter().any(|(journaled, _)| *journaled == mode) {
-            self.undo.push((mode, Cow::Borrowed(undo)));
+        if !self.undo.iter().any(|(journaled, _, _)| *journaled == mode) {
+            self.undo.push((mode, Cow::Borrowed(undo), None));
         }
     }
 
@@ -236,13 +256,13 @@ impl<W: Write> RestoreGuard<W> {
     pub(crate) fn frame_open(&self) -> bool {
         self.undo
             .iter()
-            .any(|(mode, _)| *mode == END_SYNCHRONIZED.0)
+            .any(|(mode, _, _)| *mode == END_SYNCHRONIZED.0)
     }
 
     /// The whole frame reached the device: its update is closed, and a shown
     /// cursor needs no restoration.
     pub(crate) fn end_frame(&mut self, cursor_hidden: bool) {
-        self.undo.retain(|(mode, _)| {
+        self.undo.retain(|(mode, _, _)| {
             *mode != END_SYNCHRONIZED.0 && (cursor_hidden || *mode != SHOW_CURSOR.0)
         });
     }
@@ -253,7 +273,7 @@ impl<W: Write> RestoreGuard<W> {
         let Some(index) = self
             .undo
             .iter()
-            .position(|(mode, _)| *mode == END_SYNCHRONIZED.0)
+            .position(|(mode, _, _)| *mode == END_SYNCHRONIZED.0)
         else {
             return Ok(());
         };

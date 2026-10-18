@@ -86,22 +86,22 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
 /// event is routed here, in order, against the same layout, which a motion
 /// never changes. Later events of the batch stay queued, and the next read is
 /// never touched, so read boundaries stay frame boundaries.
-pub fn input_burst(
+pub fn input_burst<I: IntoIterator<Item = crate::tui::InputEffect>>(
     batch: &mut std::collections::VecDeque<crate::tui::key_event::InputEvent>,
     page_rows: usize,
-    mut route: impl FnMut(crate::tui::key_event::InputEvent) -> Vec<crate::tui::InputEffect>,
-) -> Vec<crate::tui::InputEffect> {
-    let mut effects = Vec::new();
+    effects: &mut Vec<crate::tui::InputEffect>,
+    mut route: impl FnMut(crate::tui::key_event::InputEvent) -> I,
+) {
+    effects.clear();
     while let Some(event) = batch.pop_front() {
-        let routed = route(event);
-        let motion = !routed.is_empty()
-            && routed
+        let first = effects.len();
+        effects.extend(route(event));
+        let motion = effects.len() > first
+            && effects[first..]
                 .iter()
                 .all(|effect| transcript_motion(effect, page_rows).is_some());
-        effects.extend(routed);
         if !motion {
             break;
         }
     }
-    effects
 }

@@ -70,18 +70,22 @@ async fn drive(reads: Vec<Vec<InputEvent>>, coalesce: bool) -> (usize, u64, usiz
     let mut input = PromptInput::new(Editor::new("draft"));
     let before = position(&volume).await;
     let mut frames = 0;
+    let mut effects = Vec::new();
     for read in reads {
         let mut batch: InputBatch = read.into();
         while !batch.is_empty() {
             frames += 1;
             let mut route =
                 |event| input.event(event, Rect::new(0, 9, 80, 1), &mut Viewport::default(), 1);
-            let effects = if coalesce {
-                input_burst(&mut batch, PAGE, route)
+            if coalesce {
+                input_burst(&mut batch, PAGE, &mut effects, route);
             } else {
-                batch.pop_front().map(&mut route).unwrap_or_default()
-            };
-            file_tui_inputs(&mut files, &NoFiles, effects, PAGE, 10_000)
+                effects.clear();
+                if let Some(event) = batch.pop_front() {
+                    effects.extend(route(event));
+                }
+            }
+            file_tui_inputs(&mut files, &NoFiles, effects.drain(..), PAGE, 10_000)
                 .await
                 .unwrap();
         }
@@ -230,7 +234,7 @@ proptest::proptest! {
                     let key = KeyEvent::new(if up { KeyCode::PageUp } else { KeyCode::PageDown }, KeyModifiers::NONE);
                     (InputEvent::Key(key), InputEffect::Host(if up { Action::TranscriptUp } else { Action::TranscriptDown }), page)
                 };
-                let effects = input.event(event, areas.prompt, &mut Viewport::default(), 1);
+                let effects:Vec<_> = input.event(event, areas.prompt, &mut Viewport::default(), 1).collect();
                 proptest::prop_assert_eq!(&effects, &vec![effect]);
                 let rows = effects.first().and_then(|effect| transcript_motion(effect, page)).unwrap();
                 let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
@@ -262,4 +266,120 @@ proptest::proptest! {
             Ok(())
         })?;
     }
+}
+
+fn assert_reused_burst_storage<const ALLOCATE: bool>() {
+    let mut input = PromptInput::default();
+    let mut viewport = Viewport::default();
+    let area = Rect::new(0, 0, 80, 1);
+    let mut effects = Vec::new();
+    // Warm the same storage once, then both N and 2N fit its retained capacity.
+    let mut warm: InputBatch = (0..64).map(|_| notch(true)).collect();
+    input_burst(&mut warm, PAGE, &mut effects, |event| {
+        input.event(event, area, &mut viewport, 0)
+    });
+    let capacity = effects.capacity();
+    for n in [32, 64] {
+        for _ in 0..2 {
+            let mut batch: InputBatch = (0..n).map(|at| notch(at % 3 != 0)).collect();
+            let work = acyclic_test_support::measure(|| {
+                if ALLOCATE {
+                    input_burst(&mut batch, PAGE, &mut effects, |event| {
+                        input
+                            .event(event, area, &mut viewport, 0)
+                            .collect::<Vec<_>>()
+                    });
+                } else {
+                    input_burst(&mut batch, PAGE, &mut effects, |event| {
+                        input.event(event, area, &mut viewport, 0)
+                    });
+                }
+            });
+            assert_eq!(
+                (work.count_total, work.bytes_total),
+                (0, 0),
+                "reused burst routing allocates nothing"
+            );
+            assert_eq!(effects.len(), n);
+            assert_eq!(effects.capacity(), capacity);
+            assert!(batch.is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_wheel_burst_reuses_storage_at_n_and_2n() {
+    assert_reused_burst_storage::<false>();
+}
+#[test]
+#[should_panic(expected = "reused burst routing allocates nothing")]
+fn negative_control_per_notch_vec_fails_reused_burst_assertion() {
+    assert_reused_burst_storage::<true>();
+}
+
+fn assert_file_motion_allocations<const COLLECT: bool>() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut costs = Vec::new();
+    for n in [32, 64] {
+        let (_, mut files) = runtime.block_on(session("motion-allocations"));
+        runtime.block_on(files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({
+            "transcript_back":1000,"selected_task":acyclic_harness::TaskId::from_bytes([41;16]).to_string()
+        }))).unwrap();
+        let mut input = PromptInput::default();
+        let mut effects = Vec::new();
+        let mut batch: InputBatch = (0..n).map(|_| notch(true)).collect();
+        input_burst(&mut batch, PAGE, &mut effects, |event| {
+            input.event(event, Rect::new(0, 0, 80, 1), &mut Viewport::default(), 0)
+        });
+        let measured = acyclic_test_support::measure(|| {
+            if COLLECT {
+                let motions = effects
+                    .drain(..)
+                    .filter_map(|effect| transcript_motion(&effect, PAGE))
+                    .collect::<Vec<_>>();
+                runtime
+                    .block_on(file_tui_inputs(
+                        &mut files,
+                        &NoFiles,
+                        motions.into_iter().map(InputEffect::Scroll),
+                        PAGE,
+                        10000,
+                    ))
+                    .unwrap();
+            } else {
+                runtime
+                    .block_on(file_tui_inputs(
+                        &mut files,
+                        &NoFiles,
+                        effects.drain(..),
+                        PAGE,
+                        10000,
+                    ))
+                    .unwrap();
+            }
+        });
+        assert_eq!(
+            tui_scroll(&files).unwrap(),
+            1000 + n * WHEEL_ROWS.unsigned_abs()
+        );
+        assert!(effects.is_empty());
+        costs.push((measured.count_total, measured.bytes_total));
+    }
+    assert_eq!(
+        costs[0], costs[1],
+        "file motion folding retains no per-burst motion buffer"
+    );
+}
+
+#[test]
+fn file_motion_folding_allocations_do_not_grow_with_the_burst() {
+    assert_file_motion_allocations::<false>();
+}
+#[test]
+#[should_panic(expected = "file motion folding retains no per-burst motion buffer")]
+fn negative_control_collected_motions_fail_the_same_allocation_assertion() {
+    assert_file_motion_allocations::<true>();
 }

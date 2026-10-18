@@ -238,19 +238,20 @@ pub async fn file_tui_inputs<P: StreamProvider + ?Sized>(
     page_rows: usize,
     maximum_scroll: usize,
 ) -> Result<()> {
-    let mut motions = Vec::new();
-    for effect in effects {
+    let mut effects = effects.into_iter().peekable();
+    while let Some(effect) = effects.next() {
         if let Some(rows) = super::transcript_motion(&effect, page_rows) {
-            motions.push(rows);
-            continue;
+            let motions = std::iter::once(rows).chain(std::iter::from_fn(|| {
+                let rows = effects
+                    .peek()
+                    .and_then(|effect| super::transcript_motion(effect, page_rows))?;
+                effects.next();
+                Some(rows)
+            }));
+            super::scroll_tui(files, motions, maximum_scroll).await?;
+        } else {
+            handle_tui_input(files, reader, effect).await?;
         }
-        if !motions.is_empty() {
-            super::scroll_tui(files, motions.drain(..), maximum_scroll).await?;
-        }
-        handle_tui_input(files, reader, effect).await?;
     }
-    if motions.is_empty() {
-        return Ok(());
-    }
-    super::scroll_tui(files, motions, maximum_scroll).await
+    Ok(())
 }

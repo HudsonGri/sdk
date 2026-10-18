@@ -40,6 +40,7 @@ pub async fn run(
     let mut events = client::terminal_events(tty);
     // Events of the current read not yet handled; each gets its own frame.
     let mut batch = client::InputBatch::new();
+    let mut effects = Vec::new();
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();
     prompt_files.refresh(&commands, &mut input)?;
@@ -99,13 +100,13 @@ pub async fn run(
         let area = PromptBox::input_area(areas.prompt);
         let page_rows = usize::from(areas.transcript.height);
         // A flick or held PageUp is one input batch: one scroll, one frame.
-        let effects = client::input_burst(&mut batch, page_rows, |event| {
+        client::input_burst(&mut batch, page_rows, &mut effects, |event| {
             input.event(event, area, &mut viewport, now)
         });
         client::file_tui_inputs(
             &mut commands,
             reader.as_ref(),
-            effects,
+            effects.drain(..),
             page_rows,
             maximum_scroll,
         )

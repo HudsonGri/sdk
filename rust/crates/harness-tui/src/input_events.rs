@@ -15,15 +15,24 @@ impl PromptInput {
         area: Rect,
         viewport: &mut Viewport,
         now_ms: u64,
-    ) -> Vec<InputEffect> {
+    ) -> impl Iterator<Item = InputEffect> + use<> {
         self.input_width = usize::from(area.width);
-        match event {
+        let mut wheel = None;
+        let effects = match event {
             InputEvent::Key(key) => self.key(key, now_ms, self.input_width),
             InputEvent::Paste(text) => self.paste(&text, now_ms),
             InputEvent::CommittedText(text) => self.committed_text(&text, now_ms),
             InputEvent::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => vec![InputEffect::Scroll(WHEEL_ROWS)],
-                MouseEventKind::ScrollDown => vec![InputEffect::Scroll(-WHEEL_ROWS)],
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    wheel = Some(InputEffect::Scroll(
+                        if mouse.kind == MouseEventKind::ScrollUp {
+                            WHEEL_ROWS
+                        } else {
+                            -WHEEL_ROWS
+                        },
+                    ));
+                    Vec::new()
+                }
                 _ => self.mouse(mouse, area, viewport, now_ms),
             },
             InputEvent::Focus(false) => {
@@ -33,7 +42,8 @@ impl PromptInput {
                 effects
             }
             InputEvent::Resize(_, _) | InputEvent::Focus(true) => self.flush_chord(),
-        }
+        };
+        wheel.into_iter().chain(effects)
     }
 
     /// Drive the chord-prefix timeout without blocking or spawning a timer task.

@@ -46,7 +46,9 @@ impl Profile {
         if self.kitty {
             bytes.extend_from_slice(b"\x1b[?0u");
         }
-        for mode in [2026, 2027, 1004, 2004, 1049, 1006, 1002, 1000, 1003] {
+        for mode in [
+            2026, 2027, 1004, 2004, 1049, 9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016,
+        ] {
             let state = if self.modes && (mode != 2027 || self.grapheme) {
                 2
             } else {
@@ -511,7 +513,7 @@ fn restore_is_reusable_and_preserves_permanent_and_unknown_modes() -> io::Result
 fn alternate_screen_reports_sgr_wheel_and_inline_keeps_native_scrolling() -> io::Result<()> {
     let setup = |screen, modes: &[(u16, ModeState)]| -> io::Result<Vec<u8>> {
         let mut caps = Capabilities::default();
-        for mode in [1049, 1000, 1003] {
+        for mode in [1049, 9, 1000, 1001, 1003, 1005, 1015, 1016] {
             caps.modes.insert(mode, ModeState::Reset);
         }
         caps.modes.extend(modes.iter().copied());
@@ -616,6 +618,9 @@ fn start_states() -> impl Iterator<Item = u8> {
 
 fn restored_modes(initial: u8, at: usize) -> (TermMode, TermMode) {
     let mut caps = Capabilities::default();
+    for mode in [9, 1001, 1005, 1015, 1016] {
+        caps.modes.insert(mode, ModeState::Reset);
+    }
     let mut original = Vec::new();
     for (index, mode) in [1004, 2004, 1049, 1006, 1002, 1000, 1003]
         .into_iter()
@@ -669,7 +674,7 @@ fn every_mode_subset_and_failure_boundary_restores() {
 fn an_inherited_mouse_protocol_is_selected_again_on_restore() -> io::Result<()> {
     for (inherited, reselect) in [(1000, b"\x1b[?1000h"), (1003, b"\x1b[?1003h")] {
         let mut caps = Capabilities::default();
-        for mode in [1049, 1006, 1002, 1000, 1003] {
+        for mode in [1049, 9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016] {
             caps.modes.insert(mode, ModeState::Reset);
         }
         caps.modes.insert(inherited, ModeState::Set);
@@ -694,7 +699,7 @@ fn an_inherited_mouse_protocol_is_selected_again_on_restore() -> io::Result<()> 
     // An unknown protocol state could be an active selection: reporting is
     // not enabled at all.
     let mut caps = Capabilities::default();
-    for mode in [1049, 1006, 1002, 1003] {
+    for mode in [1049, 9, 1001, 1002, 1003, 1005, 1006, 1015, 1016] {
         caps.modes.insert(mode, ModeState::Reset);
     }
     let mut bytes = Vec::new();
@@ -727,7 +732,7 @@ proptest! {
     }
 
     #[test]
-    fn reply_round_trip_and_chunk_invariance(mode in prop_oneof![Just(2026u16), Just(2027), Just(1004), Just(2004)],
+    fn reply_round_trip_and_chunk_invariance(mode in prop::sample::select(vec![2026u16,2027,1004,2004,1049,9,1000,1001,1002,1003,1005,1006,1015,1016]),
         state in 0u8..5, flags in any::<u16>(), rgb in any::<[u8; 3]>(), chunk in 1usize..80) {
         let [r, g, b] = rgb;
         let encoded = format!("\x1b[?{mode};{state}$y\x1b[?{flags}u\x1b]11;rgb:{r:02x}/{g:02x}/{b:02x}\x07\x1b[?62;4c");
@@ -754,3 +759,6 @@ proptest! {
         prop_assert_eq!(&whole.replies, &split.replies);
     }
 }
+
+#[path = "terminal/mouse.rs"]
+mod mouse;
