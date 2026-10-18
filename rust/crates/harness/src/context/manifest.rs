@@ -69,6 +69,13 @@ impl ContextManifest {
         use crate::{executor::stock_boundary, wire::ErrorCode};
         crate::executor::with_history_io(io, |work| -> Result<()> {
             limits.validate(work)?;
+            if self.skill_catalog.total().is_none() {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Invalid,
+                    "manifest skill count overflows",
+                ));
+            }
             crate::executor::json::json_byte_length(self, limits.render_bytes, work)?;
             self.discovery.validate(work)?;
             for file in self

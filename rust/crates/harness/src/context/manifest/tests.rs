@@ -43,6 +43,33 @@ fn definition(name: String, description: String) -> ToolDefinition {
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
+    // Decoding rejects every unrepresentable count before projection; the
+    // boundary admits and round-trips every representable count exactly.
+    #[test]
+    fn skill_counts_are_admitted_without_overflow(
+        count in 0usize..8,
+        unlisted in prop_oneof![any::<u64>(), (u64::MAX - 8)..=u64::MAX],
+    ) {
+        let manifest = ContextManifest {
+            skill_catalog: SkillCatalog {
+                skills: (0..count).map(|_| CatalogSkill {
+                    name: "fixture".into(), description: "description".into(), path: "SKILL.md".into(),
+                }).collect(),
+                unlisted,
+            },
+            ..Default::default()
+        };
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let decoded = ContextManifest::decode(&bytes, Limits::default());
+        let fits = count as u128 + u128::from(unlisted) <= u128::from(u64::MAX);
+        prop_assert_eq!(decoded.is_ok(), fits);
+        if fits {
+            prop_assert_eq!(decoded.unwrap(), manifest);
+        } else {
+            prop_assert!(decoded.unwrap_err().to_string().contains("skill count overflows"));
+        }
+    }
+
     // Property: order never changes uniqueness or membership; duplicate source
     // metadata, selected invocations and tool names are all rejected.
     #[test]
