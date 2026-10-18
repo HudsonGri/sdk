@@ -15,7 +15,7 @@ use crate::request::validate_append_size;
 use crate::request::{append_digest, commit_digest, condition_path, fork_digest, mutation_path};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::request::{
-    hash_conditions, hash_path, hash_records, normalize_commit, request_hasher,
+    commit_hash_bytes, hash_conditions, hash_path, hash_records, normalize_commit, request_hasher,
     validate_commit_shape,
 };
 use async_trait::async_trait;

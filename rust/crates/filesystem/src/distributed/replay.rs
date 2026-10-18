@@ -175,6 +175,48 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         work.check()?;
         self.authority_require_live(authority, work).await?;
+        let path = work.operation_path(authority, operation)?;
+        match self.tail(path.clone(), work).await {
+            Ok(1) => {
+                let locator = self.record(path, 0, work).await?;
+                let sequence = work
+                    .decode_fixed::<8>(
+                        &locator.0.value,
+                        OPERATION_SEQUENCE_DOMAIN,
+                        "invalid Stream operation locator",
+                    )
+                    .map(u64::from_le_bytes)?;
+                let records = work.path(authority, "/records", None)?;
+                let record = self.record(records, sequence, work).await?;
+                let durable = authority_decode_borrowed(authority, &record.0.value, work)?;
+                if sequence == 0
+                    || durable.sequence.get() != sequence
+                    || durable.operation_id != operation
+                    || record.0.commit_id != locator.0.commit_id
+                {
+                    return Err(authority_corrupt(
+                        "operation locator does not bind its authority record",
+                        work,
+                    ));
+                }
+                let payload = work.bytes(durable.payload)?;
+                return Ok(Some(durable_commit(
+                    durable,
+                    record.0.committed_at_micros,
+                    payload,
+                )));
+            }
+            Ok(_) => {
+                return Err(authority_corrupt(
+                    "operation locator contains an invalid record count",
+                    work,
+                ));
+            }
+            Err(error) if authority_missing(&error) => {}
+            Err(error) => return Err(error),
+        }
+        // Pre-index authorities and first/fork creation retain their original
+        // operation-key envelope. New appends are indexed atomically above.
         let key = work.key(
             b"operation\0",
             &[&authority.into_bytes(), &operation.into_bytes()],

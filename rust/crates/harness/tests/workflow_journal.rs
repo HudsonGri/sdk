@@ -390,7 +390,8 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     assert!(first_result.is_ok() ^ second_result.is_ok());
     assert!(
         matches!(&first_result, Err(acyclic_harness::Error::Conflict(_)))
-            ^ matches!(&second_result, Err(acyclic_harness::Error::Conflict(_)))
+            ^ matches!(&second_result, Err(acyclic_harness::Error::Conflict(_))),
+        "commit race must retain Conflict: first={first_result:?}; second={second_result:?}"
     );
     let tail = journal.replay(0, 64, None)?.await?.0;
     assert_eq!(tail.len(), 3);

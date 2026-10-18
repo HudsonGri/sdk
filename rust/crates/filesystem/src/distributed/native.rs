@@ -272,6 +272,30 @@ impl<'a> AuthorityWork<'a> {
         Ok(path)
     }
 
+    pub(super) fn operation_path(
+        &mut self,
+        authority: AuthorityId,
+        operation: OperationId,
+    ) -> Result<StreamPath, AuthorityStoreError> {
+        const PREFIX: &[u8] = b"fs/authorities/";
+        const MIDDLE: &[u8] = b"/operations/";
+        const LENGTH: usize = PREFIX.len() + 32 + MIDDLE.len() + 32;
+        let writes = codec_work(LENGTH as u64, (PREFIX.len() + MIDDLE.len()) as u64, 0);
+        self.admit(writes)?;
+        let mut text = [0; LENGTH];
+        text[..PREFIX.len()].copy_from_slice(PREFIX);
+        let middle = PREFIX.len() + 32;
+        hex::encode_to_slice(authority.into_bytes(), &mut text[PREFIX.len()..middle])
+            .map_err(|_| crate::WorkError::Overflow)?;
+        text[middle..middle + MIDDLE.len()].copy_from_slice(MIDDLE);
+        hex::encode_to_slice(operation.into_bytes(), &mut text[middle + MIDDLE.len()..])
+            .map_err(|_| crate::WorkError::Overflow)?;
+        self.charge(writes)?;
+        let text = std::str::from_utf8(&text)
+            .map_err(|_| AuthorityStoreError::RejectedStatic("operation path is not UTF-8"))?;
+        self.own_path(text)
+    }
+
     pub(super) fn lease_path(
         &mut self,
         workspace: crate::WorkspaceId,

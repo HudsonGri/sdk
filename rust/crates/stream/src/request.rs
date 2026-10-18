@@ -84,6 +84,44 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
     Ok(hash.finalize().into())
 }
 
+/// Returns the exact number of bytes hashed by the canonical commit digest.
+#[must_use]
+pub fn commit_hash_bytes(request: &CommitRequest) -> u64 {
+    let path_bytes = |path: &StreamPath| 8 + path.as_str().len() as u64;
+    let record_bytes = |records: &[Bytes]| {
+        8 + records
+            .iter()
+            .map(|record| 8 + record.len() as u64)
+            .sum::<u64>()
+    };
+    b"acyclic.stream.request.v1\0".len() as u64
+        + b"commit".len() as u64
+        + request
+            .conditions
+            .iter()
+            .map(|condition| match condition {
+                CommitCondition::Head { path, .. } => 1 + path_bytes(path) + 8 + 32,
+                CommitCondition::Tail { path, .. } => 1 + path_bytes(path) + 8,
+                CommitCondition::Absent { path } => 1 + path_bytes(path),
+            })
+            .sum::<u64>()
+        + request
+            .mutations
+            .iter()
+            .map(|mutation| match mutation {
+                CommitMutation::Append { path, records } => {
+                    1 + path_bytes(path) + record_bytes(records)
+                }
+                CommitMutation::Fork {
+                    source,
+                    destination,
+                    records,
+                    ..
+                } => 1 + path_bytes(source) + path_bytes(destination) + 8 + record_bytes(records),
+            })
+            .sum::<u64>()
+}
+
 pub(crate) fn hash_conditions(hash: &mut Sha256, conditions: &[CommitCondition]) {
     for condition in conditions {
         match condition {

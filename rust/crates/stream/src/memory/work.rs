@@ -271,43 +271,6 @@ impl MemoryStream {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn commit_hash_bytes(request: &CommitRequest) -> u64 {
-    let path_bytes = |path: &StreamPath| 8 + path.as_str().len() as u64;
-    let record_bytes = |records: &[Bytes]| {
-        8 + records
-            .iter()
-            .map(|record| 8 + record.len() as u64)
-            .sum::<u64>()
-    };
-    b"acyclic.stream.request.v1\0".len() as u64
-        + b"commit".len() as u64
-        + request
-            .conditions
-            .iter()
-            .map(|condition| match condition {
-                CommitCondition::Head { path, .. } => 1 + path_bytes(path) + 8 + 32,
-                CommitCondition::Tail { path, .. } => 1 + path_bytes(path) + 8,
-                CommitCondition::Absent { path } => 1 + path_bytes(path),
-            })
-            .sum::<u64>()
-        + request
-            .mutations
-            .iter()
-            .map(|mutation| match mutation {
-                CommitMutation::Append { path, records } => {
-                    1 + path_bytes(path) + record_bytes(records)
-                }
-                CommitMutation::Fork {
-                    source,
-                    destination,
-                    records,
-                    ..
-                } => 1 + path_bytes(source) + path_bytes(destination) + 8 + record_bytes(records),
-            })
-            .sum::<u64>()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn inspect<T>(meter: &Arc<dyn NativeReadMeter>, lookup: impl FnOnce() -> T) -> std::io::Result<T> {
     let mut operation =
         NativeOperationReservation::new(Arc::clone(meter), NativeOperationKind::Read, 1)?;

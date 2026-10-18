@@ -1,5 +1,32 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static OMIT_REQUEST_BINDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(super) static OMIT_OPERATION_LOCATOR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn bind_attempt_key(
+    request: &mut CommitRequest,
+    work: &mut AuthorityWork<'_>,
+) -> Result<(), AuthorityStoreError> {
+    let hashing = codec_work(0, 0, acyclic_stream::request::commit_hash_bytes(request));
+    work.admit(hashing)?;
+    let digest = acyclic_stream::request::commit_digest(request).map_err(map_stream_error)?;
+    work.charge(hashing)?;
+    // Streams retains rejected decisions too. Its key names this exact request,
+    // while the authority record retains the logical operation across cuts.
+    #[cfg(test)]
+    if OMIT_REQUEST_BINDING.get() {
+        return Ok(());
+    }
+    request.idempotency_key = work.key(b"operation-attempt\0", &[&digest])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
+
 pub(super) async fn seal<G: AuthorityGuard>(
     work: &mut AuthorityWork<'_>,
     guard: Option<&mut G>,
@@ -102,8 +129,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let records = work.path(authority_id, "/records", None)?;
         let epochs = work.path(authority_id, "/epochs", None)?;
         let retirement = work.path(authority_id, "/retirement", None)?;
-        let mut conditions = work.vec(7)?;
+        let operation_path = work.operation_path(authority_id, commit.operation_id)?;
+        let mut conditions = work.vec(8)?;
         conditions.extend([
+            CommitCondition::Absent {
+                path: operation_path.clone(),
+            },
             CommitCondition::Absent { path: retirement },
             CommitCondition::Tail {
                 path: records.clone(),
@@ -138,8 +169,16 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         } else {
             (None, None)
         };
-        let mut mutations = work.vec(3)?;
+        let mut mutations = work.vec(4)?;
         work.append_record(&mut mutations, records.clone(), [encoded])?;
+        let location =
+            work.stream_bytes(OPERATION_SEQUENCE_DOMAIN, &[&sequence.get().to_le_bytes()])?;
+        work.append_record(&mut mutations, operation_path, [location])?;
+        #[cfg(test)]
+        if OMIT_OPERATION_LOCATOR.get() {
+            // The append stays real; remove only its durable operation index.
+            mutations.pop();
+        }
         if let Some(generation) =
             generation_from_payload(authority_id, sequence, durable.payload, work)?
         {
@@ -210,24 +249,19 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let idempotency_key = work.key(
-            b"operation\0",
-            &[
-                &authority_id.into_bytes(),
-                &commit.operation_id.into_bytes(),
-            ],
-        )?;
-        let result = self
-            .commit(
-                CommitRequest {
-                    conditions,
-                    mutations,
-                    idempotency_key,
-                },
-                deadline,
-                work,
-                guard.as_deref_mut(),
+        let mut request = CommitRequest {
+            conditions,
+            mutations,
+            // The canonical digest excludes its key; binding replaces this
+            // static placeholder before the request reaches a provider.
+            idempotency_key: acyclic_stream::IdempotencyKey::new(
+                acyclic_stream::OwnedBytes::from_static(b"pending-attempt"),
             )
+            .map_err(map_stream_error)?,
+        };
+        bind_attempt_key(&mut request, work)?;
+        let result = self
+            .commit(request, deadline, work, guard.as_deref_mut())
             .await;
         if work.is_native() && result.is_ok() {
             work.check()?;

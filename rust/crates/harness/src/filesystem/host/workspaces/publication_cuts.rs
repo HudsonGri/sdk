@@ -8,6 +8,7 @@ use acyclic_fs::{
 use std::sync::Mutex;
 use tokio::sync::oneshot;
 pub(super) mod accounting;
+pub(super) mod workflow;
 
 thread_local! {
     static RESTORE_CONFLICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -391,6 +392,40 @@ async fn http_proof(restore: bool) {
     }
     let _reset = Reset;
     RESTORE_CONFLICT.set(restore);
+    let (server, client) = http_client().await;
+    // Remote Streams exposes ordinary work; original native work is covered
+    // above with MemoryStream, which implements the native provider contract.
+    for mode in [Mode::Batched, Mode::Raw, Mode::Measured] {
+        for conditional in [false, true] {
+            for directories_only in [false, true] {
+                // Each schedule owns a separate logical workspace and authority.
+                let authority = acyclic_fs::StreamAuthorityStore::new(Arc::new(client.clone()));
+                let result = schedule_accounted(
+                    authority,
+                    mode,
+                    conditional,
+                    accounting::Case {
+                        directories_only,
+                        ..Default::default()
+                    },
+                )
+                .await;
+                if restore && !conditional {
+                    assert!(result.is_err(), "HTTP conflict control escaped {mode:?}");
+                } else {
+                    assert!(
+                        result.is_ok(),
+                        "HTTP publication retry proof {mode:?}: {result:?}"
+                    );
+                }
+            }
+        }
+    }
+    server.abort();
+}
+
+#[cfg(feature = "grpc")]
+async fn http_client() -> (tokio::task::JoinHandle<()>, acyclic_stream::grpc::Client) {
     let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let pem = certificate.cert.pem();
     let identity =
@@ -430,33 +465,5 @@ async fn http_proof(restore: bool) {
         acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(endpoint, "cut-proof", pem)
             .await
             .unwrap();
-    // Remote Streams exposes ordinary work; original native work is covered
-    // above with MemoryStream, which implements the native provider contract.
-    for mode in [Mode::Batched, Mode::Raw, Mode::Measured] {
-        for conditional in [false, true] {
-            for directories_only in [false, true] {
-                // Each schedule owns a separate logical workspace and authority.
-                let authority = acyclic_fs::StreamAuthorityStore::new(Arc::new(client.clone()));
-                let result = schedule_accounted(
-                    authority,
-                    mode,
-                    conditional,
-                    accounting::Case {
-                        directories_only,
-                        ..Default::default()
-                    },
-                )
-                .await;
-                if restore && !conditional {
-                    assert!(result.is_err(), "HTTP conflict control escaped {mode:?}");
-                } else {
-                    assert!(
-                        result.is_ok(),
-                        "HTTP publication retry proof {mode:?}: {result:?}"
-                    );
-                }
-            }
-        }
-    }
-    server.abort();
+    (server, client)
 }

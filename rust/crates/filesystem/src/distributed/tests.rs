@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
+mod append_retry;
+
 fn proposed(id: u8) -> ProposedCommit {
     ProposedCommit {
         operation_id: OperationId::from_bytes([id; 16]),
@@ -563,6 +565,7 @@ struct ReleaseSpy {
     cancel_inspect: Option<CancellationToken>,
     lose_ack: bool,
     corrupt_observation: u8,
+    advance_gate: AtomicBool,
 }
 
 impl ReleaseSpy {
@@ -574,6 +577,7 @@ impl ReleaseSpy {
             cancel_inspect: None,
             lose_ack: false,
             corrupt_observation: 0,
+            advance_gate: AtomicBool::new(false),
         }
     }
 }
@@ -638,6 +642,30 @@ impl StreamProvider for ReleaseSpy {
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.writes.store(true, SeqCst);
+        if self.advance_gate.swap(false, SeqCst) {
+            let path = request
+                .conditions
+                .iter()
+                .find_map(|condition| match condition {
+                    CommitCondition::Tail { path, .. }
+                        if path.as_str().ends_with("/publication-gate") =>
+                    {
+                        Some(path.clone())
+                    }
+                    _ => None,
+                })
+                .expect("append gate condition");
+            self.inner
+                .append(AppendRequest {
+                    path,
+                    records: vec![acyclic_stream::OwnedBytes::from_static(
+                        PUBLICATION_GATE_FREE,
+                    )],
+                    if_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+        }
         let result = self.inner.commit(request).await?;
         if self.lose_ack {
             Err(StreamError::Unavailable)
