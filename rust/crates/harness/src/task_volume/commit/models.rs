@@ -1,5 +1,9 @@
 use super::*;
 use acyclic_stream::MemoryStream;
+use std::{
+    future::Future as _,
+    task::{Context, Waker},
+};
 
 const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
 
@@ -14,26 +18,44 @@ fn competing_batch(broken: bool) {
         );
         let cut = loom::future::block_on(Box::pin(volume.head())).unwrap();
         let writer = volume.clone();
-        let other = loom::thread::spawn(move || {
-            if broken {
-                model_checking::set_fault(model_checking::Fault::OmitPublicationFence);
-            }
+        model_checking::pause_next_publication();
+        let mut single = Box::pin(async move {
             let write = FileValue::new(
                 FileKey::parse(".ui/config/peer.json").unwrap(),
                 b"peer".to_vec(),
             );
-            loom::future::block_on(Box::pin(writer.append(cut, &write))).is_ok()
+            writer.append(cut, &write).await
         });
-        if broken {
-            model_checking::set_fault(model_checking::Fault::OmitPublicationFence);
-        }
+        assert!(
+            single
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
         let writes = ["first", "second"].map(|name| {
             FileValue::new(
                 FileKey::parse(&format!(".ui/config/{name}.json")).unwrap(),
                 name.as_bytes().to_vec(),
             )
         });
-        let accepted = loom::future::block_on(Box::pin(volume.append_many(cut, &writes))).is_ok();
+        model_checking::pause_next_publication();
+        let mut batch = Box::pin(volume.append_many(cut, &writes));
+        assert!(
+            batch
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        if broken {
+            model_checking::set_fault(model_checking::Fault::OmitPublicationFence);
+        }
+        let other = loom::thread::spawn(move || {
+            if broken {
+                model_checking::set_fault(model_checking::Fault::OmitPublicationFence);
+            }
+            loom::future::block_on(single).is_ok()
+        });
+        let accepted = loom::future::block_on(batch).is_ok();
         let peer = other.join().unwrap();
         assert_ne!(
             accepted, peer,

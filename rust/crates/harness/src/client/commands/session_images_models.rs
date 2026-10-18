@@ -1,6 +1,10 @@
 use super::image_test_support::{Reader, image};
 use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
+use std::{
+    future::Future as _,
+    task::{Context, Waker},
+};
 
 const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
 
@@ -35,17 +39,38 @@ fn draft_race(broken: bool) {
                 .unwrap();
             (volume, submitter, editor)
         }));
-        let peer = loom::thread::spawn(move || {
-            loom::future::block_on(Box::pin(editor.write_unchanged_state(
-                CommandFileRoot::Session,
-                "attachments.json",
-                &json!([image(2)]),
-            )))
+        // Both clients have resolved the same immutable cut before either IO
+        // starts. Explore the real commits, cache acknowledgements and follows;
+        // serializing pure preparation removes no publication ordering.
+        files::model_checking::pause_next_publication();
+        let mut update = Box::pin(async move {
+            editor
+                .write_unchanged_state(
+                    CommandFileRoot::Session,
+                    "attachments.json",
+                    &json!([image(2)]),
+                )
+                .await
         });
+        assert!(
+            update
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
         if broken {
             files::model_checking::set_fault(files::model_checking::Fault::OmitDraftConsumption);
         }
-        let submitted = loom::future::block_on(Box::pin(submitter.submit("describe", &Reader)));
+        files::model_checking::pause_next_publication();
+        let mut submission = Box::pin(submitter.submit("describe", &Reader));
+        assert!(
+            submission
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        let peer = loom::thread::spawn(move || loom::future::block_on(update));
+        let submitted = loom::future::block_on(submission);
         let edited = peer.join().unwrap();
         loom::future::block_on(Box::pin(async {
             let mut restored = CommandSession::open(volume, submitter.session, 65_536, 32)
