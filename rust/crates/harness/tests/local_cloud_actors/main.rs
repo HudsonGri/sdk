@@ -12,9 +12,12 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn observation_path() -> TestResult<StreamPath> {
     let scope = serde_json::to_vec(&["staging", "00000000-0000-4000-8000-0000000000e1", ACTOR])?;
+    let hash: String = Sha256::digest(scope)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     Ok(StreamPath::new(format!(
-        ".acyclic/actors-observation/{:x}",
-        Sha256::digest(scope)
+        ".acyclic/actors-observation/{hash}"
     ))?)
 }
 
