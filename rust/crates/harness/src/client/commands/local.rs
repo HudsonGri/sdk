@@ -192,10 +192,21 @@ pub(crate) async fn run_local_command_files(
 /// Drive the local owner throughout presentation, including awaited input writes.
 /// Polling it only while waiting for events can strand a file lock held by an
 /// owner future while presentation waits for that same file operation.
-pub async fn with_local_commands<T, E: From<Error>>(
+///
+/// Both sides are built and polled in boxes of their own: the presentation's
+/// state never moves through, and its poll never shares, the frame that polls
+/// the turns the owner drives.
+pub async fn with_local_commands<T, E: From<Error>, F>(
     local: Arc<LocalHarness>,
     session: OperationId,
-    presentation: impl std::future::Future<Output = std::result::Result<T, E>>,
-) -> std::result::Result<T, E> {
-    super::scheduling::drive_command_owner(run_local_commands(local, session), presentation).await
+    presentation: impl FnOnce() -> F,
+) -> std::result::Result<T, E>
+where
+    F: std::future::Future<Output = std::result::Result<T, E>>,
+{
+    super::scheduling::drive_command_owner(
+        acyclic_fs::in_heap(|| run_local_commands(local, session)),
+        acyclic_fs::in_heap(presentation),
+    )
+    .await
 }

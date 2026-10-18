@@ -360,7 +360,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
     };
     let transcript = tokio::time::timeout(
         HANG_GUARD,
-        client::with_local_commands(local.clone(), operation, presentation),
+        client::with_local_commands(local.clone(), operation, move || presentation),
     )
     .await
     .expect("hang guard: the owner stalled before the turn settled")
