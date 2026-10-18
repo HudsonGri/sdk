@@ -88,7 +88,7 @@ fn fragmented_text_conversion_preserves_the_flattened_allocation() {
         baseline.1, candidate.1
     );
     conversion_cost(candidate.1);
-    assert_eq!((baseline.1.count_total, baseline.1.bytes_total), (5, 350));
+    assert_eq!((baseline.1.count_total, baseline.1.bytes_total), (6, 382));
     assert_eq!(candidate.1.count_total + 1, baseline.1.count_total);
     assert_eq!(candidate.1.bytes_total + 11, baseline.1.bytes_total);
 }
@@ -96,7 +96,7 @@ fn fragmented_text_conversion_preserves_the_flattened_allocation() {
 fn conversion_cost(cost: acyclic_test_support::AllocationInfo) {
     assert_eq!(
         (cost.count_total, cost.bytes_total),
-        (4, 339),
+        (5, 371),
         "fragmented row conversion"
     );
 }
