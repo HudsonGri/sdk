@@ -7,6 +7,14 @@ use acyclic_harness::{
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, process::Output};
 
+pub fn last_line(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .last()
+        .unwrap_or("(empty)")
+        .to_owned()
+}
+
 pub fn output(
     case: &Value,
     operation: OperationId,
@@ -20,7 +28,7 @@ pub fn output(
         return Err(format!(
             "exit {:?}, expected {expected_code}\nstdout: {}\nstderr: {}",
             output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
+            last_line(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )
         .into());

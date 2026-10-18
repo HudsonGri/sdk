@@ -85,7 +85,7 @@ async fn execute(
     if timed_out {
         return Err(format!(
             "binary scenario exceeded 1 s\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&stdout),
+            assertions::last_line(&stdout),
             String::from_utf8_lossy(&stderr)
         )
         .into());
@@ -226,7 +226,7 @@ async fn binary_scenarios() -> TestResult {
         (path, protocol, result)
     });
     let mut results = FuturesUnordered::new();
-    results.extend(cases.by_ref().take(16));
+    results.extend(cases.by_ref().take(8));
     let mut failure = None;
     while let Some((path, protocol, result)) = results.next().await {
         let name = format!("{} [{protocol}]", path.strip_prefix(root())?.display());
