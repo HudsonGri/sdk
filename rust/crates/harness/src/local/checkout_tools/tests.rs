@@ -154,7 +154,6 @@ fn offloaded_projection_cleanup(broken: bool) {
         async || Ok(7),
     ))
     .unwrap();
-    let (sender, receiver) = loom::sync::mpsc::channel();
     let observed = users.clone();
     let worker_slot = slot.clone();
     let mut caller_claim = None;
@@ -171,7 +170,6 @@ fn offloaded_projection_cleanup(broken: bool) {
                 Some(7),
                 "bash worker lost its projection before physical cleanup"
             );
-            let _ = sender.send(());
         })
     } else {
         thread::spawn(move || {
@@ -191,10 +189,8 @@ fn offloaded_projection_cleanup(broken: bool) {
             // The dropped waiter cannot receive the completed custody. It is
             // released here, after the same physical cleanup boundary as Bash.
             drop(claim);
-            let _ = sender.send(());
         })
     };
-    drop(receiver);
     drop(caller_claim);
     // A second command can enter and complete while the first command's
     // caller is gone. Its last-user check must still see physical custody.
