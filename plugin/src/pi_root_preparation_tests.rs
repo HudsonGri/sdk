@@ -245,14 +245,6 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
         policy.grants.iter().map(str::to_owned).chain([
             "interaction:route".to_owned(),
             "interaction:open".to_owned(),
-            policy
-                .journal
-                .capability(VolumeOperation::Read, &mut None)
-                .unwrap(),
-            policy
-                .journal
-                .capability(VolumeOperation::Write, &mut None)
-                .unwrap(),
         ]),
     );
     let fixture = Fixture::with_policy(policy).await;
@@ -286,7 +278,7 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
         .conversation_authority_with_native_work(
             task,
             fixture.owner.policy.agent,
-            &fixture.owner.policy.grants,
+            storage.signed.capabilities(),
             &fixture.work,
         )
         .unwrap();
