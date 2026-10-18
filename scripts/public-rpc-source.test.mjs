@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createSourceInspector, publicRpcComplete } from "./public-rpc-source.mjs";
+import { createSourceInspector } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
 import { ObjectsService } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
@@ -35,13 +35,6 @@ for (const [rpc, name] of [["PutObjects", "put_batch"], ["GetObjects", "get_batc
     assert.equal(exposure.typescriptGrpcNodeBun, true);
     assert.equal(exposure.rustHttp, false);
     assert.equal(exposure.typescriptHttp, false);
-    const row = { rpc: `${ObjectsService.typeName}/${rpc}`, httpOperation: null, ...exposure };
-    assert.equal(publicRpcComplete(row), true);
-    for (const field of ["rustGrpc", "typescriptGrpcNodeBun", "typescriptPackageExported"]) {
-      assert.equal(publicRpcComplete({ ...row, [field]: false }), false, field);
-    }
-    assert.equal(publicRpcComplete({ ...row, httpOperation: "v1/objects/objects/batch" }), false);
-    assert.equal(publicRpcComplete({ ...row, httpOperation: undefined }), false);
   });
 }
 

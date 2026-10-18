@@ -11,7 +11,10 @@ type Outcome = Result<Vec<u8>, Error>;
 /// Counts the production path's physical reads. Buffer allocations are exact
 /// in the work trace; the meter also sees runtime worker bookkeeping.
 #[derive(Default)]
-struct CountingMeter(Mutex<Counts>);
+pub(crate) struct CountingMeter {
+    counts: Mutex<Counts>,
+    retained: std::sync::atomic::AtomicU64,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Counts {
@@ -21,10 +24,13 @@ struct Counts {
 
 impl CountingMeter {
     fn counts(&self) -> Counts {
-        *self.0.lock().unwrap()
+        *self.counts.lock().unwrap()
     }
     fn update(&self, change: impl FnOnce(&mut Counts)) {
-        change(&mut self.0.lock().unwrap());
+        change(&mut self.counts.lock().unwrap());
+    }
+    pub(crate) fn retained(&self) -> u64 {
+        self.retained.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -60,7 +66,8 @@ impl NativeReadMeter for CountingMeter {
         }
         Ok(())
     }
-    fn allocate(&self, _: u64) -> std::io::Result<()> {
+    fn allocate(&self, bytes: u64) -> std::io::Result<()> {
+        self.retained.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn reserve_allocation(&self, _: u64) -> std::io::Result<()> {
@@ -76,8 +83,8 @@ impl NativeReadMeter for CountingMeter {
     fn allocate_refcount_header(&self) -> std::io::Result<()> {
         self.allocate(0)
     }
-    fn adopt(&self, _: u64) -> std::io::Result<()> {
-        Ok(())
+    fn adopt(&self, bytes: u64) -> std::io::Result<()> {
+        self.allocate(bytes)
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
         (bytes, self.adopt(bytes))
@@ -97,7 +104,10 @@ impl NativeReadMeter for CountingMeter {
     fn record_examination(&self, _: u64, _: u64) -> std::io::Result<()> {
         Ok(())
     }
-    fn release(&self, _: u64) {}
+    fn release(&self, bytes: u64) {
+        let previous = self.retained.fetch_sub(bytes, std::sync::atomic::Ordering::SeqCst);
+        assert!(previous >= bytes, "released unowned capacity");
+    }
     fn admit_bytes(&self, _: usize) -> std::io::Result<()> {
         Ok(())
     }

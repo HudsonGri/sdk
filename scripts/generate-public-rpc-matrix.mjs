@@ -1,6 +1,6 @@
 // Enumerate canonical services; HTTP mappings describe existing provider operations.
 import { readFileSync, writeFileSync } from "node:fs";
-import { createSourceInspector, publicRpcComplete } from "./public-rpc-source.mjs";
+import { createSourceInspector } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
 import { BucketsService as BucketsV1, ObjectsService as ObjectsV1, MultipartService as MultipartV1 } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
@@ -55,7 +55,7 @@ if (process.argv[2] === "check" || process.argv[2] === "complete") {
 } else if (process.argv[2] === "write") writeFileSync(path, output);
 else throw new Error("expected write, check, or complete");
 if (process.argv[2] === "complete") {
-  const gaps = rows.filter(row => !publicRpcComplete(row));
+  const gaps = rows.filter(row => !row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun || !(row.rpc.startsWith("acyclic.actors.") ? row.typescriptGrpcWeb : row.typescriptHttp) || !row.typescriptPackageExported);
   if (gaps.length) throw new Error(`public SDK surface incomplete:\n${gaps.map(row => `${row.rpc}: target transport/package export missing`).join("\n")}`);
 }
 console.log(`Public RPC matrix: ${rows.length} current operations`);

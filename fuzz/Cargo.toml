@@ -29,3 +29,10 @@ path = "fuzz_targets/objects_restore.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "objects_batch"
+path = "fuzz_targets/objects_batch.rs"
+test = false
+doc = false
+bench = false

@@ -2,7 +2,12 @@ use super::super::Guarded;
 use super::*;
 use crate::sync::{Arc, AtomicBool, Ordering};
 
-struct PutCodec;
+mod reply;
+struct PutCodec {
+    prepared: Option<reply::Reply>,
+    expected: usize,
+    meter: Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
+}
 struct PutEncoder;
 
 impl tonic::codec::Encoder for PutEncoder {
@@ -22,18 +27,13 @@ impl tonic::codec::Encoder for PutEncoder {
 
 impl tonic::codec::Codec for PutCodec {
     type Encode = Guarded<wire::PutObjectsRequest>;
-    type Decode = wire::PutObjectsResponse;
+    type Decode = reply::Reply;
     type Encoder = PutEncoder;
-    type Decoder = <tonic_prost::ProstCodec<wire::PutObjectsRequest, wire::PutObjectsResponse> as tonic::codec::Codec>::Decoder;
+    type Decoder = reply::Decoder;
 
-    fn encoder(&mut self) -> Self::Encoder {
-        PutEncoder
-    }
+    fn encoder(&mut self) -> Self::Encoder { PutEncoder }
     fn decoder(&mut self) -> Self::Decoder {
-        tonic::codec::Codec::decoder(&mut tonic_prost::ProstCodec::<
-            wire::PutObjectsRequest,
-            wire::PutObjectsResponse,
-        >::default())
+        reply::Decoder { prepared: self.prepared.take(), expected: self.expected, meter: self.meter.clone() }
     }
 }
 
@@ -41,9 +41,16 @@ impl tonic::codec::Codec for PutCodec {
 struct Completion {
     sent: AtomicBool,
     failed: AtomicBool,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 
 impl Completion {
+    fn new(meter: Option<&std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>) -> Result<Arc<Self>, Error> {
+        let allocation = meter.map(|meter| acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<Self>()))
+            .transpose().map_err(|_| protocol())?;
+        Ok(Arc::new(Self { _allocation: allocation, ..Self::default() }))
+    }
+
     fn sent(&self) {
         self.sent.store(true, Ordering::Release);
     }
@@ -55,6 +62,22 @@ impl Completion {
             Err(protocol())
         }
     }
+}
+
+fn accepted_upload<S, C>(frames: S, completion: Arc<Completion>, mut check: C) -> impl futures::Stream<Item = S::Item>
+where
+    S: futures::Stream<Item = Guarded<wire::PutObjectsRequest>>,
+    C: FnMut() -> bool,
+{
+    frames.take_while(move |frame| {
+        let accepted = check();
+        if !accepted {
+            completion.failed.store(true, Ordering::Release);
+        } else if matches!(frame.value.frame, Some(wire::put_objects_request::Frame::Complete(true))) {
+            completion.sent();
+        }
+        futures::future::ready(accepted)
+    })
 }
 
 fn item_error(detail: &wire::ErrorDetail) -> Result<Error, Error> {
@@ -72,6 +95,7 @@ fn put_frames(
     meter: Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
 ) -> impl futures::Stream<Item = Guarded<wire::PutObjectsRequest>> + Send + 'static {
     let source = completion.clone();
+    let admission = meter.clone();
     let items = stream::iter(bodies.into_iter().zip(0_u32..)).flat_map(move |(body, index)| {
         let meter = meter.clone();
         let source = source.clone();
@@ -130,7 +154,7 @@ fn put_frames(
             }
         })
     });
-    stream::once(async move {
+    let frames = stream::once(async move {
         Guarded {
             value: wire::PutObjectsRequest {
                 frame: Some(wire::put_objects_request::Frame::Header(header)),
@@ -140,14 +164,14 @@ fn put_frames(
     })
     .chain(items)
     .chain(stream::once(async move {
-        completion.sent();
         Guarded {
             value: wire::PutObjectsRequest {
                 frame: Some(wire::put_objects_request::Frame::Complete(true)),
             },
             _allocation: None,
         }
-    }))
+    }));
+    accepted_upload(frames, completion, move || admission.as_ref().is_none_or(|meter| meter.check().is_ok()))
 }
 
 impl GrpcObjects {
@@ -155,7 +179,16 @@ impl GrpcObjects {
         &self,
         requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
     ) -> Vec<Result<wire::ObjectInfo, Error>> {
-        self.put_objects_with_custody(requests, (), None).await
+        let count = requests.len();
+        if count == 0 { return Vec::new(); }
+        match self.put_objects_with_custody(requests, (), None).await {
+            Ok(mut reply) if reply.failure.is_none() => reply.response.value.results.drain(..).map(|result| match result.result {
+                Some(wire::put_object_result::Result::Object(object)) => Ok(object),
+                Some(wire::put_object_result::Result::Error(error)) => item_error(&error).and_then(Err),
+                None => Err(protocol()),
+            }).collect(),
+            _ => vec![Err(protocol()); count],
+        }
     }
 
     async fn put_objects_with_custody<G: Send + Sync + 'static>(
@@ -163,16 +196,13 @@ impl GrpcObjects {
         requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
         custody: G,
         meter: Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
-    ) -> Vec<Result<wire::ObjectInfo, Error>> {
-        let count = requests.len();
-        if count == 0 {
-            return Vec::new();
-        }
-        let result = async {
+    ) -> Result<reply::Reply, Error> {
+        let count = requests.len();        let result = async {
             let mut objects = batch_vector(count, meter.as_ref())?;
             let mut bodies = batch_vector(count, meter.as_ref())?;
             let mut sizes = batch_vector(count, meter.as_ref())?;
-            for (header, body) in requests {
+            let mut requests = requests;
+            for (header, body) in requests.drain(..) {
                 sizes.value.push(body.len() as u64);
                 objects.value.push(header);
                 bodies.value.push(body);
@@ -184,70 +214,47 @@ impl GrpcObjects {
             for size in &sizes.value {
                 request::upload_length(*size)?;
             }
-            let completion_custody = meter
-                .as_ref()
-                .map(|meter| {
-                    acyclic_native_runtime::ReadAllocation::new(
-                        meter,
-                        std::mem::size_of::<Completion>(),
-                    )
-                })
-                .transpose()
-                .map_err(|_| protocol())?;
-            let completed = Arc::new(Completion::default());
+            let response = batch_vector(count, meter.as_ref())?;
+            let codec = PutCodec {
+                expected: count,
+                meter: meter.clone(),
+                prepared: Some(reply::Reply { response: Guarded {
+                    value: wire::PutObjectsResponse { results: response.value },
+                    _allocation: response._allocation,
+                }, failure: None }),
+            };            let input_storage = meter.as_ref().map(|_| requests);
+            let completed = Completion::new(meter.as_ref())?;
             let body_frames = put_frames(
                 std::mem::take(&mut bodies.value),
                 header,
                 completed.clone(),
                 meter.clone(),
             );
-            let retire = stream::once(async move {
-                drop((custody, objects, bodies, completion_custody));
-                None::<Guarded<wire::PutObjectsRequest>>
-            })
-            .filter_map(futures::future::ready);
-            let frames = body_frames.chain(retire).take_while(move |_| {
-                futures::future::ready(meter.as_ref().is_none_or(|meter| meter.check().is_ok()))
-            });
+            let storage = (input_storage, objects, bodies, custody);
+            let frames = body_frames.inspect(move |_| { let _ = &storage; });
             let input = self.authenticated(frames, self.transfer_timeout).await?;
             let (mut client, path) = self
                 .streaming("/acyclic.objects.v1.ObjectsService/PutObjects")
                 .await?;
-            let reply: wire::PutObjectsResponse = client
-                .client_streaming(input, path, PutCodec)
-                .await
-                .map(ok)
-                .map_err(|status| error_from_status(&status))?;
+            let reply: reply::Reply = client
+                .client_streaming(input, path, codec)
+                .await.map(ok).map_err(|status| error_from_status(&status))?;
             completed.validate()?;
-            if reply.results.len() != count {
-                return Err(protocol());
-            }
-            reply
-                .results
-                .into_iter()
-                .zip(sizes.value.drain(..))
-                .map(|(result, size)| match result.result {
+            for (result, size) in reply.response.value.results.iter().zip(sizes.value.iter()) {
+                match &result.result {
                     Some(wire::put_object_result::Result::Object(object)) => {
-                        info(&object)?;
-                        if object.size != size {
-                            return Err(protocol());
-                        }
-                        Ok(Ok(object))
+                        info(object)?;
+                        if object.size != *size { return Err(protocol()); }
                     }
-                    Some(wire::put_object_result::Result::Error(error)) => {
-                        Ok(Err(item_error(&error)?))
-                    }
-                    None => Err(protocol()),
-                })
-                .collect::<Result<Vec<_>, Error>>()
+                    Some(wire::put_object_result::Result::Error(error)) => { item_error(error)?; }
+                    None => return Err(protocol()),
+                }
+            }
+            Ok(reply)
         };
-        match tokio::time::timeout(self.transfer_timeout, result).await {
-            Ok(Ok(results)) => results,
-            Ok(Err(error)) => vec![Err(error); count],
-            Err(_) => vec![Err(wire::ErrorCode::Unavailable.into()); count],
-        }
+        tokio::time::timeout(self.transfer_timeout, result).await
+            .unwrap_or_else(|_| Err(wire::ErrorCode::Unavailable.into()))
     }
-
     pub(super) fn put_objects_native(
         &self,
         mut input: super::super::ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
@@ -286,53 +293,61 @@ impl GrpcObjects {
                     .checked_add(body.len())
                     .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))
             })?;
+            let mut slots = batch_vector(count, Some(&meter)).map_err(NativeObjectsError::from)?;
+            for _ in 0..count {
+                let control = ReadAllocation::new(&meter, std::mem::size_of::<ObjectsPutReceipt>())?;
+                slots.value.push(Box::new(ObjectsPutReceipt::new(wire::ObjectInfo::default(), Some(control))));
+            }
+            let mut failure = super::super::NativeObjectsSharedFailure::prepare(&meter)?;
+            let failure_slot = std::sync::Arc::get_mut(&mut failure)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
             meter.admit_write(maximum)?;
             let requests = std::mem::take(&mut input.data);
-            let mut values = super::super::Guarded {
-                value: self
-                    .put_objects_with_custody(requests, input, Some(meter.clone()))
-                    .await,
-                _allocation: Some(ReadAllocation::empty(&meter)),
-            };
-            let capacity =
-                values.value.capacity() * std::mem::size_of::<Result<wire::ObjectInfo, Error>>();
-            if let Some(custody) = values._allocation.as_mut() {
-                custody.reconcile_capacity(capacity)?;
-            }
-            let completed = values
-                .value
-                .iter()
-                .filter_map(|result| result.as_ref().ok())
-                .try_fold(0usize, |total, info| {
-                    let size = usize::try_from(info.size)
-                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-                    total
-                        .checked_add(size)
-                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))
-                })?;
-            let recorded = meter.record_write(completed);
-            for value in values.value.drain(..) {
-                results.push(match value {
-                    Ok(info) => {
-                        let mut custody = ReadAllocation::empty(&meter);
-                        let retained = info_capacity(&info)?;
-                        let claim = custody.reconcile_capacity(retained);
-                        let receipt = ObjectsPutReceipt::new(info, Some(custody));
-                        match claim {
-                            Ok(()) => Ok(receipt),
-                            Err(error) => {
-                                let mut failure = NativeObjectsError::from(error);
-                                failure.receipt = Some(Box::new(receipt));
-                                Err(failure)
+            match self.put_objects_with_custody(requests, input, Some(meter.clone())).await {
+                Err(error) => results.extend((0..count).map(|_| Err(NativeObjectsError::from(error)))),
+                Ok(mut reply) => {
+                    // No admission or cancellation check may precede accepted-write recording.
+                    let completed = reply.response.value.results.iter().filter_map(|result| match &result.result {
+                        Some(wire::put_object_result::Result::Object(object)) => Some(object.size as usize),
+                        _ => None,
+                    }).sum();
+                    let recorded = meter.record_write(completed);
+                    failure_slot.value = reply.failure.take().or_else(|| recorded.err().map(Into::into));
+                    for mut slot in slots.value.drain(..) {
+                        let value = if reply.response.value.results.is_empty() { None } else { Some(reply.response.value.results.remove(0)) };
+                        results.push(match value.and_then(|result| result.result) {
+                            Some(wire::put_object_result::Result::Object(info)) => {
+                                let retained = info_capacity(&info);
+                                slot.value = info;
+                                let claim = retained.and_then(|bytes| reply.response._allocation.as_mut()
+                                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?.split(bytes))
+                                    .and_then(|mut claim| slot._allocation.as_mut()
+                                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?.absorb(&mut claim));
+                                if let Err(error) = claim {
+                                    let mut error = NativeObjectsError::from(error);
+                                    error.receipt = Some(slot);
+                                    Err(error)
+                                } else if failure.value.is_some() {
+                                    let mut error = NativeObjectsError::from(super::super::NativeObjectsCause::SharedFailure(failure.clone()));
+                                    error.receipt = Some(slot);
+                                    Err(error)
+                                } else {
+                                    let control = slot._allocation.as_mut()
+                                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?
+                                        .split(std::mem::size_of::<ObjectsPutReceipt>())?;
+                                    let receipt = *slot;
+                                    drop(control);
+                                    Ok(receipt)
+                                }
                             }
-                        }
+                            Some(wire::put_object_result::Result::Error(error)) => Err(item_error(&error).unwrap_or_else(|error| error).into()),
+                            None => Err(if failure.value.is_some() {
+                                super::super::NativeObjectsCause::SharedFailure(failure.clone()).into()
+                            } else { NativeObjectsError::from(protocol()) }),
+                        });
                     }
-                    Err(error) => Err(error.into()),
-                });
-            }
-            drop(values);
-            recorded?;
-            ObjectsBatch::new(results, allocation)
+                }
+            }            ObjectsBatch::new(results, allocation)
         })
     }
 
@@ -496,6 +511,32 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local")]
+    #[test]
+    fn batch_completion_custody_retires_with_the_last_alias() {
+        use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
+        let counts = std::sync::Arc::new(crate::physical::read_tests::CountingMeter::default());
+        let meter: std::sync::Arc<dyn NativeReadMeter> = counts.clone();
+        let bytes = std::mem::size_of::<Completion>();
+        let completion = Completion::new(Some(&meter)).unwrap();
+        let transport = completion.clone();
+        drop(completion);
+        assert_eq!(counts.retained(), bytes as u64);
+        transport.sent();
+        transport.validate().unwrap();
+        drop(transport);
+        assert_eq!(counts.retained(), 0);
+
+        let external_claim = ReadAllocation::new(&meter, bytes).unwrap();
+        let control = Completion::new(None).unwrap();
+        let transport = control.clone();
+        drop(control);
+        drop(external_claim);
+        assert_ne!(counts.retained(), bytes as u64);
+        transport.sent();
+        transport.validate().unwrap();
+    }
+
     #[tokio::test]
     async fn batch_upload_moves_unique_headers_and_chunks() {
         for length in [1, 65_536] {
@@ -583,34 +624,38 @@ mod model {
 
     fn history(early_completion: bool) {
         let completion = Arc::new(Completion::default());
-        let sent = Arc::new(AtomicBool::new(false));
+        let accepted = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
         let writer = {
-            let (completion, sent, cancelled) =
-                (completion.clone(), sent.clone(), cancelled.clone());
+            let (completion, accepted, cancelled) =
+                (completion.clone(), accepted.clone(), cancelled.clone());
             loom::thread::spawn(move || {
-                if early_completion {
-                    completion.sent();
-                }
-                if !cancelled.load(Ordering::Acquire) {
-                    sent.store(true, Ordering::Release);
-                    completion.sent();
-                }
+                let source = stream::once(async move {
+                    Guarded {
+                        value: wire::PutObjectsRequest { frame: Some(wire::put_objects_request::Frame::Complete(true)) },
+                        _allocation: None,
+                    }
+                });
+                let control = completion.clone();
+                let source = source.inspect(move |_| { if early_completion { control.sent(); } });
+                let frames = accepted_upload(source, completion, move || {
+                    let allowed = !cancelled.load(Ordering::Acquire);
+                    accepted.store(allowed, Ordering::Release);
+                    allowed
+                });
+                futures::pin_mut!(frames);
+                futures::executor::block_on(frames.next());
             })
         };
         let observer = loom::thread::spawn(move || {
-            if completion.validate().is_ok() {
-                assert!(
-                    sent.load(Ordering::Acquire),
-                    "success before final upload frame"
-                );
-            }
             cancelled.store(true, Ordering::Release);
+            if completion.validate().is_ok() {
+                assert!(accepted.load(Ordering::Acquire), "success after the final marker was filtered out");
+            }
         });
         writer.join().unwrap();
         observer.join().unwrap();
     }
-
     #[test]
     fn batch_completion_models_cancellation_and_early_replies() {
         loom::model(|| history(false));
