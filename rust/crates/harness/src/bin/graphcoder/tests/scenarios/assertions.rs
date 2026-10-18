@@ -250,10 +250,11 @@ pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestRes
             && let Some(expected) = case["expect"]["results"].as_object()
         {
             let request = requests.last().ok_or("no final HTTP request")?;
-            let outputs: BTreeMap<_, _> = wire::outputs(request, protocol)?
-                .into_iter()
-                .filter(|(id, _)| !id.starts_with("binary_seed_"))
-                .collect();
+            let outputs = wire::unique_outputs(
+                wire::outputs(request, protocol)?
+                    .into_iter()
+                    .filter(|(id, _)| !id.starts_with("binary_seed_")),
+            )?;
             if expected.keys().ne(outputs.keys()) {
                 return Err(format!(
                     "HTTP tool result identities differ: expected {expected:?}, got {outputs:?}"
@@ -285,7 +286,11 @@ pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestRes
         if audits.len() != 1 {
             return Err("child files were not inspected through the shipped fs tool".into());
         }
-        let outputs: BTreeMap<_, _> = wire::outputs(&audits[0], protocol)?.into_iter().collect();
+        let outputs = wire::unique_outputs(
+            wire::outputs(&audits[0], protocol)?
+                .into_iter()
+                .filter(|(id, _)| id.starts_with("binary_audit_") || id == "binary_active_list"),
+        )?;
         for (index, (path, expected)) in expected.iter().enumerate() {
             let id = format!("binary_audit_{index}");
             let result = outputs

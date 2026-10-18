@@ -9,6 +9,8 @@ mod provider_case;
 mod scenario_actions;
 #[path = "../../harness/tests/support/scenario_data.rs"]
 mod scenario_data;
+#[path = "../../harness/src/bin/graphcoder/tests/scenarios/results.rs"]
+mod wire;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
@@ -49,6 +51,21 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                     history::matches(expected, &decoded, protocol).unwrap(),
                     matched
                 );
+            }
+        }
+    }
+    let request = value.get("wire_request").unwrap_or(&value);
+    for protocol in ["responses", "anthropic"] {
+        if let Ok(outputs) = wire::outputs(request, protocol) {
+            let decoded = serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();
+            assert_eq!(wire::outputs(&decoded, protocol).unwrap(), outputs);
+            if let Ok(unique) = wire::unique_outputs(outputs.clone()) {
+                assert_eq!(unique.len(), outputs.len());
+                if let Some(first) = outputs.first() {
+                    let mut duplicate = outputs.clone();
+                    duplicate.push(first.clone());
+                    assert!(wire::unique_outputs(duplicate).is_err());
+                }
             }
         }
     }
