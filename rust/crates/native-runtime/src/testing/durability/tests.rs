@@ -188,11 +188,25 @@ fn parent_flush_has_one_boundary_and_keeps_after_cut_physical_completion() {
     }
 }
 
+// Restoring the doubly hooked parent flush is rejected before any cut latches.
 #[cfg(target_os = "linux")]
 #[test]
-#[should_panic(expected = "parent flush was skipped")]
+#[should_panic(expected = "nested durable boundary: file:sync_parent inside file:sync_parent")]
 fn nested_parent_flush_negative_control() {
     parent_flush_cut(Some(DurableFault::After), true);
+}
+
+// The same structural rejection covers data writes, uncut and on every thread.
+#[test]
+#[should_panic(expected = "nested durable boundary: file:write inside file:write")]
+fn nested_write_boundary_is_rejected() {
+    let mut file = tempfile::tempfile().unwrap();
+    let (schedule, _) = Schedule::seeded(71);
+    runtime()
+        .block_on(schedule.scope(async {
+            crate::write_file_with(b"outer", |bytes| crate::write_file(&mut file, bytes))
+        }))
+        .unwrap();
 }
 
 fn native_control_fault(fault: DurableFault, forget_context: bool) {

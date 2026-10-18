@@ -104,6 +104,32 @@ impl Schedule {
     }
 }
 
+thread_local! {
+    // The boundary whose original call is running on this thread, if any.
+    static OPEN: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// Exactly one boundary per physical call. A hooked call reached from inside
+/// another boundary would see the outer cut latched first and skip its own
+/// physical operation, so nesting is rejected instead of silently recorded.
+struct Open;
+
+impl Open {
+    fn enter(operation: &'static str) -> Self {
+        if let Some(outer) = OPEN.get() {
+            panic!("nested durable boundary: {operation} inside {outer}");
+        }
+        OPEN.set(Some(operation));
+        Self
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        OPEN.set(None);
+    }
+}
+
 fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::Result<Call> {
     let (ordinal, fault) = {
         let mut state = schedule.0.state();
@@ -169,6 +195,7 @@ pub fn durable_write(
     let Some(context) = Context::simulation() else {
         return write(bytes);
     };
+    let _open = Open::enter(operation);
     let call = begin(context.schedule, operation, bytes.len())?;
     let result = call.before().and_then(|()| {
         #[cfg(test)]
@@ -204,6 +231,7 @@ pub fn durable_operation<T>(
     let Some(context) = Context::simulation() else {
         return work();
     };
+    let _open = Open::enter(operation);
     let call = begin(context.schedule, operation, 0)?;
     let result = call.before().and_then(|()| {
         if let Some(fault) = &call.fault
