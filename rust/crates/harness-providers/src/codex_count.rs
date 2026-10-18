@@ -1,4 +1,8 @@
 //! Codex has no public preflight count route. Keep usage plus a local delta.
+//!
+//! The delta charges one token per byte of new input. Every BPE token encodes
+//! at least one byte, so this never undercounts; overcounting only compacts an
+//! unanchored delta sooner, and the next usage anchor makes the count exact.
 use acyclic_harness::{Result, model::PreparedModelRequest};
 use serde::Serialize as _;
 
@@ -40,13 +44,13 @@ impl Counter {
     }
 }
 
-// If a resume, compaction or catalog change replaced the prefix, estimate the
+// If a resume, compaction or catalog change replaced the prefix, bound the
 // complete input. Never subtract an unrelated request's byte count.
 fn estimate(snapshot: Option<Usage>, prefix: [u8; 32], total: u64) -> u64 {
     let (tokens, bytes) = snapshot
         .filter(|s| s.digest == prefix && s.bytes <= total)
         .map_or((0, 0), |s| (s.tokens, s.bytes));
-    tokens.saturating_add(total.saturating_sub(bytes).div_ceil(3))
+    tokens.saturating_add(total.saturating_sub(bytes))
 }
 
 fn footprint(request: &PreparedModelRequest, prefix: usize) -> Result<([u8; 32], u64)> {

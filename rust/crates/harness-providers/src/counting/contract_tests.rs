@@ -117,22 +117,71 @@ fn rows() -> Vec<Row> {
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        // Codex has no count route; its counter anchors on recorded usage.
-        let (provider, _) = provider(Adapter::Responses, 200);
-        let (request, _) = request(&provider).unwrap();
-        for skills in [0, 1, 40, 300] {
-            let request = with_system(&request, &catalog(skills));
-            let charged = 5 + 7 * skills as u64;
-            let counter = crate::codex_count::Counter::default();
-            counter
-                .observe(&request, &json!({"usage":{"input_tokens":charged,"output_tokens":3}}))
-                .unwrap();
-            rows.push(Row {
+    rows.extend(codex_rows().into_iter().map(|(row, _)| row));
+    rows
+}
+
+/// New input whose o200k_base token counts were recorded with tiktoken 0.9.0:
+/// ASCII prose, then dense text (supplementary CJK, emoji ZWJ sequences and
+/// base64) that costs more than one token per three bytes.
+#[cfg(not(target_arch = "wasm32"))]
+fn recorded_inputs() -> [(&'static str, String, u64, bool); 4] {
+    let cjk: String = (0x20000..0x20010).filter_map(char::from_u32).collect();
+    let emoji = "\u{1f9d1}\u{200d}\u{1f680}\u{1f469}\u{1f3fd}\u{200d}\u{1f52c}\u{1fae0}\u{1fabf}\u{1f9a9}\u{1f9cc}\u{1faf6}\u{1f3ff}\u{1faac}\u{1f6fb}\u{1f9d1}\u{1f3fb}\u{200d}\u{1f9af}";
+    [
+        ("ASCII", "Draft release notes from the merged pull requests and list breaking changes first. ".repeat(4), 57, false),
+        ("supplementary CJK", cjk.repeat(2), 96, true),
+        ("emoji", emoji.repeat(3), 132, true),
+        ("base64", BASE64.into(), 175, true),
+    ]
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const BASE64: &str = "pKvURIxJVi2CgRXROh/M6pJ/UrTVRZKX+LQ+QtqJI4vBNibkPcs43bCCSIkn7JBPtCBXRDmD6IWFF51QVRr+YqSr1ESMSVYtgoEV0TofzOqSf1K01UWSl/i0PkLaiSOLwTYm5D3LON2wgkiJJ+yQT7QgV0Q5g+iFhRedUFUa/mKkq9REjElWLYKBFdE6H8zqkn9StNVFkpf4tD5C2okji8E2JuQ9yzjdsIJIiSfskE+0IFdEOYPohYUXnVBVGv5i";
+
+/// Tokens Responses charges to frame one more input message.
+#[cfg(not(target_arch = "wasm32"))]
+const MESSAGE_FRAMING: u64 = 4;
+
+/// The Codex counter after recorded usage anchors a request: exact at the
+/// anchor, then each request extending it with recorded input. A dense row
+/// also carries its anchor's usage.
+#[cfg(not(target_arch = "wasm32"))]
+fn codex_rows() -> Vec<(Row, Option<u64>)> {
+    let (provider, _) = provider(Adapter::Responses, 200);
+    let (anchor, _) = request(&provider).unwrap();
+    let mut rows = Vec::new();
+    for skills in [0, 1, 40, 300] {
+        let anchor = with_system(&anchor, &catalog(skills));
+        // Usage the response reported for exactly this request.
+        let usage = 5 + 7 * skills as u64;
+        let counter = crate::codex_count::Counter::default();
+        counter
+            .observe(&anchor, &json!({"usage":{"input_tokens":usage,"output_tokens":3}}))
+            .unwrap();
+        rows.push((
+            Row {
                 counter: format!("Codex usage anchor, {skills} skills"),
-                counted: counter.count(&request).unwrap(),
-                charged,
+                counted: counter.count(&anchor).unwrap(),
+                charged: usage,
+            },
+            None,
+        ));
+        for (name, text, tokens, dense) in recorded_inputs() {
+            let mut extended = anchor.request().clone();
+            extended.messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(text),
             });
+            let extended = PreparedModelRequest::prepare(extended, Limits::default(), None).unwrap();
+            rows.push((
+                Row {
+                    counter: format!("Codex delta, {skills} skills + {name}"),
+                    counted: counter.count(&extended).unwrap(),
+                    charged: usage + tokens + MESSAGE_FRAMING,
+                },
+                dense.then_some(usage),
+            ));
         }
     }
     rows
@@ -141,7 +190,7 @@ fn rows() -> Vec<Row> {
 #[test]
 fn every_counter_admits_only_requests_whose_charge_fits() {
     let rows = rows();
-    assert_eq!(rows.len(), 4 * 5 + if cfg!(target_arch = "wasm32") { 0 } else { 4 });
+    assert_eq!(rows.len(), 4 * 5 + if cfg!(target_arch = "wasm32") { 0 } else { 4 * 5 });
     assert_eq!(violations(&rows), Vec::<&str>::new());
     // A counter reporting exactly the charge is admitted at the boundary.
     let exact: Vec<_> = rows
@@ -163,4 +212,21 @@ fn every_counter_admits_only_requests_whose_charge_fits() {
         })
         .collect();
     assert_eq!(violations(&under).len(), under.len());
+}
+
+/// Negative control: the former Codex delta, one token per three new bytes,
+/// undercounts every dense recorded input and is rejected.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_third_of_a_token_per_byte_undercounts_dense_input() {
+    let dense: Vec<_> = codex_rows()
+        .into_iter()
+        .filter_map(|(row, usage)| usage.map(|usage| Row {
+            counter: row.counter,
+            counted: usage + (row.counted - usage).div_ceil(3),
+            charged: row.charged,
+        }))
+        .collect();
+    assert_eq!(dense.len(), 4 * 3);
+    assert_eq!(violations(&dense).len(), dense.len());
 }
