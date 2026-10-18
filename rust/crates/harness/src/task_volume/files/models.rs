@@ -58,7 +58,7 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
                 file: value.file.clone(),
                 position: value.position,
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                _native_metadata: None,
+                native_metadata_bytes: 0,
             },
         );
     }
@@ -504,7 +504,7 @@ fn child_terminal_freeze(broken: bool) {
                         ),
                         position: cut.position,
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                        _native_metadata: None,
+                        native_metadata_bytes: 0,
                     },
                 );
         }

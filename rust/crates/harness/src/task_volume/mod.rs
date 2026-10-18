@@ -248,7 +248,7 @@ struct StoredFile {
     file: FileValue,
     position: u64,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _native_metadata: Option<acyclic_fs::NativeAllocation>,
+    native_metadata_bytes: u64,
 }
 
 #[derive(Default)]
@@ -717,7 +717,7 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
         .insert(file.key.clone(), StoredFile {
             file, position,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native_metadata: None,
+            native_metadata_bytes: 0,
         });
 }
 

@@ -143,7 +143,10 @@ fn replay(
         ..Default::default()
     })?;
     let (file, metadata) = segment::decode_native(&record.value, io)?;
-    let existing = index.files.contains_key(&file.key);
+    let existing = index
+        .files
+        .get(&file.key)
+        .map(|stored| stored.native_metadata_bytes);
     let key = file.key.clone();
     let owner = command_query::owner(&key);
     let before = slots(index, &key, &owner);
@@ -172,19 +175,20 @@ fn replay(
     index.commit = record.commit_id;
     let after = slots(index, &key, &owner);
     io.release(reserved + before - after)?;
-    if existing {
-        // Replacement metadata follows the latest file; the first key's
-        // custody remains with the map, whose original key is preserved.
+    let retained = metadata.bytes();
+    io.absorb_native_custody(metadata)?;
+    if let Some(previous) = existing {
+        // Keep the original map key's metadata, and only the latest replacement
+        // metadata. All custody stays in the one shared binding, not per file.
+        io.release(previous)?;
         match index.files.entry(key) {
             std::collections::btree_map::Entry::Occupied(mut stored) => {
-                stored.get_mut()._native_metadata = Some(metadata)
+                stored.get_mut().native_metadata_bytes = retained;
             }
             std::collections::btree_map::Entry::Vacant(_) => {
                 return Err(Error::InvalidSegment.into());
             }
         }
-    } else {
-        io.absorb_native_custody(metadata)?;
     }
     Ok(())
 }
