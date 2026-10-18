@@ -1,5 +1,5 @@
 use rustc_hir::def_id::LocalDefId;
-use rustc_middle::mir::mono::MonoItem;
+use rustc_middle::mono::MonoItem;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 
 // Generic helpers are judged for every instance in this test executable.
