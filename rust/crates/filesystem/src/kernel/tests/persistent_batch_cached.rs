@@ -26,7 +26,7 @@ fn select_cached(
             .map(AttributeFormat::value_owned_bytes)
             .sum::<u64>();
     let mut accounting = KernelAccounting::native(&work, &cancellation);
-    let mut shared = super::super::persistent_btree::shared::SharedPage::from_owned(
+    let mut shared = crate::kernel::persistent_btree::shared::SharedPage::from_owned(
         Owned::new(
             Page::<AttributeFormat>::Leaf(values),
             KernelOwnedAllocation::NativeOriginal(work.claim(bytes, 1, WorkCounters::UNCHARGED)?),
@@ -35,8 +35,9 @@ fn select_cached(
         &mut accounting,
     )?;
     let mut controls = accounting.claim_owned(
-        (std::mem::size_of_val(&shared.value) + std::mem::size_of::<crate::NativeAllocation>())
-            as u64,
+        crate::kernel::allocation::arc_control_bytes::<
+            crate::kernel::persistent_btree::shared::SharedPage<AttributeFormat>,
+        >()? + crate::kernel::allocation::arc_control_bytes::<crate::NativeAllocation>()?,
         2,
     )?;
     shared.allocation.absorb(&mut controls)?;
@@ -91,7 +92,7 @@ fn select_cached(
         .collect();
     output.retire(&mut accounting)?;
     assert!(
-        matches!(original.view(), super::super::persistent_btree::PageRef::Leaf(values) if values.len() == count as usize)
+        matches!(original.view(), crate::kernel::persistent_btree::PageRef::Leaf(values) if values.len() == count as usize)
     );
     drop((original, source_custody));
     assert_eq!(

@@ -713,3 +713,5 @@ pub(crate) mod shared;
 mod shared_leaf;
 #[cfg(test)]
 use pages::PageChunks;
+#[cfg(test)]
+pub(crate) use pages::TARGET_PAGE_BYTES;
