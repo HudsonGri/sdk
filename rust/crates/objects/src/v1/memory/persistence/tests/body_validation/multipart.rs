@@ -2,6 +2,8 @@ use super::*;
 use acyclic_test_support::{AllocationInfo, measure};
 use std::collections::BTreeMap;
 
+mod full_batch;
+
 fn create_upload(core: &MemoryObjects) -> wire::MultipartUpload {
     futures::executor::block_on(core.create_multipart(wire::CreateMultipartRequest {
         bucket: bucket(),

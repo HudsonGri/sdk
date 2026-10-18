@@ -323,6 +323,8 @@ pub(super) fn place(
         }
     }
     // Only parts carried by this delta can contain placeholder offsets.
+    #[cfg(test)]
+    work::restore_relocation(state, &moves, publication)?;
     for change in &delta.parts {
         let (_, body) = state
             .uploads
