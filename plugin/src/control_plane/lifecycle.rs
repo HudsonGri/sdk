@@ -244,7 +244,7 @@ impl ControlPlane {
                     }
                     continue;
                 }
-                if let Err(error) = Box::pin(mount.unmount()).await {
+                if let Err(error) = fs_call(mount.unmount()).await {
                     first_error.get_or_insert_with(|| {
                         format!("cannot unmount agent '{agent_id}' during shutdown: {error}")
                     });
@@ -252,7 +252,7 @@ impl ControlPlane {
             }
             let pending_mounts = std::mem::take(&mut self.pending_mounts);
             for (key, mount) in pending_mounts {
-                if let Err(error) = Box::pin(mount.unmount()).await {
+                if let Err(error) = fs_call(mount.unmount()).await {
                     first_error.get_or_insert_with(|| {
                         format!(
                             "cannot unmount prepared spawn '{}' during shutdown: {error}",
