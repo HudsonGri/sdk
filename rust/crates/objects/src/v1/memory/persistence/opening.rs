@@ -113,10 +113,10 @@ pub(super) fn load_header(
         };
         let encoded = header.encode_to_vec();
         let length = u32::try_from(encoded.len()).map_err(corrupt)?;
-        file.write_all(MAGIC)?;
-        file.write_all(&length.to_le_bytes())?;
-        file.write_all(blake3::hash(&encoded).as_bytes())?;
-        file.write_all(&encoded)?;
+        acyclic_native_runtime::write_file_all(file, MAGIC)?;
+        acyclic_native_runtime::write_file_all(file, &length.to_le_bytes())?;
+        acyclic_native_runtime::write_file_all(file, blake3::hash(&encoded).as_bytes())?;
+        acyclic_native_runtime::write_file_all(file, &encoded)?;
         sync(file, limits)?;
         acyclic_native_runtime::sync_parent(root, native_durability(limits.durability))?;
         return Ok(header);
@@ -221,7 +221,7 @@ pub(super) fn repair_tail(
     if error.kind() != std::io::ErrorKind::UnexpectedEof {
         return Err(error.into());
     }
-    file.set_len(start)?;
+    acyclic_native_runtime::truncate_file(file, start)?;
     file.seek(SeekFrom::Start(start))?;
     sync(file, limits)?;
     Ok(())

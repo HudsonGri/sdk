@@ -134,7 +134,8 @@ impl CoreLog {
                         })
                     })
                     .transpose()?;
-                let result = self.file.write(&buffer.bytes[position..]);
+                let result =
+                    acyclic_native_runtime::write_file(&mut self.file, &buffer.bytes[position..]);
                 let count = result.as_ref().copied().unwrap_or(0);
                 let recorded = credit
                     .as_mut()
@@ -155,7 +156,7 @@ impl CoreLog {
             }
             crash_point("frame written", self.flushed);
             if !deferred {
-                let synced = self.file.sync_data();
+                let synced = acyclic_native_runtime::flush_file_data(&self.file);
                 let recorded = flush
                     .as_mut()
                     .map(|flush| {
@@ -171,7 +172,7 @@ impl CoreLog {
             Ok::<_, LocalCoreStateStoreError>(())
         })();
         if let Err(error) = append {
-            let truncated = self.file.set_len(self.length);
+            let truncated = acyclic_native_runtime::truncate_file(&self.file, self.length);
             drop(repair.as_mut().map(|repair| {
                 repair.record_completed(crate::WorkCounters {
                     backend_write_operations: 1,
@@ -190,7 +191,7 @@ impl CoreLog {
                     sought
                 })
                 .and_then(|_| {
-                    let synced = self.file.sync_data();
+                    let synced = acyclic_native_runtime::flush_file_data(&self.file);
                     drop(repair.as_mut().map(|repair| {
                         repair.record_completed(crate::WorkCounters {
                             durability_operations: 1,
@@ -226,7 +227,7 @@ impl CoreLog {
                     ..Default::default()
                 })?;
             }
-            self.file.sync_data()?;
+            acyclic_native_runtime::flush_file_data(&self.file)?;
             self.flushed = self.length;
             crash_point("frames flushed", self.flushed);
         }

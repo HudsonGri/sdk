@@ -13,6 +13,10 @@ mod clock;
 pub use clock::unix_millis;
 mod executor;
 pub use executor::{AbortHandle, TaskHandle};
+mod durability;
+pub use durability::{
+    DurableFault, DurableWrite, InjectedStorageFault, durable_operation, durable_write,
+};
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(test)]
@@ -53,6 +57,7 @@ struct State {
     trace: Vec<String>,
     ready_reads: usize,
     wall: Option<clock::Wall>,
+    writes: durability::Writes,
 }
 
 struct Inner {

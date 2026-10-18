@@ -21,6 +21,17 @@ pub fn sync_file(
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
+    #[cfg(feature = "test-support")]
+    return testing::durable_operation("file:sync", || sync_file_impl(file, durability, meter));
+    #[cfg(not(feature = "test-support"))]
+    sync_file_impl(file, durability, meter)
+}
+
+fn sync_file_impl(
+    file: &File,
+    durability: Durability,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
     if let Some(meter) = meter {
         #[cfg(not(target_vendor = "apple"))]
         if durability == Durability::Barrier {
@@ -73,6 +84,13 @@ pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::
 
 /// Flushes file data according to `durability`.
 pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
+    #[cfg(feature = "test-support")]
+    return testing::durable_operation("file:sync_data", || sync_data_impl(file, durability));
+    #[cfg(not(feature = "test-support"))]
+    sync_data_impl(file, durability)
+}
+
+fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
     let operation = obs::span!(
         DEBUG,
         "acyclic.runtime.sync_data",
@@ -94,6 +112,15 @@ pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
 
 /// Flushes the directory entry namespace on platforms exposing directory flushes.
 pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
+    #[cfg(feature = "test-support")]
+    return testing::durable_operation("file:sync_parent", || {
+        sync_parent_ordered(path, durability)
+    });
+    #[cfg(not(feature = "test-support"))]
+    sync_parent_ordered(path, durability)
+}
+
+fn sync_parent_ordered(path: &Path, durability: Durability) -> io::Result<()> {
     let operation = obs::span!(
         DEBUG,
         "acyclic.runtime.sync_parent",

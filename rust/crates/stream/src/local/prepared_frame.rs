@@ -122,14 +122,14 @@ impl PreparedFrame {
 
     fn write(&mut self, writer: &mut impl Write) -> Result<(), LocalStreamError> {
         let Some(work) = &self.work else {
-            writer.write_all(&self.encoded)?;
+            acyclic_native_runtime::write_file_all(writer, &self.encoded)?;
             return Ok(());
         };
         let (result, observed) = self
             .operation
             .as_mut()
             .ok_or(LocalStreamError::IncompleteFrame)?
-            .attempt(|| writer.write(&self.encoded));
+            .attempt(|| acyclic_native_runtime::write_file(writer, &self.encoded));
         let _ = work.record(observed);
         let actual = result.as_ref().copied().unwrap_or(0);
         let _ = work.record(

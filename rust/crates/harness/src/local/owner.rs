@@ -1,9 +1,6 @@
 pub(super) use super::owner_record::Owner;
 use super::*;
-use std::{
-    fs,
-    io::{Read, Write},
-};
+use std::{fs, io::Read};
 
 pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     let (path, volume) = match project {
@@ -179,10 +176,10 @@ impl Owner {
         let result = (|| {
             let mut file = options.open(&temporary)?;
             let mut bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
-            let written = file.write_all(&bytes);
+            let written = acyclic_native_runtime::write_file_all(&mut file, &bytes);
             bytes.fill(0);
             written?;
-            file.sync_all()?;
+            acyclic_native_runtime::flush_file_all(&file)?;
             drop(file);
             acyclic_native_runtime::durable_rename(
                 &temporary,
