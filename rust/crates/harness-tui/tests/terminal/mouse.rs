@@ -4,6 +4,70 @@ use alacritty_terminal::vte::{Params, Parser, Perform};
 const PROTOCOLS: [u16; 5] = [9, 1000, 1001, 1002, 1003];
 const ENCODINGS: [u16; 4] = [1005, 1006, 1015, 1016];
 
+fn mutable_modes() -> Capabilities {
+    let mut caps = Capabilities::default();
+    for mode in [1004, 2004, 2027, 1049]
+        .into_iter()
+        .chain(PROTOCOLS)
+        .chain(ENCODINGS)
+    {
+        caps.modes.insert(mode, ModeState::Reset);
+    }
+    caps
+}
+
+#[test]
+fn alternate_setup_owns_each_undo_without_copying() {
+    let caps = mutable_modes();
+    let mut bytes = Vec::with_capacity(256);
+    let mut guard = RestoreGuard::new(&mut bytes, &caps);
+    let allocation = acyclic_test_support::measure(|| guard.setup(ScreenMode::Alternate).unwrap());
+    guard.restore().unwrap();
+    drop(guard);
+    assert_eq!(
+        bytes,
+        b"\x1b[?1004h\x1b[?2004h\x1b[?2027h\x1b[?1049h\x1b[?1006h\x1b[?1002h\x18\x1b[?1002l\x18\x1b[?1006l\x18\x1b[?1049l\x18\x1b[?2027l\x18\x1b[?2004l\x18\x1b[?1004l"
+    );
+    assert_restored(0, 0, &bytes);
+    assert_eq!(
+        (allocation.count_total, allocation.bytes_total),
+        (16, 504),
+        "alternate setup never copies an owned undo"
+    );
+}
+
+#[test]
+fn warmed_nested_switches_reuse_and_compact_the_owned_journal() {
+    for count in [32, 64] {
+        let caps = mutable_modes();
+        let mut bytes = Vec::with_capacity(4096);
+        let mut guard = RestoreGuard::new(&mut bytes, &caps);
+        guard.enable_mode(1006).unwrap();
+        guard.enable_mode(1016).unwrap();
+        // The second switch grows the pending union once. Later switches reuse
+        // its capacity; only the existing device SET formatting allocates.
+        let allocation = acyclic_test_support::measure(|| {
+            for mode in [1005, 1015, 1006, 1016].into_iter().cycle().take(count) {
+                guard.enable_mode(mode).unwrap();
+            }
+        });
+        guard.restore().unwrap();
+        drop(guard);
+        let mut expected = b"\x1b[?1006h\x1b[?1016h".to_vec();
+        for mode in [1005, 1015, 1006, 1016].into_iter().cycle().take(count) {
+            write!(expected, "\x1b[?{mode}h").unwrap();
+        }
+        expected.extend_from_slice(b"\x18\x1b[?1016l");
+        assert_eq!(bytes, expected);
+        assert_restored(0, 0, &bytes);
+        assert_eq!(
+            (allocation.count_total, allocation.bytes_total),
+            (count as u64, 8 * count as u64),
+            "nested switches allocate only their device SET"
+        );
+    }
+}
+
 // The xterm spec defines two exclusive selections. Alacritty's model does not
 // implement every encoding, so drive this independent state with its VTE parser.
 #[derive(Default, Debug, PartialEq, Eq)]

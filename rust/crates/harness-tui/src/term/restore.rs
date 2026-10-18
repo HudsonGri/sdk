@@ -135,27 +135,23 @@ impl<W: Write> RestoreGuard<W> {
                 .position(|(journaled, _, _)| group.contains(journaled))
         });
         let original = existing.map_or(displaced, |index| self.undo[index].2);
-        let undo = match original {
-            Some(previous) => format!("\x1b[?{previous}h"),
-            None => format!("\x1b[?{mode}l"),
-        };
-        let mut pending = Vec::new();
-        if original.is_none()
-            && let Some(index) = existing
-        {
-            // Until SET completes, either the old or new selection can be
-            // active. RESET only affects the matching selection in xterm.
-            pending.extend_from_slice(&self.undo[index].1);
-        }
-        pending.extend_from_slice(undo.as_bytes());
         // One record per exclusive selection, installed before writing. Keeping
         // intermediate switches as separate undos could replay a failed inner
         // undo AFTER the original selection had already been restored.
-        let record = (mode, Cow::Owned(pending), original);
-        if let Some(index) = existing {
-            self.undo[index] = record;
-        } else {
-            self.undo.push(record);
+        let index = existing.unwrap_or_else(|| {
+            self.undo.push((mode, Cow::Owned(Vec::new()), original));
+            self.undo.len() - 1
+        });
+        self.undo[index].0 = mode;
+        let pending = self.undo[index].1.to_mut();
+        let compact_from = if original.is_none() { pending.len() } else { 0 };
+        if existing.is_none() || original.is_none() {
+            // Until SET completes, either selection can be active. Append to
+            // the owned journal; a matching RESET alone cannot clear the other.
+            match original {
+                Some(previous) => write!(pending, "\x1b[?{previous}h")?,
+                None => write!(pending, "\x1b[?{mode}l")?,
+            }
         }
         if let Some(previous) = displaced {
             self.modes.insert(previous, ModeState::Reset);
@@ -170,8 +166,11 @@ impl<W: Write> RestoreGuard<W> {
         }
         // A completed SET proves the new exclusive selection displaced every
         // earlier candidate. Only now may its undo replace the pending union.
-        if let Some(index) = existing {
-            self.undo[index].1 = Cow::Owned(undo.into_bytes());
+        if compact_from != 0 {
+            let pending = self.undo[index].1.to_mut();
+            let length = pending.len() - compact_from;
+            pending.copy_within(compact_from.., 0);
+            pending.truncate(length);
         }
         Ok(())
     }
