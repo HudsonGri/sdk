@@ -332,21 +332,7 @@ fn measure_with(
             "consumer differs after {delta:?}, source {:?}",
             source.chars().take(256).collect::<String>()
         );
-        finish
-            .then(|| {
-                markdown.fence.as_ref().map(|fence| {
-                    if fence.indented {
-                        "\nend\n\n".to_owned()
-                    } else {
-                        format!(
-                            "\n{}{}\n\n",
-                            fence.opening,
-                            char::from(fence.marker).to_string().repeat(fence.count)
-                        )
-                    }
-                })
-            })
-            .flatten()
+        finish.then(|| closing_fence(&markdown)).flatten()
     };
     production_stream(
         actions,
@@ -371,6 +357,19 @@ fn measure_with(
         );
     }
     (total, peak.max(bytes))
+}
+
+fn closing_fence(markdown: &Markdown) -> Option<String> {
+    let fence = markdown.fence.as_ref()?;
+    Some(if fence.indented {
+        "\nend\n\n".to_owned()
+    } else {
+        format!(
+            "\n{}{}\n\n",
+            fence.opening,
+            char::from(fence.marker).to_string().repeat(fence.count)
+        )
+    })
 }
 
 // Both repetitions share the same original prefix. Parse its oracle fixtures
