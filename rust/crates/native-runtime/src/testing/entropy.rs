@@ -62,12 +62,16 @@ mod tests {
         assert_eq!(bytes, [7; 32]);
     }
 
-    #[test]
-    fn scoped_entropy_survives_owned_task_and_blocking_handoffs() -> std::io::Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    fn scoped_sources(forget_host: bool) -> std::io::Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
         let (schedule, mut events) = Schedule::seeded(73);
         runtime.block_on(async {
-            let mut expected = [0; 48];
+            tokio::time::pause();
+            schedule.set_unix_millis(9876);
+            let main_thread = std::thread::current().id();
+            let mut expected = [0; 64];
             Source::new(73).fill(&mut expected);
             let mut future = Box::pin(schedule.scope(async {
                 let mut first = [0; 16];
@@ -86,7 +90,31 @@ mod tests {
                 })
                 .await
                 .unwrap();
-                [first, second, third].concat()
+                if forget_host {
+                    FORGET_HOST_CONTEXT.with(|fault| fault.set(true));
+                }
+                let fourth = crate::run_blocking_io(
+                    move || {
+                        assert_ne!(
+                            std::thread::current().id(),
+                            main_thread,
+                            "native queue was bypassed"
+                        );
+                        assert_eq!(
+                            unix_millis(),
+                            Some(9876),
+                            "native worker lost the simulated clock"
+                        );
+                        let mut bytes = [0; 16];
+                        assert!(fill_seeded(&mut bytes), "native worker lost seeded entropy");
+                        bytes
+                    },
+                    None,
+                )
+                .unwrap()
+                .await
+                .unwrap();
+                [first, second, third, fourth].concat()
             }));
             let actual = loop {
                 tokio::select! {
@@ -100,6 +128,17 @@ mod tests {
             assert!(!fill_seeded(&mut outside), "source escaped its scope");
         });
         Ok(())
+    }
+
+    #[test]
+    fn scoped_entropy_survives_owned_task_and_blocking_handoffs() -> std::io::Result<()> {
+        scoped_sources(false)
+    }
+
+    #[test]
+    #[should_panic(expected = "native worker lost the simulated clock")]
+    fn missing_native_host_context_negative_control() {
+        scoped_sources(true).unwrap();
     }
 }
 
