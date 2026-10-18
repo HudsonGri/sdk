@@ -136,6 +136,16 @@ where
         if let Ok(next) = &result {
             root = *next;
         }
+        let mut publication = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        drop(
+            store
+                .flush_before_publish(
+                    crate::async_storage::PublicationScope::Everything,
+                    &mut publication,
+                )
+                .await
+                .unwrap(),
+        );
         assert_eq!(
             encoded::<F>(retained.page.view()),
             before,
@@ -186,7 +196,18 @@ where
                         )
                         .await
                     } else {
-                        history::<_, F, M>(cached(), initial, operations, native).await
+                        #[cfg(feature = "local")]
+                        let directory = tempfile::tempdir().unwrap();
+                        #[cfg(feature = "local")]
+                        let store = crate::staged_objects::StagedObjects::open(
+                            cached(),
+                            directory.path().into(),
+                        )
+                        .await
+                        .unwrap();
+                        #[cfg(not(feature = "local"))]
+                        let store = cached();
+                        history::<_, F, M>(store, initial, operations, native).await
                     }
                 })
             },
@@ -263,101 +284,164 @@ proptest! {
     }
 }
 
-fn written_identity(omit: bool) {
+fn written_identity(omit: bool, omit_transfer: bool) {
+    fn entry(key: u8, value: u8) -> TreeEntry {
+        let mut entry = tree(key, value);
+        entry.name = LogicalName::new(NameEncoding::PosixBytes, vec![key + 1], 255).unwrap();
+        entry
+    }
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
             OMIT.set(false);
+            #[cfg(feature = "local")]
+            crate::staged_objects::decoded_tests::set_omit_transfer(false);
         }
     }
     OMIT.set(omit);
+    #[cfg(feature = "local")]
+    crate::staged_objects::decoded_tests::set_omit_transfer(omit_transfer);
+    #[cfg(not(feature = "local"))]
+    let _ = omit_transfer;
     let _reset = Reset;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            let store = cached();
-            let values: Vec<_> = (0..8).map(|key| tree(key, 1)).collect();
-            let root = seed::<_, TreeFormat>(&store, &values).await;
-            let cancellation = CancellationToken::new();
-            let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-            let (old, old_custody) = read_page_with_accounting::<_, TreeFormat>(
-                &store,
-                root,
-                DecodeLimits::default(),
-                &mut accounting,
-                &cancellation,
-                None,
-            )
-            .await
-            .unwrap();
-            let result = persistent_btree::apply_with_accounting::<_, TreeFormat, TreeMutation>(
-                &store,
-                root,
-                &[TreeMutation::Replace {
-                    entry: tree(3, 2),
-                    expected_file_id: tree(3, 1).file_id,
-                }],
-                1,
-                DecodeLimits::default(),
-                &mut accounting,
-                &cancellation,
-            )
-            .await
-            .unwrap();
-            let (new, new_custody) = read_page_with_accounting::<_, TreeFormat>(
-                &store,
-                result.value,
-                DecodeLimits::default(),
-                &mut accounting,
-                &cancellation,
-                None,
-            )
-            .await
-            .unwrap();
-            let (
-                PageLease::Shared { page: old_page, .. },
-                PageLease::Shared { page: new_page, .. },
-            ) = (&old.page, &new.page)
-            else {
-                panic!("expected shared leaves")
-            };
-            let (
-                SharedPage::Leaf {
-                    entries: old_entries,
-                    ..
-                },
-                SharedPage::Leaf {
-                    entries: new_entries,
-                    ..
-                },
-            ) = (old_page.as_ref(), new_page.as_ref())
-            else {
-                panic!("expected shared leaves")
-            };
-            for (index, (old, new)) in old_entries.iter().zip(new_entries).enumerate() {
-                assert_eq!(
-                    Arc::ptr_eq(old, new),
-                    index != 3,
-                    "written leaf lost unchanged entry identity"
+            let mut counts = Vec::new();
+            let mut identities = Vec::new();
+            for count in [8, 24] {
+                #[cfg(feature = "local")]
+                let directory = tempfile::tempdir().unwrap();
+                #[cfg(feature = "local")]
+                let store =
+                    crate::staged_objects::StagedObjects::open(cached(), directory.path().into())
+                        .await
+                        .unwrap();
+                #[cfg(not(feature = "local"))]
+                let store = cached();
+                let values: Vec<_> = (0..count).map(|key| entry(key, 1)).collect();
+                let root = seed::<_, TreeFormat>(&store, &values).await;
+                let cancellation = CancellationToken::new();
+                let mut accounting =
+                    KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+                let (old, old_custody) = read_page_with_accounting::<_, TreeFormat>(
+                    &store,
+                    root,
+                    DecodeLimits::default(),
+                    &mut accounting,
+                    &cancellation,
+                    None,
+                )
+                .await
+                .unwrap();
+                let result =
+                    persistent_btree::apply_with_accounting::<_, TreeFormat, TreeMutation>(
+                        &store,
+                        root,
+                        &[TreeMutation::Replace {
+                            entry: entry(3, 2),
+                            expected_file_id: entry(3, 1).file_id,
+                        }],
+                        1,
+                        DecodeLimits::default(),
+                        &mut accounting,
+                        &cancellation,
+                    )
+                    .await
+                    .unwrap();
+                let mut publication =
+                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+                drop(
+                    store
+                        .flush_before_publish(
+                            crate::async_storage::PublicationScope::Everything,
+                            &mut publication,
+                        )
+                        .await
+                        .unwrap(),
                 );
+                let mut allocations = acyclic_test_support::AllocationInfo::default();
+                let started = std::time::Instant::now();
+                let (new, new_custody) = {
+                    let mut read = std::pin::pin!(read_page_with_accounting::<_, TreeFormat>(
+                        &store,
+                        result.value,
+                        DecodeLimits::default(),
+                        &mut accounting,
+                        &cancellation,
+                        None,
+                    ));
+                    futures::future::poll_fn(|cx| {
+                        let mut fetched = None;
+                        allocations += acyclic_test_support::measure(|| {
+                            fetched = Some(std::future::Future::poll(read.as_mut(), cx));
+                        });
+                        fetched.unwrap()
+                    })
+                    .await
+                    .unwrap()
+                };
+                eprintln!(
+                    "published leaf K={count} omit_written={omit} omit_transfer={omit_transfer}: {allocations:?}, {:?}",
+                    started.elapsed()
+                );
+                counts.push(allocations);
+                let (
+                    PageLease::Shared { page: old_page, .. },
+                    PageLease::Shared { page: new_page, .. },
+                ) = (&old.page, &new.page)
+                else {
+                    panic!("expected shared leaves")
+                };
+                let (
+                    SharedPage::Leaf {
+                        entries: old_entries,
+                        ..
+                    },
+                    SharedPage::Leaf {
+                        entries: new_entries,
+                        ..
+                    },
+                ) = (old_page.as_ref(), new_page.as_ref())
+                else {
+                    panic!("expected shared leaves")
+                };
+                for (index, (old, new)) in old_entries.iter().zip(new_entries).enumerate() {
+                    identities.push(Arc::ptr_eq(old, new) == (index != 3));
+                }
+                let old_bytes = old.logical_bytes;
+                let new_bytes = new.logical_bytes;
+                drop((old, new));
+                retire_allocation(old_custody, old_bytes, &mut accounting).unwrap();
+                retire_allocation(new_custody, new_bytes, &mut accounting).unwrap();
             }
-            let old_bytes = old.logical_bytes;
-            let new_bytes = new.logical_bytes;
-            drop((old, new));
-            retire_allocation(old_custody, old_bytes, &mut accounting).unwrap();
-            retire_allocation(new_custody, new_bytes, &mut accounting).unwrap();
+            assert_eq!(
+                counts[0], counts[1],
+                "published leaf read grows with entry count"
+            );
+            assert!(
+                identities.into_iter().all(|same| same),
+                "written leaf lost unchanged entry identity"
+            );
         });
 }
 
 #[test]
 fn authenticated_written_leaf_keeps_unchanged_entry_identity() {
-    written_identity(false);
+    written_identity(false, false);
 }
 
 #[test]
-#[should_panic(expected = "written leaf lost unchanged entry identity")]
+#[should_panic(expected = "published leaf read grows with entry count")]
 fn omitted_written_cache_fails_the_same_identity_oracle() {
-    written_identity(true);
+    written_identity(true, false);
+}
+
+#[test]
+#[cfg(feature = "local")]
+#[should_panic(expected = "published leaf read grows with entry count")]
+fn omitted_publication_handoff_fails_the_same_allocation_pin() {
+    written_identity(false, true);
 }

@@ -118,7 +118,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     }
                     if index.drained.contains(&id) {
                         self.collection.writing(unswept, [id]);
-                        index.remove(id);
+                        index.acknowledge(id, &self.inner)?;
                         continue;
                     }
                     match index.objects.get(&id) {
@@ -186,7 +186,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     self.inner
                         .put(write.object_id, write.bytes.clone(), work)
                         .await?;
-                    self.index_mut().acknowledge(write.object_id);
+                    self.index_mut().acknowledge(write.object_id, &self.inner)?;
                 }
             } else {
                 if !spilled.is_empty() {
@@ -215,7 +215,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     .writing(unswept, writes.iter().map(|write| write.object_id));
                 self.inner.put_many(&writes, work).await?;
                 for write in &writes {
-                    self.index_mut().acknowledge(write.object_id);
+                    self.index_mut().acknowledge(write.object_id, &self.inner)?;
                 }
             }
         }
