@@ -77,6 +77,15 @@ async fn journal(
     conversation: &AuthorityIssuer,
     files: Arc<TaskFiles<MemoryStream>>,
 ) -> Result<Journal> {
+    journal_with_io(fixture, conversation, files, None).await
+}
+
+async fn journal_with_io(
+    fixture: &Fixture,
+    conversation: &AuthorityIssuer,
+    files: Arc<TaskFiles<MemoryStream>>,
+    io: Option<&PreparationIo>,
+) -> Result<Journal> {
     let owner_scope = conversation.issue(
         "interaction-owner",
         &Capabilities::new([
@@ -92,19 +101,33 @@ async fn journal(
         None,
         &mut None,
     )?;
-    fixture
-        .execution(
-            fixture.owner(TASK).await?,
-            OperationId::from_bytes([TASK; 16]),
+    let operation = OperationId::from_bytes([TASK; 16]);
+    let ordinary = fixture.execution(fixture.owner(TASK).await?, operation)?;
+    let journal = if let Some(io) = io {
+        let (task, fence) = ordinary.owner.as_ref().unwrap().0.task_binding();
+        Journal::for_task(
+            fixture.host.journal_owner(task, fence, Some(io)).await?,
+            operation,
+            operation,
+            fixture.files.clone(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &ordinary.volume,
+                verifier: &ordinary.verifier,
+                scope: &ordinary.scope,
+                maximum_bytes: ordinary.maximum_payload_bytes,
+                io: Some(io),
+            },
         )?
-        .with_task_files(files)?
-        .with_interaction_owner(
-            &conversation.verifier(&mut None)?,
-            &SchemaRegistry::new(),
-            &owner_scope,
-            &fixture.storage,
-            None,
-        )
+    } else {
+        ordinary
+    };
+    journal.with_task_files(files)?.with_interaction_owner(
+        &conversation.verifier(&mut None)?,
+        &SchemaRegistry::new(),
+        &owner_scope,
+        &fixture.storage,
+        io,
+    )
 }
 
 fn task() -> Component {
