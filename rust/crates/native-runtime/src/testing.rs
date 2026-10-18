@@ -17,6 +17,8 @@ mod durability;
 pub use durability::{
     DurableFault, DurableWrite, InjectedStorageFault, durable_operation, durable_write,
 };
+mod host;
+pub use host::blocking_on;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(test)]
@@ -89,6 +91,7 @@ pub(crate) struct Context {
     owned: bool,
     // Never nested with the schedule-state lock; cloned before sends/callbacks.
     detail: Arc<Mutex<Arc<str>>>,
+    host: Option<Arc<host::Host>>,
 }
 
 pub(crate) struct Active(pub(crate) Context);
@@ -141,6 +144,7 @@ impl Schedule {
                 schedule: self.clone(),
                 owned: false,
                 detail: Arc::new(Mutex::new(Arc::from(""))),
+                host: None,
             }),
             future,
         );
@@ -221,6 +225,7 @@ impl Context {
             schedule: self.schedule.clone(),
             owned: true,
             detail: Arc::new(Mutex::new(lock(&self.detail).clone())),
+            host: self.host.clone(),
         })
     }
 
@@ -296,14 +301,24 @@ where
             CURRENT.scope(Some(owned.clone()), async move {
                 let _active = active;
                 owned.pause("blocking:submitted").await;
+                let host = owned
+                    .schedule
+                    .0
+                    .executor
+                    .as_ref()
+                    .map(|_| host::Host::new());
+                let worker = host.clone();
                 let completion = crate::run_blocking_io(
                     move || {
                         let _inline = crate::InlineBlocking::enter();
-                        work()
+                        match worker {
+                            Some(worker) => worker.run(work),
+                            None => work(),
+                        }
                     },
                     None,
                 );
-                let result = host_work(completion, owned.schedule.0.executor.is_some()).await;
+                let result = host_work(completion, host).await;
                 owned.pause("blocking:completed").await;
                 result
             }),
@@ -340,13 +355,13 @@ enum BlockingOwner<T> {
 
 async fn host_work<T>(
     completion: std::io::Result<crate::NativeCompletion<T>>,
-    seeded: bool,
+    host: Option<Arc<host::Host>>,
 ) -> std::io::Result<T> {
     let mut completion = completion?;
     if let Some(job) = completion.pending.take() {
         let workers = crate::workers(&crate::BLOCKING_WORKERS, false)?;
-        if seeded {
-            executor::complete_io(queued(job, workers))?;
+        if let Some(host) = host {
+            host.drive(queued(job, workers)).await?;
         } else {
             queued(job, workers).await?;
         }
@@ -411,7 +426,11 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let context = Context::simulation();
+    let context = Context::simulation().map(|mut context| {
+        // A nested native job inherits sources, not another worker's permit.
+        context.host = None;
+        context
+    });
     #[cfg(test)]
     let context = if FORGET_HOST_CONTEXT.with(|fault| fault.replace(false)) {
         None

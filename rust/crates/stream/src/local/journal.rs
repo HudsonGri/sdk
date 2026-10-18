@@ -8,11 +8,13 @@ impl Journal {
         let lock = lock_root(root, limits)?;
         let epoch = match read_snapshot(root, limits)? {
             Some(snapshot) => {
-                recovered
-                    .blocking_send(Recovered::State {
+                blocking_send(
+                    recovered,
+                    Recovered::State {
                         encoded: snapshot.state,
-                    })
-                    .map_err(|_| LocalStreamError::Executor)?;
+                    },
+                )
+                .map_err(|_| LocalStreamError::Executor)?;
                 snapshot.epoch
             }
             None => 0,
@@ -137,12 +139,14 @@ impl Journal {
             if operations > limits.journal_operations {
                 return Err(LocalStreamError::Corrupt);
             }
-            recovered
-                .blocking_send(Recovered::Command {
+            blocking_send(
+                recovered,
+                Recovered::Command {
                     committed_at_millis: u64::from_le_bytes(*committed_at_millis),
                     command,
-                })
-                .map_err(|_| LocalStreamError::Executor)?;
+                },
+            )
+            .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
                 .checked_add(frame_bytes(&frame.length))
                 .ok_or(LocalStreamError::Corrupt)?;
