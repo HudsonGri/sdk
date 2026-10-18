@@ -11,7 +11,7 @@ mod scenario_data;
 mod wire;
 
 use acyclic_harness::OperationId;
-use futures::{StreamExt as _, stream};
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -221,17 +221,29 @@ async fn binary_scenarios() -> TestResult {
         return Err("no binary scenarios selected".into());
     }
     let count = cases.len();
-    let mut results = stream::iter(cases.into_iter().map(|(path, case, protocol)| async move {
+    let mut cases = cases.into_iter().map(|(path, case, protocol)| async move {
         let result = run(case, &protocol).await;
         (path, protocol, result)
-    }))
-    .buffer_unordered(16);
+    });
+    let mut results = FuturesUnordered::new();
+    results.extend(cases.by_ref().take(16));
+    let mut failure = None;
     while let Some((path, protocol, result)) = results.next().await {
         let name = format!("{} [{protocol}]", path.strip_prefix(root())?.display());
         match result {
             Ok(elapsed) => println!("PASS {name} {:.3}s", elapsed.as_secs_f64()),
-            Err(error) => return Err(format!("FAIL {name}: {error}").into()),
+            Err(error) => {
+                failure.get_or_insert_with(|| format!("FAIL {name}: {error}"));
+            }
         }
+        if failure.is_none()
+            && let Some(case) = cases.next()
+        {
+            results.push(case);
+        }
+    }
+    if let Some(failure) = failure {
+        return Err(failure.into());
     }
     println!(
         "{count} binary scenarios passed, {:.3}s",
