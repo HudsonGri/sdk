@@ -20,6 +20,8 @@ mod matchers;
 mod mcp_case;
 #[cfg(feature = "mcp-http")]
 mod mcp_http;
+#[cfg(feature = "mcp-http")]
+mod mcp_tests;
 mod notification_history;
 mod notifications;
 mod plan_query;

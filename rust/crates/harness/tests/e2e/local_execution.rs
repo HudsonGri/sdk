@@ -79,9 +79,9 @@ pub(super) async fn run(mut case: LocalCase) -> TestResult {
         .goal_continuations(None);
     #[cfg(feature = "mcp-http")]
     let mcp_server = if let Some(fixture) = case.mcp.take() {
-        let (server, settings) = super::mcp_http::Server::open(
-            &directory, fixture, host.clone(), workspace.clone(),
-        ).await?;
+        let (server, settings) =
+            super::mcp_http::Server::open(&directory, fixture, host.clone(), workspace.clone())
+                .await?;
         config = config.settings(settings);
         Some(server)
     } else {
@@ -119,12 +119,18 @@ pub(super) async fn run(mut case: LocalCase) -> TestResult {
         return Err("local scenario did not consume exactly its scripted model turns".into());
     }
     if case.expect.requests.is_some() || !case.expect.not_requests.is_empty() {
-        let values = requests.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?;
+        let values = requests
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()?;
         if let Some(expected) = &case.expect.requests {
             matchers::ordered(expected, &values, "local model requests")?;
         }
         for forbidden in &case.expect.not_requests {
-            if values.iter().any(|request| matchers::subset(forbidden, request)) {
+            if values
+                .iter()
+                .any(|request| matchers::subset(forbidden, request))
+            {
                 return Err("local model received forbidden context".into());
             }
         }

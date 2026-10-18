@@ -36,7 +36,10 @@ impl Server {
         if let Some(enabled) = &fixture.enabled_tools {
             server["enabled_tools"] = serde_json::to_value(enabled)?;
         }
-        let home = directory.parent().ok_or("missing fixture root")?.join("settings");
+        let home = directory
+            .parent()
+            .ok_or("missing fixture root")?
+            .join("settings");
         std::fs::create_dir(&home)?;
         std::fs::write(
             home.join(".claude.json"),
@@ -117,9 +120,14 @@ async fn exchange(
                 params["name"].as_str().ok_or("missing MCP tool name")?,
                 &params["arguments"],
             )?;
-            let mutations = reply.files.iter().map(|(path, text)| WorkspaceMutation::PutFile {
-                path: format!("/{path}"), bytes: text.as_bytes().to_vec().into(),
-            }).collect::<Vec<_>>();
+            let mutations = reply
+                .files
+                .iter()
+                .map(|(path, text)| WorkspaceMutation::PutFile {
+                    path: format!("/{path}"),
+                    bytes: text.as_bytes().to_vec().into(),
+                })
+                .collect::<Vec<_>>();
             if !mutations.is_empty() {
                 let key = IdempotencyKey::new(format!("mcp-{}", blake3::hash(&bytes)))?;
                 host.apply(&workspace, None, &mutations, &key).await?;
@@ -129,5 +137,7 @@ async fn exchange(
         _ => return Err("unexpected MCP fixture method".into()),
     };
     let body = serde_json::to_vec(&json!({"jsonrpc":"2.0", "id":request["id"], "result":result}))?;
-    Ok(Response::builder().header("Content-Type", "application/json").body(Full::new(body.into()))?)
+    Ok(Response::builder()
+        .header("Content-Type", "application/json")
+        .body(Full::new(body.into()))?)
 }

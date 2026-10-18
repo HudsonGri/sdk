@@ -40,7 +40,9 @@ impl McpFixture {
             .replies
             .iter()
             .filter(|reply| reply.name == name && reply.arguments == *arguments);
-        let reply = matches.next().ok_or("unexpected MCP tool name or arguments")?;
+        let reply = matches
+            .next()
+            .ok_or("unexpected MCP tool name or arguments")?;
         if matches.next().is_some() {
             return Err("ambiguous MCP tool reply");
         }

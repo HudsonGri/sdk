@@ -10,6 +10,7 @@ proptest::proptest! {
             include_bytes!("../../../harness-fuzz/corpus/client_diff/local-remove").as_slice(),
             include_bytes!("../../../harness-fuzz/corpus/client_diff/local-read").as_slice(),
             include_bytes!("../../../harness-fuzz/corpus/client_diff/local-indeterminate").as_slice(),
+            include_bytes!("../../../harness-fuzz/corpus/client_diff/local-mcp").as_slice(),
         ] {
             let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
             if value["turns"][0][0]["name"] == "write" {
