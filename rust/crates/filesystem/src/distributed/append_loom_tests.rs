@@ -91,12 +91,36 @@ fn model(broken: bool, duplicate: bool) {
         // Each actor owns its AuthorityWork/cancellation state independently.
         let stream = Arc::new(MemoryStream::default());
         let store = StreamAuthorityStore::new(stream.clone());
+        let authority = AuthorityId::from_bytes([71; 16]);
+        let epoch = Epoch::GENESIS.get().to_le_bytes();
+        // Exact initial authority bytes, in one atomic setup publication. This
+        // bounds the model without replaying unrelated creation/codec checks.
+        let initial = CommitRequest {
+            conditions: vec![],
+            mutations: [
+                ("", AUTHORITY_MARKER.to_vec()),
+                ("/records", [GENESIS_DOMAIN, epoch.as_slice()].concat()),
+                ("/epochs", [EPOCH_DOMAIN, epoch.as_slice()].concat()),
+                ("/publication-gate", PUBLICATION_GATE_FREE.to_vec()),
+            ]
+            .into_iter()
+            .map(|(suffix, bytes)| CommitMutation::Append {
+                path: stream_path(authority, suffix).unwrap(),
+                records: vec![bytes.into()],
+            })
+            .collect(),
+            idempotency_key: acyclic_stream::IdempotencyKey::new(
+                acyclic_stream::OwnedBytes::from_static(b"setup"),
+            )
+            .unwrap(),
+        };
+        assert!(matches!(
+            ready(stream.commit(initial)).unwrap(),
+            CommitOutcome::Committed(_)
+        ));
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let authority = AuthorityId::from_bytes([71; 16]);
-        ready(store.create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>))
-            .unwrap();
-        let head = ready(store.head(authority, &mut work)).unwrap();
+        let head = Head::genesis(Epoch::GENESIS);
         // The competing writer's read-only preparation is immutable setup.
         // Race its actual atomic Stream publication against every read and
         // publication in the complete authority append/lookup/retry path.
@@ -132,12 +156,8 @@ fn model(broken: bool, duplicate: bool) {
                 | FsAppendOutcome::Conflict { .. }
         ));
         writer.join().unwrap();
-        let current = ready(store.head(authority, &mut work)).unwrap();
-        let retried = ready(store.compare_and_append(
-            proposal(authority, current),
-            &mut work,
-            None::<&mut ()>,
-        ));
+        let retried =
+            ready(store.compare_and_append(proposal(authority, head), &mut work, None::<&mut ()>));
         assert!(
             matches!(
                 retried,
@@ -145,17 +165,24 @@ fn model(broken: bool, duplicate: bool) {
             ),
             "retrying a fenced proposal must publish exactly once: {retried:?}"
         );
-        let final_head = ready(store.head(authority, &mut work)).unwrap();
-        assert_eq!(final_head.sequence.get(), 1);
-        let operation = ready(store.authority_find_operation(
-            authority,
-            OperationId::from_bytes([72; 16]),
-            &mut work,
-        ))
-        .unwrap()
-        .unwrap();
+        let operation = match retried.unwrap() {
+            FsAppendOutcome::Committed(record) | FsAppendOutcome::AlreadyCommitted(record) => {
+                record
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(operation.sequence.get(), 1);
         assert_eq!(operation.payload.as_ref(), b"one publication");
         assert_eq!(operation.fingerprint, Digest::from_bytes([73; 32]));
+        assert_eq!(
+            ready(
+                store
+                    .provider()
+                    .tail(stream_path(authority, "/records").unwrap())
+            )
+            .unwrap(),
+            2
+        );
     });
 }
 
