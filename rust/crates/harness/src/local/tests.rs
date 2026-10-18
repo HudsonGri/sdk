@@ -20,6 +20,8 @@ use serde_json::{Value, json};
 mod compact;
 mod compaction;
 mod context;
+#[cfg(all(feature = "native-execution", unix))]
+mod path_tools;
 mod goals;
 #[cfg(feature = "hooks")]
 mod hook_configuration;
