@@ -28,6 +28,16 @@ impl crate::fork::ForkPreparer for UnusedForkPreparer {
 
 struct DelegatingLoop;
 
+struct PrivateContent(crate::conversation::VolumeRef);
+
+impl crate::conversation::ContentPublisher for PrivateContent {
+    fn volume(&self) -> &crate::conversation::VolumeRef {
+        &self.0
+    }
+}
+
+impl crate::conversation::ContentResidencyVerifier for PrivateContent {}
+
 impl AgentLoop for DelegatingLoop {
     fn run(
         &self,
@@ -448,6 +458,86 @@ async fn custom_executor_owns_complete_turn_input_output_without_stock_events() 
 }
 
 #[tokio::test]
+async fn private_writer_defaults_require_capacity_before_bundle_turn_effects() -> Result<()> {
+    use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
+    let volume = VolumeRef::new(
+        crate::resources::ProviderRef::new(
+            "example".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?,
+        "private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(crate::AgentId::from_bytes([7; 16])),
+        &mut None,
+    )?;
+    let grant = volume.capability(acyclic_fs::access::VolumeOperation::Write, &mut None)?;
+    let content = Arc::new(PrivateContent(volume));
+    for policy in [
+        None,
+        Some(crate::context::CompactionPolicy::default()),
+        Some(crate::context::CompactionPolicy::Disabled),
+    ] {
+        let disabled = policy == Some(crate::context::CompactionPolicy::Disabled);
+        let provider =
+            Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting());
+        let journal = Arc::new(RecordingTurnJournal::default());
+        let builder = HarnessBuilder::new()
+            .bindings(Bindings {
+                scope: crate::runtime::RuntimeScope::new(
+                    Capabilities::new(["model:generate".to_owned(), grant.clone()]),
+                    Limits::default(),
+                )?,
+                artifacts: Some(crate::runtime::ContentBindings {
+                    reader: content.clone(),
+                    writer: Some(content.clone()),
+                }),
+                ..Bindings::local()
+            })
+            .model(
+                Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+                provider.clone(),
+            )
+            .journal(journal.clone());
+        let builder = match policy {
+            Some(policy) => builder.compaction(policy),
+            None => builder,
+        };
+        let result = builder
+            .build()?
+            .run(TurnInput {
+                operation_id: crate::OperationId::new(),
+                input: crate::model::ModelContent::Text("capacity".into()),
+                selected_context: None,
+                max_steps: 1,
+            })
+            .await;
+        // Explicit Disabled is the negative control for an incorrectly disabled
+        // writer-backed default: it reaches the journal instead of the capacity gate.
+        let expected = if disabled {
+            "stock journal dispatch forbidden"
+        } else {
+            "selected model context capacity is unavailable"
+        };
+        assert!(
+            matches!(&result, Err(Error::Unsupported(message)) if message == expected),
+            "{result:?}"
+        );
+        assert!(provider.requests().is_empty());
+        if disabled {
+            assert!(matches!(
+                journal.events.lock().unwrap().as_slice(),
+                [crate::executor::ExecutionEvent::Started { .. }]
+            ));
+        } else {
+            assert!(journal.events.lock().unwrap().is_empty());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
     assert!(HarnessBuilder::new().build().is_err());
     let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
@@ -468,12 +558,38 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
             .task::<TurnInput, TurnOutput>("acyclic.stock_turn@2")
             .is_ok()
     );
-    assert!(matches!(bundle.run(TurnInput {
-            operation_id: crate::OperationId::new(),
-            input: crate::model::ModelContent::Text("typed failure".into()),
-            selected_context: None,
-            max_steps: 1,
-        }).await, Err(Error::Unsupported(message)) if message == "selected model context capacity is unavailable"));
+    let turn = || TurnInput {
+        operation_id: crate::OperationId::new(),
+        input: crate::model::ModelContent::Text("typed failure".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    // Without a private summary volume the default runs uncompacted: it needs
+    // no context capacity and passes turn entry to its first journal append.
+    let uncompacted = bundle.run(turn()).await;
+    assert!(
+        matches!(&uncompacted, Err(Error::Unsupported(message)) if message == "stock journal dispatch forbidden"),
+        "{uncompacted:?}"
+    );
+    // Explicitly arming compaction there is rejected at turn entry, before
+    // any capacity lookup, journal append or model dispatch.
+    let armed_journal = Arc::new(RecordingTurnJournal::default());
+    let armed = HarnessBuilder::new()
+        .model(
+            model.clone(),
+            Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting()),
+        )
+        .journal(armed_journal.clone())
+        .grant("model:generate")
+        .compaction(crate::context::CompactionPolicy::default())
+        .build()?
+        .run(turn())
+        .await;
+    assert!(
+        matches!(&armed, Err(Error::Unauthorized(message)) if message == "summaries require the task's private volume"),
+        "{armed:?}"
+    );
+    assert!(armed_journal.events.lock().unwrap().is_empty());
     assert!(matches!(HarnessBuilder::new()
             .model(model.clone(), Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting()))
             .journal(Arc::new(RecordingTurnJournal::default()))

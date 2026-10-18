@@ -7,6 +7,15 @@ pub(in crate::executor) struct StockExecution<'a> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
+    /// Resolved on first use, after `context` and `io` are fixed.
+    pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
+}
+
+/// The turn's compaction policy, resolved once from the original IO, with the
+/// private summary authority that resolution validated.
+pub(in crate::executor) struct ResolvedCompaction<'a> {
+    pub(in crate::executor) policy: &'a crate::context::CompactionPolicy,
+    pub(in crate::executor) destination: Option<crate::runtime::SummaryDestination<'a>>,
 }
 
 impl<'a> StockExecution<'a> {
@@ -21,6 +30,7 @@ impl<'a> StockExecution<'a> {
             interactions: None,
             io: None,
             summary: None,
+            compaction: once_cell::sync::OnceCell::new(),
         }
     }
     pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {
@@ -41,13 +51,58 @@ impl<'a> StockExecution<'a> {
             .as_ref()
             .map_or(&self.stock.context, |(pipeline, _)| pipeline)
     }
-    pub(in crate::executor) fn compaction_policy(&self) -> &crate::context::CompactionPolicy {
-        if self.summary.is_some() {
-            &crate::context::CompactionPolicy::Disabled
-        } else {
-            &self.stock.compaction
-        }
+    pub(in crate::executor) fn compaction_policy(
+        &self,
+    ) -> Result<&crate::context::CompactionPolicy> {
+        Ok(self.compaction()?.policy)
     }
+    pub(in crate::executor) fn compaction(&self) -> Result<&ResolvedCompaction<'a>> {
+        self.compaction
+            .get_or_try_init(|| self.resolve_compaction())
+    }
+    fn resolve_compaction(&self) -> Result<ResolvedCompaction<'a>> {
+        use crate::context::CompactionPolicy;
+        static THRESHOLD: std::sync::LazyLock<CompactionPolicy> =
+            std::sync::LazyLock::new(CompactionPolicy::default);
+        let stock: &'a StockExecutor = self.stock;
+        let disabled = || ResolvedCompaction {
+            policy: &CompactionPolicy::Disabled,
+            destination: None,
+        };
+        Ok(match (&self.summary, &stock.compaction, self.context) {
+            (Some(_), _, _) => disabled(),
+            (None, Some(policy @ CompactionPolicy::Threshold(_)), _) => {
+                let destination = self
+                    .context
+                    .map(|(context, _)| context.summary_destination(self.io))
+                    .transpose()?;
+                if let Some(destination) = destination {
+                    destination.require(self.io)?;
+                }
+                ResolvedCompaction {
+                    policy,
+                    destination,
+                }
+            }
+            (None, Some(CompactionPolicy::Disabled), _) => disabled(),
+            (None, None, Some((context, _))) => {
+                let destination = context.summary_destination(self.io)?;
+                ResolvedCompaction {
+                    policy: if destination.writer().is_some() {
+                        &THRESHOLD
+                    } else {
+                        &CompactionPolicy::Disabled
+                    },
+                    destination: Some(destination),
+                }
+            }
+            (None, None, None) => ResolvedCompaction {
+                policy: &THRESHOLD,
+                destination: None,
+            },
+        })
+    }
+
     pub(in crate::executor) fn output_tokens(&self) -> Option<u32> {
         self.summary
             .as_ref()
