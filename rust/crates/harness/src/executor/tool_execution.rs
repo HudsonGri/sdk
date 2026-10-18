@@ -10,6 +10,7 @@ impl StockExecution<'_> {
         invocation: ToolInvocation,
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
+        observed: &mut super::observed::ObservedFold,
     ) -> Result<ExecutionProgress<()>> {
         self.verify_task_context_binding(operation_id)?;
         let metadata = metadata_for_call(
@@ -107,7 +108,9 @@ impl StockExecution<'_> {
                 && let Some(bound) = context.take()
             {
                 context = Some(
-                    bound.with_observed_files(self.observed_files(journal, operation_id).await?),
+                    bound.with_observed_files(
+                        self.observed_files(journal, operation_id, observed).await?,
+                    ),
                 );
             }
             self.execute_tool_invocation(

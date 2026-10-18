@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::observed::ObservedFold;
 
 // Returns the file version named in its arguments, or fails when asked to,
 // and reports results the way file tools do: the version under `file`.
@@ -127,7 +128,7 @@ async fn observed_versions_survive_restart_and_ignore_failed_calls() -> Result<(
     .await?;
     let restarted = reopen(&journal);
     let observed = StockExecution::ordinary(&executor)
-        .observed_files(&restarted, operation)
+        .observed_files(&restarted, operation, &mut ObservedFold::default())
         .await?;
     assert_eq!(observed, [a1.clone(), b1.clone()]);
     // Negative control: the same call succeeding does advance the version.
@@ -138,13 +139,13 @@ async fn observed_versions_survive_restart_and_ignore_failed_calls() -> Result<(
     ])
     .await?;
     let observed = StockExecution::ordinary(&executor)
-        .observed_files(&reopen(&journal), operation)
+        .observed_files(&reopen(&journal), operation, &mut ObservedFold::default())
         .await?;
     assert_eq!(observed, [b1, a2]);
     // Negative control: losing the journal loses the observation, so nothing
     // but the journal backs it.
     let observed = StockExecution::ordinary(&executor)
-        .observed_files(&Journal::default(), operation)
+        .observed_files(&Journal::default(), operation, &mut ObservedFold::default())
         .await?;
     assert!(observed.is_empty());
     Ok(())
@@ -187,9 +188,10 @@ async fn a_session_folds_each_record_once() -> Result<()> {
         run(&[("read-a", &a1, false), ("read-b", &b1, false)]).await?;
     let journal = reopen(&journal);
     let session = StockExecution::ordinary(&executor);
+    let mut observed = ObservedFold::default();
     let before = journal.4.load(Ordering::SeqCst);
     assert_eq!(
-        session.observed_files(&journal, operation).await?,
+        session.observed_files(&journal, operation, &mut observed).await?,
         [a1.clone(), b1.clone()]
     );
     // One invocation and one result per completed call.
@@ -197,7 +199,7 @@ async fn a_session_folds_each_record_once() -> Result<()> {
     assert_eq!(folded - before, 4);
     for _ in 0..10 {
         assert_eq!(
-            session.observed_files(&journal, operation).await?,
+            session.observed_files(&journal, operation, &mut observed).await?,
             [a1.clone(), b1.clone()]
         );
     }
@@ -206,7 +208,7 @@ async fn a_session_folds_each_record_once() -> Result<()> {
     // which is exactly the quadratic cost the fold removes.
     for _ in 0..10 {
         StockExecution::ordinary(&executor)
-            .observed_files(&journal, operation)
+            .observed_files(&journal, operation, &mut ObservedFold::default())
             .await?;
     }
     assert_eq!(journal.4.load(Ordering::SeqCst), folded + 40);

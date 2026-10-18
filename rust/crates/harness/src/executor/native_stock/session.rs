@@ -7,8 +7,6 @@ pub(in crate::executor) struct StockExecution<'a> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
-    /// What this turn has shown the model so far, folded from its journal.
-    pub(in crate::executor) observed: std::sync::Mutex<super::observed::ObservedFold>,
 }
 
 impl<'a> StockExecution<'a> {
@@ -23,7 +21,6 @@ impl<'a> StockExecution<'a> {
             interactions: None,
             io: None,
             summary: None,
-            observed: std::sync::Mutex::default(),
         }
     }
     pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {

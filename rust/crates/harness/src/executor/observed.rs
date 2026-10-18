@@ -3,7 +3,8 @@ use super::*;
 /// The latest version of each path that a completed tool result showed the
 /// model, folded once over the turn's journal. Each record is selected, each
 /// invocation loaded and each completion paired exactly once; later calls
-/// continue after `after`.
+/// continue after `after`. The turn owns this state and lends it exclusively
+/// across each call, so neither locking nor concurrent fold replacement exists.
 #[derive(Default)]
 pub(in crate::executor) struct ObservedFold {
     operation: Option<OperationId>,
@@ -40,29 +41,20 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
+        fold: &mut ObservedFold,
     ) -> Result<Vec<FileRef>> {
-        let mut fold = std::mem::take(
-            &mut *self
-                .observed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
         if fold.operation != Some(operation_id) {
-            fold = ObservedFold {
+            *fold = ObservedFold {
                 operation: Some(operation_id),
                 ..ObservedFold::default()
             };
         }
-        // On error the fold is dropped, and the next call folds from scratch.
-        self.fold_observed(&mut fold, journal, operation_id).await?;
+        // Every error ends the turn, dropping its partially advanced fold.
+        self.fold_observed(fold, journal, operation_id).await?;
         let mut files = Vec::new();
         for file in &fold.files {
             stock_vec_push(&mut files, file.clone(), self.io)?;
         }
-        *self
-            .observed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = fold;
         Ok(files)
     }
 
