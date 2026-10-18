@@ -156,7 +156,9 @@ fn fragmented_canonical_run_flattens_into_one_exact_buffer() {
         || {
             let view = crate::TextRef::Many(vec![&first, &second]);
             let mut output = Cow::Borrowed("");
+            let copied = crate::work::parts()[1];
             cost = measure(|| output = view.as_str());
+            assert_eq!(crate::work::parts()[1] - copied, 4);
             output.into_owned()
         },
     );
