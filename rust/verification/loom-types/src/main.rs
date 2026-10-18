@@ -160,6 +160,26 @@ fn main() -> std::process::ExitCode {
             .file_stem()
             .is_some_and(|name| name == "rustc")
     }) {
+        if !args
+            .iter()
+            .any(|arg| arg == "--sysroot" || arg.starts_with("--sysroot="))
+        {
+            let output = std::process::Command::new(&args[1])
+                .args(["--print", "sysroot"])
+                .output()
+                .expect("query wrapped compiler sysroot");
+            assert!(
+                output.status.success(),
+                "wrapped compiler could not report its sysroot"
+            );
+            args.extend([
+                "--sysroot".to_string(),
+                String::from_utf8(output.stdout)
+                    .expect("compiler sysroot is UTF-8")
+                    .trim()
+                    .to_string(),
+            ]);
+        }
         args.remove(1);
     }
     let mut check = Check::default();
