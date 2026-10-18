@@ -12,6 +12,8 @@
         "search_query": "",
         "search_index": 0,
         "retained": "layout",
+        "search_query": "",
+        "search_index": 0,
         "selected_task": "00000000-0000-0000-0000-000000000005"
       }
     }
