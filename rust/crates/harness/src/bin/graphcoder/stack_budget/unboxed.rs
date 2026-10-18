@@ -68,12 +68,11 @@ async fn run(
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb()
     {
-        let result = client::with_local_commands(
-            local.clone(),
-            operation,
-            view::run(local.clone(), operation, args.inline),
-        )
-        .await;
+        // Built here, as before the fix: the presentation's whole state moves
+        // through this frame.
+        let presentation = view::run(local.clone(), operation, args.inline);
+        let result =
+            client::with_local_commands(local.clone(), operation, move || presentation).await;
         client::disconnect_local(local).await?;
         result?;
         return Ok(0);
