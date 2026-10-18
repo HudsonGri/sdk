@@ -97,6 +97,8 @@ fn alias_parameters_follow_the_target_container() {
 fn source_corpus_survives_parse_print_and_keeps_the_expected_verdict() {
     for source in [
         include_str!("../fuzz/corpus/source/external-module"),
+        include_str!("../fuzz/corpus/source/shadowed-function"),
+        include_str!("../fuzz/corpus/source/local-container"),
         include_str!("../fuzz/corpus/source/raw-type"),
         include_str!("../fuzz/corpus/source/raw-method"),
         include_str!("../fuzz/corpus/source/alias"),
