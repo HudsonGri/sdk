@@ -1,7 +1,7 @@
 //! Exhaustive schedules through the production native directory cache.
 #![cfg(acyclic_fs_loom)]
 use acyclic_fs::kernel;
-use acyclic_fs::{Digest, FsError, ObjectId, ObjectKind, VolumeId, WorkError};
+use acyclic_fs::{CancellationToken, Digest, FsError, ObjectId, ObjectKind, VolumeId, WorkError};
 
 #[path = "../../src/sync.rs"]
 mod sync;
@@ -60,6 +60,7 @@ mod cache {
     }
 }
 
+mod retry;
 mod view;
 
 #[path = "../../src/access/projection.rs"]

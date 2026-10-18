@@ -9,6 +9,8 @@ mod capability;
 mod compilation;
 mod decision;
 mod disclosure;
+mod retry;
+pub(crate) use retry::{RetryError, observe_policy};
 #[cfg(test)]
 pub(crate) mod fixtures;
 mod glob;

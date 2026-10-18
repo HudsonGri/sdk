@@ -100,30 +100,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         if super::tests::return_fence::omitted() {
             return result;
         }
-        let revision = loop {
-            let observed = self
-                .checkout
-                .volume
-                .current_access_policy_revision_accounted(
-                    &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
-                    work.cancellation(),
-                )
-                .await?;
-            if observed.is_some() {
-                break observed;
-            }
-            #[cfg(test)]
-            if super::tests::return_fence::skip_retry() {
-                break observed;
-            }
-            // A data-only publication may have overtaken metadata IO. Retry
-            // only this accounted observation; the data future runs once.
-        };
+        let revision =
+            crate::access::observe_policy(work.cancellation(), &self.cancellation, || async {
+                let observed = self
+                    .checkout
+                    .volume
+                    .current_access_policy_revision_accounted(
+                        &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                        work.cancellation(),
+                    )
+                    .await
+                    .map_err(MountSourceError::from)?;
+                #[cfg(test)]
+                if super::tests::return_fence::skip_retry() && observed.is_none() {
+                    return Err(MountSourceError::AccessDenied);
+                }
+                // Retry only the accounted policy observation, never the data.
+                Ok(observed)
+            })
+            .await
+            .map_err(|error| match error {
+                crate::access::RetryError::CallerCancelled => MountSourceError::Cancelled,
+                crate::access::RetryError::MountCancelled => MountSourceError::Stale,
+                crate::access::RetryError::Observation(error) => error,
+            })?;
         let valid = self
             .access_view
             .as_ref()
             .ok_or(MountSourceError::AccessDenied)?
-            .confirms_disclosure(view, revision, access_time()?)
+            .confirms_disclosure(view, Some(revision), access_time()?)
             .map_err(|_| MountSourceError::AccessDenied)?;
         if !valid {
             return Err(MountSourceError::AccessDenied);
