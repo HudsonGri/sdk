@@ -268,3 +268,122 @@ async fn checked_follow_close_codes() -> TestResult {
     }
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "pre-merge Cloud request 10 qualification at 055987e839"]
+async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
+    use wire::{session_frame::Body, session_subscription::Kind};
+    let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD").ok_or("missing local Cloud endpoints")?;
+    let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
+    let remote = endpoints.streams.connect().await?;
+    let path = StreamPath::new("cloud5322-raw/checked")?;
+    remote
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![OwnedBytes::from_static(b"anchor")],
+            if_tail: Some(0),
+            idempotency_key: None,
+        })
+        .await?;
+    let channel = tonic::transport::Endpoint::from_shared(endpoints.streams.endpoint)?
+        .tls_config(tonic::transport::ClientTlsConfig::new().ca_certificate(
+            tonic::transport::Certificate::from_pem(std::fs::read(endpoints.streams.ca_file)?),
+        ))?
+        .connect()
+        .await?;
+    let mut client = wire::stream_session_service_client::StreamSessionServiceClient::new(channel);
+    let (send, receive) = tokio::sync::mpsc::channel(8);
+    let frame = |body| wire::SessionFrame {
+        channel_id: 0,
+        generation: 0,
+        body: Some(body),
+    };
+    send.send(frame(Body::Hello(wire::SessionHello {
+        version: 1,
+        client_id: b"cloud-local-5322".to_vec().into(),
+        destination_node: String::new(),
+        receive_bytes: 1 << 20,
+        receive_frames: 100,
+    })))
+    .await?;
+    let input = futures::stream::unfold(receive, |mut receive| async move {
+        receive.recv().await.map(|frame| (frame, receive))
+    });
+    let mut request = tonic::Request::new(input);
+    request.metadata_mut().insert(
+        "authorization",
+        format!("Bearer {}", endpoints.streams.bearer).parse()?,
+    );
+    let mut output = client.session(request).await?.into_inner();
+    let welcome = tokio::time::timeout(Duration::from_secs(10), output.message())
+        .await??
+        .ok_or("raw Session ended before Welcome")?;
+    if !matches!(welcome.body, Some(Body::Welcome(_))) {
+        return Err(format!("expected Welcome, observed {welcome:?}").into());
+    }
+    let subscriptions = [
+        (1, path.as_str(), 1, vec![255; 32]),
+        (3, path.as_str(), 2, vec![]),
+        (5, "cloud5322-raw/missing", 0, vec![]),
+    ]
+    .into_iter()
+    .map(|(id, path, next, preceding)| wire::SessionSubscription {
+        channel: Some(wire::SessionChannel {
+            channel_id: id,
+            generation: 1,
+        }),
+        resume: Some(wire::SessionCursor {
+            next,
+            opaque: Default::default(),
+        }),
+        kind: Some(Kind::Follow(wire::SessionFollow {
+            path: path.into(),
+            delivery: wire::SessionDelivery::All as i32,
+            preceding_commit_id: preceding.into(),
+        })),
+    })
+    .collect();
+    send.send(frame(Body::Interest(wire::SessionInterest {
+        revision: 1,
+        upsert: subscriptions,
+        remove: vec![],
+    })))
+    .await?;
+    let expected = std::collections::BTreeMap::from([
+        (1, "prefix_not_retained"),
+        (3, "out_of_range"),
+        (5, "not_found"),
+    ]);
+    let mut closed = std::collections::BTreeMap::new();
+    while closed.len() < expected.len() {
+        let frame = tokio::time::timeout(Duration::from_secs(10), output.message())
+            .await??
+            .ok_or("raw Session ended before Closed frames")?;
+        eprintln!("Cloud5322 raw frame {frame:?}");
+        match &frame.body {
+            Some(Body::Closed(value)) => {
+                if closed
+                    .insert(frame.channel_id, value.code.clone())
+                    .is_some()
+                {
+                    return Err(format!("duplicate Closed: {frame:?}").into());
+                }
+            }
+            Some(Body::InterestApplied(_) | Body::Opened(_)) => {}
+            _ => {
+                return Err(
+                    format!("expected Opened/InterestApplied/Closed, observed {frame:?}").into(),
+                );
+            }
+        }
+    }
+    if !closed
+        .iter()
+        .map(|(id, code)| (*id, code.as_str()))
+        .eq(expected.into_iter())
+    {
+        return Err(format!("Closed codes expected 1=prefix_not_retained,3=out_of_range,5=not_found; observed {closed:?}").into());
+    }
+    eprintln!("Cloud5322 PASS exact raw Closed frames");
+    Ok(())
+}
