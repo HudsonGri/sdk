@@ -97,6 +97,11 @@ impl Schedule {
     pub fn durable_writes(&self) -> Vec<DurableWrite> {
         self.0.state().writes.trace.clone()
     }
+
+    /// Latched cause of the first cut, retained until this scope is discarded.
+    pub fn storage_fault(&self) -> Option<InjectedStorageFault> {
+        self.0.state().writes.failed.clone()
+    }
 }
 
 fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::Result<Call> {
@@ -159,7 +164,7 @@ impl Call {
 pub fn durable_write(
     operation: &'static str,
     bytes: &[u8],
-    mut write: impl FnMut(&[u8]) -> io::Result<usize>,
+    write: impl FnOnce(&[u8]) -> io::Result<usize>,
 ) -> io::Result<usize> {
     let Some(context) = Context::simulation() else {
         return write(bytes);

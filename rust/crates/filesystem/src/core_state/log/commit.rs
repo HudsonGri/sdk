@@ -134,19 +134,23 @@ impl CoreLog {
                         })
                     })
                     .transpose()?;
+                let mut recorded = Ok(None);
                 let result =
-                    acyclic_native_runtime::write_file(&mut self.file, &buffer.bytes[position..]);
-                let count = result.as_ref().copied().unwrap_or(0);
-                let recorded = credit
-                    .as_mut()
-                    .map(|credit| {
-                        credit.record_completed(crate::WorkCounters {
-                            backend_write_operations: 1,
-                            object_bytes_written: count as u64,
-                            ..Default::default()
-                        })
-                    })
-                    .transpose();
+                    acyclic_native_runtime::write_file_with(&buffer.bytes[position..], |bytes| {
+                        let result = self.file.write(bytes);
+                        let count = result.as_ref().copied().unwrap_or(0);
+                        recorded = credit
+                            .as_mut()
+                            .map(|credit| {
+                                credit.record_completed(crate::WorkCounters {
+                                    backend_write_operations: 1,
+                                    object_bytes_written: count as u64,
+                                    ..Default::default()
+                                })
+                            })
+                            .transpose();
+                        result
+                    });
                 let count = result?;
                 recorded?;
                 if count == 0 {

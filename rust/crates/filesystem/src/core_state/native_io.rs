@@ -300,24 +300,26 @@ impl Write for MaterializationWriter<'_> {
             })
             .map_err(std::io::Error::other)?;
         }
-        work.charge(crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::default()
-        })
-        .map_err(std::io::Error::other)?;
-        let count = acyclic_native_runtime::write_file(
-            &mut self.file,
+        acyclic_native_runtime::write_file_with(
             bytes
                 .get(..length)
                 .ok_or_else(|| std::io::Error::other("invalid journal write bound"))?,
-        )?;
-        work.spent(crate::WorkCounters {
-            object_bytes_written: count as u64,
-            bytes_encoded: if self.encoded { count as u64 } else { 0 },
-            ..crate::WorkCounters::default()
-        })
-        .map_err(std::io::Error::other)?;
-        Ok(count)
+            |bytes| {
+                work.charge(crate::WorkCounters {
+                    backend_write_operations: 1,
+                    ..crate::WorkCounters::default()
+                })
+                .map_err(std::io::Error::other)?;
+                let count = self.file.write(bytes)?;
+                work.spent(crate::WorkCounters {
+                    object_bytes_written: count as u64,
+                    bytes_encoded: if self.encoded { count as u64 } else { 0 },
+                    ..crate::WorkCounters::default()
+                })
+                .map_err(std::io::Error::other)?;
+                Ok(count)
+            },
+        )
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

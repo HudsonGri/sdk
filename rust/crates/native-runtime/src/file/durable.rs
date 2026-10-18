@@ -3,10 +3,19 @@ use std::io::Write;
 
 /// Writes once to an original durable writer, preserving short-write results.
 pub fn write_file(writer: &mut impl Write, bytes: &[u8]) -> io::Result<usize> {
+    write_file_with(bytes, |bytes| writer.write(bytes))
+}
+
+/// Runs one write together with its original completion accounting. A lost
+/// acknowledgement is injected only after the physical result was recorded.
+pub fn write_file_with(
+    bytes: &[u8],
+    write: impl FnOnce(&[u8]) -> io::Result<usize>,
+) -> io::Result<usize> {
     #[cfg(feature = "test-support")]
-    return testing::durable_write("file:write", bytes, |bytes| writer.write(bytes));
+    return testing::durable_write("file:write", bytes, write);
     #[cfg(not(feature = "test-support"))]
-    writer.write(bytes)
+    write(bytes)
 }
 
 /// Writes all bytes through the same per-call durable boundary.

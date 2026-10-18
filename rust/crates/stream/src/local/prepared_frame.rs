@@ -125,19 +125,21 @@ impl PreparedFrame {
             acyclic_native_runtime::write_file_all(writer, &self.encoded)?;
             return Ok(());
         };
-        let (result, observed) = self
+        let operation = self
             .operation
             .as_mut()
-            .ok_or(LocalStreamError::IncompleteFrame)?
-            .attempt(|| acyclic_native_runtime::write_file(writer, &self.encoded));
-        let _ = work.record(observed);
-        let actual = result.as_ref().copied().unwrap_or(0);
-        let _ = work.record(
-            self.transfer
-                .as_mut()
-                .ok_or(LocalStreamError::IncompleteFrame)?
-                .record(actual),
-        );
+            .ok_or(LocalStreamError::IncompleteFrame)?;
+        let transfer = self
+            .transfer
+            .as_mut()
+            .ok_or(LocalStreamError::IncompleteFrame)?;
+        let result = acyclic_native_runtime::write_file_with(&self.encoded, |bytes| {
+            let (result, observed) = operation.attempt(|| writer.write(bytes));
+            let _ = work.record(observed);
+            let actual = result.as_ref().copied().unwrap_or(0);
+            let _ = work.record(transfer.record(actual));
+            result
+        });
         match result {
             Ok(length) if length == self.encoded.len() => Ok(()),
             Ok(_) => Err(LocalStreamError::IncompleteFrame),
