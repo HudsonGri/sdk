@@ -200,6 +200,10 @@ impl ReadBudgetMeter {
 }
 
 impl NativeReadMeter for ReadBudgetMeter {
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    fn observe_file_query(&self, query: &'static str) {
+        health::record_file_query(query);
+    }
     fn check(&self) -> io::Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             Err(io::ErrorKind::Interrupted.into())

@@ -18,6 +18,9 @@ pub enum NativeOperationKind {
 
 /// Invocation-local accounting shared by bounded native I/O.
 pub trait NativeReadMeter: Send + Sync {
+    /// Observes an admitted held-file query without changing its allowance.
+    #[cfg(any(test, feature = "test-support"))]
+    fn observe_file_query(&self, _query: &'static str) {}
     /// Checks the original request's cancellation and ownership conditions.
     fn check(&self) -> io::Result<()>;
     /// Returns a pre-existing owner of the same ledger, allowance, cancellation and limits, without request retirement custody.

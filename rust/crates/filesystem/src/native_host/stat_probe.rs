@@ -7,6 +7,7 @@ thread_local! {
     static STATE: Cell<Option<(bool, u64, u64)>> = const { Cell::new(None) };
     static EDIT: RefCell<Option<Edit>> = const { RefCell::new(None) };
     static EVENTS: RefCell<Option<(usize, [&'static str; 512])>> = const { RefCell::new(None) };
+    static IMPORT_QUERIES: Cell<bool> = const { Cell::new(false) };
     static DUPLICATE: Cell<bool> = const { Cell::new(false) };
     static RESTORE_WALK: Cell<bool> = const { Cell::new(false) };
     static EXAMINATIONS: Cell<Option<u64>> = const { Cell::new(None) };
@@ -84,6 +85,9 @@ impl Probe {
             }
         });
     }
+    pub(crate) fn include_import_queries(&self) {
+        IMPORT_QUERIES.set(true);
+    }
     pub(crate) fn examinations(&self) -> u64 {
         EXAMINATIONS.get().unwrap()
     }
@@ -115,6 +119,7 @@ impl Drop for Probe {
         RESTORE_WALK.set(false);
         EXAMINATIONS.set(None);
         LEGACY_BIRTH_TIME.set(false);
+        IMPORT_QUERIES.set(false);
     }
 }
 pub(crate) fn old() -> bool {
@@ -131,7 +136,17 @@ pub(crate) fn legacy_birth_time() -> bool {
 }
 #[cfg(target_os = "linux")]
 pub(super) fn query(handle: bool) {
-    event(if handle { "handle" } else { "statx" });
+    observe_query(if handle { "handle" } else { "statx" }, handle);
+}
+pub(crate) fn file_query(query: &'static str) {
+    if query == "metadata" {
+        observe_query("metadata", false);
+    } else if IMPORT_QUERIES.get() {
+        event(query);
+    }
+}
+fn observe_query(query: &'static str, handle: bool) {
+    event(query);
     if EVENTS.with_borrow(Option::is_some) {
         return;
     }

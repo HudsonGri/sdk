@@ -18,6 +18,13 @@ macro_rules! demand_meter {
             }
         }
         impl acyclic_native_runtime::NativeReadMeter for $owner {
+            #[cfg(test)]
+            fn observe_file_query(&self, query: &'static str) {
+                #[cfg(target_os = "linux")]
+                crate::native_host::stat_probe::file_query(query);
+                #[cfg(not(target_os = "linux"))]
+                let _ = query;
+            }
             $(fn allocation_owner(&self) -> Option<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>> { ($allocation_owner)(self) })?
             fn check(&self) -> std::io::Result<()> { self.io(|state| state.check()) }
             fn reserve_cleanup_write(&self) -> std::io::Result<u64> {

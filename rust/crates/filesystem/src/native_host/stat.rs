@@ -158,6 +158,56 @@ impl HostStat {
             handle: None,
         })
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn from_std_metadata(metadata: &std::fs::Metadata) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: native stat consists only of integers and integer arrays.
+        let mut raw: libc::stat = unsafe { std::mem::zeroed() };
+        raw.st_ino = metadata.ino();
+        raw.st_uid = metadata.uid();
+        raw.st_gid = metadata.gid();
+        raw.st_size = metadata.size().cast_signed();
+        raw.st_atime = metadata.atime();
+        raw.st_atime_nsec = metadata.atime_nsec();
+        raw.st_mtime = metadata.mtime();
+        raw.st_mtime_nsec = metadata.mtime_nsec();
+        raw.st_ctime = metadata.ctime();
+        raw.st_ctime_nsec = metadata.ctime_nsec();
+        raw.st_blocks = metadata.blocks().cast_signed();
+        #[cfg(target_os = "linux")]
+        {
+            raw.st_mode = metadata.mode();
+            raw.st_dev = metadata.dev();
+            raw.st_rdev = metadata.rdev();
+            raw.st_nlink = metadata
+                .nlink()
+                .try_into()
+                .map_err(|_| io::ErrorKind::InvalidData)?;
+            raw.st_blksize = metadata.blksize().cast_signed();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt as _;
+            let invalid = |_| io::ErrorKind::InvalidData;
+            raw.st_mode = metadata.mode().try_into().map_err(invalid)?;
+            raw.st_dev = metadata.dev().cast_signed().try_into().map_err(invalid)?;
+            raw.st_rdev = metadata.rdev().cast_signed().try_into().map_err(invalid)?;
+            raw.st_nlink = metadata.nlink().try_into().map_err(invalid)?;
+            raw.st_blksize = metadata.blksize().try_into().map_err(invalid)?;
+            raw.st_flags = metadata.st_flags();
+            raw.st_gen = metadata.st_gen();
+            raw.st_birthtime = metadata.st_birthtime();
+            raw.st_birthtime_nsec = metadata.st_birthtime_nsec();
+        }
+        Ok(Self {
+            raw,
+            created: metadata
+                .created()
+                .ok()
+                .map(cap_std::time::SystemTime::from_std),
+            handle: None,
+        })
+    }
     #[cfg(target_os = "linux")]
     pub(super) fn from_statx(stat: rustix::fs::Statx) -> Self {
         // SAFETY: native stat consists only of integers and integer arrays.

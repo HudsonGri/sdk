@@ -129,22 +129,40 @@ impl FileHealthRegistry {
     }
 }
 
+fn registry(meter: Option<&dyn NativeReadMeter>) -> io::Result<&'static Mutex<FileHealthRegistry>> {
+    match FILE_HEALTH.get() {
+        Some(lock) => Ok(lock),
+        None if meter.is_some() => Err(io::ErrorKind::NotConnected.into()),
+        None => Ok(FILE_HEALTH.get_or_init(|| Mutex::new(FileHealthRegistry::new()))),
+    }
+}
+
 pub(crate) fn shared_file_health(
     file: &File,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<Arc<FileHealth>> {
-    let lock = match FILE_HEALTH.get() {
-        Some(lock) => lock,
-        None if meter.is_some() => return Err(io::ErrorKind::NotConnected.into()),
-        None => FILE_HEALTH.get_or_init(|| Mutex::new(FileHealthRegistry::new())),
-    };
+    let lock = registry(meter)?;
     if let Some(meter) = meter {
         meter.admit_read(0)?;
+        #[cfg(any(test, feature = "test-support"))]
+        meter.observe_file_query("identity");
     }
     let identity = file_identity(file)?;
     lock.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .admit(identity, meter)
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn shared_file_health_from_metadata(
+    metadata: &std::fs::Metadata,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<Arc<FileHealth>> {
+    use std::os::unix::fs::MetadataExt as _;
+    registry(meter)?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .admit((metadata.dev(), metadata.ino()), meter)
 }
 
 impl FileHealthRegistry {

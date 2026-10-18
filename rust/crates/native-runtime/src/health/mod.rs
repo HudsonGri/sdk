@@ -14,3 +14,6 @@ mod registry;
 pub(crate) use registry::{
     FILE_HEALTH, FileHealthRegistry, poison_file_health, shared_file_health,
 };
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) use registry::shared_file_health_from_metadata;

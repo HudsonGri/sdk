@@ -27,38 +27,56 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         )
         .map_err(capture_demand_error)?;
     let file = file.into_std();
-    let metadata = source_root
-        .stat_file_metadata(&file, &mut meter.clone())
-        .map_err(capture_demand_error)?;
-    if metadata.file_type() != crate::demand::SourceNodeKind::RegularFile {
-        return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
-    }
-    ensure_same_host_node(snapshot, &metadata)?;
-    #[cfg(unix)]
-    let ranges = allocated_data_ranges(
-        &file,
-        0,
-        metadata.len(),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let (native, data_ranges) = match prepare_capture_file(
+        file,
+        source_root,
+        host_path,
+        snapshot,
         maximum_extent_spans,
-        &mut meter.clone(),
-    )
-    .map(Some)
-    .map_err(capture_demand_error)?;
-    #[cfg(windows)]
-    let ranges = regular_data_ranges(&file, &metadata, maximum_extent_spans, meter)?;
-    let skip_import = ranges.as_ref().is_some_and(Vec::is_empty);
-    #[cfg(all(test, feature = "memory"))]
-    let skip_import = super::empty_stage_tests::after_ranges(skip_import);
-    if skip_import {
-        let staged = capture_vec(0, meter)?;
-        finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
-        let bytes = ranges.as_ref().map_or(0, vector_bytes);
-        drop(ranges);
-        drop(file);
-        meter.clone().release(bytes).map_err(capture_demand_error)?;
-        return Ok(staged);
-    }
-    let native = native_positional_file(file, meter)?;
+        meter,
+    )? {
+        Some(prepared) => prepared,
+        None => return Ok(Vec::new()),
+    };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let ranges = Some(data_ranges);
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let (native, metadata, ranges) = {
+        let metadata = source_root
+            .stat_file_metadata(&file, &mut meter.clone())
+            .map_err(capture_demand_error)?;
+        if metadata.file_type() != crate::demand::SourceNodeKind::RegularFile {
+            return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
+        }
+        ensure_same_host_node(snapshot, &metadata)?;
+        #[cfg(unix)]
+        let ranges = allocated_data_ranges(
+            &file,
+            0,
+            metadata.len(),
+            maximum_extent_spans,
+            &mut meter.clone(),
+        )
+        .map(Some)
+        .map_err(capture_demand_error)?;
+        #[cfg(windows)]
+        let ranges = regular_data_ranges(&file, &metadata, maximum_extent_spans, meter)?;
+        let skip_import = ranges.as_ref().is_some_and(Vec::is_empty);
+        #[cfg(all(test, feature = "memory"))]
+        let skip_import = super::empty_stage_tests::after_ranges(skip_import);
+        if skip_import {
+            let staged = capture_vec(0, meter)?;
+            finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
+            let bytes = ranges.as_ref().map_or(0, vector_bytes);
+            drop(ranges);
+            drop(file);
+            meter.clone().release(bytes).map_err(capture_demand_error)?;
+            return Ok(staged);
+        }
+        let native = native_positional_file(file, meter)?;
+        (native, metadata, ranges)
+    };
     #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
     let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
@@ -70,7 +88,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     };
     let full = [HostDataRange {
         offset: 0,
-        length: metadata.len(),
+        length: snapshot.len(),
     }];
     let data_ranges = ranges.as_deref().unwrap_or(&full);
     let mut staged = capture_vec(data_ranges.len(), meter)?;
@@ -108,6 +126,58 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     Ok(staged)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn prepare_capture_file(
+    file: std::fs::File,
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    maximum_extent_spans: u32,
+    original: &NativeMaterializationWork,
+) -> Result<Option<(acyclic_native_runtime::NativeFile, Vec<HostDataRange>)>, CaptureError> {
+    let mut empty_bytes = 0;
+    let result = acyclic_native_runtime::NativeFile::from_file_with_metadata(
+        file,
+        Some(acyclic_native_runtime::NativeFileMeter::Owned(
+            original.runtime_meter(),
+        )),
+        |file, metadata| {
+            let observed = HostStat::from_std_metadata(metadata)?;
+            if observed.file_type() != crate::demand::SourceNodeKind::RegularFile {
+                return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
+            }
+            ensure_same_host_node(snapshot, &observed)?;
+            let ranges = allocated_data_ranges(
+                file,
+                0,
+                observed.len(),
+                maximum_extent_spans,
+                &mut original.clone(),
+            )
+            .map_err(capture_demand_error)?;
+            let skip_import = ranges.is_empty();
+            #[cfg(all(test, feature = "memory"))]
+            let skip_import = super::empty_stage_tests::after_ranges(skip_import);
+            if skip_import {
+                let _staged = capture_vec::<(HostDataRange, StagedContent)>(0, original)?;
+                finish_regular_capture(source_root, host_path, snapshot, file, original)?;
+                empty_bytes = vector_bytes(&ranges);
+                drop(ranges);
+                return Ok(None);
+            }
+            Ok(Some(ranges))
+        },
+        |error| capture_native_file_error(original, error),
+    )?;
+    if result.is_none() {
+        original
+            .clone()
+            .release(empty_bytes)
+            .map_err(capture_demand_error)?;
+    }
+    Ok(result)
+}
+
 pub(super) fn finish_regular_capture(
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
@@ -131,6 +201,7 @@ pub(super) fn finish_regular_capture(
     meter.clone().check().map_err(capture_demand_error)
 }
 
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 #[allow(
     unsafe_code,
     reason = "the measured host opener transfers its fresh positional handle"
@@ -156,13 +227,20 @@ pub(super) fn native_positional_file(
     result.map_err(|(error, file)| {
         // This is an ordinary std file, not an explicit SDK close operation. Retire its physical handle before projecting the original failure.
         drop(file);
-        capture_demand_error(
-            original
-                .state
-                .take_native_io_failure()
-                .unwrap_or_else(|| native_demand_error(error)),
-        )
+        capture_native_file_error(original, error)
     })
+}
+
+fn capture_native_file_error(
+    original: &NativeMaterializationWork,
+    error: std::io::Error,
+) -> CaptureError {
+    capture_demand_error(
+        original
+            .state
+            .take_native_io_failure()
+            .unwrap_or_else(|| native_demand_error(error)),
+    )
 }
 
 impl<F: std::borrow::Borrow<acyclic_native_runtime::NativeFile>> crate::kernel::AsyncBlobSource

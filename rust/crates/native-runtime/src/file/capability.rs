@@ -25,6 +25,79 @@ impl NativeFile {
         file: File,
         accounting: Option<NativeFileMeter<'_>>,
     ) -> Result<Self, (io::Error, File)> {
+        Self::import(file, accounting, |file, meter| {
+            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+            {
+                shared_file_health(file, meter)
+            }
+            #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+            {
+                meter
+                    .map_or(Ok(()), |meter| {
+                        meter.allocate(std::mem::size_of::<FileHealth>() as u64)
+                    })
+                    .map(|()| Arc::new(FileHealth::default()))
+            }
+        })
+    }
+
+    /// Queries held metadata, inspects it, and imports only a retained result.
+    /// The file closes before runtime errors are passed to `project_error`.
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    pub fn from_file_with_metadata<T, E>(
+        file: File,
+        accounting: Option<NativeFileMeter<'_>>,
+        inspect: impl FnOnce(&File, &std::fs::Metadata) -> Result<Option<T>, E>,
+        project_error: impl FnOnce(io::Error) -> E,
+    ) -> Result<Option<(Self, T)>, E> {
+        let meter = match &accounting {
+            Some(NativeFileMeter::Borrowed(meter)) => Some(*meter),
+            Some(NativeFileMeter::Owned(meter)) => Some(meter.as_ref()),
+            None => None,
+        };
+        let metadata = loop {
+            if let Some(meter) = meter {
+                if let Err(error) = meter.admit_read(0) {
+                    drop(file);
+                    return Err(project_error(error));
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                meter.observe_file_query("metadata");
+            }
+            match file.metadata() {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => break result,
+            }
+        };
+        let metadata = match metadata {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                drop(file);
+                return Err(project_error(error));
+            }
+        };
+        let prepared = match inspect(&file, &metadata) {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let result = Self::import(file, accounting, |_, meter| {
+            crate::health::shared_file_health_from_metadata(&metadata, meter)
+        });
+        match result {
+            Ok(native) => Ok(Some((native, prepared))),
+            Err((error, file)) => {
+                drop(file);
+                Err(project_error(error))
+            }
+        }
+    }
+
+    fn import(
+        file: File,
+        accounting: Option<NativeFileMeter<'_>>,
+        make_health: impl FnOnce(&File, Option<&dyn NativeReadMeter>) -> io::Result<Arc<FileHealth>>,
+    ) -> Result<Self, (io::Error, File)> {
         let (borrowed, owner) = match accounting {
             Some(NativeFileMeter::Borrowed(meter)) => (Some(meter), None),
             Some(NativeFileMeter::Owned(meter)) => (None, Some(meter)),
@@ -62,14 +135,7 @@ impl NativeFile {
             file,
             _allocation: allocation,
         });
-        #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-        let health = shared_file_health(&payload, meter);
-        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let health = meter
-            .map_or(Ok(()), |meter| {
-                meter.allocate(std::mem::size_of::<FileHealth>() as u64)
-            })
-            .map(|()| Arc::new(FileHealth::default()));
+        let health = make_health(&payload, meter);
         match health {
             Ok(health) => Ok(Self {
                 file: payload,
