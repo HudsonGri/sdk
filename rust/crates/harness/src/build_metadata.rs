@@ -47,3 +47,9 @@ pub(crate) mod generated {
 pub mod transport {
     include!(concat!(env!("OUT_DIR"), "/grpc/acyclic.harness.v2.rs"));
 }
+
+pub(crate) const MCP_INITIALIZATION: &str = concat!(
+    "{\"capabilities\":{},\"clientInfo\":{\"name\":\"acyclic-harness\",\"version\":\"",
+    env!("CARGO_PKG_VERSION"),
+    "\"},\"protocolVersion\":\"2025-11-25\"}",
+);

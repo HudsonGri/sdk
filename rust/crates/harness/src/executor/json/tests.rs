@@ -598,10 +598,7 @@ mod object_work {
     use proptest::prelude::*;
     mod oracle {
         use crate as acyclic_harness;
-        include!(concat!(
-            crate::build_metadata::MANIFEST_DIR,
-            "/tests/support/bounded_json.rs"
-        ));
+        include!("../../../tests/support/bounded_json.rs");
     }
     proptest! {
         // Object work depends on structural nodes, never on descendant string bytes.
