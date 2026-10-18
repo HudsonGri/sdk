@@ -64,7 +64,13 @@ impl Host {
         let mut cx = PollContext::from_waker(&waker);
         let mut future = std::pin::pin!(future);
         loop {
-            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            // Synchronous physical work retains sources only. Its explicit
+            // async callback must also retain task ownership: submissions can
+            // yield this worker's permit at Pending and run in seeded order.
+            let context = Context::simulation();
+            if let Poll::Ready(output) =
+                CURRENT.sync_scope(context, || future.as_mut().poll(&mut cx))
+            {
                 return output;
             }
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);

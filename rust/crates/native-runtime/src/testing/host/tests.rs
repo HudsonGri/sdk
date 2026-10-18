@@ -46,3 +46,72 @@ proptest::proptest! {
         proptest::prop_assert_eq!(first, exchanges(seed));
     }
 }
+
+fn native_callback(
+    seed: u64,
+    erase_scope: bool,
+) -> (Vec<u8>, Vec<String>, Vec<(u64, &'static str)>) {
+    use crate::{NativeFile, OwnedRead};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source");
+    std::fs::write(&path, b"seed").unwrap();
+    let file = NativeFile::from_file(std::fs::File::open(path).unwrap(), None)
+        .map_err(|(error, _)| error)
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (schedule, mut events) = Schedule::seeded(seed);
+    let bytes = runtime.block_on(async {
+        tokio::time::pause();
+        let mut root = Box::pin(schedule.scope(async {
+            spawn_blocking(move || {
+                let mut bytes = Vec::new();
+                for offset in 0..4 {
+                    let read = file.read_batch_async(vec![OwnedRead { offset, length: 1 }]);
+                    let batch = if erase_scope {
+                        // Erase only callback task ownership, retaining its
+                        // seeded worker, clock, entropy and original device I/O.
+                        blocking_on(CURRENT.scope(None, read))
+                    } else {
+                        blocking_on(read)
+                    }
+                    .unwrap();
+                    bytes.extend_from_slice(&batch[0]);
+                }
+                bytes
+            })
+            .await
+            .unwrap()
+        }));
+        let bytes = loop {
+            tokio::select! {
+                bytes = &mut root => break bytes,
+                event = events.recv() => event.unwrap().release(),
+            }
+        };
+        drop(root);
+        schedule.drained().await;
+        bytes
+    });
+    (bytes, schedule.trace(), schedule.polls())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn original_native_io_in_a_worker_callback_retains_seeded_task_ownership(
+        seed in proptest::prelude::any::<u64>(),
+    ) {
+        let first = native_callback(seed, false);
+        proptest::prop_assert_eq!(&first.0, b"seed");
+        proptest::prop_assert_eq!(&first, &native_callback(seed, false));
+        let owned = |trace: &[String]| trace.iter()
+            .filter(|event| event.as_str() == "native:completion").count() == 4;
+        proptest::prop_assert!(owned(&first.1));
+        let erased = native_callback(seed, true);
+        proptest::prop_assert_eq!(&erased.0, b"seed");
+        proptest::prop_assert!(!owned(&erased.1), "scope-erased callback escaped the ownership oracle");
+    }
+}
