@@ -7,7 +7,7 @@ use acyclic_harness::{
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
 };
-use acyclic_native_runtime::testing::Schedule;
+use acyclic_native_runtime::testing::{DurableWrite, Schedule};
 use std::sync::Arc;
 use std::{collections::BTreeMap, path::Path};
 
@@ -19,6 +19,7 @@ fn storage(error: impl std::fmt::Display) -> Error {
 struct Trace {
     polls: Vec<(u64, &'static str)>,
     boundaries: Vec<(String, String)>,
+    writes: Vec<DurableWrite>,
     requests: Vec<u8>,
     dispatches: Vec<u8>,
     files: Vec<u8>,
@@ -40,6 +41,19 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
             "boundary {index}: {:?} != {:?}",
             left.boundaries.get(index),
             right.boundaries.get(index)
+        ));
+    }
+    if left.writes != right.writes {
+        let index = left
+            .writes
+            .iter()
+            .zip(&right.writes)
+            .position(|(left, right)| left != right)
+            .unwrap_or(left.writes.len().min(right.writes.len()));
+        return Err(format!(
+            "durable operation {index}: {:?} != {:?}",
+            left.writes.get(index),
+            right.writes.get(index)
         ));
     }
     for (name, left, right) in [
@@ -201,6 +215,7 @@ async fn replay(seed: u64, erase_source: bool) -> Result<Trace> {
     Ok(Trace {
         polls: schedule.polls(),
         boundaries,
+        writes: schedule.durable_writes(),
         requests,
         dispatches,
         files,
@@ -222,6 +237,10 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
         assert!(
             !first.boundaries.is_empty(),
             "production boundaries were bypassed"
+        );
+        assert!(
+            first.writes.iter().any(|write| write.requested > 0),
+            "original durable writes were bypassed"
         );
         let different = replay(72, false).await?;
         assert_ne!(
