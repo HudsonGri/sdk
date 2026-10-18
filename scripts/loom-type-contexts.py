@@ -16,16 +16,16 @@ FILESYSTEM = QUERY + " --cfg acyclic_fs_loom"
 HARNESS_FLAGS = FILESYSTEM + " --cfg acyclic_harness_loom"
 
 
-def context(name, selection, flags, prefix, check=False):
-    return name, selection, flags, prefix, check
+def context(name, selection, flags, prefix):
+    return name, selection, flags, prefix
 
 
 CONTEXTS = [
     context("native", ["-p", "acyclic-native-runtime", "--features", "test-support", "--lib"],
             QUERY + " --cfg acyclic_native_runtime_loom", "rust/crates/native-runtime/src/testing/"),
-    context("apple", ["-p", "acyclic-native-runtime", "--features", "test-support", "--lib", "--tests",
+    context("apple", ["-p", "acyclic-native-runtime", "--features", "test-support", "--lib",
                       "--target", "aarch64-apple-darwin"], QUERY + " --cfg acyclic_native_runtime_loom",
-            "rust/crates/native-runtime/src/apple_model.rs", check=True),
+            "rust/crates/native-runtime/src/apple_model.rs"),
     context("session", ["--manifest-path", "rust/crates/stream/models/Cargo.toml", "--test", "session_model"],
             STREAM, "rust/crates/stream/models/"),
     context("publication", ["--manifest-path", "rust/crates/stream/publication-models/Cargo.toml", "--test", "publication"],
@@ -107,7 +107,7 @@ def replay(executable, commands, directory, environment):
     run(arguments, restored, cwd=cwd, stdout=sys.stderr)
 
 
-def analyze(name, selection, flags, models, environment, check=False):
+def analyze(name, selection, flags, models, environment):
     directory = TARGET / ("loom-context-" + name)
     reports, commands = directory / "reports", directory / "commands"
     reports.mkdir(parents=True, exist_ok=True)
@@ -118,8 +118,7 @@ def analyze(name, selection, flags, models, environment, check=False):
     model_file.write_text("\n".join(models) + "\n")
     environment = dict(environment, LOOM_MODEL_ROOT=str(ROOT), LOOM_MODEL_FILES=str(model_file),
                        LOOM_MODEL_REPORTS=str(reports), LOOM_MODEL_REPLAY=str(commands), RUSTFLAGS=flags)
-    action = ["check"] if check else ["test", "--no-run"]
-    process = subprocess.Popen(["cargo", "+" + TOOLCHAIN, *action, "--locked", *selection,
+    process = subprocess.Popen(["cargo", "+" + TOOLCHAIN, "test", "--no-run", "--locked", *selection,
                                 "--message-format=json"],
                                cwd=ROOT, env=environment, stdout=subprocess.PIPE, text=True)
     executables = []
@@ -171,14 +170,14 @@ def main():
     if len(set(models)) != len(models):
         raise ValueError("duplicate model paths")
     for model in models:
-        if sum(model.startswith(prefix) for _, _, _, prefix, _ in CONTEXTS) > 1:
+        if sum(model.startswith(prefix) for _, _, _, prefix in CONTEXTS) > 1:
             raise ValueError("ambiguous compilation context: " + model)
     environment = compiler()
     result = {}
-    for name, selection, flags, prefix, check in CONTEXTS:
+    for name, selection, flags, prefix in CONTEXTS:
         selected = [path for path in models if path.startswith(prefix)]
         if selected:
-            result.update(analyze(name, selection, flags, selected, environment, check))
+            result.update(analyze(name, selection, flags, selected, environment))
             print(name + ": " + str(len(selected)) + " model sources analyzed", file=sys.stderr, flush=True)
             for model in selected:
                 if result[model].startswith("!"):
