@@ -1,5 +1,5 @@
 #![no_main]
-use acyclic_harness::tui::TranscriptAnchor;
+use acyclic_harness_tui::TranscriptAnchor;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
