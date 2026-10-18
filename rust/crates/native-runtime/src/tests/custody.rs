@@ -513,8 +513,10 @@ fn fenced_ownership_cleans_up_before_releasing_the_fence() {
         }
     }
     let cleaned = Arc::new(AtomicBool::new(false));
-    let owner = OwnershipAnchor::fenced(Cleanup(cleaned.clone()), Fence(cleaned.clone()));
+    let owner = OwnershipAnchor::new(Cleanup(cleaned.clone()));
+    // A store may have retained the root before the filesystem registers its fence.
     let retained = owner.clone();
+    let owner = OwnershipAnchor::fenced(owner, Fence(cleaned.clone()));
     drop(owner);
     assert!(!cleaned.load(Ordering::SeqCst));
     drop(retained);

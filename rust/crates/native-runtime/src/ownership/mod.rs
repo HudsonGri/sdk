@@ -2,8 +2,8 @@ use crate::*;
 
 /// Shared lifetime token for native resources that must not outlive an external owner.
 pub struct OwnershipAnchor {
-    pub(crate) _owner: Arc<dyn Send + Sync>,
-    pub(crate) release: OwnershipReleaseBarrier,
+    _owner: Arc<dyn RetainFence>,
+    release: OwnershipReleaseBarrier,
 }
 
 impl Clone for OwnershipAnchor {
@@ -27,25 +27,51 @@ impl Drop for OwnershipReleaseBarrier {
     }
 }
 
-// Field drop order is the synchronization boundary: cleanup completes before
-// the sole reopen fence is released. No other locks may be acquired by cleanup.
-struct FencedOwner<Owner, Fence> {
+// Field order is the boundary: final shared-owner cleanup precedes every fence.
+// Lock order: reopen fence -> `fences`; retain never acquires a reopen lock.
+// Final cleanup drops the fence list without locking it.
+struct SharedOwner<Owner, Fence> {
     _owner: Owner,
-    _fence: Fence,
+    fences: crate::sync::Mutex<Vec<Fence>>,
+}
+
+impl<Owner, Fence> SharedOwner<Owner, Fence> {
+    fn new(owner: Owner) -> Self {
+        Self {
+            _owner: owner,
+            fences: crate::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn retain(&self, fence: Fence) {
+        self.fences
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(fence);
+    }
+}
+
+trait RetainFence: Send + Sync {
+    fn retain_fence(&self, fence: Box<dyn Send + Sync>);
+}
+
+impl<T: Send + Sync> RetainFence for SharedOwner<T, Box<dyn Send + Sync>> {
+    fn retain_fence(&self, fence: Box<dyn Send + Sync>) {
+        self.retain(fence);
+    }
 }
 
 impl OwnershipAnchor {
-    /// Retains an owner and releases its fence only after owner cleanup completes.
-    pub fn fenced(owner: impl Send + Sync + 'static, fence: impl Send + Sync + 'static) -> Self {
-        Self::new(FencedOwner {
-            _owner: owner,
-            _fence: fence,
-        })
+    /// Retains a fence through cleanup of every clone, including pre-existing clones.
+    pub fn fenced(owner: Self, fence: impl Send + Sync + 'static) -> Self {
+        owner._owner.retain_fence(Box::new(fence));
+        owner
     }
 
     /// Erases and retains one ownership value behind a cloneable lifetime token.
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
-        let owner: Arc<dyn Send + Sync> = Arc::new(owner);
+        let owner: Arc<dyn RetainFence> =
+            Arc::new(SharedOwner::<_, Box<dyn Send + Sync>>::new(owner));
         Self {
             release: OwnershipReleaseBarrier {
                 owner: Arc::downgrade(&owner),
@@ -67,8 +93,8 @@ impl OwnershipAnchor {
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
 pub struct OwnershipReleaseBarrier {
-    pub(crate) owner: Weak<dyn Send + Sync>,
-    pub(crate) released: Arc<(Mutex<()>, Condvar)>,
+    owner: Weak<dyn RetainFence>,
+    released: Arc<(Mutex<()>, Condvar)>,
 }
 
 impl OwnershipReleaseBarrier {
