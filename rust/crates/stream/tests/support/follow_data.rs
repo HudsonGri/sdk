@@ -78,7 +78,7 @@ pub(super) fn check(
                     && after.next > next.saturating_add(1)
                     && actual.is_ok() =>
             {
-                actual = Err(StreamError::Unavailable)
+                actual = Err(StreamError::Unavailable);
             }
             Fault::SkipAll if delivery == SessionDelivery::All as i32 => {
                 if let Some(Item::Record(record)) = &data.item
@@ -89,12 +89,11 @@ pub(super) fn check(
                 }
             }
             Fault::EmptyKey | Fault::WrongMode if after.next > next => {
-                if let Some(Item::LatestValue(value)) = &data.item {
-                    if (fault == Fault::EmptyKey && value.key.is_empty() && delivery == 2)
-                        || (fault == Fault::WrongMode && delivery == 1)
-                    {
-                        actual = Ok(after.next - 1);
-                    }
+                if let Some(Item::LatestValue(value)) = &data.item
+                    && ((fault == Fault::EmptyKey && value.key.is_empty() && delivery == 2)
+                        || (fault == Fault::WrongMode && delivery == 1))
+                {
+                    actual = Ok(after.next - 1);
                 }
             }
             _ => {}

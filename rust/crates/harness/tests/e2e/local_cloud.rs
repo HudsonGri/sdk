@@ -4,7 +4,8 @@
 //! including the subagent family over a loopback Session. On the cloud, the
 //! executor families are compared and the subagent family's refusals pinned.
 use super::{
-    TestResult, execution,
+    TestResult, execution, remote_swarm,
+    resume::{self, Remote},
     scenario::Scenario,
     scenario_data,
     subagents::{self, Refusal, SubagentCase},
@@ -34,14 +35,7 @@ enum Case {
 
 #[derive(serde::Deserialize)]
 struct Endpoints {
-    streams: Endpoint,
-}
-
-#[derive(serde::Deserialize)]
-struct Endpoint {
-    endpoint: String,
-    bearer: String,
-    ca_file: PathBuf,
+    streams: Remote,
 }
 
 /// The scenario data. Cargo names the crate at run time too; a prebuilt test
@@ -124,6 +118,9 @@ async fn compare<A: StreamProvider, B: StreamProvider>(
 /// Session services: the transport a cloud Edge speaks, in process.
 struct Loopback {
     client: Arc<Client>,
+    /// How another process reaches this server.
+    remote: Remote,
+    _ca: tempfile::TempDir,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 
@@ -133,7 +130,7 @@ impl Drop for Loopback {
     }
 }
 
-async fn loopback(provider: Arc<MemoryStream>) -> TestResult<Loopback> {
+async fn loopback<P: StreamProvider + 'static>(provider: Arc<P>) -> TestResult<Loopback> {
     use acyclic_stream::{grpc, session, wire};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
@@ -159,11 +156,17 @@ async fn loopback(provider: Arc<MemoryStream>) -> TestResult<Loopback> {
             )
             .serve_with_incoming(incoming),
     );
-    let client =
-        Client::connect_eager_with_ca_certificate(&endpoint, "loopback", certificate.cert.pem())
-            .await?;
+    let ca = tempfile::tempdir()?;
+    let remote = Remote {
+        endpoint,
+        bearer: "loopback".into(),
+        ca_file: ca.path().join("ca.pem"),
+    };
+    std::fs::write(&remote.ca_file, certificate.cert.pem())?;
     Ok(Loopback {
-        client: Arc::new(client),
+        client: remote.connect().await?,
+        remote,
+        _ca: ca,
         server,
     })
 }
@@ -351,23 +354,7 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD")
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
     let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
-    let streams = endpoints.streams;
-    let remote = Arc::new(
-        Client::connect_eager_with_ca_certificate(
-            &streams.endpoint,
-            &streams.bearer,
-            std::fs::read(&streams.ca_file)?,
-        )
-        .await?,
-    );
-    // The provider contract first: a divergence there names the operation.
-    acyclic_stream::conformance::verify(remote.as_ref()).await?;
-    // Pinned, so this fails once the cloud serves what subagents need; the
-    // subagent family then joins the comparison below.
-    let refused = refusals(remote.clone(), &remote, "probe").await?;
-    if refused != cloud_refusals() {
-        return Err(format!("the cloud's Streams now refuse {refused:?}").into());
-    }
+    let remote = endpoints.streams.connect().await?;
     let cases = scenarios()?;
     let executor_cases: Vec<_> = cases
         .iter()
@@ -376,19 +363,156 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     if executor_cases.is_empty() {
         return Err("no executor scenarios discovered".into());
     }
-    // Each case has its own journal identities, so the cases run concurrently.
-    futures::future::try_join_all(executor_cases.iter().map(|(path, case)| {
-        let relative = path.strip_prefix(root()).unwrap_or(path).to_owned();
-        let remote = remote.clone();
-        async move {
-            let memory = Arc::new(MemoryStream::default());
-            compare(&relative, case, memory, remote, "subagents").await
-        }
-    }))
+    // Catalog pagination fences the whole account's hierarchy generation, so
+    // conformance needs a stable catalog before the other phases create streams.
+    timed("Streams conformance", async {
+        acyclic_stream::conformance::verify(remote.as_ref()).await?;
+        TestResult::Ok(())
+    })
     .await?;
+    // The remaining phases use disjoint paths and journal identities. Join all
+    // results before returning so a failure cannot cancel a child mid-cleanup.
+    let probes = timed(
+        "Session refusals",
+        refusals(remote.clone(), &remote, "probe"),
+    );
+    let compared = timed("executor scenarios", async {
+        futures::future::try_join_all(executor_cases.iter().map(|(path, case)| {
+            let relative = path.strip_prefix(root()).unwrap_or(path).to_owned();
+            let remote = remote.clone();
+            async move {
+                let memory = Arc::new(MemoryStream::default());
+                compare(&relative, case, memory, remote, "subagents").await
+            }
+        }))
+        .await?;
+        TestResult::Ok(())
+    });
+    let resumed = timed("kill, resume and completed reopen", async {
+        let loopback = loopback(Arc::new(MemoryStream::default())).await?;
+        let (cloud, local, unjournaled) = futures::join!(
+            resume::kill_and_resume(&endpoints.streams, remote.clone()),
+            resume::kill_and_resume(&loopback.remote, loopback.client.clone()),
+            resume::resume_unjournaled(remote.clone()),
+        );
+        let (cloud, local) = (cloud?, local?);
+        unjournaled?;
+        if cloud != local {
+            return Err(format!(
+                "resumed journals differ: {cloud:?} on the cloud, {local:?} on loopback"
+            )
+            .into());
+        }
+        TestResult::Ok(())
+    });
+    let (refused, compared, resumed) = futures::join!(probes, compared, resumed);
+    let refused = refused?;
+    compared?;
+    resumed?;
+    if refused != cloud_refusals() {
+        return Err(format!("the cloud's Streams now refuse {refused:?}").into());
+    }
+    // A native SwarmClient on the cloud's Session is refused at discovery,
+    // with the pinned cause.
+    let swarm = remote_swarm::refused(remote.clone(), &remote.session_client()?, "swarm").await?;
+    if swarm.to_string() != swarm_refusal().to_string() {
+        return Err(format!("the cloud refused the swarm client with {swarm}").into());
+    }
     println!(
-        "local cloud: Stream conformance passed; {} executor scenarios matched; the subagent family is refused: {refused:?}",
+        "local cloud: Stream conformance passed; {} executor scenarios matched; a killed turn resumed from the cloud journal; the swarm client is refused ({swarm}); the subagent family is refused: {refused:?}",
         executor_cases.len()
     );
+    Ok(())
+}
+
+async fn timed<T>(
+    phase: &str,
+    run: impl std::future::Future<Output = TestResult<T>>,
+) -> TestResult<T> {
+    let started = std::time::Instant::now();
+    let result = run.await;
+    eprintln!(
+        "local cloud phase {phase}: {:.3}s",
+        started.elapsed().as_secs_f64()
+    );
+    result.map_err(|error| format!("{phase}: {error}").into())
+}
+
+#[tokio::test]
+async fn killed_turn_resumes_from_a_loopback_journal() -> TestResult {
+    let loopback = loopback(Arc::new(MemoryStream::default())).await?;
+    resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
+    // Negative control: without a journaled prefix there is nothing to resume.
+    resume::resume_unjournaled(loopback.client.clone()).await
+}
+
+/// How a harness SwarmClient reports the cloud's refusal of its live children
+/// discovery: the harness carries a Streams cause as `Error::Storage` text.
+fn swarm_refusal() -> acyclic_harness::Error {
+    StreamError::Unsupported.into()
+}
+
+#[tokio::test]
+async fn native_swarm_client_follows_a_loopback_session_and_detects_divergence() -> TestResult {
+    let reply = "Plan the work.";
+    let memory = Arc::new(MemoryStream::default());
+    let executor = Arc::new(acyclic_stream::session::runtime::PlatformExecutor);
+    let in_process = acyclic_stream::session::Client::in_process(memory.clone(), executor);
+    let left = remote_swarm::follow(memory, &in_process, "swarm", reply).await?;
+    let shared = loopback(Arc::new(MemoryStream::default())).await?;
+    let session = shared.client.session_client()?;
+    let right = remote_swarm::follow(shared.client.clone(), &session, "swarm", reply).await?;
+    if left != right {
+        return Err(format!(
+            "swarm views differ
+in process: {left}
+loopback: {right}"
+        )
+        .into());
+    }
+    // Negative controls: a different reply changes the views; agents
+    // publishing each other's reply and status, or a re-split reply, fail
+    // the oracle.
+    let changed = remote_swarm::follow(shared.client.clone(), &session, "other", "Do it.").await?;
+    if changed == right {
+        return Err("the swarm views ignore the reply".into());
+    }
+    let swapped = |id: usize| usize::from(id == 0);
+    let crossed = remote_swarm::follow_publishing(
+        shared.client.clone(),
+        &session,
+        "crossed",
+        reply,
+        (swapped, None),
+    )
+    .await;
+    if crossed.is_ok() {
+        return Err("agents publishing each other's payloads passed".into());
+    }
+    // The same reply delivered as two chunks is a different view.
+    let resplit = remote_swarm::follow_publishing(
+        shared.client.clone(),
+        &session,
+        "resplit",
+        reply,
+        (|id| id, Some(10)),
+    )
+    .await;
+    if resplit.is_ok() {
+        return Err("a re-split reply passed".into());
+    }
+    // A Session refusing discovery as the cloud does matches the pin; one
+    // refusing it for an unrelated cause does not.
+    for (cause, matches) in [
+        (StreamError::Unsupported, true),
+        (StreamError::AccessDenied, false),
+    ] {
+        let refusing = loopback(Arc::new(Refusing(MemoryStream::default(), cause.clone()))).await?;
+        let session = refusing.client.session_client()?;
+        let error = remote_swarm::refused(refusing.client.clone(), &session, "swarm").await?;
+        if (error.to_string() == swarm_refusal().to_string()) != matches {
+            return Err(format!("refusing with {cause:?} failed the swarm with {error}").into());
+        }
+    }
     Ok(())
 }

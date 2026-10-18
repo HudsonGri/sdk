@@ -40,9 +40,7 @@ fn guard(
         && resume.opaque.is_empty()
         && follow.preceding_commit_id.len() == 32
     {
-        Some(Some(
-            follow.preceding_commit_id.as_ref().try_into().unwrap(),
-        ))
+        follow.preceding_commit_id.as_ref().first_chunk::<32>().copied().map(Some)
     } else {
         None
     };

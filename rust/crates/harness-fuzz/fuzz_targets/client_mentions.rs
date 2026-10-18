@@ -21,6 +21,5 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
         &(resolution),
         serde_json::from_slice::<CommandResolution>(&encoded),
     );
-    let actual = resolution.clone().into_model_input();
-    oracle::assert_conversion(&resolution, &actual);
+    oracle::check(&resolution);
 });

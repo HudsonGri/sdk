@@ -69,7 +69,7 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
             acyclic_harness::OperationId::from_bytes([9; 16]),
         )
     }) {
-        let canonical = serde_json::to_string(&request).unwrap();
+        let canonical = acyclic_harness::client::jsonl::request(&request).unwrap();
         let _ = fuzz_support::round_trip(
             &request,
             acyclic_harness::client::parse_local_request(&canonical, operation),
