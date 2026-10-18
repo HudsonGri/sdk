@@ -19,6 +19,8 @@ pub use durability::{
 };
 mod host;
 pub use host::blocking_on;
+mod process;
+pub use process::{ProcessCapture, capture_process};
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(test)]
@@ -59,6 +61,7 @@ struct State {
     ready_reads: usize,
     wall: Option<clock::Wall>,
     writes: durability::Writes,
+    process: Option<Arc<process::Provider>>,
 }
 
 struct Inner {

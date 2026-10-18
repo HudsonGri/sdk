@@ -13,6 +13,7 @@ use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod driver;
 mod manifest;
+mod process;
 mod recovery;
 
 // Keep each simulator layer independent of the production future's layout.
@@ -124,12 +125,22 @@ fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
             let kind = entry.file_type().map_err(storage)?;
             if kind.is_dir() {
                 pending.push(path);
-            } else if kind.is_file() {
+            } else if kind.is_file() || kind.is_symlink() {
                 let name = path.strip_prefix(directory).map_err(storage)?;
                 let name = name
                     .to_str()
                     .ok_or_else(|| Error::Invalid("non-UTF-8 durable path".into()))?;
-                files.insert(name.to_owned(), std::fs::read(&path).map_err(storage)?);
+                let bytes = if kind.is_symlink() {
+                    let target = std::fs::read_link(&path).map_err(storage)?;
+                    target
+                        .to_str()
+                        .ok_or_else(|| Error::Invalid("non-UTF-8 durable link".into()))?
+                        .as_bytes()
+                        .to_vec()
+                } else {
+                    std::fs::read(&path).map_err(storage)?
+                };
+                files.insert(name.to_owned(), (kind.is_symlink(), bytes));
             } else {
                 return Err(Error::Invalid("unexpected durable entry".into()));
             }
