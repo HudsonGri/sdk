@@ -269,7 +269,11 @@ async fn exercise(parent_fails: bool) -> Result<()> {
             futures::future::Either::Left((result, _)) => {
                 panic!("the controller finished before the client released the sibling: {result:?}")
             }
-            futures::future::Either::Right((child, run)) => (run.await, child?),
+            // A client error can precede the release the controller waits on.
+            futures::future::Either::Right((child, run)) => {
+                let child = child?;
+                (run.await, child)
+            }
         };
     assert!(result.is_err());
     let snapshot = files
