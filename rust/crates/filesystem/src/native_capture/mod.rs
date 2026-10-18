@@ -56,6 +56,8 @@ mod transaction;
 use transaction::*;
 mod stage;
 use stage::*;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos"), feature = "memory"))]
+mod import_tests;
 #[cfg(all(test, target_os = "linux", feature = "memory"))]
 mod stat_probe_tests;
 #[cfg(all(test, any(target_os = "linux", windows), feature = "memory"))]

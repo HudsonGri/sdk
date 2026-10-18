@@ -93,12 +93,12 @@ const RESCAN_CALLS: &[&str] = &[
     "statx",
     "getdents64",
     "openat",
-    "statx",
+    "metadata",
     "statx",
     "statx",
     "openat",
     "openat",
-    "statx",
+    "metadata",
     "statx",
     "openat",
     "statx",
@@ -322,11 +322,11 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                     assert_eq!(minimal_rescan(before_heap, &old_trace, fallback), fallback);
                     assert_eq!(
                         old_trace.iter().filter(|event| **event == "handle").count(),
-                        if fallback { 0 } else { 10 }
+                        if fallback { 0 } else { 8 }
                     );
                     assert_eq!(
                         after.work["backendReadOperations"],
-                        if fallback { 52 } else { 42 }
+                        if fallback { 49 } else { 41 }
                     );
                 } else if !cancelled {
                     assert_eq!(after_heap.count_total, if limit == 0 { 11 } else { 15 });

@@ -315,9 +315,9 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 let result = result.unwrap().map_err(|error| format!("{error:?}"));
                 let extra = u64::from(sparse);
                 let needed = match edit {
-                    1 | 2 => 3 + extra + 2 * fallback_reads,
-                    3 => 2 + extra + fallback_reads,
-                    _ => 4 + extra + 3 * fallback_reads,
+                    1 | 2 => 3 + extra + fallback_reads,
+                    3 => 2 + extra,
+                    _ => 4 + extra + 2 * fallback_reads,
                 };
                 let success = !cancelled && edit == 0 && limit >= needed;
                 prop_assert_eq!(result.is_ok(), success);
@@ -326,7 +326,7 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 }
                 prop_assert_eq!(staged_bytes, 17);
                 let path_check =
-                    !cancelled && limit >= 3 + extra + 2 * fallback_reads && matches!(edit, 0 | 4);
+                    !cancelled && limit >= 3 + extra + fallback_reads && matches!(edit, 0 | 4);
                 let strings = if cancelled {
                     0
                 } else {
@@ -346,19 +346,20 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 prop_assert_eq!(work.live_allocation_bytes(), live);
                 let oracle = |old| {
                     let mut bits = 1;
-                    for (start, eligible) in [
-                        (2, !cancelled),
-                        (3 + extra + fallback_reads, !cancelled && edit != 3),
+                    for (initial, start, eligible) in [
+                        (true, 2, !cancelled),
+                        (false, 3 + extra, !cancelled && edit != 3),
                         (
-                            4 + extra + 2 * fallback_reads,
+                            false,
+                            4 + extra + fallback_reads,
                             !cancelled && matches!(edit, 0 | 4),
                         ),
                     ] {
                         if eligible && limit >= start {
                             bits *= 2;
-                            if fallback && limit > start {
+                            if !initial && fallback && limit > start {
                                 bits *= 2;
-                            } else if !fallback && old {
+                            } else if !initial && !fallback && old {
                                 bits = bits * 2 + 1;
                             }
                         }
@@ -380,7 +381,7 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 let minimal = |trace, count| trace == oracle(false) && count == expected_heap;
                 prop_assert_eq!(
                     minimal(trace, heap.count_total),
-                    !(old && !fallback && !cancelled && limit >= 2)
+                    !(old && !fallback && !cancelled && edit != 3 && limit >= 3 + extra)
                 );
                 outcomes.push((result, expected));
                 drop(scope);
