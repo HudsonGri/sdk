@@ -205,17 +205,25 @@ async fn run_publishing<P: StreamProvider>(
                 .cut(&Query::Root)
                 .await
                 .map_err(at(format!("cut a{id:05}")))?;
-            let follow = volume
-                .follow(Query::Root, cut)
-                .await
-                .map_err(at(format!("follow a{id:05}")))?;
             let head = volume.head().await.map_err(at("initial head"))?;
-            TestResult::Ok((follow, head))
+            TestResult::Ok((cut, head))
         }))
         .await
         .into_iter()
         .collect::<TestResult<Vec<_>>>()?;
-    let (mut follows, mut heads): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+    let (cuts, mut heads): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+    // Interest admission is acknowledged one route at a time. Parallelize the
+    // independent reads and writes, without bursting the shared Session's
+    // bounded admission queue.
+    let mut follows = Vec::with_capacity(case.agents);
+    for (id, (volume, cut)) in volumes.iter().zip(cuts).enumerate() {
+        follows.push(
+            volume
+                .follow(Query::Root, cut)
+                .await
+                .map_err(at(format!("follow a{id:05}")))?,
+        );
+    }
     // Keep chunk order within each agent and interleave complete rounds across
     // agents, without serializing unrelated remote transactions.
     for (sequence, text) in case.chunks.iter().enumerate() {
