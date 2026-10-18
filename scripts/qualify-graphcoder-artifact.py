@@ -20,6 +20,12 @@ for line in sys.stdin:
 if executable is None:
     sys.exit("Cargo did not produce a test executable")
 
+if sys.argv[1:2] == ["--runner"]:
+    if len(sys.argv) != 3:
+        sys.exit("Qualification requires exactly one artifact runner")
+    subprocess.run([sys.executable, sys.argv[2], executable], check=True)
+    sys.exit(0)
+
 listed = subprocess.check_output([executable, "--list"], text=True)
 tests = [line.removesuffix(": test") for line in listed.splitlines()
          if line.endswith(": test")]
