@@ -70,6 +70,8 @@ impl StockExecution<'_> {
         if error.is_native_failure() {
             return Err(error);
         }
+        #[cfg(test)]
+        tracing::error!(%operation_id, call_id, ?reason, ?error, "admitted tool rejected");
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
