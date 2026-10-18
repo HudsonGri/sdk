@@ -7,9 +7,9 @@ use acyclic_auth::verify::verify;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     let trust = trust::Snapshot::default();
-    if let Some(capability) = fuzz_input.parse_with((&trust, trust::NOW), |bytes, (trust, now)| {
-        verify(bytes, trust, now)
-    }) {
+    if let Some(capability) =
+        fuzz_input.parse(|bytes| verify(bytes, &trust::Snapshot::default(), trust::NOW))
+    {
         let encoded = capability.encode();
         assert_eq!(encoded.as_slice(), bytes);
         let decoded = fuzz_support::must_decode(verify(&encoded, &trust, trust::NOW));

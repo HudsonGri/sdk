@@ -128,20 +128,25 @@ export function fuzzOracleViolations(file, source) {
   }
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].text === 'fuzz_input' && tokens[i + 1]?.text === '.'
-      && ['parse', 'parse_with', 'parse_text', 'parse_text_with', 'parse_lossy_with', 'optional', 'optional_with', 'optional_text'].includes(tokens[i + 2]?.text)
+      && ['parse', 'parse_bounded', 'parse_text', 'parse_text_bounded', 'parse_lossy', 'optional', 'optional_view', 'optional_text'].includes(tokens[i + 2]?.text)
       && tokens[i + 3]?.text === '(') helpers.push([i + 3, tokens[i + 3].end]);
   }
   const inHelper = index => helpers.some(([start, end]) => start < index && index < end);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (['parse_with', 'parse_text_with', 'parse_lossy_with', 'optional_with'].includes(token.text)
+      && tokens[i - 1]?.text === '.') report(token, 'raw parser configuration cannot carry generated buffers');
     const protectedCrates = ['std', 'core', 'acyclic_fuzz_support', 'acyclic_harness', 'acyclic_stream', 'acyclic_harness_tui', 'serde', 'serde_json', 'libfuzzer_sys', 'tokio_util', 'bytes'];
     if (token.text === 'mod' && protectedCrates.includes(tokens[i + 1]?.text))
       report(token, 'do not shadow a canonical crate');
     if (token.text === 'as' && protectedCrates.includes(tokens[i + 1]?.text)
       && tokens.slice(i - 2, i).map(t => t.text).join(' ') !== 'use crate')
       report(token, 'do not alias a replacement canonical crate');
-    if (token.text === 'mod' && tokens[i + 1]?.text === 'fuzz_support' && tokens[i + 2]?.text === '{')
-      report(token, 'the oracle module must be the shared source file');
+    if (token.text === 'mod' && tokens[i + 1]?.text === 'fuzz_support')
+      report(token, 'the oracle must be the canonical shared crate');
+    if (token.text === 'as' && tokens[i + 1]?.text === 'fuzz_support'
+      && tokens.slice(i - 2, i).map(t => t.text).join(' ') !== 'use acyclic_fuzz_support')
+      report(token, 'do not alias a replacement oracle crate');
     if (token.text.startsWith('__acyclic_') || token.text === 'test_input') report(token, 'input constructors belong exclusively to the shared entrypoint');
     if (token.text === 'FuzzInput' && tokens[i + 1]?.text === '{') report(token, 'do not manufacture raw-input views');
     if (token.text === 'include' && tokens[i + 1]?.text === '!') report(token, 'includes must be expanded by the runner');

@@ -3,11 +3,9 @@
 pub use acyclic_fuzz_support as fuzz_support;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(members) =
-        fuzz_input.parse_with(("fixture", "0.1.0"), |raw_input, (context0, context1)| {
-            sdk_generation::historical::decode_archive_members(raw_input, context0, context1)
-        })
-    {
+    if let Some(members) = fuzz_input.parse(|raw_input| {
+        sdk_generation::historical::decode_archive_members(raw_input, "fixture", "0.1.0")
+    }) {
         for path in members.keys() {
             assert!(!path.is_empty());
             assert!(!path.contains(['\\', ':']));

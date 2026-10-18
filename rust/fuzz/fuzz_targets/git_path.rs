@@ -37,9 +37,9 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         );
         let _ = fuzz_support::round_trip(&paths, acyclic_fs::native_mount_control_paths(&restored));
     }
-    if let Some(parsed) = fuzz_input.parse_text_with((root,), |argument, (root,)| {
-        path::workspace_path_argument(root, argument)
-    }) {
+    if let Some(parsed) = fuzz_input
+        .parse_text(|argument| path::workspace_path_argument(Path::new("/workspace"), argument))
+    {
         assert!(!parsed.contains('\0'));
         assert!(parsed.starts_with('/'));
         assert!(

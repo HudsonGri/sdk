@@ -104,62 +104,69 @@ impl<'a> FuzzInput<'a> {
         decode(self.bytes)
     }
 
-    /// Interpret arbitrary raw bytes with an optional parser.
-    /// Interpret raw bytes with an optional parser and its configuration.
-    pub fn optional_with<C, T>(
-        self,
-        context: C,
-        decode: fn(&'a [u8], C) -> Option<T>,
-    ) -> Option<T> {
-        decode(self.bytes, context)
+    /// Interpret arbitrary raw subviews without capturing generated buffers.
+    pub fn optional_view<T>(self, decode: fn(Self) -> Option<T>) -> Option<T> {
+        decode(self)
     }
 
-    /// Interpret arbitrary raw bytes with an optional parser.
     /// Interpret valid raw UTF-8 with an optional parser.
     pub fn optional_text<T>(self, decode: fn(&'a str) -> Option<T>) -> Option<T> {
         decode(self.text()?)
     }
 
     /// Admit a successful parse of arbitrary raw bytes.
+    ///
+    /// ```
+    /// use acyclic_fuzz_support::FuzzInput;
+    /// fn admit(input: FuzzInput<'_>) {
+    ///     let _ = input.parse(std::str::from_utf8);
+    /// }
+    /// ```
+    ///
+    /// Generated buffers cannot be captured by a parser function pointer:
+    /// ```compile_fail
+    /// use acyclic_fuzz_support::FuzzInput;
+    /// fn bypass(input: FuzzInput<'_>, generated: Vec<u8>) {
+    ///     let _ = input.parse(|_| std::str::from_utf8(&generated));
+    /// }
+    /// ```
     pub fn parse<T, E>(self, decode: fn(&'a [u8]) -> Result<T, E>) -> Option<T> {
         decode(self.bytes).ok()
     }
 
-    /// Admit a successful parse of arbitrary raw bytes.
-    /// Admit a raw parse with explicit configuration.
-    pub fn parse_with<C, T, E>(
+    /// Admit a raw parse with a numeric resource limit.
+    ///
+    /// ```compile_fail
+    /// use acyclic_fuzz_support::FuzzInput;
+    /// fn bypass(input: FuzzInput<'_>, generated: Vec<u8>) {
+    ///     let _ = input.parse_bounded(&generated, |_, wire| Ok::<_, ()>(wire.len()));
+    /// }
+    /// ```
+    pub fn parse_bounded<T, E>(
         self,
-        context: C,
-        decode: fn(&'a [u8], C) -> Result<T, E>,
+        maximum: u64,
+        decode: fn(&'a [u8], u64) -> Result<T, E>,
     ) -> Option<T> {
-        decode(self.bytes, context).ok()
+        decode(self.bytes, maximum).ok()
     }
 
-    /// Admit a successful parse of arbitrary raw bytes.
     /// Admit a successful parse of raw UTF-8.
     pub fn parse_text<T, E>(self, decode: fn(&'a str) -> Result<T, E>) -> Option<T> {
         decode(self.text()?).ok()
     }
 
-    /// Admit a successful parse of arbitrary raw bytes.
-    /// Interpret lossy raw UTF-8 with explicit configuration.
-    pub fn parse_lossy_with<C, T, E>(
-        self,
-        context: C,
-        decode: fn(&str, C) -> Result<T, E>,
-    ) -> Option<T> {
-        decode(&String::from_utf8_lossy(self.bytes), context).ok()
+    /// Interpret lossy raw UTF-8 without capturing generated buffers.
+    pub fn parse_lossy<T, E>(self, decode: fn(&str) -> Result<T, E>) -> Option<T> {
+        decode(&String::from_utf8_lossy(self.bytes)).ok()
     }
 
-    /// Admit a successful parse of arbitrary raw bytes.
-    /// Admit a successful parse of raw UTF-8.
-    /// Interpret valid raw UTF-8 with explicit configuration.
-    pub fn parse_text_with<C, T, E>(
+    /// Interpret raw UTF-8 with a numeric resource limit.
+    pub fn parse_text_bounded<T, E>(
         self,
-        context: C,
-        decode: fn(&'a str, C) -> Result<T, E>,
+        maximum: u64,
+        decode: fn(&'a str, u64) -> Result<T, E>,
     ) -> Option<T> {
-        decode(self.text()?, context).ok()
+        decode(self.text()?, maximum).ok()
     }
 
     #[doc(hidden)]
@@ -217,9 +224,9 @@ impl<T> ParsedInput<T> {
 
     /// Borrow a byte field from admitted untrusted input.
     /// Borrow a byte field with an explicit field selector.
-    pub fn field_with<C>(&self, context: C, field: fn(&T, C) -> &[u8]) -> FuzzInput<'_> {
+    pub fn field_with(&self, index: usize, field: fn(&T, usize) -> &[u8]) -> FuzzInput<'_> {
         FuzzInput {
-            bytes: field(&self.value, context),
+            bytes: field(&self.value, index),
         }
     }
 

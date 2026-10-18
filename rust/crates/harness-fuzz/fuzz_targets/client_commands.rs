@@ -139,7 +139,7 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
         }
         let _ = machine.transition(&value, &value);
     }
-    if let Some(control) = fuzz_input.parse_with((8192,), |input, (maximum,)| {
+    if let Some(control) = fuzz_input.parse_bounded(8192, |input, maximum| {
         acyclic_harness::client::CommandControl::from_bytes(input, maximum)
     }) {
         let bytes = serde_json::to_vec(&control).unwrap();
@@ -157,7 +157,7 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             serde_json::from_slice::<acyclic_harness::task_volume::Query>(&encoded),
         );
     }
-    if let Some(catalog) = fuzz_input.parse_with((8192,), |input, (maximum,)| {
+    if let Some(catalog) = fuzz_input.parse_bounded(8192, |input, maximum| {
         CommandCatalog::from_bytes(input, maximum)
     }) {
         let specs: Vec<_> = catalog.commands().cloned().collect();

@@ -65,9 +65,7 @@ pub fn check(fuzz_input: fuzz_support::FuzzInput<'_>) -> Result<()> {
         let json = serde_json::to_vec(&file).unwrap();
         let _ = fuzz_support::round_trip(&(file), serde_json::from_slice::<FileValue>(&json));
     }
-    let state = fuzz_input.parse_with((LIMIT,), |data, (limit,)| {
-        GoalState::from_bytes(data, limit)
-    });
+    let state = fuzz_input.parse_bounded(LIMIT, |data, limit| GoalState::from_bytes(data, limit));
     let expected_view = state
         .as_ref()
         .is_some_and(|state| state.markdown.len() + GOAL_METADATA_HEADROOM <= LIMIT as usize);

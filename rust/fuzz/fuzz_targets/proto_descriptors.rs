@@ -8,9 +8,7 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         return;
     }
     if let Some(canonical) = fuzz_input
-        .parse_with((&["sample.proto"],), |raw_input, (context0,)| {
-            acyclic_proto_build::canonicalize(raw_input, context0)
-        })
+        .parse(|raw_input| acyclic_proto_build::canonicalize(raw_input, &["sample.proto"]))
     {
         let _ = fuzz_support::round_trip(
             &canonical,

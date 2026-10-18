@@ -72,8 +72,17 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             path_bytes,
             ..limits
         };
-        if let Some(manifest) = fuzz_input.parse_with((limits,), |raw_input, (context0,)| {
-            ContextManifest::decode(raw_input, context0)
+        if let Some(manifest) = fuzz_input.parse_bounded(path_bytes, |raw_input, path_bytes| {
+            ContextManifest::decode(
+                raw_input,
+                Limits {
+                    path_bytes,
+                    render_bytes: 4096,
+                    file_bytes: 4096,
+                    context_messages: 16,
+                    ..Default::default()
+                },
+            )
         }) {
             assert!(
                 manifest

@@ -110,7 +110,7 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
             ChildStatus::parse(&serde_json::to_vec(&status).unwrap()),
         );
     }
-    if let Some(request) = fuzz_input.parse_with((65536,), |raw_input, (context0,)| {
+    if let Some(request) = fuzz_input.parse_bounded(65536, |raw_input, context0| {
         ChildRequest::parse(raw_input, context0)
     }) {
         let encoded = request.encode();

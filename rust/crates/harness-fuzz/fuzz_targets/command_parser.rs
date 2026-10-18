@@ -31,8 +31,8 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
             .view(command)
             .unwrap_or_else(|| unreachable!("input command slice"));
         if let Some(input) = fuzz_input.text() {
-            if let Some(Some((name, arguments))) = fuzz_input
-                .parse_text_with((4096,), |input, (maximum,)| syntax::split(input, maximum))
+            if let Some(Some((name, arguments))) =
+                fuzz_input.parse_text_bounded(4096, |input, maximum| syntax::split(input, maximum))
             {
                 let canonical = format!("/{name} {arguments}");
                 let _ = fuzz_support::round_trip(
@@ -41,12 +41,10 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
                 );
                 let _ = parse::validate_name(name);
             }
-            if let Some(resolved) = fuzz_input.parse_text_with(
-                (CommandCatalog::builtins().unwrap(),),
-                |input, (catalog,)| {
-                    futures::executor::block_on(catalog.resolve(input, &NoReads, 4096))
-                },
-            ) {
+            if let Some(resolved) = fuzz_input.parse_text(|input| {
+                let catalog = CommandCatalog::builtins().unwrap();
+                futures::executor::block_on(catalog.resolve(input, &NoReads, 4096))
+            }) {
                 assert!(
                     !input.trim_start().starts_with('/')
                         || !matches!(&resolved, CommandResolution::Prompt { .. })

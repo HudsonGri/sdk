@@ -63,8 +63,11 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
         let _ = fuzz_support::round_trip(&(query), serde_json::from_slice::<Query>(&encoded));
     }
     let operation = acyclic_harness::OperationId::from_bytes([9; 16]);
-    if let Some(request) = fuzz_input.parse_lossy_with((operation,), |text, (operation,)| {
-        acyclic_harness::client::parse_local_request(text, operation)
+    if let Some(request) = fuzz_input.parse_lossy(|text| {
+        acyclic_harness::client::parse_local_request(
+            text,
+            acyclic_harness::OperationId::from_bytes([9; 16]),
+        )
     }) {
         let canonical = serde_json::to_string(&request).unwrap();
         let _ = fuzz_support::round_trip(
