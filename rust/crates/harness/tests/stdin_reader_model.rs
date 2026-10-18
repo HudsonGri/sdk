@@ -14,11 +14,11 @@ mod sync {
 #[path = "../src/client/native_input/reader.rs"]
 mod reader;
 
-#[cfg(windows)]
+#[cfg(all(windows, not(acyclic_harness_loom)))]
 #[path = "../src/client/native_input/stdin_windows.rs"]
 mod stdin;
 
-#[cfg(windows)]
+#[cfg(all(windows, not(acyclic_harness_loom)))]
 mod client {
     mod native_input {
         use crate::stdin;
