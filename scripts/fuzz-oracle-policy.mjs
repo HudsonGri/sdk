@@ -136,7 +136,8 @@ export function fuzzOracleViolations(file, source) {
   const inHelper = index => helpers.some(([start, end]) => start < index && index < end);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
-    if (rawMethods.has(token.text) && tokens[i - 1]?.text === '.' && tokens[i + 1]?.text === '(')
+    if (rawMethods.has(token.text) && !inHelper(i)
+      && tokens[i - 1]?.text === '.' && tokens[i + 1]?.text === '(')
       report(token, 'raw admission must name fuzz_support::FuzzInput explicitly');
     if (['parse_with', 'parse_text_with', 'parse_lossy_with', 'optional_with'].includes(token.text)
       && tokens[i - 1]?.text === '.') report(token, 'raw parser configuration cannot carry generated buffers');
