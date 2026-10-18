@@ -550,7 +550,8 @@ fn batch_reply_receipt_strings_retain_only_their_decoded_length() {
     let reply = decoder.bytes(&response.encode_to_vec()).unwrap();
     assert!(reply.failure.is_none());
     assert_eq!(reply.response.value, response);
-    let Some(wire::put_object_result::Result::Object(info)) = &reply.response.value.results[0].result
+    let Some(wire::put_object_result::Result::Object(info)) =
+        &reply.response.value.results[0].result
     else {
         panic!("receipt")
     };
