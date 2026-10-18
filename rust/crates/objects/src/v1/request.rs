@@ -230,6 +230,39 @@ mod batch_tests {
             .is_err()
         );
     }
+
+    proptest::proptest! {
+        #[test]
+        fn batch_parser_matches_an_independent_order_and_completion_model(
+            count in 1usize..5,
+            actions in proptest::collection::vec((0u8..4, 0u32..6, proptest::prelude::any::<bool>()), 0..24),
+        ) {
+            use wire::{put_objects_chunk::Frame as C, put_objects_request::Frame as F};
+            let mut header = header();
+            header.objects.resize(count, header.objects[0].clone());
+            let mut parser = BatchUploadFraming::new(&header).unwrap();
+            let (mut index, mut complete) = (0usize, false);
+            for (tag, selected, flag) in actions {
+                let frame = match tag {
+                    0 => chunk(selected, C::Body(vec![1; if flag { 65_537 } else { 3 }])),
+                    1 => chunk(selected, C::Complete(flag)),
+                    2 => wire::PutObjectsRequest { frame: Some(F::Complete(flag)) },
+                    _ => wire::PutObjectsRequest::default(),
+                };
+                let expected = !complete && match tag {
+                    0 => (selected as usize) == index && index < count && !flag,
+                    1 => (selected as usize) == index && index < count && flag,
+                    2 => index == count && flag,
+                    _ => false,
+                };
+                proptest::prop_assert_eq!(parser.accept(&frame).is_ok(), expected);
+                if !expected { return Ok(()); }
+                if tag == 1 { index += 1; }
+                if tag == 2 { complete = true; }
+            }
+            proptest::prop_assert_eq!(parser.finish().is_ok(), complete);
+        }
+    }
 }
 
 impl BatchUploadFraming {

@@ -7,6 +7,9 @@ use proptest::test_runner::TestCaseError;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 type Store = LogicalObjectStore<MemoryObjects>;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod grpc_batch;
+
 fn store(maximum: u64) -> Result<Store, ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();

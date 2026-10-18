@@ -1,4 +1,36 @@
 use super::*;
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone)]
+struct Observed {
+    inner: wire::objects_service_server::ObjectsServiceServer<Fixture>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl tonic::server::NamedService for Observed {
+    const NAME: &'static str = "acyclic.objects.v1.ObjectsService";
+}
+
+impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> for Observed {
+    type Response = tonic::codegen::http::Response<tonic::body::Body>;
+    type Error = std::convert::Infallible;
+    type Future =
+        <wire::objects_service_server::ObjectsServiceServer<Fixture> as tonic::codegen::Service<
+            tonic::codegen::http::Request<tonic::body::Body>,
+        >>::Future;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: tonic::codegen::http::Request<tonic::body::Body>) -> Self::Future {
+        self.calls.lock().unwrap().push(request.uri().path().into());
+        tonic::codegen::Service::call(&mut self.inner, request)
+    }
+}
 
 pub(super) async fn put(
     memory: &MemoryObjects,
@@ -215,12 +247,15 @@ async fn grpc_batch_round_trip_is_ordered_bounded_and_uses_one_credential_per_rp
     let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
     let (stop, stopped) = tokio::sync::oneshot::channel();
+    let rpc_calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = rpc_calls.clone();
     let server = tokio::spawn(async move {
         Server::builder()
             .tls_config(ServerTlsConfig::new().identity(identity))?
-            .add_service(wire::objects_service_server::ObjectsServiceServer::new(
-                Fixture(memory),
-            ))
+            .add_service(Observed {
+                inner: wire::objects_service_server::ObjectsServiceServer::new(Fixture(memory)),
+                calls: rpc_calls,
+            })
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = stopped.await;
             })
@@ -290,6 +325,24 @@ async fn grpc_batch_round_trip_is_ordered_bounded_and_uses_one_credential_per_rp
     assert!(client.put_batch(Vec::new()).await.is_empty());
     assert!(client.get_batch(Vec::new()).await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 7);
+    let methods: Vec<_> = observed
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|path| path.rsplit('/').next().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            "PutObjects",
+            "GetObjects",
+            "GetObjects",
+            "GetObjects",
+            "GetObjects",
+            "GetObjects",
+            "PutObjects"
+        ]
+    );
     let _ = stop.send(());
     server.await??;
     Ok(())

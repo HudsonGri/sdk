@@ -553,6 +553,14 @@ abort_multipart(AbortMultipartRequest) -> AbortMultipartResponse, multipart.abor
         bounded(&query)?;
     }, {};
 {
+    fn put_batch_native(
+        &self,
+        requests: super::ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<super::ObjectsNativeFuture<'_, super::ObjectsBatch<super::ObjectsPutReceipt>>, super::NativeObjectsError> {
+        self.put_objects_native(requests, meter)
+    }
+
     async fn put_batch(
         &self,
         requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,

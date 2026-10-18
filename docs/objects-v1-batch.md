@@ -17,3 +17,11 @@ opening an RPC. Retrying a publication batch uses the original per-object
 mutation identities; cancellation can leave earlier items published. Each
 object is atomic independently. A failed item does not change its peers'
 ordered outcomes; malformed transport framing fails the batch.
+
+Native filesystem publication uses `GrpcObjects::put_batch_native` with the
+caller's original meter. One batch write admission funds one RPC. The upload
+keeps the original request guard, and returned receipts and their result vector
+retain allocation custody until destruction. Cancellation is checked while the
+transport polls upload frames; an early reply cannot acknowledge an unfinished
+upload. Complete unique upload chunks transfer their vectors into protobuf
+frames; shared and split chunks retain their contents through bounded copies.
