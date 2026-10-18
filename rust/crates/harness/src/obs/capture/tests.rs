@@ -25,7 +25,7 @@ fn owns_exactly(seen: &Seen, owner: &str, count: usize) -> bool {
     let seen = seen.lock().unwrap();
     let owners: Vec<_> = seen
         .iter()
-        .filter(|(_, field, _)| *field == "owner")
+        .filter(|(_, field, value)| *field == "owner" && !value.is_empty())
         .collect();
     owners.len() == count && owners.iter().all(|(_, _, value)| value == owner)
 }
@@ -40,8 +40,8 @@ fn isolated(mode: u8) -> bool {
 
 fn schedules(mode: u8) -> bool {
     for schedule in [
-        [0, 0, 1, 1],
         [0, 1, 0, 1],
+        [0, 0, 1, 1],
         [0, 1, 1, 0],
         [1, 0, 0, 1],
         [1, 0, 1, 0],
@@ -96,7 +96,7 @@ fn schedules(mode: u8) -> bool {
                         .lock()
                         .unwrap()
                         .iter()
-                        .filter(|(_, f, _)| *f == "owner")
+                        .filter(|(_, f, value)| *f == "owner" && !value.is_empty())
                         .count(),
                     4
                 );

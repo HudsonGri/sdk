@@ -658,10 +658,13 @@ async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn concurrent_stock_turn_span_captures_are_isolated() -> Result<()> {
-    let (first, second) = futures::join!(
-        crate::obs::capture::run(stock_turn_span_capture),
-        crate::obs::capture::run(stock_turn_span_capture),
-    );
+    let turn = || {
+        crate::obs::capture::run(|seen| async move {
+            tokio::task::yield_now().await;
+            stock_turn_span_capture(seen).await
+        })
+    };
+    let (first, second) = futures::join!(turn(), turn());
     first?;
     second
 }
