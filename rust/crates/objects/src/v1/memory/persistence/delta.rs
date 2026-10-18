@@ -9,6 +9,8 @@ pub(super) fn bodies(
         out: &mut Vec<BodyRecord>,
         publication: &mut Publication,
     ) -> Result<(), NativeObjectsError> {
+        #[cfg(test)]
+        work::encoded();
         match body {
             StoredBody::Local {
                 digest,
@@ -180,6 +182,8 @@ pub(super) fn difference(
         ..Default::default()
     };
     bucket_changes(before, next, &mut delta, publication)?;
+    #[cfg(test)]
+    work::restore_encoding(next, publication)?;
     for change in before.uploads.diff(&next.uploads) {
         let (id, upload, old) = match change {
             imbl::ordmap::DiffItem::Add(id, upload) => (id, upload, None),

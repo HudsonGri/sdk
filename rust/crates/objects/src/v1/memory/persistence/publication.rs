@@ -190,6 +190,8 @@ impl Publication {
         body: &StoredBody,
         moves: &crate::body::LocalBodyRelocations,
     ) -> Result<Option<StoredBody>, NativeObjectsError> {
+        #[cfg(test)]
+        work::relocated();
         self.check()?;
         match body {
             StoredBody::Memory(_) => Ok(None),

@@ -221,6 +221,10 @@ fn successor(prefix: &str) -> Option<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn timestamp() -> Result<prost_types::Timestamp, Error> {
+    #[cfg(all(test, feature = "local"))]
+    if let Some(timestamp) = persistence::work::timestamp() {
+        return Ok(timestamp);
+    }
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| Error::from(Unavailable))?;

@@ -74,6 +74,8 @@ mod publication;
 mod replay;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(super) mod work;
 
 use delta::*;
 pub(crate) use opening::open;
