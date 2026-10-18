@@ -13,6 +13,7 @@ PATTERNS = {
     "instant": r"\bInstant\s*(?:::|>\s*::)\s*now\b|\bInstant\s+as\b|=\s*(?:[A-Za-z_]\w*\s*::\s*)*Instant\b",
     "sleep": r"\bsleep(?:_until)?\b",
     "timed-park": r"\b(?:wait_timeout(?:_while)?|park_timeout)\b",
+    "elapsed": r"\.\s*elapsed\b|::\s*elapsed\b",
 }
 MANIFEST = Path(__file__).with_name("dst-wait-allowances.json")
 
@@ -25,6 +26,7 @@ def test_only(path):
 
 def counts(text):
     text = re.sub(r"\b(?:crate|acyclic_native_runtime)\s*::\s*deadline\s*::\s*sleep\b", "virtual_park", text)
+    text = re.sub(r"\b(?:crate|acyclic_native_runtime)\s*::\s*deadline\s*::\s*elapsed\b", "virtual_elapsed", text)
     return {kind: len(re.findall(pattern, text))
             for kind, pattern in PATTERNS.items() if re.search(pattern, text)}
 
@@ -67,6 +69,11 @@ def controls(files, allowed):
                        "let wait = Condvar::wait_timeout;",
                        "cv.wait_timeout_while(guard, duration, predicate)",
                        "std::thread::park_timeout(delay)"],
+        "elapsed": ["started.elapsed()", "started . elapsed ()",
+                    "Instant::elapsed(&started)", "let read = Instant::elapsed;",
+                    "std::time::Instant::elapsed(&started)",
+                    "<std::time::Instant>::elapsed(&started)",
+                    "let read = Tick::elapsed;"],
     }
     assert set(plants) == set(PATTERNS)
     for kind, forms in plants.items():

@@ -66,7 +66,7 @@ impl Shared {
         if self.delivery.original.is_some() && !self.delivery.is_exact() {
             return Ok(false);
         }
-        let started = std::time::Instant::now();
+        let started = acyclic_native_runtime::deadline::now();
         let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
         if self.stopping.load(Ordering::Acquire) {
             return Ok(false);
@@ -75,13 +75,13 @@ impl Shared {
         let result = (|| {
             loop {
                 work.check()?;
-                if started.elapsed() >= timeout {
+                if acyclic_native_runtime::deadline::elapsed(started) >= timeout {
                     self.delivery.invalidate(work)?;
                     return Ok(false);
                 }
                 while let Some(path) = reading.cleanup.last().filter(|_| reading.alias_cursor == 0)
                 {
-                    if started.elapsed() >= timeout {
+                    if acyclic_native_runtime::deadline::elapsed(started) >= timeout {
                         self.delivery.invalidate(work)?;
                         return Ok(false);
                     }
@@ -240,7 +240,7 @@ impl Shared {
                         })
                     != 0;
                 loop {
-                    if started.elapsed() >= timeout {
+                    if acyclic_native_runtime::deadline::elapsed(started) >= timeout {
                         self.delivery.invalidate(work)?;
                         return Ok(false);
                     }

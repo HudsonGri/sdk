@@ -32,6 +32,7 @@ struct Worker {
 }
 struct State {
     now: Instant,
+    host_after: Option<usize>,
     next: u64,
     actors: BTreeMap<u64, Entry>,
     advances: Vec<Duration>,
@@ -73,6 +74,7 @@ impl Clock {
             origin,
             state: Mutex::new(State {
                 now: origin,
+                host_after: None,
                 next: 0,
                 actors: BTreeMap::new(),
                 advances: Vec::new(),
@@ -115,11 +117,28 @@ impl Clock {
     }
     /// Monotonic value without a host clock read.
     pub fn now(&self) -> Instant {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(reads) = &mut state.host_after {
+            if *reads == 0 {
+                drop(state);
+                return Instant::now();
+            }
+            *reads -= 1;
+        }
+        state.now
+    }
+    /// Negative control: restore host reads after creating a virtual deadline.
+    #[doc(hidden)]
+    pub fn restore_host_clock_after(&self, reads: usize) {
         self.0
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .now
+            .host_after = Some(reads);
     }
     /// Time elapsed since this simulation's monotonic origin.
     pub fn elapsed(&self) -> Duration {

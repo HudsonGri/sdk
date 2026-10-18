@@ -22,7 +22,7 @@ RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg acyclic_native_runtime_loom" \
   compile "$artifacts/model" cargo test --locked -p acyclic-native-runtime --features test-support --lib --no-run --message-format=json
 run_timed python3 scripts/qualify-graphcoder-artifact.py deadline:: testing::queue_model::physical_completion testing::queue_model::broken_terminal < "$artifacts/model"
 compile "$artifacts/filesystem" cargo test --locked -p acyclic-fs --features test-support --lib --no-run --message-format=json
-run_timed python3 scripts/qualify-graphcoder-artifact.py core_state::tests::nodes::held_record_lock core_state::tests::nodes::record_lock_retry watch::deadline_tests:: watch::tests::fence_queues_every_completed_write watch::tests::live_native_backend_fences < "$artifacts/filesystem"
+run_timed python3 scripts/qualify-graphcoder-artifact.py core_state::tests::nodes::held_record_lock core_state::tests::nodes::record_lock_retry watch::deadline_tests:: watch::tests::fence_queues_every_completed_write watch::tests::live_native_backend_fences native_mount::projfs::projector::deadline_tests:: native_mount::darwin_mount::tests::deadline:: < "$artifacts/filesystem"
 python3 - "$artifacts/timings" <<'PY'
 from pathlib import Path
 import sys

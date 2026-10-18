@@ -114,6 +114,9 @@ pub mod multi_root;
 mod numeric;
 mod obs;
 pub use numeric::exact_u32_from_f64;
+#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[path = "tests/deadline_support.rs"]
+pub(crate) mod deadline_test_support;
 #[cfg(kani)]
 mod kani_proofs;
 #[cfg(feature = "native-watch")]
