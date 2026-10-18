@@ -119,18 +119,18 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
         })
     };
     let (mut added, mut removed) = (0_usize, 0_usize);
-    let mut entries = before.nested_entries;
+    let (mut entries_added, mut entries_removed) = (0_usize, 0_usize);
     for item in before.buckets.diff(&next.buckets) {
         examined();
         let (old, bucket) = match item {
             imbl::ordmap::DiffItem::Add(_, bucket) => {
                 added = added.checked_add(sum(bucket)?)?;
-                entries = entries.checked_add(bucket.objects.len())?;
+                entries_added = entries_added.checked_add(bucket.objects.len())?;
                 continue;
             }
             imbl::ordmap::DiffItem::Remove(_, bucket) => {
                 removed = removed.checked_add(sum(bucket)?)?;
-                entries = entries.checked_sub(bucket.objects.len())?;
+                entries_removed = entries_removed.checked_add(bucket.objects.len())?;
                 continue;
             }
             imbl::ordmap::DiffItem::Update {
@@ -138,9 +138,8 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
                 new: (_, bucket),
             } => (old, bucket),
         };
-        entries = entries
-            .checked_sub(old.objects.len())?
-            .checked_add(bucket.objects.len())?;
+        entries_removed = entries_removed.checked_add(old.objects.len())?;
+        entries_added = entries_added.checked_add(bucket.objects.len())?;
         for item in old.objects.diff(&bucket.objects) {
             examined();
             let (old, new) = match item {
@@ -155,10 +154,7 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
             removed = removed.checked_add(old)?;
         }
     }
-    next.object_bytes = before
-        .object_bytes
-        .checked_add(added)?
-        .checked_sub(removed)?;
+    let object_bytes = adjusted_total(before.object_bytes, removed, added)?;
     let sum_parts = |upload: &Upload| {
         upload.parts.values().try_fold(0_usize, |total, (_, body)| {
             examined();
@@ -171,12 +167,12 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
         let (old, upload) = match item {
             imbl::ordmap::DiffItem::Add(_, upload) => {
                 added = added.checked_add(sum_parts(upload)?)?;
-                entries = entries.checked_add(upload.parts.len())?;
+                entries_added = entries_added.checked_add(upload.parts.len())?;
                 continue;
             }
             imbl::ordmap::DiffItem::Remove(_, upload) => {
                 removed = removed.checked_add(sum_parts(upload)?)?;
-                entries = entries.checked_sub(upload.parts.len())?;
+                entries_removed = entries_removed.checked_add(upload.parts.len())?;
                 continue;
             }
             imbl::ordmap::DiffItem::Update {
@@ -184,9 +180,8 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
                 new: (_, upload),
             } => (old, upload),
         };
-        entries = entries
-            .checked_sub(old.parts.len())?
-            .checked_add(upload.parts.len())?;
+        entries_removed = entries_removed.checked_add(old.parts.len())?;
+        entries_added = entries_added.checked_add(upload.parts.len())?;
         for item in old.parts.diff(&upload.parts) {
             examined();
             let (old, new) = match item {
@@ -201,16 +196,25 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
             removed = removed.checked_add(old)?;
         }
     }
-    next.upload_bytes = before
-        .upload_bytes
-        .checked_sub(removed)?
-        .checked_add(added)?;
+    let upload_bytes = adjusted_total(before.upload_bytes, removed, added)?;
+    let entries = adjusted_total(before.nested_entries, entries_removed, entries_added)?;
+    let total = object_bytes.checked_add(upload_bytes)?;
+    next.object_bytes = object_bytes;
+    next.upload_bytes = upload_bytes;
     next.nested_entries = entries;
     #[cfg(all(test, not(objects_loom)))]
     if tests::omit_update() {
         next.nested_entries = before.nested_entries;
     }
-    next.object_bytes.checked_add(next.upload_bytes)
+    Some(total)
+}
+
+pub(super) fn adjusted_total(total: usize, removed: usize, added: usize) -> Option<usize> {
+    #[cfg(all(test, not(objects_loom)))]
+    if tests::restore_add_first() {
+        return total.checked_add(added)?.checked_sub(removed);
+    }
+    total.checked_sub(removed)?.checked_add(added)
 }
 
 #[inline]
