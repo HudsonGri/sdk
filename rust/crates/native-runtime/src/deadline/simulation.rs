@@ -45,6 +45,8 @@ struct State {
     queued_is_runnable: bool,
     #[cfg(test)]
     forget_parent_suspend: bool,
+    #[cfg(test)]
+    native_runnable: bool,
 }
 struct Inner {
     origin: Instant,
@@ -84,6 +86,8 @@ impl Clock {
                 queued_is_runnable: false,
                 #[cfg(test)]
                 forget_parent_suspend: false,
+                #[cfg(test)]
+                native_runnable: false,
             }),
         }))
     }
@@ -303,6 +307,8 @@ impl Actor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = state.actors.get_mut(&self.id).expect("live queued actor");
+        entry.blocked = None;
+        entry.generation += 1;
         entry.worker = Some(Worker {
             pool,
             capacity,
@@ -444,10 +450,20 @@ pub(super) fn current_now() -> Option<Instant> {
 }
 pub(crate) fn accept() -> Option<Arc<Actor>> {
     CURRENT.with(|current| {
-        current
-            .borrow()
-            .as_ref()
-            .map(|actor| actor.clock.register())
+        current.borrow().as_ref().map(|owner| {
+            let actor = owner.clock.register();
+            // Constructing a lazy native future does not submit its job. It
+            // may await a file predecessor, or never be polled at all. Queue
+            // admission (or inline execution) publishes its runnable state.
+            #[cfg(test)]
+            let dormant = !owner.clock.0.state.lock().unwrap().native_runnable;
+            #[cfg(not(test))]
+            let dormant = true;
+            if dormant {
+                actor.block(None, None, None);
+            }
+            actor
+        })
     })
 }
 pub(crate) fn inherit_future<F: Future + Send + 'static>(

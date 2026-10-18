@@ -1,5 +1,45 @@
 use super::*;
 
+async fn lazy_native_job(broken: bool) -> std::io::Result<()> {
+    let clock = Clock::new();
+    clock.0.state.lock().unwrap().native_runnable = broken;
+    let unpolled = clock
+        .enter(|| crate::run_blocking_io(|| panic!("an unpolled native job executed"), None))?;
+    let timer = clock.register();
+    timer.block(
+        Some(Deadline::at(clock.now() + Duration::from_secs(3))),
+        None,
+        None,
+    );
+    assert!(
+        clock.advance_if_idle(),
+        "unsubmitted native work prevented a bounded wait expiring"
+    );
+    drop(timer);
+    clock
+        .scope(async {
+            super::super::sleep(Duration::from_secs(2));
+            drop(unpolled);
+        })
+        .await;
+    assert_eq!(
+        clock.advances(),
+        [Duration::from_secs(3), Duration::from_secs(5)]
+    );
+    assert!(clock.0.state.lock().unwrap().actors.is_empty());
+    Ok(())
+}
+#[tokio::test(flavor = "current_thread")]
+async fn unpolled_native_futures_do_not_occupy_a_worker_or_prevent_deadlines() -> std::io::Result<()>
+{
+    lazy_native_job(false).await
+}
+#[tokio::test(flavor = "current_thread")]
+#[should_panic(expected = "unsubmitted native work prevented a bounded wait expiring")]
+async fn counting_unsubmitted_native_work_as_runnable_fails_the_same_oracle() {
+    lazy_native_job(true).await.unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn nested_scoped_futures_park_their_synchronous_parent() {
     let clock = Clock::new();
