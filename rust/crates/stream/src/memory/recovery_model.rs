@@ -354,6 +354,61 @@ pub fn local_failure_lock_order(hold_borrow: bool) {
     crate::local::follow_model::failure_lock_order(hold_borrow);
 }
 
+/// Checks unpolled record/child consumers against fair publication handoff.
+pub fn local_follow_parking(retain_pending: bool, children: bool, memory: bool) {
+    crate::local::parking_model::verify(retain_pending, children, memory);
+}
+
+/// Compares queued admission and cancellation with Tokio's fair lock.
+pub fn lock_parity(negative: bool) {
+    loom::model(move || {
+        if negative {
+            crate::query_sync::parity::negative();
+        } else {
+            crate::query_sync::parity::run();
+        }
+    });
+}
+
+/// Checks direct memory-provider streams against an unpolled state reservation.
+pub fn memory_follow_parking(retain_pending: bool, children: bool, checked: bool) {
+    crate::memory::parking_model::verify(retain_pending, children, checked);
+}
+
+/// Cancels real dispatched snapshot jobs while the writer and consumer race.
+pub fn snapshot_executor_shutdown(
+    discard: bool,
+    children: bool,
+    checked: bool,
+    cancel: bool,
+    polled: bool,
+) {
+    crate::memory::parking_model::shutdown(discard, children, checked, cancel, polled);
+}
+
+/// Every consumer departure from real dispatched snapshot jobs, on the memory
+/// provider state lock and the local publication lock, under one mutant.
+pub fn snapshot_consumer_departures(mutant: &str) {
+    use crate::snapshot::model::{Departure, Mutant};
+    let mutant = match mutant {
+        "none" => Mutant::None,
+        "leak-reservation" => Mutant::LeakReservation,
+        "no-wake" => Mutant::NoWake,
+        "armed-after-completion" => Mutant::ArmedAfterCompletion,
+        other => panic!("unknown mutant {other}"),
+    };
+    for departure in [
+        Departure::Keep,
+        Departure::CancelRacesFirstPoll,
+        Departure::CancelRacesRelease,
+    ] {
+        for children in [false, true] {
+            crate::memory::parking_model::abandon(departure, children, mutant);
+            crate::local::parking_model::abandon(departure, children, mutant);
+        }
+    }
+}
+
 /// Accepted readers and watermark queries must not wait for snapshot device I/O.
 pub fn local_compaction_visibility(hold_publication: bool) {
     crate::local::compaction_model::verify(u8::from(hold_publication));

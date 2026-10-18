@@ -1,9 +1,5 @@
 //! The reducer is exercised through actual volume writes and platform frames.
-#[path = "client_swarm_limits.rs"]
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[path = "../../harness-fuzz/support/swarm_limits.rs"]
 mod limits;
 #[path = "../../harness-fuzz/support/swarm_views.rs"]
 mod oracle;
@@ -43,8 +39,81 @@ fn negative_control_dropping_discovery_is_detected() {
 
 proptest::proptest! {
     #[test]
+    fn swarm_bounds_round_trip_and_reject_unknown_metadata(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..128)) {
+        limits::exercise(&bytes, false);
+    }
+    #[test]
     fn selected_files_and_overview_are_independent_folds(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..128)) {
         oracle::exercise(&bytes, false);
+    }
+}
+
+#[test]
+fn negative_control_omitting_a_swarm_bound_is_rejected() {
+    assert!(std::panic::catch_unwind(|| limits::exercise(b"", true)).is_err());
+}
+
+// Swarm bounds are admitted without any transport feature; every broken
+// relation is rejected by the same rule SwarmClient::new applies.
+#[test]
+fn every_out_of_range_swarm_bound_is_rejected_without_a_transport() {
+    use acyclic_harness::client::{ClientViewLimits, QueryViewLimits, SwarmClientLimits};
+    let limits = SwarmClientLimits {
+        agents: 2,
+        selected: 1,
+        layout_bytes: 1,
+        config_files: 1,
+        snapshot_files: 1,
+    };
+    let views = ClientViewLimits {
+        agents: 2,
+        selected: 1,
+        overview_values: 4,
+        overview_bytes: 512,
+        query: QueryViewLimits {
+            files: 1,
+            segments: 1,
+            bytes: 1,
+        },
+    };
+    limits.validate(&views).expect("valid bounds");
+    // Independent statement of every relation; each case must break exactly
+    // one, so deleting any single check in `validate` fails this test.
+    let violations = |l: &SwarmClientLimits, v: &ClientViewLimits| {
+        [
+            l.agents == 0,
+            l.selected > l.agents,
+            l.layout_bytes == 0,
+            l.config_files == 0,
+            l.snapshot_files == 0,
+            v.agents < l.agents,
+            v.selected < l.selected,
+        ]
+        .into_iter()
+        .filter(|broken| *broken)
+        .count()
+    };
+    assert_eq!(violations(&limits, &views), 0);
+    let broken: [fn(&mut SwarmClientLimits, &mut ClientViewLimits); 7] = [
+        |l, _| {
+            l.agents = 0;
+            l.selected = 0;
+        },
+        |l, v| {
+            l.selected = 3;
+            v.selected = 3;
+        },
+        |l, _| l.layout_bytes = 0,
+        |l, _| l.config_files = 0,
+        |l, _| l.snapshot_files = 0,
+        |_, v| v.agents = 1,
+        |_, v| v.selected = 0,
+    ];
+    for breaking in broken {
+        let (mut l, mut v) = (limits, views);
+        breaking(&mut l, &mut v);
+        assert_eq!(violations(&l, &v), 1, "{l:?} {v:?}");
+        assert!(l.validate(&v).is_err(), "{l:?} {v:?}");
     }
 }
 
@@ -98,5 +167,34 @@ fn dropped_membership_removal_mutant_fails_the_same_source_oracle() {
     assert!(std::panic::catch_unwind(|| membership_codec::query(&[0, 0, 1, 0], true)).is_err());
 }
 
+#[path = "../../harness-fuzz/support/notification_files.rs"]
+mod notification_files;
+proptest::proptest! {
+    #[test]
+    fn notification_schema_round_trips_and_rejects_wrong_owner(
+        event in proptest::num::u8::ANY,
+        sequence in proptest::num::u64::ANY,
+        detail in ".{0,64}",
+        foreign in proptest::bool::ANY,
+        bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..256),
+    ) {
+        let mut record = notification_files::encoded(event, sequence, detail);
+        if foreign { record.task = "foreign".into(); }
+        notification_files::check(&record, false);
+        notification_files::exercise(&bytes);
+    }
+}
+#[test]
+fn notification_parser_control_cannot_drop_valid_records() {
+    assert!(
+        std::panic::catch_unwind(|| notification_files::check(
+            &notification_files::encoded(4, 1, "blocked".into()),
+            true,
+        ))
+        .is_err()
+    );
+    let seed = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/notification-blocked");
+    notification_files::exercise(seed);
+}
 #[path = "client_task_files.rs"]
 mod task_files;
