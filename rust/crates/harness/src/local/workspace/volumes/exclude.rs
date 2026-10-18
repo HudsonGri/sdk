@@ -44,68 +44,59 @@ fn governing(root: &Path) -> std::io::Result<Option<(PathBuf, PathBuf)>> {
     }
 }
 
-/// The anchored pattern for `name` under `relative`, in Git's `/` syntax.
-fn pattern(relative: &Path, name: &str) -> Option<String> {
-    let mut pattern = String::new();
-    for part in relative.components() {
-        let std::path::Component::Normal(part) = part else {
-            return None;
-        };
-        pattern.push('/');
-        pattern.push_str(&glob_literal(part.to_str()?));
-    }
-    pattern.push('/');
-    pattern.push_str(&glob_literal(name));
-    pattern.push('/');
-    Some(pattern)
-}
+mod pattern;
 
-fn glob_literal(name: &str) -> String {
-    let mut literal = String::with_capacity(name.len());
-    for character in name.chars() {
-        if matches!(character, '*' | '?' | '[' | '\\' | '!' | '#') || character.is_whitespace() {
-            literal.push('\\');
-        }
-        literal.push(character);
-    }
-    literal
-}
-
-/// Appends the mount point's pattern once; existing user lines are kept.
-pub(super) fn exclude_mount_point(root: &Path, name: &str) -> std::io::Result<()> {
+pub(super) fn exclude_mount_paths(root: &Path, paths: &[PathBuf]) -> std::io::Result<()> {
     let Some((exclude, relative)) = governing(root)? else {
         return Ok(());
     };
-    let Some(pattern) = pattern(&relative, name) else {
-        return Ok(());
-    };
+    let patterns = paths
+        .iter()
+        .map(|path| {
+            let path = path.strip_prefix(root).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "mount exclusion lies outside the checkout",
+                )
+            })?;
+            pattern::pattern(&relative.join(path))
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
     let existing = match std::fs::read_to_string(&exclude) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
-    if existing.lines().any(|line| line.trim_end() == pattern) {
+    let mut appended = String::new();
+    for pattern in patterns {
+        if !existing.lines().any(|line| line == pattern) {
+            appended.push_str(MARKER);
+            appended.push('\n');
+            appended.push_str(&pattern);
+            appended.push('\n');
+        }
+    }
+    if appended.is_empty() {
         return Ok(());
     }
     if let Some(parent) = exclude.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let separator = if existing.is_empty() || existing.ends_with('\n') {
-        ""
-    } else {
-        "\n"
-    };
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        appended.insert(0, '\n');
+    }
     use std::io::Write as _;
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&exclude)?
-        .write_all(format!("{separator}{MARKER}\n{pattern}\n").as_bytes())
+        .write_all(appended.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn git(root: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
@@ -131,14 +122,14 @@ mod tests {
         for root in [&repository, &nested] {
             std::fs::create_dir_all(root.join(".volumes/scratch")).unwrap();
             std::fs::write(root.join(".volumes/scratch/note"), "x").unwrap();
-            exclude_mount_point(root, ".volumes").unwrap();
-            exclude_mount_point(root, ".volumes").unwrap();
+            exclude_mount_paths(root, &[root.join(".volumes/scratch")]).unwrap();
+            exclude_mount_paths(root, &[root.join(".volumes/scratch")]).unwrap();
         }
         std::fs::write(nested.join("tracked"), "x").unwrap();
         let text = std::fs::read_to_string(&exclude).unwrap();
         assert!(text.starts_with("user-pattern\n"));
-        assert_eq!(text.matches("/.volumes/\n").count(), 2);
-        assert_eq!(text.matches("/sub\\ dir/.volumes/\n").count(), 1);
+        assert_eq!(text.matches("/.volumes/scratch\n").count(), 1);
+        assert_eq!(text.matches("/sub\\ dir/.volumes/scratch\n").count(), 1);
         assert!(!repository.join(".gitignore").exists());
         let status = git(
             &repository,
@@ -179,13 +170,13 @@ mod tests {
             &repository,
             &["worktree", "add", "-q", linked.to_str().unwrap()],
         );
-        std::fs::create_dir_all(linked.join(".volumes")).unwrap();
-        std::fs::write(linked.join(".volumes/note"), "x").unwrap();
-        exclude_mount_point(&linked, ".volumes").unwrap();
+        std::fs::create_dir_all(linked.join(".volumes/scratch")).unwrap();
+        std::fs::write(linked.join(".volumes/scratch/note"), "x").unwrap();
+        exclude_mount_paths(&linked, &[linked.join(".volumes/scratch")]).unwrap();
         assert!(
             std::fs::read_to_string(repository.join(".git/info/exclude"))
                 .unwrap()
-                .contains("\n/.volumes/\n")
+                .contains("\n/.volumes/scratch\n")
         );
         assert_eq!(git(&linked, &["status", "--porcelain"]), "");
     }
@@ -195,7 +186,104 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         // The temporary root may sit inside a repository on a developer box;
         // only assert that nothing is created inside the directory itself.
-        exclude_mount_point(directory.path(), ".volumes").unwrap();
+        exclude_mount_paths(
+            directory.path(),
+            &[directory.path().join(".volumes/scratch")],
+        )
+        .unwrap();
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    fn ignored(root: &Path, path: &Path) -> bool {
+        let status = std::process::Command::new("git")
+            .args(["check-ignore", "--no-index", "-q", "--"])
+            .arg(path)
+            .current_dir(root)
+            .status()
+            .unwrap();
+        match status.code() {
+            Some(0) => true,
+            Some(1) => false,
+            other => panic!("git: {other:?}"),
+        }
+    }
+
+    fn native_component() -> impl Strategy<Value = String> {
+        // Windows forbids wildcard characters and trims trailing spaces.
+        // Prefix/suffix letters also exclude device names and dot components.
+        #[cfg(windows)]
+        let middle = "[a-z !#\\[\\]]{0,6}";
+        #[cfg(not(windows))]
+        let middle = "[a-z *!#?\\[\\]]{0,6}";
+        middle.prop_map(|middle| format!("a{middle}z"))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn exact_rules_preserve_authored_siblings(
+            parts in prop::collection::vec(native_component(), 0..3),
+        ) {
+            let directory = tempfile::tempdir().unwrap();
+            let repository = directory.path();
+            git(repository, &["init", "-q"]);
+            let mut root = repository.to_path_buf();
+            for part in parts { root.push(part); }
+            let mount = root.join(".volumes/scratch");
+            std::fs::create_dir_all(&mount).unwrap();
+            let authored = root.join(".volumes/user-owned");
+            std::fs::write(&authored, "keep").unwrap();
+            let control = root.join(".volumes/.acyclic-fs-mount-test.lock");
+            std::fs::write(&control, "owned").unwrap();
+            exclude_mount_paths(&root, &[mount.clone(), control.clone()]).unwrap();
+            let mounted = mount.join("data");
+            std::fs::write(&mounted, "volume").unwrap();
+            prop_assert!(ignored(repository, &mounted));
+            prop_assert!(ignored(repository, &control));
+            prop_assert!(!ignored(repository, &authored));
+            std::fs::remove_file(&mounted).unwrap();
+            std::fs::remove_dir(&mount).unwrap();
+            prop_assert!(!ignored(repository, &authored));
+            // Reinstating the broad rule must fail the sibling oracle.
+            let broad = pattern::pattern(&root.strip_prefix(repository).unwrap().join(".volumes")).unwrap();
+            std::fs::write(repository.join(".git/info/exclude"), format!("{broad}\n")).unwrap();
+            prop_assert!(ignored(repository, &authored));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrepresentable_paths_leave_existing_exclusions_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        git(directory.path(), &["init", "-q"]);
+        let exclude = directory.path().join(".git/info/exclude");
+        std::fs::write(&exclude, "user-pattern\n").unwrap();
+        for name in ["line\nbreak", "line\rbreak"] {
+            let root = directory.path().join(name);
+            std::fs::create_dir_all(&root).unwrap();
+            let error = exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "user-pattern\n");
+            if name.contains('\n') {
+                // Restore the old encoder, which escaped whitespace without
+                // rejecting physical line separators. Git must expose the
+                // projected data despite that malformed exclusion.
+                let mount = root.join(".volumes/scratch");
+                std::fs::create_dir_all(&mount).unwrap();
+                let projected = mount.join("data");
+                std::fs::write(&projected, "volume").unwrap();
+                let mut malformed = String::from("/");
+                for character in name.chars() {
+                    if character.is_whitespace() {
+                        malformed.push('\\');
+                    }
+                    malformed.push(character);
+                }
+                malformed.push_str("/.volumes/scratch\n");
+                std::fs::write(&exclude, malformed).unwrap();
+                assert!(!ignored(directory.path(), &projected));
+                std::fs::write(&exclude, "user-pattern\n").unwrap();
+            }
+        }
     }
 }

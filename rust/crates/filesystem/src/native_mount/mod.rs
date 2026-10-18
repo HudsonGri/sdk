@@ -270,6 +270,7 @@ mod error;
 pub use error::*;
 mod fence_io;
 mod recovery;
+mod registry;
 pub use recovery::*;
 mod startup;
 pub use startup::*;

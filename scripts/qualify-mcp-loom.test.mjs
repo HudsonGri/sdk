@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
 
 test("hook qualification builds real synchronization once and rejects either missing model", () => {
-  for (const missing of [null, 1, 2]) {
+  for (const missing of [null, ...Array.from({ length: 12 }, (_, i) => i + 1)]) {
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
@@ -16,13 +16,14 @@ test("hook qualification builds real synchronization once and rejects either mis
         assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
         return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }) };
       }
-      assert.ok(args[0].includes(models === 0 ? "competing_dispatches_claim_once" : "cancellation_keeps_hook_workers"));
+      if (models < 2) assert.ok(args[0].includes(models === 0 ? "competing_dispatches_claim_once" : "cancellation_keeps_hook_workers"));
+      else assert.match(args[0], /(?:cancelled_(?:hook|bash)_retains_projection|local::workspace::projection::tests::)/);
       assert.equal(args[1], "--exact");
       assert.equal(options.timeout, 9500);
       models++;
       return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
     };
-    if (missing === null) { qualifyHookLifecycleLoom(undefined, run); assert.equal(models, 2); }
+    if (missing === null) { qualifyHookLifecycleLoom(undefined, run); assert.equal(models, 12); }
     else assert.throws(() => qualifyHookLifecycleLoom(undefined, run), /requires a nonzero/);
   }
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
@@ -162,4 +163,25 @@ test("summary checkpoint qualification instruments real locks and requires both 
     assert.deepEqual(calls[1], ["model-binary", ["local::compact::checkpoints::model::"]]);
   }
   assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /node scripts\/qualify-mcp-loom\.mjs --summary-checkpoints --all-features/);
+});
+
+test("registry gate instruments real native locks and rejects either omitted proof", () => {
+  for (const missing of [null, 1, 2]) {
+    let models = 0;
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_native_loom/);
+        assert.ok(args.includes("--lib"));
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_fs" } }) };
+      }
+      assert.match(args[0], /native_mount::fence::models::/);
+      assert.equal(args[1], "--exact");
+      assert.equal(options.timeout, 9500);
+      models++;
+      return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
+    };
+    if (missing === null) { qualifyNativeRegistryLoom(run); assert.equal(models, 2); }
+    else assert.throws(() => qualifyNativeRegistryLoom(run), /requires a nonzero/);
+  }
+  assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /node scripts\/qualify-mcp-loom\.mjs --native-registry/);
 });

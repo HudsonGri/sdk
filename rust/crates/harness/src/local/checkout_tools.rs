@@ -291,9 +291,9 @@ impl ToolExecutor for CheckoutTools {
                     let mounts = Arc::clone(&state.mounts);
                     let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
                     let (result, mut state, mut files) =
-                        workspace::volumes::native_scope(&mounts, async || {
-                            let (result, state, files) =
-                                self.bash(input, maximum, state, files).await?;
+                        workspace::volumes::native_scope(&mounts, async |claims| {
+                            let (result, state, files, claims) =
+                                self.bash(input, maximum, state, files, claims).await?;
                             if !result.as_ref().is_ok_and(|result| {
                                 result.value.get("stop").is_none_or(|stop| {
                                     stop.is_null() || stop["cleanup_completed"] == true
@@ -303,7 +303,7 @@ impl ToolExecutor for CheckoutTools {
                             }
                             // Verify the journal owner before the scope publishes.
                             publication.verify(true, &mut None).await?;
-                            Ok((result, state, files))
+                            Ok(((result, state, files), claims))
                         })
                         .await?;
                     let State {

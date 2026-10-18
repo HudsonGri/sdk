@@ -155,18 +155,21 @@ impl CheckoutTools {
             // projected for the run and retired, with their writes published,
             // before the checkout is captured.
             let mounts = Arc::clone(&state.mounts);
-            let (result, mut state) = workspace::volumes::native_scope(&mounts, async || {
-                with_workers::<_, _, _, _, true>(state, check, |check| {
-                    hooks.run_checked(
-                        event,
-                        (&workspace.path, &workspace.path),
-                        input,
-                        registry,
-                        context.effective_scope().limits().file_bytes,
-                        check,
-                    )
-                })
-                .await
+            let (result, mut state) = workspace::volumes::native_scope(&mounts, async |claims| {
+                let (result, (state, claims)) =
+                    with_workers::<_, _, _, _, true>((state, claims), check, |check| {
+                        hooks.run_checked(
+                            event,
+                            (&workspace.path, &workspace.path),
+                            input,
+                            registry,
+                            context.effective_scope().limits().file_bytes,
+                            check,
+                        )
+                    })
+                    .await?;
+                owner.verify_owner(None)?.await?;
+                Ok(((result, state), claims))
             })
             .await?;
             let State {
@@ -195,10 +198,10 @@ impl CheckoutTools {
 // The native runner and model share this whole ownership boundary. Only the
 // caller can recover the guard, after all workers have released their checks.
 async fn with_workers<T: Send + Sync + 'static, R, F, FF, const RETAIN: bool>(
-    state: OwnedMutexGuard<T>,
+    state: T,
     check: impl Fn() -> std::io::Result<()> + Send + Sync + 'static,
     execute: F,
-) -> Result<(R, OwnedMutexGuard<T>)>
+) -> Result<(R, T)>
 where
     F: FnOnce(crate::hooks::HookCheck) -> FF + Send,
     FF: std::future::Future<Output = R> + Send,

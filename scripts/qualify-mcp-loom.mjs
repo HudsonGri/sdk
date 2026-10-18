@@ -28,8 +28,28 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
     kind: "--lib", filters: [
       "hooks::effects::models::competing_dispatches_claim_once_with_negative_control",
       "local::checkout_tools::hooks::models::cancellation_keeps_hook_workers_inside_the_selected_workspace",
+      "local::checkout_tools::hooks::models::cancelled_hook_retains_projection_claim_until_physical_cleanup",
+      "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
+      "local::workspace::projection::tests::first_native_users_share_one_initialization",
+      "local::workspace::projection::tests::first_projection_and_logical_publication_share_custody",
+      "local::workspace::projection::tests::failed_initialization_leaves_no_published_projection",
+      "local::workspace::projection::tests::cancelling_initialization_releases_waiters_without_partial_state",
+      "local::workspace::projection::tests::checkout_then_projection_order_cannot_deadlock",
+      "local::workspace::projection::tests::the_last_execution_scope_alone_retires_the_projection",
+      "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
+      "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
     ], timeout: 9500,
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
+}
+
+export function qualifyNativeRegistryLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "acyclic_fs", ["--features", "model-checking"], run, {
+    kind: "--lib", filters: [
+      "native_mount::fence::models::registry_contention_retires_with_original_credit_and_missing_wait_control",
+      "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
+    ], timeout: 9500,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_native_loom` }, targetCfg: [],
   });
 }
 
@@ -103,6 +123,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
   if (features[0] === "--hook-lifecycle") qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined);
+  else if (features[0] === "--native-registry") qualifyNativeRegistryLoom();
   else if (features[0] === "--coordinator-origins") qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features[0] === "--summary-checkpoints") qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
