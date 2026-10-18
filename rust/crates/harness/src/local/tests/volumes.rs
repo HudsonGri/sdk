@@ -264,10 +264,20 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
             .as_ref(),
         b"retain"
     );
-    for path in acyclic_fs::native_mount_control_paths(&directory.path().join(".volumes/scratch"))
-        .map_err(Error::from)?
+    let [fence, registry] =
+        acyclic_fs::native_mount_control_paths(&directory.path().join(".volumes/scratch"))
+            .map_err(Error::from)?;
+    assert!(
+        !registry.starts_with(directory.path()),
+        "registry entered the checkout"
+    );
+    assert!(
+        std::fs::symlink_metadata(&registry)
+            .map_err(super::super::storage)?
+            .is_file()
+    );
     {
-        let relative = path
+        let relative = fence
             .strip_prefix(directory.path())
             .map_err(super::super::storage)?;
         let relative = format!("/{}", relative.to_str().unwrap().replace('\\', "/"));
