@@ -289,8 +289,13 @@ mod unix {
             let worker = InputReader::spawn(
                 file,
                 move || {
-                    after_ready();
-                    acquire.storage()
+                    let storage = acquire.storage();
+                    if storage.is_some() {
+                        // The probe gates an admitted read: closing the channel
+                        // cannot skip cancellation by rejecting this buffer.
+                        after_ready();
+                    }
+                    storage
                 },
                 move |batch| publish(&send, batch),
                 move || finish.finish(),
