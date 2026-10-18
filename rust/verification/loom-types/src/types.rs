@@ -1,15 +1,6 @@
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::ty::{self, Ty, TyCtxt, TypingEnv};
-
-fn definition_path(tcx: TyCtxt<'_>, id: DefId) -> String {
-    // Diagnostic paths follow visible re-exports (for example std::sync::Arc).
-    // Ownership contracts attach to the defining item, independent of imports.
-    format!(
-        "{}::{}",
-        tcx.crate_name(id.krate),
-        tcx.def_path(id).to_string_no_crate_verbose()
-    )
-}
+use rustc_span::sym;
 
 pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
     let symbol = tcx.item_name(method);
@@ -54,22 +45,15 @@ pub(super) fn lock<'tcx>(
             if !default {
                 return Some(false);
             }
-            let path = definition_path(tcx, definition.did());
-            if matches!(
-                path.as_str(),
-                "core::option::Option"
-                    | "core::marker::PhantomData"
-                    | "alloc::sync::Weak"
-                    | "alloc::rc::Weak"
-            ) {
+            let id = definition.did();
+            if tcx.is_diagnostic_item(sym::Option, id) {
                 return Some(false);
             }
             // Default initializes physical fields, not arbitrary type arguments.
             // Owning pointer defaults additionally initialize their pointee.
-            let pointee = matches!(
-                path.as_str(),
-                "alloc::sync::Arc" | "alloc::rc::Rc" | "alloc::boxed::Box"
-            )
+            let pointee = (tcx.is_diagnostic_item(sym::Arc, id)
+                || tcx.is_diagnostic_item(sym::Rc, id)
+                || tcx.is_lang_item(id, rustc_hir::LangItem::OwnedBox))
             .then(|| arguments.types().next())
             .flatten();
             any(pointee
