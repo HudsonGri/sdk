@@ -6,12 +6,12 @@ use libfuzzer_sys::fuzz_target;
 mod diff_case;
 #[path = "../../harness/tests/e2e/local_case.rs"]
 mod local_case;
-#[path = "../../harness/tests/e2e/mcp_case.rs"]
-mod mcp_case;
 #[path = "../../harness/tests/e2e/local_tool_files_check.rs"]
 mod local_tool_files_check;
 #[path = "../../harness/tests/e2e/local_tool_files_tests.rs"]
 mod local_tool_files_tests;
+#[path = "../../harness/tests/e2e/mcp_case.rs"]
+mod mcp_case;
 
 pub type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -85,6 +85,24 @@ fuzz_target!(|input: &[u8]| {
         }
     }
     if let Ok(case) = serde_json::from_slice::<local_case::LocalCase>(input) {
+        if let Some(fixture) = &case.mcp {
+            for configured in &fixture.replies {
+                let mut probe = configured.arguments.clone();
+                match &mut probe {
+                    serde_json::Value::Object(fields) => {
+                        fields.insert("\0injected".into(), serde_json::Value::Null);
+                    }
+                    serde_json::Value::Array(items) => items.push(serde_json::Value::Null),
+                    _ => probe = serde_json::json!([probe, null]),
+                }
+                for arguments in [&configured.arguments, &probe] {
+                    if let Ok(reply) = fixture.reply(&configured.name, arguments) {
+                        assert_eq!(reply.name, configured.name);
+                        assert_eq!(&reply.arguments, arguments);
+                    }
+                }
+            }
+        }
         let encoded = serde_json::to_vec(&case).expect("encode local case");
         let decoded: local_case::LocalCase =
             serde_json::from_slice(&encoded).expect("decode local case");

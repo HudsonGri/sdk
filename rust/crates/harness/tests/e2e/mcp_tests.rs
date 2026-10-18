@@ -19,6 +19,10 @@ proptest! {
         inserted = arguments.clone();
         inserted["array"].as_array_mut().unwrap().push("injected".into());
         prop_assert!(fixture.reply("echo", &inserted).is_err());
+        let mut duplicate: super::mcp_case::McpFixture =
+            serde_json::from_value(serde_json::to_value(&fixture)?)?;
+        duplicate.replies.push(serde_json::from_value(serde_json::to_value(&fixture.replies[0])?)?);
+        prop_assert!(duplicate.reply("echo", &arguments).is_err());
         let encoded = serde_json::to_vec(&case)?;
         let restored: LocalCase = serde_json::from_slice(&encoded)?;
         prop_assert_eq!(serde_json::to_value(case)?, serde_json::to_value(restored)?);
