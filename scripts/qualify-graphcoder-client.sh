@@ -16,7 +16,9 @@ RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-
 python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models:: local::checkout_tools::tests:: client::commands::session::init_models::
 
 cargo test -p acyclic-harness-tui --features tui --lib --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py term::session::tests:: term::tty::tests::
+python3 scripts/qualify-graphcoder-artifact.py term::session::tests:: term::tty::tests:: term::region::tests:: term::frame::
+
+cargo test --locked -p acyclic-harness-tui --features tui --test terminal --test terminal_regions --test terminal_frames --test terminal_frame_faults
 
 RUSTFLAGS="--cfg acyclic_harness_tui_loom" cargo test -p acyclic-harness-tui --features tui --lib --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py term::lifecycle::terminal_lifecycle_model:: term::console_owner::tests::input_observes_output_close term::console_owner::tests::negative_control_detects_input_without_close
+python3 scripts/qualify-graphcoder-artifact.py term::frame::frame_model:: term::lifecycle::terminal_lifecycle_model:: term::console_owner::tests::input_observes_output_close term::console_owner::tests::negative_control_detects_input_without_close
