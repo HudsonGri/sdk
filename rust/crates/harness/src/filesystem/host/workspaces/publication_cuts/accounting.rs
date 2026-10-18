@@ -132,7 +132,8 @@ pub(super) fn new_io(
         Mode::Raw | Mode::Batched => Ok(None),
         Mode::Measured => PreparationIo::from_budget(budget, token).map(Some),
         Mode::Native => PreparationIo::from_native_work(
-            &acyclic_fs::NativeMaterializationWork::new(budget, token)?,
+            &acyclic_fs::NativeMaterializationWork::new(budget, token)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?,
         )
         .map(Some),
     }
