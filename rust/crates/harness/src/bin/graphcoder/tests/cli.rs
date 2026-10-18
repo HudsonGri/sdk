@@ -28,6 +28,7 @@ enum Mode {
     Prompt,
     Instructions,
     FsRefusals,
+    Recreated,
     ConfiguredModel,
     ConfiguredOpaqueModel,
     UnknownOutput,
@@ -297,6 +298,25 @@ async fn scenario(mode: Mode) {
     assert_eq!(answers[0]["completion"], "completed");
     // A second real process restores the same request/result instead of generating again.
     execute(&workspace, &catalog, &settings, operation, mode).await;
+    if matches!(mode, Mode::Recreated) {
+        // A new checkout at the same path must run even the same operation
+        // afresh: it must neither replay nor refuse its predecessor's state.
+        std::fs::remove_dir_all(&workspace).unwrap();
+        std::fs::create_dir(&workspace).unwrap();
+        let output = execute(&workspace, &catalog, &settings, operation, mode).await;
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("fixture answer")
+        );
+        let states = std::fs::read_dir(settings.join("acyclic/harness"))
+            .unwrap()
+            .count();
+        assert_eq!(
+            states, 2,
+            "the new checkout inherited its predecessor's state"
+        );
+    }
     let mut generated = 0;
     let mut counted = 0;
     while let Ok(kind) = observed.try_recv() {
@@ -306,7 +326,14 @@ async fn scenario(mode: Mode) {
             _ => unreachable!(),
         }
     }
-    assert_eq!(generated, if fs_refusals { 2 } else { 1 });
+    assert_eq!(
+        generated,
+        if fs_refusals || matches!(mode, Mode::Recreated) {
+            2
+        } else {
+            1
+        }
+    );
     assert!(counted > 0);
     stop.send(()).unwrap();
     server.await.unwrap();
@@ -366,6 +393,11 @@ async fn fs_inspection_refusals_reach_http_and_complete_the_shipping_binary() {
 #[tokio::test]
 async fn prompt_argv_uses_the_real_registry_and_file_client() {
     scenario(Mode::Prompt).await;
+}
+
+#[tokio::test]
+async fn recreated_checkout_runs_a_fresh_operation_through_the_real_cli_and_http() {
+    scenario(Mode::Recreated).await;
 }
 
 #[tokio::test]
