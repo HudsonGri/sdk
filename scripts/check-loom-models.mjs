@@ -25,7 +25,7 @@ export const models = {
   "rust/crates/native-runtime/src/apple_model.rs": { grade: "real" },
   "rust/crates/actors/src/guest/state.rs": { grade: "real", constructs: "production State constructor in this source file" },
   "rust/crates/actors/tests/timer_loom.rs": { grade: "real" },
-  "rust/crates/filesystem/fuzz/tests/model.rs": { grade: "real" },
+  "rust/crates/filesystem/fuzz/tests/model.rs": { grade: "real", constructs: "includes the production FoldedDirectoryCache constructor and its filesystem sync shim" },
   "rust/crates/filesystem/src/cache/decoded_model.rs": { grade: "real" },
   "rust/crates/filesystem/src/core_state/owners/models.rs": { grade: "real", constructs: "constructs the production Owners alias of the ordered registry mutex passed to join" },
   "rust/crates/filesystem/src/demand/admissions_loom_tests.rs": { grade: "abstract", scope: "Actual NativeProofAccounting; explicit modeled reference count substitutes for std Arc strong_count semantics. Reclamation protocol only." },
@@ -49,9 +49,9 @@ export const models = {
   "rust/crates/filesystem/src/workspace/identity_loom.rs": { grade: "real" },
   "rust/crates/filesystem/tests/native_binding_model.rs": { grade: "abstract", scope: "Real cached-binding predicate/lease-order helper and ProbeGuard; source lease/stamp/cache environment is handwritten. Not mounted callback proof." },
   "rust/crates/filesystem/tests/native_stage_loom.rs": { grade: "abstract", scope: "Real StageState phase lock; atomic journal acceptance and physical effects are a handwritten Store. Does not prove journal implementation or crash durability." },
-  "rust/crates/harness-providers/tests/models/cancellation.rs": { grade: "real" },
+  "rust/crates/harness-providers/tests/models/cancellation.rs": { grade: "real", constructs: "includes the production Cancellation implementation and its registration lock" },
   "rust/crates/harness-providers/tests/models/refresh.rs": { grade: "abstract", scope: "Production refresh::execute included with shim; HTTP/file IO replaced by small futures. Covers failed-attempt sharing, not credential ACLs, JSON bounds or full dispatch." },
-  "rust/crates/harness-providers/tests/verification_models.rs": { grade: "real" },
+  "rust/crates/harness-providers/tests/verification_models.rs": { grade: "real", constructs: "includes production Refresh and usage Snapshot constructors and the provider sync shim" },
   "rust/crates/harness-tui/src/term/console_owner.rs": { grade: "abstract", scope: "Actual console owner state/locks/worker handoff; modeled native submit/cancel/restore actions. Does not run ConPTY or Windows console API." },
   "rust/crates/harness-tui/src/term/lifecycle.rs": { grade: "abstract", scope: "Actual terminal lifecycle/state/locks and close/resume fencing; Vec/fake restore IO. Does not prove OS restoration or signal integration." },
   "rust/crates/harness/src/client/commands/model.rs": { grade: "runner" },
@@ -127,13 +127,8 @@ const verdicts = new Map();
 let scannerPath;
 
 function scanner() {
-  scannerPath ??= execFileSync('cargo', [
-    'build', '--locked', '--quiet', '--message-format=json',
-    '--manifest-path', `${repository}/rust/verification/loom-locks/Cargo.toml`,
-    '--target-dir', `${process.env.CARGO_TARGET_DIR ?? `${repository}/target`}/loom-locks`,
-  ], {encoding: 'utf8', maxBuffer: 1 << 26}).split('\n').filter(Boolean).map(line => JSON.parse(line))
-    .find(message => message.reason === 'compiler-artifact' && message.executable)?.executable;
-  if (!scannerPath) throw new Error('loom-locks scanner did not build an executable');
+  scannerPath ??= process.env.LOOM_SOURCE_SCANNER;
+  if (!scannerPath) throw new Error('set LOOM_SOURCE_SCANNER to the built loom-lock-scan executable; run scripts/qualify-loom-scanner.sh first');
   return scannerPath;
 }
 

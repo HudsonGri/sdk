@@ -5,6 +5,18 @@ use std::{collections::BTreeMap, path::PathBuf, process::Command};
 static CASE: AtomicUsize = AtomicUsize::new(0);
 
 fn compile(source: &str) -> Result<BTreeMap<String, String>, String> {
+    compile_model(
+        source,
+        "model.rs",
+        "pub fn child() { let _ = std::sync::Mutex::new(0); }",
+    )
+}
+
+fn compile_model(
+    source: &str,
+    model: &str,
+    child: &str,
+) -> Result<BTreeMap<String, String>, String> {
     let directory = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
@@ -21,12 +33,8 @@ fn compile(source: &str) -> Result<BTreeMap<String, String>, String> {
             .map_err(|e| e.to_string())?;
     }
     std::fs::write(directory.join("model.rs"), source).map_err(|e| e.to_string())?;
-    std::fs::write(
-        directory.join("child.rs"),
-        "pub fn child() { let _ = std::sync::Mutex::new(0); }",
-    )
-    .map_err(|e| e.to_string())?;
-    std::fs::write(directory.join("models"), "model.rs\n").map_err(|e| e.to_string())?;
+    std::fs::write(directory.join("child.rs"), child).map_err(|e| e.to_string())?;
+    std::fs::write(directory.join("models"), format!("{model}\n")).map_err(|e| e.to_string())?;
     let sysroot = Command::new("rustc")
         .args(["+nightly-2026-07-01", "--print", "sysroot"])
         .output()
@@ -67,7 +75,7 @@ fn compile(source: &str) -> Result<BTreeMap<String, String>, String> {
             .map_err(|e| e.to_string())?;
         for line in output.lines() {
             let fields: Vec<_> = line.split('\t').collect();
-            if fields.len() != 3 || fields[0] != "model.rs" {
+            if fields.len() != 3 || fields[0] != model {
                 return Err(format!("invalid compiler response: {line}"));
             }
             if found
@@ -206,4 +214,32 @@ fn metadata_analysis_includes_private_unreachable_callers() {
     );
     let plain = compile(&format!("{helpers} fn unused() {{ let _: u8 = make(); }}")).unwrap();
     assert!(plain.values().all(|verdict| verdict == "0"), "{plain:?}");
+}
+
+#[test]
+fn production_defaults_are_not_model_owned_but_model_defaults_are() {
+    let source = "mod production { #[derive(Default)] pub struct Component(pub std::sync::Mutex<()>); } mod child;";
+    let healthy = compile_model(
+        source,
+        "child.rs",
+        "pub fn scenario() { let _ = crate::production::Component::default(); }",
+    )
+    .unwrap();
+    assert!(!healthy.is_empty());
+    assert!(
+        healthy.values().all(|verdict| verdict == "0"),
+        "{healthy:?}"
+    );
+    for body in [
+        "pub fn scenario() { let _ = std::sync::Mutex::<()>::default(); }",
+        "#[derive(Default)] struct Model(std::sync::Arc<std::sync::Mutex<()>>); pub fn scenario() { let _ = Model::default(); }",
+    ] {
+        let broken = compile_model(source, "child.rs", body).unwrap();
+        assert!(
+            broken
+                .iter()
+                .any(|(name, verdict)| name.ends_with("scenario") && verdict == "1"),
+            "{broken:?}"
+        );
+    }
 }

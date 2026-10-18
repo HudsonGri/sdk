@@ -71,6 +71,7 @@ impl Callbacks for Check {
                 types: tcx.typeck(owner),
                 owner,
                 instances: &instances,
+                roots: &roots,
                 verdict: verdicts
                     .entry((file.clone(), tcx.def_path_str(owner.to_def_id())))
                     .or_insert(Ok(false)),
@@ -99,6 +100,7 @@ struct Body<'a, 'tcx> {
     types: &'tcx TypeckResults<'tcx>,
     owner: rustc_hir::def_id::LocalDefId,
     instances: &'a instances::Instances<'tcx>,
+    roots: &'a std::collections::HashMap<rustc_hir::def_id::LocalDefId, String>,
     verdict: &'a mut Result<bool, String>,
 }
 
@@ -107,11 +109,15 @@ impl<'tcx> Body<'_, 'tcx> {
         let found = types::lock(
             self.tcx,
             self.owner,
+            self.roots,
             rustc_middle::ty::Unnormalized::new_wip(ty),
             default,
             0,
         )
-        .or_else(|| self.instances.lock(self.tcx, self.owner, ty, default));
+        .or_else(|| {
+            self.instances
+                .lock(self.tcx, self.owner, self.roots, ty, default)
+        });
         match found {
             Some(true) => {
                 if let Ok(owned) = self.verdict {

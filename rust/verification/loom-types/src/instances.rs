@@ -48,6 +48,7 @@ impl<'tcx> Instances<'tcx> {
         &self,
         tcx: TyCtxt<'tcx>,
         owner: LocalDefId,
+        roots: &HashMap<LocalDefId, String>,
         ty: Ty<'tcx>,
         default: bool,
     ) -> Option<bool> {
@@ -56,7 +57,7 @@ impl<'tcx> Instances<'tcx> {
         if let Some(instances) = self.compiled(tcx).get(&owner.to_def_id()) {
             for instance in instances {
                 let ty = ty::EarlyBinder::bind(tcx, ty).instantiate(tcx, instance.args);
-                owned |= crate::types::lock(tcx, owner, ty, default, 0)?;
+                owned |= crate::types::lock(tcx, owner, roots, ty, default, 0)?;
                 found = true;
             }
         }

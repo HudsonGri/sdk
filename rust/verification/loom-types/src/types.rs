@@ -22,6 +22,7 @@ pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
 pub(super) fn lock<'tcx>(
     tcx: TyCtxt<'tcx>,
     owner: LocalDefId,
+    roots: &std::collections::HashMap<LocalDefId, String>,
     ty: ty::Unnormalized<'tcx, Ty<'tcx>>,
     default: bool,
     depth: usize,
@@ -56,24 +57,45 @@ pub(super) fn lock<'tcx>(
                 || tcx.is_lang_item(id, rustc_hir::LangItem::OwnedBox))
             .then(|| arguments.types().next())
             .flatten();
-            any(pointee
-                .into_iter()
-                .map(ty::Unnormalized::new_wip)
-                .chain(
-                    definition
-                        .all_fields()
-                        .map(|field| field.ty(tcx, arguments)),
-                )
-                .map(|ty| lock(tcx, owner, ty, true, depth + 1)))
+            if let Some(pointee) = pointee {
+                return lock(
+                    tcx,
+                    owner,
+                    roots,
+                    ty::Unnormalized::new_wip(pointee),
+                    true,
+                    depth + 1,
+                );
+            }
+            // Only model-owned aggregates introduce model state. Initializing a
+            // production component through its public Default implementation
+            // does not turn its private locks into a substitute model lock.
+            if !id
+                .as_local()
+                .is_some_and(|id| crate::ownership::model(tcx, roots, id).is_some())
+            {
+                return Some(false);
+            }
+            any(definition
+                .all_fields()
+                .map(|field| lock(tcx, owner, roots, field.ty(tcx, arguments), true, depth + 1)))
         }
-        ty::Tuple(elements) if default => any(elements
-            .iter()
-            .map(|ty| lock(tcx, owner, ty::Unnormalized::new_wip(ty), true, depth + 1))),
+        ty::Tuple(elements) if default => any(elements.iter().map(|ty| {
+            lock(
+                tcx,
+                owner,
+                roots,
+                ty::Unnormalized::new_wip(ty),
+                true,
+                depth + 1,
+            )
+        })),
         ty::Array(element, length) if default => match length.try_to_target_usize(tcx) {
             Some(0) => Some(false),
             Some(_) => lock(
                 tcx,
                 owner,
+                roots,
                 ty::Unnormalized::new_wip(*element),
                 true,
                 depth + 1,
@@ -83,6 +105,7 @@ pub(super) fn lock<'tcx>(
         ty::Ref(_, element, _) if default => lock(
             tcx,
             owner,
+            roots,
             ty::Unnormalized::new_wip(*element),
             true,
             depth + 1,

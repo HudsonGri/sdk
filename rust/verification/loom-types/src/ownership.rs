@@ -64,7 +64,8 @@ pub(super) fn declarations(
                 let definition = tcx.adt_def(owner);
                 let arguments = ty::GenericArgs::identity_for_item(tcx, owner);
                 owned = definition.all_fields().any(|field| {
-                    crate::types::lock(tcx, owner, field.ty(tcx, arguments), false, 0) == Some(true)
+                    crate::types::lock(tcx, owner, roots, field.ty(tcx, arguments), false, 0)
+                        == Some(true)
                 });
             }
             _ => {}
@@ -73,7 +74,7 @@ pub(super) fn declarations(
             if let Some(Res::Def(DefKind::Struct | DefKind::TyAlias, id)) = path.res.type_ns {
                 let ty = tcx.type_of(id).instantiate_identity();
                 owned |= tcx.crate_name(id.krate).as_str() == "loom"
-                    && crate::types::lock(tcx, owner, ty, false, 0) == Some(true);
+                    && crate::types::lock(tcx, owner, roots, ty, false, 0) == Some(true);
             }
         }
         found.push((file.clone(), tcx.def_path_str(owner.to_def_id()), owned));
