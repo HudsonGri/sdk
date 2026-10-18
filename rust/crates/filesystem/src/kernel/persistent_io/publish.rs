@@ -11,6 +11,15 @@ pub(crate) fn retain_written_leaf<S: AsyncObjectStore, F: Format>(
     entries: &[Arc<Entry<F::Value>>],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
+    #[cfg(all(
+        test,
+        feature = "memory",
+        not(acyclic_fs_loom),
+        not(target_arch = "wasm32")
+    ))]
+    if tests::omit_written_cache() {
+        return Ok(());
+    }
     if !store.supports_decoded_cache() {
         return Ok(());
     }
@@ -54,3 +63,12 @@ pub(crate) fn retain_written_leaf<S: AsyncObjectStore, F: Format>(
     drop(page);
     crate::kernel::persistent_point::retire_allocation(allocation, bytes, accounting)
 }
+
+#[cfg(all(
+    test,
+    feature = "memory",
+    not(acyclic_fs_loom),
+    not(target_arch = "wasm32")
+))]
+#[path = "../tests/persistent_io/publish.rs"]
+mod tests;
