@@ -270,18 +270,12 @@ fn deep_paths_take_a_measured_class_buffer() {
 
 fn complete_capture(
     runtime: &tokio::runtime::Runtime,
+    source: &std::path::Path,
     count: usize,
     depth: usize,
     budget: WorkBudget,
     previous: bool,
 ) -> (Result<CaptureReceipt, String>, WorkCounters, Option<u64>) {
-    let source = tempfile::tempdir().unwrap();
-    let prefix = vec!["d"; depth].join("/");
-    let directory = source.path().join(prefix);
-    std::fs::create_dir_all(&directory).unwrap();
-    for index in 0..count {
-        std::fs::write(directory.join(format!("f{index:03}")), []).unwrap();
-    }
     let setup =
         NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
     let mut checkout = runtime
@@ -293,10 +287,13 @@ fn complete_capture(
     // The checkout and capture must share their original ledger. The resource
     // allowance measures only capture, after constructing the checkout.
     let work = setup.native_volume_work(budget).unwrap();
-    let available = work.remaining().unwrap().allocation_operations;
+    // Measure the allowance being limited, not its original parent ledger:
+    // accounting metadata owned by the parent does not spend this allowance.
+    let allowance = work.resource.as_ref().unwrap();
+    let available = allowance.remaining().unwrap().allocation_operations;
     let options = CaptureOptions {
-        source_root: source.path().to_owned(),
-        expected_root_identity: capture_root_identity(source.path()).unwrap(),
+        source_root: source.to_owned(),
+        expected_root_identity: capture_root_identity(source).unwrap(),
         maximum_paths: (count + depth + 8) as u32,
         maximum_extent_spans: 8,
     };
@@ -314,7 +311,7 @@ fn complete_capture(
         ))
         .map(|receipt| receipt.value)
         .map_err(|failure| format!("{:?}", failure.error));
-    let used = work
+    let used = allowance
         .remaining()
         .ok()
         .map(|left| available - left.allocation_operations);
@@ -330,8 +327,16 @@ fn complete_captures_preserve_the_previous_exact_allocation_operation_limit() {
         .build()
         .unwrap();
     for (count, depth) in [(129, 1), (4, 16)] {
+        // Every isolated checkout captures the same host objects and metadata.
+        let source = tempfile::tempdir().unwrap();
+        let directory = source.path().join(vec!["d"; depth].join("/"));
+        std::fs::create_dir_all(&directory).unwrap();
+        for index in 0..count {
+            std::fs::write(directory.join(format!("f{index:03}")), []).unwrap();
+        }
         let (expected, _, used) = complete_capture(
             &runtime,
+            source.path(),
             count,
             depth,
             WorkBudget {
@@ -350,10 +355,16 @@ fn complete_captures_preserve_the_previous_exact_allocation_operation_limit() {
                 allocation_operations: limit,
                 ..WorkBudget::UNBOUNDED
             };
-            let (old, old_work, _) = complete_capture(&runtime, count, depth, budget, true);
-            let (new, work, _) = complete_capture(&runtime, count, depth, budget, false);
+            let (old, old_work, _) =
+                complete_capture(&runtime, source.path(), count, depth, budget, true);
+            let (new, work, _) =
+                complete_capture(&runtime, source.path(), count, depth, budget, false);
             assert_eq!(new, old, "count={count} depth={depth} limit={limit}");
-            assert_eq!(new.is_ok(), limit >= exact);
+            assert_eq!(
+                new.is_ok(),
+                limit >= exact,
+                "count={count} depth={depth} limit={limit} exact={exact}"
+            );
             assert_eq!(work.allocation_operations, old_work.allocation_operations);
             assert_eq!(work.items_examined, old_work.items_examined);
         }
@@ -362,6 +373,7 @@ fn complete_captures_preserve_the_previous_exact_allocation_operation_limit() {
         FORCE_COUNTING.set(true);
         let (broken, _, _) = complete_capture(
             &runtime,
+            source.path(),
             count,
             depth,
             WorkBudget {
