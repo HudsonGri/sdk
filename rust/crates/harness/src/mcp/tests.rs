@@ -87,7 +87,7 @@ impl McpToolTransport for Transport {
     }
 }
 fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
-    McpCatalog { server:"fixture".into(), revision:revision.into(), schema_exposure:McpSchemaExposure::Eager,
+    McpCatalog { server:"fixture".into(), revision:revision.into(), schema_exposure:McpSchemaExposure::Eager {},
         discovery:McpDiscoveryPolicy::Search, projection_schema:crate::tool::json_projection_schema(json!({})), tools:names.iter().map(|name| McpToolDefinition {
         name:(*name).into(), title:None, description:format!("Find {name}"), input_schema:json!({"type":"object"}),
         output_schema:Some(json!({"type":"object","required":["value"],"properties":{"value":{"type":"integer"}}})) }).collect() }

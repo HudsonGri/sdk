@@ -214,7 +214,7 @@ fn register(
     };
     #[cfg(test)]
     if policy_tests::ignore_exposure() {
-        catalog.schema_exposure = super::McpSchemaExposure::Eager;
+        catalog.schema_exposure = super::McpSchemaExposure::Eager {};
     }
     catalog.tools.retain(|tool| {
         server

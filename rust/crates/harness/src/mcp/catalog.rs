@@ -9,18 +9,23 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
 /// Model schema selection.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpSchemaExposure {
     /// Publish all schemas.
-    #[default]
-    Eager,
+    Eager {},
     /// Publish named schemas.
     Selected {
         /// Distinct server-local names.
         names: Vec<String>,
     },
+}
+
+impl Default for McpSchemaExposure {
+    fn default() -> Self {
+        Self::Eager {}
+    }
 }
 
 /// Local discovery policy.
@@ -190,7 +195,7 @@ impl McpCatalog {
 
     fn selected(&self, name: &str) -> bool {
         match &self.schema_exposure {
-            McpSchemaExposure::Eager => true,
+            McpSchemaExposure::Eager {} => true,
             McpSchemaExposure::Selected { names } => names.iter().any(|selected| selected == name),
         }
     }

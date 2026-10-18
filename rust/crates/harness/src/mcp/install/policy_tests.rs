@@ -64,7 +64,7 @@ proptest! {
             .filter(|(index, _)| eager || mask & (1 << index) != 0)
             .map(|(_, name)| name.to_owned()).collect::<Vec<_>>();
         let expected = selected.iter().map(|name| format!("mcp.fixture.{name}")).collect::<Vec<_>>();
-        let exposure = if eager { McpSchemaExposure::Eager } else { McpSchemaExposure::Selected { names: selected } };
+        let exposure = if eager { McpSchemaExposure::Eager {} } else { McpSchemaExposure::Selected { names: selected } };
         let installed = installation(exposure).unwrap();
         prop_assert!(check_visibility(&installed, &expected).is_ok());
     }

@@ -296,7 +296,7 @@ async fn one_session_discovers_installs_calls_and_reconciles_without_replay() ->
     let catalog = McpCatalog {
         server: "configured".into(),
         revision: "1".into(),
-        schema_exposure: McpSchemaExposure::Eager,
+        schema_exposure: McpSchemaExposure::Eager {},
         discovery: McpDiscoveryPolicy::Disabled,
         projection_schema: crate::tool::json_projection_schema(json!({})),
         tools: listed.tools.into_iter().map(Into::into).collect(),
