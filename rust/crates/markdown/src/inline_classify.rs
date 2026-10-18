@@ -169,6 +169,26 @@ impl Rows {
         (self.first.is_none() || (self.marker && self.significant <= "</blockquote>".len() + 1))
             .then_some(self.row)
     }
+    fn marker_probe(&mut self, source: &str, c: char, white: bool, broad: bool) -> bool {
+        // Asterisks can interrupt only as a three-marker rule or a
+        // bullet followed by horizontal whitespace and content.
+        // Once another byte disqualifies both, this row is inline.
+        let star = self.first.and_then(|at| source.as_bytes().get(at)) == Some(&b'*');
+        let bullet = self
+            .first
+            .and_then(|at| source.as_bytes().get(at + 1))
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'));
+        if !broad && star && !bullet && !white && c != '*' {
+            self.marker = false;
+        }
+        // Interrupts are decided within a marker, nine ordered-list digits,
+        // or the longest HTML block tag plus content.
+        self.marker
+            && (broad || !star || bullet || self.significant >= 3)
+            && self.significant <= "</blockquote>".len() + 1
+            && (!white || !self.space)
+    }
+
     pub(super) fn push(&mut self, source: &str) -> Option<usize> {
         let mut probe = None;
         #[cfg(test)]
@@ -231,24 +251,7 @@ impl Rows {
                         );
                     }
                 }
-                // Asterisks can interrupt only as a three-marker rule or a
-                // bullet followed by horizontal whitespace and content.
-                // Once another byte disqualifies both, this row is inline.
-                let star = self.first.and_then(|at| source.as_bytes().get(at)) == Some(&b'*');
-                let bullet = self
-                    .first
-                    .and_then(|at| source.as_bytes().get(at + 1))
-                    .is_some_and(|byte| matches!(byte, b' ' | b'\t'));
-                if !broad_probes && star && !bullet && !white && c != '*' {
-                    self.marker = false;
-                }
-                // An interrupt is decided within a marker, nine ordered-list
-                // digits, or </blockquote> (the longest block tag), plus content.
-                if self.marker
-                    && (broad_probes || !star || bullet || self.significant >= 3)
-                    && self.significant <= "</blockquote>".len() + 1
-                    && (!white || !self.space)
-                {
+                if self.marker_probe(source, c, white, broad_probes) {
                     probe = Some(probe.map_or(self.row, |p| p.min(self.row)));
                 }
                 self.space = white;

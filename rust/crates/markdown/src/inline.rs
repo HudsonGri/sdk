@@ -516,5 +516,6 @@ thread_local! { pub(crate) static SKIP_UNDECIDED: std::cell::Cell<bool> = const 
 #[cfg(test)]
 thread_local! { pub(super) static REPLAY_CLASSIFIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
+// Restore unconditional newline and provisional-marker classification.
 #[cfg(test)]
 thread_local! { pub(crate) static REPLAY_ROWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
