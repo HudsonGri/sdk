@@ -57,6 +57,7 @@ impl Callbacks for Check {
         }
         let mut verdicts: BTreeMap<(String, String), Result<bool, String>> = BTreeMap::new();
         let roots = ownership::roots(tcx, &self.root, &self.models);
+        let instances = instances::Instances::default();
         for (file, item, owned) in ownership::declarations(tcx, &roots) {
             verdicts.insert((file, item), Ok(owned));
         }
@@ -69,6 +70,7 @@ impl Callbacks for Check {
                 tcx,
                 types: tcx.typeck(owner),
                 owner,
+                instances: &instances,
                 verdict: verdicts
                     .entry((file.clone(), tcx.def_path_str(owner.to_def_id())))
                     .or_insert(Ok(false)),
@@ -96,6 +98,7 @@ struct Body<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     types: &'tcx TypeckResults<'tcx>,
     owner: rustc_hir::def_id::LocalDefId,
+    instances: &'a instances::Instances<'tcx>,
     verdict: &'a mut Result<bool, String>,
 }
 
@@ -108,7 +111,7 @@ impl<'tcx> Body<'_, 'tcx> {
             default,
             0,
         )
-        .or_else(|| instances::lock(self.tcx, self.owner, ty, default));
+        .or_else(|| self.instances.lock(self.tcx, self.owner, ty, default));
         match found {
             Some(true) => {
                 if let Ok(owned) = self.verdict {

@@ -169,3 +169,24 @@ fn every_compiled_generic_instance_is_classified() {
     .unwrap();
     assert!(plain.values().all(|verdict| verdict == "0"), "{plain:?}");
 }
+
+#[test]
+fn inlined_generic_instances_keep_their_enclosing_substitutions() {
+    for inline in ["always", "never"] {
+        let helpers = format!(
+            "#[inline({inline})] fn make<T: Default>() -> T {{ T::default() }} #[inline({inline})] fn outer<T: Default>() -> T {{ make::<T>() }}"
+        );
+        let found = compile(&format!("{helpers} pub fn plain() {{ let _: u8 = outer(); }} pub fn owning() {{ let _: std::sync::Mutex<()> = outer(); }}")).unwrap();
+        for name in ["make", "outer"] {
+            assert!(found.iter().any(|(body, verdict)| body.rsplit("::").next() == Some(name) && verdict == "1"), "inline={inline}: {found:?}");
+        }
+        let plain = compile(&format!(
+            "{helpers} pub fn plain() {{ let _: u8 = outer(); }}"
+        ))
+        .unwrap();
+        assert!(
+            plain.values().all(|verdict| verdict == "0"),
+            "inline={inline}: {plain:?}"
+        );
+    }
+}
