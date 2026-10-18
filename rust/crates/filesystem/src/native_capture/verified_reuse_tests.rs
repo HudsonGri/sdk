@@ -115,6 +115,7 @@ fn fixture_with_sparse(
     let mut checkout = runtime
         .block_on(super::capture_policy_tests::native_checkout(&setup))
         .unwrap();
+    checkout.bind_authored_operation(crate::OperationId::from_bytes([23; 16]));
     let limits = checkout.volume_config().limits;
     let paths = FILES
         .map(|(text, _)| {
@@ -223,6 +224,12 @@ fn rescan_with_baseline(
         *value = serde_json::json!(value.as_u64().unwrap() - before[name].as_u64().unwrap());
     }
     let live_after = work.live_allocation_bytes();
+    #[cfg(target_os = "macos")]
+    eprintln!(
+        "NATIVE_REUSE heap={} copied={} work={receipt}",
+        heap.count_total,
+        crate::native_host::stat_probe::copied_bytes()
+    );
     let bytes = fixture
         .paths
         .iter()
