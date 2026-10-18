@@ -6,6 +6,18 @@ use std::sync::Arc;
 
 use crate::v1::{Error, wire::ErrorCode::Unavailable};
 
+#[cfg(test)]
+thread_local! {
+    static LENGTH_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn count_body_lengths<R>(run: impl FnOnce() -> R) -> (R, usize) {
+    let before = LENGTH_READS.get();
+    let result = run();
+    (result, LENGTH_READS.get() - before)
+}
+
 #[derive(Clone)]
 pub(crate) enum BodyReadMode {
     Ordinary,
@@ -163,6 +175,8 @@ impl StoredBody {
     }
 
     pub(crate) fn len(&self) -> usize {
+        #[cfg(test)]
+        LENGTH_READS.with(|count| count.set(count.get() + 1));
         match self {
             Self::Memory(body) => body.len(),
             Self::Composite { length, .. } => *length,

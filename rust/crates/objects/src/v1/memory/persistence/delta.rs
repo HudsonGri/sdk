@@ -9,6 +9,8 @@ pub(super) fn bodies(
         out: &mut Vec<BodyRecord>,
         publication: &mut Publication,
     ) -> Result<(), NativeObjectsError> {
+        #[cfg(test)]
+        work::encoded();
         match body {
             StoredBody::Local {
                 digest,
@@ -180,8 +182,25 @@ pub(super) fn difference(
         ..Default::default()
     };
     bucket_changes(before, next, &mut delta, publication)?;
-    for (id, upload) in &next.uploads {
-        let old = before.uploads.get(id);
+    #[cfg(test)]
+    work::restore_encoding(next, publication)?;
+    for change in before.uploads.diff(&next.uploads) {
+        let (id, upload, old) = match change {
+            imbl::ordmap::DiffItem::Add(id, upload) => (id, upload, None),
+            imbl::ordmap::DiffItem::Update {
+                old: (_, old),
+                new: (id, upload),
+            } => (id, upload, Some(old)),
+            imbl::ordmap::DiffItem::Remove(id, _) => {
+                let change = UploadChange {
+                    id: publication.text(id)?,
+                    deleted: true,
+                    ..Default::default()
+                };
+                publication.push(&mut delta.uploads, change)?;
+                continue;
+            }
+        };
         if old.is_none() {
             let metadata = upload
                 .metadata
@@ -197,37 +216,32 @@ pub(super) fn difference(
             };
             publication.push(&mut delta.uploads, change)?;
         }
-        for (number, (receipt, body)) in &upload.parts {
+        let empty = OrdMap::new();
+        for change in old
+            .map_or(&empty, |upload| &upload.parts)
+            .diff(&upload.parts)
+        {
+            let (number, receipt, body) = match change {
+                imbl::ordmap::DiffItem::Add(number, (receipt, body)) => (number, receipt, body),
+                imbl::ordmap::DiffItem::Update {
+                    old: (_, (old, _)),
+                    new: (number, (receipt, body)),
+                } if old != receipt => (number, receipt, body),
+                _ => continue,
+            };
             let refs = bodies(body, publication)?;
-            if old
-                .and_then(|old| old.parts.get(number))
-                .is_none_or(|(old, _)| old != receipt)
-            {
-                let change = PartChange {
-                    upload: publication.text(id)?,
-                    number: *number,
-                    receipt: Some(wire::UploadedPart {
-                        etag: publication.text(&receipt.etag)?,
-                        part_number: receipt.part_number,
-                        size: receipt.size,
-                    }),
-                    bodies: refs,
-                };
-                publication.push(&mut delta.parts, change)?;
-            }
+            let change = PartChange {
+                upload: publication.text(id)?,
+                number: *number,
+                receipt: Some(wire::UploadedPart {
+                    etag: publication.text(&receipt.etag)?,
+                    part_number: receipt.part_number,
+                    size: receipt.size,
+                }),
+                bodies: refs,
+            };
+            publication.push(&mut delta.parts, change)?;
         }
-    }
-    for id in before
-        .uploads
-        .keys()
-        .filter(|id| !next.uploads.contains_key(*id))
-    {
-        let change = UploadChange {
-            id: publication.text(id)?,
-            deleted: true,
-            ..Default::default()
-        };
-        publication.push(&mut delta.uploads, change)?;
     }
     for item in before.receipts.diff(&next.receipts) {
         if let imbl::ordmap::DiffItem::Add(key, receipt) = item {
