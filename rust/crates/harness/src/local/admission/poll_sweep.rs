@@ -575,7 +575,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
             .min(64)
             .min(cuts.len()))
             .map(|_| {
-                scope.spawn(|| -> Result<()> {
+                acyclic_grpc_observability::task::scoped_thread(scope, || -> Result<()> {
                     let io_threads = Arc::new(AtomicUsize::new(0));
                     let started_io = io_threads.clone();
                     let runtime = tokio::runtime::Builder::new_current_thread()

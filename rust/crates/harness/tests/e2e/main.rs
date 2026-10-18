@@ -246,16 +246,16 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 
 #[test]
 fn scenarios() -> TestResult {
-    let _trace = std::env::var_os("E2E_TRACE").map(|_| {
-        tracing::subscriber::set_default(
+    if std::env::var_os("E2E_TRACE").is_some() {
+        tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::new(
                     "warn,acyclic_harness::filesystem::task_runtime::dispatch=trace",
                 ))
                 .without_time()
                 .finish(),
-        )
-    });
+        )?;
+    }
     let started = Instant::now();
     scenario_runtime()?.block_on(run_scenarios(started))
 }

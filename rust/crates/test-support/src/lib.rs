@@ -1,4 +1,6 @@
 //! Thread-local allocation measurements and independent differential runs.
+#[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+pub mod capture;
 pub mod differential;
 use std::{
     alloc::{GlobalAlloc, Layout, System},

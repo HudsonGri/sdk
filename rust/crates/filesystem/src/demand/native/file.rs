@@ -228,11 +228,17 @@ impl NativeDemandFile {
         let mut filled = 0;
         while filled < bytes.len() {
             context.check()?;
-            let position = offset.checked_add(filled as u64).ok_or(crate::WorkError::Overflow)?;
+            let position = offset
+                .checked_add(filled as u64)
+                .ok_or(crate::WorkError::Overflow)?;
             let output = bytes.get_mut(filled..).ok_or(DemandError::InvalidRequest)?;
             match read_at(file, position, output, context) {
                 Ok(0) => break,
-                Ok(count) => filled = filled.checked_add(count).ok_or(crate::WorkError::Overflow)?,
+                Ok(count) => {
+                    filled = filled
+                        .checked_add(count)
+                        .ok_or(crate::WorkError::Overflow)?
+                }
                 Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }
@@ -280,13 +286,14 @@ impl DemandFile for NativeDemandFile {
         }
         let file = self.clone();
         let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new()
-            .name("acyclic-remote-read".to_owned())
-            .spawn(move || {
+        let spawned = acyclic_grpc_observability::task::named_thread(
+            std::thread::Builder::new().name("acyclic-remote-read".to_owned()),
+            move || {
                 let result = file.read(offset, length, &mut context);
                 BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
                 let _ = answer.send((result, context));
-            });
+            },
+        );
         if spawned.is_err() {
             BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
             return Err(DemandError::SourceUnavailable);

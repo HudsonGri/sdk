@@ -12,16 +12,16 @@ use std::time::Instant;
 #[tokio::test]
 #[ignore = "requires a writable ProjFS host; run alone for profiling"]
 async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std::error::Error>> {
-    let _trace = std::env::var_os("ACYCLIC_PROJFS_PROFILE_TRACING").map(|_| {
-        tracing::subscriber::set_default(
+    if std::env::var_os("ACYCLIC_PROJFS_PROFILE_TRACING").is_some() {
+        tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
                 .with_env_filter("acyclic_fs::native_mount=trace")
                 .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
                 .with_ansi(false)
                 .with_writer(std::io::stderr)
                 .finish(),
-        )
-    });
+        )?;
+    }
     acyclic_fs::initialize_native_mount_services()?;
     let work = acyclic_fs::NativeMaterializationWork::new(
         WorkBudget::UNBOUNDED,

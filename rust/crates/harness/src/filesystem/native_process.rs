@@ -373,7 +373,7 @@ where
         let request = self.request.clone();
         let schema = (self.plan.result_schema.clone(), self.result_schema.clone());
         let observer = self.observer.clone();
-        tokio::spawn(async move {
+        acyclic_grpc_observability::task::spawn(async move {
             let (status, diagnostic) = execute(
                 &owner, &view, &authority, &request, &dispatch, &schema, observer,
             )

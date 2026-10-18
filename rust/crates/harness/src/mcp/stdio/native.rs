@@ -316,7 +316,10 @@ impl Drop for ProcessOwner {
 }
 
 fn drop_on_worker<T: Send + 'static>(runtime: &tokio::runtime::Handle, value: T) {
-    drop(runtime.spawn_blocking(move || drop(value)));
+    drop(acyclic_grpc_observability::task::runtime_blocking(
+        runtime,
+        move || drop(value),
+    ));
 }
 
 mod requests;

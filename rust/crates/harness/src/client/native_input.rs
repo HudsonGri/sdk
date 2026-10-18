@@ -112,7 +112,7 @@ pub fn terminal_events(
 ) -> acyclic_stream::BoxProviderStream<'static, Result<InputBatch>> {
     Box::pin(futures::stream::try_unfold(tty, |mut tty| async move {
         loop {
-            let completion = tokio::task::spawn_blocking(move || {
+            let completion = acyclic_grpc_observability::task::spawn_blocking(move || {
                 let events = tty.read_events(
                     std::time::Instant::now() + std::time::Duration::from_secs(86_400),
                 );

@@ -98,7 +98,7 @@ where
     I: FnOnce(tokio::sync::OwnedMutexGuard<()>) -> F + Send + 'static,
 {
     // cancelling the caller must not release root ownership while provider spawn_blocking workers
-    tokio::spawn(async move { initialize(ownership).await })
+    acyclic_grpc_observability::task::spawn(async move { initialize(ownership).await })
         .await
         .map_err(|_| FsError::LocalInitializationWorker)
 }

@@ -422,10 +422,12 @@ impl LocalHarness {
             },
             async {
                 let filesystem = workspace.filesystem.clone();
-                tokio::task::spawn_blocking(move || filesystem.flush_deferred_authority())
-                    .await
-                    .map_err(storage)?
-                    .map_err(storage)
+                acyclic_grpc_observability::task::spawn_blocking(move || {
+                    filesystem.flush_deferred_authority()
+                })
+                .await
+                .map_err(storage)?
+                .map_err(storage)
             },
         )
         .await?;

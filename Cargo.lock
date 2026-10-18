@@ -27,6 +27,7 @@ dependencies = [
  "acyclic-tonic-web-wasm-client",
  "async-trait",
  "bytes",
+ "ctor",
  "futures",
  "http",
  "http-body",
@@ -180,6 +181,7 @@ dependencies = [
  "cap-std",
  "cc",
  "crc-fast",
+ "ctor",
  "diffy",
  "divan",
  "fs2",
@@ -290,6 +292,8 @@ dependencies = [
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
+ "acyclic-test-support",
+ "ctor",
  "futures",
  "http-body",
  "pin-project-lite",
@@ -309,6 +313,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
+ "acyclic-grpc-observability",
  "acyclic-harness",
  "acyclic-harness-providers",
  "acyclic-harness-tui",
@@ -323,6 +328,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "ctor",
  "diffy",
  "dirs",
  "futures",
@@ -834,6 +840,8 @@ name = "acyclic-test-support"
 version = "0.2.0"
 dependencies = [
  "proptest",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

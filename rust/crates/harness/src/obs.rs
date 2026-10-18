@@ -199,26 +199,24 @@ pub(crate) mod capture {
 
     /// Captures synchronous work without exposing a thread guard to async tests.
     pub(crate) fn sync<T>(test: impl FnOnce(Seen) -> T) -> T {
-        let (seen, dispatch, _registration) = subscriber();
+        let (seen, dispatch) = subscriber();
         tracing::dispatcher::with_default(&dispatch, || test(seen))
     }
 
-    fn subscriber() -> (Seen, tracing::Dispatch, tracing::Dispatch) {
+    fn subscriber() -> (Seen, tracing::Dispatch) {
         use tracing_subscriber::layer::SubscriberExt as _;
-        // Keep tracing-core's callsite registration on its multi-dispatch path,
-        // even when an unobserved thread first reaches a shared callsite.
-        let registration = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Seen::default();
-        let dispatch =
-            tracing::Dispatch::new(tracing_subscriber::registry().with(Capture(Arc::clone(&seen))));
-        (seen, dispatch, registration)
+        let dispatch = acyclic_test_support::capture::dispatch(
+            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+        );
+        (seen, dispatch)
     }
 
     /// Installs the test's subscriber only while its future is being polled.
     /// Spawned tasks must carry this dispatcher with `with_current_subscriber`.
     pub(crate) async fn run<T, F: Future<Output = T>>(test: impl FnOnce(Seen) -> F) -> T {
         use tracing::instrument::WithSubscriber as _;
-        let (seen, dispatch, _registration) = subscriber();
+        let (seen, dispatch) = subscriber();
         async move { test(seen).await }
             .with_subscriber(dispatch)
             .await

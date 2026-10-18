@@ -43,7 +43,7 @@ impl NativeDemandSource {
                 }
             });
             let worker_stop = stop.0.clone();
-            let mut worker = tokio::task::spawn_blocking(crate::obs::in_context(crate::obs::caller_context(), move || {
+            let mut worker = acyclic_grpc_observability::task::spawn_blocking(crate::obs::in_context(crate::obs::caller_context(), move || {
                 let _permit = permit;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     worker_stop.check().map_err(|_| DemandError::Cancelled)?;

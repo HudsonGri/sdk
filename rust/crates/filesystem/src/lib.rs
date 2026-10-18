@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 #![deny(unsafe_code)]
 #![cfg_attr(
     test,
@@ -409,3 +410,6 @@ pub mod browser;
 
 #[cfg(windows)]
 pub use native_host::private_file::{create_owner_only_file, has_owner_only_permissions};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_capture;

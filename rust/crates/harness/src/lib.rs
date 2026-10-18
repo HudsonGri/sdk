@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::disallowed_methods))]
 #![deny(unsafe_code)]
 #![cfg_attr(
     target_arch = "wasm32",
@@ -189,3 +190,6 @@ pub use resource_preparation::ChildScratchCreationProof;
 
 mod process_error;
 pub use process_error::ProcessError;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_capture;

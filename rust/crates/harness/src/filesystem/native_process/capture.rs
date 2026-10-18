@@ -71,7 +71,7 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
     custody: T,
 ) -> Result<(Option<NativeProcessResult>, T)> {
-    let (output, custody) = tokio::task::spawn_blocking(move || {
+    let (output, custody) = acyclic_grpc_observability::task::spawn_blocking(move || {
         with_custody(custody, |custody| {
             let mut command = Command::new(&invocation.executable);
             if !invocation.inherit_environment {

@@ -86,9 +86,8 @@ impl NativeDemandSource {
             let released = context.release(claimed_input);
             let result = result.and_then(|value| released.map(|()| value));
             let result = match result {
-                Ok((path, ownership)) => tokio::task::spawn_blocking(crate::obs::in_context(
-                    crate::obs::caller_context(),
-                    move || {
+                Ok((path, ownership)) => acyclic_grpc_observability::task::spawn_blocking(
+                    crate::obs::in_context(crate::obs::caller_context(), move || {
                         let result = (|| {
                             let root = HostRoot::open(&path, &mut context)?;
                             let inline = crate::native_host::filesystem_is_local(
@@ -126,8 +125,8 @@ impl NativeDemandSource {
                             })
                         })();
                         (result, context)
-                    },
-                ))
+                    }),
+                )
                 .await
                 .map_err(|_| DemandError::WorkerUnavailable)?,
                 Err(error) => (Err(error), context),
