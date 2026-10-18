@@ -620,6 +620,7 @@ async fn running_owner<P: acyclic_stream::StreamProvider + 'static>(
         stream,
         filesystem,
         volume,
+        None,
         &issuer.verifier(&mut None)?,
         signed,
         &scope,

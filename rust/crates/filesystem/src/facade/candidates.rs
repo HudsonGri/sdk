@@ -119,7 +119,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn private_candidate(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -347,7 +346,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-watch"))]
     fn replica(
         &self,
         mut dependencies: DependencyLedger,
