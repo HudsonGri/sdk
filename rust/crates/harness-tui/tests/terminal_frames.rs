@@ -24,6 +24,9 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
 
+#[path = "terminal_frames/contents.rs"]
+mod contents;
+
 const WIDTH: u16 = 24;
 const HEIGHT: u16 = 6;
 
