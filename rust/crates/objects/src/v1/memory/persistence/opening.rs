@@ -44,7 +44,7 @@ pub(crate) fn open(
             .read(true)
             .write(true)
             .open(root.join("mutations.log"))?;
-        let header = load_header(&mut file, &root, limits, getrandom::fill)?;
+        let header = load_header(&mut file, &root, limits, super::super::fill_entropy)?;
         let root = Arc::new(crate::physical::LocalRoot::new(root));
         let (state, operations, inline_bytes) = replay(&mut file, &root, options, limits)?;
         let bytes = file.stream_position()?;

@@ -9,6 +9,7 @@ use acyclic_harness::{
 };
 use acyclic_native_runtime::testing::Schedule;
 use std::sync::Arc;
+use std::{collections::BTreeMap, path::Path};
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
@@ -21,6 +22,7 @@ struct Trace {
     requests: Vec<u8>,
     dispatches: Vec<u8>,
     files: Vec<u8>,
+    durable: Vec<u8>,
 }
 
 fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
@@ -44,6 +46,7 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
         ("requests", &left.requests, &right.requests),
         ("dispatches", &left.dispatches, &right.dispatches),
         ("files", &left.files, &right.files),
+        ("durable", &left.durable, &right.durable),
     ] {
         if left != right {
             let offset = left
@@ -61,7 +64,31 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
     Ok(())
 }
 
-async fn scenario() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
+    let mut pending = vec![directory.to_path_buf()];
+    let mut files = BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        for entry in std::fs::read_dir(path).map_err(storage)? {
+            let entry = entry.map_err(storage)?;
+            let path = entry.path();
+            let kind = entry.file_type().map_err(storage)?;
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() {
+                let name = path.strip_prefix(directory).map_err(storage)?;
+                let name = name
+                    .to_str()
+                    .ok_or_else(|| Error::Invalid("non-UTF-8 durable path".into()))?;
+                files.insert(name.to_owned(), std::fs::read(&path).map_err(storage)?);
+            } else {
+                return Err(Error::Invalid("unexpected durable entry".into()));
+            }
+        }
+    }
+    serde_json::to_vec(&files).map_err(storage)
+}
+
+async fn scenario() -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>)> {
     // The independently initialized stores and settings never discover HOME.
     let directory = tempfile::tempdir().map_err(storage)?;
     let reference = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -132,6 +159,7 @@ async fn scenario() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         .ok_or_else(|| Error::Invalid("missing final snapshot".into()))?
         .files;
     Ok((
+        directory,
         serde_json::to_vec(&provider.requests()).map_err(storage)?,
         serde_json::to_vec(&provider.dispatches()).map_err(storage)?,
         serde_json::to_vec(&files).map_err(storage)?,
@@ -147,7 +175,7 @@ async fn replay(seed: u64, erase_source: bool) -> Result<Trace> {
     };
     let mut turn = Box::pin(schedule.scope(scenario()));
     let mut boundaries = Vec::new();
-    let (requests, dispatches, files) = loop {
+    let (directory, requests, dispatches, files) = loop {
         tokio::select! {
             biased;
             event = events.recv() => {
@@ -176,6 +204,7 @@ async fn replay(seed: u64, erase_source: bool) -> Result<Trace> {
         requests,
         dispatches,
         files,
+        durable: durable_bytes(directory.path())?,
     })
 }
 

@@ -23,6 +23,10 @@ mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
 tokio::task_local! { static BLOCKING_CONTEXT: Option<Context>; }
+#[cfg(test)]
+thread_local! {
+    static FORGET_HOST_CONTEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// A submitted operation paused before execution or acknowledgement.
 pub struct Boundary {
@@ -295,17 +299,19 @@ where
     let owner = if let Some(context) = Context::current() {
         let active = context.accept("blocking");
         let owned = active.0.clone();
-        BlockingOwner::Worker(spawn_owned(
+        BlockingOwner::Controlled(spawn_owned(
             &context,
             CURRENT.scope(Some(owned.clone()), async move {
                 let _active = active;
                 owned.pause("blocking:submitted").await;
-                let result = BLOCKING_CONTEXT.sync_scope(Some(owned.clone()), || {
-                    CURRENT.sync_scope(None, || {
+                let completion = crate::run_blocking_io(
+                    move || {
                         let _inline = crate::InlineBlocking::enter();
                         work()
-                    })
-                });
+                    },
+                    None,
+                );
+                let result = host_work(completion, owned.schedule.0.executor.is_some()).await;
                 owned.pause("blocking:completed").await;
                 result
             }),
@@ -320,6 +326,7 @@ where
     };
     async move {
         match owner {
+            BlockingOwner::Controlled(worker) => worker.await?,
             BlockingOwner::Shared(shared) => shared.await.map_err(std::io::Error::other)?,
             BlockingOwner::Worker(worker) => worker.await,
         }
@@ -342,8 +349,25 @@ where
 
 /// The one task that owns a blocking closure's result.
 enum BlockingOwner<T> {
+    Controlled(TaskHandle<std::io::Result<T>>),
     Worker(TaskHandle<T>),
     Shared(tokio::task::JoinHandle<std::io::Result<T>>),
+}
+
+async fn host_work<T>(
+    completion: std::io::Result<crate::NativeCompletion<T>>,
+    seeded: bool,
+) -> std::io::Result<T> {
+    let mut completion = completion?;
+    if let Some(job) = completion.pending.take() {
+        let workers = crate::workers(&crate::BLOCKING_WORKERS, false)?;
+        if seeded {
+            executor::complete_io(queued(job, workers))?;
+        } else {
+            queued(job, workers).await?;
+        }
+    }
+    completion.await
 }
 
 pub(crate) fn submit(
@@ -392,6 +416,30 @@ where
     match &context.schedule.0.executor {
         Some(executor) => executor.spawn(future),
         None => TaskHandle::native(tokio::spawn(future)),
+    }
+}
+
+// Retain only the simulated external sources on real host workers. CURRENT
+// stays unset there: a blocking operation must not dispatch async barriers
+// back into the executor that is waiting for its physical terminal.
+pub(crate) fn inherit_host<F, T>(work: F) -> impl FnOnce() -> T + Send + 'static
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let context = Context::simulation();
+    #[cfg(test)]
+    let context = if FORGET_HOST_CONTEXT.with(|fault| fault.replace(false)) {
+        None
+    } else {
+        context
+    };
+    let runtime = context
+        .as_ref()
+        .and_then(|_| tokio::runtime::Handle::try_current().ok());
+    move || {
+        let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
+        BLOCKING_CONTEXT.sync_scope(context, work)
     }
 }
 
