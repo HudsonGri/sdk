@@ -1,16 +1,15 @@
-use super::{TestResult, json_matchers, provider::Recording};
+use super::{TestResult, json_matchers};
 use acyclic_harness::conversation::FileDescriptor;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-pub fn check(case: &Value, recording: &Recording, protocol: &str) -> TestResult {
+pub fn check(case: &Value, requests: &BTreeMap<String, Vec<Value>>, protocol: &str) -> TestResult {
     for (name, expected) in case["expect"]["model_requests"]
         .as_object()
         .into_iter()
         .flatten()
     {
-        let actual = recording
-            .requests
+        let actual = requests
             .get(name)
             .ok_or_else(|| format!("missing HTTP model {name}"))?;
         let expected = expected
@@ -33,7 +32,7 @@ pub fn check(case: &Value, recording: &Recording, protocol: &str) -> TestResult 
     Ok(())
 }
 
-fn matches(expected: &Value, actual: &Value, protocol: &str) -> TestResult<bool> {
+pub fn matches(expected: &Value, actual: &Value, protocol: &str) -> TestResult<bool> {
     let fields = expected
         .as_object()
         .ok_or("model request expectation must be an object")?;
@@ -184,27 +183,27 @@ mod tests {
             let call = json!({"type":"function_call","call_id":"call","name":"wait","arguments":"{}"});
             let result = json!({"type":"function_call_output","call_id":"call","output":output});
             let body = json!({"input":[call,result]});
-            prop_assert!(matches(&expected, &body, "responses").map_err(TestCaseError::fail)?);
+            prop_assert!(matches(&expected, &body, "responses").map_err(|error| TestCaseError::fail(error.to_string()))?);
             let mut missing = body.clone(); missing["input"].as_array_mut().unwrap().pop();
-            prop_assert!(!matches(&expected, &missing, "responses").map_err(TestCaseError::fail)?);
+            prop_assert!(!matches(&expected, &missing, "responses").map_err(|error| TestCaseError::fail(error.to_string()))?);
             let mut renamed = body.clone(); renamed["input"][0]["name"] = "archive".into();
-            prop_assert!(!matches(&expected, &renamed, "responses").map_err(TestCaseError::fail)?);
+            prop_assert!(!matches(&expected, &renamed, "responses").map_err(|error| TestCaseError::fail(error.to_string()))?);
             let mut changed = body.clone(); changed["input"][1]["output"] = serde_json::to_string(&json!({"answer":format!("{text}! ")}))?.into();
-            prop_assert!(!matches(&expected, &changed, "responses").map_err(TestCaseError::fail)?);
+            prop_assert!(!matches(&expected, &changed, "responses").map_err(|error| TestCaseError::fail(error.to_string()))?);
             let mut duplicate = expected.clone();
             duplicate["messages"].as_array_mut().unwrap().push(expected["messages"][0].clone());
-            prop_assert!(!matches(&duplicate, &body, "responses").map_err(TestCaseError::fail)?);
+            prop_assert!(!matches(&duplicate, &body, "responses").map_err(|error| TestCaseError::fail(error.to_string()))?);
         }
 
         #[test]
         fn file_history_is_bound_to_exact_utf8_bytes(text in ".{1,64}") {
-            let descriptor = FileDescriptor::from_bytes(text.as_bytes(), "text/plain", &mut None).map_err(TestCaseError::fail)?;
+            let descriptor = FileDescriptor::from_bytes(text.as_bytes(), "text/plain", &mut None).map_err(|error| TestCaseError::fail(error.to_string()))?;
             let expected = json!({"messages":[{"role":"user","content":[{"kind":"file","policy":"bounded_full","file":{"descriptor":descriptor}}]}]});
             for (protocol, field, kind) in [("responses","input","input_text"), ("anthropic","messages","text")] {
                 let body = json!({(field):[{"role":"user","content":[{"type":kind,"text":text}]}]});
-                prop_assert!(matches(&expected, &body, protocol).map_err(TestCaseError::fail)?);
+                prop_assert!(matches(&expected, &body, protocol).map_err(|error| TestCaseError::fail(error.to_string()))?);
                 let changed = json!({(field):[{"role":"user","content":[{"type":kind,"text":format!("{text}!")}]}]});
-                prop_assert!(!matches(&expected, &changed, protocol).map_err(TestCaseError::fail)?);
+                prop_assert!(!matches(&expected, &changed, protocol).map_err(|error| TestCaseError::fail(error.to_string()))?);
             }
         }
     }

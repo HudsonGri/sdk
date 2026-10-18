@@ -389,7 +389,7 @@ mod tests {
                 {"type":"event","kind":"completed","metadata":null}
             ]);
             for protocol in ["responses", "anthropic"] {
-                let (parts, pending) = wire::encode(&turn, protocol).map_err(TestCaseError::fail)?;
+                let (parts, pending) = wire::encode(&turn, protocol).map_err(|error| TestCaseError::fail(error.to_string()))?;
                 prop_assert!(!pending);
                 let frames: Vec<Value> = parts.iter().map(|part| serde_json::from_str(part.strip_prefix("data: ").unwrap().trim())).collect::<Result<_, _>>()?;
                 let (actual_name, actual_arguments) = if protocol == "responses" {

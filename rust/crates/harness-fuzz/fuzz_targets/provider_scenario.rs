@@ -1,8 +1,13 @@
 #![no_main]
+#[path = "../../harness/src/bin/graphcoder/tests/scenarios/history.rs"]
+mod history;
+#[path = "../../harness/tests/support/json_matchers.rs"]
+mod json_matchers;
 #[path = "../../harness/tests/e2e/provider_case.rs"]
 mod provider_case;
 #[path = "../../harness/tests/support/scenario_data.rs"]
 mod scenario_data;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
         return;
@@ -18,6 +23,19 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             scenario_data::split_tiers(serde_json::from_slice(&encoded).unwrap()).unwrap(),
             (value.clone(), binary)
         );
+    }
+    if let (Some(expected), Some(actual)) = (value.get("history_expect"), value.get("wire_request"))
+    {
+        for protocol in ["responses", "anthropic"] {
+            if let Ok(matched) = history::matches(expected, actual, protocol) {
+                let decoded: serde_json::Value =
+                    serde_json::from_slice(&serde_json::to_vec(actual).unwrap()).unwrap();
+                assert_eq!(
+                    history::matches(expected, &decoded, protocol).unwrap(),
+                    matched
+                );
+            }
+        }
     }
     let Ok(case) = serde_json::from_value::<provider_case::ProviderCase>(value) else {
         return;
