@@ -87,3 +87,28 @@ fn negative_control_detects_post_drop_read_after_stolen_readiness() -> io::Resul
     assert!(!stolen_readiness_after_drop(true)?);
     Ok(())
 }
+
+#[test]
+fn native_worker_publishes_valid_bytes_and_eof() -> io::Result<()> {
+    use tokio::io::ReadBuf;
+    let (read, mut write) = pipe()?;
+    write.write_all(b"first\nsecond\n")?;
+    drop(write);
+    let mut reader = super::Reader::spawn(read)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let bytes = runtime.block_on(async {
+        let mut output = Vec::new();
+        loop {
+            let mut bytes = [0; 3];
+            let mut destination = ReadBuf::new(&mut bytes);
+            std::future::poll_fn(|cx| reader.poll_read(cx, &mut destination)).await?;
+            if destination.filled().is_empty() {
+                break;
+            }
+            output.extend_from_slice(destination.filled());
+        }
+        io::Result::Ok(output)
+    });
+    assert_eq!(bytes?, b"first\nsecond\n");
+    Ok(())
+}
