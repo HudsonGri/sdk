@@ -64,6 +64,7 @@ fn same(
     browser: &WasmClientViews,
     drop_projection: bool,
     drop_task: bool,
+    drop_notification: bool,
 ) -> Result<(), String> {
     let agents: Vec<String> = serde_wasm_bindgen::from_value(browser.agents().unwrap()).unwrap();
     let expected = native
@@ -88,6 +89,17 @@ fn same(
         .unwrap();
     if actual_models != expected_models {
         return Err("view parity: model projections differ".into());
+    }
+    let actual_notifications: serde_json::Value = if drop_notification {
+        serde_json::json!([])
+    } else {
+        serde_wasm_bindgen::from_value(browser.notifications().unwrap()).unwrap()
+    };
+    let expected_notifications = native
+        .read(|v| serde_json::to_value(v.notifications().collect::<Vec<_>>()).unwrap())
+        .unwrap();
+    if actual_notifications != expected_notifications {
+        return Err("view parity: notification projections differ".into());
     }
     let actual_goals: serde_json::Value =
         serde_wasm_bindgen::from_value(browser.goals().unwrap()).unwrap();
@@ -235,6 +247,7 @@ async fn exercise(
     wrong_handle: bool,
     drop_projection: bool,
     drop_task: bool,
+    drop_notification: bool,
 ) -> Result<(), String> {
     let provider = Arc::new(MemoryStream::default());
     let volume = TaskVolume::open(provider.clone(), path("swarm/a/files"))
@@ -259,6 +272,12 @@ async fn exercise(
         )
         .await
         .unwrap();
+    put(
+        &volume,
+        ".tasks/t/notifications/settled.json",
+        br#"{"task":"t","sequence":9007199254740993,"event":"needs_approval","detail":"approval requested"}"#,
+    )
+    .await;
     put(&volume, "GOAL.md", b"initial goal").await;
     put(&volume, "plans/main.md", b"- [ ] initial plan").await;
     put(
@@ -357,6 +376,7 @@ async fn exercise(
             },
             async |change| {
                 if matches!(change, acyclic_harness::client::SwarmChange::Snapshot { .. }) {
+                    put(&volume, ".tasks/t/notifications/blocked.json", br#"{"task":"t","sequence":9007199254740994,"event":"goal_blocked","detail":"input needed"}"#).await;
                     put(&volume, "GOAL.md", b"---\nstatus: done\n---\nfinal goal").await;
                     put(&volume, "plans/main.md", b"- [x] final plan").await;
                     put(&volume, ".tasks/t/turns/9007199254740994/request.json", &request("final")).await;
@@ -364,7 +384,7 @@ async fn exercise(
                     put(&volume,".tasks/t/turns/9007199254740993/tools/call/result.json",b"result").await;
                     target.set(Some(volume.head().await.unwrap().position));
                 }
-                same(&native, &browser, drop_projection, drop_task).map_err(acyclic_harness::Error::Invalid)?;
+                same(&native, &browser, drop_projection, drop_task, drop_notification).map_err(acyclic_harness::Error::Invalid)?;
                 let ready = native
                     .read(|v| {
                         target.get().is_some_and(|target| v.cursor(&path("swarm/a")).is_some_and(|c| c.position == target))
@@ -393,12 +413,12 @@ async fn exercise(
 }
 #[wasm_bindgen_test]
 async fn native_and_wasm_render_the_same_followed_files_and_full_width_cursor() {
-    exercise(false, false, false).await.unwrap();
+    exercise(false, false, false, false).await.unwrap();
 }
 #[wasm_bindgen_test]
 async fn negative_control_separate_browser_reducer_is_detected() {
     assert!(
-        exercise(true, false, false)
+        exercise(true, false, false, false)
             .await
             .unwrap_err()
             .contains("view parity")
@@ -408,7 +428,7 @@ async fn negative_control_separate_browser_reducer_is_detected() {
 #[wasm_bindgen_test]
 async fn negative_control_omitting_followed_model_projections_is_detected() {
     assert!(
-        exercise(false, true, false)
+        exercise(false, true, false, false)
             .await
             .unwrap_err()
             .contains("model projections")
@@ -444,9 +464,19 @@ fn request(name: &str) -> Vec<u8> {
 }
 
 #[wasm_bindgen_test]
+async fn negative_control_omitting_followed_notifications_is_detected() {
+    assert!(
+        exercise(false, false, false, true)
+            .await
+            .unwrap_err()
+            .contains("notification projections")
+    );
+}
+
+#[wasm_bindgen_test]
 async fn negative_control_omitting_followed_task_tools_is_detected() {
     assert!(
-        exercise(false, false, true)
+        exercise(false, false, true, false)
             .await
             .unwrap_err()
             .contains("task folders differ")
