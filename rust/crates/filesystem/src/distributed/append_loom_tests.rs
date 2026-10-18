@@ -79,8 +79,7 @@ fn competing_proposal(authority: AuthorityId, head: Head) -> CommitRequest {
                 &authority.into_bytes(),
                 &durable.operation_id.into_bytes(),
             ]
-            .concat()
-            .into(),
+            .concat(),
         )
         .unwrap(),
     }
