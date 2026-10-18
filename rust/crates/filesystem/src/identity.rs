@@ -1,4 +1,5 @@
 //! Fresh filesystem UUIDs share the active simulation's entropy source.
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "native-watch", windows)))]
 pub(crate) fn fresh_uuid() -> uuid::Uuid {
     #[cfg(feature = "test-support")]
     {
@@ -11,7 +12,7 @@ pub(crate) fn fresh_uuid() -> uuid::Uuid {
 }
 
 pub(crate) fn fresh_time_uuid() -> uuid::Uuid {
-    #[cfg(feature = "test-support")]
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     {
         let mut bytes = [0; 16];
         if let Some(millis) = acyclic_native_runtime::testing::unix_millis()

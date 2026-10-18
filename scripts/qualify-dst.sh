@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The identity seam serves portable constructors too. Native feature unification
+# must not conceal missing modules or native-only test-support imports.
+cargo check --locked -p acyclic-fs --no-default-features --features memory --lib
+bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
+cargo check --locked -p acyclic-fs --no-default-features --features memory,browser,test-support --lib --target wasm32-unknown-unknown
+
 # Build each focused target once; the artifact runner executes the binaries.
 cargo test --locked -p acyclic-native-runtime --features test-support --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py testing::entropy:: testing::executor:: testing::clock:: testing::queue:: testing::durability:: testing::host:: testing::process::

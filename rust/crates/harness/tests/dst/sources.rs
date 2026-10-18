@@ -230,3 +230,29 @@ fn planted_unseeded_sources_fail_the_scan() {
     assert!(test_only("harness/src/client/tests/history.rs"));
     assert!(!test_only("harness/src/local/owner.rs"));
 }
+
+#[test]
+fn fresh_transport_identities_do_not_copy_domain_keys() {
+    // This is a structural allocation proof: the transport owns the generator's
+    // Bytes directly. A domain key is only constructed for the domain consumer.
+    let routes = [
+        (
+            include_str!("../../../stream/src/grpc/client.rs"),
+            "crate::new_identity_bytes,",
+            "|| Bytes::copy_from_slice(crate::new_idempotency_key().as_bytes()),",
+        ),
+        (
+            include_str!("../../../stream/src/session/client.rs"),
+            "identity: crate::new_identity_bytes(),",
+            "identity: Bytes::copy_from_slice(crate::new_idempotency_key().as_bytes()),",
+        ),
+    ];
+    let owns_generated_bytes =
+        |text: &str, route: &str| text.contains(route) && !text.contains("new_idempotency_key()");
+    for (source, route, copying_mutant) in routes {
+        assert!(owns_generated_bytes(source, route));
+        // Restoring either original call must fail the same allocation gate.
+        let broken = source.replace(route, copying_mutant);
+        assert!(!owns_generated_bytes(&broken, route));
+    }
+}

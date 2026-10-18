@@ -1,9 +1,5 @@
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use super::*;
-#[cfg(feature = "test-support")]
-use acyclic_native_runtime::testing::spawn;
-#[cfg(not(feature = "test-support"))]
-use tokio::spawn;
 
 /// Bounded self-contained local backend options.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -101,6 +97,11 @@ where
     F: std::future::Future<Output = T> + Send + 'static,
     I: FnOnce(tokio::sync::OwnedMutexGuard<()>) -> F + Send + 'static,
 {
+    #[cfg(feature = "test-support")]
+    use acyclic_native_runtime::testing::spawn;
+    #[cfg(not(feature = "test-support"))]
+    use tokio::spawn;
+
     // cancelling the caller must not release root ownership while provider spawn_blocking workers
     spawn(async move { initialize(ownership).await })
         .await
