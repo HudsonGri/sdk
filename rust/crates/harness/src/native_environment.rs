@@ -62,6 +62,14 @@ fn resolve(read: Read<'_>) -> Option<OsString> {
     if let Read::State(Some(directory)) = read {
         return Some(directory.as_os_str().to_owned());
     }
+    #[cfg(all(
+        feature = "test-support",
+        feature = "filesystem-local",
+        not(target_arch = "wasm32")
+    ))]
+    if let Read::State(None) = read {
+        return None;
+    }
     #[cfg(test)]
     match &read {
         Read::Variable(name) if !user_location(name) => {}

@@ -22,6 +22,10 @@ impl LocalHarness {
         checkout: Option<&Path>,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
+        #[cfg(feature = "native-execution")]
+        if checkout.is_some() {
+            config = config.prepare_state()?;
+        }
         #[cfg(all(feature = "native-execution", any(test, feature = "test-support")))]
         let state_owner = config.test_state.clone();
         #[cfg(all(feature = "native-execution", not(any(test, feature = "test-support"))))]

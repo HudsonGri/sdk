@@ -17,7 +17,8 @@ fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
     // Positive control: the injected directory is the one resolution, and the test helper always injects one.
     let injected = tempfile::tempdir().map_err(super::super::storage)?;
     let rooted = LocalHarnessConfig::new(checkout.path(), (model()?, text()))
-        .state_directory(injected.path());
+        .state_directory(injected.path())
+        .prepare_state()?;
     assert_eq!(rooted.resolved_state_directory()?, injected.path());
     let helper = crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?;
     let owned = helper.resolved_state_directory()?;
@@ -27,19 +28,30 @@ fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
         crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?
             .resolved_state_directory()?
     );
+    let default = unrooted.prepare_state()?;
+    assert!(default.test_state.is_some());
+    assert_ne!(default.resolved_state_directory()?, owned);
+    assert!(
+        !default
+            .resolved_state_directory()?
+            .starts_with(checkout.path())
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn opening_without_an_injected_root_fails_before_any_state_exists() -> Result<()> {
+async fn opening_without_an_injected_root_owns_temporary_state() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
-    let opened =
-        LocalHarness::open(LocalHarnessConfig::new(checkout.path(), (model()?, text()))).await;
-    assert!(
-        matches!(&opened, Err(Error::Unsupported(message)) if message.starts_with("unit tests must inject")),
-        "{:?}",
-        opened.as_ref().err()
-    );
+    let config =
+        LocalHarnessConfig::new(checkout.path(), (model()?, text())).without_default_tools();
+    // Negative control: bypassing preparation cannot enter the per-user root.
+    assert!(config.resolved_state_directory().is_err());
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    let config = config.settings(crate::native_settings::SettingsConfig::for_test(
+        checkout.path(),
+    )?);
+    let harness = LocalHarness::open(config).await?;
+    harness.close().await?;
     Ok(())
 }
 

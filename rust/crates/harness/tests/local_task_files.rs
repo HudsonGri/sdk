@@ -10,6 +10,50 @@ use futures::StreamExt as _;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn direct_test_support_compositions_default_to_private_state() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let model = Model::new(
+        "scripted".into(),
+        "test".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let config = acyclic_harness::LocalHarnessConfig::new(
+        directory.path(),
+        (model, Arc::new(ScriptedModelProvider::new([]))),
+    )
+    .without_default_tools();
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    let config = config.settings(
+        acyclic_harness::native_settings::SettingsConfig::new(directory.path(), directory.path())
+            .codex_home(directory.path().join(".codex")),
+    );
+    let first = LocalHarness::open(config).await?;
+    // A second direct config must not reopen the first composition's per-project
+    // user store: its private volume identities must be distinct.
+    let model = Model::new(
+        "scripted".into(),
+        "test".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let config = acyclic_harness::LocalHarnessConfig::new(
+        directory.path(),
+        (model, Arc::new(ScriptedModelProvider::new([]))),
+    )
+    .without_default_tools();
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    let config = config.settings(
+        acyclic_harness::native_settings::SettingsConfig::new(directory.path(), directory.path())
+            .codex_home(directory.path().join(".codex")),
+    );
+    let second = LocalHarness::open(config).await?;
+    assert_ne!(first.task_files().volume(), second.task_files().volume());
+    first.close().await?;
+    second.close().await
+}
+
+#[tokio::test]
 async fn private_request_files_follow_immediately_and_survive_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;

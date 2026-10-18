@@ -106,6 +106,15 @@ impl LocalHarnessConfig {
         self.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
         Ok(self)
     }
+    /// Apply fixture defaults only when opening a store; embedded bindings without
+    /// a checkout must not allocate or resolve an unused state directory.
+    pub(super) fn prepare_state(self) -> Result<Self> {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.state_directory.is_none() {
+            return self.with_test_state();
+        }
+        Ok(self)
+    }
     /// The one resolution of this composition's durable state directory: the injected directory, else the
     /// project's default under the per-user root.
     pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
