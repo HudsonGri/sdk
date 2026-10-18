@@ -163,8 +163,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let state = crate::in_heap(|| self.state(ctx)).await?;
-        let head = crate::in_heap(|| self.head(ctx)).await?;
+        let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
+        let head = crate::heap_future::metered!(ctx, |ctx| self.head(ctx))?;
         ctx.charge(WorkCounters {
             bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
             ..WorkCounters::UNCHARGED
@@ -184,9 +184,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = crate::in_heap(|| self.store.load_lazy_workspace(self.workspace.id(), ctx))
-                .await?
-                .ok_or(LazyWorkspaceError::NotFound)?;
+            let state = crate::heap_future::metered!(ctx, |ctx| self
+                .store
+                .load_lazy_workspace(self.workspace.id(), ctx))?
+            .ok_or(LazyWorkspaceError::NotFound)?;
             let source = self.source.reference();
             if state.schema_version != LAZY_STATE_SCHEMA
                 || state.workspace_id != self.workspace.id()
@@ -208,16 +209,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 source,
                 ..state
             };
-            if crate::in_heap(|| {
+            if crate::heap_future::metered!(ctx, |ctx| {
                 self.store.compare_and_swap_lazy_workspace(
                     self.workspace.id(),
                     revision,
                     next.clone(),
                     ctx,
                 )
-            })
-            .await?
-            {
+            })? {
                 return Ok(next);
             }
         }
@@ -229,9 +228,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = crate::in_heap(|| self.store.load_lazy_workspace(self.workspace.id(), ctx))
-                .await?
-                .ok_or(LazyWorkspaceError::NotFound)?;
+            let state = crate::heap_future::metered!(ctx, |ctx| self
+                .store
+                .load_lazy_workspace(self.workspace.id(), ctx))?
+            .ok_or(LazyWorkspaceError::NotFound)?;
             if state.schema_version != LAZY_STATE_SCHEMA
                 || state.workspace_id != self.workspace.id()
                 || state.source.identity != self.source.reference().identity
@@ -267,16 +267,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 pending_remove: None,
                 ..state.clone()
             };
-            if crate::in_heap(|| {
+            if crate::heap_future::metered!(ctx, |ctx| {
                 self.store.compare_and_swap_lazy_workspace(
                     self.workspace.id(),
                     state.revision,
                     next,
                     ctx,
                 )
-            })
-            .await?
-            {
+            })? {
                 return Ok(());
             }
         }

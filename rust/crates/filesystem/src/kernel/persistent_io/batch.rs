@@ -57,17 +57,14 @@ where
                 custody: KernelOwnedAllocation::Standalone,
             });
         }
-        let mut frame = batch_in_heap(accounting, |accounting| {
+        crate::heap_future::metered!(accounting, |accounting| {
             crate::kernel::file_read::read_objects_with_accounting(
                 store,
                 &plan.requests,
                 accounting,
                 cancellation,
             )
-        })?;
-        let result = frame.value.as_mut().await;
-        drop(frame);
-        result
+        })
     }
     .await;
     let cold = match cold {
@@ -232,25 +229,6 @@ fn batch_container<T>(
         bytes = actual;
     }
     Ok((values, bytes, allocation))
-}
-
-pub(super) fn batch_in_heap<'a, 'accounting, F: Future>(
-    accounting: &'a mut KernelAccounting<'accounting>,
-    create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
-) -> Result<ReadOwned<std::pin::Pin<Box<crate::heap_future::HeapFuture<F>>>>, FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let custody = if accounting.native_work().is_some() {
-        let bytes = usize_to_u64(size_of::<F>());
-        accounting.claim_owned(bytes, u64::from(bytes != 0))?
-    } else {
-        KernelOwnedAllocation::Standalone
-    };
-    #[cfg(target_arch = "wasm32")]
-    let custody = KernelOwnedAllocation::Standalone;
-    Ok(ReadOwned {
-        value: in_heap(|| create(accounting)),
-        custody,
-    })
 }
 
 impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {

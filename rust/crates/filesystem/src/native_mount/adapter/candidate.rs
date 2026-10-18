@@ -73,14 +73,14 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         ))?;
     // The diff and the directory walk are deep; each runs from its own
     // allocation.
-    let (diff, allocation) = crate::in_heap(|| {
+    let (diff, allocation) = crate::heap_future::in_heap_claimed(&native, || {
         base.candidate_diff(
             candidate,
             MAXIMUM_EXACT_INSTALL_CHANGES,
             &native,
             cancellation,
         )
-    })
+    })?
     .await?;
     let mut inputs = InputBuffers::new(carrier)?;
     let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) = allocation else {
@@ -118,7 +118,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
         installed.nodes.push(change.file_id);
     }
     inputs.release(file_buffer_bytes)?;
-    let directories = crate::in_heap(|| {
+    let directories = crate::heap_future::in_heap_claimed(&native, || {
         installed_directories(
             base,
             candidate,
@@ -128,7 +128,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
             &native,
             cancellation,
         )
-    })
+    })?
     .await?;
     for binding in diff.bindings {
         install_binding_change(

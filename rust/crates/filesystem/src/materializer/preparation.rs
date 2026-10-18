@@ -83,7 +83,7 @@ impl<S: MaterializationJournalStore>
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
         let state = super::stage_state::StageState::<_, S::ActionCompletion<'_>>::new(journal);
         let workspace = generation.workspace();
-        let reader = crate::in_heap(|| {
+        let reader = crate::heap_future::in_heap_claimed(work, || {
             workspace.checkout(
                 crate::model::GenerationSelector::Exact(generation.id()),
                 crate::model::CheckoutMode::read_only_pinned(),
@@ -91,6 +91,7 @@ impl<S: MaterializationJournalStore>
                 work.cancellation(),
             )
         })
+        .map_err(|error| E::from(MaterializationError::Backend(error)))?
         .await
         .and_then(|checkout| {
             checkout
@@ -118,14 +119,18 @@ impl<S: MaterializationJournalStore>
                                     self.check_custody(&journal).map_err(E::from)?;
                                     // Acceptance checks both live tails; the backend
                                     // separately checks the physical allocation.
-                                    crate::in_heap(|| self.verify_allocation(&journal))
-                                        .await
-                                        .map_err(E::from)?;
-                                    crate::in_heap(|| self.store.prepare_action(journal))
-                                        .await
-                                        .map_err(|error| {
-                                            E::from(MaterializationError::Store(error))
-                                        })
+                                    crate::heap_future::in_heap_claimed(work, || {
+                                        self.verify_allocation(&journal)
+                                    })
+                                    .map_err(|error| E::from(MaterializationError::Backend(error)))?
+                                    .await
+                                    .map_err(E::from)?;
+                                    crate::heap_future::in_heap_claimed(work, || {
+                                        self.store.prepare_action(journal)
+                                    })
+                                    .map_err(|error| E::from(MaterializationError::Backend(error)))?
+                                    .await
+                                    .map_err(|error| E::from(MaterializationError::Store(error)))
                                 },
                                 invalid,
                             )
@@ -148,7 +153,7 @@ impl<S: MaterializationJournalStore>
             }
         };
         // Erased: the staging's Send proof starts here, not in every caller's.
-        let staged: acyclic_stream::BoxProviderFuture<'_, _> = crate::in_heap(|| {
+        let staged = crate::heap_future::in_heap_claimed(work, || {
             crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
                 &reader,
                 selections,
@@ -156,7 +161,9 @@ impl<S: MaterializationJournalStore>
                 work,
                 &mut control,
             )
-        });
+        })
+        .map_err(|error| E::from(MaterializationError::Backend(error)))?
+        .map_frame(|frame| -> acyclic_stream::BoxProviderFuture<'_, _> { frame });
         let result = staged.await;
         let (journal, completion, last) = state.into_inner();
         drop(completion);

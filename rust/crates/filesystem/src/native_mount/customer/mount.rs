@@ -190,7 +190,7 @@ where
         let cancellation = work.cancellation();
         if let Some(guard) = options.callback_guard.as_ref() {
             let check = guard.check(&work)?;
-            crate::in_heap(|| check).await?;
+            crate::heap_future::in_heap_claimed(&work, || check)?.await?;
         }
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
@@ -200,9 +200,10 @@ where
         } else {
             CheckoutMode::read_only_pinned()
         };
-        let mut checkout =
-            crate::in_heap(|| self.checkout(GenerationSelector::Head, mode, &work, cancellation))
-                .await?;
+        let mut checkout = crate::heap_future::in_heap_claimed(&work, || {
+            self.checkout(GenerationSelector::Head, mode, &work, cancellation)
+        })?
+        .await?;
         let config = checkout.volume_config();
         let root = crate::workspace::customer_path_with_accounting(
             &options.subdirectory,
@@ -212,11 +213,13 @@ where
         )?;
         let root_custody = root.1;
         let root = root.0;
-        let selected = crate::in_heap(|| checkout.lookup_no_follow(&root, &work, cancellation))
-            .await
-            .map_err(WorkspaceError::from)?
-            .record
-            .ok_or(WorkspaceError::NotFound)?;
+        let selected = crate::heap_future::in_heap_claimed(&work, || {
+            checkout.lookup_no_follow(&root, &work, cancellation)
+        })?
+        .await
+        .map_err(WorkspaceError::from)?
+        .record
+        .ok_or(WorkspaceError::NotFound)?;
         if selected.kind != FileKind::Directory {
             return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
         }

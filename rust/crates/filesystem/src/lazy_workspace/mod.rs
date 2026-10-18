@@ -31,14 +31,20 @@ macro_rules! accounted {
             let $cancel = cancellation($ctx);
             #[cfg(not(target_arch = "wasm32"))]
             if let Some($work) = $ctx.native_work() {
-                return crate::in_heap(|| async { $call.await })
+                return crate::heap_future::in_heap_claimed($work, || async { $call.await })?
                     .await
                     .map_err(LazyWorkspaceError::from);
             }
             let $work = $ctx.remaining()?;
             // Each expansion awaits the call twice; boxed, neither reserves
-            // its future in the enclosing poll frame.
-            accept_receipt(crate::in_heap(|| async { $call.await }).await, $ctx)
+            // its future in the enclosing poll frame. The frame is paid for on
+            // the ledger first and stays live while the receipt is accepted,
+            // so the receipt's peak includes it.
+            let (measured, reservation) =
+                crate::heap_future::in_heap_metered(&mut *$ctx, |_| async { $call.await })?.await;
+            let accepted = accept_receipt(measured, $ctx);
+            crate::heap_future::FrameLedger::release_frame(&mut *$ctx, reservation)?;
+            accepted
         })
         .await
     }};

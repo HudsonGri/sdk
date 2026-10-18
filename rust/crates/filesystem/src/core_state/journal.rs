@@ -41,7 +41,8 @@ impl MaterializationJournalStore for LocalCoreStateStore {
             return Err(NativeTreeMaterializationError::InvalidLayout.into());
         }
         // Boxed: the transaction's poll frame is not reserved in this one.
-        crate::in_heap(|| async move {
+        let frame_work = work.clone();
+        crate::heap_future::in_heap_claimed(&frame_work, || async move {
             self.materialization(work)
                 .transaction(move |namespace| {
                     let original = namespace
@@ -108,7 +109,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     })
                 })
                 .await
-        })
+        })?
         .await
     }
 

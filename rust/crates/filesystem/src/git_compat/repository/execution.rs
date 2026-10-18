@@ -1,5 +1,5 @@
 use super::*;
-use crate::heap_future::in_heap;
+use crate::heap_future::in_heap_unmetered;
 
 fn inspected_join(pending: &GitPendingTransition) -> bool {
     matches!(
@@ -25,10 +25,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .await
             .map_err(GitCompatRunError::Executor)?;
         match &command {
+            // Unmetered: git commands hold no work ledger; executors meter their own effects.
             GitCommand::MergeContinue => {
-                return in_heap(|| self.continue_join(workspace_tree, executor)).await;
+                return in_heap_unmetered(|| self.continue_join(workspace_tree, executor)).await;
             }
-            GitCommand::MergeAbort => return in_heap(|| self.abort_join(executor)).await,
+            // Unmetered: as above.
+            GitCommand::MergeAbort => return in_heap_unmetered(|| self.abort_join(executor)).await,
             GitCommand::Add { .. } => {
                 if let Some(pending) = self.pending_transition().await? {
                     if matches!(pending.mutation, GitPendingMutation::Join { .. }) {
@@ -41,14 +43,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         }
         // The command, the executor's effect, and its completion each run in
         // a heap future: this frame holds pointers, never their state.
-        let output = in_heap(|| self.execute_validated(command, workspace_tree)).await?;
+        // Unmetered: git commands hold no work ledger; executors meter their own effects.
+        let output = in_heap_unmetered(|| self.execute_validated(command, workspace_tree)).await?;
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
         match output {
             GitCommandOutput::Prepared { transition, action } => {
-                in_heap(|| self.finish(transition, &action, executor)).await
+                // Unmetered: as above.
+                in_heap_unmetered(|| self.finish(transition, &action, executor)).await
             }
             output => Ok(output),
         }
@@ -104,7 +108,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         action: &GitFilesystemAction,
         executor: &E,
     ) -> Result<GitFilesystemResult, GitCompatRunError<S::Error, E::Error>> {
-        let result = in_heap(|| executor.execute(operation, action))
+        // Unmetered: the executor meters its own effect.
+        let result = in_heap_unmetered(|| executor.execute(operation, action))
             .await
             .map_err(GitCompatRunError::Executor)?;
         executor
