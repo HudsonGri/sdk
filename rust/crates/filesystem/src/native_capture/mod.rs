@@ -17,14 +17,14 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod accounting;
+#[cfg(all(test, feature = "memory"))]
+mod reserve_tests;
 #[cfg(test)]
 mod capture_policy_tests;
 mod entry;
 mod model;
 #[cfg(all(test, unix))]
 mod native_view_baseline_tests;
-#[cfg(all(test, feature = "memory"))]
-mod reserve_tests;
 use accounting::*;
 #[cfg(windows)]
 mod sparse;
@@ -34,9 +34,9 @@ mod sparse_scan;
 use sparse::*;
 mod paths;
 use paths::*;
-mod names;
 #[cfg(all(test, feature = "memory"))]
 mod path_error_tests;
+mod names;
 use names::*;
 mod host_walk;
 #[cfg(all(test, feature = "memory"))]
@@ -63,6 +63,8 @@ mod metadata_input_tests;
 mod rescan_probe_tests;
 #[cfg(all(test, target_os = "linux", feature = "memory"))]
 mod stat_probe_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod held_root_tests;
 use metadata::*;
 #[cfg(all(test, feature = "memory"))]
 mod empty_stage_tests;
@@ -89,8 +91,7 @@ mod windows_sparse_tests;
 pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
 pub use entry::{
-    capture_baseline, capture_paths, capture_root_identity, capture_root_incarnation,
-    capture_subtree,
+    HeldRoot, capture_baseline, capture_paths, capture_root_identity, capture_subtree, hold_root,
 };
 #[cfg(feature = "native-mount")]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
