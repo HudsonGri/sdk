@@ -328,6 +328,7 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
             Arc::new(MemoryStream::default()),
             host.clone(),
             &volume,
+            Some(&volume),
             &issuer.verifier(&mut None)?,
             &signed,
             &scope,
