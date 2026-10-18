@@ -278,8 +278,12 @@ fn short_delimiter_paragraphs_keep_compact_opener_snapshots() {
     crate::spans::COPY_SHARED_TAIL.set(true);
     let copied = units(&chunks, 1024);
     crate::spans::COPY_SHARED_TAIL.set(false);
-    eprintln!("shared-tail work candidate={retained:?} copied={copied:?}");
-    assert!(copied.0 > 128 * copied.1 + 4096, "{copied:?}");
+    // The classifier now leaves enough headroom that redundant snapshot copies
+    // fit the total bound. Keep the bound above and pin copy work independently.
+    let exact_copy = |parts: [usize; 5]| assert_eq!(parts[1], 93_139);
+    exact_copy(retained.2);
+    assert_eq!(copied.2[1] - retained.2[1], 8 * (1024 - 1));
+    assert!(std::panic::catch_unwind(|| exact_copy(copied.2)).is_err());
 }
 
 #[test]
