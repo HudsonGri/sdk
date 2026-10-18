@@ -151,3 +151,26 @@ fn an_unknown_or_permanent_selection_prevents_displacement() {
         }
     }
 }
+
+#[test]
+fn an_already_selected_encoding_needs_no_displacement_or_reselection() {
+    for encoding in [ModeState::Set, ModeState::AlwaysSet] {
+        let mut caps = Capabilities::default();
+        caps.modes.insert(1049, ModeState::Reset);
+        for mode in PROTOCOLS {
+            caps.modes.insert(mode, ModeState::Reset);
+        }
+        // Other encoding states are unknown, but switching is unnecessary:
+        // the selected SGR encoding already proves its exclusive selection.
+        caps.modes.insert(1006, encoding);
+        let mut bytes = Vec::new();
+        RestoreGuard::new(&mut bytes, &caps)
+            .setup(ScreenMode::Alternate)
+            .unwrap();
+        assert_eq!(
+            bytes,
+            b"\x1b[?1049h\x1b[?1002h\x18\x1b[?1002l\x18\x1b[?1049l"
+        );
+        assert_restored(0, 1006, &bytes);
+    }
+}

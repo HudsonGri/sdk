@@ -78,7 +78,8 @@ impl<W: Write> RestoreGuard<W> {
             && mutable(1002)
             && MOUSE_SELECTIONS
                 .iter()
-                .all(|group| self.known_selection(group))
+                .zip([1002, 1006])
+                .all(|(group, target)| self.known_selection(group, target))
         {
             self.enable_mode(1006)?;
             self.enable_mode(1002)?;
@@ -86,22 +87,26 @@ impl<W: Write> RestoreGuard<W> {
         Ok(())
     }
 
-    fn known_selection(&self, group: &[u16]) -> bool {
-        group.iter().all(|mode| {
+    fn known_selection(&self, group: &[u16], target: u16) -> bool {
+        let active = |mode| {
             matches!(
                 self.modes.get(mode),
-                Some(
-                    ModeState::Set
-                        | ModeState::Reset
-                        | ModeState::Unsupported
-                        | ModeState::AlwaysReset
-                )
+                Some(ModeState::Set | ModeState::AlwaysSet)
             )
-        }) && group
-            .iter()
-            .filter(|mode| self.modes.get(*mode) == Some(&ModeState::Set))
-            .count()
-            <= 1
+        };
+        group.iter().filter(|mode| active(*mode)).count() <= 1
+            && (active(&target)
+                || group.iter().all(|mode| {
+                    matches!(
+                        self.modes.get(mode),
+                        Some(
+                            ModeState::Set
+                                | ModeState::Reset
+                                | ModeState::Unsupported
+                                | ModeState::AlwaysReset
+                        )
+                    )
+                }))
     }
 
     /// Enable a queried DEC private mode, remembering its exact prior selection.
@@ -110,7 +115,7 @@ impl<W: Write> RestoreGuard<W> {
             return Ok(());
         }
         let group = MOUSE_SELECTIONS.iter().find(|group| group.contains(&mode));
-        if group.is_some_and(|group| !self.known_selection(group)) {
+        if group.is_some_and(|group| !self.known_selection(group, mode)) {
             return Ok(());
         }
         let displaced = group.and_then(|group| {
