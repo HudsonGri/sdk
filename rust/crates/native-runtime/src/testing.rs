@@ -9,6 +9,10 @@ use tokio::sync::{mpsc, oneshot};
 use crate::sync::Mutex;
 mod entropy;
 pub use entropy::fill_seeded;
+mod clock;
+pub use clock::unix_millis;
+mod executor;
+pub use executor::{AbortHandle, TaskHandle};
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(test)]
@@ -18,7 +22,7 @@ mod queue;
 mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
-tokio::task_local! { static BLOCKING_ENTROPY: Option<Arc<entropy::Source>>; }
+tokio::task_local! { static BLOCKING_CONTEXT: Option<Context>; }
 
 /// A submitted operation paused before execution or acknowledgement.
 pub struct Boundary {
@@ -43,6 +47,7 @@ struct State {
     cancelled: bool,
     trace: Vec<String>,
     ready_reads: usize,
+    wall: Option<clock::Wall>,
 }
 
 struct Inner {
@@ -50,6 +55,7 @@ struct Inner {
     // Never nested with the entropy lock, or held across callbacks/awaits/wakes.
     state: Mutex<State>,
     entropy: Option<Arc<entropy::Source>>,
+    executor: Option<Arc<executor::Executor>>,
 }
 
 impl Inner {
@@ -94,24 +100,26 @@ impl Drop for Active {
 impl Schedule {
     /// Creates the push receiver used by a deterministic test driver.
     pub fn new() -> (Self, mpsc::UnboundedReceiver<Boundary>) {
-        Self::with_entropy(None)
+        Self::with_seed(None)
     }
 
-    /// Creates a simulation scope with one reproducible identity stream.
-    /// It never replaces host entropy outside this scope and its descendants.
+    /// Creates a simulation scope with reproducible entropy and owned-task polling.
+    /// Neither changes ordinary execution outside the scope and its descendants.
     pub fn seeded(seed: u64) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
-        Self::with_entropy(Some(Arc::new(entropy::Source::new(seed))))
+        Self::with_seed(Some(seed))
     }
 
-    fn with_entropy(
-        entropy: Option<Arc<entropy::Source>>,
-    ) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
+    fn with_seed(seed: Option<u64>) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
         let (events, receiver) = mpsc::unbounded_channel();
         (
             Self(Arc::new(Inner {
                 events,
-                state: Mutex::new(State::default()),
-                entropy,
+                state: Mutex::new(State {
+                    wall: seed.map(|_| clock::Wall::new()),
+                    ..State::default()
+                }),
+                entropy: seed.map(|seed| Arc::new(entropy::Source::new(seed))),
+                executor: seed.map(executor::Executor::new),
             })),
             receiver,
         )
@@ -119,16 +127,18 @@ impl Schedule {
 
     /// Instruments only this explicitly scoped future and its owned descendants.
     pub async fn scope<F: Future>(&self, future: F) -> F::Output {
-        CURRENT
-            .scope(
-                Some(Context {
-                    schedule: self.clone(),
-                    owned: false,
-                    detail: Arc::new(Mutex::new(Arc::from(""))),
-                }),
-                future,
-            )
-            .await
+        let future = CURRENT.scope(
+            Some(Context {
+                schedule: self.clone(),
+                owned: false,
+                detail: Arc::new(Mutex::new(Arc::from(""))),
+            }),
+            future,
+        );
+        match &self.0.executor {
+            Some(executor) => executor.run(future).await,
+            None => future.await,
+        }
     }
 
     /// Marks cancellation before the caller's future is dropped.
@@ -141,6 +151,9 @@ impl Schedule {
     /// Waits for accepted operations to reach their physical terminal.
     pub async fn drained(&self) {
         std::future::poll_fn(|cx| {
+            if let Some(executor) = &self.0.executor {
+                executor.poll_owned(cx);
+            }
             let mut state = self.0.state();
             if state.active == 0 {
                 Poll::Ready(())
@@ -161,11 +174,23 @@ impl Schedule {
     pub fn trace(&self) -> Vec<String> {
         self.0.state().trace.clone()
     }
+
+    /// Exact seeded task-poll trace, including detached completions.
+    pub fn polls(&self) -> Vec<(u64, &'static str)> {
+        self.0
+            .executor
+            .as_ref()
+            .map_or_else(Vec::new, |executor| executor.trace())
+    }
 }
 
 impl Context {
     pub(crate) fn current() -> Option<Self> {
         CURRENT.try_with(Clone::clone).ok().flatten()
+    }
+
+    fn simulation() -> Option<Self> {
+        Self::current().or_else(|| BLOCKING_CONTEXT.try_with(Clone::clone).ok().flatten())
     }
 
     pub(crate) fn accept(&self, kind: &'static str) -> Active {
@@ -225,24 +250,27 @@ pub fn describe(detail: impl FnOnce() -> String) {
     }
 }
 
-/// Runs the same Tokio owned task with deterministic submission/terminal gates.
-pub fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+/// Runs the original owned future with deterministic submission/terminal gates.
+pub fn spawn<F>(future: F) -> TaskHandle<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
     let Some(context) = Context::current() else {
-        return tokio::spawn(future);
+        return TaskHandle::native(tokio::spawn(future));
     };
     let active = context.accept("task");
     let owned = active.0.clone();
-    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
-        let _active = active;
-        owned.pause("task:submitted").await;
-        let result = future.await;
-        owned.pause("task:completed").await;
-        result
-    }))
+    spawn_owned(
+        &context,
+        CURRENT.scope(Some(owned.clone()), async move {
+            let _active = active;
+            owned.pause("task:submitted").await;
+            let result = future.await;
+            owned.pause("task:completed").await;
+            result
+        }),
+    )
 }
 
 /// Executes the real blocking closure, retaining ownership after caller drop.
@@ -254,12 +282,12 @@ where
     let owner = if let Some(context) = Context::current() {
         let active = context.accept("blocking");
         let owned = active.0.clone();
-        BlockingOwner::Worker(tokio::spawn(CURRENT.scope(
-            Some(owned.clone()),
-            async move {
+        BlockingOwner::Worker(spawn_owned(
+            &context,
+            CURRENT.scope(Some(owned.clone()), async move {
                 let _active = active;
                 owned.pause("blocking:submitted").await;
-                let result = BLOCKING_ENTROPY.sync_scope(owned.schedule.0.entropy.clone(), || {
+                let result = BLOCKING_CONTEXT.sync_scope(Some(owned.clone()), || {
                     CURRENT.sync_scope(None, || {
                         let _inline = crate::InlineBlocking::enter();
                         work()
@@ -267,8 +295,8 @@ where
                 });
                 owned.pause("blocking:completed").await;
                 result
-            },
-        )))
+            }),
+        ))
     } else if crate::inline_blocking_allowed() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
@@ -281,19 +309,19 @@ where
             completion.await
         }))
     } else {
-        BlockingOwner::Worker(tokio::task::spawn_blocking(work))
+        BlockingOwner::Worker(TaskHandle::native(tokio::task::spawn_blocking(work)))
     };
     async move {
         match owner {
             BlockingOwner::Shared(shared) => shared.await.map_err(std::io::Error::other)?,
-            BlockingOwner::Worker(worker) => worker.await.map_err(std::io::Error::other),
+            BlockingOwner::Worker(worker) => worker.await,
         }
     }
 }
 
 /// The one task that owns a blocking closure's result.
 enum BlockingOwner<T> {
-    Worker(tokio::task::JoinHandle<T>),
+    Worker(TaskHandle<T>),
     Shared(tokio::task::JoinHandle<std::io::Result<T>>),
 }
 
@@ -310,23 +338,40 @@ pub(crate) fn submit(
         | crate::NativeJob::Task { completion, .. } => completion.clone(),
     };
     let (done, waiting) = oneshot::channel();
-    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
-        let _active = active;
-        owned.pause("native:submitted").await;
-        let result = match crate::workers(pool, job.meter().is_some()) {
-            Ok(workers) => queued(job, workers).await,
-            Err(error) => Err(error),
-        };
-        if result.is_err()
-            && let Some(completion) = completion
-        {
-            // The caller may already be gone; failure must retire its fence too.
-            completion.complete();
-        }
-        owned.pause("native:completed").await;
-        let _ = done.send(result);
-    }));
+    drop(spawn_owned(
+        context,
+        CURRENT.scope(Some(owned.clone()), async move {
+            let _active = active;
+            owned.pause("native:submitted").await;
+            let result = match crate::workers(pool, job.meter().is_some()) {
+                Ok(workers) if owned.schedule.0.executor.is_some() => {
+                    executor::complete_io(queued(job, workers))
+                }
+                Ok(workers) => queued(job, workers).await,
+                Err(error) => Err(error),
+            };
+            if result.is_err()
+                && let Some(completion) = completion
+            {
+                // The caller may already be gone; failure must retire its fence too.
+                completion.complete();
+            }
+            owned.pause("native:completed").await;
+            let _ = done.send(result);
+        }),
+    ));
     waiting
+}
+
+fn spawn_owned<F>(context: &Context, future: F) -> TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match &context.schedule.0.executor {
+        Some(executor) => executor.spawn(future),
+        None => TaskHandle::native(tokio::spawn(future)),
+    }
 }
 
 // Keep the original queue admission, capacity wake, worker handoff and physical

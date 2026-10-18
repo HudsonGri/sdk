@@ -14,15 +14,9 @@ fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-struct Clock;
-impl acyclic_stream::UnixMillisClock for Clock {
-    fn now_unix_millis(&self) -> u64 {
-        1_700_000_000_000
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct Trace {
+    polls: Vec<(u64, &'static str)>,
     boundaries: Vec<(String, String)>,
     requests: Vec<u8>,
     dispatches: Vec<u8>,
@@ -30,6 +24,9 @@ struct Trace {
 }
 
 fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
+    if left.polls != right.polls {
+        return Err("seeded task polling diverged".into());
+    }
     if left.boundaries != right.boundaries {
         let index = left
             .boundaries
@@ -89,17 +86,17 @@ async fn scenario() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         "1".into(),
         serde_json::Value::Null,
     )?;
-    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-        "done".into(),
-    )]));
+    let provider = Arc::new(ScriptedModelProvider::new([
+        ScriptedTurn::Text("done".into()),
+        ScriptedTurn::Text("reopened".into()),
+    ]));
     let config = || -> Result<_> {
         Ok(local_harness_config(
             directory.path().join("filesystem"),
             (model.clone(), provider.clone()),
         )?
         .volume(volume.clone())
-        .state_directory(directory.path().join("state"))
-        .clock(Arc::new(Clock)))
+        .state_directory(directory.path().join("state")))
     };
     let harness = LocalHarness::open(config()?).await?;
     assert_eq!(harness.run("finish this turn").await?.text, "done");
@@ -122,6 +119,18 @@ async fn scenario() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         .ok_or_else(|| Error::Invalid("missing reopened snapshot".into()))?
         .files;
     assert_eq!(files, restored, "cold reopen lost acknowledged files");
+    assert_eq!(
+        reopened.run("submit after reopening").await?.text,
+        "reopened"
+    );
+    let files = reopened
+        .task_files()
+        .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
+        .await
+        .map_err(storage)?
+        .snapshot
+        .ok_or_else(|| Error::Invalid("missing final snapshot".into()))?
+        .files;
     Ok((
         serde_json::to_vec(&provider.requests()).map_err(storage)?,
         serde_json::to_vec(&provider.dispatches()).map_err(storage)?,
@@ -130,7 +139,7 @@ async fn scenario() -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
 }
 
 async fn replay(seed: u64, erase_source: bool) -> Result<Trace> {
-    // Negative control removes only entropy injection, preserving real barriers.
+    // Negative control removes seeded execution, preserving real barriers.
     let (schedule, mut events) = if erase_source {
         Schedule::new()
     } else {
@@ -149,8 +158,20 @@ async fn replay(seed: u64, erase_source: bool) -> Result<Trace> {
             result = &mut turn => break result?,
         }
     };
-    schedule.drained().await;
+    drop(turn);
+    loop {
+        tokio::select! {
+            biased;
+            event = events.recv() => {
+                let event = event.ok_or_else(|| Error::Invalid("lost drain driver".into()))?;
+                boundaries.push((event.name.into(), event.detail.to_string()));
+                event.release();
+            },
+            () = schedule.drained() => break,
+        }
+    }
     Ok(Trace {
+        polls: schedule.polls(),
         boundaries,
         requests,
         dispatches,
@@ -165,6 +186,7 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
         .build()
         .map_err(storage)?;
     runtime.block_on(async {
+        tokio::time::pause();
         let first = replay(71, false).await?;
         let second = replay(71, false).await?;
         same_trace(&first, &second).expect("same seed diverged");
