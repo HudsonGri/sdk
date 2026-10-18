@@ -772,5 +772,6 @@ mod tests;
 pub(crate) mod entries;
 mod leaf;
 mod pages;
+pub(crate) mod shared;
 #[cfg(test)]
 use pages::PageChunks;

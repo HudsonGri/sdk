@@ -77,7 +77,7 @@ pub(crate) fn share_values<T>(
     mut values: Owned<Vec<T>>,
     nested_bytes: impl Fn(&T) -> u64,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<Owned<Vec<Arc<Entry<T>>>>, FsError> {
+) -> Result<(Owned<Vec<Arc<Entry<T>>>>, u64), FsError> {
     let mut output = match Owned::allocate(values.value.len(), accounting) {
         Ok(output) => output,
         Err(error) => {
@@ -85,6 +85,7 @@ pub(crate) fn share_values<T>(
             return Err(error);
         }
     };
+    let mut logical_bytes = output.bytes;
     let result = (|| {
         for value in std::mem::take(&mut values.value) {
             let bytes = nested_bytes(&value);
@@ -96,11 +97,16 @@ pub(crate) fn share_values<T>(
                 entry.retire(accounting)?;
                 return Err(WorkError::Overflow.into());
             };
+            let Some(logical_total) = logical_bytes.checked_add(entry.value.bytes) else {
+                entry.retire(accounting)?;
+                return Err(WorkError::Overflow.into());
+            };
             if let Err(error) = output.allocation.absorb(&mut entry.allocation) {
                 entry.retire(accounting)?;
                 return Err(error);
             }
             output.bytes = total;
+            logical_bytes = logical_total;
             output.value.push(entry.value);
         }
         Ok(())
@@ -110,7 +116,7 @@ pub(crate) fn share_values<T>(
         output.retire(accounting)?;
         return Err(error);
     }
-    Ok(output)
+    Ok((output, logical_bytes))
 }
 
 pub(crate) enum Entries<'a, T> {
