@@ -84,6 +84,67 @@ fn every_write_cut_preserves_its_exact_prefix_and_cause() {
     }
 }
 
+fn native_control_fault(fault: DurableFault, forget_context: bool) {
+    let mut original = tempfile::tempfile().unwrap();
+    original.write_all(b"retained").unwrap();
+    let file = crate::NativeFile::from_file(original, None)
+        .unwrap_or_else(|(error, _)| panic!("native file: {error}"));
+    let (schedule, mut events) = Schedule::seeded(71);
+    schedule.cut_at(0, fault);
+    let result = runtime().block_on(async {
+        let mut operation = Box::pin(schedule.scope(async {
+            if forget_context {
+                FORGET_HOST_CONTEXT.with(|fault| fault.set(true));
+            }
+            file.set_len_async(3, None).unwrap().await
+        }));
+        let result = loop {
+            tokio::select! {
+                biased;
+                boundary = events.recv() => boundary.unwrap().release(),
+                result = &mut operation => break result,
+            }
+        };
+        drop(operation);
+        schedule.drained().await;
+        result
+    });
+    assert!(result.is_err(), "native control lost the injected fault");
+    let error = result.unwrap_err();
+    let cause = error
+        .get_ref()
+        .unwrap()
+        .downcast_ref::<InjectedStorageFault>()
+        .unwrap();
+    assert_eq!(cause.ordinal, 0);
+    assert_eq!(cause.operation, "file:truncate");
+    assert_eq!(cause.fault, fault);
+    assert_eq!(
+        file.as_file().metadata().unwrap().len(),
+        if fault == DurableFault::After { 3 } else { 8 }
+    );
+    assert_eq!(schedule.durable_writes().len(), 1);
+}
+
+#[test]
+fn native_file_controls_retain_the_scoped_fault_and_original_file_effect() {
+    for fault in [
+        DurableFault::Before,
+        DurableFault::After,
+        DurableFault::Torn(1),
+        DurableFault::Failed,
+        DurableFault::DiskFull,
+    ] {
+        native_control_fault(fault, false);
+    }
+}
+
+#[test]
+#[should_panic(expected = "native control lost the injected fault")]
+fn negative_control_losing_native_file_context_escapes_the_fault() {
+    native_control_fault(DurableFault::Before, true);
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]

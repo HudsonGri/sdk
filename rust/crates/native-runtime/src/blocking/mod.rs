@@ -40,8 +40,6 @@ pub fn run_blocking_io<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
     meter: Option<(Arc<dyn NativeReadMeter>, bool)>,
 ) -> io::Result<NativeCompletion<T>> {
-    #[cfg(feature = "test-support")]
-    let operation = crate::testing::inherit_host(operation);
     let (meter, allocation_meter) = match meter {
         Some((meter, true)) => {
             workers(&BLOCKING_WORKERS, true)?;
@@ -74,6 +72,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
     health: Option<Arc<FileHealth>>,
     pool: &'static LazyLock<io::Result<NativeWorkers>>,
 ) -> io::Result<NativeCompletion<T>> {
+    #[cfg(feature = "test-support")]
+    let operation = crate::testing::inherit_host(operation);
     let allocation_meter = allocation_meter.or(meter.as_ref());
     if let Some(meter) = &meter {
         meter.check()?;
