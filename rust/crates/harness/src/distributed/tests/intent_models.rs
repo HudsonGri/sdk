@@ -7,46 +7,44 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 fn publication_model<const OMIT_LOOKUP: bool>() {
     loom::model(|| {
         let client = Arc::new(MemoryStream::default());
-        let coordinator = block_on(open(&client)).unwrap();
+        let coordinator = Box::new(block_on(open(&client)).unwrap());
         // The host's production gate orders refresh, retry lookup and mutation.
         let shared = loom::sync::Arc::new(crate::sync::Mutex::new(coordinator));
         let task = OperationId::from_bytes([41; 16]);
         let declaration = spec(task, 0).unwrap();
+        // Sign scopes in the serial prefix. Cryptography is covered by the
+        // native properties; the modeled race starts at canonical publication.
+        let (owner, issuer) = owner_issuer();
+        let scope = grant(&issuer, "observe", &["operation:observe"]).unwrap();
+        let verifier = issuer.verifier(&mut None).unwrap();
+        let reader_authority = Box::new((owner.clone(), scope.clone(), verifier.clone()));
         let writer = {
             let shared = loom::sync::Arc::clone(&shared);
             let declaration = declaration.clone();
             loom::thread::spawn(move || {
-                block_on(async {
-                    let mut coordinator = shared.lock().await;
-                    declare(&mut coordinator, declaration, "task")
-                        .await
-                        .unwrap();
-                });
+                let mut coordinator = block_on(shared.lock());
+                super::model_provider::declare_fixture(&mut coordinator, declaration, "task")
+                    .unwrap();
             })
         };
         let reader = {
             let shared = loom::sync::Arc::clone(&shared);
             let declaration = declaration.clone();
             loom::thread::spawn(move || {
-                block_on(async {
-                    let (owner, issuer) = owner_issuer();
-                    let scope = grant(&issuer, "observe", &["operation:observe"]).unwrap();
-                    let mut coordinator = shared.lock().await;
-                    let observed = coordinator
-                        .observe_declaration(
-                            &owner,
-                            &scope,
-                            &issuer.verifier(&mut None).unwrap(),
-                            task,
-                            &IdempotencyKey::new("task").unwrap(),
-                            &mut None,
-                        )
-                        .await
-                        .unwrap();
-                    if let Some(observed) = observed {
-                        assert_eq!(observed, declaration);
-                    }
-                });
+                let (owner, scope, verifier) = *reader_authority;
+                let mut coordinator = block_on(shared.lock());
+                let observed = block_on(coordinator.observe_declaration(
+                    &owner,
+                    &scope,
+                    &verifier,
+                    task,
+                    &IdempotencyKey::new("task").unwrap(),
+                    &mut None,
+                ))
+                .unwrap();
+                if let Some(observed) = observed {
+                    assert_eq!(observed, declaration);
+                }
             })
         };
         writer.join().unwrap();
@@ -59,21 +57,15 @@ fn publication_model<const OMIT_LOOKUP: bool>() {
         }
         let _restore = Restore;
         intent_index::set_omit_index_lookup(OMIT_LOOKUP);
-        let (owner, issuer) = owner_issuer();
-        let scope = grant(&issuer, "observe", &["operation:observe"]).unwrap();
-        let observed = block_on(async {
-            let mut coordinator = shared.lock().await;
-            coordinator
-                .observe_declaration(
-                    &owner,
-                    &scope,
-                    &issuer.verifier(&mut None).unwrap(),
-                    task,
-                    &IdempotencyKey::new("task").unwrap(),
-                    &mut None,
-                )
-                .await
-        })
+        let mut coordinator = block_on(shared.lock());
+        let observed = block_on(coordinator.observe_declaration(
+            &owner,
+            &scope,
+            &verifier,
+            task,
+            &IdempotencyKey::new("task").unwrap(),
+            &mut None,
+        ))
         .unwrap();
         assert_eq!(
             observed,
