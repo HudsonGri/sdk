@@ -287,13 +287,15 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
 async fn bounded_ordinary_path(body: &[u8]) -> Result<()> {
     let (host, file) = ordinary(body).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let io = PreparationIo::from_budget(
+    let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
             peak_allocation_bytes: 1024 * 1024,
             ..acyclic_fs::WorkBudget::UNBOUNDED
         },
         &cancellation,
-    )?;
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
     let (current, bytes) = host
         .current_path(
             file.volume(),
