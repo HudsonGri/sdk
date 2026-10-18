@@ -1,5 +1,6 @@
 //! Pin only the requested lazy source file before producing its durable FileRef.
 use super::*;
+use acyclic_fs::facade::FsWork as _;
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
 thread_local! {
@@ -21,7 +22,9 @@ pub(super) async fn path(
         .promote(
             &format!("/{relative}"),
             maximum,
-            path_operation("acyclic.local.checkout-read/v1", operation, relative),
+            acyclic_fs::IdempotencyKey::from_bytes(
+                path_operation("acyclic.local.checkout-read/v1", operation, relative).into_bytes(),
+            ),
             PublicationPermit::Unrestricted,
             &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
         )
