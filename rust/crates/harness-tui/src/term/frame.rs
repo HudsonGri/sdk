@@ -406,7 +406,9 @@ impl<D: Present> FrameTerminal<D> {
     ) -> io::Result<()> {
         self.terminal.autoresize()?;
         if self.invalid {
-            self.terminal.clear()?;
+            // We own the retained baseline. Clear through the backend without
+            // Terminal::clear's synchronous cursor query on the output path.
+            self.terminal.backend_mut().clear()?;
         }
         let area = self.terminal.current_buffer_mut().area;
         let retained = !self.invalid && self.shown.area == area;
