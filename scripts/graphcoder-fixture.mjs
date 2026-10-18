@@ -44,7 +44,7 @@ export async function fixture({ images = false } = {}) {
   writeFileSync(catalog, JSON.stringify({ scripted: {
     adapter: "responses", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}`,
     models: { test: { capacity: { context_tokens: 8192, output_tokens: 1024 }, features: { tools: true, images } } }, max_event_bytes: 65536,
-    ...(images ? { images: { test: { maximum_bytes: 4194304, maximum_total_bytes: 8388608, maximum_images: 16, maximum_dimension: 4096, maximum_tokens: 16384 } } } : {}),
+    ...(images ? { images: { test: { maximum_bytes: 4194304, maximum_total_bytes: 8388608, maximum_images: 16, maximum_dimension: 4096, maximum_tokens: 1024 } } } : {}),
     token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
   } }));
   return {
