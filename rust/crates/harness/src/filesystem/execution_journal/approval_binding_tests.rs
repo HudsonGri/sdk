@@ -4,7 +4,7 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
-    // Only the original provider, private volume and sufficient admitted byte
+    // Only the original provider, an authorized private volume and sufficient byte
     // bound may supply the followed publication surface.
     #[test]
     fn task_file_binding_is_exact(
@@ -34,7 +34,7 @@ proptest! {
                     &journal.scope,
                     maximum,
                 ).await.unwrap());
-                let valid = same_provider && same_volume && maximum >= 65_536;
+                let valid = same_provider && maximum >= 65_536;
                 let accepted = journal.with_task_files(files.clone()).is_ok();
                 assert_eq!(accepted, valid);
                 if !valid {

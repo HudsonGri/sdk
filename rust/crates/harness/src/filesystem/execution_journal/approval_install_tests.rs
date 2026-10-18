@@ -45,6 +45,52 @@ async fn initialized(reason: &str) -> Result<(Journal, InteractionId, OperationI
     ))
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn verdict_reconstructs_once_and_only_flushes_a_resolved_approval(reason in ".{0,256}") {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for native in [false, true] {
+            for pending in [false, true] {
+                for duplicate in [false, true] {
+                    let (outcome, trace) = differential::observe::<_,_,(&'static str,u64)>(
+                        || runtime.block_on(async {
+                            let (journal, approved, operation, _, _) = initialized(&reason).await.unwrap();
+                            let id = if pending {
+                                let id = InteractionId::from_bytes([87;16]);
+                                journal.open_interaction(id, &Interaction::approval(
+                                    "Pending".into(), operation, [5;32],
+                                ).unwrap(), None).unwrap().await.unwrap();
+                                id
+                            } else { approved };
+                            (journal, id)
+                        }),
+                        |(journal, id)| {
+                            let cancellation = acyclic_fs::CancellationToken::new();
+                            let work = acyclic_fs::NativeMaterializationWork::new(
+                                acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
+                            ).unwrap();
+                            let io = native.then(|| PreparationIo::from_native_work(&work).unwrap());
+                            if duplicate {
+                                // Restore the removed, real history reconstruction
+                                // before the ordinary verdict/proof path.
+                                let host = journal.interactions().unwrap();
+                                let aggregate = runtime.block_on(host.aggregate(io.as_ref())).unwrap();
+                                host.read_outcome(&aggregate.0, id, io.as_ref()).unwrap();
+                            }
+                            runtime.block_on(journal.interaction_outcome_with_io(id, io.as_ref())).unwrap()
+                        });
+                    prop_assert_eq!(outcome, (!pending).then_some(InteractionOutcome::Approved {}));
+                    let reconstructions = trace.iter().filter(|(name,_)| *name == "interaction-reconstruction").count();
+                    prop_assert_eq!(reconstructions, 1 + usize::from(duplicate));
+                    prop_assert_eq!(reconstructions == 1, !duplicate);
+                    prop_assert_eq!(trace.iter().filter(|(name,_)| *name == "approval-receipt").count(), usize::from(!pending));
+                }
+            }
+        }
+    }
+}
+
 fn once(trace: &[(&str, u64)], request: u64, decision: u64, allocations: u64, bytes: u64) -> bool {
     let values = |event| {
         trace
