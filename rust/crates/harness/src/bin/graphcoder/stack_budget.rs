@@ -4,8 +4,12 @@
 //! the platform: 1 MiB on Windows, the smallest of the release platforms. The
 //! budget is measured on the target being built, through the same `serve` that
 //! `main` calls, so every poll frame of the turn, the tools it runs, and the
-//! filesystem work under them is counted.
+//! filesystem work under them is counted. Each entry point `serve` selects is
+//! measured: the headless prompt, JSONL over standard input, and the TUI on a
+//! real pseudo-terminal (script(1) on Unix, ConPTY on Windows).
 use crate::{args::Args, entry::serve};
+#[path = "stack_budget/terminal.rs"]
+mod terminal;
 #[path = "stack_budget/unboxed.rs"]
 mod unboxed;
 use acyclic_test_support::stack::deepest_stack;
@@ -82,6 +86,12 @@ fn scripted(
                             .get(requests.len())
                             .cloned()
                             .unwrap_or_else(|| json!({"type": "message", "text": "unscripted"}));
+                        // A terminal driver quits the TUI once the script is served.
+                        if requests.len() + 1 == turns.len()
+                            && let Some(settled) = std::env::var_os(SETTLED)
+                        {
+                            std::fs::write(settled, b"settled").unwrap();
+                        }
                         if turn["type"] == "function_call" {
                             turn["call_id"] = json!(format!("call{}", requests.len()));
                             turn["arguments"] = json!(with_file(&turn["arguments"], &body));
@@ -129,8 +139,27 @@ fn scripted(
     (address, seen, stop, server)
 }
 
-/// Runs one headless prompt through `serve` and returns its exit code and depth in KiB.
-fn measured_turn<const UNBOXED: bool>(turns: Vec<serde_json::Value>) -> (u8, usize, Vec<String>) {
+/// How the measured invocation receives its prompt: each is a distinct `serve` path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    /// `-p`: the headless client.
+    Prompt,
+    /// `--input-format jsonl`: the JSONL client over standard input.
+    Jsonl,
+    /// No prompt, on a terminal: the TUI and its local command loop.
+    Tui,
+}
+
+/// Names the file the scripted provider writes once its last turn is served.
+const SETTLED: &str = "GRAPHCODER_STACK_SETTLED";
+/// Selects the case in a process whose argv a terminal host fixes.
+const CASE: &str = "GRAPHCODER_STACK_CASE";
+
+/// Runs one invocation through `serve` and returns its exit code and depth in bytes.
+fn measured_turn<const UNBOXED: bool>(
+    turns: Vec<serde_json::Value>,
+    entry: Entry,
+) -> (u8, usize, Vec<String>) {
     let spawn = turns.first().is_some_and(|turn| turn["name"] == "spawn");
     let (address, requests, stop, server) = scripted(turns);
     let directory = tempfile::tempdir().unwrap();
@@ -149,20 +178,30 @@ fn measured_turn<const UNBOXED: bool>(turns: Vec<serde_json::Value>) -> (u8, usi
             "response_field": "input_tokens", "framing_tokens": 0}
     }})).unwrap())
     .unwrap();
-    let args = Args::try_parse_from([
-        "graphcoder".as_ref(),
-        "--workspace".as_ref(),
-        workspace.as_os_str(),
-        "--catalog".as_ref(),
-        catalog.as_os_str(),
-        "--settings-root".as_ref(),
-        settings.as_os_str(),
-        "--model".as_ref(),
-        "stack/tiny".as_ref(),
-        "-p".as_ref(),
-        "go".as_ref(),
-    ] as [&std::ffi::OsStr; 11])
-    .unwrap();
+    let operation =
+        std::env::args().find_map(|arg| arg.strip_prefix("--stack-operation=").map(str::to_owned));
+    let mut argv: Vec<std::ffi::OsString> = vec![
+        "graphcoder".into(),
+        "--workspace".into(),
+        workspace.clone().into(),
+        "--catalog".into(),
+        catalog.clone().into(),
+        "--settings-root".into(),
+        settings.clone().into(),
+        "--model".into(),
+        "stack/tiny".into(),
+    ];
+    match entry {
+        Entry::Prompt => argv.extend(["-p".into(), "go".into()]),
+        Entry::Jsonl => argv.extend([
+            "--input-format".into(),
+            "jsonl".into(),
+            "--operation".into(),
+            operation.expect("a JSONL case names its operation").into(),
+        ]),
+        Entry::Tui => {}
+    }
+    let args = Args::try_parse_from(argv).unwrap();
     let entry = if UNBOXED { unboxed::serve } else { serve };
     let callback = || {
         entry(
@@ -208,7 +247,7 @@ fn measured_turn<const UNBOXED: bool>(turns: Vec<serde_json::Value>) -> (u8, usi
 pub(crate) fn qualify() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let cases = [
-        "diff", "commit", "tools", "spawn", "send", "wait", "archive", "unboxed",
+        "diff", "commit", "tools", "spawn", "send", "wait", "archive", "jsonl", "tui", "unboxed",
     ];
     if args.iter().any(|arg| arg == "--list") {
         if !args.iter().any(|arg| arg == "--ignored") {
@@ -218,21 +257,28 @@ pub(crate) fn qualify() {
         }
         return;
     }
-    if let Some(case) =
+    if let Some(case) = std::env::var(CASE).ok().or_else(|| {
         std::env::args().find_map(|arg| arg.strip_prefix("--stack-case=").map(str::to_owned))
-    {
+    }) {
         let turns = match case.as_str() {
-            "diff" => vec![fs("diff"), fs("commit -m seed"), fs("diff"), text("done")],
+            "diff" | "jsonl" | "tui" => {
+                vec![fs("diff"), fs("commit -m seed"), fs("diff"), text("done")]
+            }
             "commit" | "unboxed" => vec![fs("commit -m stack"), text("done")],
             "spawn" => vec![child_call("spawn"), text("done")],
             "tools" => every_entry_point(),
             "send" | "wait" | "archive" => vec![child_call(&case), text("done")],
             _ => panic!("unknown stack case {case}"),
         };
+        let entry = match case.as_str() {
+            "jsonl" => Entry::Jsonl,
+            "tui" => Entry::Tui,
+            _ => Entry::Prompt,
+        };
         let (code, used, requests) = if case == "unboxed" {
-            measured_turn::<true>(turns)
+            measured_turn::<true>(turns, entry)
         } else {
-            measured_turn::<false>(turns)
+            measured_turn::<false>(turns, entry)
         };
         if case == "tools" {
             covers_every_entry_point(code, used, &requests);
@@ -259,7 +305,7 @@ pub(crate) fn qualify() {
                 assert_eq!(code, 0);
                 assert!(requests.len() >= 2, "tool result was not returned");
                 // The tool result is a JSON string inside the request body.
-                let expected = if case == "diff" {
+                let expected = if matches!(case.as_str(), "diff" | "jsonl" | "tui") {
                     r#"\"kind\":\"diff\""#
                 } else {
                     "Committed"
@@ -291,6 +337,10 @@ pub(crate) fn qualify() {
             continue;
         }
         let executable = std::env::current_exe().unwrap();
+        if case == "tui" {
+            terminal::run(&executable);
+            continue;
+        }
         #[cfg(unix)]
         let mut command = {
             let mut command = std::process::Command::new("sh");
@@ -301,14 +351,27 @@ pub(crate) fn qualify() {
         };
         #[cfg(windows)]
         let mut command = std::process::Command::new(executable);
-        assert!(
-            command
-                .arg(format!("--stack-case={case}"))
-                .status()
-                .unwrap()
-                .success(),
-            "main-thread {case}"
-        );
+        command.arg(format!("--stack-case={case}"));
+        let status = if case == "jsonl" {
+            use std::io::Write as _;
+            let operation = acyclic_harness::OperationId::new();
+            let request = acyclic_harness::client::jsonl::request(
+                &acyclic_harness::client::prepare_local_prompt(operation, "go").unwrap(),
+            )
+            .unwrap();
+            let mut child = command
+                .arg(format!("--stack-operation={operation}"))
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            writeln!(stdin, "{request}").unwrap();
+            drop(stdin);
+            child.wait().unwrap()
+        } else {
+            command.status().unwrap()
+        };
+        assert!(status.success(), "main-thread {case}");
     }
 }
 
