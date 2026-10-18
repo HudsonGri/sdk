@@ -8,6 +8,8 @@ use crate::{
 };
 
 mod binding;
+mod catalog;
+pub(crate) use catalog::CatalogModel;
 
 /// Pinned instructions, available skills, selected invocations and exact tool schemas.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -21,6 +23,17 @@ pub struct ContextManifest {
     pub discovery: DiscoveredContext,
     /// Names in invocation order, resolving only through this manifest's pinned skill catalog.
     pub selected_skills: Vec<String>,
+    /// Listed skills pinned as data. Each model request renders the longest
+    /// prefix that fits its own allowance, after the conventions.
+    #[serde(default, skip_serializing_if = "SkillCatalog::is_empty")]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(
+            type = "{ skills: { name: string; description: string; path: string }[]; unlisted?: number }"
+        )
+    )]
+    pub skill_catalog: SkillCatalog,
     /// Pinned configuration inputs (such as hooks and MCP settings), never prompt text.
     #[serde(default)]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
@@ -41,6 +54,7 @@ impl ContextManifest {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             discovery,
             selected_skills,
+            skill_catalog: SkillCatalog::default(),
             sources: Vec::new(),
             tools: tools.definitions(None)?,
         })
@@ -198,13 +212,15 @@ impl ContextManifest {
     }
 
     /// Binds one immutable selection to its registered executors and reusable context stage.
+    /// A skill catalog renders only against a selected model, so this model-free
+    /// binding leaves it out; an executor's own binding renders it.
     pub async fn bind(
         reference: FileRef,
         reader: &dyn ContentResidencyVerifier,
         tools: ToolRegistry,
         limits: Limits,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
-        Self::bind_observed(reference, reader, tools, limits, None).await
+        Self::bind_observed(reference, reader, tools, limits, None, None).await
     }
 }
 
@@ -214,6 +230,7 @@ mod tests;
 struct ManifestStage {
     context: Context,
     sources: Vec<FileRef>,
+    catalog: Option<catalog::StageCatalog>,
 }
 
 impl ContextStage for ManifestStage {
@@ -237,13 +254,17 @@ impl ContextStage for ManifestStage {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            selection::place_snapshot(
+            let mut context = selection::place_snapshot(
                 context,
                 &self.context,
                 ContextPlacement::Prepend,
                 limits,
                 io,
-            )
+            )?;
+            if let Some(catalog) = &self.catalog {
+                catalog.project(&mut context, limits, io)?;
+            }
+            Ok(context)
         })
     }
 

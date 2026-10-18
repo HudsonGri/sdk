@@ -13,7 +13,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-const SKILLS: &str = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n- fixture: Read fixture files. (file: .agents/skills/fixture/SKILL.md)\n</skills_instructions>";
+const SKILLS: &str = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n1 skills available (list .agents/skills/ and .claude/skills/ to see all)\n- fixture: Read fixture files. (file: .agents/skills/fixture/SKILL.md)\n</skills_instructions>";
 
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
@@ -22,6 +22,8 @@ enum Mode {
     Prompt,
     Instructions,
     Skills,
+    /// An 8k-token model: one entry exceeds its catalog allowance.
+    SmallModel,
     Jsonl,
     OpenJsonl,
     Dumb,
@@ -34,7 +36,10 @@ async fn execute(
     operation: OperationId,
     mode: Mode,
 ) -> Vec<u8> {
-    let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions | Mode::Skills);
+    let jsonl = !matches!(
+        mode,
+        Mode::Prompt | Mode::Instructions | Mode::Skills | Mode::SmallModel
+    );
     let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
@@ -209,6 +214,23 @@ async fn scenario(mode: Mode) {
                         requests.send("model").unwrap();
                         return ([("content-type", "text/event-stream")], ANSWER.to_owned());
                     }
+                    if matches!(mode, Mode::SmallModel) {
+                        // 5% of (8192 - 1024 reserved) tokens, bounded as bytes:
+                        // too small for one entry, so only the pointer remains.
+                        let pointer = acyclic_harness::context::SkillCatalog {
+                            skills: vec![acyclic_harness::context::CatalogSkill {
+                                name: "fixture".into(),
+                                description: "Read fixture files.".into(),
+                                path: ".agents/skills/fixture/SKILL.md".into(),
+                            }],
+                            unlisted: 0,
+                        }
+                        .render((8192 - 1024) / 20)
+                        .unwrap();
+                        assert!(pointer.contains("1 skills") && !pointer.contains("(file: "));
+                        let pointer = json!({"type":"message","role":"system","content":[{"type":"input_text","text":pointer}]});
+                        assert!(body["input"].as_array().unwrap().contains(&pointer), "{}", body["input"]);
+                    }
                     if instructions {
                         // The block is dated when the turn is admitted, at most a minute earlier.
                         let environment = [0, 60_000].map(|earlier| environment(&cwd, earlier));
@@ -254,7 +276,7 @@ async fn scenario(mode: Mode) {
             .await
             .unwrap();
     });
-    if instructions {
+    if instructions || matches!(mode, Mode::SmallModel) {
         std::fs::create_dir_all(workspace.join(".agents/skills/fixture")).unwrap();
         std::fs::write(
             workspace.join(".agents/skills/fixture/SKILL.md"),
@@ -275,7 +297,7 @@ async fn scenario(mode: Mode) {
     let catalog = directory.path().join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "models":{"tiny":{"capacity":{"context_tokens":if matches!(mode, Mode::SmallModel) { 8192 } else { 65536 },"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
     let operation = OperationId::new();
@@ -354,6 +376,12 @@ async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
 #[tokio::test]
 async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
+}
+
+// The turn completing is the fit: the request was admitted within capacity.
+#[tokio::test]
+async fn small_models_still_learn_that_skills_exist() {
+    scenario(Mode::SmallModel).await;
 }
 
 #[cfg(unix)]

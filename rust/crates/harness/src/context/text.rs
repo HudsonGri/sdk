@@ -1,7 +1,7 @@
 //! Values inside context tags cannot author tags or extra catalog lines.
 use std::fmt::Write as _;
 
-pub(super) fn push_value(text: &mut String, value: &str) {
+pub(crate) fn push_value(text: &mut String, value: &str) {
     for character in value.chars() {
         match character {
             '&' => text.push_str("&amp;"),

@@ -107,11 +107,18 @@ impl StockExecutor {
                 "executor already has a context manifest".into(),
             ));
         }
-        let (tools, stage) = crate::context::ContextManifest::bind(
+        let model = crate::context::CatalogModel {
+            model: &self.model,
+            provider: self.provider.as_ref(),
+            compaction: &self.compaction,
+        };
+        let (tools, stage) = crate::context::ContextManifest::bind_observed(
             reference,
             reader.as_ref(),
             self.tools,
             self.limits,
+            Some(&model),
+            None,
         )
         .await?;
         self.tools = tools;

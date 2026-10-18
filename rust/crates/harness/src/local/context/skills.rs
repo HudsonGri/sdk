@@ -2,14 +2,14 @@
 //!
 //! Only frontmatter metadata enters the context. Bodies stay in the checkout,
 //! where the agent reads one with its ordinary file tools before following it.
-use super::text;
 use super::*;
+use crate::context::{CatalogSkill, SKILL_ROOTS};
 
 /// Directory entries examined per page.
 const PAGE: u32 = 64;
 
 mod catalog;
-pub(in crate::local) use catalog::{Listed, ROOTS, frame, listed, omission};
+pub(in crate::local) use catalog::listed;
 
 impl LocalHarness {
     /// Lists `<root>/<name>/SKILL.md` frontmatter from the selected checkout view.
@@ -17,7 +17,7 @@ impl LocalHarness {
         &self,
         workspace: &LocalWorkspace,
         maximum: u64,
-    ) -> Result<Vec<Listed>> {
+    ) -> Result<Vec<CatalogSkill>> {
         let (selected, pending) = workspace.selected_view().await?;
         if let Some((operation, _)) = pending {
             return Err(Error::Indeterminate(OperationId::from_bytes(
@@ -35,9 +35,9 @@ impl LocalHarness {
             work: &work,
             cancellation: &cancellation,
         };
-        let mut skills: Vec<Listed> = Vec::new();
+        let mut skills: Vec<CatalogSkill> = Vec::new();
         let mut names = std::collections::BTreeSet::new();
-        for root in ROOTS {
+        for root in SKILL_ROOTS {
             let mut directories = Vec::new();
             let mut cursor = None;
             loop {

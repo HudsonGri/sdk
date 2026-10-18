@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn stock_context_capacity(
+pub(crate) fn stock_context_capacity(
     provider: &dyn ModelProvider,
     model: &Model,
     io: Option<&PreparationIo>,

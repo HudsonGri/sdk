@@ -2,7 +2,7 @@
 //!
 //! The block is rendered once into the turn's context manifest, so a resumed
 //! or replayed turn sees the facts that were true when it was admitted.
-use super::text::push_value;
+use crate::context::text::push_value;
 use std::path::Path;
 mod porcelain;
 use porcelain::summarize;
