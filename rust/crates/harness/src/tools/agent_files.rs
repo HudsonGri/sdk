@@ -38,7 +38,11 @@ pub(super) async fn inspect(
     command: &str,
 ) -> Result<Option<crate::tool::ToolResult>> {
     use crate::task_volume::{FileQuerySource, Query};
-    let command = super::parse_fs_command(command)?;
+    // Only well-formed agent-file queries are answered here; the facade reports every other
+    // command, malformed ones included, as its own result.
+    let Ok(command) = super::parse_fs_command(command) else {
+        return Ok(None);
+    };
     let [verb, path] = command.arguments.as_slice() else {
         return Ok(None);
     };
