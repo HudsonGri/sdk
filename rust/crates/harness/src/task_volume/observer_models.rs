@@ -25,7 +25,11 @@ fn check(broken: bool) {
         // Partition at provider acceptance: before it, observation is empty.
         // After it, only the shared index acknowledgement races with refresh.
         // A delayed G1 acknowledgement must not overwrite G2's refreshed cut.
-        loom::future::block_on(source.provider.commit(request.clone())).unwrap();
+        let CommitOutcome::Committed(accepted_receipt) =
+            loom::future::block_on(source.provider.commit(request)).unwrap()
+        else {
+            unreachable!()
+        };
         let latest = FileValue::new(FileKey::Goal, b"second".to_vec());
         let (record, _) = segment::encode(&latest, None).unwrap();
         let outcome = loom::future::block_on(source.provider.append(AppendRequest {
@@ -42,10 +46,14 @@ fn check(broken: bool) {
             if broken {
                 model_checking::set_fault(model_checking::Fault::OverwriteRebuiltIndex);
             }
-            // The real idempotent provider replay returns the original accepted
-            // envelope. commit_append runs the real cache acknowledgement.
-            loom::future::block_on(source.commit_append(cut, request, accepted, next, None))
-                .unwrap();
+            // Explore the real production acknowledgement after provider
+            // acceptance, against the complete production refresh below.
+            loom::future::block_on(source.acknowledge(
+                cut,
+                accepted,
+                next,
+                accepted_receipt.commit_id,
+            ));
             source
         });
         let snapshot = loom::future::block_on(observer.snapshot(&Query::Root, 1)).unwrap();

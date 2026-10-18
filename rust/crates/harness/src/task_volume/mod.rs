@@ -1,4 +1,5 @@
 //! Logical task files over single-event appends and immutable segment views.
+mod acknowledgement;
 mod child;
 mod child_queries;
 mod child_result;
@@ -563,24 +564,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             self.provider.commit(request).await?
         };
         match outcome {
-            CommitOutcome::Committed(envelope) => {
-                let mut index = self.index.lock().await;
-                let unchanged = self.generation(&index) == expected;
-                #[cfg(acyclic_harness_loom)]
-                let unchanged = unchanged
-                    || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
-                if unchanged {
-                    apply(&mut index, files, next);
-                    index.next = next;
-                    index.commit = envelope.commit_id;
-                }
-                Ok(Generation {
-                    volume: expected.volume,
-                    epoch: expected.epoch,
-                    position: next,
-                    commit: *envelope.commit_id.as_bytes(),
-                })
-            }
+            CommitOutcome::Committed(envelope) => Ok(self
+                .acknowledge(expected, files, next, envelope.commit_id)
+                .await),
             CommitOutcome::Conflict(_) => {
                 self.refresh().await?;
                 let index = self.index.lock().await;
