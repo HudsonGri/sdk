@@ -11,51 +11,70 @@ fn check(broken: bool) {
         let observer = loom::future::block_on(source.reopen()).unwrap();
         assert!(Arc::ptr_eq(&source.index, &observer.index));
         let cut = loom::future::block_on(source.head()).unwrap();
-        let file = FileValue::new(FileKey::Goal, b"goal".to_vec());
-        // Prepare outside the race: only the production commit and cache
-        // acknowledgement compete with the production observer refresh.
+        let file = FileValue::new(FileKey::Goal, b"first".to_vec());
         let (request, accepted, next) =
             loom::future::block_on(source.prepare_append(cut, &file, Vec::new(), false, None))
                 .unwrap()
                 .unwrap();
+        assert!(
+            loom::future::block_on(observer.snapshot(&Query::Root, 1))
+                .unwrap()
+                .files
+                .is_empty()
+        );
+        // Partition at provider acceptance: before it, observation is empty.
+        // After it, only the shared index acknowledgement races with refresh.
+        // A delayed G1 acknowledgement must not overwrite G2's refreshed cut.
+        loom::future::block_on(source.provider.commit(request.clone())).unwrap();
+        let latest = FileValue::new(FileKey::Goal, b"second".to_vec());
+        let (record, _) = segment::encode(&latest, None).unwrap();
+        let outcome = loom::future::block_on(source.provider.append(AppendRequest {
+            path: source.path.clone(),
+            records: vec![record],
+            if_tail: Some(next),
+            idempotency_key: None,
+        }))
+        .unwrap();
+        let acyclic_stream::AppendOutcome::Committed(receipt) = outcome else {
+            unreachable!()
+        };
         let writer = loom::thread::spawn(move || {
             if broken {
-                loom::future::block_on(source.provider.commit(request)).unwrap();
-            } else {
-                loom::future::block_on(source.commit_append(cut, request, accepted, next, None))
-                    .unwrap();
+                model_checking::set_fault(model_checking::Fault::OverwriteRebuiltIndex);
             }
+            // The real idempotent provider replay returns the original accepted
+            // envelope. commit_append runs the real cache acknowledgement.
+            loom::future::block_on(source.commit_append(cut, request, accepted, next, None))
+                .unwrap();
             source
         });
         let snapshot = loom::future::block_on(observer.snapshot(&Query::Root, 1)).unwrap();
-        assert!(snapshot.files.is_empty() || snapshot.files == vec![file.clone()]);
-        assert_eq!(
-            snapshot.generation.position,
-            cut.position + snapshot.files.len() as u64
-        );
+        assert_eq!(snapshot.files, vec![latest.clone()]);
+        assert_eq!(snapshot.generation.position, next + 1);
+        assert_eq!(snapshot.generation.commit, *receipt.commit_id.as_bytes());
         let source = writer.join().unwrap();
-        // No repair operation: a completed writer must have published the same
-        // generation and bytes into every local observer's shared index.
+        // Lock order: index only. No repairing operation follows the join.
         let index = loom::future::block_on(observer.index.lock());
         assert_eq!(
             source.generation(&index).position,
-            next,
-            "completed append lost from shared index"
+            next + 1,
+            "shared index regressed"
         );
+        assert_eq!(index.commit, receipt.commit_id);
         assert_eq!(
-            index.files.get(&file.key).map(|stored| &stored.file),
-            Some(&file)
+            index.files.get(&latest.key).map(|stored| &stored.file),
+            Some(&latest)
         );
     });
 }
 
 #[test]
-fn shared_observer_refresh_and_append_are_atomic() {
+fn shared_observer_refresh_and_delayed_acknowledgement_are_atomic() {
     check(false);
 }
 
 #[test]
-#[should_panic(expected = "completed append lost from shared index")]
-fn negative_control_detects_missing_cache_acknowledgement() {
+#[should_panic]
+fn negative_control_detects_overwriting_the_shared_index() {
     check(true);
 }
