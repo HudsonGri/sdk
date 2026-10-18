@@ -276,28 +276,39 @@ fn invisible_work<const WRAP_CONTROL: bool>(length: usize) {
                 position: crate::tui::RowPosition { line: 10, row: 0 },
             };
             fixture._runtime.block_on(async {
-                fixture.files.write_state(
-                    crate::client::CommandFileRoot::Session,
-                    "layout.json",
-                    &serde_json::json!({
-                        "transcript_top": anchor,
-                        "open_view": if find { "find" } else { "transcript" },
-                        "view_input": if find { "find" } else { "prompt" },
-                        "search_query": "plain",
-                    }),
-                ).await.unwrap();
+                fixture
+                    .files
+                    .write_state(
+                        crate::client::CommandFileRoot::Session,
+                        "layout.json",
+                        &serde_json::json!({
+                            "transcript_top": anchor,
+                            "open_view": if find { "find" } else { "transcript" },
+                            "view_input": if find { "find" } else { "prompt" },
+                            "search_query": "plain",
+                        }),
+                    )
+                    .await
+                    .unwrap();
             });
             WrappedLines::take_work();
-            fixture.renderer.layout(&fixture.files, &fixture.input, width, height).unwrap();
+            fixture
+                .renderer
+                .layout(&fixture.files, &fixture.input, width, height)
+                .unwrap();
             if WRAP_CONTROL {
                 fixture.renderer.wrapped_transcript.view(Top::Tail, 1);
             }
             assert_eq!(
-                WrappedLines::take_work(), (0, 0, 0),
+                WrappedLines::take_work(),
+                (0, 0, 0),
                 "an invisible transcript performs no wrapping or painting"
             );
             assert_eq!(fixture.renderer.top, Some(anchor));
-            assert_eq!(crate::client::tui_anchor(&fixture.files).unwrap(), Some(anchor));
+            assert_eq!(
+                crate::client::tui_anchor(&fixture.files).unwrap(),
+                Some(anchor)
+            );
         }
     }
 }
