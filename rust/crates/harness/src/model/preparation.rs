@@ -289,12 +289,8 @@ impl ToolResultContent {
                     })
                 })?,
             },
-            Self::Error {
-                message,
-                provenance,
-            } => Self::Error {
+            Self::Error { message } => Self::Error {
                 message: copy_text(message, quota)?,
-                provenance: *provenance,
             },
         })
     }
