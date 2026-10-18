@@ -16,7 +16,7 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         return;
     };
     let _ = matchers::subset(
-        &serde_json::json!({"$json": &value}),
+        &serde_json::json!({"$json": &*value}),
         &serde_json::Value::String(fuzz_support::must_decode(std::str::from_utf8(bytes)).into()),
     );
     let Some(case) = value.admit(notifications::Notifications::parse) else {
