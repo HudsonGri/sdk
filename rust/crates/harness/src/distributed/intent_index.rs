@@ -35,7 +35,7 @@ fn direction(key: &str, bit: usize) -> usize {
 
 impl IntentIndex {
     pub(super) fn get(&self, key: &str) -> Option<u64> {
-        #[cfg(all(test, not(acyclic_harness_loom)))]
+        #[cfg(test)]
         if tests::intent_index::omit_index_lookup() {
             return None;
         }

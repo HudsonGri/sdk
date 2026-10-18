@@ -23,6 +23,13 @@ mod cancellation;
 mod fencing;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod frame_cancellation;
+#[cfg(all(
+    acyclic_harness_loom,
+    acyclic_loom,
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+mod intent_models;
 #[cfg(feature = "filesystem")]
 mod limits;
 #[cfg(all(

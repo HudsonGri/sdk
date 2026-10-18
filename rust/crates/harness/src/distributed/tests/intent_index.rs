@@ -15,6 +15,10 @@ pub(in crate::distributed) fn copy_before_admission() -> bool {
 pub(in crate::distributed) fn omit_index_lookup() -> bool {
     OMIT_INDEX_LOOKUP.get()
 }
+#[cfg(all(acyclic_harness_loom, acyclic_loom))]
+pub(super) fn set_omit_index_lookup(value: bool) {
+    OMIT_INDEX_LOOKUP.set(value);
+}
 
 fn assert_index_matches_map(keys: &[String]) {
     let mut index = super::super::intent_index::IntentIndex::default();
@@ -229,6 +233,42 @@ fn absent_intent_does_not_allocate_or_read_history() -> Result<()> {
         assert_eq!(cost.bytes_total, 0);
     }
     Ok(())
+}
+
+#[test]
+fn existing_intent_has_exact_equal_cost_at_eight_and_twenty_four() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut costs = Vec::new();
+    for count in [8_u8, 24] {
+        let (_, coordinator) = runtime.block_on(seeded(count))?;
+        let mut result = None;
+        let cost = acyclic_test_support::measure(|| {
+            result =
+                Some(runtime.block_on(coordinator.read_indexed_intent("history-00", &mut None)));
+        });
+        assert!(result.unwrap()?.is_some());
+        eprintln!("indexed retry K={count}: {cost:?}");
+        costs.push(acyclic_test_support::differential::allocation_counts(cost));
+    }
+    assert_eq!(costs[0], costs[1]);
+    Ok(())
+}
+
+#[test]
+#[should_panic(expected = "assertion `left == right` failed")]
+fn restored_scan_fails_the_same_existing_intent_cost_pin() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RESTORE_SCAN.set(false);
+        }
+    }
+    let _restore = Restore;
+    RESTORE_SCAN.set(true);
+    existing_intent_has_exact_equal_cost_at_eight_and_twenty_four().unwrap();
 }
 
 #[test]
