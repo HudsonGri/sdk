@@ -161,14 +161,14 @@ impl Registry {
         }
         Ok(ResolvedModel {
             files: self.files.clone(),
-            estimator: crate::accounting::TokenEstimator::new(config.adapter),
+            estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),
             model,
             config,
             capacity,
             key,
             transport: self.transport.clone(),
             #[cfg(not(target_arch = "wasm32"))]
-            codex_count: crate::codex_count::Counter::default(),
+            codex_count: std::sync::Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         })

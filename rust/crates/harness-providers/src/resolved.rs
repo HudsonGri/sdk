@@ -10,7 +10,8 @@ use std::sync::Arc;
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
     pub(crate) files: crate::files::Files,
-    pub(crate) estimator: crate::accounting::TokenEstimator,
+    /// Calibration shared by every reader-bound copy of this selection.
+    pub(crate) estimator: Arc<crate::accounting::TokenEstimator>,
     /// Immutable harness model identity.
     pub(crate) model: Model,
     pub(crate) config: Arc<ProviderSpec>,
@@ -18,7 +19,7 @@ pub struct ResolvedModel {
     pub(crate) key: Option<String>,
     pub(crate) transport: Arc<dyn HttpTransport>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) codex_count: crate::codex_count::Counter,
+    pub(crate) codex_count: Arc<crate::codex_count::Counter>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }
@@ -89,14 +90,14 @@ impl ModelProvider for ResolvedModel {
                 reader: Some(reader),
                 maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
             },
-            estimator: crate::accounting::TokenEstimator::new(self.config.adapter),
+            estimator: Arc::clone(&self.estimator),
             model: self.model.clone(),
             config: self.config.clone(),
             capacity: self.capacity,
             key: self.key.clone(),
             transport: self.transport.clone(),
             #[cfg(not(target_arch = "wasm32"))]
-            codex_count: Default::default(),
+            codex_count: Arc::clone(&self.codex_count),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: self.codex_login.clone(),
         }))

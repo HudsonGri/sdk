@@ -200,10 +200,24 @@ pub struct PreparedTaskAdmitCommand {
 }
 struct ModelBinding {
     model: Model,
-    provider: Arc<dyn ModelProvider>,
+    /// Never dispatched as is: [`Self::provider_for`] is the only way out, so
+    /// file-backed input always reads under the executing task's own scope.
+    unbound: Arc<dyn ModelProvider>,
     compaction: crate::context::CompactionPolicy,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl ModelBinding {
+    /// The provider bound to `context` as its content reader. A task's input
+    /// (its prompt, received parcels, tool results) lives in volumes only its
+    /// own scope may read; no composition-wide reader stands in for it.
+    fn provider_for(&self, context: &Arc<crate::runtime::TaskContext>) -> Arc<dyn ModelProvider> {
+        let reader: Arc<dyn crate::conversation::ContentResidencyVerifier> = context.clone();
+        self.unbound
+            .bind_content(reader, context.scope().limits().file_bytes)
+            .unwrap_or_else(|| Arc::clone(&self.unbound))
+    }
 }
 
 /// Stock command adapters over the runtime's existing executors and journal.
@@ -270,7 +284,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         let _ = before;
         self.model = Some(ModelBinding {
             model,
-            provider,
+            unbound: provider,
             compaction,
             #[cfg(not(target_arch = "wasm32"))]
             native_custody,

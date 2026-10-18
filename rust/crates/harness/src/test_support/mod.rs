@@ -14,7 +14,9 @@ mod search;
 mod task_volume_work;
 pub use search::{ScriptedSearch, ScriptedSearchProvider};
 
-pub use scripted::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn};
+pub use scripted::{
+    ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,
+};
 #[cfg(feature = "test-support")]
 pub use task_volume_work::measure as measure_task_volume_work;
 #[cfg(feature = "test-support")]

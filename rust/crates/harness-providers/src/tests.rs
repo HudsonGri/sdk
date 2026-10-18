@@ -270,7 +270,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
     });
     let provider = ResolvedModel {
         files: crate::files::Files::default(),
-        estimator: crate::accounting::TokenEstimator::new(adapter),
+        estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(adapter)),
         model: Model {
             provider: "fixture".into(),
             name: "model".into(),
@@ -298,7 +298,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         key: Some("scripted-key".into()),
         transport: script.clone(),
         #[cfg(not(target_arch = "wasm32"))]
-        codex_count: crate::codex_count::Counter::default(),
+        codex_count: std::sync::Arc::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
     };
