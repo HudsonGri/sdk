@@ -1,13 +1,10 @@
 """Resolve model constructors in their actual Cargo test compilation contexts."""
-import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import shutil
 import sys
-import tarfile
-import urllib.request
 
 TOOLCHAIN = "nightly-2026-07-01"
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,26 +56,8 @@ def run(arguments, environment, **options):
 
 
 def compiler():
-    host = subprocess.check_output(["rustc", "+" + TOOLCHAIN, "-vV"], text=True).split("host: ")[1].splitlines()[0]
     sysroot = Path(subprocess.check_output(["rustc", "+" + TOOLCHAIN, "--print", "sysroot"], text=True).strip())
-    directory = TARGET / ("loom-rustc-dev-" + TOOLCHAIN.removeprefix("nightly-"))
-    name = "rustc-dev-nightly-" + host
-    libraries = directory / name / "rustc-dev/lib/rustlib" / host / "lib"
-    if not libraries.is_dir():
-        directory.mkdir(parents=True, exist_ok=True)
-        archive = directory / (name + ".tar.xz")
-        url = "https://static.rust-lang.org/dist/" + TOOLCHAIN.removeprefix("nightly-") + "/" + archive.name
-        try:
-            urllib.request.urlretrieve(url, archive)
-            expected = urllib.request.urlopen(url + ".sha256").read().decode().split()[0]
-            with archive.open("rb") as source:
-                if hashlib.file_digest(source, "sha256").hexdigest() != expected:
-                    raise ValueError("compiler component checksum mismatch")
-            with tarfile.open(archive) as source:
-                source.extractall(directory, filter="data")
-        finally:
-            archive.unlink(missing_ok=True)
-    environment = dict(os.environ, RUSTFLAGS="-Lall=" + str(libraries) + " -Lnative=" + str(sysroot / "lib"))
+    environment = dict(os.environ, RUSTFLAGS="-Lnative=" + str(sysroot / "lib"))
     environment.pop("CARGO_ENCODED_RUSTFLAGS", None)
     environment.pop("RUSTC_WORKSPACE_WRAPPER", None)
     run(["cargo", "+" + TOOLCHAIN, "build", "--locked", "--manifest-path",
