@@ -12,7 +12,7 @@
   "expect":{
     "wire":[],
     "files":{"plans/a.md":"before\n"},
-    "results":{"call":{"name":"mcp.fixture.echo","content":{"kind":"parts","parts":[{"kind":"text","text":"MCP_BINARY_ECHO:ping"}]}}},
+    "results":{"call":{"name":"mcp.fixture.echo","content":{"kind":"json","value":{"content":[{"type":"text","text":"MCP_BINARY_ECHO:ping"}],"isError":false}}}},
     "request_text":["MCP_BINARY_ECHO:ping"],
     "settings_files":{"mcp.log":"initialize\nnotifications/initialized\ntools/list\ntools/call\n"}
   }
