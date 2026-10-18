@@ -208,13 +208,17 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None)
-        .tools(
-            case.tools
-                .iter()
-                .map(String::as_str)
-                .chain(added)
-                .map(echo_tool),
-        );
+        .tools(added.into_iter().map(echo_tool));
+    let config = if case.settings.is_empty() {
+        config
+    } else {
+        let settings = temporary.path().join("settings");
+        super::scenario_data::seed_settings(&settings, &case.settings)?;
+        config.settings(
+            acyclic_harness::native_settings::SettingsConfig::new(&directory, &settings)
+                .codex_home(settings.join(".codex")),
+        )
+    };
     let harness = LocalHarness::open(config).await?;
     let (operation, task_id, status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
