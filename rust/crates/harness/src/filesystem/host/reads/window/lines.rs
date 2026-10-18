@@ -210,9 +210,8 @@ mod tests {
         for byte in bytes {
             scan.update(std::slice::from_ref(byte));
         }
-        let agrees = |scan: &LineScan| {
-            scan.finish().1.is_some() == std::str::from_utf8(bytes).is_ok()
-        };
+        let agrees =
+            |scan: &LineScan| scan.finish().1.is_some() == std::str::from_utf8(bytes).is_ok();
         assert!(agrees(&scan));
         // Mutate the production scanner, emulating loss of the validation
         // frontier at a chunk boundary. The UTF-8 oracle must reject it.

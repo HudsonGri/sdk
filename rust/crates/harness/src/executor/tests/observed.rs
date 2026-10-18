@@ -199,7 +199,9 @@ async fn a_session_folds_each_record_once() -> Result<()> {
     let mut observed = ObservedFold::default();
     let before = journal.4.load(Ordering::SeqCst);
     assert_eq!(
-        session.observed_files(&journal, operation, &mut observed).await?,
+        session
+            .observed_files(&journal, operation, &mut observed)
+            .await?,
         [a1.clone(), b1.clone()]
     );
     // One invocation and one result per completed call.
@@ -207,7 +209,9 @@ async fn a_session_folds_each_record_once() -> Result<()> {
     assert_eq!(folded - before, 4);
     for _ in 0..10 {
         assert_eq!(
-            session.observed_files(&journal, operation, &mut observed).await?,
+            session
+                .observed_files(&journal, operation, &mut observed)
+                .await?,
             [a1.clone(), b1.clone()]
         );
     }
