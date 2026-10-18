@@ -141,6 +141,7 @@ mod spec;
 
 #[cfg(test)]
 mod tests {
+    use super::LineScan;
     use super::spec::{reference, scan_chunks};
     use proptest::prelude::*;
 
@@ -200,5 +201,22 @@ mod tests {
         }
         assert_eq!(scan_chunks(&[b'a', 0x80, b'\n'], [1, 2], 1, None).1, None);
         assert_eq!(scan_chunks(&[0xE2, 0x82, 0x28], [1], 1, None).1, None);
+    }
+
+    #[test]
+    fn negative_control_detects_discarded_utf8_carry() {
+        let bytes = &"🦀".as_bytes()[..3];
+        let mut scan = LineScan::new(1, None);
+        for byte in bytes {
+            scan.update(std::slice::from_ref(byte));
+        }
+        let agrees = |scan: &LineScan| {
+            scan.finish().1.is_some() == std::str::from_utf8(bytes).is_ok()
+        };
+        assert!(agrees(&scan));
+        // Mutate the production scanner, emulating loss of the validation
+        // frontier at a chunk boundary. The UTF-8 oracle must reject it.
+        scan.carried = 0;
+        assert!(!agrees(&scan), "UTF-8 oracle accepted a dropped carry");
     }
 }

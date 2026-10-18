@@ -111,6 +111,12 @@ impl Retained {
     /// Appends `chunk`; `remaining` bounds what any later chunk can add, so
     /// amortized growth never claims more than the file could still supply.
     fn append(&mut self, chunk: &[u8], remaining: u64, io: &PreparationIo) -> Result<()> {
+        #[cfg(test)]
+        if tests::ALLOCATE_BEFORE_ADMISSION.with(std::cell::Cell::get) {
+            self.bytes
+                .try_reserve_exact(chunk.len())
+                .map_err(Error::Allocation)?;
+        }
         let mut observer = io;
         observer.admit_copy(chunk.len() as u64)?;
         let needed = self.bytes.len() + chunk.len();

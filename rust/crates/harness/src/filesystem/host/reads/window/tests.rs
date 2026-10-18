@@ -1,5 +1,12 @@
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget};
+use proptest::prelude::*;
+
+thread_local! {
+    /// Reintroduces the reviewed allocation-before-admission defect inside
+    /// the production append path; ordinary builds contain no fault switch.
+    pub(super) static ALLOCATE_BEFORE_ADMISSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 const LINE: usize = 1 << 20;
 
@@ -15,6 +22,46 @@ fn budget(peak: u64, copied: u64) -> WorkBudget {
 
 fn ledger(budget: WorkBudget) -> Result<PreparationIo> {
     PreparationIo::from_budget(budget, &CancellationToken::new())
+}
+
+fn denied_before_growth(length: usize, copy_short: bool) -> Result<()> {
+    let line = vec![b'x'; length];
+    let peak = length as u64 - u64::from(!copy_short);
+    let copied = length as u64 - u64::from(copy_short);
+    let allowance = budget(peak, copied);
+    let io = ledger(allowance)?;
+    let mut retained = Retained::default();
+    assert!(retained.append(&line, 0, &io).is_err());
+    assert_eq!(retained.bytes.capacity(), 0, "allocation before admission");
+    assert_eq!(io.owned_bytes()?, 0);
+    let left = io.remaining()?;
+    assert_eq!(left.allocation_operations, allowance.allocation_operations);
+    assert_eq!(left.bytes_copied, allowance.bytes_copied);
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // Denying either storage or copying must precede allocation and copying,
+    // for every selected-window length, rather than only the 1-MiB probe.
+    #[test]
+    fn denied_windows_never_allocate(length in 1usize..65_537, copy_short in any::<bool>()) {
+        denied_before_growth(length, copy_short).unwrap();
+    }
+}
+
+#[test]
+fn negative_control_detects_allocation_before_admission() {
+    ALLOCATE_BEFORE_ADMISSION.with(|flag| flag.set(true));
+    let detected = std::panic::catch_unwind(|| denied_before_growth(17, false).unwrap());
+    ALLOCATE_BEFORE_ADMISSION.with(|flag| flag.set(false));
+    let panic = detected.expect_err("the real append mutant must violate the same denial oracle");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("allocation before admission"), "{message}");
 }
 
 #[test]
