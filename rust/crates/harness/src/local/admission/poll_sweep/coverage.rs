@@ -41,12 +41,7 @@ fn manifest_pairs() -> Vec<(Scenario, usize)> {
     ]
     .into_iter()
     .flat_map(|scenario| {
-        let total: usize = expected(scenario)
-            .unwrap()
-            .iter()
-            .filter(|(name, _)| name.as_str() != "stream:read:ready")
-            .map(|(_, count)| *count)
-            .sum();
+        let total = durable_total(scenario).unwrap();
         (1..=total).map(move |cut| (scenario, cut))
     })
     .collect()
@@ -67,6 +62,15 @@ fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
         Scenario::Compaction => include_bytes!("coverage/compaction.json"),
     };
     serde_json::from_slice(bytes).map_err(storage)
+}
+
+/// Every durable boundary in the reviewed manifest is one replay cut.
+fn durable_total(scenario: Scenario) -> Result<usize> {
+    Ok(expected(scenario)?
+        .iter()
+        .filter(|(name, _)| durable(name))
+        .map(|(_, count)| *count)
+        .sum())
 }
 
 pub(super) fn check_boundaries(
@@ -93,11 +97,7 @@ pub(super) fn check_cuts(
     recorded: usize,
     cuts: impl IntoIterator<Item = usize>,
 ) -> Result<()> {
-    let total: usize = expected(scenario)?
-        .iter()
-        .filter(|(name, _)| name.as_str() != "stream:read:ready")
-        .map(|(_, count)| *count)
-        .sum();
+    let total = durable_total(scenario)?;
     let cuts: Vec<_> = cuts.into_iter().collect();
     if recorded != total
         || cuts.len() != total
@@ -115,7 +115,7 @@ proptest::proptest! {
     #[test]
     fn broken_real_sweep_cannot_drop_a_cut(which in 0u8..3, omitted in 0usize..4096) {
         let scenario = match which { 0 => Scenario::Text, 1 => Scenario::EffectAndContinuation, _ => Scenario::Compaction };
-        let total = expected(scenario).unwrap().iter().filter(|(name, _)| name.as_str() != "stream:read:ready").map(|(_, count)| *count).sum::<usize>();
+        let total = durable_total(scenario).unwrap();
         let omitted = 1 + omitted % total;
         // This is the actual replay planner, deliberately missing a real cut.
         proptest::prop_assert!(check_cuts(scenario, total, (1..=total).filter(|cut| *cut != omitted)).is_err());
@@ -149,6 +149,8 @@ fn omitted_actual_hook_and_cut_are_rejected() -> Result<()> {
         .unwrap();
     let mut broken = actual.clone();
     broken.remove(omitted);
+    let omitted = durable_count(&actual[..omitted]);
+    let total = durable_count(&actual);
     assert!(
         check_boundaries(Scenario::Text, &broken, observed.ready_reads).is_err(),
         "missing real hook went undetected"
@@ -156,8 +158,8 @@ fn omitted_actual_hook_and_cut_are_rejected() -> Result<()> {
     assert!(
         check_cuts(
             Scenario::Text,
-            actual.len(),
-            (1..=actual.len()).filter(|cut| *cut != omitted + 1)
+            total,
+            (1..=total).filter(|cut| *cut != omitted + 1)
         )
         .is_err(),
         "missing real replay went undetected"

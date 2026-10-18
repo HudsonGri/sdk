@@ -14,7 +14,7 @@ use std::sync::Arc;
 mod model;
 mod schedule;
 use model::{Effect, ModelEffects};
-use schedule::{Exit, Schedule, check_cut, drive};
+use schedule::{Exit, Schedule, check_cut, check_replay, drive, durable, durable_count};
 mod coverage;
 mod invariants;
 mod read_contention;
@@ -360,7 +360,7 @@ async fn case(
         let harness = fixture.open().await?;
         let schedule = &fixture.schedule;
         schedule.start();
-        let (exit, hit) = drive(
+        let (exit, hit, ordinal) = drive(
             fixture.run(&harness),
             cut,
             schedule,
@@ -370,12 +370,8 @@ async fn case(
         let points = schedule.points();
         assert_eq!(points.len(), hit, "uncontrolled I/O changed the schedule");
         if let Some(cut) = cut {
-            check_cut(&exit, cut, hit).expect("every cancellation must fire");
-            assert_eq!(
-                points,
-                baseline[..cut],
-                "replay diverged before cancellation"
-            );
+            check_cut(&exit, cut, ordinal).expect("every cancellation must fire");
+            check_replay(&points, baseline, cut).map_err(Error::Storage)?;
         } else {
             let Exit::Completed(output) = exit else {
                 panic!("baseline cancelled")
@@ -540,7 +536,8 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
         assert!(!baseline.is_empty());
         eprintln!(
-            "{scenario:?}: {} deterministic cancellation points",
+            "{scenario:?}: {} durable cancellation points of {}",
+            durable_count(&baseline),
             baseline.len()
         );
         schedules.push((scenario, baseline, seed));
@@ -550,7 +547,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     let mut cuts: Vec<_> = schedules
         .iter()
         .flat_map(|(scenario, baseline, seed)| {
-            (1..=baseline.len()).map(move |cut| (*scenario, baseline, seed, cut))
+            (1..=durable_count(baseline)).map(move |cut| (*scenario, baseline, seed, cut))
         })
         .collect();
     coverage::permute(&mut cuts, 711);
@@ -558,7 +555,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     for (scenario, baseline, _) in &schedules {
         coverage::check_cuts(
             *scenario,
-            baseline.len(),
+            durable_count(baseline),
             cuts.iter()
                 .filter(|(candidate, _, _, _)| candidate == scenario)
                 .map(|(_, _, _, cut)| *cut),
@@ -604,7 +601,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                             .map_err(|error| {
                                 let error = Error::Storage(format!(
                                     "{scenario:?} cut {cut}/{}: {error:?}",
-                                    baseline.len()
+                                    durable_count(baseline)
                                 ));
                                 eprintln!("{error:?}");
                                 failed.store(true, Ordering::Relaxed);
@@ -661,13 +658,13 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         Some(cut),
         "named admission submission moved"
     );
+    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
+    assert_eq!(durable_count(&recovered.points), cut);
     assert_eq!(
-        baseline[cut - 1],
-        "task:submitted",
+        recovered.points.last(),
+        Some(&"task:submitted"),
         "named admission cut moved"
     );
-    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
-    assert_eq!(recovered.points.len(), cut);
     assert!(
         recovered.admission_committed,
         "submitted admission did not commit while draining"

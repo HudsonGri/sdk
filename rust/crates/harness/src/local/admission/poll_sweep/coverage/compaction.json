@@ -8,6 +8,6 @@
   "stream:read:blocked": 2,
   "stream:read:completed": 2,
   "stream:read:ready": 4387,
-  "task:completed": 117,
-  "task:submitted": 117
+  "task:completed": 119,
+  "task:submitted": 119
 }
