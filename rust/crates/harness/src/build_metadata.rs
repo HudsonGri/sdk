@@ -6,6 +6,10 @@
 
 /// Cargo manifest directory for checked-in fixtures.
 pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
 pub(crate) const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const DESCRIPTOR_DIGEST: &str = env!("HARNESS_DESCRIPTOR_DIGEST");
 pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =
