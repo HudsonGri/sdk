@@ -1,6 +1,6 @@
 //! Seeded production replays: compare bytes, never rewrite identities or errors.
 use acyclic_harness::{
-    Error, LocalHarness, Result,
+    Error, LocalHarness, Result, client,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
     model::Model,
@@ -23,6 +23,7 @@ struct Trace {
     requests: Vec<u8>,
     dispatches: Vec<u8>,
     files: Vec<u8>,
+    jsonl: Vec<u8>,
     durable: Vec<u8>,
 }
 
@@ -60,6 +61,7 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
         ("requests", &left.requests, &right.requests),
         ("dispatches", &left.dispatches, &right.dispatches),
         ("files", &left.files, &right.files),
+        ("jsonl", &left.jsonl, &right.jsonl),
         ("durable", &left.durable, &right.durable),
     ] {
         if left != right {
@@ -102,7 +104,55 @@ fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
     serde_json::to_vec(&files).map_err(storage)
 }
 
-async fn scenario() -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>)> {
+async fn prompt(
+    harness: &Arc<LocalHarness>,
+    prompt: &str,
+    expected: &str,
+    headless: bool,
+) -> Result<Vec<u8>> {
+    if !headless {
+        assert_eq!(harness.run(prompt).await?.text, expected);
+        return Ok(Vec::new());
+    }
+    // The same identity, request-file, client and finish path used by graphcoder -p.
+    let operation = client::local_identity(harness, Some(prompt), None).await?;
+    let command = client::prepare_local_prompt(operation, prompt)?;
+    let (mut connection, target) = client::connect_local(harness.clone(), operation).await?;
+    let mut jsonl = Vec::new();
+    let outcome = client::run_headless(&mut connection, command, target, &mut jsonl).await;
+    assert_eq!(connection.finish(outcome).await?.exit_code(), 0);
+    assert_eq!(jsonl.last(), Some(&b'\n'), "incomplete JSONL frame");
+    let text = std::str::from_utf8(&jsonl).map_err(storage)?;
+    let mut lines = text.lines();
+    client::jsonl::parse_snapshot(lines.next().expect("missing initial frame"))?;
+    let mut completed = false;
+    for line in lines {
+        let change = client::jsonl::parse_change(line)?;
+        for file in change.file.iter().chain(&change.files) {
+            if matches!(
+                file.key,
+                acyclic_harness::task_volume::FileKey::Session {
+                    file: acyclic_harness::task_volume::TaskFile::ExecutionResult(_),
+                    ..
+                }
+            ) {
+                let outcome: serde_json::Value =
+                    serde_json::from_slice(&file.bytes).map_err(storage)?;
+                assert_eq!(
+                    outcome["ok"]["text"], expected,
+                    "final text differs from provider output"
+                );
+                completed = true;
+            }
+        }
+    }
+    assert!(completed, "JSONL omitted the terminal outcome");
+    Ok(jsonl)
+}
+
+async fn scenario(
+    headless: bool,
+) -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
     // The independently initialized stores and settings never discover HOME.
     let directory = tempfile::tempdir().map_err(storage)?;
     let reference = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -139,8 +189,8 @@ async fn scenario() -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>)> {
         .volume(volume.clone())
         .state_directory(directory.path().join("state")))
     };
-    let harness = LocalHarness::open(config()?).await?;
-    assert_eq!(harness.run("finish this turn").await?.text, "done");
+    let harness = Arc::new(LocalHarness::open(config()?).await?);
+    let mut jsonl = prompt(&harness, "finish this turn", "done", headless).await?;
     let files = harness
         .task_files()
         .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
@@ -150,7 +200,7 @@ async fn scenario() -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>)> {
         .ok_or_else(|| Error::Invalid("missing snapshot".into()))?
         .files;
     drop(harness);
-    let reopened = LocalHarness::open(config()?).await?;
+    let reopened = Arc::new(LocalHarness::open(config()?).await?);
     let restored = reopened
         .task_files()
         .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
@@ -160,10 +210,7 @@ async fn scenario() -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>)> {
         .ok_or_else(|| Error::Invalid("missing reopened snapshot".into()))?
         .files;
     assert_eq!(files, restored, "cold reopen lost acknowledged files");
-    assert_eq!(
-        reopened.run("submit after reopening").await?.text,
-        "reopened"
-    );
+    jsonl.extend(prompt(&reopened, "submit after reopening", "reopened", headless).await?);
     let files = reopened
         .task_files()
         .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
@@ -177,19 +224,20 @@ async fn scenario() -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>)> {
         serde_json::to_vec(&provider.requests()).map_err(storage)?,
         serde_json::to_vec(&provider.dispatches()).map_err(storage)?,
         serde_json::to_vec(&files).map_err(storage)?,
+        jsonl,
     ))
 }
 
-async fn replay(seed: u64, erase_source: bool) -> Result<Trace> {
+async fn replay(seed: u64, erase_source: bool, headless: bool) -> Result<Trace> {
     // Negative control removes seeded execution, preserving real barriers.
     let (schedule, mut events) = if erase_source {
         Schedule::new()
     } else {
         Schedule::seeded(seed)
     };
-    let mut turn = Box::pin(schedule.scope(scenario()));
+    let mut turn = Box::pin(schedule.scope(scenario(headless)));
     let mut boundaries = Vec::new();
-    let (directory, requests, dispatches, files) = loop {
+    let (directory, requests, dispatches, files, jsonl) = loop {
         tokio::select! {
             biased;
             event = events.recv() => {
@@ -219,6 +267,7 @@ async fn replay(seed: u64, erase_source: bool) -> Result<Trace> {
         requests,
         dispatches,
         files,
+        jsonl,
         durable: durable_bytes(directory.path())?,
     })
 }
@@ -231,8 +280,8 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
         .map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        let first = replay(71, false).await?;
-        let second = replay(71, false).await?;
+        let first = replay(71, false, false).await?;
+        let second = replay(71, false, false).await?;
         same_trace(&first, &second).expect("same seed diverged");
         assert!(
             !first.boundaries.is_empty(),
@@ -242,12 +291,12 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
             first.writes.iter().any(|write| write.requested > 0),
             "original durable writes were bypassed"
         );
-        let different = replay(72, false).await?;
+        let different = replay(72, false, false).await?;
         assert_ne!(
             first.dispatches, different.dispatches,
             "seed did not reach production identities"
         );
-        let broken = replay(71, true).await?;
+        let broken = replay(71, true, false).await?;
         assert!(
             same_trace(&first, &broken).is_err(),
             "unseeded trace escaped the replay oracle"
@@ -256,6 +305,22 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
             first.dispatches, broken.dispatches,
             "unseeded production negative control escaped"
         );
+        Ok(())
+    })
+}
+
+#[test]
+fn seeded_headless_entrypoint_replays_complete_jsonl() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(storage)?;
+    runtime.block_on(async {
+        tokio::time::pause();
+        let first = replay(71, false, true).await?;
+        let second = replay(71, false, true).await?;
+        same_trace(&first, &second).expect("headless same seed diverged");
+        assert!(!first.jsonl.is_empty(), "headless output bypassed");
         Ok(())
     })
 }
