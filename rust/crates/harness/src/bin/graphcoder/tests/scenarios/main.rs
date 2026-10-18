@@ -174,6 +174,28 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
 
 #[tokio::test]
 async fn binary_scenarios() -> TestResult {
+    if let Some(directory) = std::env::var_os("BINARY_TEST_ARTIFACTS") {
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory)?;
+        let executable = std::env::var_os("CARGO_BIN_EXE_graphcoder")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_graphcoder").into());
+        std::fs::copy(
+            executable,
+            directory.join(if cfg!(windows) {
+                "graphcoder.exe"
+            } else {
+                "graphcoder"
+            }),
+        )?;
+        std::fs::copy(
+            std::env::current_exe()?,
+            directory.join(if cfg!(windows) {
+                "scenarios.exe"
+            } else {
+                "scenarios"
+            }),
+        )?;
+    }
     let started = Instant::now();
     let mut cases = Vec::new();
     let filter = std::env::var("E2E_FILTER").unwrap_or_default();
