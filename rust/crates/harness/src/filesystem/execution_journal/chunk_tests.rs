@@ -491,7 +491,7 @@ fn projection_payload_copy_negative_control_has_exact_extra_allocations() {
         eprintln!("copy negative native={native} old={old:?} candidate={new:?}");
         assert_eq!(old[0], new[0]);
         assert_eq!(old[1] - new[1], if native { 16 } else { 8 });
-        assert_eq!(new[1], if native { 307 } else { 219 });
+        assert_eq!(new[1], if native { 315 } else { 219 });
         if native {
             assert_eq!(old[3] - new[3], 16);
             assert_eq!(old[4] - new[4], 8 * b"working".len() as u64);

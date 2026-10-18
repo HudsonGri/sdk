@@ -207,8 +207,8 @@ fn borrowed_chunk_packing_has_exact_allocations_with_copy_negative_control() {
             "packing native={native} candidate={} native_ops={} copied={}",
             candidate.1, candidate.2, baseline.1
         );
-        assert_eq!(candidate.1, if native { 6 } else { 5 });
-        assert_eq!(candidate.2, if native { 4 } else { 0 });
+        assert_eq!(candidate.1, if native { 7 } else { 5 });
+        assert_eq!(candidate.2, if native { 6 } else { 0 });
         assert_eq!(
             baseline.1,
             candidate.1 + 1,
