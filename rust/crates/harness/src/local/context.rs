@@ -8,6 +8,10 @@ use crate::{
 pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
+#[cfg(feature = "native-execution")]
+pub(super) mod environment;
+#[cfg(feature = "native-execution")]
+mod skills;
 
 fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -117,6 +121,13 @@ impl LocalHarness {
             manifest
                 .conventions
                 .push(workspace.context_line().to_owned());
+            if self.checkout_context {
+                manifest
+                    .conventions
+                    .push(environment::render(&workspace.path, self.clock.now_unix_millis()).await);
+                let skills = self.checkout_skills(workspace, maximum).await?;
+                manifest.conventions.extend(skills::frame(&skills));
+            }
         }
         #[cfg(feature = "hooks")]
         manifest.sources.extend(hook_configuration);

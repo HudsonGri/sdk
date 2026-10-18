@@ -103,8 +103,78 @@ async fn execute(
     output.stdout
 }
 
+/// The checkout path as the environment block shows it, without a verbatim prefix.
+fn shown(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(share) if share.starts_with(r"UNC\") => format!(r"\\{}", &share[4..]),
+        Some(local) => local.to_owned(),
+        None => text.into_owned(),
+    }
+}
+
+/// UTC date by counting whole years and months, independent of the harness arithmetic.
+fn utc_date(unix_millis: u64) -> String {
+    let mut days = unix_millis / 86_400_000;
+    let leap = |year: u64| year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let mut year = 1970;
+    while days >= if leap(year) { 366 } else { 365 } {
+        days -= if leap(year) { 366 } else { 365 };
+        year += 1;
+    }
+    let mut month = 1;
+    for length in [
+        31,
+        if leap(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ] {
+        if days < length {
+            break;
+        }
+        days -= length;
+        month += 1;
+    }
+    format!("{year:04}-{month:02}-{:02}", days + 1)
+}
+
+/// The exact environment message a turn admitted `earlier` milliseconds ago carries.
+fn environment(cwd: &str, earlier: u64) -> Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let text = format!(
+        "<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>bash</shell>\n  <os>{}</os>\n  <current_date>{}</current_date>\n  <timezone>UTC</timezone>\n</environment_context>",
+        std::env::consts::OS,
+        utc_date(now - earlier)
+    );
+    json!({"type":"message","role":"system","content":[{"type":"input_text","text":text}]})
+}
+
+#[test]
+fn utc_dates_count_whole_years_and_months() {
+    assert_eq!(utc_date(0), "1970-01-01");
+    assert_eq!(utc_date(951_782_400_000), "2000-02-29");
+    assert_eq!(utc_date(1_792_324_800_000), "2026-10-18");
+}
+
 async fn scenario(mode: Mode) {
     let instructions = matches!(mode, Mode::Instructions);
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&settings).unwrap();
+    let cwd = shown(&std::fs::canonicalize(&workspace).unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -124,10 +194,20 @@ async fn scenario(mode: Mode) {
             "/responses",
             post(move |Json(body): Json<Value>| {
                 let requests = requests.clone();
+                let cwd = cwd.clone();
                 async move {
                     assert!(body.to_string().contains("hello"));
                     if instructions {
-                        assert_eq!(body["input"], json!([
+                        // The block is dated when the turn is admitted, at most a minute earlier.
+                        let environment = [0, 60_000].map(|earlier| environment(&cwd, earlier));
+                        assert!(
+                            environment.contains(&body["input"][3]),
+                            "{} not in {environment:?}",
+                            body["input"][3]
+                        );
+                        let mut input = body["input"].clone();
+                        input.as_array_mut().unwrap().remove(3);
+                        assert_eq!(input, json!([
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep the current goal in GOAL.md in the agent private volume; use active, blocked or done frontmatter status."}]},
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep each Markdown plan in plans/<id>.md beside GOAL.md in the agent private volume; use ordinary file tools and - [ ], - [~], - [x] task lists."}]},
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
@@ -153,11 +233,6 @@ async fn scenario(mode: Mode) {
             .await
             .unwrap();
     });
-    let directory = tempfile::tempdir().unwrap();
-    let workspace = directory.path().join("workspace");
-    let settings = directory.path().join("settings");
-    std::fs::create_dir(&workspace).unwrap();
-    std::fs::create_dir(&settings).unwrap();
     if instructions {
         std::fs::write(
             workspace.join("AGENTS.md"),
