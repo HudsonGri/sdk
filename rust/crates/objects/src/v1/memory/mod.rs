@@ -262,6 +262,8 @@ use native::*;
 use publication::*;
 use read::*;
 pub(super) use state::State;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+use state::changed;
 use state::{Bucket, Receipt, SharedInfo, Stored, Upload, stored_bytes};
 use transaction::{PendingObject, Transaction};
 

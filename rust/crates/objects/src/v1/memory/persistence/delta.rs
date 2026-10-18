@@ -55,18 +55,8 @@ pub(super) fn changed_keys(
     publication: &mut Publication,
 ) -> Result<Vec<SharedInfo<String>>, NativeObjectsError> {
     let mut output = Vec::new();
-    if let Some(before) = before {
-        for item in before.objects.diff(&next.objects) {
-            if let imbl::ordmap::DiffItem::Add(key, _)
-            | imbl::ordmap::DiffItem::Update { new: (key, _), .. } = item
-            {
-                publication.push(&mut output, key.clone())?;
-            }
-        }
-    } else {
-        for key in next.objects.keys() {
-            publication.push(&mut output, key.clone())?;
-        }
+    for (key, _) in changed(before.map(|bucket| &bucket.objects), &next.objects) {
+        publication.push(&mut output, key.clone())?;
     }
     Ok(output)
 }
@@ -77,7 +67,7 @@ pub(super) fn bucket_changes(
     delta: &mut Delta,
     publication: &mut Publication,
 ) -> Result<(), NativeObjectsError> {
-    fn changed(
+    fn object_change(
         name: &str,
         key: &str,
         value: &Stored,
@@ -91,7 +81,7 @@ pub(super) fn bucket_changes(
         })
     }
     let mut removed = Vec::new();
-    for (name, bucket) in &next.buckets {
+    for (name, bucket) in changed(Some(&before.buckets), &next.buckets) {
         let old = before.buckets.get(name);
         if old.is_none_or(|old| old.info != bucket.info) {
             let info = wire::Bucket {
@@ -115,7 +105,7 @@ pub(super) fn bucket_changes(
         }
         let Some(old) = old else {
             for (key, value) in &bucket.objects {
-                let change = changed(name, key.as_str(), value, publication)?;
+                let change = object_change(name, key.as_str(), value, publication)?;
                 publication.push(&mut delta.objects, change)?;
             }
             continue;
@@ -123,7 +113,7 @@ pub(super) fn bucket_changes(
         for item in old.objects.diff(&bucket.objects) {
             match item {
                 imbl::ordmap::DiffItem::Add(key, value) => {
-                    let change = changed(name, key.as_str(), value, publication)?;
+                    let change = object_change(name, key.as_str(), value, publication)?;
                     publication.push(&mut delta.objects, change)?;
                 }
                 imbl::ordmap::DiffItem::Update {
@@ -154,11 +144,10 @@ pub(super) fn bucket_changes(
     }
     publication.reserve(&mut delta.objects, removed.len())?;
     delta.objects.extend(removed);
-    for name in before
-        .buckets
-        .keys()
-        .filter(|name| !next.buckets.contains_key(*name))
-    {
+    for item in before.buckets.diff(&next.buckets) {
+        let imbl::ordmap::DiffItem::Remove(name, _) = item else {
+            continue;
+        };
         let change = BucketChange {
             name: publication.text(name)?,
             info: None,
@@ -174,13 +163,17 @@ pub(super) fn difference(
     ordinal: u64,
     publication: &mut Publication,
 ) -> Result<Delta, NativeObjectsError> {
+    #[cfg(all(test, not(objects_loom)))]
+    if tests::restore_scan() {
+        return tests::old_difference(before, next, ordinal, publication);
+    }
     let mut delta = Delta {
         sequence: next.sequence,
         ordinal,
         ..Default::default()
     };
     bucket_changes(before, next, &mut delta, publication)?;
-    for (id, upload) in &next.uploads {
+    for (id, upload) in changed(Some(&before.uploads), &next.uploads) {
         let old = before.uploads.get(id);
         if old.is_none() {
             let metadata = upload
@@ -197,8 +190,7 @@ pub(super) fn difference(
             };
             publication.push(&mut delta.uploads, change)?;
         }
-        for (number, (receipt, body)) in &upload.parts {
-            let refs = bodies(body, publication)?;
+        for (number, (receipt, body)) in changed(old.map(|upload| &upload.parts), &upload.parts) {
             if old
                 .and_then(|old| old.parts.get(number))
                 .is_none_or(|(old, _)| old != receipt)
@@ -211,17 +203,16 @@ pub(super) fn difference(
                         part_number: receipt.part_number,
                         size: receipt.size,
                     }),
-                    bodies: refs,
+                    bodies: bodies(body, publication)?,
                 };
                 publication.push(&mut delta.parts, change)?;
             }
         }
     }
-    for id in before
-        .uploads
-        .keys()
-        .filter(|id| !next.uploads.contains_key(*id))
-    {
+    for item in before.uploads.diff(&next.uploads) {
+        let imbl::ordmap::DiffItem::Remove(id, _) = item else {
+            continue;
+        };
         let change = UploadChange {
             id: publication.text(id)?,
             deleted: true,
@@ -242,3 +233,6 @@ pub(super) fn difference(
     }
     Ok(delta)
 }
+
+#[cfg(all(test, not(objects_loom)))]
+mod tests;

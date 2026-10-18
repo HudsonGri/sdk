@@ -8,6 +8,8 @@ pub(in crate::v1) struct State {
     pub(super) sequence: u64,
     /// Body bytes of every stored object, maintained by [`stored_bytes`].
     pub(super) object_bytes: usize,
+    pub(super) upload_bytes: usize,
+    pub(super) nested_entries: usize,
 }
 #[derive(Clone)]
 pub(super) struct Bucket {
@@ -26,6 +28,51 @@ pub(super) struct Upload {
     pub(super) metadata: SharedInfo<Option<wire::ObjectMetadata>>,
     pub(super) parts: OrdMap<u32, (SharedInfo<wire::UploadedPart>, StoredBody)>,
 }
+
+// Persistent-map diff must compare subtree identity, never walk its contents
+// just to decide whether that subtree changed. Unequal identities deliberately
+// retain equal-value updates for the inner diff to resolve.
+impl PartialEq for Bucket {
+    fn eq(&self, other: &Self) -> bool {
+        self.info == other.info && self.objects.ptr_eq(&other.objects)
+    }
+}
+impl PartialEq for Upload {
+    fn eq(&self, other: &Self) -> bool {
+        self.bucket == other.bucket
+            && self.key == other.key
+            && self.metadata == other.metadata
+            && self.parts.ptr_eq(&other.parts)
+    }
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(super) fn changed<'a, K: Clone + Ord, V: Clone + PartialEq>(
+    before: Option<&'a OrdMap<K, V>>,
+    next: &'a OrdMap<K, V>,
+) -> impl Iterator<Item = (&'a K, &'a V)> {
+    before
+        .into_iter()
+        .flat_map(move |before| {
+            before
+                .diff(next)
+                .inspect(|_| examined())
+                .filter_map(|item| match item {
+                    imbl::ordmap::DiffItem::Add(key, value)
+                    | imbl::ordmap::DiffItem::Update {
+                        new: (key, value), ..
+                    } => Some((key, value)),
+                    imbl::ordmap::DiffItem::Remove(..) => None,
+                })
+        })
+        .chain(
+            before
+                .is_none()
+                .then_some(next)
+                .into_iter()
+                .flat_map(|next| next.iter().inspect(|_| examined())),
+        )
+}
 #[derive(Clone, PartialEq)]
 pub(super) struct Receipt {
     pub(super) digest: [u8; 32],
@@ -37,18 +84,65 @@ pub(super) struct Receipt {
 
 /// Updates stored bytes from changed persistent subtrees.
 pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
+    #[cfg(all(test, not(objects_loom)))]
+    if tests::restore_scan() {
+        let count = next
+            .buckets
+            .values()
+            .map(|bucket| {
+                examined();
+                bucket.objects.len()
+            })
+            .sum::<usize>()
+            + next
+                .uploads
+                .values()
+                .map(|upload| {
+                    examined();
+                    upload
+                        .parts
+                        .values()
+                        .map(|(_, body)| {
+                            examined();
+                            std::hint::black_box(body.len());
+                            1
+                        })
+                        .sum::<usize>()
+                })
+                .sum::<usize>();
+        std::hint::black_box(count);
+    }
     let sum = |bucket: &Bucket| {
         bucket.objects.values().try_fold(0_usize, |total, object| {
+            examined();
             total.checked_add(object.body.len())
         })
     };
     let (mut added, mut removed) = (0_usize, 0_usize);
-    for (name, bucket) in &next.buckets {
-        let Some(old) = before.buckets.get(name) else {
-            added = added.checked_add(sum(bucket)?)?;
-            continue;
+    let mut entries = before.nested_entries;
+    for item in before.buckets.diff(&next.buckets) {
+        examined();
+        let (old, bucket) = match item {
+            imbl::ordmap::DiffItem::Add(_, bucket) => {
+                added = added.checked_add(sum(bucket)?)?;
+                entries = entries.checked_add(bucket.objects.len())?;
+                continue;
+            }
+            imbl::ordmap::DiffItem::Remove(_, bucket) => {
+                removed = removed.checked_add(sum(bucket)?)?;
+                entries = entries.checked_sub(bucket.objects.len())?;
+                continue;
+            }
+            imbl::ordmap::DiffItem::Update {
+                old: (_, old),
+                new: (_, bucket),
+            } => (old, bucket),
         };
+        entries = entries
+            .checked_sub(old.objects.len())?
+            .checked_add(bucket.objects.len())?;
         for item in old.objects.diff(&bucket.objects) {
+            examined();
             let (old, new) = match item {
                 imbl::ordmap::DiffItem::Add(_, new) => (0, new.body.len()),
                 imbl::ordmap::DiffItem::Update {
@@ -61,22 +155,72 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
             removed = removed.checked_add(old)?;
         }
     }
-    for (name, bucket) in &before.buckets {
-        if !next.buckets.contains_key(name) {
-            removed = removed.checked_add(sum(bucket)?)?;
-        }
-    }
     next.object_bytes = before
         .object_bytes
         .checked_add(added)?
         .checked_sub(removed)?;
-    next.uploads
-        .values()
-        .flat_map(|upload| upload.parts.values())
-        .try_fold(next.object_bytes, |total, (_, body)| {
+    let sum_parts = |upload: &Upload| {
+        upload.parts.values().try_fold(0_usize, |total, (_, body)| {
+            examined();
             total.checked_add(body.len())
         })
+    };
+    let (mut added, mut removed) = (0_usize, 0_usize);
+    for item in before.uploads.diff(&next.uploads) {
+        examined();
+        let (old, upload) = match item {
+            imbl::ordmap::DiffItem::Add(_, upload) => {
+                added = added.checked_add(sum_parts(upload)?)?;
+                entries = entries.checked_add(upload.parts.len())?;
+                continue;
+            }
+            imbl::ordmap::DiffItem::Remove(_, upload) => {
+                removed = removed.checked_add(sum_parts(upload)?)?;
+                entries = entries.checked_sub(upload.parts.len())?;
+                continue;
+            }
+            imbl::ordmap::DiffItem::Update {
+                old: (_, old),
+                new: (_, upload),
+            } => (old, upload),
+        };
+        entries = entries
+            .checked_sub(old.parts.len())?
+            .checked_add(upload.parts.len())?;
+        for item in old.parts.diff(&upload.parts) {
+            examined();
+            let (old, new) = match item {
+                imbl::ordmap::DiffItem::Add(_, (_, body)) => (0, body.len()),
+                imbl::ordmap::DiffItem::Remove(_, (_, body)) => (body.len(), 0),
+                imbl::ordmap::DiffItem::Update {
+                    old: (_, (_, old)),
+                    new: (_, (_, new)),
+                } => (old.len(), new.len()),
+            };
+            added = added.checked_add(new)?;
+            removed = removed.checked_add(old)?;
+        }
+    }
+    next.upload_bytes = before
+        .upload_bytes
+        .checked_sub(removed)?
+        .checked_add(added)?;
+    next.nested_entries = entries;
+    #[cfg(all(test, not(objects_loom)))]
+    if tests::omit_update() {
+        next.nested_entries = before.nested_entries;
+    }
+    next.object_bytes.checked_add(next.upload_bytes)
 }
+
+#[inline]
+pub(super) fn examined() {
+    #[cfg(all(test, not(objects_loom)))]
+    tests::examined();
+}
+
+#[cfg(all(test, not(objects_loom)))]
+mod tests;
 
 #[derive(Clone)]
 pub(super) struct SharedInfo<T = wire::ObjectInfo>(pub(super) Arc<super::Guarded<T>>);

@@ -8,19 +8,28 @@ impl Journal {
     }
     pub(in crate::v1::memory) fn validate_bodies(
         &self,
+        before: &State,
         state: &State,
         pending: Option<&PendingObject>,
     ) -> Result<(), Error> {
-        let bodies = state
-            .buckets
-            .values()
-            .flat_map(|bucket| bucket.objects.values())
+        let bodies = changed(Some(&before.buckets), &state.buckets)
+            .flat_map(|(name, bucket)| {
+                changed(
+                    before.buckets.get(name).map(|bucket| &bucket.objects),
+                    &bucket.objects,
+                )
+            })
+            .map(|(_, object)| object)
             .map(|object| &object.body)
             .chain(
-                state
-                    .uploads
-                    .values()
-                    .flat_map(|upload| upload.parts.values())
+                changed(Some(&before.uploads), &state.uploads)
+                    .flat_map(|(id, upload)| {
+                        changed(
+                            before.uploads.get(id).map(|upload| &upload.parts),
+                            &upload.parts,
+                        )
+                    })
+                    .map(|(_, part)| part)
                     .map(|(_, body)| body),
             );
         if bodies
@@ -124,7 +133,7 @@ impl Journal {
         publication: &mut Publication,
     ) -> Result<Vec<u8>, NativeObjectsError> {
         let mut inline_data = Vec::new();
-        for (name, bucket) in &next.buckets.clone() {
+        for (name, bucket) in changed(Some(&before.buckets), &next.buckets.clone()) {
             let keys = changed_keys(before.buckets.get(name), bucket, publication)?;
             if keys.is_empty() {
                 continue;
@@ -141,9 +150,12 @@ impl Journal {
                 object.body = self.prepare_inline(&object.body, &mut inline_data, publication)?;
             }
         }
-        for (id, _) in &next.uploads.clone() {
+        for (id, snapshot) in changed(Some(&before.uploads), &next.uploads.clone()) {
             let upload = next.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
-            for (number, _) in &upload.parts.clone() {
+            for (number, _) in changed(
+                before.uploads.get(id).map(|old| &old.parts),
+                &snapshot.parts,
+            ) {
                 let (_, body) = upload
                     .parts
                     .get_mut(number)

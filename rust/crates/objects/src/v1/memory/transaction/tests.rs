@@ -129,6 +129,8 @@ proptest! {
             prop_assert_eq!(state.sequence, sequence);
             prop_assert_eq!(state.receipts.len(), receipts);
             prop_assert_eq!(state.object_bytes, model.values().map(Vec::len).sum::<usize>());
+            prop_assert_eq!(state.nested_entries, model.len());
+            prop_assert_eq!(state.upload_bytes, 0);
         }
     }
 }

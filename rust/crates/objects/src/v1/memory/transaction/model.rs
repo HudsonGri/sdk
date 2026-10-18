@@ -53,6 +53,8 @@ fn read(core: &MemoryObjects) -> u64 {
     };
     let info = value.header.object.unwrap();
     let receipt = state.receipts.get("write-once");
+    assert_eq!(state.nested_entries, 1);
+    assert_eq!(state.upload_bytes, 0);
     let all_old = state.sequence == 1
         && body.as_slice() == b"old"
         && state.object_bytes == 3
