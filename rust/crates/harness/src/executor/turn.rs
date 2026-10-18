@@ -62,6 +62,9 @@ impl StockExecution<'_> {
                     ExecutionProgress::Rejected(reason) => {
                         return Ok(ExecutionProgress::Rejected(reason));
                     }
+                    ExecutionProgress::Failed(reason) => {
+                        return Ok(ExecutionProgress::Failed(reason));
+                    }
                 }
             }
         }

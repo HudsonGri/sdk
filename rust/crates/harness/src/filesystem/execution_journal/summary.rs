@@ -325,6 +325,7 @@ impl PreparationRecord for Observation {
                 "invalid_output",
                 "projection_rejected",
                 "publication_rejected",
+                "interrupted",
             ];
             let mut bytes = 0;
             let mut remaining = labels.as_slice();
