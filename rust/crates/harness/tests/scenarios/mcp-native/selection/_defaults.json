@@ -1,0 +1,4 @@
+{"mcp":{"pages":{"":{"tools":[{"name":"echo","description":"Return a reply and save the supplied bytes.",
+  "inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}},
+  {"name":"other","inputSchema":{"type":"object"}}]}}},
+  "expect":{"not_requests":[{"tools":[{"name":"mcp.fixture.other"}]}]}}
