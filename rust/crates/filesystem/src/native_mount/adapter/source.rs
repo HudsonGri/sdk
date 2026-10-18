@@ -566,11 +566,11 @@ impl<A, O> CheckoutMountSource<A, O> {
                 &self.cancellation,
             )
             .map_err(MountSourceError::from)?;
-        checkout
-            .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
+        // Refreshing and installing are deep; each runs from its own allocation.
+        crate::in_heap(|| checkout.refresh_head(WorkBudget::UNBOUNDED, &self.cancellation))
             .await
             .map_err(engine_error)?;
-        self.record_advance(&mut checkout, &base).await
+        crate::in_heap(|| self.record_advance(&mut checkout, &base)).await
     }
 
     async fn record_advance(
@@ -588,13 +588,16 @@ impl<A, O> CheckoutMountSource<A, O> {
         let root =
             NamespacePath::new(Vec::new(), self.limits).map_err(MountSourceError::NamespacePath)?;
         let work = capture_meter(BOUNDARY_BUDGET, &self.cancellation)?;
-        let (installed, _allocation) = installed_changes(
-            base,
-            checkout,
-            InstallScope::Subtree(&root),
-            &mut NativeDemandCarrier::Native(&work),
-            &self.cancellation,
-        )
+        let mut carrier = NativeDemandCarrier::Native(&work);
+        let (installed, _allocation) = crate::in_heap(|| {
+            installed_changes(
+                base,
+                checkout,
+                InstallScope::Subtree(&root),
+                &mut carrier,
+                &self.cancellation,
+            )
+        })
         .await?;
         self.checkout.view_gate.begin_transition();
         checkout.record(&ViewChange::Effect(&installed))?;
