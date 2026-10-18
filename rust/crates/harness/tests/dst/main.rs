@@ -9,7 +9,14 @@ use acyclic_harness::{
 };
 use acyclic_native_runtime::testing::{DurableWrite, Schedule};
 use std::sync::Arc;
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
+
+// Keep each simulator layer independent of the production future's layout.
+type EntryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
+fn entry<'a, T>(future: impl Future<Output = T> + 'a) -> EntryFuture<'a, T> {
+    Box::pin(future)
+}
 
 fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
@@ -104,171 +111,185 @@ fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
     serde_json::to_vec(&files).map_err(storage)
 }
 
-async fn prompt(
-    harness: &Arc<LocalHarness>,
-    prompt: &str,
-    expected: &str,
+fn prompt<'a>(
+    harness: &'a Arc<LocalHarness>,
+    prompt: &'a str,
+    expected: &'a str,
     headless: bool,
-) -> Result<Vec<u8>> {
-    if !headless {
-        assert_eq!(harness.run(prompt).await?.text, expected);
-        return Ok(Vec::new());
-    }
-    // The same identity, request-file, client and finish path used by graphcoder -p.
-    let operation = client::local_identity(harness, Some(prompt), None).await?;
-    let command = client::prepare_local_prompt(operation, prompt)?;
-    let (mut connection, target) = client::connect_local(harness.clone(), operation).await?;
-    let mut jsonl = Vec::new();
-    let outcome = client::run_headless(&mut connection, command, target, &mut jsonl).await;
-    assert_eq!(connection.finish(outcome).await?.exit_code(), 0);
-    assert_eq!(jsonl.last(), Some(&b'\n'), "incomplete JSONL frame");
-    let text = std::str::from_utf8(&jsonl).map_err(storage)?;
-    let mut lines = text.lines();
-    client::jsonl::parse_snapshot(lines.next().expect("missing initial frame"))?;
-    let mut completed = false;
-    for line in lines {
-        let change = client::jsonl::parse_change(line)?;
-        for file in change.file.iter().chain(&change.files) {
-            if matches!(
-                file.key,
-                acyclic_harness::task_volume::FileKey::Session {
-                    file: acyclic_harness::task_volume::TaskFile::ExecutionResult(_),
-                    ..
+) -> EntryFuture<'a, Result<Vec<u8>>> {
+    entry(async move {
+        if !headless {
+            assert_eq!(entry(harness.run(prompt)).await?.text, expected);
+            return Ok(Vec::new());
+        }
+        // The same identity, request-file, client and finish path used by graphcoder -p.
+        let operation = entry(client::local_identity(harness, Some(prompt), None)).await?;
+        let command = client::prepare_local_prompt(operation, prompt)?;
+        let (mut connection, target) =
+            entry(client::connect_local(harness.clone(), operation)).await?;
+        let mut jsonl = Vec::new();
+        let outcome = entry(client::run_headless(
+            &mut connection,
+            command,
+            target,
+            &mut jsonl,
+        ))
+        .await;
+        assert_eq!(entry(connection.finish(outcome)).await?.exit_code(), 0);
+        assert_eq!(jsonl.last(), Some(&b'\n'), "incomplete JSONL frame");
+        let text = std::str::from_utf8(&jsonl).map_err(storage)?;
+        let mut lines = text.lines();
+        client::jsonl::parse_snapshot(lines.next().expect("missing initial frame"))?;
+        let mut completed = false;
+        for line in lines {
+            let change = client::jsonl::parse_change(line)?;
+            for file in change.file.iter().chain(&change.files) {
+                if matches!(
+                    file.key,
+                    acyclic_harness::task_volume::FileKey::Session {
+                        file: acyclic_harness::task_volume::TaskFile::ExecutionResult(_),
+                        ..
+                    }
+                ) {
+                    let outcome: serde_json::Value =
+                        serde_json::from_slice(&file.bytes).map_err(storage)?;
+                    assert_eq!(
+                        outcome["ok"]["text"], expected,
+                        "final text differs from provider output"
+                    );
+                    completed = true;
                 }
-            ) {
-                let outcome: serde_json::Value =
-                    serde_json::from_slice(&file.bytes).map_err(storage)?;
-                assert_eq!(
-                    outcome["ok"]["text"], expected,
-                    "final text differs from provider output"
-                );
-                completed = true;
             }
         }
-    }
-    assert!(completed, "JSONL omitted the terminal outcome");
-    Ok(jsonl)
+        assert!(completed, "JSONL omitted the terminal outcome");
+        Ok(jsonl)
+    })
 }
 
-async fn scenario(
+fn scenario(
     headless: bool,
-) -> Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
-    // The independently initialized stores and settings never discover HOME.
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let reference = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let volume = VolumeRef::new(
-        reference.clone(),
-        "project".into(),
-        VolumeClass::Project,
-        VolumeOwner::Project("dst".into()),
-        &mut None,
-    )?;
-    let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
-        directory.path().join("filesystem"),
-    ))
-    .await
-    .map_err(storage)?;
-    FilesystemHost::new(fs, &reference, None)?
-        .create_volume(&volume)
-        .await?;
-    let model = Model::new(
-        "scripted".into(),
-        "dst".into(),
-        "1".into(),
-        serde_json::Value::Null,
-    )?;
-    let provider = Arc::new(ScriptedModelProvider::new([
-        ScriptedTurn::Text("done".into()),
-        ScriptedTurn::Text("reopened".into()),
-    ]));
-    let config = || -> Result<_> {
-        Ok(local_harness_config(
+) -> EntryFuture<'static, Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>> {
+    entry(async move {
+        // The independently initialized stores and settings never discover HOME.
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let reference =
+            ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let volume = VolumeRef::new(
+            reference.clone(),
+            "project".into(),
+            VolumeClass::Project,
+            VolumeOwner::Project("dst".into()),
+            &mut None,
+        )?;
+        let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
             directory.path().join("filesystem"),
-            (model.clone(), provider.clone()),
-        )?
-        .volume(volume.clone())
-        .state_directory(directory.path().join("state")))
-    };
-    let harness = Arc::new(LocalHarness::open(config()?).await?);
-    let mut jsonl = prompt(&harness, "finish this turn", "done", headless).await?;
-    let files = harness
-        .task_files()
-        .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
+        ))
         .await
-        .map_err(storage)?
-        .snapshot
-        .ok_or_else(|| Error::Invalid("missing snapshot".into()))?
-        .files;
-    drop(harness);
-    let reopened = Arc::new(LocalHarness::open(config()?).await?);
-    let restored = reopened
-        .task_files()
-        .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
-        .await
-        .map_err(storage)?
-        .snapshot
-        .ok_or_else(|| Error::Invalid("missing reopened snapshot".into()))?
-        .files;
-    assert_eq!(files, restored, "cold reopen lost acknowledged files");
-    jsonl.extend(prompt(&reopened, "submit after reopening", "reopened", headless).await?);
-    let files = reopened
-        .task_files()
-        .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
-        .await
-        .map_err(storage)?
-        .snapshot
-        .ok_or_else(|| Error::Invalid("missing final snapshot".into()))?
-        .files;
-    Ok((
-        directory,
-        serde_json::to_vec(&provider.requests()).map_err(storage)?,
-        serde_json::to_vec(&provider.dispatches()).map_err(storage)?,
-        serde_json::to_vec(&files).map_err(storage)?,
-        jsonl,
-    ))
+        .map_err(storage)?;
+        FilesystemHost::new(fs, &reference, None)?
+            .create_volume(&volume)
+            .await?;
+        let model = Model::new(
+            "scripted".into(),
+            "dst".into(),
+            "1".into(),
+            serde_json::Value::Null,
+        )?;
+        let provider = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("done".into()),
+            ScriptedTurn::Text("reopened".into()),
+        ]));
+        let config = || -> Result<_> {
+            Ok(local_harness_config(
+                directory.path().join("filesystem"),
+                (model.clone(), provider.clone()),
+            )?
+            .volume(volume.clone())
+            .state_directory(directory.path().join("state")))
+        };
+        let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        let mut jsonl = prompt(&harness, "finish this turn", "done", headless).await?;
+        let files = harness
+            .task_files()
+            .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
+            .await
+            .map_err(storage)?
+            .snapshot
+            .ok_or_else(|| Error::Invalid("missing snapshot".into()))?
+            .files;
+        drop(harness);
+        let reopened = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        let restored = reopened
+            .task_files()
+            .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
+            .await
+            .map_err(storage)?
+            .snapshot
+            .ok_or_else(|| Error::Invalid("missing reopened snapshot".into()))?
+            .files;
+        assert_eq!(files, restored, "cold reopen lost acknowledged files");
+        jsonl.extend(prompt(&reopened, "submit after reopening", "reopened", headless).await?);
+        let files = reopened
+            .task_files()
+            .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
+            .await
+            .map_err(storage)?
+            .snapshot
+            .ok_or_else(|| Error::Invalid("missing final snapshot".into()))?
+            .files;
+        Ok((
+            directory,
+            serde_json::to_vec(&provider.requests()).map_err(storage)?,
+            serde_json::to_vec(&provider.dispatches()).map_err(storage)?,
+            serde_json::to_vec(&files).map_err(storage)?,
+            jsonl,
+        ))
+    })
 }
 
-async fn replay(seed: u64, erase_source: bool, headless: bool) -> Result<Trace> {
-    // Negative control removes seeded execution, preserving real barriers.
-    let (schedule, mut events) = if erase_source {
-        Schedule::new()
-    } else {
-        Schedule::seeded(seed)
-    };
-    let mut turn = Box::pin(schedule.scope(scenario(headless)));
-    let mut boundaries = Vec::new();
-    let (directory, requests, dispatches, files, jsonl) = loop {
-        tokio::select! {
-            biased;
-            event = events.recv() => {
-                let event = event.ok_or_else(|| Error::Invalid("lost boundary driver".into()))?;
-                boundaries.push((event.name.into(), event.detail.to_string()));
-                event.release();
-            },
-            result = &mut turn => break result?,
+fn replay(seed: u64, erase_source: bool, headless: bool) -> EntryFuture<'static, Result<Trace>> {
+    entry(async move {
+        // Negative control removes seeded execution, preserving real barriers.
+        let (schedule, mut events) = if erase_source {
+            Schedule::new()
+        } else {
+            Schedule::seeded(seed)
+        };
+        let mut turn = entry(schedule.scope(scenario(headless)));
+        let mut boundaries = Vec::new();
+        let (directory, requests, dispatches, files, jsonl) = loop {
+            tokio::select! {
+                biased;
+                event = events.recv() => {
+                    let event = event.ok_or_else(|| Error::Invalid("lost boundary driver".into()))?;
+                    boundaries.push((event.name.into(), event.detail.to_string()));
+                    event.release();
+                },
+                result = &mut turn => break result?,
+            }
+        };
+        drop(turn);
+        loop {
+            tokio::select! {
+                biased;
+                event = events.recv() => {
+                    let event = event.ok_or_else(|| Error::Invalid("lost drain driver".into()))?;
+                    boundaries.push((event.name.into(), event.detail.to_string()));
+                    event.release();
+                },
+                () = schedule.drained() => break,
+            }
         }
-    };
-    drop(turn);
-    loop {
-        tokio::select! {
-            biased;
-            event = events.recv() => {
-                let event = event.ok_or_else(|| Error::Invalid("lost drain driver".into()))?;
-                boundaries.push((event.name.into(), event.detail.to_string()));
-                event.release();
-            },
-            () = schedule.drained() => break,
-        }
-    }
-    Ok(Trace {
-        polls: schedule.polls(),
-        boundaries,
-        writes: schedule.durable_writes(),
-        requests,
-        dispatches,
-        files,
-        jsonl,
-        durable: durable_bytes(directory.path())?,
+        Ok(Trace {
+            polls: schedule.polls(),
+            boundaries,
+            writes: schedule.durable_writes(),
+            requests,
+            dispatches,
+            files,
+            jsonl,
+            durable: durable_bytes(directory.path())?,
+        })
     })
 }
 
