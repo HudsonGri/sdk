@@ -2,7 +2,9 @@
 
 mod call_id;
 mod content;
+mod image;
 mod inventory;
+pub use image::{ImageFormat, ImageHeader, ImageInput};
 mod media;
 mod prefix;
 mod preparation;

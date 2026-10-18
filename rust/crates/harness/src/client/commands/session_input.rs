@@ -80,8 +80,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Ok(operation);
             }
             let cut = self.generation;
-            #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
-            let attachments = self.state(CommandFileRoot::Session, "attachments.json")?;
             let mut resolution = self
                 .catalog
                 .resolve(input, reader, self.maximum_bytes)
@@ -90,7 +88,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             if let CommandResolution::Prompt { text, mentions, .. } = &mut resolution {
                 for file in crate::client::host_images::draft_images(self)? {
                     reader
-                        .verify(&file, crate::client::host_images::MAX_IMAGE, None)?
+                        .verify(&file, file.descriptor().byte_length(), None)?
                         .await?;
                     text.push('\n');
                     let start = text.len();
@@ -111,7 +109,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     "command query advanced during resolution; retry from the new cut".into(),
                 ));
             }
-            let prompt = matches!(resolution, CommandResolution::Prompt { .. });
             let published = if RETRY {
                 self.publish_input_resolution_at::<true>(resolution, operation)
                     .await
@@ -119,29 +116,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 self.publish_resolution_with_retry::<false>(resolution, operation)
                     .await
             }?;
-            #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
-            if prompt
-                && attachments
-                    .as_ref()
-                    .is_some_and(|value| value.as_array().is_some_and(|images| !images.is_empty()))
-                && self.state(CommandFileRoot::Session, "attachments.json")? == attachments
-            {
-                if let Err(error) = self
-                    .write_unchanged_state(
-                        CommandFileRoot::Session,
-                        "attachments.json",
-                        &serde_json::json!([]),
-                    )
-                    .await
-                {
-                    // The immutable request is already accepted. A peer's newer
-                    // draft wins without telling the user to submit it again.
-                    if !matches!(error, Error::Conflict(_)) {
-                        return Err(error);
-                    }
-                }
-            }
-            let _ = prompt;
             return Ok(published);
         }
         Err(Error::Conflict(

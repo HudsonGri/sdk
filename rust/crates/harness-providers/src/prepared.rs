@@ -28,7 +28,7 @@ impl PreparedInput {
             request.request(),
             &names,
             &origin,
-            images.iter().map(|image| image.0.as_ref()),
+            images.iter(),
             &mut files,
         )?;
         let mut generation = Vec::with_capacity(body.capacity()?);

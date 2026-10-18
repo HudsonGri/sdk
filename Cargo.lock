@@ -433,7 +433,6 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
- "imagesize",
  "js-sys",
  "keyring",
  "loom",

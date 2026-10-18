@@ -259,6 +259,8 @@ struct Index {
     child_inputs: BTreeMap<Component, Vec<FileKey>>,
 }
 
+mod batch;
+
 /// A disposable index over one durable private task volume.
 /// Hosts authorize writes/queries with the volume's existing access decision.
 pub struct TaskVolume<P: ?Sized> {

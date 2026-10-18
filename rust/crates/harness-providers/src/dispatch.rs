@@ -127,7 +127,7 @@ pub(crate) async fn encode(
         request.request(),
         names,
         origin,
-        images.iter().map(|image| image.0.as_ref()),
+        images.iter(),
         &mut files,
     )?;
     let mut bytes = Vec::with_capacity(body.capacity()?);

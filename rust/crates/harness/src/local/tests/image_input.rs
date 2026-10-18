@@ -19,6 +19,7 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
     let owner = harness.client_owner();
     let session = OperationId::new();
     let mut commands = crate::client::local_ui(&harness, &session.to_string(), &owner).await?;
+    install_image_policy(&mut commands, 4 * 1024 * 1024).await?;
     let reader = harness.client_reader()?;
     let publisher = harness.client_publisher()?;
     let prepared = crate::tui::prepare_image(2, 1, vec![255; 8]).unwrap();
@@ -147,6 +148,7 @@ async fn host_image_rejections_preserve_the_followed_draft() -> Result<()> {
         &harness.client_owner(),
     )
     .await?;
+    install_image_policy(&mut commands, 4 * 1024 * 1024).await?;
     let reader = harness.client_reader()?;
     let publisher = harness.client_publisher()?;
     let mut input = PromptInput::default();
@@ -220,4 +222,102 @@ async fn host_image_rejections_preserve_the_followed_draft() -> Result<()> {
         "successful host actions clear stale errors"
     );
     Ok(())
+}
+
+async fn install_image_policy<P: acyclic_stream::StreamProvider + ?Sized>(
+    commands: &mut crate::client::CommandSession<P>,
+    maximum: u64,
+) -> Result<()> {
+    let model = model()?;
+    let name = format!("{}/{}", model.provider, model.name);
+    let policy = crate::model::ImageInput {
+        maximum_bytes: maximum,
+        maximum_total_bytes: maximum * 2,
+        maximum_images: 16,
+        maximum_dimension: 4096,
+        maximum_tokens: 16384,
+    };
+    let policies = std::collections::BTreeMap::from([(name.clone(), policy)]);
+    commands
+        .write_state(
+            CommandFileRoot::Config,
+            "image-input.json",
+            &json!({"default":name,"models":policies}),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn host_images_follow_catalog_byte_count_total_and_dimension_policy() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::new(directory.path(), (model()?, text())).without_default_tools(),
+    )
+    .await?;
+    let mut commands = crate::client::local_ui(
+        &harness,
+        &OperationId::new().to_string(),
+        &harness.client_owner(),
+    )
+    .await?;
+    let reader = harness.client_reader()?;
+    let publisher = harness.client_publisher()?;
+    let crate::tui::ClipboardContent::Image { mut jpeg, .. } =
+        crate::tui::prepare_image(2, 1, vec![255; 8]).unwrap()
+    else {
+        unreachable!()
+    };
+    jpeg.resize(5 * 1024 * 1024, 0); // A JPEG permits trailing bytes after EOI.
+    let source = directory.path().join("five megabytes.jpg");
+    std::fs::write(&source, jpeg).map_err(super::super::storage)?;
+    let mut input = PromptInput::default();
+    for (maximum, dimension, count, total, expected) in [
+        (2, 4096, 2, 4, 0),
+        (8, 1, 2, 16, 0),
+        (8, 2, 1, 16, 1),
+        (8, 2, 1, 16, 1),
+        (8, 2, 2, 8, 1),
+        (8, 2, 2, 16, 2),
+    ] {
+        install_image_policy(&mut commands, maximum * 1024 * 1024).await?;
+        let mut catalog = commands
+            .state(CommandFileRoot::Config, "image-input.json")?
+            .unwrap();
+        let name = catalog["default"].as_str().unwrap().to_owned();
+        let policy = &mut catalog["models"][&name];
+        policy["maximum_dimension"] = json!(dimension);
+        policy["maximum_images"] = json!(count);
+        policy["maximum_total_bytes"] = json!(total * 1024 * 1024u64);
+        commands
+            .write_state(CommandFileRoot::Config, "image-input.json", &catalog)
+            .await?;
+        crate::client::host_tui_input(
+            &mut commands,
+            reader.as_ref(),
+            publisher.as_ref(),
+            &mut input,
+            InputEffect::Submit {
+                text: format!("/attach {}", source.display()),
+                edit: None,
+                queued: false,
+            },
+            20,
+            0,
+            0,
+        )
+        .await?;
+        PromptFiles::default().refresh(&commands, &mut input)?;
+        assert_eq!(input.images, expected, "followed model policy: {catalog}");
+    }
+    commands.submit("describe", reader.as_ref()).await?;
+    let request = commands.take_request().unwrap();
+    let resolution: crate::client::CommandResolution =
+        serde_json::from_slice(&request.bytes).map_err(super::super::storage)?;
+    assert!(
+        matches!(resolution, crate::client::CommandResolution::Prompt { mentions, .. } if mentions.len()==2 && mentions.iter().all(|m| m.file.descriptor().byte_length()==5*1024*1024))
+    );
+    drop(commands);
+    drop(publisher);
+    drop(reader);
+    harness.close().await
 }

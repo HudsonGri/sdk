@@ -69,7 +69,9 @@ impl ResolvedModel {
         self.estimator.observe(input_bytes, metadata);
         #[cfg(not(target_arch = "wasm32"))]
         if self.codex_login.is_some() {
-            self.codex_count.observe(request, metadata)?;
+            self.codex_count.observe(request, metadata, |message| {
+                crate::images::tokens(self, message)
+            })?;
         }
         #[cfg(target_arch = "wasm32")]
         let _ = request;

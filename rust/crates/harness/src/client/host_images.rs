@@ -8,8 +8,41 @@ use crate::{
 use acyclic_stream::StreamProvider;
 use std::io::Read;
 
-pub(super) const MAX_IMAGE: u64 = 4 * 1024 * 1024;
-const MAX_TOTAL: u64 = 8 * 1024 * 1024;
+pub(super) fn image_policy<P: StreamProvider + ?Sized>(
+    files: &CommandSession<P>,
+) -> Result<crate::model::ImageInput> {
+    let catalog = files
+        .state(CommandFileRoot::Config, "image-input.json")?
+        .ok_or_else(|| Error::Unsupported("selected model has no image admission policy".into()))?;
+    let default = catalog["default"]
+        .as_str()
+        .ok_or_else(|| Error::Invalid("image catalog has no default model".into()))?;
+    let configured = files
+        .state(CommandFileRoot::Task, "settings.json")?
+        .and_then(|s| s["model"].as_str().map(str::to_owned))
+        .or(files
+            .state(CommandFileRoot::Config, "settings.json")?
+            .and_then(|s| s["model"].as_str().map(str::to_owned)))
+        .unwrap_or_else(|| default.into());
+    let selection = if configured.contains('/') {
+        configured
+    } else {
+        format!(
+            "{}/{}",
+            default.split_once('/').map_or(default, |(p, _)| p),
+            configured
+        )
+    };
+    let policy: crate::model::ImageInput = serde_json::from_value(
+        catalog["models"]
+            .get(&selection)
+            .unwrap_or(&catalog["fallback"])
+            .clone(),
+    )
+    .map_err(|_| Error::Unsupported("selected model has no image admission policy".into()))?;
+    policy.validate()?;
+    Ok(policy)
+}
 
 pub(super) fn draft_images<P: StreamProvider + ?Sized>(
     files: &CommandSession<P>,
@@ -20,20 +53,11 @@ pub(super) fn draft_images<P: StreamProvider + ?Sized>(
             .unwrap_or_else(|| serde_json::json!([])),
     )
     .map_err(|e| Error::Invalid(e.to_string()))?;
-    let mut bytes = 0u64;
-    if images.len() > 16 {
-        return Err(Error::Invalid("too many draft images".into()));
-    }
     for file in &images {
         file.validate(&mut None)?;
-        bytes = bytes
-            .checked_add(file.descriptor().byte_length())
-            .ok_or_else(|| Error::Invalid("image size overflow".into()))?;
         if file.volume().class() != VolumeClass::AgentPrivate
             || !file.descriptor().media_type().starts_with("image/")
             || file.descriptor().byte_length() == 0
-            || file.descriptor().byte_length() > MAX_IMAGE
-            || bytes > MAX_TOTAL
         {
             return Err(Error::Invalid(
                 "draft image exceeds its private-volume allowance".into(),
@@ -49,13 +73,15 @@ async fn publish<P: StreamProvider + ?Sized>(
     mime: &str,
     extension: &str,
 ) -> Result<()> {
+    let policy = image_policy(files)?;
+    policy.parse(bytes, Some(mime))?;
     let mut images = draft_images(files)?;
     let total: u64 = images.iter().map(|f| f.descriptor().byte_length()).sum();
     if publisher.volume().class() != VolumeClass::AgentPrivate
         || bytes.is_empty()
-        || bytes.len() as u64 > MAX_IMAGE
-        || total + bytes.len() as u64 > MAX_TOTAL
-        || images.len() == 16
+        || bytes.len() as u64 > policy.maximum_bytes
+        || total + bytes.len() as u64 > policy.maximum_total_bytes
+        || images.len() >= policy.maximum_images as usize
     {
         return Err(Error::Invalid("image exceeds draft allowance".into()));
     }
@@ -84,7 +110,10 @@ async fn publish<P: StreamProvider + ?Sized>(
     drop(hold);
     Ok(())
 }
-fn attached(path: &str) -> Result<(Vec<u8>, &'static str, &'static str)> {
+fn attached(
+    path: &str,
+    policy: &crate::model::ImageInput,
+) -> Result<(Vec<u8>, &'static str, &'static str)> {
     if !std::fs::metadata(path)
         .map_err(|e| Error::Invalid(e.to_string()))?
         .is_file()
@@ -100,25 +129,14 @@ fn attached(path: &str) -> Result<(Vec<u8>, &'static str, &'static str)> {
         return Err(Error::Invalid("attachment must be a regular file".into()));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_IMAGE + 1)
+    file.take(policy.maximum_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| Error::Invalid(e.to_string()))?;
-    if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE {
+    if bytes.is_empty() || bytes.len() as u64 > policy.maximum_bytes {
         return Err(Error::Invalid("image exceeds byte allowance".into()));
     }
-    let (mime, ext) =
-        match imagesize::image_type(&bytes).map_err(|e| Error::Invalid(e.to_string()))? {
-            imagesize::ImageType::Png => ("image/png", "png"),
-            imagesize::ImageType::Jpeg => ("image/jpeg", "jpg"),
-            imagesize::ImageType::Gif => ("image/gif", "gif"),
-            imagesize::ImageType::Webp => ("image/webp", "webp"),
-            imagesize::ImageType::Heif(_) => ("image/heif", "heif"),
-            _ => return Err(Error::Invalid("unsupported image format".into())),
-        };
-    let size = imagesize::blob_size(&bytes).map_err(|e| Error::Invalid(e.to_string()))?;
-    if size.width == 0 || size.height == 0 || size.width > 4096 || size.height > 4096 {
-        return Err(Error::Invalid("image exceeds dimension allowance".into()));
-    }
+    let header = policy.parse(&bytes, None)?;
+    let (mime, ext) = header.format.media();
     Ok((bytes, mime, ext))
 }
 /// Shared native host binding used by GraphCoder and embedded terminal clients.
@@ -139,7 +157,12 @@ async fn apply_host_input<P: StreamProvider + ?Sized>(
                 arboard::Clipboard::new().map_err(|e| Error::Unsupported(e.to_string()))?;
             match clipboard.get_image() {
                 Ok(image) => {
-                    if image.bytes.len() > 64 * 1024 * 1024 {
+                    let policy = image_policy(files)?;
+                    let decoded = u64::from(policy.maximum_dimension)
+                        .checked_pow(2)
+                        .and_then(|n| n.checked_mul(4))
+                        .ok_or_else(|| Error::Invalid("image dimension overflow".into()))?;
+                    if image.bytes.len() as u64 > decoded {
                         return Err(Error::Invalid(
                             "clipboard image exceeds decoded allowance".into(),
                         ));
@@ -176,9 +199,14 @@ async fn apply_host_input<P: StreamProvider + ?Sized>(
             edit: None,
             ..
         } if text.trim_start().starts_with('/') => {
-            match files.catalog().resolve(text, reader, MAX_IMAGE).await? {
+            match files
+                .catalog()
+                .resolve(text, reader, image_policy(files)?.maximum_bytes)
+                .await?
+            {
                 CommandResolution::Sdk { command, arguments } if command == "attach" => {
-                    let (bytes, mime, ext) = attached(arguments.trim().trim_matches('"'))?;
+                    let policy = image_policy(files)?;
+                    let (bytes, mime, ext) = attached(arguments.trim().trim_matches('"'), &policy)?;
                     publish(files, publisher, &bytes, mime, ext).await
                 }
                 _ => super::file_tui_input(files, reader, effect, page_rows, maximum_scroll).await,

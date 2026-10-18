@@ -53,24 +53,10 @@ pub(crate) async fn count(
                 )
             })
             .transpose()?;
-        let result = provider.codex_count.count(request).and_then(|tokens| {
-            let extra = request
-                .request()
-                .messages
-                .iter()
-                .try_fold(0u64, |total, message| {
-                    total
-                        .checked_add(u64::from(crate::images::tokens(provider, message)?))
-                        .ok_or_else(|| crate::invalid("file token count overflows"))
-                })?;
-            projection::plan(
-                provider,
-                request,
-                tokens
-                    .checked_add(extra)
-                    .ok_or_else(|| crate::invalid("file token count overflows"))?,
-            )
-        });
+        let result = provider
+            .codex_count
+            .count(request, |message| crate::images::tokens(provider, message))
+            .and_then(|tokens| projection::plan(provider, request, tokens));
         let mut custody = custody;
         let result = match custody.as_mut() {
             Some(hold) => crate::native::diagnostic(result, hold),
@@ -141,7 +127,7 @@ pub(crate) async fn count(
             request.request(),
             &names,
             &origin,
-            images.iter().map(|image| image.0.as_ref()),
+            images.iter(),
             &mut files,
         )?;
         let body = wire::body(&generation, &provider.model.name, spec.adapter);

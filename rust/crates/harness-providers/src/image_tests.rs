@@ -16,8 +16,12 @@ use acyclic_harness::{
 use base64::Engine as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "image_anchor_tests.rs"]
+mod anchors;
 #[path = "image_catalog_tests.rs"]
 mod catalog;
+#[path = "image_dedup_tests.rs"]
+mod dedup;
 #[path = "image_native_tests.rs"]
 mod native;
 #[path = "image_projection_tests.rs"]
@@ -299,8 +303,8 @@ async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> 
         assert!(count.message_tokens[0] < 2600);
         assert_eq!(
             reads.calls.load(Ordering::SeqCst),
-            3,
-            "verified counting reads the same image occurrences as inference"
+            1,
+            "verified counting resolves each distinct immutable image once"
         );
         let digest = request.request_digest();
         let events = provider
@@ -319,7 +323,7 @@ async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> 
         let recounted = provider.count_tokens(&request).await?;
         assert_eq!(count.message_tokens, recounted.message_tokens);
         assert_eq!(count.fixed_tokens, recounted.fixed_tokens);
-        assert_eq!(reads.calls.load(Ordering::SeqCst), 9);
+        assert_eq!(reads.calls.load(Ordering::SeqCst), 3);
         let sent = script.sent.lock().expect("capture");
         assert_eq!(sent.len(), 1);
         let body = checked_body(adapter, &sent[0].body)?;

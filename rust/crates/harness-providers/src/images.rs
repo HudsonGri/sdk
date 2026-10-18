@@ -151,26 +151,49 @@ pub(crate) fn admit(
     Ok(())
 }
 
+pub(crate) struct Loaded<'a> {
+    values: Vec<(OwnedBytes, Option<ContentHold<'a>>)>,
+    occurrences: Vec<usize>,
+}
+impl Loaded<'_> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &[u8]> {
+        self.occurrences
+            .iter()
+            .map(|index| self.values[*index].0.as_ref())
+    }
+}
+
 pub(crate) async fn load<'a>(
     provider: &'a ResolvedModel,
     request: &'a ModelRequest,
     io: Option<&'a ContentIo>,
-) -> Result<Vec<(OwnedBytes, Option<ContentHold<'a>>)>> {
+) -> Result<Loaded<'a>> {
+    load_unique::<true>(provider, request, io).await
+}
+
+pub(crate) async fn load_unique<'a, const UNIQUE: bool>(
+    provider: &'a ResolvedModel,
+    request: &'a ModelRequest,
+    io: Option<&'a ContentIo>,
+) -> Result<Loaded<'a>> {
     encoded_bytes(provider, request)?;
-    let mut result = Vec::new();
-    for (file, policy, allowed) in request.messages.iter().flat_map(parts) {
-        let limits = match policy {
-            FileProjectionPolicy::BoundedFull => continue,
-            FileProjectionPolicy::Native(policy)
-                if allowed && matches!(policy.intent, NativeMediaIntent::Image { .. }) =>
-            {
-                let Some(limits) = support(provider, file, policy)? else {
-                    continue;
-                };
-                Some((limits, policy.maximum_bytes))
-            }
-            _ => continue,
+    let mut result = Loaded {
+        values: Vec::new(),
+        occurrences: Vec::new(),
+    };
+    let mut pinned = std::collections::BTreeMap::new();
+    for (file, policy) in request.messages.iter().flat_map(files) {
+        let Some(limits) = support(provider, file, policy)? else {
+            continue;
         };
+        let identity = (file.volume(), file.path(), file.version());
+        if UNIQUE && let Some((previous, index)) = pinned.get(&identity) {
+            if *previous != file {
+                return Err(invalid("image identity has conflicting metadata"));
+            }
+            result.occurrences.push(*index);
+            continue;
+        }
         let reader = provider
             .files
             .reader
@@ -179,38 +202,15 @@ pub(crate) async fn load<'a>(
         let payload = verified_content_bytes(
             reader.as_ref(),
             file,
-            limits.map_or(file.descriptor().byte_length(), |(limits, maximum)| {
-                limits.maximum_bytes.min(maximum)
-            }),
+            limits.maximum_bytes.min(policy.maximum_bytes),
             io,
         )
         .await?;
-        let Some((limits, _)) = limits else {
-            result.push(payload);
-            continue;
-        };
-        let bytes = &payload.0;
-        let kind = imagesize::image_type(bytes).map_err(|_| invalid("invalid image header"))?;
-        let matches = matches!(
-            (kind, file.descriptor().media_type()),
-            (imagesize::ImageType::Png, "image/png")
-                | (imagesize::ImageType::Jpeg, "image/jpeg")
-                | (imagesize::ImageType::Gif, "image/gif")
-                | (imagesize::ImageType::Webp, "image/webp")
-                | (imagesize::ImageType::Heif(_), "image/heic" | "image/heif")
-        );
-        if !matches {
-            return Err(invalid("image header differs from its declared media type"));
-        }
-        let size = imagesize::blob_size(bytes).map_err(|_| invalid("invalid image dimensions"))?;
-        if size.width == 0
-            || size.height == 0
-            || size.width > limits.maximum_dimension as usize
-            || size.height > limits.maximum_dimension as usize
-        {
-            return Err(invalid("image exceeds its dimension allowance"));
-        }
-        result.push(payload);
+        limits.parse(&payload.0, Some(file.descriptor().media_type()))?;
+        let index = result.values.len();
+        pinned.insert(identity, (file, index));
+        result.values.push(payload);
+        result.occurrences.push(index);
     }
     Ok(result)
 }

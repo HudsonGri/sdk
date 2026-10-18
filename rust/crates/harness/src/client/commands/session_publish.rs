@@ -3,6 +3,64 @@ use super::*;
 pub(super) const PUBLICATION_ATTEMPTS: usize = 8;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    pub(super) async fn publish_many<const RETRY: bool>(
+        &mut self,
+        writes: &[files::FileValue],
+    ) -> Result<()> {
+        for file in writes {
+            if file.bytes.len() as u64 > self.maximum_bytes
+                || files::record_bytes(file)? > acyclic_stream::MAX_RECORD_BYTES
+            {
+                return Err(Error::Invalid(
+                    "command publication exceeds byte bound".into(),
+                ));
+            }
+        }
+        let before: Vec<_> = writes
+            .iter()
+            .map(|f| self.files.get(&f.key).cloned())
+            .collect();
+        for _ in 0..PUBLICATION_ATTEMPTS {
+            self.make_room(
+                writes
+                    .iter()
+                    .filter(|f| !self.files.contains_key(&f.key))
+                    .count(),
+            )?;
+            let expected = self.generation;
+            let result = match &self.writer {
+                Some(writer) => writer.write_many(expected, writes).await,
+                None => self.volume.append_many(expected, writes).await,
+            };
+            match result {
+                Ok(generation) => {
+                    while self.generation.position < generation.position {
+                        self.advance().await?;
+                    }
+                    return Ok(());
+                }
+                Err(files::Error::Conflict(generation)) => {
+                    while self.generation.position < generation.position {
+                        self.advance().await?;
+                    }
+                    if !RETRY
+                        || self.generation == expected
+                        || writes
+                            .iter()
+                            .zip(&before)
+                            .any(|(f, old)| self.files.get(&f.key) != old.as_ref())
+                    {
+                        return Err(Error::Conflict(
+                            "command files changed; retry from the new cut".into(),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(Error::Conflict("command publication remained busy".into()))
+    }
+
     pub(super) fn publication_byte_limit(&self, key: files::FileKey) -> Result<usize> {
         let framing = files::record_bytes(&files::FileValue::new(key, Vec::new()))?;
         Ok(usize::try_from(self.maximum_bytes)

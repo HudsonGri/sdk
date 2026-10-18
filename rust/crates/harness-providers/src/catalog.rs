@@ -153,18 +153,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     images: models
                         .iter()
                         .filter(|(_, model)| model.features.images)
-                        .map(|(name, _)| {
-                            (
-                                name.clone(),
-                                ImageInput {
-                                    maximum_bytes: 4 * 1024 * 1024,
-                                    maximum_total_bytes: 8 * 1024 * 1024,
-                                    maximum_images: 16,
-                                    maximum_dimension: 4096,
-                                    maximum_tokens: 16_384,
-                                },
-                            )
-                        })
+                        .map(|(name, _)| (name.clone(), ImageInput::default()))
                         .collect(),
                     headers: BTreeMap::new(),
                     models,
