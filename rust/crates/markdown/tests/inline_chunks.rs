@@ -265,6 +265,9 @@ fn short_paragraphs_stay_within_the_total_work_bound() {
 
 #[test]
 fn short_delimiter_paragraphs_keep_compact_opener_snapshots() {
+    // Retain the historical classifier workload so this isolates snapshot
+    // copying even after unrelated parser work has been eliminated.
+    crate::inline::REPLAY_ROWS.set(true);
     let chunks = ["*".to_owned(), "!".to_owned(), "\n".to_owned()];
     for count in [128, 256, 512, 1024] {
         let measured = units(&chunks, count);
@@ -276,6 +279,7 @@ fn short_delimiter_paragraphs_keep_compact_opener_snapshots() {
     crate::spans::COPY_SHARED_TAIL.set(true);
     let copied = units(&chunks, 1024);
     crate::spans::COPY_SHARED_TAIL.set(false);
+    crate::inline::REPLAY_ROWS.set(false);
     assert!(copied.0 > 128 * copied.1 + 4096, "{copied:?}");
 }
 
@@ -365,4 +369,10 @@ fn markers_after_escaped_breaks_have_linear_work() {
     assert!(std::panic::catch_unwind(|| bound(redundant)).is_err());
     let source = "\n*\\".repeat(86);
     replay(&source, &(1..source.len()).collect::<Vec<_>>());
+}
+
+#[test]
+fn control_whitespace_breaks_are_classified_before_the_next_row() {
+    let source = "[r]: /r\n[s]: /s\n\nprefix \u{b}\n_";
+    replay(source, &(1..source.len()).collect::<Vec<_>>());
 }

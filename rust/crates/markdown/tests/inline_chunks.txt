@@ -36,3 +36,5 @@ cc 635a9b93b3c60e292a39a7ea0d5c162e05ba8b2606deb9a445bb0eb2beb9b300
 cc 3284893e775a81e40d7c8a4d1976163346ac0c750cb9591f69a7b47fb5e48a97 # shrinks to chunks = ["*", "!", "\n"]
 
 cc 76d8c3f442f692a58bfefb158990bc4baba57edefd295347e689d7a0ca24f76f # shrinks to chunks = ["\n", "*", "\\"]
+
+cc 9dbc44f796b56f0bdd21243d881eed9473630ad807b3d3c97fc8cba74b6ee16e
