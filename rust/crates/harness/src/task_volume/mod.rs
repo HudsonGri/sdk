@@ -18,10 +18,10 @@ mod plan_name;
 mod publication;
 mod recent;
 pub(crate) use publication::{DurableFile, publish, publish_durable};
-mod refresh;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_open;
 mod opening;
+mod refresh;
 mod schema;
 mod segment;
 pub(crate) use segment::record_bytes;
@@ -712,13 +712,15 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
                 .insert(file.key.clone());
         }
     }
-    index
-        .files
-        .insert(file.key.clone(), StoredFile {
-            file, position,
+    index.files.insert(
+        file.key.clone(),
+        StoredFile {
+            file,
+            position,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_bytes: 0,
-        });
+        },
+    );
 }
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
