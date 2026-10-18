@@ -275,7 +275,7 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
             .put_content(
                 &protected.policy.journal,
                 &grant,
-                "constructor.json",
+                "pi-inputs/constructor.json",
                 b"{}",
                 "application/json",
                 "constructor.json",
@@ -296,13 +296,27 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
     let lease = match runtime
         .runtime
         .task_host()
-        .recover_work(task, &mut None)
+        .pull_work(
+            &acyclic_harness::distributed::Worker {
+                id: "pi-approval-constructor".into(),
+                available: Default::default(),
+                labels: Default::default(),
+            },
+            Some(OperationId::from_bytes(task.into_bytes())),
+            &mut None,
+        )
         .await
         .unwrap()
     {
         acyclic_harness::distributed::WorkPull::Claimed(lease) => lease,
         _ => panic!("expected the admitted root lease"),
     };
+    runtime
+        .runtime
+        .task_host()
+        .start_task(&lease, &mut None)
+        .await
+        .unwrap();
     let fence = acyclic_harness::scheduler::LeaseFence::from(&lease.reservation);
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap();
     let conversation = protected
