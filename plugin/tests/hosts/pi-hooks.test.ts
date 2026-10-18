@@ -133,7 +133,7 @@ test("selected native source uses task files and revalidates the SDK before admi
     const root=manager.appendMessage({role:"user",content:"selected ".repeat(1800),timestamp:1});
     manager.appendMessage(fauxAssistantMessage(fauxToolCall("acyclic_spawn",{id:"child",prompt:"instruction",context:"native_cut"},{id:"spawn"}),{stopReason:"toolUse",timestamp:2}));
     const before=[manager.getHeader(),...manager.getEntries()].map(entry=>JSON.stringify(entry)).join("\n")+"\n";
-    const files:Array<{key:{Input:string},channel:null,bytes:number[]}>=[];
+    const files:Array<{key:{Input:string},channel:null,bytes:{text:string}|{base64:string}}>=[];
     const calls:Record<string,unknown>[]=[];
     const task="00000000-0000-0000-0000-000000000001";
     const fixture=setup(async (event,input)=> {
@@ -152,9 +152,10 @@ test("selected native source uses task files and revalidates the SDK before admi
     const run=()=>fixture.tools.get("acyclic_spawn")!.execute("spawn",{id:"child",prompt:"instruction",context:"native_cut"},undefined,undefined,context);
     if(mutation==="unchanged") await run();
     else await assert.rejects(run,/Native source changed before admission/);
-    const manifest=JSON.parse(Buffer.from(files.at(-1)!.bytes).toString());
+    const decode=(bytes:{text:string}|{base64:string})=>"text" in bytes?Buffer.from(bytes.text):Buffer.from(bytes.base64,"base64");
+    const manifest=JSON.parse(decode(files.at(-1)!.bytes).toString());
     assert.ok(manifest.chunks>1);
-    const source=Buffer.concat(files.slice(0,-1).map(file=>Buffer.from(file.bytes)));
+    const source=Buffer.concat(files.slice(0,-1).map(file=>decode(file.bytes)));
     assert.equal(source.toString(),before);
     assert.equal(source.length,manifest.length);
     assert.equal(calls.length,mutation==="unchanged"?1:0);
@@ -165,6 +166,32 @@ test("selected native source uses task files and revalidates the SDK before admi
       assert.deepEqual(declaration.sha256,Array.from(createHash("sha256").update(source).digest()));
     }
   }
+});
+
+test("native upload chunks preserve UTF-8 boundaries in the canonical file codec",async () => {
+  await fc.assert(fc.asyncProperty(fc.integer({min:0,max:8191}),fc.constantFrom("a","é","中","🦀"),async (padding,character)=>{
+    const manager=SessionManager.inMemory("/selected-project");
+    manager.appendMessage({role:"user",content:"a".repeat(padding)+character.repeat(9000),timestamp:1});
+    manager.appendMessage(fauxAssistantMessage(fauxToolCall("acyclic_spawn",{id:"child",prompt:"instruction",context:"native_cut"},{id:"spawn"}),{stopReason:"toolUse",timestamp:2}));
+    const expected=[manager.getHeader(),...manager.getEntries()].map(row=>JSON.stringify(row)).join("\n")+"\n";
+    const fixture=setup(async event=>event==="session_start"?{task:"00000000-0000-0000-0000-000000000001"}:event==="catalog"?{tools:[{name:"acyclic_spawn",description:"spawn",input_schema:{type:"object"}}]}:{content:[],isError:false},[],async (_task,_path,files)=>{
+      const decoded:Buffer[]=[];
+      for(const file of [...files].slice(0,-1)) {
+        const bytes=JSON.parse(JSON.stringify(file)).bytes;
+        assert.ok(!Array.isArray(bytes));
+        assert.equal(Object.keys(bytes).length,1);
+        const raw="text" in bytes?Buffer.from(bytes.text):Buffer.from(bytes.base64,"base64");
+        let text:string|undefined;
+        try {text=new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(raw);} catch {}
+        assert.deepEqual(bytes,text===undefined?{base64:raw.toString("base64")}:{text});
+        decoded.push(raw);
+      }
+      assert.deepEqual(Buffer.concat(decoded),Buffer.from(expected));
+    });
+    const context={...fixture.context,sessionManager:manager,model:{id:"probe",provider:"test"}} as unknown as ExtensionContext;
+    await fixture.handlers.get("session_start")!({},context);
+    await fixture.tools.get("acyclic_spawn")!.execute("spawn",{id:"child",prompt:"instruction",context:"native_cut"},undefined,undefined,context);
+  }),{numRuns:32});
 });
 
 test("session activation preserves every additive tool and enables every harness tool",async () => {

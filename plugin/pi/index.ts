@@ -4,6 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -71,7 +72,7 @@ function identity(ctx: ExtensionContext) {
   return { sessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
 }
 
-type Publish = (task: string, path: string, files: Iterable<{key:{Input:string},channel:null,bytes:number[]}>) => Promise<void>;
+type Publish = (task: string, path: string, files: Iterable<{key:{Input:string},channel:null,bytes:{text:string}|{base64:string}}>) => Promise<void>;
 const publish: Publish = async (task,path,files) => {
   const child=spawn(executable,["__files",task,path],{windowsHide:true,stdio:["pipe","ignore","pipe"]});
   const closed=new Promise<void>((resolve,reject)=> {
@@ -121,10 +122,12 @@ async function nativeSpawn(input: unknown, ctx: ExtensionContext, toolCallId: st
     const prefix=`workspace/native/${ctx.sessionManager.getSessionId()}/${hash.toString("hex")}`;
     const path=`${prefix}/manifest.json`;
     function* files() {
-      for(let offset=0;offset<source.length;offset+=8192) yield {
-        key:{Input:`${prefix}/chunk-${offset/8192}`},channel:null as null,bytes:Array.from(source.subarray(offset,offset+8192)),
-      };
-      yield {key:{Input:path},channel:null as null,bytes:Array.from(Buffer.from(JSON.stringify({chunks:Math.ceil(source.length/8192),length:source.length})))};
+      for(let offset=0;offset<source.length;offset+=8192) {
+        const chunk=source.subarray(offset,offset+8192);
+        yield {key:{Input:`${prefix}/chunk-${offset/8192}`},channel:null as null,
+          bytes:isUtf8(chunk)?{text:chunk.toString("utf8")}:{base64:chunk.toString("base64")}};
+      }
+      yield {key:{Input:path},channel:null as null,bytes:{text:JSON.stringify({chunks:Math.ceil(source.length/8192),length:source.length})}};
     }
     await write(task,path,files());
     if(snapshot()!==original || ctx.sessionManager.getLeafId()!==head) throw new Error("Native source changed before admission");
