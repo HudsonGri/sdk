@@ -671,7 +671,10 @@ fn grapheme_allocations<const CLONE: bool>() {
                 .unwrap();
             });
             assert_eq!(
-                after.count_total, before.count_total,
+                // An unchanged frame also skips crossterm's one formatted
+                // attribute-reset allocation, as the ordinary frame path does.
+                after.count_total + u64::from(moved.is_none()),
+                before.count_total,
                 "one retained baseline must match the independent path"
             );
         }
