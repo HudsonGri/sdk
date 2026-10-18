@@ -19,6 +19,7 @@ where
             else {
                 return Ok(());
             };
+            owner.require_task_context_binding(context, io)?;
             let key = FileKey::Task {
                 task: Component::new(owner.task_id().to_string())?,
                 file: TaskFile::Citations(u64::from(step)),
