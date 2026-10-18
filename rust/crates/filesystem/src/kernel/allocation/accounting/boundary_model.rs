@@ -31,14 +31,21 @@ fn model(depth: u8, cancel: bool) {
             crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &root_cancel).unwrap();
         let probe_work = scopes(&probe, depth);
         let setup = probe.live_allocation_bytes();
-        let setup_items = probe.receipt().items_examined;
+        let setup_receipt = probe.receipt();
+        let setup_items = setup_receipt.items_examined;
+        if depth == 0 {
+            assert_eq!(setup_receipt.peak_allocation_bytes, setup);
+        }
         drop(probe_work);
         drop(probe);
         let root = crate::NativeMaterializationWork::new(
             WorkBudget {
                 bytes_copied: 2,
                 items_examined: setup_items + 2,
-                peak_allocation_bytes: setup + 1,
+                // Fund any temporary registry growth during setup. Each
+                // resource still permits exactly one byte; the root-only
+                // case has exactly one byte beyond its initial backing.
+                peak_allocation_bytes: setup_receipt.peak_allocation_bytes.max(setup + 1),
                 ..WorkBudget::UNBOUNDED
             },
             &root_cancel,
