@@ -113,6 +113,7 @@ impl Fixture {
             stream.clone(),
             files.clone(),
             &volume,
+            None,
             &verifier,
             &signed,
             &scope,
