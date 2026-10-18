@@ -41,7 +41,27 @@ struct Trace {
 
 fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
     if left.polls != right.polls {
-        return Err("seeded task polling diverged".into());
+        let index = left
+            .polls
+            .iter()
+            .zip(&right.polls)
+            .position(|(left, right)| left != right)
+            .unwrap_or(left.polls.len().min(right.polls.len()));
+        let start = index.saturating_sub(8);
+        return Err(format!(
+            "seeded task polling at {index} (lengths {}, {}): {:?} != {:?}; equal boundaries {}, writes {}, requests {}, dispatches {}, files {}, JSONL {}, durable {}",
+            left.polls.len(),
+            right.polls.len(),
+            &left.polls[start..left.polls.len().min(index + 9)],
+            &right.polls[start..right.polls.len().min(index + 9)],
+            left.boundaries == right.boundaries,
+            left.writes == right.writes,
+            left.requests == right.requests,
+            left.dispatches == right.dispatches,
+            left.files == right.files,
+            left.jsonl == right.jsonl,
+            left.durable == right.durable,
+        ));
     }
     if left.boundaries != right.boundaries {
         let index = left
