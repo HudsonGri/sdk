@@ -38,7 +38,7 @@ for names in groups:
     # build transport's descriptors into their process/runtime fixture.
     command = [executable, *names, "--exact"]
     if whole_suite:
-        command.append("--test-threads=1")
+        command.extend(["--test-threads=1", "--nocapture"])
     try:
         result = subprocess.run(command, capture_output=True,
                                 text=True, timeout=9)
