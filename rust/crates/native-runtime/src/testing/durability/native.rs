@@ -60,6 +60,12 @@ fn retains_cut(operation: Operation, fault: DurableFault, bytes: &[u8], erase: b
     if !cause.is_some_and(|cause| {
         cause.ordinal == 0 && cause.fault == fault && cause.operation == expected_operation
     }) {
+        if !erase {
+            eprintln!(
+                "{operation:?} {fault:?}: {result:?}; trace {:?}",
+                schedule.durable_writes()
+            );
+        }
         return false;
     }
     let after = fault == DurableFault::After;
