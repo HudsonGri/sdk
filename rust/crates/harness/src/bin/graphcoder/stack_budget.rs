@@ -81,7 +81,11 @@ fn scripted(
                     let body = String::from_utf8(body.to_vec()).unwrap();
                     // Children run their own turns against the same provider;
                     // only the parent's requests advance the script.
-                    let turn = if !body.contains(CHILD_TASK_IN_REQUEST) {
+                    let turn = if body.contains(CHILD_TASK_IN_REQUEST) {
+                        text("child done")
+                    } else if body.contains("stack fixture") {
+                        if body.contains("function_call_output") { text("prepared") } else { child_call("spawn") }
+                    } else {
                         let mut turn = turns
                             .get(requests.len())
                             .cloned()
@@ -98,8 +102,6 @@ fn scripted(
                         }
                         requests.push(body);
                         turn
-                    } else {
-                        text("child done")
                     };
                     eprintln!("stack provider response: {} {}", turn["name"], turn["arguments"]);
                     let event = if turn["type"] == "message" {
@@ -161,6 +163,9 @@ fn measured_turn<const UNBOXED: bool>(
     entry: Entry,
 ) -> (u8, usize, Vec<String>) {
     let spawn = turns.first().is_some_and(|turn| turn["name"] == "spawn");
+    let existing_child = turns
+        .first()
+        .is_some_and(|turn| matches!(turn["name"].as_str(), Some("send" | "wait" | "archive")));
     let (address, requests, stop, server) = scripted(turns);
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
@@ -200,6 +205,27 @@ fn measured_turn<const UNBOXED: bool>(
             operation.expect("a JSONL case names its operation").into(),
         ]),
         Entry::Tui => {}
+    }
+    if existing_child {
+        // Prepare through the shipping entrypoint, with its ordinary child
+        // admission. The measured invocation must find a real admitted child.
+        let mut fixture_args = argv.clone();
+        *fixture_args.last_mut().unwrap() = "stack fixture".into();
+        let code = serve(
+            Args::try_parse_from(fixture_args).unwrap(),
+            Some(acyclic_harness_providers::Credentials::explicit(
+                Default::default(),
+            )),
+            Some(directory.path().join("state")),
+        )
+        .unwrap();
+        assert!(matches!(code, 0 | 4), "child fixture failed: {code}");
+        admitted(
+            &workspace,
+            &catalog,
+            &settings,
+            &directory.path().join("state"),
+        );
     }
     let args = Args::try_parse_from(argv).unwrap();
     let entry = if UNBOXED { unboxed::serve } else { serve };
@@ -247,7 +273,18 @@ fn measured_turn<const UNBOXED: bool>(
 pub(crate) fn qualify() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let cases = [
-        "diff", "commit", "tools", "spawn", "send", "wait", "archive", "jsonl", "tui", "unboxed",
+        "diff",
+        "commit",
+        "tools",
+        "merge-continue",
+        "merge-abort",
+        "spawn",
+        "send",
+        "wait",
+        "archive",
+        "jsonl",
+        "tui",
+        "unboxed",
     ];
     if args.iter().any(|arg| arg == "--list") {
         if !args.iter().any(|arg| arg == "--ignored") {
@@ -267,6 +304,7 @@ pub(crate) fn qualify() {
             "commit" | "unboxed" => vec![fs("commit -m stack"), text("done")],
             "spawn" => vec![child_call("spawn"), text("done")],
             "tools" => every_entry_point(),
+            "merge-continue" | "merge-abort" => merge_recovery(&case),
             "send" | "wait" | "archive" => vec![child_call(&case), text("done")],
             _ => panic!("unknown stack case {case}"),
         };
@@ -282,6 +320,10 @@ pub(crate) fn qualify() {
         };
         if case == "tools" {
             covers_every_entry_point(code, used, &requests);
+            return;
+        }
+        if case.starts_with("merge-") {
+            covers_merge_recovery(&case, code, used, &requests);
             return;
         }
         if case == "unboxed" {
@@ -301,7 +343,21 @@ pub(crate) fn qualify() {
                 used < BUDGET_KIB * 1024,
                 "{case}: {used} bytes exceeds the strict {BUDGET_KIB} KiB budget"
             );
-            if !CHILD_TOOLS.contains(&case.as_str()) {
+            if matches!(case.as_str(), "send" | "wait" | "archive") {
+                assert_eq!(code, 0, "{case}: real child operation did not complete");
+                let expected = match case.as_str() {
+                    "send" => json!({"agent":"kid", "queued":true}),
+                    "archive" => json!({"agent":"kid"}),
+                    _ => serde_json::Value::Null,
+                };
+                let outputs = tool_outputs(requests.last().expect("child result request"));
+                let output = outputs.last().expect("child result reached model");
+                if case == "wait" {
+                    assert_eq!(output["agents"][0]["reference"], "kid", "{output}");
+                } else {
+                    assert_eq!(output, &expected);
+                }
+            } else if !CHILD_TOOLS.contains(&case.as_str()) {
                 assert_eq!(code, 0);
                 assert!(requests.len() >= 2, "tool result was not returned");
                 // The tool result is a JSON string inside the request body.
@@ -525,6 +581,78 @@ fn fs(command: &str) -> serde_json::Value {
 }
 fn text(text: &str) -> serde_json::Value {
     json!({"type": "message", "text": text})
+}
+
+fn tool_outputs(request: &str) -> Vec<serde_json::Value> {
+    let request: serde_json::Value = serde_json::from_str(request).unwrap();
+    request["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call_output")
+        .map(|item| serde_json::from_str(item["output"].as_str().unwrap()).unwrap())
+        .collect()
+}
+
+fn merge_recovery(case: &str) -> Vec<serde_json::Value> {
+    let mut turns = vec![
+        fs("commit -m base"),
+        fs("branch topic"),
+        fs("switch topic"),
+        call("bash", json!({"command":"printf 'theirs\\n' > calc.py"})),
+        fs("commit -m theirs"),
+        fs("switch main"),
+        call("bash", json!({"command":"printf 'ours\\n' > calc.py"})),
+        fs("commit -m ours"),
+        fs("merge topic"),
+    ];
+    if case == "merge-continue" {
+        turns.push(call(
+            "bash",
+            json!({"command":"printf 'resolved\\n' > calc.py"}),
+        ));
+        turns.push(fs("merge --continue"));
+    } else {
+        turns.push(fs("merge --abort"));
+    }
+    turns.push(call("bash", json!({"command":"cat calc.py"})));
+    turns.push(fs("status"));
+    turns.push(text("done"));
+    turns
+}
+
+fn covers_merge_recovery(case: &str, code: u8, used: usize, requests: &[String]) {
+    assert_eq!(code, 0, "{case}");
+    assert!(used < BUDGET_KIB * 1024, "{case}: {used} bytes");
+    let outputs = tool_outputs(requests.last().unwrap());
+    assert_eq!(outputs.len(), merge_recovery(case).len() - 1);
+    assert!(
+        outputs[8].to_string().contains("unresolved conflicts"),
+        "merge did not conflict: {}",
+        outputs[8]
+    );
+    let recovery = if case == "merge-continue" { 10 } else { 9 };
+    assert!(
+        outputs[recovery]["result"].is_object(),
+        "recovery failed: {}",
+        outputs[recovery]
+    );
+    let expected = if case == "merge-continue" {
+        "resolved\n"
+    } else {
+        "ours\n"
+    };
+    assert_eq!(
+        outputs[recovery + 1]["stdout"],
+        expected,
+        "wrong recovered bytes: {}",
+        outputs[recovery + 1]
+    );
+    assert!(
+        outputs.last().unwrap()["result"]["Status"].is_object(),
+        "status failed: {}",
+        outputs.last().unwrap()
+    );
 }
 
 fn admitted(
