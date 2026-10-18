@@ -14,7 +14,9 @@ use crate::{
 pub(crate) struct CatalogModel<'a> {
     pub(crate) model: &'a Model,
     pub(crate) provider: &'a dyn ModelProvider,
-    pub(crate) compaction: &'a CompactionPolicy,
+    /// `None` until turn entry resolves the default to threshold compaction
+    /// or none.
+    pub(crate) compaction: Option<&'a CompactionPolicy>,
 }
 
 impl CatalogModel<'_> {
@@ -25,8 +27,12 @@ impl CatalogModel<'_> {
             Ok(capacity) => Ok(Some(skill_catalog::token_allowance(
                 capacity.context_tokens,
                 match self.compaction {
-                    CompactionPolicy::Threshold(policy) => policy.response_reserve_tokens,
-                    CompactionPolicy::Disabled => capacity.output_tokens,
+                    Some(CompactionPolicy::Threshold(policy)) => policy.response_reserve_tokens,
+                    Some(CompactionPolicy::Disabled) => capacity.output_tokens,
+                    // Either resolution may follow; take the smaller allowance.
+                    None => crate::context::ThresholdCompaction::default()
+                        .response_reserve_tokens
+                        .max(capacity.output_tokens),
                 },
             ))),
             Err(error) if error.code() == crate::wire::ErrorCode::Unsupported => Ok(None),
@@ -194,6 +200,7 @@ mod tests {
             context_tokens in 3u32..200_000,
             output_tokens in 1u32..65_536,
             reserve in prop::option::of(1u32..65_536),
+            resolved in any::<bool>(),
             extra in 0u64..16_384,
         ) {
             let catalog = SkillCatalog {
@@ -229,11 +236,16 @@ mod tests {
                 ..Limits::default()
             };
             prop_assert!(validate_projected_context(&base, limits, None).is_ok());
-            let selected = CatalogModel { model: &model, provider: &provider, compaction: &compaction };
+            // An unresolved default takes the smaller of its two allowances.
+            let selected = CatalogModel { model: &model, provider: &provider, compaction: resolved.then_some(&compaction) };
             let tokens = selected.tokens(None).unwrap().unwrap();
             prop_assert_eq!(tokens, crate::context::skill_catalog::token_allowance(
                 capacity.context_tokens,
-                reserve.unwrap_or(capacity.output_tokens),
+                if resolved {
+                    reserve.unwrap_or(capacity.output_tokens)
+                } else {
+                    ThresholdCompaction::default().response_reserve_tokens.max(capacity.output_tokens)
+                },
             ));
             let stage = StageCatalog::new(catalog.clone(), index, &selected, &tools, None).unwrap();
             let allowance = stage.allowance(&base, limits, None).unwrap();

@@ -174,7 +174,7 @@ where
                 let model = crate::context::CatalogModel {
                     model: &binding.model,
                     provider: binding.provider.as_ref(),
-                    compaction,
+                    compaction: Some(compaction),
                 };
                 self.model_context(command.context_manifest, &context, &model, io)
                     .await

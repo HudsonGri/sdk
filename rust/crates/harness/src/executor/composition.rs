@@ -110,7 +110,7 @@ impl StockExecutor {
         let model = crate::context::CatalogModel {
             model: &self.model,
             provider: self.provider.as_ref(),
-            compaction: &self.compaction,
+            compaction: self.compaction.as_ref(),
         };
         let (tools, stage) = crate::context::ContextManifest::bind_observed(
             reference,

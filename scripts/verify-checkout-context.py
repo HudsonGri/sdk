@@ -195,12 +195,6 @@ def qualify(build_log):
         env_source = CONTEXT / "environment.rs"
         env_original = env_source.read_bytes()
         env_source.write_bytes(env_original.replace(b"use porcelain::summarize;", b"pub(super) use porcelain::summarize;"))
-        # Expose a failed command's cause in this test binary only. Keep the
-        # shipping dispatcher unchanged (the cause-carrying API belongs to #1020).
-        dispatch = ROOT / "rust/crates/harness/src/filesystem/task_runtime/dispatch.rs"
-        dispatch_original = dispatch.read_bytes()
-        diagnostic = replace_once(dispatch.read_text(), "Err(error) => {\n                        tracing::trace!(", 'Err(error) => {\n                        #[cfg(test)] eprintln!("command failure: {error:?}");\n                        tracing::trace!(')
-        dispatch.write_text(diagnostic)
         try:
             command = ["cargo", "test", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "--features", FEATURES,
                        "--lib", "--test", "cli", "--no-run", "--message-format=json-render-diagnostics"]
@@ -216,7 +210,6 @@ def qualify(build_log):
             print(f"Linux build: {time.monotonic() - start:.3f}s", flush=True)
         finally:
             env_source.write_bytes(env_original)
-            dispatch.write_bytes(dispatch_original)
     finally:
         source.write_bytes(original)
         for path in files:

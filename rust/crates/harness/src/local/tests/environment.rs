@@ -101,21 +101,18 @@ async fn checkout_turns_carry_environment_facts_and_discovered_skills() -> Resul
     let workspace = harness.workspace.as_ref().expect("checkout workspace");
     let cwd = crate::local::context::environment::display(&workspace.path);
     let skills = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n2 skills available (list .agents/skills/ and .claude/skills/ to see all)\n- release-notes: Draft release notes. (file: .agents/skills/release-notes/SKILL.md)\n- audit: Audit dependencies. (file: .claude/skills/audit/SKILL.md)\n</skills_instructions>";
-    let conventions: Vec<String> =
-        serde_json::from_str(include_str!("../../context/instructions.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
     let requests = provider.requests();
     for (request, git_status) in [(0, "branch main; clean"), (1, "branch main; 1 untracked")] {
         let environment = format!(
             "<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>bash</shell>\n  <os>{}</os>\n  <current_date>2026-10-18</current_date>\n  <timezone>UTC</timezone>\n  <git_status>{git_status}</git_status>\n</environment_context>",
             std::env::consts::OS
         );
-        let mut expected = conventions.clone();
-        expected.extend([
+        // Neither prompt names GOAL.md or plans, so no goal guidance leads.
+        let expected = [
             workspace.context_line().to_owned(),
             environment,
             skills.to_owned(),
-        ]);
+        ];
         let (texts, instructions) = system_text(&requests[request]);
         // The exact system prefix precedes the quoted AGENTS.md instructions.
         assert_eq!(texts[..expected.len()], expected[..], "request {request}");
