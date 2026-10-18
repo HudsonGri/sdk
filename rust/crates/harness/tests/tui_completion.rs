@@ -45,9 +45,21 @@ fn files_snapshot_follow_and_resume() -> Result {
                 include_bytes!("../src/client/commands.json"),
             )
             .await?;
-            put(&volume, "commands/theme.md", b"Choose a theme").await?;
+            // Builtin names and aliases are reserved, and completion matches
+            // either by prefix: no builtin may complete `/thes`.
+            let catalog: Vec<serde_json::Value> =
+                serde_json::from_slice(include_bytes!("../src/client/commands.json"))?;
+            let reserved = catalog.iter().flat_map(|command| {
+                std::iter::once(&command["name"])
+                    .chain(command["aliases"].as_array().into_iter().flatten())
+            });
+            for spelling in reserved {
+                let spelling = spelling.as_str().ok_or("catalog spelling must be text")?;
+                assert!(!spelling.starts_with("thes"), "builtin {spelling} completes /thes");
+            }
+            put(&volume, "commands/thesis.md", b"Draft a thesis").await?;
             put(&volume, "workspace/Straße.rs", b"source").await?;
-            let mut input = PromptInput::new(Editor::new("/th"));
+            let mut input = PromptInput::new(Editor::new("/thes"));
             let mut files = CompletionFiles::observe(&volume, &mut input, None, 100).await?;
             assert_eq!(
                 input
@@ -55,7 +67,7 @@ fn files_snapshot_follow_and_resume() -> Result {
                     .items()
                     .map(|i| i.value.as_str())
                     .collect::<Vec<_>>(),
-                ["theme"]
+                ["thesis"]
             );
             input.editor.set_text("@STRASSE", 0);
             input.refresh_completions();
@@ -73,9 +85,9 @@ fn files_snapshot_follow_and_resume() -> Result {
             let mut files =
                 CompletionFiles::observe(&volume, &mut input, Some(cursor), 100).await?;
             assert_eq!(input.completion.work, work);
-            put(&volume, "commands/theme.md", b"Updated description").await?;
+            put(&volume, "commands/thesis.md", b"Updated description").await?;
             files.next(&mut input).await?;
-            input.editor.set_text("/th", 3);
+            input.editor.set_text("/thes", 5);
             input.refresh_completions();
             assert_eq!(
                 input.completion.items().next().unwrap().description,
