@@ -8,7 +8,15 @@ fn one_native_submission(calls: u64, writes: u64, frames: usize, idle: bool) {
         if idle { 0 } else { frames as u64 },
         "exact native frame submissions"
     );
+    #[cfg(windows)]
     assert_eq!(writes, calls, "one native syscall per submitted frame");
+    #[cfg(unix)]
+    if idle {
+        assert_eq!(writes, 0, "idle frames never enter the kernel");
+    } else {
+        // PTYs can legally split writes or fill between readiness and write.
+        assert!(writes >= calls, "every submitted frame reaches the kernel");
+    }
 }
 
 /// Native kernel/device cost, paired with the independently initialized old
