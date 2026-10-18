@@ -72,15 +72,15 @@ impl<'ast> Visit<'ast> for Bounds {
 }
 
 fn ident(token: Option<&TokenTree>, expected: &str) -> bool {
-    matches!(token, Some(TokenTree::Ident(value)) if value.to_string().trim_start_matches("r#") == expected)
+    matches!(token, Some(TokenTree::Ident(value)) if crate::name(value) == expected)
 }
 
 fn tokens(stream: TokenStream) -> bool {
     let input: Vec<_> = stream.into_iter().collect();
     for (index, token) in input.iter().enumerate() {
         if ident(Some(token), "preemption_bound")
-            && matches!(input.get(index + 1), Some(TokenTree::Punct(p)) if matches!(p.as_char(), '=' | ':'))
-            && !(ident(input.get(index + 2), "None")
+            && !(matches!(input.get(index + 1), Some(TokenTree::Punct(p)) if matches!(p.as_char(), '=' | ':'))
+                && ident(input.get(index + 2), "None")
                 && input.get(index + 3).is_none_or(
                     |next| matches!(next, TokenTree::Punct(p) if matches!(p.as_char(), ';' | ',')),
                 ))
@@ -90,11 +90,22 @@ fn tokens(stream: TokenStream) -> bool {
         if !ident(index.checked_sub(1).and_then(|i| input.get(i)), "fn")
             && (ident(Some(token), "check_with_bound")
                 || ident(Some(token), "assert_negative_control"))
-            && let Some(TokenTree::Group(arguments)) = input.get(index + 1)
-            && arguments.delimiter() == proc_macro2::Delimiter::Parenthesis
-            && !ident(arguments.stream().into_iter().next().as_ref(), "None")
         {
-            return true;
+            use syn::parse::Parser;
+            let unbounded = match input.get(index + 1) {
+                Some(TokenTree::Group(arguments))
+                    if arguments.delimiter() == proc_macro2::Delimiter::Parenthesis =>
+                {
+                    syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+                        .parse2(arguments.stream())
+                        .ok()
+                        .is_some_and(|args| args.first().is_some_and(none))
+                }
+                _ => false,
+            };
+            if !unbounded {
+                return true;
+            }
         }
         if let TokenTree::Group(group) = token
             && tokens(group.stream())
@@ -127,6 +138,8 @@ mod tests {
             prop_assert_eq!(bounded(&call).ok(), Some(true));
             let unbounded_call = format!("fn f() {{ check_with_bound{}({}None{}, run); }}", gaps[7], gaps[8], gaps[9]);
             prop_assert_eq!(bounded(&unbounded_call).ok(), Some(false));
+            let macro_call = format!("fn f() {{ wrap! {{ check_with_bound{}({}None{} .or(Some(2)), run); }} }}", gaps[7], gaps[8], gaps[9]);
+            prop_assert_eq!(bounded(&macro_call).ok(), Some(true));
         }
     }
 
@@ -142,6 +155,8 @@ mod tests {
             "builder.preemption_bound.replace(2);",
             "check_with_bound::<()>(Some(2), run);",
             "wrapper! { builder.preemption_bound = None.or(Some(2)); }",
+            "wrapper! { builder.preemption_bound.replace(2); }",
+            "wrapper! { check_with_bound::<()>(None.or(Some(2)), run); }",
         ] {
             assert_eq!(
                 bounded(&format!("fn f() {{ {body} }}")).ok(),
