@@ -14,6 +14,7 @@ struct Node {
     key: String,
     sequence: u64,
     _custody: crate::NativeCustody,
+    _key_custody: crate::NativeCustody,
 }
 
 struct Pending {
@@ -90,6 +91,12 @@ impl IntentIndex {
             usize::MAX
         };
         let mut portable_bytes = 0;
+        let leaf_custody = claim_node(quota, &mut portable_bytes)?;
+        let branch_custody = if bit == usize::MAX {
+            None
+        } else {
+            Some(claim_node(quota, &mut portable_bytes)?)
+        };
         let copied = match quota.work().as_deref_mut() {
             Some(io) => {
                 let copied = io.clone_text(key)?;
@@ -98,12 +105,25 @@ impl IntentIndex {
             }
             None => key.to_owned(),
         };
-        let leaf = allocate(copied, sequence, usize::MAX, quota, &mut portable_bytes)?;
-        let branch = if bit == usize::MAX {
-            None
-        } else {
-            Some(allocate(String::new(), 0, bit, quota, &mut portable_bytes)?)
-        };
+        let key_custody = detach(copied.capacity() as u64, quota, &mut portable_bytes)?;
+        let leaf = Box::new(Node {
+            bit: usize::MAX,
+            children: [None, None],
+            key: copied,
+            sequence,
+            _custody: leaf_custody,
+            _key_custody: key_custody,
+        });
+        let branch = branch_custody.map(|custody| {
+            Box::new(Node {
+                bit,
+                children: [None, None],
+                key: String::new(),
+                sequence: 0,
+                _custody: custody,
+                _key_custody: None,
+            })
+        });
         Ok(Pending {
             leaf,
             branch,
@@ -135,45 +155,39 @@ impl IntentIndex {
     }
 }
 
-fn allocate(
-    key: String,
-    sequence: u64,
-    bit: usize,
+fn claim_node(
     quota: &mut CodecQuota<'_, '_>,
     portable_bytes: &mut u64,
-) -> Result<Box<Node>> {
-    let mut custody = None;
-    let key_bytes = key.capacity() as u64;
+) -> Result<crate::NativeCustody> {
     let bytes = std::mem::size_of::<Node>() as u64;
     if let Some(io) = quota.work().as_deref_mut() {
         io.admit_owned(bytes)?;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
         quota.adopt(bytes)?;
-        let total = bytes + key_bytes;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = quota
-            .work()
-            .as_deref_mut()
-            .filter(|io| io.original_native_work().is_some())
-        {
-            custody = Some(io.take_native_custody(total)?);
-            quota.transfer_bytes(total)?;
-        } else {
-            *portable_bytes += total;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        {
-            *portable_bytes += total;
-        }
     }
-    Ok(Box::new(Node {
-        bit,
-        children: [None, None],
-        key,
-        sequence,
-        _custody: custody,
-    }))
+    detach(bytes, quota, portable_bytes)
+}
+
+fn detach(
+    bytes: u64,
+    quota: &mut CodecQuota<'_, '_>,
+    portable_bytes: &mut u64,
+) -> Result<crate::NativeCustody> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(io) = quota
+        .work()
+        .as_deref_mut()
+        .filter(|io| io.original_native_work().is_some())
+    {
+        let custody = io.take_native_custody(bytes)?;
+        quota.transfer_bytes(bytes)?;
+        return Ok(Some(custody));
+    }
+    if quota.work().is_some() {
+        *portable_bytes += bytes;
+    }
+    Ok(None)
 }
 
 impl Drop for IntentIndex {
