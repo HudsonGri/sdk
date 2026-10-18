@@ -140,6 +140,7 @@ fn batch_reply_reuses_maps_with_exact_allocator_and_meter_counts() {
                 assert!(physical.count_total > 1);
             } else {
                 assert_eq!(physical.count_total, 1);
+                assert_eq!(physical.bytes_total, 7);
                 assert_eq!(metered, physical.count_total);
                 assert_eq!(counts.written.load(Ordering::SeqCst), 7);
                 let Some(wire::put_object_result::Result::Object(info)) =
@@ -163,6 +164,98 @@ fn batch_reply_reuses_maps_with_exact_allocator_and_meter_counts() {
             drop(decoder);
             assert_eq!(counts.retained(), 0);
         }
+    }
+}
+
+fn append_text(tag: u32, value: &str, output: &mut Vec<u8>) {
+    append_message(tag, value.as_bytes(), output);
+}
+
+fn append_message(tag: u32, value: &[u8], output: &mut Vec<u8>) {
+    prost::encoding::encode_key(tag, WireType::LengthDelimited, output);
+    prost::encoding::encode_varint(value.len() as u64, output);
+    output.extend_from_slice(value);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn batch_reply_copies_only_final_string_values(
+        previous in "[a-z]{1,8192}",
+        values in prop::collection::vec("[a-z]{1,24}", 6),
+        cancel in any::<bool>(),
+        error in any::<bool>(),
+    ) {
+        use std::sync::atomic::Ordering;
+        let item = if error {
+            let mut item = wire::ErrorDetail { code: wire::ErrorCode::AccessDenied as i32, request_id: previous.clone() }.encode_to_vec();
+            append_text(2, &values[0], &mut item);
+            item
+        } else {
+            let Some(wire::put_object_result::Result::Object(mut info)) = object(0).result else { unreachable!() };
+            info.etag = previous.clone();
+            let mut item = info.encode_to_vec();
+            append_text(1, &values[0], &mut item);
+            // Repeated message fields merge; scalar strings use the final value.
+            for overwrite in [true, false] {
+                let mut metadata = Vec::new();
+                for (tag, value) in [1, 3, 4, 5, 6].into_iter().zip(&values[1..]) {
+                    append_text(tag, if overwrite { &previous } else { value }, &mut metadata);
+                }
+                append_message(3, &metadata, &mut item);
+            }
+            item
+        };
+        let mut result = Vec::new();
+        append_message(if error { 2 } else { 1 }, &item, &mut result);
+        let mut bytes = Vec::new();
+        append_message(1, &result, &mut bytes);
+        let expected = wire::PutObjectsResponse::decode(bytes.as_slice()).unwrap();
+        let counts = std::sync::Arc::new(crate::test_meter::CountingMeter::default());
+        {
+            let mut native = metered_decoder(1, Some(counts.clone()));
+            counts.cancelled.store(cancel, Ordering::SeqCst);
+            let baseline = counts.retained();
+            let mut reply = None;
+            let physical = acyclic_test_support::measure(|| reply = Some(native.bytes(&bytes).unwrap()));
+            let reply = reply.unwrap();
+            prop_assert!(reply.failure.is_none());
+            prop_assert_eq!(&reply.response.value, &expected);
+            let strings = if error { &values[..1] } else { &values[..] };
+            let exact: u64 = strings.iter().map(|text| text.len() as u64).sum();
+            prop_assert_eq!(physical.count_total, strings.len() as u64);
+            prop_assert_eq!(physical.bytes_total, exact);
+            prop_assert_eq!(counts.retained() - baseline, exact);
+            prop_assert_eq!(counts.codec_copied.load(Ordering::SeqCst), exact);
+        }
+        prop_assert_eq!(counts.retained(), 0);
+    }
+}
+
+#[test]
+fn batch_reply_ordinary_exchange_has_no_native_storage() {
+    for count in [0, 1, 1000] {
+        let mut sizes = batch_vector(count, None).unwrap();
+        sizes.value.resize(count, 0);
+        let mut exchange = None;
+        let allocations = acyclic_test_support::measure(|| {
+            exchange = Some(received(None, sizes, Arc::new(Completion::default())).unwrap());
+        });
+        let exchange = exchange.unwrap();
+        assert_eq!(
+            exchange
+                .value
+                .resources
+                .lock()
+                .unwrap()
+                .texts
+                .value
+                .capacity(),
+            0
+        );
+        assert_eq!(exchange.value.metadata.lock().unwrap().value.capacity(), 0);
+        // Only the completion and exchange Arcs, independent of batch length.
+        assert_eq!(allocations.count_total, 2);
     }
 }
 
@@ -355,6 +448,7 @@ fn batch_reply_checked_in_seed_corpus() {
         include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-7.pb").as_slice(),
         include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-8.pb").as_slice(),
         include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-9.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-10.pb").as_slice(),
     ] {
         for expected in 0..3 {
             let reply = decoder(expected).bytes(bytes).unwrap();
