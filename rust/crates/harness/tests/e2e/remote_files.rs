@@ -153,7 +153,7 @@ struct Endpoints {
 }
 
 #[tokio::test]
-#[ignore = "needs a local cloud: node scripts/local-cloud.mjs"]
+#[ignore = "needs Cloud request 12: public Objects batches; request 10: authority Session kinds"]
 async fn executor_files_and_journal_match_on_the_local_cloud() -> TestResult {
     let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD")
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the endpoints file")?;
