@@ -1,7 +1,7 @@
 //! The controller outlives the killed turn and all of its accepted operations.
 use super::*;
 use acyclic_native_runtime::{
-    ProcessCaptureFailure, ProcessInput, ProcessOutput,
+    ProcessCaptureFailure, ProcessInput,
     testing::{Boundary, DurableFault, InjectedStorageFault, ProcessCapture, Schedule},
 };
 use std::time::Duration;
@@ -16,7 +16,6 @@ pub(super) struct Driver {
     pub schedule: Schedule,
     events: mpsc::UnboundedReceiver<Boundary>,
     pub boundaries: Vec<(String, String)>,
-    refuses_processes: bool,
 }
 
 const UNSIMULATED_PROCESS: &str = "unsimulated process reached a seeded replay";
@@ -30,23 +29,6 @@ impl Driver {
         Self::from_scope(Schedule::without_entropy(seed), None).refuse_processes()
     }
 
-    /// The only way a replay runs a process: through this scripted provider.
-    pub fn with_process(
-        seed: u64,
-        provider: impl Fn(
-            ProcessCapture<'_>,
-            &mut dyn FnMut() -> std::io::Result<()>,
-            &mut dyn FnMut(ProcessOutput<'_>) -> std::io::Result<ProcessInput>,
-        ) -> std::result::Result<std::process::Output, ProcessCaptureFailure>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        let driver = Self::from_scope(Schedule::seeded(seed), None);
-        driver.schedule.set_process_provider(provider);
-        driver
-    }
-
     fn from_scope(
         (schedule, events): (Schedule, mpsc::UnboundedReceiver<Boundary>),
         cut: Option<(usize, DurableFault)>,
@@ -58,13 +40,12 @@ impl Driver {
             schedule,
             events,
             boundaries: Vec::new(),
-            refuses_processes: false,
         }
     }
 
     // Without a scripted provider the original capture would spawn a real OS
     // process inside the replay. Refuse it, and fail the run that reached it.
-    fn refuse_processes(mut self) -> Self {
+    fn refuse_processes(self) -> Self {
         self.schedule.set_process_provider(|_, _, _| {
             Err(ProcessCaptureFailure {
                 error: std::io::Error::other(UNSIMULATED_PROCESS),
@@ -74,7 +55,6 @@ impl Driver {
                 cleanup_completed: true,
             })
         });
-        self.refuses_processes = true;
         self
     }
 
@@ -134,11 +114,9 @@ impl Driver {
                     () = &mut deadline => panic!("accepted work exceeded the simulated deadline"),
                 }
             }
-            if self.refuses_processes {
-                let spawned = schedule.trace();
-                let spawned = spawned.iter().find(|event| event.starts_with("process:"));
-                assert!(spawned.is_none(), "{UNSIMULATED_PROCESS}: {spawned:?}");
-            }
+            let spawned = schedule.trace();
+            let spawned = spawned.iter().find(|event| event.starts_with("process:"));
+            assert!(spawned.is_none(), "{UNSIMULATED_PROCESS}: {spawned:?}");
             outcome
         })
     }
