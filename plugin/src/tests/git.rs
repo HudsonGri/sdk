@@ -77,7 +77,7 @@ async fn write_child_text(control: &ControlPlane, text: &'static str) {
 
 #[test]
 fn git_merge_error_exposes_conflict_markers_in_the_agent_mount() {
-    run_large_stack("git-conflict-visibility", || async {
+    run_async_test("git-conflict-visibility", || async {
         let fixture = Fixture::new();
         fs::write(fixture.root.join("conflict.txt"), "base\n").unwrap();
         let mut control = open_child(&fixture).await;
@@ -164,12 +164,12 @@ async fn merge_child_attributes(attributes: &'static [u8]) {
 
 #[test]
 fn child_merge_ignores_unregistered_child_attributes() {
-    run_large_stack("child-merge-driver", || {
+    run_async_test("child-merge-driver", || {
         merge_child_attributes(b"*.lock merge=ours\n")
     });
 }
 
 #[test]
 fn child_merge_ignores_non_utf8_child_attributes() {
-    run_large_stack("child-merge-non-utf8", || merge_child_attributes(b"\xff"));
+    run_async_test("child-merge-non-utf8", || merge_child_attributes(b"\xff"));
 }
