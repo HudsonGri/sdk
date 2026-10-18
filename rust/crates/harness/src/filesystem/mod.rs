@@ -160,8 +160,10 @@ pub(crate) use host::file_publication;
 pub(crate) use host::map_error;
 use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
+mod content_prefix;
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
+pub(crate) mod file_citations;
 mod file_query;
 #[cfg(not(target_arch = "wasm32"))]
 use content_verifier::require_file_read;

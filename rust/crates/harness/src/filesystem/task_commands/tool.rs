@@ -37,7 +37,12 @@ where
         }
         Ok((
             self.runtime
-                .execution_journal(task, fence.clone(), turn)
+                .execution_journal_with_context(
+                    task,
+                    fence.clone(),
+                    turn,
+                    Arc::clone(_native_context),
+                )
                 .await?,
             super::super::task_runtime::execution_operation(task, turn, io)?,
         ))

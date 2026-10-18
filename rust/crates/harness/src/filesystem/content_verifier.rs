@@ -284,6 +284,46 @@ where
         })
     }
 
+    fn inspect_private_prefix<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                GenerationRef,
+                u64,
+                acyclic_stream::OwnedBytes,
+                Option<crate::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let (generation, length, bytes) = super::content_prefix::read(
+                self,
+                volume,
+                granted_prefix,
+                path,
+                expected_generation,
+                maximum_bytes,
+                io,
+            )
+            .await?;
+            let hold = io
+                .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
+                .transpose()?;
+            Ok((generation, length, bytes, hold))
+        })
+    }
+
     fn read_private_path<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,

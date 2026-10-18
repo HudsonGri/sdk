@@ -17,6 +17,7 @@ pub(crate) fn normalize(label: &str) -> Key {
 
 #[derive(Default)]
 pub(crate) struct References {
+    pub(crate) citations: HashMap<Key, crate::directive::Resolution>,
     pub(super) committed: HashMap<Key, Definition>,
     pub(super) pending: HashMap<Key, Definition>,
     #[cfg(test)]
@@ -98,12 +99,14 @@ pub(crate) struct Template {
     pub(super) source: String,
     paragraph: bool,
     task: bool,
+    pub(crate) offsets: Vec<(usize, usize)>,
     pub(crate) keys: HashSet<Key>,
 }
 
 impl Template {
     pub(crate) fn new(
         source: &str,
+        origin: usize,
         quotes: usize,
         events: &[(Event<'_>, std::ops::Range<usize>)],
     ) -> Self {
@@ -115,7 +118,10 @@ impl Template {
         if task {
             normalized.push_str("- ");
         }
+        let mut offsets = Vec::new();
+        let mut original = origin;
         for (index, mut line) in source.split_inclusive('\n').enumerate() {
+            let length = line.len();
             if index > 0 {
                 for _ in 0..quotes {
                     let trimmed = line.trim_start_matches([' ', '\t']);
@@ -126,7 +132,9 @@ impl Template {
                     }
                 }
             }
+            offsets.push((normalized.len(), original + length - line.len()));
             normalized.push_str(line);
+            original += length;
         }
         #[cfg(test)]
         crate::work::copy(normalized.len());
@@ -142,10 +150,21 @@ impl Template {
             options(paragraph),
             Some(&mut callback),
         ) {}
+        if normalized.contains(":file[") {
+            let citation_events: Vec<_> = Parser::new_ext(&normalized, options(paragraph))
+                .into_offset_iter()
+                .collect();
+            keys.extend(
+                crate::directive::render::Projection::new(&normalized, &citation_events)
+                    .offsets(&offsets)
+                    .keys(),
+            );
+        }
         Self {
             source: normalized,
             paragraph,
             task,
+            offsets,
             keys,
         }
     }
@@ -154,7 +173,11 @@ impl Template {
         &self,
         references: &References,
         budget: usize,
-    ) -> (Vec<Event<'static>>, usize, std::ops::Range<usize>) {
+    ) -> (
+        Vec<(Event<'static>, std::ops::Range<usize>)>,
+        usize,
+        std::ops::Range<usize>,
+    ) {
         let (mut events, calls) =
             crate::events::scoped(&self.source, references, options(self.paragraph), budget);
         let (cost, interval) = expansion(calls.iter());
@@ -162,11 +185,7 @@ impl Template {
             events.drain(..2);
             events.truncate(events.len().saturating_sub(2));
         }
-        (
-            events.into_iter().map(|(event, _)| event).collect(),
-            cost,
-            interval,
-        )
+        (events, cost, interval)
     }
 }
 

@@ -1,6 +1,29 @@
 use super::{Component, FileKey, Query};
 use std::collections::BTreeMap;
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn file_citations_query_visits_only_selected_sidecars(turns in 1u64..64, selected in 0u8..8) {
+        use super::TaskFile;
+        let mut index = BTreeMap::new();
+        for task in 0..8 {
+            for turn in 0..turns {
+                let task = Component::new(format!("t{task}")).unwrap();
+                index.insert(FileKey::Task { task: task.clone(), file: TaskFile::Citations(turn) }, ());
+                index.insert(FileKey::Task { task, file: TaskFile::Chunk { turn, sequence: 0 } }, ());
+            }
+        }
+        let query = Query::Citations(vec![Component::new(format!("t{selected}")).unwrap()]);
+        let candidates: Vec<_> = query.ranges().into_iter().flat_map(|range| index.range(range)).collect();
+        proptest::prop_assert_eq!(candidates.len(), turns as usize);
+        proptest::prop_assert!(candidates.iter().all(|(key, _)| query.matches(key)));
+        let all = Query::Task(Component::new(format!("t{selected}")).unwrap());
+        let broken = all.ranges().into_iter().flat_map(|range| index.range(range)).count();
+        proptest::prop_assert_ne!(broken, turns as usize);
+    }
+}
+
 #[test]
 fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std::error::Error>> {
     let mut index = BTreeMap::new();

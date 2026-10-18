@@ -109,9 +109,8 @@ impl LocalHarness {
         let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
-        let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
-        #[cfg(any(feature = "native-execution", feature = "hooks"))]
-        let mut manifest = manifest;
+        let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        manifest.conventions.push("Use :file[path] for an inline file chip and ::file[path]{lines=1-3} for a snapshot excerpt. Paths are relative to the task project; symbol selection is unsupported. Resolve block citations to literal text before putting them into spawn/delegate prompts, send/merge message fields, or question IDs.".to_owned());
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             manifest

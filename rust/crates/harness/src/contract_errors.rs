@@ -57,6 +57,9 @@ pub enum Error {
     /// A definitive tool rejection; safe to journal without allocating a diagnostic.
     #[error("tool rejected: {0}")]
     ToolRejected(&'static str),
+    /// Block citations must be resolved to literal text before authoring a downstream request.
+    #[error("unresolved block file citation in authored request")]
+    UnresolvedFileDirective,
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -351,6 +354,26 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    pub(crate) fn require_resolved_file_directives(
+        text: &[u8],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: text.len() as u64,
+                items: 1,
+            })?;
+        }
+        if text
+            .windows(b"::file[".len())
+            .any(|part| part == b"::file[")
+        {
+            return Err(Self::UnresolvedFileDirective);
+        }
+        Ok(())
+    }
+
     #[cfg(all(
         not(target_arch = "wasm32"),
         any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
@@ -403,7 +426,9 @@ impl Error {
             Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
                 ErrorCode::Unsupported
             }
-            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
+            Self::Invalid(_) | Self::ToolRejected(_) | Self::UnresolvedFileDirective => {
+                ErrorCode::Invalid
+            }
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
@@ -481,6 +506,7 @@ impl Error {
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
                 | Self::ToolRejected(_)
+                | Self::UnresolvedFileDirective
                 | Self::Unauthorized(_)
                 | Self::Cancelled
                 | Self::InteractionRejected(_)

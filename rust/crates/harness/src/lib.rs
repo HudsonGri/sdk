@@ -42,6 +42,8 @@ pub mod effect_host;
 pub mod effects;
 pub mod executor;
 pub mod extension;
+#[cfg(any(feature = "filesystem", feature = "terminal"))]
+pub mod file_citations;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod fork;

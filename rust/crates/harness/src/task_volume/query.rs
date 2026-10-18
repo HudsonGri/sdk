@@ -110,6 +110,8 @@ pub enum Query {
     Children,
     /// One child subtree.
     Child(Component),
+    /// Citation sidecars belonging to the selected retained task outcomes.
+    Citations(Vec<Component>),
     /// One exact logical file, including goal, plan, status and mount declarations.
     File(FileKey),
 }
@@ -260,6 +262,7 @@ impl Query {
                         TaskFile::TurnRequest(*turn),
                     ),
                     chunks(task, *turn),
+                    range(task, TaskFile::Citations(*turn), TaskFile::Citations(*turn)),
                     range(
                         task,
                         TaskFile::Completion(*turn),
@@ -307,6 +310,12 @@ impl Query {
             ),
             Self::Task(task) | Self::TaskView { task, .. } => {
                 range(task, TaskFile::Request(minimum), TaskFile::Context(maximum))
+            }
+            Self::Citations(tasks) => {
+                return tasks
+                    .iter()
+                    .map(|task| range(task, TaskFile::Citations(0), TaskFile::Citations(u64::MAX)))
+                    .collect();
             }
             Self::File(key) => (Included(key.clone()), Included(key.clone())),
             _ => (Unbounded, Unbounded),
@@ -462,6 +471,13 @@ impl Query {
                     file: TaskFile::Notification(_),
                 },
             ) => t == task,
+            (
+                Self::Citations(tasks),
+                FileKey::Task {
+                    task,
+                    file: TaskFile::Citations(_),
+                },
+            ) => tasks.contains(task),
             (Self::File(wanted), actual) => wanted == actual,
             _ => false,
         }

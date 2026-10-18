@@ -14,6 +14,7 @@ pub struct TaskFileClient {
     command_projection: super::command_output::Projection,
     commands_dirty: bool,
     selected: Option<crate::TaskId>,
+    archive_cut: Option<(crate::TaskId, u64, usize)>,
     bounds: (usize, usize),
     presentation_revision: u64,
 }
@@ -55,6 +56,7 @@ impl TaskFileClient {
             command_projection: super::command_output::Projection::default(),
             commands_dirty: false,
             selected: None,
+            archive_cut: None,
             bounds: (maximum_files, maximum_bytes),
             presentation_revision: 0,
         })
@@ -93,9 +95,76 @@ impl TaskFileClient {
             self.session.replace_task_views(replacement.session, owner);
             self.changes = replacement.changes;
             self.selected = Some(task);
+            self.archive_cut = None;
+            self.command_projection.invalidate_citations();
             self.commands_dirty = true;
             self.advance_presentation();
         }
+        Ok(())
+    }
+
+    /// Follow active chunks and immutable excerpts from the retained session archive.
+    pub async fn follow_commands<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        source: &impl FileQuerySource,
+        commands: &super::CommandSession<P>,
+        owner: &wire::Authority,
+    ) -> Result<()> {
+        let selected = commands
+            .active_task()
+            .unwrap_or(crate::TaskId::parse(&owner.id)?);
+        if self.command_projection.refresh(commands, owner)? {
+            self.commands_dirty = true;
+            self.advance_presentation();
+        }
+        let identity = self.command_projection.archive_identity();
+        let cut = (selected, identity.0, identity.1);
+        if self.archive_cut == Some(cut) {
+            return Ok(());
+        }
+        let mut replacement =
+            Self::observe_task(source, owner, selected, self.bounds.0, self.bounds.1).await?;
+        let mut tasks = self
+            .command_projection
+            .archive_tasks()
+            .filter(|task| *task != selected)
+            .map(|task| crate::task_volume::Component::new(task.to_string()))
+            .collect::<crate::task_volume::Result<Vec<_>>>()?;
+        tasks.sort_unstable();
+        tasks.dedup();
+        if !tasks.is_empty() {
+            let query = Query::Citations(tasks);
+            match source
+                .observe_files(query.clone(), None, self.bounds.0, self.bounds.1)
+                .await
+            {
+                Ok(mut observed) => {
+                    let snapshot = observed
+                        .snapshot
+                        .take()
+                        .ok_or_else(|| Error::Conflict("citation snapshot missing".into()))?;
+                    replacement.session.query_snapshot(
+                        query,
+                        snapshot,
+                        self.bounds.0,
+                        self.bounds.1,
+                    )?;
+                    replacement.changes = Box::pin(futures::stream::select(
+                        replacement.changes,
+                        observed.changes,
+                    ));
+                }
+                Err(crate::task_volume::Error::LimitExceeded) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.session.replace_task_views(replacement.session, owner);
+        self.changes = replacement.changes;
+        self.selected = Some(selected);
+        self.archive_cut = Some(cut);
+        self.command_projection.invalidate_citations();
+        self.commands_dirty = true;
+        self.advance_presentation();
         Ok(())
     }
 
@@ -133,6 +202,12 @@ impl TaskFileClient {
 
     /// Apply a separate authorized document query.
     pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
+        if let super::ViewUpdate::File(change) = &update {
+            if has_citations(change) {
+                self.command_projection.invalidate_citations();
+            }
+            self.commands_dirty |= has_payload(change);
+        }
         let document = |key: &crate::task_volume::FileKey| {
             matches!(
                 key,
@@ -166,6 +241,9 @@ impl TaskFileClient {
             .await
             .ok_or_else(|| Error::Conflict("task follow ended; reopen snapshot".into()))??;
         let visible = has_payload(&change);
+        if has_citations(&change) {
+            self.command_projection.invalidate_citations();
+        }
         if self.session.query_change(change)? && visible {
             self.commands_dirty = true;
             self.advance_presentation();
@@ -180,3 +258,21 @@ fn has_payload(change: &crate::task_volume::Change) -> bool {
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
+
+fn has_citations(change: &crate::task_volume::Change) -> bool {
+    let citation = |key: &crate::task_volume::FileKey| {
+        matches!(
+            key,
+            crate::task_volume::FileKey::Task {
+                file: crate::task_volume::TaskFile::Citations(_),
+                ..
+            }
+        )
+    };
+    change
+        .file
+        .iter()
+        .chain(&change.files)
+        .any(|file| citation(&file.key))
+        || change.removed.iter().any(citation)
+}

@@ -34,6 +34,7 @@ mod conversation;
 mod cancellation;
 mod canonical;
 mod chunks;
+mod citations;
 mod configuration;
 mod content;
 mod interactions;
@@ -65,6 +66,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     schemas: SchemaRegistry,
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
+    input_context: Option<Arc<crate::runtime::TaskContext>>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,

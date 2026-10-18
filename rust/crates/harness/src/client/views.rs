@@ -211,6 +211,29 @@ impl ClientViews {
             .values()
             .find_map(|files| files.head(key))
     }
+    /// Decode the immutable excerpt file at the selected agent's current cut.
+    #[cfg(any(feature = "filesystem", feature = "terminal"))]
+    pub fn file_citations(
+        &self,
+        agent: &StreamPath,
+        task: crate::task_volume::Component,
+        turn: u64,
+    ) -> Result<Option<crate::file_citations::FileCitations>> {
+        let key = FileKey::Task {
+            task,
+            file: crate::task_volume::TaskFile::Citations(turn),
+        };
+        let Some(file) = self.file(agent, &key) else {
+            return Ok(None);
+        };
+        let [bytes] = file.segments.as_slice() else {
+            return Err(Error::Invalid(
+                "citation file has an invalid segment shape".into(),
+            ));
+        };
+        crate::file_citations::FileCitations::decode(bytes, file.length).map(Some)
+    }
+
     /// Visits only the requested agent's selected content.
     pub fn files<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a HeadFile> {
         self.agents

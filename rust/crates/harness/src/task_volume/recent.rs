@@ -3,6 +3,7 @@ use super::*;
 use futures::StreamExt as _;
 use window::Window;
 mod window;
+pub(super) const DISPLAY_KINDS: u8 = 9;
 
 pub(super) fn kind(key: &FileKey) -> Option<u8> {
     let FileKey::Task { file, .. } = key else {
@@ -27,6 +28,7 @@ pub(super) fn kind(key: &FileKey) -> Option<u8> {
         TaskFile::Tool { .. } => 4,
         TaskFile::ExecutionResult(_) => 6,
         TaskFile::Completion(_) => 7,
+        TaskFile::Citations(_) => 8,
         _ => return None,
     })
 }
@@ -87,7 +89,7 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             return Err(Error::LimitExceeded);
         }
         let mut files = Vec::new();
-        for kind in 0..=7 {
+        for kind in 0..DISPLAY_KINDS {
             for ((_, _, sequence), key) in index
                 .view_order
                 .range((task.clone(), kind, 0)..=(task.clone(), kind, u64::MAX))

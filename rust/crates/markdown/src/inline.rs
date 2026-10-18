@@ -49,6 +49,16 @@ impl Inline {
 impl Markdown {
     pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
         let inline = self.inline.as_ref()?;
+        let appended = self
+            .source
+            .as_bytes()
+            .get(previous.saturating_sub(6)..)
+            .unwrap_or_default();
+        #[cfg(test)]
+        work::scan(appended.len());
+        if appended.windows(6).any(|part| part == b":file[") {
+            return None;
+        }
         let checkpoint = inline.provisional.as_ref().unwrap_or(&inline.checkpoint);
         let cost = checkpoint.cost;
         let base = checkpoint.offset;
@@ -218,7 +228,8 @@ impl Markdown {
         base: usize,
     ) {
         let content = source.trim_start_matches([' ', '\t']);
-        if possible_definition(content)
+        if source.contains(":file[")
+            || possible_definition(content)
             || !self.context.is_empty()
             || self.offset != base
             || !paragraph(source, events)

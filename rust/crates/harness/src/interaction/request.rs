@@ -148,6 +148,7 @@ impl Interaction {
                 let mut custody = crate::wire_codec::CodecQuota::new(work, slots)?;
                 let mut ids = BTreeSet::new();
                 for option in options {
+                    Error::require_resolved_file_directives(option.id.as_bytes(), custody.work())?;
                     if let Some(observer) = custody.work().as_deref_mut() {
                         observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                             bytes: 0,

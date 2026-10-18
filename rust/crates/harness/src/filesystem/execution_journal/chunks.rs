@@ -31,6 +31,12 @@ where
         let (channel, delta) = match model {
             ModelEvent::Content { delta } => (Channel::Text, delta),
             ModelEvent::Reasoning { delta } => (Channel::Reasoning, delta),
+            ModelEvent::Completed { .. } => {
+                if self.input_context.is_none() {
+                    return Ok(());
+                }
+                return self.publish_citations(*step, io)?.await;
+            }
             _ => return Ok(()),
         };
         let sequence = key

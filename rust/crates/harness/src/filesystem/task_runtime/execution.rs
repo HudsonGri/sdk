@@ -126,7 +126,7 @@ where
             .open_execution_journal(task, fence.clone(), turn, &admission)
             .await?
             .with_task_files(task_files)
-            .with_input_verifier(task_context.clone());
+            .with_input_context(task_context.clone());
         let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?

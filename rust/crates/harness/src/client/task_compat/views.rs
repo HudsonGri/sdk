@@ -71,6 +71,13 @@ pub struct TranscriptView {
     pub streaming_turn: Option<crate::OperationId>,
     /// Text received for the current assistant message.
     pub streaming_text: String,
+    /// Source intervals for each retained assistant message.
+    #[serde(default)]
+    pub text_turns: BTreeMap<u64, std::ops::Range<usize>>,
+    /// Immutable excerpts at the same followed task-file cut.
+    #[cfg(any(feature = "filesystem", feature = "terminal"))]
+    #[serde(default)]
+    pub file_citations: crate::file_citations::Views,
     /// First retained task chunk; a query-window change invalidates render caches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_start: Option<crate::task_volume::FileKey>,
@@ -88,6 +95,15 @@ pub struct TranscriptView {
 }
 
 impl TranscriptView {
+    pub(crate) fn clear_streamed_text(&mut self) {
+        self.streaming_text.clear();
+        self.text_turns.clear();
+        #[cfg(any(feature = "filesystem", feature = "terminal"))]
+        {
+            self.file_citations = Default::default();
+        }
+    }
+
     pub(crate) fn pending(&self, reasoning: bool) -> usize {
         let (text, pending) = if reasoning {
             (&self.reasoning, self.reasoning_pending)
@@ -229,7 +245,7 @@ impl ClientViews {
                         crate::conversation::assistant_message_id(turn) == message.id
                     })
                 {
-                    transcript.streaming_text.clear();
+                    transcript.clear_streamed_text();
                     transcript.file_start = None;
                     transcript.text_pending = 0;
                     transcript.reasoning_pending = 0;
@@ -301,7 +317,7 @@ impl ClientViews {
                 }) {
                     return Ok(());
                 }
-                transcript.streaming_text.clear();
+                transcript.clear_streamed_text();
                 transcript.file_start = None;
                 transcript.text_pending = 0;
                 transcript.reasoning_pending = 0;

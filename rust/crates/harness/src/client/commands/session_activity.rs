@@ -1,6 +1,23 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    pub(crate) fn output_task(&self, sequence: u64) -> Option<TaskId> {
+        let key = self.outputs.get(&sequence)?;
+        let id = match key {
+            files::FileKey::Task {
+                file: files::TaskFile::ExecutionResult(id),
+                ..
+            }
+            | files::FileKey::Session {
+                file: files::TaskFile::ExecutionResult(id),
+                ..
+            } => id,
+            _ => return None,
+        };
+        files::command_query::identity(id)
+            .map(|(_, operation)| crate::runtime::task_id_for_admission(operation))
+    }
+
     /// Stock admission selected by the oldest outstanding request, including a
     /// claimed request whose canonical model chunks are already being followed.
     pub fn active_task(&self) -> Option<TaskId> {

@@ -2,9 +2,9 @@
 //! stream; keep viewport layout and task/query ownership in the consuming client.
 
 mod code;
-pub mod directive;
 mod context;
 mod delimiters;
+pub mod directive;
 mod events;
 mod inline;
 mod reference_render;
@@ -86,6 +86,7 @@ struct Cached {
 impl Cached {
     fn new(
         source: &str,
+        origin: (usize, usize),
         mut range: Range<usize>,
         lines: Range<usize>,
         state: render::Renderer,
@@ -110,12 +111,13 @@ impl Cached {
             .bytes()
             .filter(|byte| *byte == b'>')
             .count();
+        let absolute = origin.0 + range.start.saturating_sub(origin.1);
         let raw = source.get(range).unwrap_or_default();
         if !raw.contains('[') {
             return None;
         }
         Some(Self {
-            template: Template::new(raw, quotes, events),
+            template: Template::new(raw, absolute, quotes, events),
             state,
             lines,
             cost: 0,
@@ -138,6 +140,39 @@ struct Fence {
 }
 
 impl Markdown {
+    /// Install immutable results for this message, updating only dependent leaves.
+    pub fn set_file_resolutions(
+        &mut self,
+        values: impl IntoIterator<Item = (Range<usize>, String, directive::Resolution)>,
+    ) -> usize {
+        let next: HashMap<_, _> = values
+            .into_iter()
+            .filter(|(range, raw, _)| self.source.get(range.clone()) == Some(raw.as_str()))
+            .map(|(range, _, value)| (directive::render::key(range.start), value))
+            .collect();
+        let changed: HashSet<_> = self
+            .references
+            .citations
+            .keys()
+            .chain(next.keys())
+            .filter(|key| self.references.citations.get(*key) != next.get(*key))
+            .cloned()
+            .collect();
+        self.references.citations = next;
+        let first = self.resolve(&changed);
+        if !changed.is_empty() {
+            self.inline = None;
+            self.plain = false;
+            let open = self.stable_lines;
+            self.lines.truncate(open);
+            self.parse_tail();
+            self.finish_visible();
+            first.min(open)
+        } else {
+            first
+        }
+    }
+
     /// Create a stream with tables bounded to this many display columns.
     /// Zero selects one column; the default presentation uses 80 columns.
     /// Recreate the presentation from its source when the viewport width changes.
@@ -350,6 +385,8 @@ impl Markdown {
         let events = self.parse_frontier(&source);
         self.seal_leading_definitions(base, &source, &events);
         let following_blocks = self.following_blocks(&source, &events);
+        let mut directives =
+            directive::render::Projection::new(&source, &events).offsets(&[(prefix.len(), base)]);
         let mut out = self.state.checkpoint();
         let mut stack = self.context.clone();
         let mut candidate = None;
@@ -398,7 +435,7 @@ impl Markdown {
                 }
                 stack.push(container(&source, range.start, tag));
             }
-            out.event_in(event, Some(&self.references));
+            directives.event(&mut out, event, range, &self.references);
             if matches!(event, Event::Html(_))
                 && range.end > prefix.len()
                 && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
@@ -423,6 +460,7 @@ impl Markdown {
                     && let Some((start, first, state, begin, _)) = leaf.take()
                     && let Some(mut cache) = Cached::new(
                         &source,
+                        (base, prefix.len()),
                         start..range.end,
                         first..self.lines.len() + out.lines.len(),
                         state,

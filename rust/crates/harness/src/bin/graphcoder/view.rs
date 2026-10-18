@@ -48,13 +48,7 @@ pub async fn run(
     let mut documents = client::local_documents(&local, &authority).await?;
     loop {
         client
-            .follow_task(
-                local.task_files().as_ref(),
-                &authority,
-                commands
-                    .active_task()
-                    .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
-            )
+            .follow_commands(local.task_files().as_ref(), &commands, &authority)
             .await?;
         client.project_commands(&commands, &authority)?;
         renderer.update_files(&client, &authority);

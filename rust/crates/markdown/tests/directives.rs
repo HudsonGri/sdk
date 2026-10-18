@@ -140,7 +140,7 @@ fn losing_pending_escape_is_detected() {
     let mut stream = Stream::default();
     stream.push("\\");
     let mut broken = stream.clone();
-    broken.escaped = false;
+    broken.scanner.escaped = false;
     stream.push(":file[x]");
     broken.push(":file[x]");
     stream.finish();
@@ -277,4 +277,191 @@ fn recovery_property_detects_swallowing_an_invalid_body() {
             .iter()
             .any(|node| node.directive.target().is_some())
     );
+}
+
+#[test]
+fn borrowed_scanning_and_selection_allocate_nothing() {
+    let source = "::file[src/lib.rs#L1]{chars=0:1} :file[x] ".repeat(128);
+    let mut owned = Stream::default();
+    owned.push(&source);
+    owned.finish();
+    let mut scanner = Scanner::default();
+    let mut count = 0;
+    let cost = acyclic_test_support::measure(|| {
+        let mut emit = |range: std::ops::Range<usize>, kind| {
+            let expected = owned.nodes().get(count).expect("owned node");
+            let raw = source.get(range.clone()).expect("source range");
+            let target = TargetRef::parse(raw, kind).expect("borrowed target");
+            let previous = expected.directive.target().expect("owned target");
+            assert_eq!(range, expected.range);
+            assert_eq!(target.path, previous.path);
+            assert_eq!(target.lines, previous.lines);
+            assert_eq!(target.chars, previous.chars);
+            assert_eq!(target.selected("éx\n"), previous.selected("éx\n"));
+            count += 1;
+            Ok::<_, std::convert::Infallible>(())
+        };
+        scanner.push(&source, &mut emit).unwrap();
+        scanner.finish(&mut emit).unwrap();
+    });
+    assert_eq!(count, owned.nodes().len());
+    assert_eq!((cost.count_total, cost.bytes_total), (0, 0));
+    let cost = acyclic_test_support::measure(|| {
+        let mut copied = Stream::default();
+        copied.push(&source);
+        copied.finish();
+        assert_eq!(copied.nodes(), owned.nodes());
+    });
+    assert_ne!((cost.count_total, cost.bytes_total), (0, 0));
+}
+
+#[test]
+fn parser_events_render_chips_and_snapshot_results_at_every_split() {
+    let source = "stable first paragraph\n\n**see :file[src/lib.rs] here**\n\n::file[src/lib.rs#L1]\n\nlast paragraph\n\n";
+    let raw = "::file[src/lib.rs#L1]";
+    let start = source.find(raw).unwrap();
+    let result = Resolution::Content(Excerpt {
+        content: "let answer = 42;".into(),
+        lines: Some(Lines { start: 1, end: 1 }),
+    });
+    for split in source
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain([source.len()])
+    {
+        let mut markdown = crate::Markdown::default();
+        markdown.push(&source[..split]);
+        markdown.push(&source[split..]);
+        let first = markdown.lines()[0].spans[0].text.as_ptr();
+        markdown.set_file_resolutions([(start..start + raw.len(), raw.into(), result.clone())]);
+        assert_eq!(markdown.lines()[0].spans[0].text.as_ptr(), first);
+        let spans: Vec<_> = markdown
+            .lines()
+            .iter()
+            .flat_map(|line| &line.spans)
+            .collect();
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.text == "src/lib.rs" && span.style.bold && span.style.underline),
+            "split {split}: {:?}",
+            markdown.lines()
+        );
+        assert!(
+            spans.iter().any(|span| span.text.contains("answer")),
+            "split {split}: {:?}",
+            markdown.lines()
+        );
+        assert!(!spans.iter().any(|span| span.text.contains("::file[")));
+    }
+}
+
+#[test]
+fn repeated_directives_keep_distinct_message_snapshots() {
+    let raw = "::file[x]";
+    let source = format!("{raw}\n\n{raw}\n\n");
+    let mut markdown = crate::Markdown::default();
+    markdown.push(&source);
+    markdown.set_file_resolutions(
+        [0, raw.len() + 2]
+            .into_iter()
+            .zip(["first cut", "second cut"])
+            .map(|(at, text)| {
+                (
+                    at..at + raw.len(),
+                    raw.into(),
+                    Resolution::Content(Excerpt {
+                        content: text.into(),
+                        lines: None,
+                    }),
+                )
+            }),
+    );
+    let text: String = markdown
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect();
+    assert!(text.contains("first cut"), "{text}");
+    assert!(text.contains("second cut"), "{text}");
+}
+
+#[test]
+fn code_and_forged_source_offsets_remain_literal() {
+    let source = "`:file[x]`\n\n```\n::file[x]\n```\n\n::file[y]\n\n";
+    let mut markdown = crate::Markdown::default();
+    markdown.push(source);
+    markdown.set_file_resolutions([(
+        0..9,
+        "::file[y]".into(),
+        Resolution::Error(ResolutionError::Denied),
+    )]);
+    let text: String = markdown
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect();
+    assert!(text.contains(":file[x]"));
+    assert!(text.contains("::file[x]"));
+    assert!(text.contains("::file[y]"));
+    assert!(!text.contains("read denied"));
+}
+
+fn snapshot_parse_work(replay: bool) {
+    let raw = "::file[x]";
+    let source = format!("{}\n\n{raw}\n\n", "retained ".repeat(4096));
+    let at = source.find(raw).unwrap();
+    let mut markdown = crate::Markdown::default();
+    markdown.push(&source);
+    let before = crate::references::PARSED_BYTES.get();
+    if replay {
+        markdown = crate::Markdown::default();
+        markdown.push(&source);
+    }
+    markdown.set_file_resolutions([(
+        at..at + raw.len(),
+        raw.into(),
+        Resolution::Error(ResolutionError::Denied),
+    )]);
+    assert!(
+        crate::references::PARSED_BYTES.get() - before <= 4 * raw.len() + 64,
+        "citation updates must not parse finalized history"
+    );
+}
+
+#[test]
+fn citation_snapshot_updates_parse_only_dependent_leaves() {
+    snapshot_parse_work(false);
+}
+
+#[test]
+#[should_panic(expected = "citation updates must not parse finalized history")]
+fn citation_snapshot_counter_detects_reopening_the_document() {
+    snapshot_parse_work(true);
+}
+
+#[test]
+fn quoted_multiline_attributes_keep_original_offsets_after_normalization() {
+    let source = "> ::file[x]{lines=1\n> chars=1:2}\n\n";
+    let mut scanner = Stream::default();
+    scanner.push(source);
+    scanner.finish();
+    let node = &scanner.nodes()[0];
+    let mut markdown = crate::Markdown::default();
+    markdown.push(source);
+    markdown.set_file_resolutions([(
+        node.range.clone(),
+        node.directive.raw().into(),
+        Resolution::Content(Excerpt {
+            content: "chosen".into(),
+            lines: Some(Lines { start: 1, end: 1 }),
+        }),
+    )]);
+    let text: String = markdown
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect();
+    assert!(text.contains("chosen"), "{text}");
+    assert!(!text.contains("::file["));
 }

@@ -16,6 +16,8 @@ use acyclic_markdown::Markdown;
 struct StreamText {
     markdown: Markdown,
     fed: usize,
+    crlfs: Vec<usize>,
+    citations: Option<crate::file_citations::Views>,
     // Pending suffix repair: replace the last three displayed bytes, then append.
     provisional: bool,
     provisional_newline: bool,
@@ -37,6 +39,12 @@ impl StreamText {
         self.provisional = provisional;
         self.provisional_newline = text.ends_with('\n');
         let delta = text.get(self.fed..).unwrap_or_default();
+        let start = self.fed;
+        if delta.starts_with('\n') && start != 0 && text.as_bytes().get(start - 1) == Some(&b'\r') {
+            self.crlfs.push(start);
+        }
+        self.crlfs
+            .extend(delta.match_indices("\r\n").map(|(at, _)| start + at + 1));
         self.fed = text.len();
         #[cfg(test)]
         {
@@ -52,6 +60,58 @@ impl StreamText {
             changed
         }
     }
+    fn resolve(
+        &mut self,
+        values: impl IntoIterator<
+            Item = (
+                std::ops::Range<usize>,
+                String,
+                acyclic_markdown::directive::Resolution,
+            ),
+        >,
+    ) -> usize {
+        let crlfs = &self.crlfs;
+        let values = values.into_iter().map(|(range, raw, resolution)| {
+            let offset = |at| at - crlfs.partition_point(|&line_feed| line_feed < at);
+            let raw = if raw.contains('\r') {
+                raw.replace("\r\n", "\n").replace('\r', "\n")
+            } else {
+                raw
+            };
+            (offset(range.start)..offset(range.end), raw, resolution)
+        });
+        self.markdown.set_file_resolutions(values)
+    }
+
+    fn resolve_transcript(&mut self, transcript: &crate::client::TranscriptView) -> usize {
+        if self
+            .citations
+            .as_ref()
+            .is_none_or(|seen| !std::sync::Arc::ptr_eq(seen, &transcript.file_citations))
+        {
+            let values = transcript
+                .file_citations
+                .iter()
+                .flat_map(|(turn, snapshot)| {
+                    transcript
+                        .text_turns
+                        .get(turn)
+                        .and_then(|range| {
+                            transcript
+                                .streaming_text
+                                .get(range.clone())
+                                .map(|source| snapshot.results(source, range.start))
+                        })
+                        .unwrap_or_default()
+                });
+            let changed = self.resolve(values);
+            self.citations = Some(transcript.file_citations.clone());
+            changed
+        } else {
+            self.markdown.lines().len()
+        }
+    }
+
     fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {
         let mut rows: Vec<_> = self
             .markdown
@@ -218,9 +278,10 @@ impl ClientRenderer {
             self.reasoning_rows.truncate(changed_reasoning);
             self.reasoning_rows
                 .extend(self.reasoning.rows(changed_reasoning));
-            let changed = self
+            let mut changed = self
                 .stream
                 .push(&transcript.streaming_text, transcript.pending(false));
+            changed = changed.min(self.stream.resolve_transcript(transcript));
             self.transcript_changed = self.transcript_changed.min(self.stable + changed);
             self.transcript.truncate(self.stable + changed);
             self.transcript.extend(self.stream.rows(changed));

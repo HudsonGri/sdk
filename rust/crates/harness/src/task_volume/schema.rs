@@ -75,6 +75,8 @@ pub enum TaskFile {
         /// Assistant channel represented by this head.
         channel: Channel,
     },
+    /// Immutable file-citation snapshot beside one assistant message.
+    Citations(u64),
     /// Terminal turn outcome.
     Completion(u64),
     /// Tool lifecycle file.
@@ -104,7 +106,7 @@ pub enum TaskFile {
 impl TaskFile {
     pub(super) fn turn(&self) -> Option<u64> {
         match self {
-            Self::TurnRequest(n) | Self::Completion(n) => Some(*n),
+            Self::TurnRequest(n) | Self::Citations(n) | Self::Completion(n) => Some(*n),
             Self::Chunk { turn, .. } | Self::TextHead { turn, .. } | Self::Tool { turn, .. } => {
                 Some(*turn)
             }
@@ -131,6 +133,7 @@ impl TaskFile {
                     Channel::Reasoning => "reasoning.md",
                 }
             ),
+            Self::Citations(n) => format!("turns/{n}/citations.json"),
             Self::Completion(n) => format!("turns/{n}/completion.json"),
             Self::Tool { turn, call, file } => {
                 let leaf = match file {
@@ -318,6 +321,7 @@ impl FileKey {
                 TaskFile::ChildWait(id(name.strip_suffix(".json").ok_or(Error::InvalidPath)?)?)
             }
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
+            ["turns", n, "citations.json"] => TaskFile::Citations(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
                 turn: number(n)?,

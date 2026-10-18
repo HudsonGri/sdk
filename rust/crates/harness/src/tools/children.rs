@@ -99,6 +99,7 @@ impl Executor {
             "send" => {
                 let input: SendInput =
                     serde_json::from_value(invocation.arguments).map_err(invalid)?;
+                Error::require_resolved_file_directives(input.message.as_bytes(), &mut None)?;
                 if input.message.is_empty() {
                     return Err(invalid("child message is empty"));
                 }

@@ -135,6 +135,7 @@ impl ChildRequest {
         {
             return Err(invalid());
         }
+        crate::Error::require_resolved_file_directives(prompt.as_bytes(), &mut None)?;
         Ok(Self {
             prompt: prompt.into(),
             model: metadata.model,

@@ -81,6 +81,10 @@ pub(super) struct Projection {
     after: u64,
     cut: Option<(u64, Option<u64>)>,
     segments: Vec<std::sync::Arc<str>>,
+    segment_tasks: Vec<Option<crate::TaskId>>,
+    #[cfg(any(feature = "filesystem", feature = "terminal"))]
+    live_citations: Option<crate::file_citations::Views>,
+    citations_dirty: bool,
     revision: u64,
     applied_revision: u64,
     applied_segments: usize,
@@ -94,7 +98,22 @@ pub(super) struct Projection {
     reasoning_start: Option<crate::task_volume::FileKey>,
 }
 
+#[cfg(any(feature = "filesystem", feature = "terminal"))]
+mod citations;
+
 impl Projection {
+    pub(super) fn archive_identity(&self) -> (u64, usize) {
+        (self.revision, self.segments.len())
+    }
+
+    pub(super) fn archive_tasks(&self) -> impl Iterator<Item = crate::TaskId> + '_ {
+        self.segment_tasks.iter().filter_map(|task| *task)
+    }
+
+    pub(super) fn invalidate_citations(&mut self) {
+        self.citations_dirty = true;
+    }
+
     pub(super) fn refresh<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         files: &super::CommandSession<P>,
@@ -113,6 +132,7 @@ impl Projection {
             self.cut = Some(cut);
             self.after = history_after;
             self.segments.clear();
+            self.segment_tasks.clear();
             self.revision = self.revision.wrapping_add(1);
         }
         let mut changed = rebuild;
@@ -126,6 +146,7 @@ impl Projection {
                 .and_then(serde_json::Value::as_str)
             {
                 self.segments.push(std::sync::Arc::from(text));
+                self.segment_tasks.push(files.output_task(sequence));
             }
             self.after = sequence;
             changed = true;
@@ -188,9 +209,30 @@ impl Projection {
         };
         let reasoning = text.get(reasoning_offset..).unwrap_or_default().to_owned();
         let mut work = delta.len() + reasoning.len();
+        #[cfg(any(feature = "filesystem", feature = "terminal"))]
+        let metadata = {
+            let changed = reset
+                || archived
+                || self.citations_dirty
+                || match (&self.live_citations, live) {
+                    (Some(previous), Some(live)) => {
+                        !std::sync::Arc::ptr_eq(previous, &live.file_citations)
+                    }
+                    (None, None) => false,
+                    _ => true,
+                };
+            self.live_citations = live.map(|live| live.file_citations.clone());
+            changed.then(|| {
+                (
+                    citations::archive(&self.segments, &self.segment_tasks, views),
+                    live.map(|live| (live.file_citations.clone(), live.text_turns.clone())),
+                )
+            })
+        };
+        self.citations_dirty = false;
         let transcript = views.transcripts.entry(self.owner.clone()).or_default();
         if reset {
-            transcript.streaming_text.clear();
+            transcript.clear_streamed_text();
             self.archive_len = 0;
             self.applied_segments = 0;
         }
@@ -223,6 +265,25 @@ impl Projection {
             );
         }
         transcript.streaming_text.push_str(&delta);
+        #[cfg(any(feature = "filesystem", feature = "terminal"))]
+        if let Some((mut archive, live)) = metadata {
+            let base = transcript.streaming_text.len().saturating_sub(live_size);
+            if let Some((snapshots, ranges)) = live {
+                for (turn, snapshot) in snapshots.iter() {
+                    if let Some(range) = ranges.get(turn) {
+                        archive.push((base + range.start..base + range.end, snapshot.clone()));
+                    }
+                }
+            }
+            let mut snapshots = std::collections::BTreeMap::new();
+            let mut ranges = std::collections::BTreeMap::new();
+            for (range, snapshot) in archive {
+                snapshots.insert(range.start as u64, snapshot);
+                ranges.insert(range.start as u64, range);
+            }
+            transcript.file_citations = std::sync::Arc::new(snapshots);
+            transcript.text_turns = ranges;
+        }
         if reasoning_reset {
             transcript.reasoning.clear();
         }

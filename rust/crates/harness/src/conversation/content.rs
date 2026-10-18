@@ -203,6 +203,37 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Reads a no-follow UTF-8 candidate prefix at one authenticated generation.
+    /// Returns the generation, complete file length, bounded bytes and metadata custody.
+    fn inspect_private_prefix<'a, 'io>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _expected_generation: Option<&'a GenerationRef>,
+        _maximum_bytes: u64,
+        io: Option<&'io ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                GenerationRef,
+                u64,
+                acyclic_stream::OwnedBytes,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "private prefix reads are unavailable",
+        ))
+    }
+
     /// Resolves the named private file at the caller's pinned generation.
     fn read_private_path<'a, 'io>(
         &'a self,
@@ -478,6 +509,38 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             io,
         )
     }
+    fn inspect_private_prefix<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                GenerationRef,
+                u64,
+                acyclic_stream::OwnedBytes,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.bound_reader(volume, io)?.inspect_private_prefix(
+            volume,
+            granted_prefix,
+            path,
+            expected_generation,
+            maximum_bytes,
+            io,
+        )
+    }
+
     fn read_private_path<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,

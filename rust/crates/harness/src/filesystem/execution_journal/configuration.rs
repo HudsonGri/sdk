@@ -239,6 +239,7 @@ where
             schemas,
             maximum_payload_bytes,
             input_verifier: None,
+            input_context: None,
             interactions,
             owner: None,
             execution: None,
@@ -324,6 +325,14 @@ where
     #[must_use]
     pub fn with_input_verifier(mut self, verifier: Arc<dyn ContentResidencyVerifier>) -> Self {
         self.input_verifier = Some(verifier);
+        self
+    }
+
+    /// Binds message citations and input admission to the original task context.
+    #[must_use]
+    pub(crate) fn with_input_context(mut self, context: Arc<crate::runtime::TaskContext>) -> Self {
+        self.input_verifier = Some(context.clone());
+        self.input_context = Some(context);
         self
     }
 

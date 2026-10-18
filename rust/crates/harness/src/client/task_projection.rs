@@ -1,5 +1,5 @@
 //! Incremental folds over immutable task segments and their sequence cursors.
-use super::{TaskFileViews, TaskFileQueryView};
+use super::{TaskFileQueryView, TaskFileViews};
 use crate::task_volume::{Channel, FileKey, FileValue, TaskFile, ToolFile};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,6 +13,7 @@ pub(super) struct Fold {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Tail {
     through: Option<u64>,
+    source_start: Option<usize>,
     pending: Vec<u8>,
     pending_text: usize,
     frozen: bool,
@@ -70,7 +71,11 @@ pub(super) fn snapshot(views: &mut TaskFileViews, files: &TaskFileQueryView) {
         .filter_map(|key| match key {
             FileKey::Task {
                 task,
-                file: TaskFile::Chunk { .. } | TaskFile::ExecutionResult(_) | TaskFile::Tool { .. },
+                file:
+                    TaskFile::Chunk { .. }
+                    | TaskFile::Citations(_)
+                    | TaskFile::ExecutionResult(_)
+                    | TaskFile::Tool { .. },
             } => Some(owner(task)),
             _ => None,
         })
@@ -110,6 +115,7 @@ pub(super) fn projected_task(key: &FileKey) -> Option<crate::task_volume::Compon
             task,
             file:
                 TaskFile::Chunk { .. }
+                | TaskFile::Citations(_)
                 | TaskFile::ExecutionResult(_)
                 | TaskFile::Tool {
                     file: ToolFile::Stdout(_) | ToolFile::Stderr(_),
@@ -177,7 +183,13 @@ pub(super) fn append(views: &mut TaskFileViews, file: &FileValue) -> usize {
             transcript.streaming_turn = Some(crate::OperationId::from_bytes(
                 u128::from(*turn).to_be_bytes(),
             ));
+            let source_start = *tail.source_start.get_or_insert(target.len());
             let work = tail.append(*sequence, &file.bytes, target);
+            if channel == Channel::Text {
+                transcript
+                    .text_turns
+                    .insert(*turn, source_start..target.len());
+            }
             if channel == Channel::Text {
                 transcript.text_pending = tail.pending_text;
             } else {
@@ -243,6 +255,18 @@ pub(super) fn append(views: &mut TaskFileViews, file: &FileValue) -> usize {
                 u128::from(sequence).to_be_bytes(),
             ));
             text.len()
+        }
+        #[cfg(any(feature = "filesystem", feature = "terminal"))]
+        TaskFile::Citations(turn) => {
+            let Ok(citations) =
+                crate::file_citations::FileCitations::decode(&file.bytes, file.bytes.len() as u64)
+            else {
+                return 0;
+            };
+            let transcript = views.transcripts.entry(key).or_default();
+            std::sync::Arc::make_mut(&mut transcript.file_citations)
+                .insert(*turn, std::sync::Arc::new(citations));
+            file.bytes.len()
         }
         TaskFile::Completion(turn) => {
             if let Some(fold) = views.task_folds.get_mut(&key) {

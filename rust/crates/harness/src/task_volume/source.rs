@@ -24,6 +24,9 @@ impl<P: StreamProvider + ?Sized> FileQuerySource for TaskVolume<P> {
         maximum_bytes: usize,
     ) -> BoxProviderFuture<'_, Result<Observation>> {
         Box::pin(async move {
+            if matches!(&query, Query::Citations(tasks) if tasks.len() > maximum_files) {
+                return Err(Error::LimitExceeded);
+            }
             if maximum_files == 0 || maximum_bytes == 0 {
                 return Err(Error::LimitExceeded);
             }

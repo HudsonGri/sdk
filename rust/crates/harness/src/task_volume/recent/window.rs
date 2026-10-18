@@ -2,8 +2,8 @@
 use super::super::{Change, FileKey, FileValue};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Display kinds 0..=7 are bounded separately; the last slot holds unclassified files.
-const SLOTS: usize = 9;
+/// Each display kind is bounded separately; the last slot holds unclassified files.
+const SLOTS: usize = super::DISPLAY_KINDS as usize + 1;
 const UNCLASSIFIED: usize = SLOTS - 1;
 
 struct Entry {

@@ -290,3 +290,6 @@ mod groups;
 mod native;
 mod tasks;
 mod tools;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod file_citations;

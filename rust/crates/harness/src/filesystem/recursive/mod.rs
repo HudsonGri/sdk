@@ -47,6 +47,7 @@ impl ForkToolArguments {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskId> {
         limits.validate(work)?;
+        Error::require_resolved_file_directives(self.msg.as_bytes(), work)?;
         if let Some(observer) = work.as_deref_mut() {
             observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                 bytes: 0,

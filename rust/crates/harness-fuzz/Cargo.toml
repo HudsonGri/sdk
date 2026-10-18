@@ -329,3 +329,11 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "file_citations"
+path = "fuzz_targets/file_citations.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false

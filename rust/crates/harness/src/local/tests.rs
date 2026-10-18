@@ -787,3 +787,7 @@ mod task_files;
 #[cfg(all(feature = "tui", feature = "terminal"))]
 #[path = "tests/live_ui.rs"]
 mod live_ui;
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+#[path = "tests/file_citations.rs"]
+mod file_citations;

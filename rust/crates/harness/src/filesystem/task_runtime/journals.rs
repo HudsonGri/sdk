@@ -6,6 +6,26 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(in crate::filesystem) async fn execution_journal_with_context(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        turn: OperationId,
+        context: Arc<crate::runtime::TaskContext>,
+    ) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>> {
+        if !context.original_task_binding_matches(task, &fence) {
+            return Err(Error::Unauthorized(
+                "journal context differs from its original task".into(),
+            ));
+        }
+        let admission = self.host.observe_admission(task).await?;
+        Ok(Arc::new(
+            self.open_execution_journal(task, fence, turn, &admission)
+                .await?
+                .with_input_context(context),
+        ))
+    }
+
     /// Opens the original owner-fenced journal and returns its exact task/turn namespace.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn execution_journal_with_native_work(
@@ -67,7 +87,7 @@ where
                         "journal reader differs from its original task context",
                     ));
                 }
-                journal.with_input_verifier(context)
+                journal.with_input_context(context)
             }
             None => journal,
         };

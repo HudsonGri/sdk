@@ -120,6 +120,7 @@ impl LocalHarness {
                 } else {
                     file.bytes.as_ref()
                 };
+                Error::require_resolved_file_directives(body, &mut None)?;
                 let (payload, _) = publisher
                     .stage_once(
                         operation,

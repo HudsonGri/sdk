@@ -150,6 +150,29 @@ impl Renderer {
         self.lines.push(prefixed);
     }
 
+    pub(crate) fn directive_lines(&mut self, kind: crate::directive::Kind, lines: Vec<Line>) {
+        if let Some(table) = &mut self.table {
+            for line in lines {
+                for span in line.spans {
+                    table.event(&Event::Text(span.text.into()), None);
+                }
+            }
+        } else if kind == crate::directive::Kind::Inline {
+            for line in lines {
+                for span in line.spans {
+                    let mut style = self.style;
+                    style.underline |= span.style.underline;
+                    self.line.push(&span.text, style, span.link.as_ref());
+                }
+            }
+        } else {
+            self.flush();
+            for line in lines {
+                self.block_line(line);
+            }
+        }
+    }
+
     pub(crate) fn event(&mut self, event: &Event<'_>) {
         self.event_in(event, None);
     }

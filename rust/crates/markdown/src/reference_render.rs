@@ -30,12 +30,9 @@ impl Markdown {
         out: &mut render::Renderer,
         cost: &mut usize,
     ) {
-        if cache
-            .template
-            .keys
-            .iter()
-            .all(|key| self.references.get(key).is_none())
-        {
+        if cache.template.keys.iter().all(|key| {
+            self.references.get(key).is_none() && !self.references.citations.contains_key(key)
+        }) {
             return;
         }
         let (events, used, interval) = cache.template.events(
@@ -53,8 +50,10 @@ impl Markdown {
             work::copy(std::mem::size_of::<Line>());
             replacement.reuse_line(std::mem::take(line));
         }
-        for event in &events {
-            replacement.event_in(event, Some(&self.references));
+        let mut directives = directive::render::Projection::new(&cache.template.source, &events)
+            .offsets(&cache.template.offsets);
+        for (event, range) in &events {
+            directives.event(&mut replacement, event, range, &self.references);
         }
         replacement.flush();
         out.lines.truncate(cache.lines.start - self.lines.len());
@@ -128,8 +127,11 @@ impl Markdown {
                 let (events, used, interval) = cache.template.events(&self.references, budget);
                 cache.cost = used;
                 cache.budget = interval;
-                for event in events {
-                    renderer.event_in(&event, Some(&self.references));
+                let mut directives =
+                    directive::render::Projection::new(&cache.template.source, &events)
+                        .offsets(&cache.template.offsets);
+                for (event, range) in &events {
+                    directives.event(&mut renderer, event, range, &self.references);
                 }
                 renderer.flush();
                 changed = changed.min(cache.lines.start);

@@ -41,7 +41,7 @@ mod old {
         super::super::super::file_kind(file)
     }
     fn trim(files: &mut Window, maximum: usize, bytes: usize, recent: usize) {
-        for kind in 0..=7 {
+        for kind in 0..=8 {
             while files
                 .values()
                 .filter(|(_, file)| self::kind(file) == Some(kind))
@@ -162,7 +162,7 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
     let call = component(format!("c{}", index % 2));
     let turn = u64::from(index % 3);
     let sequence = u64::from(index);
-    let (file, channel) = match index % 12 {
+    let (file, channel) = match index % 13 {
         0 => (TaskFile::Status, None),
         1 => (TaskFile::TurnRequest(turn), None),
         2 => (TaskFile::Chunk { turn, sequence }, Some(Channel::Text)),
@@ -200,6 +200,7 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
             None,
         ),
         10 => (TaskFile::Request(call), None),
+        11 => (TaskFile::Citations(turn), None),
         _ => {
             let mut goal = FileValue::new(FileKey::Goal, vec![index; size]);
             goal.channel = Some(Channel::Reasoning);

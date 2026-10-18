@@ -12,17 +12,44 @@ fuzz_target!(|data: &[u8]| {
     let mut whole = Stream::default();
     whole.push(source);
     whole.finish();
+    let mut markdown = acyclic_markdown::Markdown::default();
     let mut streamed = Stream::default();
     let mut start = 0;
     for (index, _) in source.char_indices() {
         if index - start >= usize::from(stride).max(1) {
             streamed.push(&source[start..index]);
+            markdown.push(&source[start..index]);
             start = index;
         }
     }
     streamed.push(&source[start..]);
+    markdown.push(&source[start..]);
     streamed.finish();
     assert_eq!(whole.nodes(), streamed.nodes());
+    let values = || {
+        whole
+            .nodes()
+            .iter()
+            .filter(|node| node.directive.kind() == acyclic_markdown::directive::Kind::Block)
+            .filter_map(|node| {
+                let target = node.directive.target()?;
+                let resolution = match target.select(source) {
+                    Ok(content) => acyclic_markdown::directive::Resolution::Content(content),
+                    Err(error) => acyclic_markdown::directive::Resolution::Error(error),
+                };
+                Some((
+                    node.range.clone(),
+                    node.directive.raw().to_owned(),
+                    resolution,
+                ))
+            })
+            .collect::<Vec<_>>()
+    };
+    markdown.set_file_resolutions(values());
+    let mut fresh = acyclic_markdown::Markdown::default();
+    fresh.push(source);
+    fresh.set_file_resolutions(values());
+    assert_eq!(markdown.lines(), fresh.lines());
     for prefix in [
         ":file[unfinished\n",
         "::file[unfinished\r",

@@ -41,3 +41,78 @@ proptest! {
         cuts in prop::collection::vec(any::<bool>(), 0..200)
     ) { partition(&format!("retained archive\n\n{text}"), &cuts); }
 }
+
+#[test]
+fn file_citations_offsets_survive_streamed_crlf_normalization() {
+    use acyclic_markdown::directive::{Resolution, ResolutionError};
+    let source = "retained\r\n\r\n::file[x]{lines=1\r\n chars=0:1}\r\n\r\n";
+    let raw = "::file[x]{lines=1\r\n chars=0:1}";
+    let at = source.find(raw).unwrap();
+    let values = || {
+        [(
+            at..at + raw.len(),
+            raw.to_owned(),
+            Resolution::Error(ResolutionError::Denied),
+        )]
+    };
+    let mut whole = StreamText::default();
+    whole.push(source, 0);
+    whole.resolve(values());
+    let mut stream = StreamText::default();
+    for end in 1..=source.len() {
+        stream.push(&source[..end], 0);
+    }
+    stream.resolve(values());
+    assert_eq!(stream.markdown.lines(), whole.markdown.lines());
+    let text: String = stream
+        .markdown
+        .lines()
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+        .collect();
+    assert!(text.contains("read denied"), "{text}");
+    assert!(!text.contains("::file["));
+}
+#[test]
+fn file_citations_stream_reset_also_resets_snapshot_identity() {
+    use crate::file_citations::{FileCitation, FileCitations};
+    use acyclic_markdown::directive::{Resolution, ResolutionError};
+    let raw = "::file[x]";
+    let mut transcript = crate::client::TranscriptView::default();
+    transcript.streaming_text = raw.into();
+    transcript.text_turns.insert(0, 0..raw.len());
+    std::sync::Arc::make_mut(&mut transcript.file_citations).insert(
+        0,
+        std::sync::Arc::new(FileCitations {
+            source_bytes: raw.len() as u64,
+            entries: vec![FileCitation {
+                range: 0..raw.len(),
+                raw: raw.into(),
+                resolution: Resolution::Error(ResolutionError::Denied),
+                read: None,
+            }],
+            ..Default::default()
+        }),
+    );
+    let render = |stream: &mut StreamText| {
+        stream.push(raw, 0);
+        stream.resolve_transcript(&transcript);
+        stream
+            .markdown
+            .lines()
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.text.as_str()))
+            .collect::<String>()
+    };
+    let mut stream = StreamText::default();
+    let expected = render(&mut stream);
+    assert!(expected.contains("read denied"));
+    stream = StreamText::default();
+    assert_eq!(render(&mut stream), expected);
+    // Keeping the old identity while resetting its parser loses the excerpt.
+    let mut broken = StreamText {
+        citations: Some(transcript.file_citations.clone()),
+        ..Default::default()
+    };
+    assert_ne!(render(&mut broken), expected);
+}
