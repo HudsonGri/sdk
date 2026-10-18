@@ -116,6 +116,24 @@ fn paused() -> wire::SubscriptionObservation {
     }
 }
 
+// All boundaries use fixture inputs, never a previous remote reply as configuration.
+fn observation(
+    actor: Option<wire::ActorObservation>,
+    request: &wire::CreateActorRequest,
+    expected: &[wire::SubscriptionObservation],
+) -> TestResult<wire::ActorObservation> {
+    let actor = actor_configuration(actor, ID, request, 1)?;
+    subscriptions(&actor, expected)?;
+    Ok(actor)
+}
+
+fn active() -> wire::SubscriptionObservation {
+    wire::SubscriptionObservation {
+        stream_path: SOURCE.into(),
+        ..subscription(1)
+    }
+}
+
 // Cloud's additive public Configure RPC; no internal mutation or state injection.
 #[derive(Clone, PartialEq, prost::Message)]
 struct Configure {
@@ -221,14 +239,27 @@ pub(super) async fn qualify() -> TestResult {
         Some(&std::fs::read(&remote.ca_file)?),
     )
     .await?;
-    let created = actors
-        .create_actor(request)
-        .await?
-        .into_inner()
-        .actor
-        .ok_or("created actor missing")?;
-    assert_eq!(created.actor_id, ID);
+    observation(
+        actors
+            .create_actor(request.clone())
+            .await?
+            .into_inner()
+            .actor,
+        &request,
+        &[active()],
+    )?;
     configure(remote, &bearer, 1).await?;
+    observation(
+        actors
+            .inspect_actor(wire::InspectActorRequest {
+                actor_id: ID.into(),
+            })
+            .await?
+            .into_inner()
+            .actor,
+        &request,
+        &[active()],
+    )?;
     let boundary = observed.tail(observation_path(ID)?).await?;
     let AppendOutcome::Committed(poison) = source.append(append(b"poison")).await? else {
         return Err("poison append did not commit".into());
@@ -241,7 +272,7 @@ pub(super) async fn qualify() -> TestResult {
             .any(|sub| sub.state == wire::SubscriptionState::Paused as i32)
     })
     .await?;
-    subscriptions(&before, &[paused()])?;
+    observation(Some(before), &request, &[paused()])?;
     configure(remote, &bearer, 2).await?;
     // One public read after the acknowledged Configure, never an Inspect polling loop.
     let configured = actors
@@ -252,7 +283,7 @@ pub(super) async fn qualify() -> TestResult {
         .into_inner()
         .actor
         .ok_or("configured actor missing")?;
-    subscriptions(&configured, &[paused()])?;
+    observation(Some(configured), &request, &[paused()])?;
     let mut expected = paused();
     expected.state = wire::SubscriptionState::Active as i32;
     expected.failed_cursor = None;
@@ -269,15 +300,21 @@ pub(super) async fn qualify() -> TestResult {
         .into_inner()
         .actor
         .ok_or("resume omitted actor")?;
-    subscriptions(&resumed, &[expected])?;
+    let resumed = observation(Some(resumed), &request, &[expected.clone()])?;
     let retried = actors
         .resume_subscription(resume)
         .await?
         .into_inner()
         .actor
         .ok_or("resume retry omitted actor")?;
+    let retried = observation(Some(retried), &request, &[expected.clone()])?;
     assert_eq!(retried, resumed);
-    followed_observation(&observed, ID, next, |actor| actor == &resumed).await?;
+    let (retained, _) = followed_observation(&observed, ID, next, |actor| {
+        actor.subscriptions == [expected.clone()]
+    })
+    .await?;
+    let retained = observation(Some(retained), &request, &[expected])?;
+    assert_eq!(retained, resumed);
     actors
         .delete_actor(wire::DeleteActorRequest {
             actor_id: ID.into(),
@@ -289,32 +326,74 @@ pub(super) async fn qualify() -> TestResult {
 
 #[test]
 fn paused_oracle_rejects_active_and_changed_failure_boundaries() -> TestResult {
+    let request = configuration();
     let expected = paused();
-    subscriptions(
-        &wire::ActorObservation {
-            subscriptions: vec![expected.clone()],
-            ..Default::default()
-        },
-        &[expected.clone()],
-    )?;
-    for field in 0..9 {
-        let mut changed = expected.clone();
+    let valid = wire::ActorObservation {
+        actor_id: ID.into(),
+        code_sha256: request.code_sha256.clone(),
+        home_region: request.home_region.clone(),
+        configuration_revision: 1,
+        subscriptions: vec![expected.clone()],
+        ..Default::default()
+    };
+    observation(Some(valid.clone()), &request, &[expected.clone()])?;
+    for field in 0..10 {
+        let mut changed = valid.clone();
+        let sub = &mut changed.subscriptions[0];
         match field {
-            0 => changed.state = wire::SubscriptionState::Active as i32,
-            1 => changed.failed_cursor = None,
-            2 => changed.retry_count += 1,
-            3 => changed.failure_code.clear(),
-            4 => changed.completed_cursor += 1,
-            5 => changed.delivered_cursor += 1,
-            6 => changed.recoverable_cursor += 1,
-            7 => changed.stream_path.push_str("-wrong"),
-            _ => changed.subscription_id.push_str("-wrong"),
+            0 => sub.state = wire::SubscriptionState::Active as i32,
+            1 => sub.failed_cursor = None,
+            2 => sub.retry_count += 1,
+            3 => sub.failure_code.clear(),
+            4 => sub.completed_cursor += 1,
+            5 => sub.delivered_cursor += 1,
+            6 => sub.recoverable_cursor += 1,
+            7 => sub.stream_path.push_str("-wrong"),
+            8 => sub.subscription_id.push_str("-wrong"),
+            _ => sub.placement_anchor = true,
         }
-        let actor = wire::ActorObservation {
-            subscriptions: vec![changed],
-            ..Default::default()
-        };
-        assert!(subscriptions(&actor, &[expected.clone()]).is_err());
+        assert!(observation(Some(changed), &request, &[expected.clone()]).is_err());
     }
     Ok(())
+}
+
+proptest::proptest! {
+    #[test]
+    fn every_boundary_rejects_matching_corrupt_configuration(
+        revision in 2u64..=u64::MAX,
+        hash_byte in 0usize..32,
+        region_suffix in "[a-z]{1,16}",
+    ) {
+        let request = configuration();
+        // Create, first Configure, Pause, second Configure, Resume, retry, retained follow.
+        for expected in [active(), active(), paused(), paused(), active(), active(), active()] {
+            let valid = wire::ActorObservation {
+                actor_id: ID.into(),
+                code_sha256: request.code_sha256.clone(),
+                home_region: request.home_region.clone(),
+                configuration_revision: 1,
+                subscriptions: vec![expected.clone()],
+                ..Default::default()
+            };
+            assert!(observation(Some(valid.clone()), &request, &[expected.clone()]).is_ok());
+            assert!(observation(None, &request, &[expected.clone()]).is_err());
+            for field in 0..4 {
+                let mut reply = valid.clone();
+                match field {
+                    0 => reply.actor_id.push_str("-wrong"),
+                    1 => reply.code_sha256[hash_byte] ^= 1,
+                    2 => reply.home_region.push_str(&region_suffix),
+                    _ => reply.configuration_revision = revision,
+                }
+                let retained = reply.clone();
+                // Negative control: the former subscription/equality oracle admits
+                // identical corruption in both remote outputs.
+                assert_eq!(reply, retained);
+                assert!(subscriptions(&reply, &[expected.clone()]).is_ok());
+                for actor in [reply, retained] {
+                    assert!(observation(Some(actor), &request, &[expected.clone()]).is_err());
+                }
+            }
+        }
+    }
 }

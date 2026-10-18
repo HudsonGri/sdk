@@ -171,10 +171,21 @@ fn observation_with_code(
     revision: u64,
     code: &str,
 ) -> TestResult<wire::ActorObservation> {
+    let mut expected = create();
+    expected.code_sha256 = digest(code);
+    actor_configuration(actor, ACTOR, &expected, revision)
+}
+
+fn actor_configuration(
+    actor: Option<wire::ActorObservation>,
+    id: &str,
+    expected: &wire::CreateActorRequest,
+    revision: u64,
+) -> TestResult<wire::ActorObservation> {
     let actor = actor.ok_or("response omitted the actor")?;
-    if actor.actor_id != ACTOR
-        || actor.code_sha256 != digest(code)
-        || actor.home_region != "la"
+    if actor.actor_id != id
+        || actor.code_sha256 != expected.code_sha256
+        || actor.home_region != expected.home_region
         || actor.configuration_revision != revision
     {
         return Err(format!("unexpected actor identity/configuration: {actor:?}").into());
