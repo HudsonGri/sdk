@@ -389,9 +389,9 @@ async fn serve(body: Value, send: mpsc::UnboundedSender<Request>, width: usize) 
     send.send(Request { body, reply }).unwrap();
     match result.await.unwrap() {
         Ok((parts, pending)) => {
-            let bytes = parts.concat().into_bytes();
-            let chunks: Vec<_> = bytes
-                .chunks(width)
+            let chunks: Vec<_> = parts
+                .iter()
+                .flat_map(|part| part.as_bytes().chunks(width))
                 .map(|chunk| Ok::<_, std::io::Error>(chunk.to_vec()))
                 .collect();
             Response::builder()
