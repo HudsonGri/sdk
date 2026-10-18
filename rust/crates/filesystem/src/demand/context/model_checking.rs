@@ -2,6 +2,14 @@ use super::*;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+fn panic_message(error: &(dyn std::any::Any + Send)) -> &str {
+    error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .expect("assertion message")
+}
+
 loom::thread_local! {
     static BROKEN_RELEASE: Cell<bool> = Cell::new(false);
     static SKIP_WORKER_WAIT: Cell<bool> = Cell::new(false);
@@ -56,7 +64,7 @@ fn capture_close_joins_in_flight_transient_accounting_before_draining() {
     exercise(false);
     let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
         .expect_err("closing outside the leaf must lose transient custody");
-    let message = error.downcast_ref::<String>().expect("assertion message");
+    let message = panic_message(&*error);
     assert!(
         message.contains("transient capture allocation retirement"),
         "{message}"
@@ -108,7 +116,7 @@ fn capture_close_waits_for_accepted_payloads_but_not_accounting_handles() {
     exercise(false);
     let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
         .expect_err("closing without worker retirement must fail");
-    let message = error.downcast_ref::<String>().expect("assertion message");
+    let message = panic_message(&*error);
     assert!(
         message.contains("accepted capture payload retired"),
         "{message}"
@@ -151,7 +159,7 @@ fn capture_worker_registration_racing_close_never_returns_an_active_closed_lease
     exercise(false);
     let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
         .expect_err("registration after closure must fail the same lifetime bound");
-    let message = error.downcast_ref::<String>().expect("assertion message");
+    let message = panic_message(&*error);
     assert!(
         message.contains("registered worker remains open"),
         "{message}"
@@ -190,6 +198,6 @@ fn concurrent_capture_retirement_and_transfer_conserve_every_byte() {
     exercise(false);
     let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
         .expect_err("a non-atomic release must lose an update");
-    let message = error.downcast_ref::<String>().expect("assertion message");
+    let message = panic_message(&*error);
     assert!(message.contains("capture byte conservation"), "{message}");
 }
