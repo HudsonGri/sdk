@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) struct MemoryContentPublisher<A, O> {
+pub(super) struct MemoryContentPublisher<A = MemoryAuthorityBackend, O = MemoryObjectBackend> {
     pub(super) files: Arc<FilesystemContentPublisher<A, O>>,
     pub(super) memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
