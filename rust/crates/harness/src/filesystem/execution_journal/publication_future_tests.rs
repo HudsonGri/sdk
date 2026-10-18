@@ -820,10 +820,8 @@ fn records_poll_parent(mode: u8, early: bool) -> Result<bool> {
             b"payload",
         )?;
         if early {
-            Ok(
-                crate::obs::traced_future(obs_span!(INFO, "acyclic.harness.test.early"), future)
-                    .boxed(),
-            )
+            let span = obs_span!(INFO, "acyclic.harness.test.early");
+            Ok(crate::obs::traced_future(move || span, || future).boxed())
         } else {
             Ok(future)
         }

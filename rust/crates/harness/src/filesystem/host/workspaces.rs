@@ -19,24 +19,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             &owned
         };
-        let workspace = self.open(reference, Some(io)).await?;
-        let bytes = match generation {
-            Some(reference) => io.sdk(
-                self.generation(&workspace, reference, Some(io))
-                    .await?
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-            None => io.sdk(
-                workspace
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-        };
-        if io.original_native_work().is_none() {
-            io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-        }
-        Ok(bytes)
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            let workspace = self.open(reference, Some(io)).await?;
+            let bytes = match generation {
+                Some(reference) => io.sdk(
+                    self.generation(&workspace, reference, Some(io))
+                        .await?
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .await,
+                )?,
+                None => io.sdk(
+                    workspace
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .await,
+                )?,
+            };
+            if io.original_native_work().is_none() {
+                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+            }
+            Ok(bytes)
+        })?
+        .await
     }
 
     /// Stats one path at the current head or an exact generation.
@@ -195,20 +198,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<Generation<A, O>> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        let workspace = self.open(workspace, None).await?;
+        let workspace = acyclic_fs::in_heap(|| self.open(workspace, None)).await?;
         let key = filesystem_key(idempotency_key);
         let mut transaction = match expected_generation {
             Some(reference) => {
-                let generation = self.generation(&workspace, reference, None).await?;
-                workspace
-                    .begin_transaction_at(&generation, key, budget, &cancellation)
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .map_err(map_error)?
+                let generation =
+                    acyclic_fs::in_heap(|| self.generation(&workspace, reference, None)).await?;
+                acyclic_fs::in_heap(|| {
+                    workspace.begin_transaction_at(&generation, key, budget, &cancellation)
+                })
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(map_error)?
             }
-            None => workspace
-                .begin_transaction(key, budget, &cancellation)
+            None => acyclic_fs::in_heap(|| workspace.begin_transaction(key, budget, &cancellation))
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)
@@ -236,10 +240,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            transaction
-                .write_batch(&directories, &files, budget, &cancellation)
-                .await
-                .map_err(|failure| map_error(failure.error))?;
+            acyclic_fs::in_heap(|| {
+                transaction.write_batch(&directories, &files, budget, &cancellation)
+            })
+            .await
+            .map_err(|failure| map_error(failure.error))?;
             true
         } else {
             false
@@ -250,24 +255,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             for mutation in mutations {
                 match mutation {
                     WorkspaceMutation::CreateDirectory { path } => {
-                        transaction
-                            .create_dir_all(path, budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
+                        acyclic_fs::in_heap(|| {
+                            transaction.create_dir_all(path, budget, &cancellation)
+                        })
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?;
                     }
                     WorkspaceMutation::PutFile { path, bytes } => {
-                        transaction
-                            .write(path, bytes.clone(), budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
+                        acyclic_fs::in_heap(|| {
+                            transaction.write(path, bytes.clone(), budget, &cancellation)
+                        })
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?;
                     }
                     WorkspaceMutation::Remove { path } => {
-                        transaction
-                            .remove(path, budget, &cancellation)
+                        acyclic_fs::in_heap(|| transaction.remove(path, budget, &cancellation))
                             .await
                             .map(|receipt| receipt.value)
                             .map_err(|failure| failure.error)
@@ -283,7 +289,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 {
                     let metadata =
                         content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
-                    match transaction.remove(&metadata, budget, &cancellation).await {
+                    match acyclic_fs::in_heap(|| {
+                        transaction.remove(&metadata, budget, &cancellation)
+                    })
+                    .await
+                    {
                         Ok(_) => {}
                         Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
                         Err(failure) => return Err(map_error(failure.error)),
@@ -292,8 +302,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         }
         loop {
-            let committed = transaction
-                .commit(
+            let committed = acyclic_fs::in_heap(|| {
+                transaction.commit(
                     None,
                     acyclic_fs::PublicationPermit::Unrestricted,
                     budget,
@@ -305,17 +315,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         })
                     },
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+            })
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
             return match committed {
                 TransactionCommit::Committed(generation)
                 | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
                 TransactionCommit::Conflict { .. } if expected_generation.is_none() => {
                     // Reuse the original candidate only when the SDK proves its
                     // exact observations and mutation dependencies still hold.
-                    match transaction
-                        .rebase(1, budget, &cancellation)
+                    match acyclic_fs::in_heap(|| transaction.rebase(1, budget, &cancellation))
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| map_error(failure.error))?

@@ -20,7 +20,8 @@ pub async fn connect_local(
 /// Other clients retain a shared runtime until its final owner disconnects.
 pub async fn disconnect_local(local: Arc<LocalHarness>) -> Result<()> {
     if let Some(local) = Arc::into_inner(local) {
-        local.disconnect().await?;
+        // Retirement is the largest client future; its callers hold a pointer.
+        acyclic_fs::in_heap(|| local.disconnect()).await?;
     }
     Ok(())
 }

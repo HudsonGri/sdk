@@ -338,6 +338,7 @@ dependencies = [
  "keyring",
  "loom",
  "once_cell",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-build",

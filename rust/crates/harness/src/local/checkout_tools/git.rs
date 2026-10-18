@@ -85,17 +85,24 @@ impl CheckoutTools {
         let now = acyclic_stream::UnixMillisClock::now_unix_millis(
             &acyclic_stream::SystemUnixMillisClock,
         );
-        let before_recovery = head(view).await?;
+        let before_recovery = acyclic_fs::in_heap(|| head(view)).await?;
         if source.is_none() {
-            self.prepare_reconciliation(workspace, context, b"recover", &before_recovery)
-                .await?;
+            acyclic_fs::in_heap(|| {
+                self.prepare_reconciliation(workspace, context, b"recover", &before_recovery)
+            })
+            .await?;
         }
         // A previous worker can disappear after opening its lease. Expiry
         // fences it; complete its durable reconciliation before opening ours.
-        let recovery = coordinator
-            .recover_workspace(volume, now, acyclic_fs::OperationReconcileLimits::default())
-            .await
-            .map_err(storage)?;
+        let recovery = acyclic_fs::in_heap(|| {
+            coordinator.recover_workspace(
+                volume,
+                now,
+                acyclic_fs::OperationReconcileLimits::default(),
+            )
+        })
+        .await
+        .map_err(storage)?;
         let recovered = recovery.is_some();
         let parent = match recovery {
             Some(outcome) => reconciliation_generation(outcome)?,
@@ -104,7 +111,7 @@ impl CheckoutTools {
         // With no recovered window the preparation marker covers no changes.
         // Acknowledge it without refreshing a mount that is already current.
         if source.is_none() {
-            self.publish_reconciliation(workspace, context, recovered)
+            acyclic_fs::in_heap(|| self.publish_reconciliation(workspace, context, recovered))
                 .await?;
         } else if recovered && let Some(native) = native {
             owner.verify_owner(None)?.await?;
@@ -112,8 +119,8 @@ impl CheckoutTools {
             owner.verify_owner(None)?.await?;
         }
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
-        let lease = coordinator
-            .begin_with_lease_id(
+        let lease = acyclic_fs::in_heap(|| {
+            coordinator.begin_with_lease_id(
                 volume.id(),
                 parent.id(),
                 context.operation_id().to_string(),
@@ -121,61 +128,66 @@ impl CheckoutTools {
                 now.saturating_add(GIT_PUBLICATION_LEASE_MILLIS),
                 lease_id,
             )
-            .await
-            .map_err(storage)?;
-        let result = async {
+        })
+        .await
+        .map_err(storage)?;
+        let result = acyclic_fs::in_heap(|| async {
             owner.verify_owner(None)?.await?;
             if source.is_none() {
-                self.capture(
-                    (workspace, checkout),
-                    watcher,
-                    context.operation_id(),
-                    0,
-                    lease.publication_permit(),
-                    Some((
-                        context.task().ordinary_journal_owner::<LocalStream>()?,
-                        false,
-                    )),
-                )
+                let journal = context.task().ordinary_journal_owner::<LocalStream>()?;
+                acyclic_fs::in_heap(|| {
+                    self.capture(
+                        (workspace, checkout),
+                        watcher,
+                        context.operation_id(),
+                        0,
+                        lease.publication_permit(),
+                        Some((journal, false)),
+                    )
+                })
                 .await?;
             }
-            crate::tools::git::run_with_guard(
-                crate::tools::git::Workspace {
-                    filesystem: &workspace.filesystem,
-                    store: &workspace.store,
-                    view,
-                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
-                        source.destination.as_path()
-                    }),
-                    repository: if source.is_some() {
-                        volume.id()
-                    } else {
-                        workspace.view().workspace().id()
+            acyclic_fs::in_heap(|| {
+                crate::tools::git::run_with_guard(
+                    crate::tools::git::Workspace {
+                        filesystem: &workspace.filesystem,
+                        store: &workspace.store,
+                        view,
+                        root: source.as_ref().map_or(workspace.path.as_path(), |source| {
+                            source.destination.as_path()
+                        }),
+                        repository: if source.is_some() {
+                            volume.id()
+                        } else {
+                            workspace.view().workspace().id()
+                        },
+                        lease: Some(lease.clone()),
+                        checkout: (source.is_none() && workspace.mounted.is_none())
+                            .then_some(workspace.identity),
+                        author: "LocalHarness",
+                        authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                            .unwrap_or(i64::MAX),
                     },
-                    lease: Some(lease.clone()),
-                    checkout: (source.is_none() && workspace.mounted.is_none())
-                        .then_some(workspace.identity),
-                    author: "LocalHarness",
-                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                        .unwrap_or(i64::MAX),
-                },
-                &parsed.arguments,
-                || async { owner.verify_owner(None)?.await },
-            )
+                    &parsed.arguments,
+                    || async { owner.verify_owner(None)?.await },
+                )
+            })
             .await
-        }
+        })
         .await;
-        let before_close = head(view).await?;
+        let before_close = acyclic_fs::in_heap(|| head(view)).await?;
         if source.is_none()
             && !result
                 .as_ref()
                 .is_ok_and(|output| output.switched.is_some())
         {
-            self.prepare_reconciliation(workspace, context, b"close", &before_close)
-                .await?;
+            acyclic_fs::in_heap(|| {
+                self.prepare_reconciliation(workspace, context, b"close", &before_close)
+            })
+            .await?;
         }
-        let closed = coordinator
-            .finish_workspace(
+        let closed = acyclic_fs::in_heap(|| {
+            coordinator.finish_workspace(
                 volume,
                 &lease,
                 acyclic_stream::UnixMillisClock::now_unix_millis(
@@ -183,8 +195,9 @@ impl CheckoutTools {
                 ),
                 acyclic_fs::OperationReconcileLimits::default(),
             )
-            .await
-            .map_err(storage);
+        })
+        .await
+        .map_err(storage);
         // Closing can rebase a child after the command has already published.
         // A switched checkout belongs to the destination, so never apply the
         // source workspace's reconciliation over it.
@@ -198,7 +211,7 @@ impl CheckoutTools {
         // In-place actions publish directly to the workspace, including conflict
         // projections. Refresh its clean mount before another command can enter
         // this checkout. Switched actions select their destination mount below.
-        let advanced = async {
+        let advanced = acyclic_fs::in_heap(|| async {
             if let Some(native) = native {
                 owner.verify_owner(None)?.await?;
                 native.advance_to_head().await?;
@@ -209,7 +222,7 @@ impl CheckoutTools {
                     .is_ok_and(|output| output.switched.is_some())
             {
                 if publication.is_ok() {
-                    self.publish_reconciliation(workspace, context, true)
+                    acyclic_fs::in_heap(|| self.publish_reconciliation(workspace, context, true))
                         .await?;
                 } else {
                     reconciliation::advance_mount(workspace, &|| async {
@@ -219,7 +232,7 @@ impl CheckoutTools {
                 }
             }
             Ok::<(), Error>(())
-        }
+        })
         .await;
         owner.verify_owner(None)?.await?;
         let output = match result {
@@ -238,7 +251,7 @@ impl CheckoutTools {
         };
         if let Some(switched) = output.switched {
             *active = Some(switched.into_checkout()?);
-            self.selected_workspace(state, owner.as_ref()).await?;
+            acyclic_fs::in_heap(|| self.selected_workspace(state, owner.as_ref())).await?;
         }
         // Persist the selected view in memory even when a recovered transition
         // has no command result or closing the old workspace failed.
