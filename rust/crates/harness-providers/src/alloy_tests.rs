@@ -62,9 +62,10 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     models: BTreeMap::from([(
                         "fixture".into(),
                         ModelSpec {
+                            max_context_tokens: None,
                             capacity: ModelContextCapacity {
                                 context_tokens,
-                                output_tokens: context_tokens / 4,
+                                output_tokens: Some(context_tokens / 4),
                             },
                             features: ModelFeatures {
                                 tools: true,
@@ -132,7 +133,7 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
             alloy.capacity(),
             ModelContextCapacity {
                 context_tokens: 4096,
-                output_tokens: 1024
+                output_tokens: Some(1024)
             }
         );
         #[cfg(not(target_arch = "wasm32"))]
@@ -236,7 +237,7 @@ proptest! {
             prop_assert_eq!(&a.model().provider,MEMBERS[(ordinal%4) as usize].0);
             let capacity=a.context_capacity(a.model()).unwrap();
             prop_assert_eq!(capacity.context_tokens,expected);
-            prop_assert_eq!(capacity.output_tokens,expected/4);
+            prop_assert_eq!(capacity.output_tokens,Some(expected/4));
         }
     }
     #[test]
