@@ -308,3 +308,23 @@ async fn file_citations_provider_policy_can_deny_an_admitted_path() -> Result<()
     assert!(snapshot.view.is_none());
     Ok(())
 }
+
+#[tokio::test]
+#[should_panic(expected = "bounded prefix must not read the unrelated suffix")]
+async fn file_citations_backend_counter_detects_pinning_the_whole_project() {
+    use futures::FutureExt as _;
+    let mut body = "αβγδ\n".as_bytes().to_vec();
+    body.extend(std::iter::repeat_n(b'x', 3 * 1024 * 1024));
+    crate::filesystem::file_citations::PIN_PROJECT.set(true);
+    let result =
+        std::panic::AssertUnwindSafe(resolved("::file[file.rs#L1]{chars=1:3}", true, &body))
+            .catch_unwind()
+            .await;
+    crate::filesystem::file_citations::PIN_PROJECT.set(false);
+    match result {
+        Ok(result) => {
+            result.unwrap();
+        }
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}

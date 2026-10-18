@@ -14,6 +14,9 @@ use std::ops::Range;
 #[cfg(test)]
 thread_local! { pub(crate) static READ_WHOLE_FILE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
+#[cfg(test)]
+thread_local! { pub(crate) static PIN_PROJECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
 fn message_error(error: ResolutionError, source: &str) -> FileCitations {
     FileCitations {
         source_bytes: source.len() as u64,

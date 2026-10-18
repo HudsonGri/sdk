@@ -49,7 +49,10 @@ where
         }
         None => io.sdk(workspace.head(io, io.cancellation()).await)?,
     };
-    if expected.is_none() {
+    // The task file stores the selected bytes. This generation identifies the
+    // read fact; permanently pinning its whole project would read every blob.
+    #[cfg(test)]
+    if super::file_citations::PIN_PROJECT.get() {
         fork_preparer_io::retain(&generation, Some(io)).await?;
     }
     let path = crate::executor::with_history_io(Some(io), |work| {
