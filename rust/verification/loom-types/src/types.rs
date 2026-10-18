@@ -20,7 +20,7 @@ pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
 pub(super) fn lock<'tcx>(
     tcx: TyCtxt<'tcx>,
     owner: LocalDefId,
-    ty: ty::Unnormalized<TyCtxt<'tcx>, Ty<'tcx>>,
+    ty: ty::Unnormalized<'tcx, Ty<'tcx>>,
     default: bool,
     depth: usize,
 ) -> Option<bool> {
