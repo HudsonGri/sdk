@@ -282,6 +282,8 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 hyper = { version = "1.11.0", default-features = false, features = ["server", "http1"] }
+hyper-util.workspace = true
+http-body-util = "0.1.3"
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc"] }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
