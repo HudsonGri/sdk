@@ -395,6 +395,26 @@ pub(super) fn left_context(source: &str) -> String {
     }
 }
 
+// The committed projection and provisional row preview use the same physical
+// break rule. A terminal backslash needs the engine's escape state first.
+pub(crate) fn hard_break(source: &str, end: usize) -> Option<bool> {
+    let before = source.as_bytes().get(..end).unwrap_or_default();
+    #[cfg(test)]
+    work::scan(3);
+    if before.last() == Some(&b'\\') {
+        return None;
+    }
+    let trailing = before
+        .get(before.len().saturating_sub(2)..)
+        .unwrap_or_default();
+    Some(
+        trailing.len() == 2
+            && trailing
+                .iter()
+                .all(|byte| matches!(byte, b' ' | b'\t' | 0x0b | 0x0c)),
+    )
+}
+
 fn table_candidate(source: &str) -> bool {
     source.rsplit_once('\n').is_some_and(|(_, next)| {
         next.bytes()

@@ -222,18 +222,6 @@ impl Held {
     }
 }
 
-// How the row ending before `end` (its newline) breaks: `None` when it ends
-// in a backslash, whose hard break would also drop that backslash from the
-// engine's last line; otherwise whether trailing spaces make a hard break.
-fn hard_break(source: &str, end: usize) -> Option<bool> {
-    let row = source.get(..end).unwrap_or_default();
-    let content = row.trim_end_matches(' ');
-    #[cfg(test)]
-    work::scan(row.len() - content.len() + 1);
-    (row.len() != content.len() || !content.ends_with('\\'))
-        .then_some(row.len() - content.len() >= 2)
-}
-
 impl Markdown {
     pub(crate) fn advance_inline(
         &mut self,

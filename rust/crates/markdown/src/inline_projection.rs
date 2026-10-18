@@ -43,17 +43,7 @@ impl Cache {
         if let Some(&(id, _)) = self.keys.get(&key) {
             return id;
         }
-        let horizontal = |index| {
-            source
-                .as_bytes()
-                .get(index)
-                .is_some_and(|byte| matches!(byte, b' ' | b'\t' | 0x0b | 0x0c))
-        };
-        let hard = escaped
-            || range
-                .start
-                .checked_sub(2)
-                .is_some_and(|at| horizontal(at) && horizontal(at + 1));
+        let hard = escaped || crate::inline::hard_break(source, range.start) == Some(true);
         let value = if hard {
             Output::newline(false)
         } else {

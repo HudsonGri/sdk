@@ -373,6 +373,16 @@ fn markers_after_escaped_breaks_have_linear_work() {
 
 #[test]
 fn control_whitespace_breaks_are_classified_before_the_next_row() {
-    let source = "[r]: /r\n[s]: /s\n\nprefix \u{b}\n_";
-    replay(source, &(1..source.len()).collect::<Vec<_>>());
+    for left in [' ', '\t', '\u{b}', '\u{c}'] {
+        for right in [' ', '\t', '\u{b}', '\u{c}'] {
+            let source = format!("[r]: /r\n[s]: /s\n\nprefix{left}{right}\n_");
+            replay(&source, &(1..source.len()).collect::<Vec<_>>());
+        }
+    }
+    let source = "prefix \u{b}";
+    let exact = |result| assert_eq!(result, Some(true));
+    exact(crate::inline::hard_break(source, source.len()));
+    // Restore the former preview's ASCII-space-only rule.
+    let old = Some(source.len() - source.trim_end_matches(' ').len() >= 2);
+    assert!(std::panic::catch_unwind(|| exact(old)).is_err());
 }
