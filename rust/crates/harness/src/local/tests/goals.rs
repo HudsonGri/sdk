@@ -165,7 +165,7 @@ async fn run(case: Case) -> Result<()> {
             "stock writer's actual destination"
         );
     }
-    if case.unreachable {
+    if case.unreachable || declared_blocked(&case) {
         check_output(&case, harness.resume(task_id).await)?;
         assert_eq!(provider.requests().len(), case.calls);
     }
@@ -177,12 +177,7 @@ async fn run(case: Case) -> Result<()> {
     // published ordinary continuation or change the result of its replay.
     let reopen_config = config()?.goal_continuations(None);
     let reopened = LocalHarness::open(reopen_config).await?;
-    assert_eq!(
-        reopened.resume(task_id).await?.text,
-        format!("settle-{}", case.writes.len() - 1),
-        "{}",
-        case.name
-    );
+    check_output(&case, reopened.resume(task_id).await)?;
     assert_eq!(provider.requests().len(), case.calls, "{}", case.name);
     assert_eq!(admitted.len(), case.tasks);
     Ok(())
@@ -209,9 +204,25 @@ fn goal_config(
     })
 }
 
+/// Whether the loop settles on a blocked GOAL.md that the agent or the cap wrote.
+fn declared_blocked(case: &Case) -> bool {
+    !case.unreachable
+        && case.final_goal.as_deref().is_some_and(|goal| {
+            goal.starts_with(
+                "---
+status: blocked
+",
+            )
+        })
+}
+
 fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Result<()> {
-    if case.unreachable {
-        let reason = crate::goal::GoalBlockedReason::TaskViewUnreachable;
+    if case.unreachable || declared_blocked(case) {
+        let reason = if case.unreachable {
+            crate::goal::GoalBlockedReason::TaskViewUnreachable
+        } else {
+            crate::goal::GoalBlockedReason::Declared
+        };
         assert!(
             matches!(&output, Err(Error::GoalBlocked(actual)) if actual == &reason),
             "{}: {output:?}",
@@ -220,6 +231,11 @@ fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Res
         let error = Error::GoalBlocked(reason);
         assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
         assert!(!error.is_native_failure());
+        // `-p` exits with the stable blocked code, never as completed.
+        assert_eq!(
+            crate::client::HeadlessOutcome::from_error(&error),
+            crate::client::HeadlessOutcome::Blocked
+        );
     } else {
         assert_eq!(
             output?.text,
@@ -304,7 +320,7 @@ async fn local_goal_settle_loses_to_a_new_user_admission() -> Result<()> {
     Ok(())
 }
 
-async fn write_goal(harness: &LocalHarness, contents: &str) -> Result<()> {
+pub(super) async fn write_goal(harness: &LocalHarness, contents: &str) -> Result<()> {
     use crate::conversation::ContentPublisher;
     crate::filesystem::FilesystemContentPublisher::new(
         harness.files.clone(),
@@ -373,7 +389,11 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
     ));
     drop(harness);
     let harness = LocalHarness::open(config()?).await?;
-    assert_eq!(harness.resume(task_id).await?.text, "recovered");
+    // The one allowed continuation runs, then the cap leaves GOAL.md blocked.
+    assert!(matches!(
+        harness.resume(task_id).await,
+        Err(Error::GoalBlocked(crate::goal::GoalBlockedReason::Declared))
+    ));
     assert_eq!(
         harness.recover_turn_inputs(continuation).await?,
         Some(original)
@@ -437,12 +457,17 @@ async fn local_goal_resuming_an_old_continuation_drives_its_pending_successor() 
     assert_eq!(provider.requests().len(), 2);
     drop(harness);
     let harness = LocalHarness::open(config()?).await?;
-    assert_eq!(harness.resume(first).await?.text, "second");
-    assert!(matches!(
-        harness.runtime.task_host().outcome(second).await?,
-        Some(crate::Outcome::Succeeded(_))
-    ));
-    assert_eq!(harness.resume(first).await?.text, "second");
+    // The pending successor runs, then the cap leaves GOAL.md blocked.
+    for _ in 0..2 {
+        assert!(matches!(
+            harness.resume(first).await,
+            Err(Error::GoalBlocked(crate::goal::GoalBlockedReason::Declared))
+        ));
+        assert!(matches!(
+            harness.runtime.task_host().outcome(second).await?,
+            Some(crate::Outcome::Succeeded(_))
+        ));
+    }
     assert_eq!(provider.requests().len(), 3);
     assert_eq!(provider.remaining(), 0);
     Ok(())

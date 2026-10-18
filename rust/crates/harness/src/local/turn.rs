@@ -125,8 +125,7 @@ impl LocalHarness {
                 }
                 super::routing::Route::Child => {
                     self.prepare_inheritance(task, Some(parent)).await?;
-                    let prompt = self.prompt_context(Some(task), prompt).await?;
-                    let (receive, model) = self.stage_turn(operation, &prompt).await?;
+                    let (receive, model) = self.stage_question(operation, task, prompt).await?;
                     self.admit_turn(operation, Some(parent), receive, model)
                         .await
                 }
@@ -178,7 +177,7 @@ impl LocalHarness {
                 (selected, through)
             }
         };
-        let (retained, checkpoint) = self
+        let (retained, _) = self
             .retain_continuation(task, parent, selected, through, prompt)
             .await?;
         let prompt = &retained
@@ -189,18 +188,27 @@ impl LocalHarness {
         self.prepare_inheritance(task, None).await?;
         let (receive, model) = match self.recover_turn_inputs(operation).await? {
             Some(inputs) => inputs,
-            None => {
-                let prompt = self.prompt_context(Some(task), prompt).await?;
-                self.stage_bound_turn(
-                    operation,
-                    &prompt,
-                    checkpoint.boundary.manifest,
-                    self.input_publisher()?.as_ref(),
-                )
-                .await?
-            }
+            None => self.stage_question(operation, task, prompt).await?,
         };
         self.admit_turn(operation, None, receive, model).await
+    }
+    /// Stages a user question beneath a conversation. History retains its
+    /// checkpoint; guidance is selected from the question alone, before any
+    /// inherited or compacted history text is prepended, so earlier markers
+    /// can never choose this admission's conventions.
+    async fn stage_question(
+        &self,
+        operation: OperationId,
+        task: TaskId,
+        question: &str,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let publisher = self.input_publisher()?;
+        let manifest = self
+            .turn_manifest(operation, question, publisher.as_ref())
+            .await?;
+        let prompt = self.prompt_context(Some(task), question).await?;
+        self.stage_bound_turn(operation, &prompt, manifest, publisher.as_ref())
+            .await
     }
     // The caller holds the existing admission gate and prepares inheritance.
     pub(super) async fn admit_turn(
@@ -308,13 +316,7 @@ impl LocalHarness {
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
-        let manifest = match &self.context_manifest {
-            Some(reference) => reference.clone(),
-            None => {
-                self.stage_context_manifest_with(operation, publisher)
-                    .await?
-            }
-        };
+        let manifest = self.turn_manifest(operation, prompt, publisher).await?;
         let (receive, model) = self
             .stage_bound_turn_using(
                 operation,
@@ -326,6 +328,21 @@ impl LocalHarness {
             )
             .await?;
         Ok((receive, model, manifest))
+    }
+
+    async fn turn_manifest(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<crate::conversation::FileRef> {
+        Ok(match &self.context_manifest {
+            Some(reference) => reference.clone(),
+            None => {
+                self.stage_context_manifest_with(operation, Some(prompt), publisher)
+                    .await?
+            }
+        })
     }
 
     pub(super) async fn stage_bound_turn(

@@ -8,6 +8,7 @@ use crate::{
 pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
+mod guidance;
 
 fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -76,13 +77,15 @@ impl LocalHarness {
 
     #[cfg(test)]
     pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, self.input_publisher()?.as_ref())
+        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref())
             .await
     }
 
+    /// Pins the live file conventions once per admission, alongside instructions.
     pub(super) async fn stage_context_manifest_with(
         &self,
         operation: OperationId,
+        prompt: Option<&str>,
         publisher: &dyn ContentPublisher,
     ) -> Result<FileRef> {
         if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
@@ -109,7 +112,9 @@ impl LocalHarness {
         let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
-        let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
+        let manifest =
+            ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
         #[cfg(any(feature = "native-execution", feature = "hooks"))]
         let mut manifest = manifest;
         #[cfg(feature = "native-execution")]
@@ -197,6 +202,7 @@ impl LocalHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use proptest::prelude::*;
 
     proptest! {

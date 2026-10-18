@@ -36,9 +36,25 @@ impl ContextManifest {
         selected_skills: Vec<String>,
         tools: &ToolRegistry,
     ) -> Result<Self> {
+        Self::for_files(discovery, selected_skills, tools, true, true)
+    }
+
+    pub(crate) fn for_files(
+        discovery: DiscoveredContext,
+        selected_skills: Vec<String>,
+        tools: &ToolRegistry,
+        goal: bool,
+        plans: bool,
+    ) -> Result<Self> {
+        let defaults: [&str; 2] = serde_json::from_str(include_str!("instructions.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(Self {
-            conventions: serde_json::from_str(include_str!("instructions.json"))
-                .map_err(|error| Error::Invalid(error.to_string()))?,
+            conventions: defaults
+                .into_iter()
+                .zip([goal, plans])
+                .filter(|(_, enabled)| *enabled)
+                .map(|(text, _)| text.to_owned())
+                .collect(),
             discovery,
             selected_skills,
             sources: Vec::new(),
