@@ -459,23 +459,27 @@ async fn response_waits_fail_with_typed_stalls_and_reject_an_unguarded_wait() {
         "Session Welcome",
         "Session sibling outcomes",
     ] {
-        // The independent outer guard makes removing the real wait guard a
-        // finite negative control: that returns an infrastructure failure,
-        // rather than the required operation-specific typed Session failure.
-        let mut guard = super::super::progress_guard::Guard::new();
-        assert!(typed_stall(
-            guard
-                .run(wait(&mut 1, operation, std::future::pending::<()>()))
-                .await,
-            operation,
-        ));
-        let mut guard = super::super::progress_guard::Guard::new();
-        assert!(!typed_stall(
-            guard
-                .run(async { Ok::<(), WaitError>(std::future::pending().await) })
-                .await,
-            operation,
-        ));
+        // Register the independent observer before either wait starts. Both
+        // guards then observe initial admission, rather than an empty outer
+        // registry mistaking the inner guard's first quiet period for a stall.
+        for guarded in [true, false] {
+            let mut guard = super::super::progress_guard::Guard::new();
+            let registry = guard.registry.clone();
+            let result = guard
+                .run(async {
+                    let registration = registry.register(Path::new("wait-negative-control"));
+                    drop(registration.polling());
+                    if guarded {
+                        wait(&mut 1, operation, std::future::pending::<()>()).await
+                    } else {
+                        // Removing the response guard must fail this same
+                        // typed-error oracle without an external termination.
+                        Ok(std::future::pending::<()>().await)
+                    }
+                })
+                .await;
+            assert_eq!(typed_stall(result, operation), guarded);
+        }
     }
 }
 
