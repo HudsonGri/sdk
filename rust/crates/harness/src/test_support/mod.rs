@@ -55,7 +55,7 @@ pub(crate) mod model_view_work;
 pub use model_view_work::measure as measure_model_view_work;
 
 /// Reads child-fixture controls while refusing ambient user directory discovery.
-#[cfg(feature = "test-support")]
+/// Available wherever this module is (unit tests on every target, or `test-support`).
 pub fn environment(name: &str) -> Option<std::ffi::OsString> {
     crate::native_environment::variable_with_user_locations(name, false)
 }
