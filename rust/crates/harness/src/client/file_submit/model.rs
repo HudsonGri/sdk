@@ -45,7 +45,15 @@ fn oracle() -> Oracle<Input, Fault, Event> {
         let fault = fault.copied();
         // Default builder: no preemption, permutation, iteration or time cap.
         loom::model(move || {
-            let event = fixture::run(input, fault);
+            // Dispatch before entering either scenario's async-operation frame.
+            // Nesting restoration inside the publication fixture retains both
+            // large frames on Loom's ordinary coroutine stack.
+            let event = match input.barrier {
+                Barrier::Intent | Barrier::Target | Barrier::Checkpoint => {
+                    fixture::run(input, fault)
+                }
+                Barrier::Restoration => restoration::run(input, fault),
+            };
             sink.lock().unwrap().push(event);
         });
         let observations = Arc::try_unwrap(observations).unwrap().into_inner().unwrap();

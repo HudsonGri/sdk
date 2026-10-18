@@ -3,7 +3,6 @@ use super::super::{FileClient, FileClientError};
 use super::{
     Barrier, Event, FAULT, Fault, Input,
     provider::Monitor,
-    restoration,
     setup::{self, Setup, block_on},
 };
 use crate::{Error, task_volume::Query};
@@ -12,9 +11,6 @@ use loom::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 pub(super) fn run(input: Input, fault: Option<Fault>) -> Event {
-    if input.barrier == Barrier::Restoration {
-        return restoration::run(input, fault);
-    }
     let Setup {
         local,
         remote,
