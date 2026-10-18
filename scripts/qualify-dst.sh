@@ -9,8 +9,7 @@ RUSTFLAGS="--cfg acyclic_native_runtime_loom" cargo test --locked -p acyclic-nat
 cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,grpc,test-support --test dst --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py seeded_production_turn_replays_exact_bytes seeded_headless_entrypoint_replays_complete_jsonl
 
-cargo check --locked -p acyclic-harness --lib --tests --features filesystem-local,native-execution,grpc,test-support --target x86_64-pc-windows-gnu
-cargo check --locked -p acyclic-native-runtime --lib --tests --features test-support --target x86_64-pc-windows-gnu
-cargo check --locked -p acyclic-stream --lib --tests --features local,test-support --target x86_64-pc-windows-gnu
-cargo check --locked -p acyclic-objects --lib --tests --features local,test-support --target x86_64-pc-windows-gnu
-cargo check --locked -p acyclic-fs --lib --tests --features local,test-support --target x86_64-pc-windows-gnu
+# Keep transitive native features identical across the touched packages' tests.
+cargo check --locked -p acyclic-harness -p acyclic-native-runtime -p acyclic-stream -p acyclic-objects -p acyclic-fs --lib --tests \
+  --features acyclic-harness/filesystem-local,acyclic-harness/native-execution,acyclic-harness/grpc,acyclic-harness/test-support,acyclic-native-runtime/test-support,acyclic-stream/local,acyclic-stream/test-support,acyclic-objects/local,acyclic-objects/test-support,acyclic-fs/local,acyclic-fs/test-support \
+  --target x86_64-pc-windows-gnu
