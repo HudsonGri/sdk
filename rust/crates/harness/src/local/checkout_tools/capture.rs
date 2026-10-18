@@ -11,7 +11,12 @@ use std::time::Duration;
 
 mod arrivals;
 
-const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system", ".volumes"];
+const EXCLUDED: &[&str] = &[
+    ".git",
+    ".acyclic-sdk",
+    crate::workspace::SDK_NAMESPACES[0],
+    crate::workspace::SDK_NAMESPACES[1],
+];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 

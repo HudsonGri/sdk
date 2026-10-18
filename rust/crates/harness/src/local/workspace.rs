@@ -287,13 +287,11 @@ pub(super) async fn open(
             "local checkout root was replaced during open".into(),
         ));
     }
-    let exclusions = if native_mounts {
-        volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
-    } else {
-        Vec::new()
-    };
+    // Capture and publication never carry SDK namespaces; demand must not
+    // either, or a head would retain host bytes that capture cannot refresh.
+    // This also covers every projection and its control files under .volumes.
     let source = source
-        .exclude(exclusions, &&work, &cancellation)
+        .exclude(volumes::reserved(config)?, &&work, &cancellation)
         .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
     let source = Arc::new(source);
     let fresh = original.is_none();

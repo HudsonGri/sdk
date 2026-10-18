@@ -1,6 +1,7 @@
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
+#[cfg(any(target_os = "linux", all(test, unix)))]
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
 #[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
@@ -49,15 +50,22 @@ pub(in crate::local) fn excluded(
             let relative = relative
                 .to_str()
                 .ok_or_else(|| Error::Invalid("mount path is not UTF-8".into()))?;
-            let path = acyclic_fs::path::PortablePath::parse(
-                &format!("/{}", relative.replace('\\', "/")),
-                config.limits,
-            )
-            .map_err(storage)?;
-            NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
-                .map_err(storage)
+            namespace(config, &relative.replace('\\', "/"))
         })
         .collect()
+}
+
+pub(super) fn reserved(config: acyclic_fs::VolumeConfig) -> Result<Vec<NamespacePath>> {
+    crate::workspace::SDK_NAMESPACES
+        .iter()
+        .map(|name| namespace(config, name))
+        .collect()
+}
+
+fn namespace(config: acyclic_fs::VolumeConfig, relative: &str) -> Result<NamespacePath> {
+    let path = acyclic_fs::path::PortablePath::parse(&format!("/{relative}"), config.limits)
+        .map_err(storage)?;
+    NamespacePath::from_portable_in_profile(&path, config.profile, config.limits).map_err(storage)
 }
 
 pub(super) async fn attach(
