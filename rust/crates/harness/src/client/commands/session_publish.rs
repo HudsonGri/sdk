@@ -74,7 +74,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         bytes: Vec<u8>,
         create_only: bool,
     ) -> Result<()> {
-        self.publish_rebased::<false, true>(key, bytes, create_only)
+        self.publish_rebased::<false, true>(files::FileValue::new(key, bytes), create_only)
             .await
     }
 
@@ -88,8 +88,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         value: &Value,
     ) -> Result<()> {
         self.publish_rebased::<true, true>(
-            self.state_key(root, name)?,
-            serde_json::to_vec(value).map_err(codec)?,
+            files::FileValue::new(
+                self.state_key(root, name)?,
+                serde_json::to_vec(value).map_err(codec)?,
+            ),
             false,
         )
         .await
@@ -100,11 +102,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     // The const variants are the real-path models' two negative controls.
     pub(super) async fn publish_rebased<const RETRY: bool, const MATCH_KEY: bool>(
         &mut self,
-        key: files::FileKey,
-        bytes: Vec<u8>,
+        file: files::FileValue,
         create_only: bool,
     ) -> Result<()> {
-        let file = files::FileValue::new(key, bytes);
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        let file = tests::handoff(file);
         if file.bytes.len() as u64 > self.maximum_bytes
             || files::record_bytes(&file)? > acyclic_stream::MAX_RECORD_BYTES
         {
@@ -160,3 +162,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         ))
     }
 }
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+#[path = "session_publish_tests.rs"]
+mod tests;

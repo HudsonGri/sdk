@@ -343,8 +343,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         value: &Value,
     ) -> Result<()> {
         self.publish_rebased::<true, true>(
-            self.state_key(root, name)?,
-            serde_json::to_vec(value).map_err(codec)?,
+            files::FileValue::new(
+                self.state_key(root, name)?,
+                serde_json::to_vec(value).map_err(codec)?,
+            ),
             false,
         )
         .await?;
@@ -365,7 +367,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "command catalog changed; review the new revision".into(),
             ));
         }
-        self.publish_rebased::<true, true>(key, bytes, false).await
+        self.publish_rebased::<true, true>(files::FileValue::new(key, bytes), false)
+            .await
     }
 
     /// The selected task is persisted in the session layout, not the input loop.
@@ -471,7 +474,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         for (file, create_only) in writes {
-            self.publish_rebased::<RETRY, true>(file.key, file.bytes.to_vec(), create_only)
+            self.publish_rebased::<RETRY, true>(file, create_only)
                 .await?;
         }
         Ok(operation)
