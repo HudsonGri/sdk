@@ -428,6 +428,111 @@ fn journal_wrappers_preserve_atomic_unmetered_task_files() {
     assert_eq!(*execution, operation);
 }
 
+fn journal_wrapper_observations(
+    mut digest: [u8; 32],
+    mut observe: impl FnMut(
+        usize,
+        acyclic_test_support::AllocationInfo,
+        acyclic_test_support::AllocationInfo,
+        (u64, u64),
+        (u64, u64),
+    ) -> proptest::test_runner::TestCaseResult,
+) -> proptest::test_runner::TestCaseResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let operation = OperationId::from_bytes([4; 16]);
+    digest[0] |= 1;
+    let event = ExecutionEvent::Started {
+        request_digest: digest,
+    };
+    let oversized = vec![0; 4097];
+    let initializations = std::cell::Cell::new(0);
+    let [before, after] = [true, false].map(|old| {
+        initializations.set(initializations.get() + 1);
+        let mut journal = runtime.block_on(fixture()).unwrap();
+        let file = runtime
+            .block_on(prepare(&journal, operation, &event, b"payload"))
+            .unwrap();
+        journal.execution = Some((OperationId::from_bytes([5; 16]), operation));
+        journal.volume = VolumeRef::new(
+            journal.volume.provider().clone(),
+            "foreign".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )
+        .unwrap();
+        let state = runtime
+            .block_on(fixture_state(&journal, operation, file.volume()))
+            .unwrap();
+        [0u8, 1, 2, 3, 4].map(|mode| {
+            let observed = differential::observe::<_, _, (&'static str, u64)>(
+                || (),
+                |()| {
+                    let mut outcome = None;
+                    let mut layouts = (0, 0);
+                    let allocation = acyclic_test_support::measure(|| {
+                        (outcome, layouts) = crate::obs::observe_box_layouts(|| Some(
+                            runtime
+                                .block_on(
+                                    run(
+                                        &Choice(&journal, old),
+                                        mode,
+                                        0,
+                                        (operation, "key", &event),
+                                        &file,
+                                        &oversized,
+                                    )
+                                    .unwrap(),
+                                )
+                                .map_err(|e| e.to_string()),
+                        ));
+                    });
+                    (outcome.unwrap(), allocation, layouts)
+                },
+            );
+            assert_eq!(
+                &state,
+                &runtime
+                    .block_on(fixture_state(&journal, operation, file.volume()))
+                    .unwrap()
+            );
+            assert!(observed.1.is_empty(), "factory error reached storage work");
+            observed
+        })
+    });
+    prop_assert_eq!(initializations.get(), 2);
+    for (mode, (before, after)) in before.into_iter().zip(after).enumerate() {
+        prop_assert!(after.0.0.is_err());
+        prop_assert_eq!(&before.0.0, &after.0.0);
+        prop_assert_eq!(before.1, after.1);
+        let (before_layout, after_layout) = (before.0.2, after.0.2);
+        let (before, after) = (before.0.1, after.0.1);
+        prop_assert_eq!(after.count_total, before.count_total - 1);
+        observe(mode, before, after, before_layout, after_layout)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn journal_wrapper_frame_measurements() {
+    journal_wrapper_observations([1; 32], |mode, before, after, _, _| {
+        eprintln!(
+            "JOURNAL_FRAME {}",
+            serde_json::json!({
+                "mode": mode,
+                "before": differential::allocation_counts(before),
+                "after": differential::allocation_counts(after),
+                "saved": before.bytes_total - after.bytes_total,
+            })
+        );
+        Ok(())
+    })
+    .unwrap();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     // No warm-up or stores are shared across the two implementations. New
@@ -487,55 +592,17 @@ proptest! {
     // Fail through each real entrypoint before storage work: isolate the
     // wrapper's exact one-box saving from the full operation above.
     #[test]
-    fn journal_wrapper_removes_exactly_one_allocation(mut digest in any::<[u8;32]>()) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let operation = OperationId::from_bytes([4;16]);
-        digest[0] |= 1;
-        let event = ExecutionEvent::Started { request_digest: digest };
-        let oversized = vec![0;4097];
-        let initializations = std::cell::Cell::new(0);
-        let [before, after] = [true, false].map(|old| {
-            initializations.set(initializations.get() + 1);
-            let mut journal = runtime.block_on(fixture()).unwrap();
-            let file = runtime.block_on(prepare(&journal, operation, &event, b"payload")).unwrap();
-            journal.execution = Some((OperationId::from_bytes([5;16]), operation));
-            journal.volume = VolumeRef::new(journal.volume.provider().clone(), "foreign".into(),
-                VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([1;16])), &mut None).unwrap();
-            let state = runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap();
-            [0u8,1,2,3,4].map(|mode| {
-                let observed = differential::observe::<_, _, (&'static str, u64)>(|| (), |()| {
-                    let mut outcome = None;
-                    let mut layouts = (0, 0);
-                    let allocation = acyclic_test_support::measure(|| {
-                        (outcome, layouts) = crate::obs::observe_box_layouts(|| {
-                            Some(runtime.block_on(run(&Choice(&journal, old), mode, 0,
-                                (operation, "key", &event), &file, &oversized).unwrap()).map_err(|e| e.to_string()))
-                        });
-                    });
-                    (outcome.unwrap(), allocation, layouts)
-                });
-                assert_eq!(&state, &runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap());
-                assert!(observed.1.is_empty(), "factory error reached storage work");
-                observed
-            })
-        });
-        prop_assert_eq!(initializations.get(), 2);
-        for (mode, (before, after)) in before.into_iter().zip(after).enumerate() {
-            prop_assert!(after.0.0.is_err());
-            prop_assert_eq!(&before.0.0, &after.0.0);
-            prop_assert_eq!(before.1, after.1);
-            let (before_layout, after_layout) = (before.0.2, after.0.2);
+    fn journal_wrapper_removes_exactly_one_allocation(digest in any::<[u8;32]>()) {
+        journal_wrapper_observations(digest, |mode, before, after, before_layout, after_layout| {
             prop_assert_eq!(before_layout.0, 2);
             prop_assert_eq!(after_layout.0, 1);
-            let (before, after) = (before.0.1, after.0.1);
-            prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Predict allocator bytes from concrete boxed layouts, including
-            // both factories' outer frames, rather than compiler-sensitive pins.
+            // Exact bytes come from concrete boxed layouts, including both outer frames.
             let saved = before_layout.1 - after_layout.1;
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
-        }
+            Ok(())
+        })?;
     }
 
     // Every old/new factory is compared at its exact admission boundary, after
