@@ -46,9 +46,9 @@ fn select_cached(
         page: persistent_io::PageLease::Shared {
             page,
             logical_bytes: bytes,
+            _native_custody: Some(source_custody.clone()),
         },
         logical_bytes: 0,
-        native_custody: Some(source_custody.clone()),
     };
     let allocation = accounting.claim_owned(0, 0)?;
     let start = work.receipt().items_examined;
@@ -60,7 +60,6 @@ fn select_cached(
             persistent_io::OwnedPage {
                 page: persistent_io::PageLease::Owned(page),
                 logical_bytes: bytes,
-                native_custody: None,
             },
             allocation,
         )

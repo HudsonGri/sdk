@@ -273,10 +273,10 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
                                 .downcast::<Page<F>>()
                                 .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?,
                             logical_bytes: value.logical_bytes,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            _native_custody: value.native_custody,
                         },
                         logical_bytes: 0,
-                        #[cfg(not(target_arch = "wasm32"))]
-                        native_custody: value.native_custody,
                     };
                     let allocation = accounting.claim_owned(0, 0)?;
                     return Ok((page, allocation));

@@ -275,6 +275,35 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         Ok(None)
     }
 
+    fn decoded_page<F: crate::kernel::persistent_btree::Format>(
+        &self,
+        id: ObjectId,
+        read: &crate::storage::ObjectRead,
+    ) -> Result<(crate::kernel::persistent_io::PageLease<F>, ProofGuard), crate::FsError> {
+        use crate::kernel::persistent_io::{PageLease, cached_page_with_accounting};
+        match self.meter.owned(|accounting| {
+            let cached = cached_page_with_accounting::<S, F>(
+                self.store,
+                id,
+                self.limits.decode,
+                accounting,
+            )?;
+            match cached {
+                Some((page, allocation)) => Ok((Some(page), allocation, 0)),
+                None => Ok((None, accounting.claim_owned(0, 0)?, 0)),
+            }
+        })? {
+            (Some(page), guard) => Ok((page, guard)),
+            (None, guard) => {
+                drop(guard);
+                let (page, guard) = self.meter.decode_steps(|observe| {
+                    F::decode(read, self.limits.decode, &mut |step| observe(step))
+                })?;
+                Ok((PageLease::Owned(page), guard))
+            }
+        }
+    }
+
     async fn collect_pages<F: crate::kernel::persistent_btree::Format>(
         &mut self,
         root: ObjectId,
@@ -309,24 +338,15 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 None
             };
             let bytes = self.read_object(id, true).await?;
-            let page = self.meter.decode_steps(|observe| {
-                F::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
-                    observe(step)
-                })
-            })?;
+            let page = self.decoded_page::<F>(id, &bytes.0)?;
             drop(bytes);
             let old = old_bytes
                 .as_ref()
-                .map(|bytes| {
-                    self.meter.decode_steps(|observe| {
-                        F::decode(&bytes.0.bytes, self.limits.decode, &mut |step| {
-                            observe(step)
-                        })
-                    })
-                })
+                .zip(before)
+                .map(|(bytes, id)| self.decoded_page::<F>(id, &bytes.0))
                 .transpose()?;
             drop(old_bytes);
-            let old_children = old.as_ref().and_then(|page| match &page.0 {
+            let old_children = old.as_ref().and_then(|page| match page.0.as_page() {
                 Page::Internal(children) => Some(children.as_slice()),
                 Page::Leaf(_) => None,
             });
@@ -342,7 +362,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             }
             let lower = lower.as_ref().map(|key| &key.0);
             let upper = upper.as_ref().map(|key| &key.0);
-            match &page.0 {
+            match page.0.as_page() {
                 Page::Leaf(values) => {
                     validate_ordered_bounds(values.iter().map(F::key), lower, upper)?;
                 }

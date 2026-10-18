@@ -216,8 +216,6 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
                 OwnedPage {
                     page: PageLease::Owned(Page::Leaf(records.value)),
                     logical_bytes: bytes,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    native_custody: None,
                 },
                 records.allocation,
                 bytes,

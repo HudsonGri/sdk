@@ -28,8 +28,6 @@ fn page(
         OwnedPage {
             page: PageLease::Owned(Page::Leaf(records.value)),
             logical_bytes: records.bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
         },
         records.allocation,
     )

@@ -25,8 +25,6 @@ use std::sync::Arc;
 
 pub(crate) struct OwnedPage<F: Format> {
     pub(crate) page: PageLease<F>,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) native_custody: Option<Arc<crate::NativeAllocation>>,
     pub(crate) logical_bytes: u64,
 }
 
@@ -35,7 +33,18 @@ pub(crate) enum PageLease<F: Format> {
     Shared {
         page: Arc<Page<F>>,
         logical_bytes: u64,
+        #[cfg(not(target_arch = "wasm32"))]
+        _native_custody: Option<Arc<crate::NativeAllocation>>,
     },
+}
+
+impl<F: Format> PageLease<F> {
+    pub(crate) fn as_page(&self) -> &Page<F> {
+        match self {
+            Self::Owned(page) => page,
+            Self::Shared { page, .. } => page,
+        }
+    }
 }
 
 impl<F: Format> OwnedPage<F> {
@@ -50,14 +59,12 @@ impl<F: Format> OwnedPage<F> {
         };
         match input.value.page {
             PageLease::Owned(page) => Ok(((page, input.value.logical_bytes), input.custody)),
-            PageLease::Shared {
-                page,
-                logical_bytes,
-            } => {
+            shared @ PageLease::Shared { logical_bytes, .. } => {
+                let page = shared.as_page();
                 #[cfg(not(target_arch = "wasm32"))]
                 if accounting.native_work().is_some() {
                     let cloned = super::file_read::decode_owned(accounting, |steps| {
-                        clone_page::<F>(&page, &mut |step| steps(step))
+                        clone_page::<F>(page, &mut |step| steps(step))
                     })?;
                     let bytes = match &cloned.1 {
                         super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => {
@@ -75,7 +82,7 @@ impl<F: Format> OwnedPage<F> {
                     .map_err(allocation_error)?;
                 charge_copy(logical_bytes, &budget, allocations, work)?;
                 Ok((
-                    ((*page).clone(), logical_bytes),
+                    (page.clone(), logical_bytes),
                     super::allocation::KernelOwnedAllocation::Standalone,
                 ))
             }
@@ -132,7 +139,7 @@ mod decode;
 
 pub(crate) use batch::read_pages_with_accounting;
 use cache::admit_decoded_with_accounting;
-pub(crate) use cache::read_page_with_accounting;
+pub(crate) use cache::{cached_page_with_accounting, read_page_with_accounting};
 use decode::claim_read_allocation;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]

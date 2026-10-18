@@ -110,8 +110,8 @@ where
         let bytes = decoded.logical_bytes;
         match decoded.page {
             PageLease::Owned(page) => Ok(Owned::new(page, allocation, bytes)),
-            PageLease::Shared { page, .. } => {
-                let result = match page.as_ref() {
+            shared @ PageLease::Shared { .. } => {
+                let result = match shared.as_page() {
                     Page::Leaf(entries) => {
                         let mut output = Owned::allocate(entries.len(), self.accounting)?;
                         for entry in entries {
@@ -139,7 +139,7 @@ where
                         Owned::new(Page::Internal(value), allocation, bytes)
                     }
                 };
-                drop(page);
+                drop(shared);
                 retire_allocation(allocation, bytes, self.accounting)?;
                 Ok(result)
             }

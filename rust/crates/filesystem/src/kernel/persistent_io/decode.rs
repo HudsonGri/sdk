@@ -75,7 +75,6 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
                 OwnedPage {
                     page: PageLease::Owned(page),
                     logical_bytes,
-                    native_custody: None,
                 },
                 allocation,
             )
@@ -158,8 +157,6 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
         OwnedPage {
             page: PageLease::Owned(decoded),
             logical_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
         },
         KernelOwnedAllocation::Standalone,
     ))
