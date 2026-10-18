@@ -21,6 +21,14 @@ struct Blocked {
 struct Entry {
     generation: u64,
     blocked: Option<Blocked>,
+    suspended: usize,
+    worker: Option<Worker>,
+}
+#[derive(Clone, Copy)]
+struct Worker {
+    pool: usize,
+    capacity: usize,
+    running: bool,
 }
 struct State {
     now: Instant,
@@ -33,6 +41,10 @@ struct State {
     host_clock: bool,
     #[cfg(test)]
     duplicate_entry: bool,
+    #[cfg(test)]
+    queued_is_runnable: bool,
+    #[cfg(test)]
+    forget_parent_suspend: bool,
 }
 struct Inner {
     origin: Instant,
@@ -68,6 +80,10 @@ impl Clock {
                 host_clock: false,
                 #[cfg(test)]
                 duplicate_entry: false,
+                #[cfg(test)]
+                queued_is_runnable: false,
+                #[cfg(test)]
+                forget_parent_suspend: false,
             }),
         }))
     }
@@ -140,6 +156,8 @@ impl Clock {
             Entry {
                 generation: 0,
                 blocked: None,
+                suspended: 0,
+                worker: None,
             },
         );
         Arc::new(Actor {
@@ -156,7 +174,31 @@ impl Clock {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let running = state.actors.values().any(|actor| actor.blocked.is_none());
+            let running = state.actors.values().any(|actor| {
+                if actor.suspended != 0 || actor.blocked.is_some() {
+                    return false;
+                }
+                #[cfg(test)]
+                if state.queued_is_runnable {
+                    return true;
+                }
+                if let Some(worker) = actor.worker.filter(|worker| !worker.running) {
+                    // A queued job can run only when its original OS pool has
+                    // a free worker. Blocked workers still occupy their slots.
+                    // Pool identities never enter the replay trace or ordering.
+                    let occupied = state
+                        .actors
+                        .values()
+                        .filter(|actor| {
+                            actor
+                                .worker
+                                .is_some_and(|active| active.running && active.pool == worker.pool)
+                        })
+                        .count();
+                    return occupied < worker.capacity;
+                }
+                true
+            });
             #[cfg(test)]
             let running = running && !state.advance_while_running;
             if running {
@@ -204,16 +246,82 @@ pub(crate) struct Actor {
 }
 impl Actor {
     pub(crate) fn enter<T>(self: &Arc<Self>, work: impl FnOnce() -> T) -> T {
-        struct Restore(Option<Arc<Actor>>);
+        struct Restore {
+            previous: Option<Arc<Actor>>,
+            suspended: Option<Arc<Actor>>,
+        }
         impl Drop for Restore {
             fn drop(&mut self) {
+                if let Some(parent) = self.suspended.take() {
+                    parent
+                        .clock
+                        .0
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .actors
+                        .get_mut(&parent.id)
+                        .expect("live parent actor")
+                        .suspended -= 1;
+                }
                 CURRENT.with(|current| {
-                    current.replace(self.0.take());
+                    current.replace(self.previous.take());
                 });
             }
         }
-        let _restore = Restore(CURRENT.with(|current| current.replace(Some(self.clone()))));
+        let previous = CURRENT.with(|current| current.replace(Some(self.clone())));
+        let suspended = previous
+            .as_ref()
+            .filter(|parent| parent.id != self.id && Arc::ptr_eq(&parent.clock.0, &self.clock.0))
+            .cloned();
+        #[cfg(test)]
+        let suspended =
+            suspended.filter(|_| !self.clock.0.state.lock().unwrap().forget_parent_suspend);
+        if let Some(parent) = &suspended {
+            parent
+                .clock
+                .0
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .actors
+                .get_mut(&parent.id)
+                .expect("live parent actor")
+                .suspended += 1;
+        }
+        let _restore = Restore {
+            previous,
+            suspended,
+        };
         work()
+    }
+    pub(crate) fn queued(&self, pool: usize, capacity: usize) {
+        let mut state = self
+            .clock
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = state.actors.get_mut(&self.id).expect("live queued actor");
+        entry.worker = Some(Worker {
+            pool,
+            capacity,
+            running: false,
+        });
+    }
+    pub(crate) fn started(&self) {
+        let mut state = self
+            .clock
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = state.actors.get_mut(&self.id).expect("live worker actor");
+        if let Some(worker) = &mut entry.worker {
+            worker.running = true;
+        }
+        entry.blocked = None;
+        entry.generation += 1;
     }
     pub(super) fn resume(&self) {
         let mut state = self

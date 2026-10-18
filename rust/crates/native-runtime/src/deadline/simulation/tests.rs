@@ -1,6 +1,65 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn nested_scoped_futures_park_their_synchronous_parent() {
+    let clock = Clock::new();
+    clock
+        .scope(async {
+            clock
+                .scope(async { super::super::sleep(Duration::from_secs(3)) })
+                .await;
+        })
+        .await;
+    assert_eq!(clock.advances(), [Duration::from_secs(3)]);
+    assert!(clock.0.state.lock().unwrap().actors.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn original_worker_pool_expires_virtual_waits_before_running_queued_jobs()
+-> std::io::Result<()> {
+    let capacity = crate::workers(&crate::BLOCKING_WORKERS, false)?.threads;
+    let clock = Clock::new();
+    clock
+        .scope(async {
+            let mut tasks = Vec::new();
+            for _ in 0..=capacity {
+                tasks.push(Some(crate::run_blocking_io(
+                    || {
+                        super::super::sleep(Duration::from_secs(5));
+                    },
+                    None,
+                )?));
+            }
+            std::future::poll_fn(|cx| {
+                let mut pending = false;
+                for task in &mut tasks {
+                    if let Some(future) = task {
+                        match Pin::new(future).poll(cx) {
+                            Poll::Ready(Ok(())) => {
+                                task.take();
+                            }
+                            Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause)),
+                            Poll::Pending => pending = true,
+                        }
+                    }
+                }
+                if pending {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(Ok(()))
+                }
+            })
+            .await
+        })
+        .await?;
+    assert_eq!(
+        clock.advances(),
+        [Duration::from_secs(5), Duration::from_secs(10)]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn captured_callbacks_park_and_read_the_same_clock_after_scope_exit() {
     let origin = Instant::now();
     let mut traces = Vec::new();

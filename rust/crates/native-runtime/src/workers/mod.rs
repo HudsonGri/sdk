@@ -15,7 +15,7 @@ pub(crate) struct NativeWorkers {
     pub(crate) sender: mpsc::SyncSender<NativeJob>,
     pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
     /// Worker threads draining `sender`; tests use it to occupy every worker.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) threads: usize,
 }
 
@@ -94,7 +94,7 @@ pub(crate) fn start_workers(
     Ok(NativeWorkers {
         sender,
         admission,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         threads: worker_count,
     })
 }

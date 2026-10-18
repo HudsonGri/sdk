@@ -68,6 +68,7 @@ impl NativeJob {
     pub(crate) fn run(self) -> Option<Waker> {
         #[cfg(feature = "test-support")]
         if let Some(actor) = self.test_terminal().test_actor() {
+            actor.started();
             return actor.enter(|| self.run_inner());
         }
         self.run_inner()

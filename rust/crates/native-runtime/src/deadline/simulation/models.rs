@@ -1,5 +1,92 @@
 use super::*;
 
+fn pool_capacity(broken: bool) {
+    loom::model(move || {
+        let clock = Clock::new();
+        clock.0.state.lock().unwrap().queued_is_runnable = broken;
+        let worker = clock.register();
+        worker.queued(0, 1);
+        let queued = clock.register();
+        queued.queued(0, 1);
+        // A free worker can start either queued job; time must not advance.
+        assert!(!clock.advance_if_idle());
+        let running = worker.clone();
+        let advancing = clock.clone();
+        let thread = loom::thread::spawn(move || {
+            running.started();
+            running.block(
+                Some(Deadline::at(advancing.now() + Duration::from_secs(3))),
+                None,
+                None,
+            );
+            advancing.advance_if_idle();
+            assert_eq!(
+                advancing.elapsed(),
+                Duration::from_secs(3),
+                "full-pool queue prevented a bounded wait expiring"
+            );
+        });
+        // The driver can inspect capacity before, during or after the worker
+        // parks. Whichever acquires the clock last must expire the same bound.
+        clock.advance_if_idle();
+        thread.join().unwrap();
+        worker.resume();
+        assert!(!clock.advance_if_idle());
+        drop(worker);
+        assert!(!clock.advance_if_idle());
+        queued.started();
+        queued.block(
+            Some(Deadline::at(clock.now() + Duration::from_secs(2))),
+            None,
+            None,
+        );
+        assert!(clock.advance_if_idle());
+        assert_eq!(
+            clock.advances(),
+            [Duration::from_secs(3), Duration::from_secs(5)]
+        );
+    });
+}
+#[test]
+fn full_worker_pools_block_queued_actors_until_capacity_is_available() {
+    pool_capacity(false);
+}
+#[test]
+#[should_panic(expected = "full-pool queue prevented a bounded wait expiring")]
+fn counting_queued_work_as_runnable_fails_the_same_pool_model() {
+    pool_capacity(true);
+}
+
+fn synchronous_child(broken: bool) {
+    loom::model(move || {
+        let clock = Clock::new();
+        clock.0.state.lock().unwrap().forget_parent_suspend = broken;
+        let parent = clock.register();
+        let child = clock.register();
+        parent.enter(|| {
+            child.enter(|| {
+                let suspended = clock.0.state.lock().unwrap().actors[&parent.id].suspended;
+                assert_eq!(suspended, 1, "synchronous child left its parent runnable");
+                super::super::sleep(Duration::from_secs(3));
+            })
+        });
+        assert_eq!(clock.advances(), [Duration::from_secs(3)]);
+        assert_eq!(
+            clock.0.state.lock().unwrap().actors[&parent.id].suspended,
+            0
+        );
+    });
+}
+#[test]
+fn synchronous_children_park_their_calling_actor_until_return() {
+    synchronous_child(false);
+}
+#[test]
+#[should_panic(expected = "synchronous child left its parent runnable")]
+fn leaving_the_synchronous_parent_runnable_fails_the_same_model() {
+    synchronous_child(true);
+}
+
 fn callback_entry(broken: bool) {
     loom::model(move || {
         let clock = Clock::new();
