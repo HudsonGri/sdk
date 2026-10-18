@@ -6,7 +6,7 @@ proptest! {
     // its admission outcome, including invalid commands and deadline bounds.
     #[test]
     fn normalized_rules_round_trip_without_changing_validation(
-        event in 0usize..4,
+        event in 0usize..HookEvent::ALL.len(),
         executable in ".{0,48}",
         argv in prop::collection::vec(".{0,24}", 0..5),
         shell in prop::option::of(prop_oneof![Just("sh".to_owned()), Just("unknown".to_owned())]),
@@ -26,7 +26,7 @@ proptest! {
         };
         let valid = hook.validate().is_ok();
         let rule = HookRule {
-            on: [HookEvent::SessionStart, HookEvent::PreToolUse, HookEvent::PostToolUse, HookEvent::Stop][event],
+            on: HookEvent::ALL[event],
             matcher,
             hooks: vec![hook],
         };

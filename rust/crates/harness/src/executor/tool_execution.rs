@@ -16,6 +16,7 @@ impl StockExecution<'_> {
         invocation: ToolInvocation,
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
+        _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
         self.verify_task_context_binding(operation_id)?;
         let metadata = metadata_for_call(
@@ -196,8 +197,8 @@ impl StockExecution<'_> {
         stock_vec_push(prior_messages, message, self.io)?;
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
-            self.append_hook_context(prior_messages, pre_hook)?;
-            self.append_hook_context(prior_messages, settled.feedback)?;
+            self.append_hook_context(_hook_context, pre_hook)?;
+            self.append_hook_context(_hook_context, settled.feedback)?;
         }
         Ok(ExecutionProgress::Ready(()))
     }

@@ -46,7 +46,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
                 0,
                 invocation,
                 0,
-                &mut messages
+                &mut messages,
+                &mut Vec::new(),
             )
             .await,
         Err(Error::Invalid(_))

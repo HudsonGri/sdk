@@ -17,6 +17,7 @@ impl StockExecution<'_> {
         }
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
+        let mut hook_context = Vec::new();
         let mut text = String::new();
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
@@ -40,12 +41,13 @@ impl StockExecution<'_> {
                 &mut prior_messages,
             )?;
             if calls.is_empty() {
-                // A Stop block continues the turn only within its step budget.
+                // A Stop block prevents settlement and consumes the step budget.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(reason) =
                     Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
-                    && step + 1 < input.max_steps
                 {
+                    // Every denial continues. At the final step, falling out
+                    // of the loop reports the same budget exhaustion as tools.
                     // The superseded answer moves into history; the turn's
                     // output is the answer given after the hook's reason.
                     let answer = text.split_off(answer_start);
@@ -60,7 +62,6 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
-            let results = prior_messages.len();
             for (invocation, invocation_index) in calls {
                 match self
                     .resolve_tool_call(
@@ -70,6 +71,7 @@ impl StockExecution<'_> {
                         invocation,
                         invocation_index,
                         &mut prior_messages,
+                        &mut hook_context,
                     )
                     .await?
                 {
@@ -82,7 +84,7 @@ impl StockExecution<'_> {
                     }
                 }
             }
-            context_after_results(&mut prior_messages[results..]);
+            append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
         }
         Err(stock_boundary(
             self.io,
@@ -165,9 +167,15 @@ impl StockExecution<'_> {
     }
 }
 
-/// Hook context gathered while a step's tool calls settle follows every
-/// result of that step: a system message between two results would interrupt
-/// the tool exchange. The sort is stable, so each group keeps its order.
-pub(super) fn context_after_results(step: &mut [ModelMessage]) {
-    step.sort_by_key(|message| message.role != ModelRole::Tool);
+/// Results go straight into history; hook context is deferred until every
+/// result is present. No sorting scratch allocation or reordering is needed.
+pub(super) fn append_step_context(
+    messages: &mut Vec<ModelMessage>,
+    context: &mut Vec<ModelMessage>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    for message in context.drain(..) {
+        stock_vec_push(messages, message, io)?;
+    }
+    Ok(())
 }

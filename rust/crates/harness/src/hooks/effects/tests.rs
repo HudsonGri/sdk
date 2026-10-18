@@ -14,6 +14,7 @@ proptest! {
         text in ".{0,96}",
         operation in any::<[u8;16]>(),
         interrupted in any::<bool>(),
+        event in prop::sample::select(HookEvent::ALL.to_vec()),
     ) {
         futures::executor::block_on(async {
             let volume = TaskVolume::open(
@@ -22,7 +23,7 @@ proptest! {
             let task = TaskId::from_bytes([1;16]);
             let operation = OperationId::from_bytes(operation);
             let first = run_once::<_,_,_,_,_,true>(
-                &volume, (task, operation, "session-start"), 4096, true, authorization,
+                &volume, (task, operation, event.name()), 4096, true, authorization,
                 || async {
                     if interrupted { return Err(Error::Indeterminate(operation)); }
                     Ok(HookOutput { additional_context: vec![text.clone()], ..Default::default() })
@@ -34,7 +35,7 @@ proptest! {
                 prop_assert_eq!(first?.expect("started hook outcome").additional_context, vec![text.clone()]);
             }
             let replay = run_once::<_,_,_,_,_,true>(
-                &volume, (task, operation, "session-start"), 4096, false, authorization,
+                &volume, (task, operation, event.name()), 4096, false, authorization,
                 || async { panic!("recovery resent a hook") },
             ).await;
             if interrupted {

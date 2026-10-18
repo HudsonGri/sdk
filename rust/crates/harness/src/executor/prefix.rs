@@ -36,6 +36,7 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(input.operation_id));
         }
         let mut results = Vec::new();
+        let mut hook_context = Vec::new();
         for event in retained.events {
             let (invocation, metadata) = match event {
                 ModelEvent::ReasoningBlock { block } => {
@@ -152,17 +153,17 @@ impl StockExecution<'_> {
             )?;
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             {
-                self.append_hook_context(&mut results, guard)?;
-                self.append_hook_context(&mut results, feedback)?;
+                self.append_hook_context(&mut hook_context, guard)?;
+                self.append_hook_context(&mut hook_context, feedback)?;
             }
             if through_call.is_some_and(|id| invocation.call_id == id) {
                 break;
             }
         }
-        super::turn::context_after_results(&mut results);
         for result in results {
             stock_vec_push(&mut request.messages, result, self.io)?;
         }
+        super::turn::append_step_context(&mut request.messages, &mut hook_context, self.io)?;
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
         self.verify_model_request_content(journal, &prepared)

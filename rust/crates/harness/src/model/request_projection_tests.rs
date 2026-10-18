@@ -45,6 +45,25 @@ fn content(request: &ModelRequest) -> &ToolResultContent {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
+    // Refusals preserve arbitrary text through the real request codec while
+    // bypassing success schemas. Control: the former text-parts envelope fails
+    // that same schema, even when it carries the identical reason.
+    #[test]
+    fn refusal_requests_round_trip_independently_of_success_schemas(reason in ".{0,64}") {
+        let mut request = with_result(Value::Null, json!(false));
+        let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) =
+            &mut request.messages[2].content else { unreachable!() };
+        *content = ToolResultContent::Refused { reason: reason.clone() };
+        let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
+        let decoded = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
+        prop_assert_eq!(decoded.request(), &request);
+        prop_assert_eq!(decoded.request_digest(), prepared.request_digest());
+        let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) =
+            &mut request.messages[2].content else { unreachable!() };
+        *content = ToolResultContent::Parts { parts: vec![ModelDataPart::Text { text: reason }] };
+        prop_assert!(PreparedModelRequest::prepare(request, Limits::default(), None).is_err());
+    }
+
     // Reusing the owned projection must preserve schema outcomes (including
     // exact errors), wire bytes, and the original value on success and failure.
     #[test]

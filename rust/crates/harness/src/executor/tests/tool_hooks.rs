@@ -13,6 +13,8 @@ struct HookBackend {
     interrupted: AtomicBool,
     pre: AtomicUsize,
     post: AtomicUsize,
+    stop: AtomicUsize,
+    stop_blocks: AtomicUsize,
     reason: String,
     replacement: i64,
     denied: bool,
@@ -106,6 +108,13 @@ impl ToolExecutor for HookBackend {
                             }],
                             ..Default::default()
                         })
+                    } else if event == HookEvent::Stop {
+                        let attempt = self.stop.fetch_add(1, Ordering::SeqCst);
+                        Ok(HookOutput {
+                            blocked: (attempt < self.stop_blocks.load(Ordering::SeqCst))
+                                .then(|| self.reason.clone()),
+                            ..Default::default()
+                        })
                     } else {
                         self.post.fetch_add(1, Ordering::SeqCst);
                         Ok(HookOutput {
@@ -116,7 +125,11 @@ impl ToolExecutor for HookBackend {
                 },
             )
             .await?;
-            self.interrupt(if event == HookEvent::PreToolUse { 1 } else { 3 })?;
+            self.interrupt(match event {
+                HookEvent::PreToolUse => 1,
+                HookEvent::Stop => 4,
+                _ => 3,
+            })?;
             Ok(result)
         })
     }
@@ -147,6 +160,8 @@ async fn fixture(
         interrupted: AtomicBool::new(false),
         pre: AtomicUsize::new(0),
         post: AtomicUsize::new(0),
+        stop: AtomicUsize::new(0),
+        stop_blocks: AtomicUsize::new(0),
         reason,
         replacement,
         denied,
@@ -406,8 +421,90 @@ proptest! {
             interrupted,
             contexts[..contexts.len() - 1].iter().any(|count| *count > 0)
         );
-        super::super::turn::context_after_results(&mut step);
+        let mut step = results.clone();
+        super::super::turn::append_step_context(&mut step, &mut notes.clone(), None).unwrap();
         results.extend(notes);
         prop_assert_eq!(step, results);
     }
+}
+
+#[test]
+fn hook_free_steps_allocate_no_sorting_scratch() {
+    for broken in [false, true] {
+        let mut messages = vec![
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Text("result".into()),
+            };
+            512
+        ];
+        let mut context = Vec::new();
+        let measured = acyclic_test_support::measure(|| {
+            if broken {
+                // Restore the original production stable sort. Even an already
+                // ordered step allocated uncharged scratch in the native path.
+                messages.sort_by_key(|message| message.role != ModelRole::Tool);
+            } else {
+                super::super::turn::append_step_context(&mut messages, &mut context, None).unwrap();
+            }
+        });
+        assert_eq!(
+            (measured.count_total, measured.bytes_total) == (0, 0),
+            !broken
+        );
+    }
+}
+
+/// Exhaust every Stop disposition within a bounded turn, including denial at
+/// the final step. Replay must retain each disposition without invoking again.
+#[tokio::test]
+async fn stop_denials_never_settle_success_at_any_step_budget() -> Result<()> {
+    for cut in [0, 4] {
+        for budget in 1..=4 {
+            for blocks in 0..=budget {
+                let (mut executor, _, _, hooks) =
+                    fixture(cut, "continue working".into(), 42, false, false).await?;
+                hooks.stop_blocks.store(blocks as usize, Ordering::SeqCst);
+                executor.provider = Arc::new(ScriptedModelProvider::new(
+                    (0..budget).map(|step| ScriptedTurn::Text(format!("answer {step}"))),
+                ));
+                let mut rules = crate::hooks::Hooks::default();
+                rules.add_json(br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"configured","args":[]}]}]}}"#)?;
+                executor = executor.with_hooks(Some(Arc::new(BoundHooks {
+                    rules,
+                    manifest: [3; 32],
+                })));
+                let mut input = input();
+                input.max_steps = budget;
+                if cut == 4 {
+                    assert!(matches!(
+                        executor
+                            .execute(input.clone(), hooks.journal.as_ref())
+                            .await,
+                        Err(Error::Indeterminate(_))
+                    ));
+                    assert_eq!(hooks.stop.load(Ordering::SeqCst), 1);
+                }
+                for _ in 0..2 {
+                    let result = executor
+                        .execute(input.clone(), hooks.journal.as_ref())
+                        .await;
+                    if blocks == budget {
+                        assert!(
+                            matches!(result, Err(Error::Conflict(ref reason))
+                        if reason == "executor step limit reached"),
+                            "Stop denial escaped budget {budget}: {result:?}"
+                        );
+                    } else {
+                        assert_eq!(result?.text, format!("answer {blocks}"));
+                    }
+                    assert_eq!(
+                        hooks.stop.load(Ordering::SeqCst),
+                        (blocks + 1).min(budget) as usize
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
