@@ -209,13 +209,19 @@ mod tests {
     }
 
     fn native_component() -> impl Strategy<Value = String> {
-        // Windows forbids wildcard characters and trims trailing spaces.
-        // Prefix/suffix letters also exclude device names and dot components.
-        #[cfg(windows)]
-        let middle = "[a-z !#\\[\\]]{0,6}";
-        #[cfg(not(windows))]
-        let middle = "[a-z *!#?\\[\\]]{0,6}";
-        middle.prop_map(|middle| format!("a{middle}z"))
+        let character = any::<char>().prop_filter("representable native component", |character| {
+            if matches!(character, '/' | '\0' | '\r' | '\n') {
+                return false;
+            }
+            #[cfg(windows)]
+            if *character < ' ' || "<>:\"\\|?*".contains(*character) {
+                return false;
+            }
+            true
+        });
+        // Letters exclude dot/device names and Windows trailing-name trimming.
+        prop::collection::vec(character, 0..6)
+            .prop_map(|middle| format!("a{}z", middle.into_iter().collect::<String>()))
     }
 
     proptest! {
