@@ -194,12 +194,17 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
                 }
                 enabled.store(true, Ordering::SeqCst);
                 let releasing = gate.clone();
+                let enabled_on_release = enabled.clone();
                 let producer = shuttle::thread::spawn(move || {
                     let mut state = releasing.0.lock().unwrap();
                     while !state.0 {
                         state = releasing.1.wait(state).unwrap();
                     }
                     state.1 = true;
+                    // This gate opens permanently. Later provider calls cannot
+                    // block, so avoid re-entering its mutex after release. The
+                    // modeled atomic still explores calls racing this release.
+                    enabled_on_release.store(false, Ordering::SeqCst);
                     let waker = state.2.take();
                     drop(state);
                     if let Some(waker) = waker {
