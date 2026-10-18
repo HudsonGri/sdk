@@ -23,7 +23,7 @@ pub(super) fn lock<'tcx>(
                 continue;
             }
             let ty = ty::EarlyBinder::bind(ty).instantiate(tcx, instance.args);
-            owned |= crate::types::lock(tcx, owner, ty::Unnormalized::new_wip(ty), default, 0)?;
+            owned |= crate::types::lock(tcx, owner, ty, default, 0)?;
             found = true;
         }
     }
