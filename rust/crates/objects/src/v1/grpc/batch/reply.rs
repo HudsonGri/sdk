@@ -360,13 +360,13 @@ impl Decode<'_> {
         texts: &mut [Option<&'a str>; 5],
     ) -> Result<(), NativeObjectsError> {
         fields(bytes, |tag, kind, input| {
-            let index = match tag {
-                1 => Some(0),
-                3..=6 => Some(tag as usize - 2),
+            let slot = match tag {
+                1 => texts.get_mut(0),
+                3..=6 => texts.get_mut(tag as usize - 2),
                 _ => None,
             };
-            if let Some(index) = index {
-                texts[index] = Some(text(kind, input)?);
+            if let Some(slot) = slot {
+                *slot = Some(text(kind, input)?);
                 return Ok(());
             }
             if tag == 2 {
@@ -566,12 +566,10 @@ impl Decoder {
                         None
                     };
                     let item = message(kind, input)?;
-                    let credits = resources
-                        .texts
-                        .value
-                        .get_mut(index)
-                        .map(|credits| std::mem::replace(credits, std::array::from_fn(|_| None)))
-                        .unwrap_or_else(|| std::array::from_fn(|_| None));
+                    let credits = resources.texts.value.get_mut(index).map_or_else(
+                        || std::array::from_fn(|_| None),
+                        |credits| std::mem::replace(credits, std::array::from_fn(|_| None)),
+                    );
                     let mut decode = Decode {
                         meter: self.meter.as_ref(),
                         allocation: item_credit.as_mut(),

@@ -188,7 +188,7 @@ proptest! {
     ) {
         use std::sync::atomic::Ordering;
         let item = if error {
-            let mut item = wire::ErrorDetail { code: wire::ErrorCode::AccessDenied as i32, request_id: previous.clone() }.encode_to_vec();
+            let mut item = wire::ErrorDetail { code: wire::ErrorCode::AccessDenied as i32, request_id: previous }.encode_to_vec();
             append_text(2, &values[0], &mut item);
             item
         } else {
