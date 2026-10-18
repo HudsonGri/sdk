@@ -95,25 +95,29 @@ fn model(broken: bool, duplicate: bool) {
         let epoch = Epoch::GENESIS.get().to_le_bytes();
         // Exact initial authority bytes, in one atomic setup publication. This
         // bounds the model without replaying unrelated creation/codec checks.
-        let initial = CommitRequest {
+        let mut initial = CommitRequest {
             conditions: vec![],
-            mutations: [
-                ("", AUTHORITY_MARKER.to_vec()),
-                ("/records", [GENESIS_DOMAIN, epoch.as_slice()].concat()),
-                ("/epochs", [EPOCH_DOMAIN, epoch.as_slice()].concat()),
-                ("/publication-gate", PUBLICATION_GATE_FREE.to_vec()),
-            ]
-            .into_iter()
-            .map(|(suffix, bytes)| CommitMutation::Append {
-                path: stream_path(authority, suffix).unwrap(),
-                records: vec![bytes.into()],
-            })
-            .collect(),
+            mutations: vec![],
             idempotency_key: acyclic_stream::IdempotencyKey::new(
                 acyclic_stream::OwnedBytes::from_static(b"setup"),
             )
             .unwrap(),
         };
+        for (suffix, bytes) in [
+            ("", AUTHORITY_MARKER.to_vec()),
+            ("/records", [GENESIS_DOMAIN, epoch.as_slice()].concat()),
+            ("/epochs", [EPOCH_DOMAIN, epoch.as_slice()].concat()),
+            ("/publication-gate", PUBLICATION_GATE_FREE.to_vec()),
+        ] {
+            let path = stream_path(authority, suffix).unwrap();
+            initial
+                .conditions
+                .push(CommitCondition::Absent { path: path.clone() });
+            initial.mutations.push(CommitMutation::Append {
+                path,
+                records: vec![bytes.into()],
+            });
+        }
         assert!(matches!(
             ready(stream.commit(initial)).unwrap(),
             CommitOutcome::Committed(_)
