@@ -40,7 +40,7 @@ type Event = (usize, Option<(FileId, FileKind)>);
 
 fn entry(key: u8, identity: u8) -> TreeEntry {
     TreeEntry {
-        name: LogicalName::new(NameEncoding::PosixBytes, vec![key], 255).unwrap(),
+        name: LogicalName::new(NameEncoding::PosixBytes, vec![key + 1], 255).unwrap(),
         file_id: FileId::from_bytes([identity; 16]),
         kind: FileKind::Regular,
     }
