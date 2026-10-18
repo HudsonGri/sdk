@@ -241,7 +241,12 @@ async function hook(run) {
   if (projected.fs) projected.fs.storage_bucket = storageBucket(filesystemConfigs(run));
   fs.writeFileSync(file, JSON.stringify(projected, null, 2), { mode: 0o600 });
   const started = performance.now();
-  const child = spawn(test[0], test.slice(1), { stdio: logStdio(path.join(out, "test.log")), env: { ...process.env, ACYCLIC_LOCAL_CLOUD: file } });
+  const child = spawn(test[0], test.slice(1), { stdio: logStdio(path.join(out, "test.log")), env: {
+    ...process.env, ACYCLIC_LOCAL_CLOUD: file,
+    // Only this fixture's freshly generated account material; never operator state.
+    ACYCLIC_LOCAL_CLOUD_ACCOUNT: path.join(run, "account"),
+    ACYCLIC_LOCAL_CLOUD_CTL: path.join(out, "bin/cloudctl"),
+  } });
   const [code, signal] = await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("close", (status, killed) => resolve([status, killed]));
