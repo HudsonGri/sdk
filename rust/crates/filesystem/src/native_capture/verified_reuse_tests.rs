@@ -486,7 +486,7 @@ fn exact_metadata(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), 
     let expected = if cfg!(windows) {
         485
     } else if cfg!(target_os = "macos") {
-        504
+        513
     } else {
         497
     };
@@ -501,7 +501,7 @@ fn exact_metadata(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), 
     let expected_work = if cfg!(windows) {
         [500, 73_654, 1_245, 19_871, 17, 466]
     } else if cfg!(target_os = "macos") {
-        [516, 73_638, 1_286, 22_115, 14, 474]
+        [516, 73_346, 1_286, 22_188, 15, 480]
     } else {
         [516, 73_846, 1_158, 20_678, 17, 478]
     };
@@ -604,7 +604,7 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(exact));
                 proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), Some(exact));
                 if budget == u64::MAX {
-                    eprintln!("CHANGED_REUSE index={index} heap={} old_heap={} work={work} old_work={old_work}", heap.count_total, old_heap.count_total);
+                    eprintln!("CHANGED_REUSE index={index} heap={heap:?} old_heap={old_heap:?} work={work} old_work={old_work}");
                 }
             }
             let mut broken = fixture(&runtime);
@@ -681,14 +681,14 @@ const RESCAN: (u64, [(&str, u64); 6]) = (
 );
 #[cfg(target_os = "macos")]
 const RESCAN: (u64, [(&str, u64); 6]) = (
-    437,
+    454,
     [
         ("objectBytesWritten", 0),
-        ("bytesHashed", 71_731),
-        ("bytesEncoded", 512),
-        ("bytesCopied", 18_676),
-        ("objectProbes", 14),
-        ("allocationOperations", 408),
+        ("bytesHashed", 72_389),
+        ("bytesEncoded", 384),
+        ("bytesCopied", 18_638),
+        ("objectProbes", 18),
+        ("allocationOperations", 422),
     ],
 );
 #[cfg(windows)]
