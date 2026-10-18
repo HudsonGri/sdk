@@ -68,14 +68,16 @@ pub(super) fn sort_capture_states(
     {
         return capture_sort_by(states, capture_state_order, meter);
     }
+    let credit = crate::materializer::NativeResourceCredit::Items;
+    let validation = meter.reserve_work(credit.delta(2 * (states.len() - 1) as u64))?;
+    let mut inspected = 0;
     for pair in states.windows(2) {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        inspected += 1;
         #[cfg(test)]
         super::state_order_tests::path_comparison();
         if pair[0].1 >= pair[1].1 {
+            validation.record_completed(credit.delta(inspected))?;
+            drop(validation);
             return capture_sort_by(states, capture_state_order, meter);
         }
     }
@@ -83,12 +85,11 @@ pub(super) fn sort_capture_states(
     // before it is inspected, so refusal never scans an uncharged tail.
     let mut deepest = states[0].1.depth();
     for state in &states[1..] {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
+        inspected += 1;
         deepest = deepest.max(state.1.depth());
     }
+    validation.record_completed(credit.delta(inspected))?;
+    drop(validation);
     if deepest
         .checked_add(1)
         .and_then(|span| span.checked_mul(4))
