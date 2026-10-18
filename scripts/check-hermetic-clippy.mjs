@@ -8,7 +8,7 @@ for (const negative of [false, true]) {
   const start = performance.now();
   const result = spawnSync('cargo', ['clippy', '--locked', '--manifest-path', manifest,
     '--lib', '--message-format=json', ...(negative ? ['--features', 'negative'] : []),
-    '--', '-D', 'clippy::disallowed_methods', '-D', 'clippy::disallowed_macros'], {cwd: root, env: {...process.env, HOME: '/hermetic-ui-control'}, encoding: 'utf8', maxBuffer: 1 << 23});
+    '--', '-D', 'clippy::disallowed_methods', '-D', 'clippy::disallowed_macros'], {cwd: root, encoding: 'utf8', maxBuffer: 1 << 23});
   if (result.error) throw result.error;
   const diagnostics = result.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
     .filter(record => record.reason === 'compiler-message').map(record => record.message);
