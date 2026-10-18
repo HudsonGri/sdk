@@ -3,11 +3,17 @@ use crate::lock_order::{Mutex as OrderedMutex, OPERATION};
 use crate::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
+#[derive(Debug, PartialEq)]
+enum Sharing {
+    Exclusive,
+    Shared([u8; 16]),
+}
+
 type Owners<T> = OrderedMutex<BTreeMap<PathBuf, Arc<Lifecycle<T>>>, OPERATION>;
 
 #[derive(Debug)]
 struct Lifecycle<T> {
-    current: OrderedMutex<Option<([u8; 16], Arc<T>)>, OPERATION>,
+    current: OrderedMutex<Option<(Sharing, Arc<T>)>, OPERATION>,
     references: AtomicUsize,
     #[cfg(test)]
     locks: AtomicUsize,
@@ -27,7 +33,7 @@ impl<T> Lifecycle<T> {
         }
     }
 
-    fn lock(&self) -> crate::lock_order::MutexGuard<'_, Option<([u8; 16], Arc<T>)>> {
+    fn lock(&self) -> crate::lock_order::MutexGuard<'_, Option<(Sharing, Arc<T>)>> {
         #[cfg(test)]
         self.locks.fetch_add(1, Ordering::Relaxed);
         self.current.lock().unwrap_or_else(PoisonError::into_inner)
@@ -118,14 +124,14 @@ fn canonical(root: &Path) -> Result<(PathBuf, [u8; 16]), LocalCoreStateStoreErro
 
 pub(super) fn exclusive(root: &Path) -> Result<OwnerRef, LocalCoreStateStoreError> {
     let (root, identity) = canonical(root)?;
-    join::<_, true>(registry(), root.clone(), identity, false, || {
+    join::<_, true, true>(registry(), root.clone(), identity, false, || {
         create(&root, None)
     })
 }
 
 // Registry and namespace gates are never nested. Creation/teardown holds only
 // the namespace gate, then the OS lock; no record-log or provider lock is taken.
-fn join<T, const FENCE: bool>(
+fn join<T, const FENCE: bool, const RETAIN_ADMISSION: bool>(
     owners: &Owners<T>,
     root: PathBuf,
     identity: [u8; 16],
@@ -145,7 +151,7 @@ fn join<T, const FENCE: bool>(
     };
     let mut guard = Some(lifecycle.lock());
     if let Some((original, owner)) = guard.as_ref().unwrap().as_ref() {
-        if !shared || *original != identity {
+        if !shared || *original != Sharing::Shared(identity) {
             return Err(LocalCoreStateStoreError::OwnershipConflict(root));
         }
         lifecycle.references.fetch_add(1, Ordering::Relaxed);
@@ -156,7 +162,12 @@ fn join<T, const FENCE: bool>(
     }
     let owner = create()?;
     let mut guard = guard.unwrap_or_else(|| lifecycle.lock());
-    *guard = Some((identity, owner.clone()));
+    let sharing = if shared || !RETAIN_ADMISSION {
+        Sharing::Shared(identity)
+    } else {
+        Sharing::Exclusive
+    };
+    *guard = Some((sharing, owner.clone()));
     lifecycle.references.store(1, Ordering::Relaxed);
     Ok(OwnerRef(Some(owner), lifecycle.clone()))
 }
@@ -166,7 +177,7 @@ impl LocalCoreStateStore {
     /// Other processes remain excluded until the last owned handle drops.
     pub fn open_shared_owner(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
         let (root, identity) = canonical(&root.into())?;
-        let owner = join::<_, true>(registry(), root.clone(), identity, true, || {
+        let owner = join::<_, true, true>(registry(), root.clone(), identity, true, || {
             create(&root, Some(super::contexts::OWNED_CHECKPOINT as usize))
         })?;
         Ok(Self {

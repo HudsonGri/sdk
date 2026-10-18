@@ -9,7 +9,7 @@ fn race<const FENCE: bool>() {
             let registry = registry.clone();
             let created = created.clone();
             loom::thread::spawn(move || {
-                join::<_, FENCE>(&registry, "namespace".into(), [1; 16], true, || {
+                join::<_, FENCE, true>(&registry, "namespace".into(), [1; 16], true, || {
                     let id = created.fetch_add(1, Ordering::SeqCst);
                     loom::thread::yield_now();
                     Ok(Arc::new(id))
@@ -34,7 +34,7 @@ fn race<const FENCE: bool>() {
         owners[0].0.as_ref().unwrap(),
         owners[1].0.as_ref().unwrap()
     ));
-    let reopened = join::<_, FENCE>(&registry, "namespace".into(), [1; 16], true, || {
+    let reopened = join::<_, FENCE, true>(&registry, "namespace".into(), [1; 16], true, || {
         panic!("reopen ignored a live owner")
     })
     .unwrap();
@@ -43,7 +43,7 @@ fn race<const FENCE: bool>() {
         reopened.0.as_ref().unwrap()
     ));
     drop((owners, reopened));
-    join::<_, FENCE>(&registry, "namespace".into(), [2; 16], true, || {
+    join::<_, FENCE, true>(&registry, "namespace".into(), [2; 16], true, || {
         created.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(2))
     })
@@ -65,7 +65,7 @@ fn concurrent_reopen_preserves_the_joined_owner() {
     loom::model(|| {
         let registry = Arc::new(Owners::new(BTreeMap::new()));
         let created = Arc::new(AtomicUsize::new(0));
-        let first = join::<_, true>(&registry, "namespace".into(), [1; 16], true, || {
+        let first = join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
             Ok(Arc::new(created.fetch_add(1, Ordering::SeqCst)))
         })
         .unwrap();
@@ -77,7 +77,7 @@ fn concurrent_reopen_preserves_the_joined_owner() {
             let registry = registry.clone();
             let created = created.clone();
             loom::thread::spawn(move || {
-                join::<_, true>(&registry, "namespace".into(), [1; 16], true, || {
+                join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
                     loom::thread::yield_now();
                     Ok(Arc::new(created.fetch_add(1, Ordering::SeqCst)))
                 })
@@ -86,7 +86,7 @@ fn concurrent_reopen_preserves_the_joined_owner() {
         };
         let current = opener.join().unwrap();
         release.join().unwrap();
-        let again = join::<_, true>(&registry, "namespace".into(), [1; 16], true, || {
+        let again = join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
             panic!("lost the owner retained by the reopening caller")
         })
         .unwrap();
@@ -125,7 +125,8 @@ fn release_race<const FENCE: bool>() {
                 tearing_down: tearing_down.clone(),
             }))
         };
-        let first = join::<_, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
+        let first =
+            join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
         let releasing = {
             loom::thread::spawn(move || {
                 let mut first = first;
@@ -139,13 +140,13 @@ fn release_race<const FENCE: bool>() {
             loom::thread::yield_now();
         }
         let current =
-            join::<_, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
+            join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
         releasing.join().unwrap();
         assert!(
             !overlap.load(Ordering::SeqCst),
             "owner teardown raced reopen"
         );
-        let again = join::<_, true>(&registry, "namespace".into(), [1; 16], true, || {
+        let again = join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
             panic!("reopen lost its owner")
         })
         .unwrap();
@@ -174,7 +175,7 @@ fn negative_control_detects_last_release_outside_the_registry_fence() {
 fn nonfinal_locks<const FAST: bool>() {
     loom::model(|| {
         let registry = Owners::new(BTreeMap::new());
-        let first = join::<_, true>(&registry, "namespace".into(), [1; 16], true, || {
+        let first = join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
             Ok(Arc::new(1))
         })
         .unwrap();
@@ -215,15 +216,58 @@ fn simultaneous_nonfinal_releases_cannot_bypass_teardown() {
                 tearing_down: Arc::new(AtomicBool::new(false)),
             }))
         };
-        let first = join::<_, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
+        let first =
+            join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
         let second = first.clone();
         let peer = loom::thread::spawn(move || drop(first));
         drop(second);
         let current =
-            join::<_, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
+            join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
         peer.join().unwrap();
         assert!(locked.load(Ordering::SeqCst));
         drop(current);
         assert!(!locked.load(Ordering::SeqCst));
     });
+}
+
+fn exclusive_admission<const RETAIN: bool>() {
+    loom::model(|| {
+        let registry = Arc::new(Owners::new(BTreeMap::new()));
+        let exclusive =
+            join::<_, true, RETAIN>(&registry, "namespace".into(), [1; 16], false, || {
+                Ok(Arc::new(1))
+            })
+            .unwrap();
+        let joining = {
+            let registry = registry.clone();
+            loom::thread::spawn(move || {
+                join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
+                    panic!("created over a live exclusive admission")
+                })
+            })
+        };
+        assert!(
+            matches!(
+                joining.join().unwrap(),
+                Err(LocalCoreStateStoreError::OwnershipConflict(_))
+            ),
+            "exclusive admission became shareable"
+        );
+        drop(exclusive);
+        join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
+            Ok(Arc::new(2))
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+fn exclusive_admissions_cannot_be_joined() {
+    exclusive_admission::<true>();
+}
+
+#[test]
+#[should_panic(expected = "exclusive admission became shareable")]
+fn negative_control_detects_erasing_exclusive_admission() {
+    exclusive_admission::<false>();
 }

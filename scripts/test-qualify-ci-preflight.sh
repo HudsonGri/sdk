@@ -192,7 +192,7 @@ chmod +x "$gate/bin/cargo-nextest"
 cat >"$gate/bin/mcp_loom" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  core_state::owners::models::) printf 'test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
+  core_state::owners::models::) printf 'test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   distributed::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   local::compact::checkpoints::model::) printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   hooks::*|local::checkout_tools::hooks::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
