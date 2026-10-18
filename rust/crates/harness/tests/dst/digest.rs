@@ -1,6 +1,5 @@
 //! Cross-process oracle over every held trace byte, saved for first-divergence reports.
 use super::*;
-use std::io::Write as _;
 use std::sync::OnceLock;
 
 // Deliberately outside seeded scope, as if production cached host entropy at
