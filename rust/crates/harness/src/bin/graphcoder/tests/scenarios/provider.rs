@@ -2,6 +2,7 @@ use super::{TestResult, wire};
 use axum::{Json, Router, body::Body, http::Response, routing::post};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::Path;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -17,6 +18,8 @@ pub struct Recording {
     pub remaining: BTreeMap<String, usize>,
     pub audits: BTreeMap<String, Vec<Value>>,
     pub attempts: BTreeMap<String, usize>,
+    pub actions_applied: usize,
+    pub actions_remaining: Vec<(String, usize)>,
 }
 
 pub struct Provider {
@@ -180,7 +183,7 @@ impl Script {
     }
 }
 
-pub async fn start(case: &Value, protocol: &str) -> TestResult<Provider> {
+pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult<Provider> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let url = format!("http://{}", listener.local_addr()?);
     let (send, mut receive) = mpsc::unbounded_channel::<Request>();
@@ -212,18 +215,42 @@ pub async fn start(case: &Value, protocol: &str) -> TestResult<Provider> {
             .unwrap_or_else(|| json!({}));
         script.list_active = case["expect"].get("active").is_some();
     }
+    let mut actions = BTreeMap::new();
+    for action in serde_json::from_value::<Vec<super::scenario_actions::Action>>(
+        case.get("actions").cloned().unwrap_or_else(|| json!([])),
+    )? {
+        super::scenario_actions::file(&action)?;
+        let script = scripts
+            .get(&action.model)
+            .ok_or("action selected an unknown model")?;
+        if action.request > script.turns.len() {
+            return Err("action selected an unscripted model request".into());
+        }
+        let key = (action.model.clone(), action.request);
+        if actions.insert(key, action).is_some() {
+            return Err("scenario actions repeat a model request event".into());
+        }
+    }
+    let workspace = workspace.to_owned();
     let actor = tokio::spawn(async move {
         let mut errors = Vec::new();
+        let mut actions_applied = 0;
         loop {
             tokio::select! {
                 _ = &mut stopped => break,
                 request = receive.recv() => {
                     let Some(request) = request else { break };
                     let route = route(&request.body, &protocol, &routes);
-                    let reply = match scripts.get_mut(route) {
-                        Some(script) => script.reply(request.body, &seed, &protocol, raw),
-                        None => Err(format!("unknown scripted route: {route}").into()),
-                    };
+                    let reply = (|| {
+                        let script = scripts.get_mut(route).ok_or_else(|| format!("unknown scripted route: {route}"))?;
+                        if (script.pins.is_empty() || script.prepared)
+                            && let Some(action) = actions.remove(&(route.to_owned(), script.requests.len() + 1))
+                        {
+                            publish_action(&workspace, &action)?;
+                            actions_applied += 1;
+                        }
+                        script.reply(request.body, &seed, &protocol, raw)
+                    })();
                     if let Err(error) = &reply {
                         errors.push(format!("{route}: {error}"));
                     }
@@ -255,6 +282,8 @@ pub async fn start(case: &Value, protocol: &str) -> TestResult<Provider> {
             remaining,
             attempts,
             audits,
+            actions_applied,
+            actions_remaining: actions.into_keys().collect(),
         })
     });
     let width = case["chunk_bytes"].as_u64().unwrap_or(13) as usize;
@@ -286,6 +315,41 @@ pub async fn start(case: &Value, protocol: &str) -> TestResult<Provider> {
         actor,
         stop: Some(stop),
     })
+}
+
+fn publish_action(workspace: &Path, action: &super::scenario_actions::Action) -> TestResult {
+    use acyclic_harness::task_volume::{ChildFile, FileKey};
+    use std::io::Write as _;
+    let value = super::scenario_actions::file(action)?;
+    let FileKey::Child { reference, file } = &value.key else {
+        return Err("action escaped the child namespace".into());
+    };
+    let child = workspace.join(".volumes/agents").join(reference.as_str());
+    if !child.is_dir() {
+        return Err(format!(
+            "shipped child filesystem view is absent: {}",
+            child.display()
+        )
+        .into());
+    }
+    let path = workspace.join(".volumes").join(value.key.path());
+    let parent = path.parent().ok_or("action has no child directory")?;
+    std::fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&value.bytes)?;
+    temporary.as_file().sync_all()?;
+    match file {
+        ChildFile::Control => {
+            temporary.persist(path).map_err(|error| error.error)?;
+        }
+        ChildFile::Inbox(_) => {
+            temporary
+                .persist_noclobber(path)
+                .map_err(|error| error.error)?;
+        }
+        _ => return Err("action selected a harness-owned child file".into()),
+    }
+    Ok(())
 }
 
 fn route<'a>(body: &Value, protocol: &str, routes: &'a serde_json::Map<String, Value>) -> &'a str {

@@ -4,6 +4,8 @@ mod history;
 #[path = "../../../../../tests/support/json_matchers.rs"]
 mod json_matchers;
 mod provider;
+#[path = "../../../../../tests/support/scenario_actions.rs"]
+mod scenario_actions;
 #[path = "../../../../../tests/support/scenario_data.rs"]
 mod scenario_data;
 mod wire;
@@ -111,7 +113,7 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
     let settings_files =
         serde_json::from_value(case.get("settings").cloned().unwrap_or_else(|| json!({})))?;
     scenario_data::seed_settings(&settings, &settings_files)?;
-    let provider = provider::start(&case, protocol).await?;
+    let provider = provider::start(&case, protocol, &workspace).await?;
     let catalog = temporary.path().join("catalog.json");
     std::fs::write(
         &catalog,

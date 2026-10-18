@@ -5,6 +5,8 @@ mod history;
 mod json_matchers;
 #[path = "../../harness/tests/e2e/provider_case.rs"]
 mod provider_case;
+#[path = "../../harness/tests/support/scenario_actions.rs"]
+mod scenario_actions;
 #[path = "../../harness/tests/support/scenario_data.rs"]
 mod scenario_data;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -15,6 +17,19 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok((value, binary)) = scenario_data::split_tiers(value) else {
         return;
     };
+    if let Ok(action) = serde_json::from_value::<scenario_actions::Action>(value.clone()) {
+        let encoded = serde_json::to_vec(&action).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<scenario_actions::Action>(&encoded).unwrap(),
+            action
+        );
+        if let Ok(file) = scenario_actions::file(&action) {
+            assert_eq!(
+                acyclic_harness::task_volume::FileKey::parse(&file.key.path()).unwrap(),
+                file.key
+            );
+        }
+    }
     if let Some(object) = value.as_object() {
         let mut envelope = object.clone();
         envelope.insert("binary".into(), binary.into());

@@ -25,12 +25,14 @@ mod provider_case;
 mod provider_http;
 mod provider_tests;
 mod providers;
-mod remote_swarm;
-mod resume;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
+mod remote_swarm;
+mod resume;
 mod runtime_tests;
 mod scenario;
+#[path = "../support/scenario_actions.rs"]
+mod scenario_actions;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
 mod subagents;

@@ -117,6 +117,14 @@ fn observe(
 }
 
 pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestResult {
+    let actions = case["actions"].as_array().map_or(0, Vec::len);
+    if recording.actions_applied != actions || !recording.actions_remaining.is_empty() {
+        return Err(format!(
+            "expected {actions} child file actions, applied {}, remaining {:?}",
+            recording.actions_applied, recording.actions_remaining
+        )
+        .into());
+    }
     super::history::check(case, &recording.requests, protocol)?;
     for text in case["expect"]["request_text"]
         .as_array()
