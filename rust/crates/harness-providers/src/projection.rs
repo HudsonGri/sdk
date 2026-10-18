@@ -494,6 +494,7 @@ fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<Stri
             })
             .collect::<Result<Vec<_>>>()
             .map(|parts| parts.join("\n")),
+        ToolResultContent::Refused { reason } => Ok(reason.clone()),
     }
 }
 

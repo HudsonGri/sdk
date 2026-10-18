@@ -149,6 +149,7 @@ pub(super) fn result_bound(
     if work.is_some() {
         match content {
             ToolResultContent::Json { value } => inspect_value(value, maximum, work)?,
+            ToolResultContent::Refused { reason } => history_step(work, reason.len() as u64)?,
             ToolResultContent::Parts { parts } => {
                 for part in parts {
                     history_step(work, 1)?;
@@ -290,6 +291,9 @@ impl ToolResultContent {
                         },
                     })
                 })?,
+            },
+            Self::Refused { reason } => Self::Refused {
+                reason: copy_text(reason, quota)?,
             },
         })
     }

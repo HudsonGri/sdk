@@ -8,9 +8,9 @@ use acyclic_harness::{
     LocalHarness, OperationId,
     client::{DiffLimits, DiffPath, DiffPublication, DiffView},
     context::{CompactionPolicy, ContextRoot, PinnedContextPath},
-    native_settings::SettingsConfig,
     conversation::{FileDescriptor, FileRef},
     model::{Model, ModelContent, ModelContentPart, ModelEvent, ModelRequest},
+    native_settings::SettingsConfig,
     task_volume::{FileQuerySource, Query},
     test_support::{
         ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config, local_task_stream,
@@ -71,7 +71,22 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     let turns = super::local_case::bind_seed_files(case.turns, &references)?;
-    let scripted_calls = super::local_tool_files::calls(&turns);
+    let mut scripted_calls = super::local_tool_files::calls(&turns);
+    for (call_id, arguments) in &case.expect.arguments {
+        let (_, call) = scripted_calls
+            .iter_mut()
+            .find(|(_, call)| &call.call_id == call_id)
+            .ok_or("rewritten arguments name no scripted bash call")?;
+        call.arguments = arguments.clone();
+    }
+    // A refused call never ran, so it publishes no tool request or result files.
+    scripted_calls.retain(|(_, call)| {
+        case.expect.results.as_ref().is_none_or(|results| {
+            results
+                .get(&call.call_id)
+                .is_none_or(|result| result["content"]["kind"] != "refused")
+        })
+    });
     let provider = Arc::new(ScriptedModelProvider::new(turns));
     let home = temporary.path().join("home");
     for (path, text) in &case.home {

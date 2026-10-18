@@ -119,12 +119,9 @@ impl StockExecution<'_> {
             ));
         }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-        let blocked_content =
-            pre_hook
-                .take_block_reason()
-                .map(|text| crate::model::ToolResultContent::Parts {
-                    parts: vec![crate::model::ModelDataPart::Text { text }],
-                });
+        let blocked_content = pre_hook
+            .take_block_reason()
+            .map(|reason| crate::model::ToolResultContent::Refused { reason });
         #[cfg(not(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32"))))]
         let blocked_content: Option<crate::model::ToolResultContent> = None;
         if blocked_content.is_some() && started.is_some() {

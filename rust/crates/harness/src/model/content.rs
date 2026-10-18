@@ -123,6 +123,13 @@ pub enum ToolResultContent {
         /// Text and file parts.
         parts: Vec<ModelDataPart>,
     },
+    /// A hook refused the call before it ran. The reason is model-visible
+    /// text rather than a tool projection, so the tool's projection schema
+    /// does not apply to it.
+    Refused {
+        /// Why the call did not run.
+        reason: String,
+    },
 }
 
 impl ModelContent {
@@ -289,6 +296,11 @@ impl ToolResultContent {
     ) -> Result<()> {
         history_step(work, 1)?;
         limits.validate(work)?;
+        if let Self::Refused { reason } = self
+            && reason.len() as u64 > limits.render_bytes
+        {
+            return Err(invalid(work, "tool result text exceeds render limit"));
+        }
         if let Self::Parts { parts } = self {
             if parts.len() > limits.attachments.saturating_add(1) {
                 return Err(invalid(work, "tool result exceeds attachment limit"));

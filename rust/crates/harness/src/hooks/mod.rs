@@ -63,12 +63,14 @@ impl Hooks {
         self.bindings.is_empty()
     }
 
-    pub(crate) fn has_tool_hooks(&self) -> bool {
+    /// Whether any command fires at a site the stock execution loop owns.
+    pub(crate) fn has_execution_hooks(&self) -> bool {
         self.bindings.iter().any(|binding| {
-            matches!(
-                binding.event,
-                HookEvent::PreToolUse | HookEvent::PostToolUse
-            ) && !binding.commands.is_empty()
+            let execution = match binding.event.site() {
+                HookSite::Prompt => false,
+                HookSite::BeforeTool | HookSite::AfterTool | HookSite::TurnEnd => true,
+            };
+            execution && !binding.commands.is_empty()
         })
     }
 

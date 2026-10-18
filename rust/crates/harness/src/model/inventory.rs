@@ -75,6 +75,7 @@ impl ToolResultContent {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
             Self::Json { value } => crate::executor::json::json_value_logical_owned_bytes(value),
+            Self::Refused { reason } => Ok(reason.capacity() as u64),
             Self::Parts { parts } => parts.iter().try_fold(
                 slots(parts.capacity(), size_of::<ModelDataPart>())?,
                 |bytes, part| {

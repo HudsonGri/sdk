@@ -20,6 +20,11 @@
   "files": {
    "plans/a.md": "hooked"
   },
+  "arguments": {
+   "call": {
+    "command": "printf hooked > plans/a.md; printf replaced"
+   }
+  },
   "results": {
    "call": {
     "name": "bash",

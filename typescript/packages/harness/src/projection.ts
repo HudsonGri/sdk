@@ -222,8 +222,10 @@ export function publicModelContent(content: NativeModel.ModelContent): ModelCont
     if (part.kind === "tool_result") {
       const content = part.content.kind === "json"
         ? { kind: "json" as const, value: normalizeModelJson(part.content.value) }
-        : { kind: "parts" as const, parts: part.content.parts.map(data => data.kind === "file"
-          ? publicFilePart(data) : data) as readonly ModelDataPart[] };
+        : part.content.kind === "refused"
+          ? { kind: "refused" as const, reason: part.content.reason }
+          : { kind: "parts" as const, parts: part.content.parts.map(data => data.kind === "file"
+            ? publicFilePart(data) : data) as readonly ModelDataPart[] };
       return { kind: part.kind, callId: part.call_id, name: part.name, content };
     }
     if (part.kind === "file") {

@@ -97,6 +97,10 @@ impl ModelRequest {
         content: &mut ToolResultContent,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        // A refusal is model-visible text about a call that never ran, not a projection.
+        if matches!(content, ToolResultContent::Refused { .. }) {
+            return Ok(());
+        }
         match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {

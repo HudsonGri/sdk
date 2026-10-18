@@ -25,7 +25,8 @@
    "call": {
     "name": "bash",
     "content": {
-     "$contains": "HOOK-DENY-OTTER"
+     "kind": "refused",
+     "reason": "HOOK-DENY-OTTER"
     }
    }
   },

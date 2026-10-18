@@ -89,10 +89,8 @@ impl StockExecution<'_> {
                 not(target_arch = "wasm32")
             )))]
             let blocked: Option<String> = None;
-            let projection = if let Some(text) = blocked {
-                crate::model::ToolResultContent::Parts {
-                    parts: vec![crate::model::ModelDataPart::Text { text }],
-                }
+            let projection = if let Some(reason) = blocked {
+                crate::model::ToolResultContent::Refused { reason }
             } else {
                 completed_tool_projection(
                     journal,
