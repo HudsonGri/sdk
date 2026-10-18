@@ -28,14 +28,18 @@ mod simulation {
         stdout: Vec<u8>,
     }
 
-    fn capture_probe(tracked: bool) -> Result<Observed> {
+    fn capture_probe(entropy: bool) -> Result<Observed> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         runtime.block_on(async {
             tokio::time::pause();
-            let (schedule, mut boundaries) = Schedule::seeded(71);
+            let (schedule, mut boundaries) = if entropy {
+                Schedule::seeded(71)
+            } else {
+                Schedule::without_entropy(71)
+            };
             let source = Arc::new(OnceLock::new());
             let worker_source = Arc::clone(&source);
             let invocation = Invocation {
@@ -76,13 +80,7 @@ mod simulation {
             type Capture<'a> = Pin<
                 Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>,
             >;
-            let operation: Capture<'_> = if tracked {
-                Box::pin(operation)
-            } else {
-                // Reverting the worker handoff to plain Tokio loses the
-                // simulation context while leaving the native operation intact.
-                Box::pin(acyclic_native_runtime::testing::untracked(operation))
-            };
+            let operation: Capture<'_> = Box::pin(operation);
             let mut operation = Box::pin(schedule.scope(operation));
             let (output, custody) = loop {
                 tokio::select! {
@@ -122,6 +120,8 @@ mod simulation {
         let second = capture_probe(true)?;
         assert!(retained_sources(&first));
         assert_eq!(first, second, "real process handoff did not replay");
+        // Erase only the worker's entropy source. Keep its seeded executor,
+        // clock and physical terminal, including the same Pending control check.
         assert!(
             !retained_sources(&capture_probe(false)?),
             "source-erased process handoff escaped the same oracle"
