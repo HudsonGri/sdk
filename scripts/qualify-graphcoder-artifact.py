@@ -23,7 +23,8 @@ if executable is None:
 listed = subprocess.check_output([executable, "--list"], text=True)
 tests = [line.removesuffix(": test") for line in listed.splitlines()
          if line.endswith(": test")]
-prefixes = sys.argv[1:]
+whole_suite = "--suite" in sys.argv[1:]
+prefixes = [argument for argument in sys.argv[1:] if argument != "--suite"]
 if not prefixes:
     sys.exit("Qualification requires explicit test filters")
 for prefix in prefixes:
@@ -31,11 +32,15 @@ for prefix in prefixes:
         sys.exit(f"No tests matched qualification filter {prefix}")
 selected = [name for name in tests if name.startswith(tuple(prefixes))]
 print(f"Test executable: {executable}", flush=True)
-for name in selected:
+groups = [selected] if whole_suite else [[name] for name in selected]
+for names in groups:
     # Nested native process tests own their stdio pipes; do not pass the remote
     # build transport's descriptors into their process/runtime fixture.
+    command = [executable, *names, "--exact"]
+    if whole_suite:
+        command.append("--test-threads=1")
     try:
-        result = subprocess.run([executable, name, "--exact"], capture_output=True,
+        result = subprocess.run(command, capture_output=True,
                                 text=True, timeout=9)
     except subprocess.TimeoutExpired as error:
         for output, stream in [(error.stdout, sys.stdout), (error.stderr, sys.stderr)]:
