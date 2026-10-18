@@ -23,36 +23,33 @@ fn exited() -> ExitStatus {
 
 fn world<'a>(directory: &'a Path) -> EntryFuture<'a, Result<Trace>> {
     entry(async move {
-        let mut driver = Driver::new(71, None);
-        driver
-            .schedule
-            .set_process_provider(|request, check, observe| {
-                assert_eq!(request.command.get_args().last().unwrap(), "printf native");
-                assert!(request.command.get_current_dir().unwrap().is_absolute());
-                assert_eq!(request.timeout, Duration::from_secs(300));
-                assert!(request.maximum >= b"simulated bash".len());
-                assert!(request.input.is_none());
-                let fail = |error| ProcessCaptureFailure {
-                    error,
-                    status: None,
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                    cleanup_completed: true,
-                };
-                check().map_err(fail)?;
-                acyclic_native_runtime::testing::blocking_on(tokio::time::sleep(
-                    Duration::from_millis(2),
-                ));
-                let action = observe(ProcessOutput::Stdout(b"simulated bash")).map_err(fail)?;
-                assert!(action.bytes.is_empty());
-                assert!(!action.complete);
-                check().map_err(fail)?;
-                Ok(std::process::Output {
-                    status: exited(),
-                    stdout: b"simulated bash".to_vec(),
-                    stderr: Vec::new(),
-                })
-            });
+        let mut driver = Driver::with_process(71, |request, check, observe| {
+            assert_eq!(request.command.get_args().last().unwrap(), "printf native");
+            assert!(request.command.get_current_dir().unwrap().is_absolute());
+            assert_eq!(request.timeout, Duration::from_secs(300));
+            assert!(request.maximum >= b"simulated bash".len());
+            assert!(request.input.is_none());
+            let fail = |error| ProcessCaptureFailure {
+                error,
+                status: None,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                cleanup_completed: true,
+            };
+            check().map_err(fail)?;
+            acyclic_native_runtime::testing::blocking_on(tokio::time::sleep(
+                Duration::from_millis(2),
+            ));
+            let action = observe(ProcessOutput::Stdout(b"simulated bash")).map_err(fail)?;
+            assert!(action.bytes.is_empty());
+            assert!(!action.complete);
+            check().map_err(fail)?;
+            Ok(std::process::Output {
+                status: exited(),
+                stdout: b"simulated bash".to_vec(),
+                stderr: Vec::new(),
+            })
+        });
         let model = Model::new(
             "scripted".into(),
             "dst".into(),

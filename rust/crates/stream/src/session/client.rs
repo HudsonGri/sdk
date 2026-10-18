@@ -230,7 +230,7 @@ impl Client {
         let mut pool = Pool {
             connections: connections.clone(),
             executor: executor.clone(),
-            identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
+            identity: Bytes::copy_from_slice(crate::new_idempotency_key().as_bytes()),
             connect,
             home: String::new(),
             routes: Routes::new(),
