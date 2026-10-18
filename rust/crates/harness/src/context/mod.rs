@@ -30,7 +30,12 @@ pub use compaction::*;
 mod snapshot;
 pub use snapshot::*;
 mod manifest;
+pub(crate) use manifest::CatalogModel;
 pub use manifest::ContextManifest;
+pub(crate) mod skill_catalog;
+pub(crate) use skill_catalog::SKILL_ROOTS;
+pub use skill_catalog::{CatalogSkill, SkillCatalog};
+pub(crate) mod text;
 
 mod checkpoint;
 pub use checkpoint::*;

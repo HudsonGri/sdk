@@ -7,16 +7,12 @@ use crate::{
 
 pub(super) mod binding;
 #[cfg(feature = "native-execution")]
-mod budget;
-#[cfg(feature = "native-execution")]
 mod checkout;
 #[cfg(feature = "native-execution")]
 pub(super) mod environment;
 mod guidance;
 #[cfg(feature = "native-execution")]
 pub(super) mod skills;
-#[cfg(feature = "native-execution")]
-mod text;
 
 fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -89,7 +85,6 @@ impl LocalHarness {
             operation,
             None,
             self.limits,
-            None,
             self.input_publisher()?.as_ref(),
         )
         .await
@@ -101,7 +96,6 @@ impl LocalHarness {
         operation: OperationId,
         prompt: Option<&str>,
         limits: Limits,
-        task: Option<TaskId>,
         publisher: &dyn ContentPublisher,
     ) -> Result<FileRef> {
         if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
@@ -146,24 +140,15 @@ impl LocalHarness {
                     .conventions
                     .push(environment::render(&workspace.path, self.clock.now_unix_millis()).await);
                 let skills = self.checkout_skills(workspace, maximum).await?;
-                let model = self.capture_model(task).await?;
-                let output = match &self.compaction {
-                    crate::context::CompactionPolicy::Disabled => None,
-                    crate::context::CompactionPolicy::Threshold(policy) => {
-                        Some(policy.validate(self.provider.context_capacity(&model)?, None)?)
-                    }
-                };
-                let reference =
-                    budget::manifest_reference_bound(publisher.volume(), &path, limits)?;
-                let budget = budget::catalog_budget(
-                    &manifest,
-                    &model,
-                    prompt.unwrap_or_default(),
-                    output,
-                    &reference,
-                    limits,
-                )?;
-                manifest.conventions.extend(skills::frame(&skills, budget));
+                // The manifest pins the accepted catalog as data; each model
+                // request renders it against that model's own allowance.
+                // Carry what the manifest file has room for and count the rest.
+                let file = limits.file_bytes.min(limits.render_bytes);
+                let field = r#","skill_catalog":{"skills":,"unlisted":18446744073709551615}"#;
+                let used = crate::executor::json::json_byte_length(&manifest, file, &mut None)?
+                    .saturating_add(field.len() as u64);
+                manifest.skill_catalog =
+                    crate::context::SkillCatalog::bounded(skills, file.saturating_sub(used));
             }
         }
         let bytes = manifest.encode(limits)?;

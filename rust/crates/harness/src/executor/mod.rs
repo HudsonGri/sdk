@@ -40,6 +40,7 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
+pub(crate) use accounting::stock_context_capacity;
 mod binding;
 mod compaction;
 mod composition;

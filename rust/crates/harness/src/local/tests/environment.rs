@@ -100,7 +100,7 @@ async fn checkout_turns_carry_environment_facts_and_discovered_skills() -> Resul
 
     let workspace = harness.workspace.as_ref().expect("checkout workspace");
     let cwd = crate::local::context::environment::display(&workspace.path);
-    let skills = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n- release-notes: Draft release notes. (file: .agents/skills/release-notes/SKILL.md)\n- audit: Audit dependencies. (file: .claude/skills/audit/SKILL.md)\n</skills_instructions>";
+    let skills = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n2 skills available (list .agents/skills/ and .claude/skills/ to see all)\n- release-notes: Draft release notes. (file: .agents/skills/release-notes/SKILL.md)\n- audit: Audit dependencies. (file: .claude/skills/audit/SKILL.md)\n</skills_instructions>";
     let conventions: Vec<String> =
         serde_json::from_str(include_str!("../../context/instructions.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -154,9 +154,10 @@ async fn skill_discovery_exhausts_pages_and_refreshes_after_reopen() -> Result<(
     let (reference, before) = super::context::manifest(&harness, operation).await?;
     assert!(
         before
-            .conventions
+            .skill_catalog
+            .skills
             .iter()
-            .any(|text| text.contains("- last: original"))
+            .any(|skill| skill.name == "last" && skill.description == "original")
     );
     write(
         root,
@@ -186,15 +187,44 @@ async fn skill_discovery_exhausts_pages_and_refreshes_after_reopen() -> Result<(
     reopened.close().await
 }
 
-// A catalog larger than the render bound still starts turns: skills are listed
-// in discovery order until the budget is reached, and one line counts exactly
-// the rest. Negative control: sizing only the manifest overflows the request.
+/// The recorded causes of failed task commands.
+fn causes(trace: &str) -> String {
+    trace
+        .lines()
+        .filter(|line| {
+            let line = line.to_ascii_lowercase();
+            line.contains("cause") || line.contains("error") || line.contains("fail")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Collects formatted diagnostics so a test can read a failed command's cause.
+#[derive(Clone, Default)]
+struct Diagnostics(Arc<Mutex<Vec<u8>>>);
+impl std::io::Write for Diagnostics {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("diagnostics").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+// The shipping configuration (automatic compaction) starts a turn in a
+// checkout with 300 skills whose catalog exceeds the model's whole capacity. The manifest pins every skill as data; the request
+// lists the longest prefix within 5% of the model's usable input and one line
+// counts exactly the rest. Negative control: the byte-only budget renders the
+// whole catalog into the manifest, and with compactable history behind it the
+// next turn still cannot start.
 #[tokio::test]
-async fn oversized_skill_catalog_is_counted_not_fatal() -> Result<()> {
+async fn oversized_skill_catalog_fits_the_model_allowance() -> Result<()> {
     const SKILLS: usize = 300;
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let root = directory.path();
-    let mut catalog = Vec::new();
+    let mut skills = Vec::new();
     for index in 0..SKILLS {
         let path = format!(".agents/skills/s{index:03}/SKILL.md");
         let text = format!(
@@ -202,95 +232,132 @@ async fn oversized_skill_catalog_is_counted_not_fatal() -> Result<()> {
             "d".repeat(1000)
         );
         write(root, &path, &text)?;
-        catalog.extend(crate::local::context::skills::listed(text.as_bytes(), path));
+        skills.extend(crate::local::context::skills::listed(text.as_bytes(), path));
     }
-    // Negative control: an invalid entry is skipped without ending the scan.
+    // An invalid entry is skipped without ending the scan.
     write(root, ".agents/skills/r-broken/SKILL.md", "no frontmatter")?;
-    // Referenced instruction bodies consume render space only after projection.
-    write(root, "AGENTS.md", &"x".repeat(64_000))?;
-    for limits in [
-        crate::conversation::Limits {
-            render_bytes: 256 * 1024,
-            ..crate::conversation::Limits::default()
-        },
-        crate::conversation::Limits {
-            file_bytes: 128 * 1024,
-            ..crate::conversation::Limits::default()
-        },
-    ] {
-        let state = tempfile::tempdir().map_err(super::super::storage)?;
-        let provider = scripted([ScriptedTurn::Text("first".into())]);
-        // This fixture exercises byte admission. The shared checkout factory
-        // disables token compaction: this provider counts one token per byte
-        // and its 32 KiB token capacity cannot admit even this AGENTS.md alone.
-        let config = checkout_config(root, (model()?, provider.clone()))?
-            .state_directory(state.path())
-            .clock(Arc::new(Clock))
-            .limits(limits);
-        let harness = LocalHarness::open(config).await?;
-        let operation = OperationId::new();
-        let task = super::context::admitted(harness.submit(operation, "hello").await?)?;
-        assert_eq!(harness.resume(task).await?.text, "first");
-        let (_, mut manifest) = super::context::manifest(&harness, operation).await?;
-        let index = manifest
-            .conventions
-            .iter()
-            .position(|text| text.starts_with("<skills_instructions>"))
-            .expect("skill catalog");
-        let block = &manifest.conventions[index];
-        let listed = block
-            .lines()
-            .filter(|line| line.contains(" (file: "))
-            .count();
-        assert!(listed > 0 && listed < SKILLS, "{listed}");
-        for (line, skill) in block
-            .lines()
-            .filter(|line| line.contains(" (file: "))
-            .zip(&catalog)
-        {
-            assert!(line.starts_with(&format!("- {}: ", skill.name)));
-        }
-        assert!(block.contains(&crate::local::context::skills::omission(SKILLS - listed)));
-        let encoded = manifest.encode(limits)?.len() as u64;
-        let bodies = manifest
-            .discovery
-            .instructions
-            .iter()
-            .try_fold(0, |sum, instruction| {
-                instruction.source().framed_bytes().map(|bytes| sum + bytes)
-            })?;
-        assert!(encoded <= limits.file_bytes);
-        let mut request = provider.requests().pop().expect("model request");
-        // Proof that the original fixture's automatic-compaction setting is
-        // incompatible with these byte-bound cases, independent of catalog fit.
-        let prepared = crate::model::PreparedModelRequest::prepare(request.clone(), limits, None)?;
-        let count = provider.count_tokens(&prepared).await?;
-        assert!(count.validate(&prepared, &mut None)? > u64::from(capacity().context_tokens));
-        assert!(
-            serde_json::to_vec(&request)
-                .map_err(super::super::storage)?
-                .len() as u64
-                + bodies
-                <= limits.render_bytes
-        );
-
-        // Negative control: use the original manifest-only budget through the
-        // same renderer, then replace its message in the actual built request.
-        manifest.conventions.remove(index);
-        let used = manifest.encode(limits)?.len() as u64;
-        let old_budget = limits.render_bytes.saturating_sub(used).saturating_sub(1);
-        manifest
-            .conventions
-            .push(crate::local::context::skills::frame(&catalog, old_budget).expect("old catalog"));
-        let encoded = serde_json::to_vec(&manifest)
-            .map_err(super::super::storage)?
-            .len() as u64;
-        request.messages.iter_mut().find(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("<skills_instructions>"))).expect("catalog message").content = ModelContent::Text(manifest.conventions.last().unwrap().clone());
-        let request_bytes = serde_json::to_vec(&request)
-            .map_err(super::super::storage)?
-            .len() as u64;
-        assert!(encoded > limits.file_bytes || request_bytes + bodies > limits.render_bytes);
-        harness.close().await?;
+    let catalog = crate::context::SkillCatalog {
+        skills,
+        unlisted: 0,
+    };
+    // A failed command's cause is visible only in its trace.
+    let diagnostics = Diagnostics::default();
+    let writer = diagnostics.clone();
+    let _diagnostics = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
+    let traced = || String::from_utf8_lossy(&diagnostics.0.lock().expect("diagnostics")).into_owned();
+    // A large model: its 5% allowance lists a few entries, while the whole
+    // catalog still exceeds its capacity.
+    let capacity = ModelContextCapacity {
+        context_tokens: 200_000,
+        output_tokens: 16_384,
+    };
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Text("first".into()),
+        ])
+        .with_context_capacity(capacity),
+    );
+    let config = || -> Result<LocalHarnessConfig> {
+        Ok(
+            crate::test_support::local_harness_config(root, (model()?, provider.clone()))?
+                .state_directory(state.path())
+                .clock(Arc::new(Clock)),
+        )
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let crate::context::CompactionPolicy::Threshold(policy) = harness.compaction.clone() else {
+        panic!("the shipping configuration compacts automatically");
+    };
+    let allowance = crate::context::skill_catalog::token_allowance(
+        capacity.context_tokens,
+        policy.response_reserve_tokens,
+    );
+    let operation = OperationId::new();
+    let task = super::context::admitted(harness.submit(operation, "hello").await?)?;
+    let first = harness.resume(task).await;
+    assert!(first.is_ok(), "{:?}\n{}", first.as_ref().err(), causes(&traced()));
+    assert_eq!(first?.text, "first");
+    let (_, manifest) = super::context::manifest(&harness, operation).await?;
+    assert_eq!(manifest.skill_catalog, catalog);
+    let request = provider.requests().pop().expect("model request");
+    let (system, _) = system_text(&request);
+    let block = system
+        .iter()
+        .find(|text| text.starts_with("<skills_instructions>"))
+        .expect("skill catalog");
+    let block_bytes = serde_json::to_string(block)
+        .map_err(super::super::storage)?
+        .len() as u64;
+    assert!(block_bytes <= allowance, "{block_bytes} > {allowance}");
+    let listed = block
+        .lines()
+        .filter(|line| line.contains(" (file: "))
+        .count();
+    assert!(listed > 0 && listed < SKILLS, "{listed}");
+    assert_eq!(
+        catalog.render(allowance).as_deref(),
+        Some(block.as_str()),
+        "the longest prefix within the allowance"
+    );
+    for (line, skill) in block
+        .lines()
+        .filter(|line| line.contains(" (file: "))
+        .zip(&catalog.skills)
+    {
+        assert!(line.starts_with(&format!("- {}: ", skill.name)));
     }
+    assert!(block.contains(&format!(
+        "- {}{}",
+        SKILLS - listed,
+        crate::context::skill_catalog::OMITTED
+    )));
+    // The admitted request leaves the response reserve free.
+    let prepared = crate::model::PreparedModelRequest::prepare(request, harness.limits, None)?;
+    let count = provider.count_tokens(&prepared).await?;
+    assert!(!policy.needs_compaction(capacity, count.validate(&prepared, &mut None)?)?);
+
+    // Negative control: the byte-only budget sized the block to what the
+    // manifest file left of the render bound, and pinned it rendered.
+    let mut bytes_only = manifest;
+    bytes_only.skill_catalog = crate::context::SkillCatalog::default();
+    let limits = harness.limits;
+    let used = serde_json::to_vec(&bytes_only)
+        .map_err(super::super::storage)?
+        .len() as u64;
+    bytes_only.conventions.push(
+        catalog
+            .render(limits.render_bytes - used - 1)
+            .expect("byte-only catalog"),
+    );
+    let reference = bytes_only
+        .publish(
+            harness.input_publisher()?.as_ref(),
+            OperationId::new(),
+            "inputs/byte-only.manifest.json",
+            limits,
+        )
+        .await?;
+    harness.close().await?;
+    let reopened = LocalHarness::open(config()?.context_manifest(reference)).await?;
+    diagnostics.0.lock().expect("diagnostics").clear();
+    let task = super::context::admitted(reopened.submit(OperationId::new(), "hello").await?)?;
+    let rejected = reopened.resume(task).await;
+    assert!(rejected.is_err(), "the byte-only catalog was admitted");
+    assert_eq!(provider.requests().len(), 1, "nothing was dispatched");
+    // Each turn starts its own context, so only the mandatory system
+    // content and prompt remain and compaction has nothing to drop.
+    let diagnostics = causes(&traced());
+    assert!(
+        diagnostics.contains("mandatory content leaves no compaction source"),
+        "{:?}\n{diagnostics}",
+        rejected.err()
+    );
+    // The indeterminate turn stays unfinished, so the harness is dropped.
     Ok(())
 }

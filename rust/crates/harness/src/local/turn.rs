@@ -4,12 +4,6 @@ use acyclic_stream::BoxProviderFuture;
 
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
-enum ModelSelection {
-    Global,
-    Prepared(TaskId),
-    Admitted(TaskId),
-}
-
 impl LocalHarness {
     /// Stock command bindings using retained task inheritance.
     pub(super) async fn stock_commands(
@@ -30,16 +24,6 @@ impl LocalHarness {
     }
 
     pub(super) async fn command_model(&self, task: Option<TaskId>) -> Result<Model> {
-        self.selected_model(task.map_or(ModelSelection::Global, ModelSelection::Admitted))
-            .await
-    }
-
-    pub(super) async fn capture_model(&self, task: Option<TaskId>) -> Result<Model> {
-        self.selected_model(task.map_or(ModelSelection::Global, ModelSelection::Prepared))
-            .await
-    }
-
-    async fn selected_model(&self, selection: ModelSelection) -> Result<Model> {
         let mut model = self.model.clone();
         let settings = self
             .task_files
@@ -69,13 +53,10 @@ impl LocalHarness {
                     .into();
             }
         }
-        let name = match selection {
-            ModelSelection::Global => None,
-            ModelSelection::Prepared(task) => self.prepared_value(task, "model").await?,
-            ModelSelection::Admitted(task) => self.resolved_value(task, "model").await?,
-        };
-        if let Some(name) = name {
-            model.name = name;
+        if let Some(task) = task {
+            if let Some(name) = self.resolved_value(task, "model").await? {
+                model.name = name;
+            }
         }
         model.validate()?;
         Ok(model)
@@ -361,14 +342,8 @@ impl LocalHarness {
         Ok(match &self.context_manifest {
             Some(reference) => reference.clone(),
             None => {
-                self.stage_context_manifest_with(
-                    operation,
-                    Some(prompt),
-                    limits,
-                    Some(crate::runtime::task_id_for_admission(operation)),
-                    publisher,
-                )
-                .await?
+                self.stage_context_manifest_with(operation, Some(prompt), limits, publisher)
+                    .await?
             }
         })
     }

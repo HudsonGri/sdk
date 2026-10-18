@@ -313,19 +313,6 @@ impl LocalHarness {
             Ok(inherited[field].as_str().map(str::to_owned))
         }
     }
-
-    // Capture precedes root admission. Use only the bindings already prepared
-    // as files; the legacy admitted-task ancestry fallback is unavailable here.
-    pub(super) async fn prepared_value(&self, task: TaskId, field: &str) -> Result<Option<String>> {
-        if let Some(value) = self.own_value(task, field).await? {
-            return Ok(Some(value));
-        }
-        Ok(
-            read_inheritance(&self.task_files.inner, task, self.limits.file_bytes)
-                .await?
-                .and_then(|value| value[field].as_str().map(str::to_owned)),
-        )
-    }
     async fn own_value(&self, task: TaskId, field: &str) -> Result<Option<String>> {
         let name = if field == "model" {
             "settings"

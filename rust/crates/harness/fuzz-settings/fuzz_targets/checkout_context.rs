@@ -10,11 +10,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[path = "../../src/local/context/skills/catalog.rs"]
 mod catalog;
 #[path = "../../src/context/discovery/frontmatter.rs"]
-mod context;
+mod frontmatter;
 #[path = "../../src/local/context/environment/porcelain.rs"]
 mod porcelain;
-#[path = "../../src/local/context/text.rs"]
+#[path = "../../src/context/skill_catalog.rs"]
+mod skill_catalog;
+#[path = "../../src/context/text.rs"]
 mod text;
+mod context {
+    pub(crate) use crate::frontmatter::parse_frontmatter;
+    pub(crate) use crate::skill_catalog::CatalogSkill;
+}
 
 use libfuzzer_sys::fuzz_target;
 
@@ -36,9 +42,14 @@ fuzz_target!(|input: &[u8]| {
             Some(skill)
         );
         let skill = catalog::listed(input, String::from_utf8_lossy(input).into_owned()).unwrap();
-        let rendered = catalog::frame(&[skill], u64::MAX).unwrap();
+        let rendered = skill_catalog::SkillCatalog {
+            skills: vec![skill],
+            unlisted: 0,
+        }
+        .render(u64::MAX)
+        .unwrap();
         assert_eq!(rendered.matches('<').count(), 2);
-        assert_eq!(rendered.lines().count(), 6);
+        assert_eq!(rendered.lines().count(), 7);
         assert!(!rendered.contains(['\u{B}', '\u{C}', '\r', '\u{85}', '\u{2028}', '\u{2029}']));
     }
     assert!(porcelain::summarize(input, true).ends_with("more changes not counted"));
