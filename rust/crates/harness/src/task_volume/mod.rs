@@ -314,8 +314,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         };
         if initialize {
             let header = Header {
-                volume: Uuid::new_v4(),
-                epoch: Uuid::new_v4(),
+                volume: crate::identity::fresh_uuid(),
+                epoch: crate::identity::fresh_uuid(),
                 schema: SCHEMA,
             };
             provider
@@ -522,7 +522,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 path: self.path.clone(),
                 records: vec![segment],
             }],
-            idempotency_key: IdempotencyKey::new(Uuid::new_v4().as_bytes().to_vec())?,
+            idempotency_key: IdempotencyKey::new(crate::identity::fresh_uuid().as_bytes().to_vec())?,
         };
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.

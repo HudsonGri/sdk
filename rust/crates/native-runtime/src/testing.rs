@@ -7,6 +7,8 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::sync::Mutex;
+mod entropy;
+pub use entropy::fill_seeded;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(test)]
@@ -16,6 +18,7 @@ mod queue;
 mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
+tokio::task_local! { static BLOCKING_ENTROPY: Option<Arc<entropy::Source>>; }
 
 /// A submitted operation paused before execution or acknowledgement.
 pub struct Boundary {
@@ -45,8 +48,9 @@ struct State {
 
 struct Inner {
     events: mpsc::UnboundedSender<Boundary>,
-    // Sole lock. Never held across an await, user callback, send, or wake.
+    // Never nested with the entropy lock, or held across callbacks/awaits/wakes.
     state: Mutex<State>,
+    entropy: Option<Arc<entropy::Source>>,
 }
 
 impl Inner {
@@ -92,11 +96,24 @@ impl Drop for Active {
 impl Schedule {
     /// Creates the push receiver used by a deterministic test driver.
     pub fn new() -> (Self, mpsc::UnboundedReceiver<Boundary>) {
+        Self::with_entropy(None)
+    }
+
+    /// Creates a simulation scope with one reproducible identity stream.
+    /// It never replaces host entropy outside this scope and its descendants.
+    pub fn seeded(seed: u64) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
+        Self::with_entropy(Some(Arc::new(entropy::Source::new(seed))))
+    }
+
+    fn with_entropy(
+        entropy: Option<Arc<entropy::Source>>,
+    ) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
         let (events, receiver) = mpsc::unbounded_channel();
         (
             Self(Arc::new(Inner {
                 events,
                 state: Mutex::new(State::default()),
+                entropy,
             })),
             receiver,
         )
@@ -255,9 +272,14 @@ where
             async move {
                 let _active = active;
                 owned.pause("blocking:submitted").await;
+                let entropy = owned.schedule.0.entropy.clone();
                 let result = blocking_on_service(move || {
-                    let _inline = crate::InlineBlocking::enter();
-                    work()
+                    BLOCKING_ENTROPY.sync_scope(entropy, || {
+                        CURRENT.sync_scope(None, || {
+                            let _inline = crate::InlineBlocking::enter();
+                            work()
+                        })
+                    })
                 })
                 .await;
                 owned.pause("blocking:completed").await;

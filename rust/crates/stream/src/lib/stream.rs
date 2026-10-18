@@ -151,5 +151,12 @@ impl<P: StreamProvider> Replay<P> {
 }
 
 fn new_idempotency_key() -> IdempotencyKey {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    {
+        let mut bytes = [0; 16];
+        if acyclic_native_runtime::testing::fill_seeded(&mut bytes) {
+            return IdempotencyKey(Bytes::copy_from_slice(&bytes));
+        }
+    }
     IdempotencyKey(Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()))
 }
