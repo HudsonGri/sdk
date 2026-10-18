@@ -2,15 +2,15 @@ use crate::source;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{CRATE_DEF_ID, LocalDefId};
 use rustc_middle::ty::{self, TyCtxt};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 pub(super) fn roots(
     tcx: TyCtxt<'_>,
     root: &Path,
     models: &BTreeSet<String>,
-) -> BTreeMap<LocalDefId, String> {
-    let mut roots = BTreeMap::new();
+) -> HashMap<LocalDefId, String> {
+    let mut roots = HashMap::new();
     for owner in tcx.hir_body_owners() {
         let Some(file) = source(tcx, root, tcx.def_span(owner)) else {
             continue;
@@ -33,7 +33,7 @@ pub(super) fn roots(
 
 pub(super) fn model<'a>(
     tcx: TyCtxt<'_>,
-    roots: &'a BTreeMap<LocalDefId, String>,
+    roots: &'a HashMap<LocalDefId, String>,
     mut owner: LocalDefId,
 ) -> Option<&'a String> {
     loop {
@@ -49,10 +49,10 @@ pub(super) fn model<'a>(
 
 pub(super) fn declarations(
     tcx: TyCtxt<'_>,
-    roots: &BTreeMap<LocalDefId, String>,
+    roots: &HashMap<LocalDefId, String>,
 ) -> Vec<(String, String, bool)> {
     let mut found = Vec::new();
-    for item in tcx.hir_crate_items(()).items() {
+    for item in tcx.hir_crate_items(()).free_items() {
         let item = tcx.hir_item(item);
         let owner = item.owner_id.def_id;
         let Some(file) = model(tcx, roots, owner) else {

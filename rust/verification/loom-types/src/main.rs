@@ -158,7 +158,9 @@ fn main() -> std::process::ExitCode {
     }
     let mut check = Check::default();
     if let Ok(root) = std::env::var("LOOM_MODEL_ROOT") {
-        check.root = root.into();
+        check.root = PathBuf::from(root)
+            .canonicalize()
+            .expect("resolve model source root");
         check.models =
             std::fs::read_to_string(std::env::var("LOOM_MODEL_FILES").expect("model list"))
                 .expect("read model list")
