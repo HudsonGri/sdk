@@ -241,26 +241,59 @@ impl Fixture {
 async fn pi_approval_journal_construction_always_attaches_checked_files() {
     use acyclic_harness::{core::SchemaRegistry, filesystem::FilesystemExecutionJournal};
     let mut policy = root_policy();
-    policy.grants = Capabilities::new(
-        policy.grants.iter().map(str::to_owned).chain([
-            "interaction:route".to_owned(),
-            "interaction:open".to_owned(),
-        ]),
-    );
-    let fixture = Fixture::with_policy(policy).await;
-    let task = fixture.request.binding.task_id;
-    fixture
-        .runtime
-        .admit_root(
-            &fixture.request.binding,
-            &fixture.request.root,
-            &fixture.command,
-            &fixture.work,
+    policy.grants = Capabilities::new(policy.grants.iter().map(str::to_owned).chain([
+        "interaction:route".to_owned(),
+        "interaction:open".to_owned(),
+    ]));
+    let directory = tempfile::tempdir().unwrap();
+    let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await
+    .unwrap();
+    let (protected, filesystem, request) = root_input_fixture(directory.path(), &raw, policy).await;
+    let work = work();
+    let storage = protected.authority(&work).unwrap();
+    let grant = ContentGrant::verify(
+        &storage.verifier,
+        &storage.signed,
+        &protected.policy.journal,
+        VolumeOperation::Write,
+        protected.policy.maximum_payload_bytes,
+        &mut None,
+    )
+    .unwrap();
+    // Construction needs an admitted task, but does not execute its command.
+    let command = WorkflowCommand {
+        operation_id: crate::pi_root_inputs::preparation_operation(
+            protected.policy.root_task,
+            &work,
         )
+        .unwrap(),
+        kind: acyclic_harness::filesystem::EFFECT_TASK_COMMAND_KIND.into(),
+        payload: filesystem
+            .put_content(
+                &protected.policy.journal,
+                &grant,
+                "constructor.json",
+                b"{}",
+                "application/json",
+                "constructor.json",
+                protected.policy.maximum_payload_bytes,
+                &IdempotencyKey::new("constructor-fixture").unwrap(),
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+    };
+    let runtime = open(directory.path(), &protected, filesystem.clone(), &work).await;
+    let task = request.binding.task_id;
+    runtime
+        .admit_root(&request.binding, &request.root, &command, &work)
         .await
         .unwrap();
-    let lease = match fixture
-        .runtime
+    let lease = match runtime
         .runtime
         .task_host()
         .recover_work(task, &mut None)
@@ -271,47 +304,40 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
         _ => panic!("expected the admitted root lease"),
     };
     let fence = acyclic_harness::scheduler::LeaseFence::from(&lease.reservation);
-    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&fixture.work).unwrap();
-    let storage = fixture.owner.authority(&fixture.work).unwrap();
-    let conversation = fixture
-        .owner
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap();
+    let conversation = protected
         .conversation_authority_with_native_work(
             task,
-            fixture.owner.policy.agent,
+            protected.policy.agent,
             storage.signed.capabilities(),
-            &fixture.work,
+            &work,
         )
         .unwrap();
     let verifier = conversation.0.1.verifier(&mut Some(&mut &io)).unwrap();
     let binding = || acyclic_harness::filesystem::FilesystemJournalBinding {
-        volume: &fixture.owner.policy.journal,
+        volume: &protected.policy.journal,
         verifier: &storage.verifier,
         scope: &storage.signed,
-        maximum_bytes: fixture.owner.policy.maximum_payload_bytes,
+        maximum_bytes: protected.policy.maximum_payload_bytes,
         io: Some(&io),
     };
     // Both Pi command and prepared-writeback callers use this constructor,
     // then bind their selected private interaction content volume.
-    for private in [
-        &fixture.owner.policy.journal,
-        &fixture.request.binding.scratch.volume,
-    ] {
+    for private in [&protected.policy.journal, &request.binding.scratch.volume] {
         for attached in [false, true] {
-            let owner = fixture
-                .runtime
+            let owner = runtime
                 .runtime
                 .task_host()
                 .journal_owner(task, &fence, Some(&io))
                 .await
                 .unwrap();
             let journal = if attached {
-                fixture
-                    .runtime
+                runtime
                     .execution_journal(
                         owner,
-                        fixture.command.operation_id,
-                        fixture.command.operation_id,
-                        fixture.filesystem.clone(),
+                        command.operation_id,
+                        command.operation_id,
+                        filesystem.clone(),
                         binding(),
                     )
                     .unwrap()
@@ -319,9 +345,9 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
                 // Negative control restores the old caller construction.
                 FilesystemExecutionJournal::for_task(
                     owner,
-                    fixture.command.operation_id,
-                    fixture.command.operation_id,
-                    fixture.filesystem.clone(),
+                    command.operation_id,
+                    command.operation_id,
+                    filesystem.clone(),
                     binding(),
                 )
                 .unwrap()
