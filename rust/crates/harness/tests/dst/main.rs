@@ -190,7 +190,12 @@ fn prompt<'a>(
             &mut jsonl,
         ))
         .await;
-        assert_eq!(entry(connection.finish(outcome)).await?.exit_code(), 0);
+        assert_eq!(
+            entry(connection.finish(outcome)).await?.exit_code(),
+            0,
+            "headless outcome: {}",
+            String::from_utf8_lossy(&jsonl)
+        );
         assert_eq!(jsonl.last(), Some(&b'\n'), "incomplete JSONL frame");
         let text = std::str::from_utf8(&jsonl).map_err(storage)?;
         for line in text.lines() {
