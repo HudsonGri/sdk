@@ -22,7 +22,7 @@ pub(super) fn lock<'tcx>(
             if instance.def_id() != owner.to_def_id() {
                 continue;
             }
-            let ty = ty::EarlyBinder::bind(ty).instantiate(tcx, instance.args);
+            let ty = ty::EarlyBinder::bind(tcx, ty).instantiate(tcx, instance.args);
             owned |= crate::types::lock(tcx, owner, ty, default, 0)?;
             found = true;
         }
