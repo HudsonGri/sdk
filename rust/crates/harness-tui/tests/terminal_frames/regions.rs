@@ -19,6 +19,16 @@ fn one_native_submission(calls: u64, writes: u64, frames: usize, idle: bool) {
     }
 }
 
+fn scene(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
+    move |frame| {
+        let lines: Vec<Line<'_>> = (offset..offset + usize::from(frame.area().height))
+            .map(|row| Line::raw(format!("row{row:04}")))
+            .collect();
+        frame.render_widget(Paragraph::new(lines), frame.area());
+        frame.set_cursor_position((2, frame.area().height - 1));
+    }
+}
+
 /// Native kernel/device cost, paired with the independently initialized old
 /// terminal. Run in ConPTY on Windows and a drained kernel PTY on Unix.
 #[test]
@@ -32,7 +42,9 @@ fn real_terminal_region_cost() -> io::Result<()> {
         "native profile must enable the measured path"
     );
     let mut report = String::new();
-    for frames in [32, 64] {
+    // Keep even the intentionally unbuffered old Windows path below the suite
+    // ceiling. Cell-work properties independently cover 4000/8000-cell screens.
+    for frames in [2, 4] {
         for path in ["per-command", "frame", "regions"] {
             output.write_all(b"\x1b[0m\x1b[r\x1b[2J")?;
             let calls = Rc::new(Count::new(0));
@@ -47,11 +59,11 @@ fn real_terminal_region_cost() -> io::Result<()> {
                         viewport: Viewport::Fixed(area),
                     },
                 )?;
-                terminal.draw(scrolled(0))?;
+                terminal.draw(scene(0))?;
                 old = Some(terminal);
             } else {
                 let mut terminal = FrameTerminal::new(device, size)?;
-                terminal.draw(size, scrolled(0))?;
+                terminal.draw(size, scene(0))?;
                 new = Some(terminal);
             }
             for idle in [false, true] {
@@ -65,14 +77,14 @@ fn real_terminal_region_cost() -> io::Result<()> {
                         for step in 1..=frames {
                             let offset = if idle { frames } else { step };
                             if let Some(terminal) = old.as_mut() {
-                                terminal.draw(scrolled(offset))?;
+                                terminal.draw(scene(offset))?;
                             }
                             if let Some(terminal) = new.as_mut() {
                                 let hint = (path == "regions" && !idle).then_some(RegionScroll {
                                     region: area,
                                     rows: 1,
                                 });
-                                terminal.draw_scrolled(size, hint, scrolled(offset))?;
+                                terminal.draw_scrolled(size, hint, scene(offset))?;
                             }
                         }
                         Ok(())
