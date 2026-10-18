@@ -158,7 +158,10 @@ async fn schedule_accounted<A: AsyncAuthorityStore>(
     conditional: bool,
     case: accounting::Case,
 ) -> Result<accounting::Report> {
-    let name = format!("publication-cut-{mode:?}-{conditional}");
+    let name = format!(
+        "publication-cut-{mode:?}-{conditional}-{}",
+        case.directories_only
+    );
     let barrier = Arc::new(Mutex::new(None));
     let authority = ScheduledAuthority {
         inner,
@@ -215,6 +218,8 @@ async fn schedule_accounted<A: AsyncAuthorityStore>(
             bytes: b"right".as_slice().into(),
         },
     ];
+    let left = &left[..if case.directories_only { 1 } else { 2 }];
+    let right = &right[..if case.directories_only { 1 } else { 2 }];
     let first_key = IdempotencyKey::new("left")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
@@ -227,7 +232,7 @@ async fn schedule_accounted<A: AsyncAuthorityStore>(
         &host,
         &workspace,
         conditional.then_some(&expected),
-        &left,
+        left,
         &first_key,
         mode,
         io.as_ref(),
@@ -243,7 +248,7 @@ async fn schedule_accounted<A: AsyncAuthorityStore>(
         &host,
         &workspace,
         None,
-        &right,
+        right,
         &IdempotencyKey::new("right")?,
         mode,
     )
@@ -253,6 +258,11 @@ async fn schedule_accounted<A: AsyncAuthorityStore>(
     second?;
     let report = accounting::verify(&audit, io.as_ref(), &first)?;
     if case.limit.is_some() || case.cancel {
+        assert!(
+            host.operation_generation(&workspace, &first_key, None)
+                .await?
+                .is_none()
+        );
         assert!(
             host.read(&workspace, None, "/shared/left", 16, None)
                 .await
@@ -272,6 +282,15 @@ async fn schedule_accounted<A: AsyncAuthorityStore>(
             ),
             "explicit generation lost its fence: {first:?}"
         );
+        if case.directories_only {
+            host.stat(&workspace, None, "/shared").await?;
+            assert!(
+                host.operation_generation(&workspace, &first_key, None)
+                    .await?
+                    .is_none()
+            );
+            return Ok(report);
+        }
         assert!(
             host.read(&workspace, None, "/shared/left", 16, None)
                 .await
@@ -287,10 +306,19 @@ async fn schedule_accounted<A: AsyncAuthorityStore>(
     }
     let committed = first?;
     assert_eq!(
-        publish(&host, &workspace, None, &left, &first_key, mode).await?,
+        publish(&host, &workspace, None, left, &first_key, mode).await?,
         committed,
         "retry lost the original operation identity"
     );
+    let recorded = host
+        .operation_generation(&workspace, &first_key, None)
+        .await?
+        .expect("successful publication did not durably seal its operation");
+    assert_eq!(host.generation_ref_id(recorded.id(), None)?, committed);
+    if case.directories_only {
+        host.stat(&workspace, Some(&committed), "/shared").await?;
+        return Ok(report);
+    }
     for (path, expected) in [
         ("/shared/left", b"left".as_slice()),
         ("/shared/right", b"right".as_slice()),
@@ -314,6 +342,32 @@ async fn unconditional_publication_retries_a_competing_directory_creation() -> R
     }
     Ok(())
 }
+
+macro_rules! directory_only_proof {
+    ($name:ident, $mode:ident) => {
+        #[tokio::test]
+        async fn $name() -> Result<()> {
+            for conditional in [false, true] {
+                schedule_accounted(
+                    MemoryAuthorityBackend::new(Arc::new(acyclic_stream::MemoryStream::default())),
+                    Mode::$mode,
+                    conditional,
+                    accounting::Case {
+                        directories_only: true,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+            Ok(())
+        }
+    };
+}
+
+directory_only_proof!(directory_only_retry_raw, Raw);
+directory_only_proof!(directory_only_retry_batched, Batched);
+directory_only_proof!(directory_only_retry_measured, Measured);
+directory_only_proof!(directory_only_retry_native, Native);
 
 #[cfg(feature = "grpc")]
 #[tokio::test]
@@ -380,16 +434,27 @@ async fn http_proof(restore: bool) {
     // above with MemoryStream, which implements the native provider contract.
     for mode in [Mode::Batched, Mode::Raw, Mode::Measured] {
         for conditional in [false, true] {
-            // Each schedule owns a separate logical workspace and authority.
-            let authority = acyclic_fs::StreamAuthorityStore::new(Arc::new(client.clone()));
-            let result = schedule(authority, mode, conditional).await;
-            if restore && !conditional {
-                assert!(result.is_err(), "HTTP conflict control escaped {mode:?}");
-            } else {
-                assert!(
-                    result.is_ok(),
-                    "HTTP publication retry proof {mode:?}: {result:?}"
-                );
+            for directories_only in [false, true] {
+                // Each schedule owns a separate logical workspace and authority.
+                let authority = acyclic_fs::StreamAuthorityStore::new(Arc::new(client.clone()));
+                let result = schedule_accounted(
+                    authority,
+                    mode,
+                    conditional,
+                    accounting::Case {
+                        directories_only,
+                        ..Default::default()
+                    },
+                )
+                .await;
+                if restore && !conditional {
+                    assert!(result.is_err(), "HTTP conflict control escaped {mode:?}");
+                } else {
+                    assert!(
+                        result.is_ok(),
+                        "HTTP publication retry proof {mode:?}: {result:?}"
+                    );
+                }
             }
         }
     }

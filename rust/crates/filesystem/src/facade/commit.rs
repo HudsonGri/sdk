@@ -120,32 +120,61 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         F: FnMut(WorkBudget) -> Fut + ProviderTask,
         Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
     {
-        if !self.has_pending_mutations()
+        let prior = if !self.has_pending_mutations()
             && permit == PublicationPermit::Unrestricted
             && operation_context.is_none()
             && operation_evidence.is_none()
         {
-            return self
+            let resolved = self
                 .resolve_clean_commit(operation_id, budget, cancellation)
                 .await
-                .map_err(|failure| failure.map_error(E::from));
-        }
+                .map_err(|failure| failure.map_error(E::from))?;
+            if let Some(value) = resolved.value {
+                return Ok(OperationReceipt {
+                    value,
+                    work: resolved.work,
+                });
+            }
+            Some(resolved.work)
+        } else {
+            None
+        };
         let expected = self.authority_head.ok_or_else(|| {
-            OperationFailure::before_work(E::from(FsError::WritableCheckoutRequiresHead))
+            OperationFailure::new(
+                E::from(FsError::WritableCheckoutRequiresHead),
+                prior.unwrap_or_default(),
+            )
         })?;
-        self.publish_pending_against(
-            operation_id,
-            operation_context,
-            operation_evidence,
-            original_fingerprint_permit,
-            permit,
-            expected,
-            budget,
-            cancellation,
-            before_publication,
-            None,
-            None,
-        )
-        .await
+        let allowance = match prior {
+            Some(work) => remaining(work, budget).map_err(|failure| failure.map_error(E::from))?,
+            None => budget,
+        };
+        let result = self
+            .publish_pending_against(
+                operation_id,
+                operation_context,
+                operation_evidence,
+                original_fingerprint_permit,
+                permit,
+                expected,
+                allowance,
+                cancellation,
+                before_publication,
+                None,
+                None,
+            )
+            .await;
+        let Some(prior) = prior else { return result };
+        let receipt = result.map_err(|mut failure| match add(prior, *failure.work) {
+            Ok(work) => {
+                *failure.work = work;
+                failure
+            }
+            Err(failure) => failure.map_error(E::from),
+        })?;
+        Ok(OperationReceipt {
+            value: receipt.value,
+            work: add(prior, receipt.work).map_err(|failure| failure.map_error(E::from))?,
+        })
     }
 }

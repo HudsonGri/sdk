@@ -4,6 +4,7 @@ use std::cell::RefCell;
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct Case {
+    pub directories_only: bool,
     pub limit: Option<u64>,
     pub cancel: bool,
     pub reset: bool,
@@ -344,36 +345,42 @@ async fn every_publication_path_rejects_the_conflict_control() {
 #[tokio::test]
 async fn retries_keep_exact_work_identity_budget_and_cancellation_with_controls() -> Result<()> {
     for mode in [Mode::Measured, Mode::Native] {
-        let baseline = schedule_accounted(memory(), mode, false, Case::default()).await?;
-        let limit = baseline
-            .retry_prefix
-            .expect("schedule never reached the retry");
-        for case in [
-            Case::default(),
-            Case {
-                limit: Some(limit),
+        for directories_only in [false, true] {
+            let base = Case {
+                directories_only,
                 ..Default::default()
-            },
-            Case {
-                cancel: true,
-                ..Default::default()
-            },
-        ] {
-            schedule_accounted(memory(), mode, false, case).await?;
-            let broken = schedule_accounted(
-                memory(),
-                mode,
-                false,
+            };
+            let baseline = schedule_accounted(memory(), mode, false, base).await?;
+            let limit = baseline
+                .retry_prefix
+                .expect("schedule never reached the retry");
+            for case in [
+                base,
                 Case {
-                    reset: true,
-                    ..case
+                    limit: Some(limit),
+                    ..base
                 },
-            )
-            .await;
-            assert!(
-                matches!(broken, Err(Error::Invalid(ref reason)) if reason.starts_with("retry accounting proof:")),
-                "ledger-reset control escaped {mode:?}: {broken:?}"
-            );
+                Case {
+                    cancel: true,
+                    ..base
+                },
+            ] {
+                schedule_accounted(memory(), mode, false, case).await?;
+                let broken = schedule_accounted(
+                    memory(),
+                    mode,
+                    false,
+                    Case {
+                        reset: true,
+                        ..case
+                    },
+                )
+                .await;
+                assert!(
+                    matches!(broken, Err(Error::Invalid(ref reason)) if reason.starts_with("retry accounting proof:")),
+                    "ledger-reset control escaped {mode:?}: {broken:?}"
+                );
+            }
         }
     }
     Ok(())

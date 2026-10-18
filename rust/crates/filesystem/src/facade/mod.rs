@@ -118,6 +118,11 @@ use std::sync::{OnceLock, Weak};
 
 use thiserror::Error;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static RESTORE_CLEAN_REJECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 mod fork_selection;
 
 #[cfg(all(test, feature = "memory"))]

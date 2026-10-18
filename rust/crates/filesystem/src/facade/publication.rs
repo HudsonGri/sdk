@@ -232,10 +232,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             && operation_context.is_none()
             && operation_evidence.is_none()
         {
-            return self
+            if let Some(resolved) = self
                 .resolve_clean_commit(operation_id, original, cancellation)
                 .await
-                .map_err(E::from);
+                .map_err(E::from)?
+            {
+                return Ok(resolved);
+            }
         }
         let expected = self
             .authority_head
@@ -641,22 +644,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         operation_id: OperationId,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<LivePublicationObservation, FsError> {
+    ) -> W::Output<Option<LivePublicationObservation>, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
+            // A bound transaction has an operation to seal even when its desired
+            // tree is already present. Bare checkouts still reject empty commits.
+            let bound = self.authored_operation_id == Some(operation_id);
+            #[cfg(test)]
+            let bound = bound && !super::RESTORE_CLEAN_REJECTION.get();
             #[cfg(not(target_arch = "wasm32"))]
             if accounting.native_work().is_some() {
                 accounting.check()?;
             }
             if let Some(last) = self.last_commit {
-                if last.operation_id != operation_id {
+                if last.operation_id != operation_id && !bound {
                     return Err(FsError::NoPendingMutations);
                 }
-                if last.generation_id == GenerationId::new(self.generation_root.digest) {
-                    return Ok(LivePublicationObservation::AlreadyCommitted {
+                if last.operation_id == operation_id
+                    && last.generation_id == GenerationId::new(self.generation_root.digest)
+                {
+                    return Ok(Some(LivePublicationObservation::AlreadyCommitted {
                         generation_id: last.generation_id,
                         head: last.head,
-                    });
+                    }));
                 }
             }
             accounting.check()?;
@@ -681,9 +691,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),
                 error => FsError::Authority(error),
             })?;
-            let commit = resolved.as_ref().ok_or(FsError::NoPendingMutations)?;
+            let Some(commit) = resolved.as_ref() else {
+                return if bound {
+                    Ok(None)
+                } else {
+                    Err(FsError::NoPendingMutations)
+                };
+            };
             let generation_root = generation_from_record(commit, self.volume.id, &mut accounting)?;
-            Ok(if generation_root == self.generation_root {
+            Ok(Some(if generation_root == self.generation_root {
                 LivePublicationObservation::AlreadyCommitted {
                     generation_id: GenerationId::new(generation_root.digest),
                     head,
@@ -692,7 +708,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 LivePublicationObservation::IdempotencyConflict {
                     committed_fingerprint: commit.fingerprint,
                 }
-            })
+            }))
         }
         .await;
         budget.finish(result, &accounting)
