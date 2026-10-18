@@ -70,11 +70,9 @@ async fn run(
         && !acyclic_harness::tui::term::Environment::capture().is_dumb()
     {
         let result = in_heap(|| {
-            client::with_local_commands(
-                local.clone(),
-                operation,
-                view::run(local.clone(), operation, args.inline),
-            )
+            client::with_local_commands(local.clone(), operation, || {
+                view::run(local.clone(), operation, args.inline)
+            })
         })
         .await;
         in_heap(|| client::disconnect_local(local)).await?;
