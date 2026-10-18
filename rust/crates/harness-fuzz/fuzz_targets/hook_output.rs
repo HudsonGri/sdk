@@ -42,6 +42,8 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         let encoded = serde_json::to_vec(&output).unwrap();
         let decoded: HookOutput =
             fuzz_support::round_trip(&output, serde_json::from_slice(&encoded));
+        let blocking = decoded.diagnostics.iter().any(|failure| failure.blocking);
+        assert_eq!(decoded.into_result().is_err(), blocking);
     }
     for event in [
         HookEvent::SessionStart,

@@ -12,7 +12,7 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         return;
     };
     let encoded = serde_json::to_vec(&case).unwrap();
-    let decoded: swarm_case::SwarmCase =
+    let _: swarm_case::SwarmCase =
         fuzz_support::round_trip(&case, serde_json::from_slice(&encoded));
 
     if case.validate().is_ok() {

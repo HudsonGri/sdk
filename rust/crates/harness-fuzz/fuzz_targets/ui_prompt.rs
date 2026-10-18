@@ -199,25 +199,18 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
                 .into_iter()
                 .enumerate()
             {
-                cut = volume
-                    .append(
-                        cut,
-                        &Write {
-                            publication: None,
-                            key: FileKey::Task {
-                                task: acyclic_harness::task_volume::Component::new(&owner.id)
-                                    .unwrap(),
-                                file: acyclic_harness::task_volume::TaskFile::Chunk {
-                                    turn: 0,
-                                    sequence: index as u64,
-                                },
-                            },
-                            channel: Some(acyclic_harness::task_volume::Channel::Text),
-                            bytes: bytes.to_vec().into(),
+                let mut chunk = Write::new(
+                    FileKey::Task {
+                        task: acyclic_harness::task_volume::Component::new(&owner.id).unwrap(),
+                        file: acyclic_harness::task_volume::TaskFile::Chunk {
+                            turn: 0,
+                            sequence: index as u64,
                         },
-                    )
-                    .await
-                    .unwrap();
+                    },
+                    bytes.to_vec(),
+                );
+                chunk.channel = Some(acyclic_harness::task_volume::Channel::Text);
+                cut = volume.append(cut, &chunk).await.unwrap();
                 client.next_change().await.unwrap();
                 renderer.update(client.views(), &owner);
             }

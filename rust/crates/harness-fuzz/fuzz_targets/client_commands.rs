@@ -47,45 +47,41 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             if let Some(layout) = fuzz_support::FuzzInput::parse(
                 fuzz_input,
                 serde_json::from_slice::<serde_json::Value>,
-            ) {
-                if layout.is_object() {
-                    client
-                        .write_state(
-                            acyclic_harness::client::CommandFileRoot::Session,
-                            "layout.json",
-                            &layout,
-                        )
-                        .await?;
-                    let _ = client.submit("yes", &NoReads).await;
-                    let _ = client.submit("no", &NoReads).await;
-                }
+            ) && layout.is_object()
+            {
+                client
+                    .write_state(
+                        acyclic_harness::client::CommandFileRoot::Session,
+                        "layout.json",
+                        &layout,
+                    )
+                    .await?;
+                let _ = client.submit("yes", &NoReads).await;
+                let _ = client.submit("no", &NoReads).await;
             }
-            if let Some(value) = fuzz_support::json_input!(fuzz_input, serde_json::Value) {
-                if let Some(path) =
+            if let Some(value) = fuzz_support::json_input!(fuzz_input, serde_json::Value)
+                && let Some(path) =
                     value.optional_field(|value| value["command_key"].as_str().map(str::as_bytes))
-                {
-                    let fuzz_input = path;
-                    if let Some(key) =
-                        fuzz_support::FuzzInput::parse_text(fuzz_input, FileKey::parse)
-                    {
-                        let cut = volume
-                            .snapshot(&Query::File(key.clone()), 1)
-                            .await
-                            .map_err(|error| Error::Storage(error.to_string()))?
-                            .generation;
-                        let bytes = serde_json::to_vec(&CommandResolution::Prompt {
-                            text: "fuzz request".into(),
-                            source: None,
-                            mentions: vec![],
-                        })
-                        .unwrap();
-                        let _ = volume.append(cut, &FileValue::new(key, bytes)).await;
-                        client.refresh_files().await?;
-                        if let Some(request) = client.take_request() {
-                            let _ = client
-                                .consume(&request, |_, _, _| async { Ok(serde_json::Value::Null) })
-                                .await;
-                        }
+            {
+                let fuzz_input = path;
+                if let Some(key) = fuzz_support::FuzzInput::parse_text(fuzz_input, FileKey::parse) {
+                    let cut = volume
+                        .snapshot(&Query::File(key.clone()), 1)
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?
+                        .generation;
+                    let bytes = serde_json::to_vec(&CommandResolution::Prompt {
+                        text: "fuzz request".into(),
+                        source: None,
+                        mentions: vec![],
+                    })
+                    .unwrap();
+                    let _ = volume.append(cut, &FileValue::new(key, bytes)).await;
+                    client.refresh_files().await?;
+                    if let Some(request) = client.take_request() {
+                        let _ = client
+                            .consume(&request, |_, _, _| async { Ok(serde_json::Value::Null) })
+                            .await;
                     }
                 }
             }
@@ -201,19 +197,18 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
         }))));
     if let Some(resolution) =
         fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<CommandResolution>)
-    {
-        if let Ok(changes) = acyclic_harness::client::CommandResolution::file_changes(
+        && let Ok(changes) = acyclic_harness::client::CommandResolution::file_changes(
             &resolution,
             &snapshot,
             OperationId::new(),
-        ) {
-            assert!(changes.len() <= 1);
-            let encoded = serde_json::to_vec(&changes).unwrap();
-            let _ = fuzz_support::round_trip(
-                &(changes),
-                serde_json::from_slice::<Vec<CommandFileChange>>(&encoded),
-            );
-        }
+        )
+    {
+        assert!(changes.len() <= 1);
+        let encoded = serde_json::to_vec(&changes).unwrap();
+        let _ = fuzz_support::round_trip(
+            &(changes),
+            serde_json::from_slice::<Vec<CommandFileChange>>(&encoded),
+        );
     }
     if let Some(request) = fuzz_support::FuzzInput::parse(
         fuzz_input,

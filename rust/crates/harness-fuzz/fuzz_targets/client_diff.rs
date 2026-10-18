@@ -90,7 +90,7 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
         let decoded = fuzz_support::round_trip_by(
             &serde_json::to_value(&case).unwrap(),
             serde_json::from_slice::<local_case::LocalCase>(&encoded),
-            serde_json::to_value,
+            |value| serde_json::to_value(value),
         );
         assert_eq!(case.validate(), decoded.validate());
         let references = case

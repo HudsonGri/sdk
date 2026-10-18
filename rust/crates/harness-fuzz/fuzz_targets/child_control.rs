@@ -135,11 +135,11 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     if let Some(control) = fuzz_support::FuzzInput::parse(fuzz_input, Control::parse) {
         assert_eq!(control.bytes(), bytes);
     }
-    if let Some(path) = fuzz_input.text() {
-        if let Some(key) = fuzz_support::FuzzInput::parse_text(fuzz_input, FileKey::parse) {
-            assert_eq!(key.path(), path);
-            let _ = fuzz_support::round_trip(&(key), FileKey::parse(&key.path()));
-            assert!(Query::Root.matches(&key));
-        }
+    if let Some(path) = fuzz_input.text()
+        && let Some(key) = fuzz_support::FuzzInput::parse_text(fuzz_input, FileKey::parse)
+    {
+        assert_eq!(key.path(), path);
+        let _ = fuzz_support::round_trip(&(key), FileKey::parse(&key.path()));
+        assert!(Query::Root.matches(&key));
     }
 });
