@@ -1,5 +1,6 @@
 //! Compile with cfg only on this target for the production reader models.
 //! Without cfg, exercise its native worker and buffer reuse directly.
+#![cfg(unix)]
 
 mod sync {
     include!("../src/sync/arc.rs");
