@@ -268,14 +268,23 @@ pub(super) fn verify(
             return Err(fail("retry lost the typed cancellation cause"));
         }
         if let Some(limit) = audit.case.limit {
-            if cause
-                != Some(Err(acyclic_fs::WorkError::BudgetExceeded {
-                    counter: "materializations",
-                    observed: limit + 1,
-                    maximum: limit,
-                }))
-            {
-                return Err(fail("retry lost the exact exhausted-budget cause"));
+            // Standalone SDK calls admit a delta against the remaining budget;
+            // original native work admits against its invocation-wide ledger.
+            // At this cut both have consumed exactly `limit` provider units.
+            let (observed, maximum) = match &audit.identity {
+                Some(Identity::Owned(_)) => (1, 0),
+                Some(Identity::Native(_)) => (limit + 1, limit),
+                None => return Err(fail("bounded publication has no admitted ledger")),
+            };
+            let expected = Some(Err(acyclic_fs::WorkError::BudgetExceeded {
+                counter: "materializations",
+                observed,
+                maximum,
+            }));
+            if cause != expected {
+                return Err(fail(&format!(
+                    "retry lost the exact exhausted-budget cause: {cause:?}, expected {expected:?}; result {result:?}"
+                )));
             }
         }
     }
