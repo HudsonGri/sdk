@@ -282,6 +282,7 @@ async fn image_adapters_send_ordered_verified_parts_from_files_and_history() -> 
         let (file, reads, _) = file(&bytes, "image/png", false, None).await?;
         let (mut provider, script) = provider(adapter, 200);
         enable(&mut provider);
+        provider.files.maximum_bytes = 1;
         let provider = provider.with_content_reader(reads.clone());
         let messages = vec![
             user(vec![
