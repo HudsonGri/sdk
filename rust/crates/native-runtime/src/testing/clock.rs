@@ -13,6 +13,7 @@ pub struct CapturedClock {
 }
 
 impl CapturedClock {
+    /// Captures the active seed and runtime, or returns None outside simulation.
     pub fn capture() -> Option<Self> {
         let context = Context::simulation()?;
         context.schedule.0.state().wall.as_ref()?;
@@ -23,6 +24,7 @@ impl CapturedClock {
         })
     }
 
+    /// Reads simulated wall time, including elapsed time and injected jumps.
     pub fn unix_millis(&self) -> u64 {
         let _runtime = self.runtime.enter();
         self.schedule
@@ -34,11 +36,13 @@ impl CapturedClock {
             .now()
     }
 
+    /// Reads the creating runtime's monotonic clock on any callback thread.
     pub fn instant(&self) -> std::time::Instant {
         let _runtime = self.runtime.enter();
         tokio::time::Instant::now().into_std()
     }
 
+    /// Monotonic time since capture; wall-clock jumps do not affect it.
     pub fn elapsed(&self) -> Duration {
         self.instant().duration_since(self.origin)
     }

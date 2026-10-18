@@ -16,7 +16,7 @@ struct ProbeDirectory(PathBuf);
 
 impl ProbeDirectory {
     fn create(root: &Path) -> Result<Self, NativeStorageAccelerationError> {
-        let nonce = super::clock::Clock::capture()
+        let nonce = crate::native_mount::clock::Clock::capture()
             .now()
             .duration_since(UNIX_EPOCH)
             .map_err(std::io::Error::other)?
