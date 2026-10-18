@@ -102,7 +102,7 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     let project = volume(directory.path()).await?;
     let provider = text();
     let mut config = volume_config(directory.path(), project, provider.clone())?;
-    let owner_path = super::owner::state_directory(&config.project)?.join("owner.json");
+    let owner_path = super::owner::state_directory(&config.project, None)?.join("owner.json");
     config = config.compaction(acyclic_harness::context::CompactionPolicy::default());
     assert!(matches!(
         LocalHarness::open(config).await,
@@ -121,7 +121,7 @@ async fn oversized_tool_catalog_fails_before_owner_creation_or_model_dispatch() 
     let mut oversized = tool("test.oversized");
     oversized.definition.description = "x".repeat(capacity().context_tokens as usize);
     let config = volume_config(directory.path(), project, provider.clone())?.tool(oversized);
-    let owner = super::owner::state_directory(&config.project)?.join("owner.json");
+    let owner = super::owner::state_directory(&config.project, None)?.join("owner.json");
     assert!(matches!(
         LocalHarness::open(config).await,
         Err(Error::Invalid(_))
@@ -502,7 +502,7 @@ async fn corrupt_owner_is_rejected_without_reissuing_credentials() -> Result<()>
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
     let config = || Ok::<_, Error>(volume_config(directory.path(), project.clone(), text())?);
-    let path = super::owner::state_directory(&config()?.project)?.join("owner.json");
+    let path = super::owner::state_directory(&config()?.project, None)?.join("owner.json");
     drop(LocalHarness::open(config()?).await?);
     std::fs::write(&path, b"invalid owner").map_err(|error| Error::Storage(error.to_string()))?;
     assert!(matches!(
@@ -590,7 +590,10 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
         .workspace_path()
         .ok_or_else(|| Error::NotFound("checkout".into()))?;
     let config = crate::test_support::local_harness_config(checkout, (model()?, text()))?;
-    let state = super::owner::state_directory(&config.project)?;
+    let state = super::owner::state_directory(
+        &config.project,
+        Some(&super::owner::Checkout::capture(checkout)?),
+    )?;
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
     assert!(!checkout.join("owner.json").exists());
@@ -653,9 +656,10 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
         .await
         .map_err(super::storage)?;
     assert_eq!(bytes.bytes.as_ref(), b"original checkout");
+    let captured = super::owner::Checkout::capture(other)?;
     let other = crate::test_support::local_harness_config(other, (model()?, text()))?;
     assert!(matches!(
-        super::owner::Owner::open(&state, &other.project),
+        super::owner::Owner::open(&state, &other.project, Some(&captured)),
         Err(Error::Unauthorized(_))
     ));
     Ok(())

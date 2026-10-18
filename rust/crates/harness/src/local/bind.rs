@@ -66,7 +66,7 @@ impl LocalHarness {
         runtime.bind_task_files(Some(task_files.clone()));
         #[cfg(feature = "native-execution")]
         let workspace = if let Some(checkout) = checkout {
-            let directory = owner::directory(&owner::state_directory(&config.project)?)?;
+            let directory = owner::directory(&owner::state_directory(&config.project, None)?)?;
             let identity = acyclic_fs::capture_root_identity(checkout).map_err(storage_error)?;
             let digest = blake3::derive_key(
                 "acyclic.local.bound-checkout/v1",
