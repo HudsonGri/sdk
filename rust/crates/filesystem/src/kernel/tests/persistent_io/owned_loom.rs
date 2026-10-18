@@ -82,7 +82,7 @@ fn shared_lease_model<const DETACH_CUSTODY: bool>() {
         let resource = original.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
         let baseline = original.live_allocation_bytes();
         let input = page(1, &mut KernelAccounting::native(&resource, &cancellation));
-        let payload_bytes = input.0.logical_bytes;
+
         // The default cache hooks return the decoded page without retaining it.
         // Only the returned lease can keep its native custody alive.
         let (decoded, empty) = admit_decoded_with_accounting(
@@ -95,6 +95,7 @@ fn shared_lease_model<const DETACH_CUSTODY: bool>() {
         .unwrap();
         drop(empty);
         assert_eq!(decoded.logical_bytes, 0);
+        let funded = original.live_allocation_bytes();
         let mut lease = decoded.page;
         if DETACH_CUSTODY {
             let PageLease::Shared {
@@ -109,12 +110,13 @@ fn shared_lease_model<const DETACH_CUSTODY: bool>() {
         let reader = loom::thread::spawn(move || {
             // Lock order: one production allocation-resource mutex at a time.
             // A cancellation must not retire funding under a borrowed page.
-            let Page::Leaf(records) = lease.as_page() else {
+            let PageRef::Leaf(records) = lease.view() else {
                 unreachable!()
             };
             assert_eq!(records.len(), 1);
-            assert!(
-                reader_work.live_allocation_bytes() >= baseline + payload_bytes,
+            assert_eq!(
+                reader_work.live_allocation_bytes(),
+                funded,
                 "shared lease lost its original funding"
             );
             drop(lease);

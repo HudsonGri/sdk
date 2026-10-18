@@ -24,12 +24,28 @@ fn select_cached(
         + values
             .iter()
             .map(AttributeFormat::value_owned_bytes)
-            .sum::<u64>()
-        + 128;
-    let source_custody = Arc::new(work.claim(bytes, 1, WorkCounters::UNCHARGED)?);
-    let page = Arc::new(Page::<AttributeFormat>::Leaf(values));
-    let original = page.clone();
+            .sum::<u64>();
     let mut accounting = KernelAccounting::native(&work, &cancellation);
+    let mut shared = super::super::persistent_btree::shared::SharedPage::from_owned(
+        Owned::new(
+            Page::<AttributeFormat>::Leaf(values),
+            KernelOwnedAllocation::NativeOriginal(work.claim(bytes, 1, WorkCounters::UNCHARGED)?),
+            bytes,
+        ),
+        &mut accounting,
+    )?;
+    let mut controls = accounting.claim_owned(
+        (std::mem::size_of_val(&shared.value) + std::mem::size_of::<crate::NativeAllocation>())
+            as u64,
+        2,
+    )?;
+    shared.allocation.absorb(&mut controls)?;
+    let KernelOwnedAllocation::NativeOriginal(custody) = shared.allocation else {
+        unreachable!()
+    };
+    let source_custody = Arc::new(custody);
+    let page = Arc::new(shared.value);
+    let original = page.clone();
     let root = ObjectId {
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([1; 32]),
@@ -45,7 +61,6 @@ fn select_cached(
     let decoded = persistent_io::OwnedPage {
         page: persistent_io::PageLease::Shared {
             page,
-            logical_bytes: bytes,
             _native_custody: Some(source_custody.clone()),
         },
         logical_bytes: 0,
@@ -75,7 +90,9 @@ fn select_cached(
         .map(|value| value.as_ref().map(|value| value.value_bytes))
         .collect();
     output.retire(&mut accounting)?;
-    assert!(matches!(original.as_ref(), Page::Leaf(values) if values.len() == count as usize));
+    assert!(
+        matches!(original.view(), super::super::persistent_btree::PageRef::Leaf(values) if values.len() == count as usize)
+    );
     drop((original, source_custody));
     assert_eq!(
         work.live_allocation_bytes(),

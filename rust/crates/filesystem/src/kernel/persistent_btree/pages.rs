@@ -113,8 +113,8 @@ where
         match decoded.page {
             PageLease::Owned(page) => Ok(Owned::new(page, allocation, bytes)),
             shared @ PageLease::Shared { .. } => {
-                let result = match shared.as_page() {
-                    Page::Leaf(entries) => {
+                let result = match shared.view() {
+                    PageRef::Leaf(entries) => {
                         let mut output = Owned::allocate(entries.len(), self.accounting)?;
                         for entry in entries {
                             let cloned = self.clone_value(entry)?;
@@ -127,7 +127,7 @@ where
                         } = output;
                         Owned::new(Page::Leaf(value), allocation, bytes)
                     }
-                    Page::Internal(children) => {
+                    PageRef::Internal(children) => {
                         let mut output = Owned::allocate(children.len(), self.accounting)?;
                         for child in children {
                             let first = self.clone_key(&child.first)?;
