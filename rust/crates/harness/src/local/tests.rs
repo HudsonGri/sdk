@@ -754,6 +754,8 @@ mod bash_environment;
 mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+#[cfg(all(feature = "native-execution", unix))]
+mod reserved_names;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod lazy_volumes;

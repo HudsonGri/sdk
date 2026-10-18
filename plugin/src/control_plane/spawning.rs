@@ -88,6 +88,7 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
+                let identity = source.root_identity();
                 let parent_lazy = LazyWorkspace::open(
                     parent_workspace,
                     source,
@@ -98,6 +99,14 @@ impl ControlPlane {
                         budget: WorkBudget::UNBOUNDED,
                         cancellation: &CancellationToken::new(),
                     },
+                )
+                .await
+                .map_err(display)?;
+                // The child forks this head, so it inherits the reconciliation.
+                acyclic_harness::workspace::reconcile_reserved_names(
+                    &parent_lazy,
+                    &source_binding.path,
+                    identity,
                 )
                 .await
                 .map_err(display)?;
@@ -195,22 +204,24 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-            roots.push((
-                root.mount_name(),
-                LazyWorkspace::open(
-                    workspace,
-                    source,
-                    self.store.clone(),
-                    &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-                        allocations: Default::default(),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                        budget: WorkBudget::UNBOUNDED,
-                        cancellation: &CancellationToken::new(),
-                    },
-                )
+            let identity = source.root_identity();
+            let view = LazyWorkspace::open(
+                workspace,
+                source,
+                self.store.clone(),
+                &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                    allocations: Default::default(),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    budget: WorkBudget::UNBOUNDED,
+                    cancellation: &CancellationToken::new(),
+                },
+            )
+            .await
+            .map_err(display)?;
+            acyclic_harness::workspace::reconcile_reserved_names(&view, &binding.path, identity)
                 .await
-                .map_err(display)?,
-            ));
+                .map_err(display)?;
+            roots.push((root.mount_name(), view));
         }
         let mount = LocalMount::mount(roots, &pending.mount_path)
             .await

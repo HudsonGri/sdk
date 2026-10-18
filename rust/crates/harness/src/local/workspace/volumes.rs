@@ -56,7 +56,7 @@ pub(in crate::local) fn excluded(
 }
 
 pub(super) fn reserved(config: acyclic_fs::VolumeConfig) -> Result<Vec<NamespacePath>> {
-    crate::workspace::SDK_NAMESPACES
+    crate::workspace::RESERVED_NAMES
         .iter()
         .map(|name| namespace(config, name))
         .collect()

@@ -96,3 +96,44 @@ impl InternalContentClass {
         }
     }
 }
+
+#[cfg(all(
+    test,
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod reserved_tests {
+    use super::InternalContentClass;
+
+    // Reconciling a legacy binding keeps only the SDK-owned `.system`
+    // subtrees, so every SDK writer of `.system` must be one of them.
+    #[test]
+    fn every_sdk_system_writer_is_an_owned_subtree() {
+        let mut prefixes = vec![".system/harness-uploads/", ".system/harness-file-metadata/"];
+        for class in [
+            InternalContentClass::Interaction,
+            InternalContentClass::Workflow,
+            InternalContentClass::Execution,
+            InternalContentClass::ModelPrefix,
+            InternalContentClass::Conversation,
+        ] {
+            match class {
+                InternalContentClass::Interaction
+                | InternalContentClass::Workflow
+                | InternalContentClass::Execution
+                | InternalContentClass::ModelPrefix => prefixes.push(class.prefix()),
+                // Ordinary checkout content, not an SDK namespace.
+                InternalContentClass::Conversation => {
+                    assert!(!class.prefix().starts_with(".system/"));
+                }
+            }
+        }
+        for prefix in prefixes {
+            assert!(
+                crate::workspace::sdk_owned(&format!("{prefix}entry")),
+                "{prefix}"
+            );
+        }
+    }
+}

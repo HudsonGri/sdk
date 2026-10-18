@@ -1,10 +1,28 @@
 //! Task-selected native views and their filesystem access decisions.
 mod composition;
 mod discovery;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod reconcile;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod reserved;
 pub use acyclic_fs::access::MountMode;
 pub use composition::{Mount, MountTable, VolumeView, compose};
-
-/// Root names reserved for SDK state in every checkout. Source demand, native
-/// capture and native publication all skip them, so host bytes under these
-/// names can neither enter a checkout head nor overwrite SDK-owned entries.
-pub(crate) const SDK_NAMESPACES: [&str; 2] = [".system", ".volumes"];
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use reconcile::reconcile_reserved_names;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use reserved::RESERVED_NAMES;
+#[cfg(all(
+    test,
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use reserved::sdk_owned;
