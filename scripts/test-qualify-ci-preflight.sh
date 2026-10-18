@@ -5,6 +5,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/acyclic-qualify-ci-test.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/bin"
+# Keep the caller outside the checkout: fixture planning and execution must share
+# their own repository scope, including relative CARGO_TARGET_DIR resolution.
+cd "$work"
 
 # Exercise the actual verifier with a digest-only sha256sum interface,
 # including rejected archive bytes and failed reads.
@@ -183,19 +186,25 @@ EOF
 chmod +x "$gate/bin/cargo-nextest"
 export FAKE_MODEL_FIXTURE="$root/scripts/qualify-ci-preflight-fixtures.mjs"
 export FAKE_MODEL_FIXTURE_DIR="$gate"
-model_gate() {
+# Exercise the default target path regardless of the build box's absolute cache.
+unset CARGO_TARGET_DIR
+model_gate() (
+  cd "$root"
   : >"$gate/cargo.log"
   : >"$gate/flags.log"
   node "$FAKE_MODEL_FIXTURE" prepare "$gate"
   (
-    cd "$root"
     SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
       FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" PATH="$gate/bin:$work/bin:$PATH" \
       bash "$1" gate
   ) >"$gate/model-gate.stdout" 2>&1 || return 1
   node "$FAKE_MODEL_FIXTURE" verify "$gate" 2>"$gate/model-gate.stderr"
-}
+)
 if ! model_gate scripts/qualify-ci.sh; then
+  cat "$gate/model-gate.stdout" "$gate/model-gate.stderr" >&2
+  exit 1
+fi
+if ! CARGO_TARGET_DIR=relative-models model_gate scripts/qualify-ci.sh; then
   cat "$gate/model-gate.stdout" "$gate/model-gate.stderr" >&2
   exit 1
 fi
