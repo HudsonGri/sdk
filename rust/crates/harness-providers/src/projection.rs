@@ -565,11 +565,15 @@ fn project_message<'a>(
         }
         Adapter::Responses => {
             if message.role != ModelRole::User
-                || !message
-                    .content
-                    .parts()
-                    .iter()
-                    .any(|part| matches!(part, ModelContentPart::File { .. }))
+                || !message.content.parts().iter().any(|part| {
+                    matches!(
+                        part,
+                        ModelContentPart::File {
+                            policy: acyclic_harness::model::FileProjectionPolicy::Native(_),
+                            ..
+                        }
+                    )
+                })
             {
                 return Ok(ordered.into_iter().map(Message::Item).collect());
             }

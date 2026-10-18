@@ -16,6 +16,13 @@ impl LocalHarness {
         input: &ModelContent,
     ) -> Result<()> {
         input.validate_user_input(&mut None)?;
+        if !input
+            .parts()
+            .iter()
+            .any(|part| matches!(part, crate::model::ModelContentPart::File { .. }))
+        {
+            return Ok(());
+        }
         let reader = self.client_reader()?;
         for part in input.parts() {
             if let crate::model::ModelContentPart::File { file, .. } = part {
@@ -39,10 +46,11 @@ impl LocalHarness {
         &self,
         operation: OperationId,
         prompt: &str,
+        publisher: &dyn ContentPublisher,
+        maximum_bytes: u64,
     ) -> Result<ModelContent> {
-        let publisher = self.input_publisher()?;
         let (file, hold) = publisher
-            .observe_staged_once(input_operation(operation), self.limits.file_bytes, None)?
+            .observe_staged_once(input_operation(operation), maximum_bytes, None)?
             .await?;
         let Some(file) = file else {
             return Ok(ModelContent::Text(prompt.into()));
@@ -54,7 +62,7 @@ impl LocalHarness {
         let (bytes, _read_hold) = crate::conversation::verified_content_bytes(
             reader.as_ref(),
             &file,
-            self.limits.file_bytes,
+            maximum_bytes,
             None,
         )
         .await?;
