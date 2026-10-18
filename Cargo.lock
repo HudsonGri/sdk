@@ -431,6 +431,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
+ "httpdate",
  "js-sys",
  "keyring",
  "loom",
