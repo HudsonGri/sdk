@@ -1,5 +1,5 @@
-//! Every fresh identity, wall-clock read and entropy draw in the simulated
-//! crates crosses a seeded seam. A new direct source fails this scan.
+//! Exact allowances for the listed identity, wall-clock and entropy sources
+//! in six crates. New or stale direct-source counts fail this scan.
 //!
 //! Mount clock reads are checked separately below over the whole native_mount
 //! tree in every spelling. Host fallbacks live in the captured clock seam and
