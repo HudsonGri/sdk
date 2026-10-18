@@ -11,7 +11,7 @@ mod checkout;
 #[cfg(feature = "native-execution")]
 pub(super) mod environment;
 #[cfg(feature = "native-execution")]
-mod skills;
+pub(super) mod skills;
 #[cfg(feature = "native-execution")]
 mod text;
 
@@ -118,6 +118,8 @@ impl LocalHarness {
         let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
         #[cfg(any(feature = "native-execution", feature = "hooks"))]
         let mut manifest = manifest;
+        #[cfg(feature = "hooks")]
+        manifest.sources.extend(hook_configuration);
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             manifest
@@ -128,11 +130,19 @@ impl LocalHarness {
                     .conventions
                     .push(environment::render(&workspace.path, self.clock.now_unix_millis()).await);
                 let skills = self.checkout_skills(workspace, maximum).await?;
-                manifest.conventions.extend(skills::frame(&skills));
+                // The catalog takes what the rest of the manifest leaves of the
+                // render bound: its JSON string plus the separating comma.
+                let used = crate::executor::json::json_byte_length(
+                    &manifest,
+                    self.limits.render_bytes,
+                    &mut None,
+                )?;
+                let budget = self.limits.render_bytes.saturating_sub(used).saturating_sub(1);
+                manifest
+                    .conventions
+                    .extend(skills::frame(&skills, budget));
             }
         }
-        #[cfg(feature = "hooks")]
-        manifest.sources.extend(hook_configuration);
         let bytes = manifest.encode(self.limits)?;
         Ok(publisher
             .stage_once(
