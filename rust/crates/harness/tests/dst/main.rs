@@ -51,19 +51,21 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
             right.boundaries.get(index)
         ));
     }
-    if left.writes != right.writes {
+    let write_difference = if left.writes != right.writes {
         let index = left
             .writes
             .iter()
             .zip(&right.writes)
             .position(|(left, right)| left != right)
             .unwrap_or(left.writes.len().min(right.writes.len()));
-        return Err(format!(
+        Some(format!(
             "durable operation {index}: {:?} != {:?}",
             left.writes.get(index),
             right.writes.get(index)
-        ));
-    }
+        ))
+    } else {
+        None
+    };
     for (name, left, right) in [
         ("requests", &left.requests, &right.requests),
         ("dispatches", &left.dispatches, &right.dispatches),
@@ -72,19 +74,40 @@ fn same_trace(left: &Trace, right: &Trace) -> std::result::Result<(), String> {
         ("durable", &left.durable, &right.durable),
     ] {
         if left != right {
-            let offset = left
-                .iter()
-                .zip(right)
-                .position(|(left, right)| left != right)
-                .unwrap_or(left.len().min(right.len()));
+            if name == "files" {
+                let left: Vec<acyclic_harness::task_volume::FileValue> =
+                    serde_json::from_slice(left).expect("serialized files");
+                let right: Vec<acyclic_harness::task_volume::FileValue> =
+                    serde_json::from_slice(right).expect("serialized files");
+                if let Some((left, right)) = left.iter().zip(&right).find(|(a, b)| a != b) {
+                    return Err(format!(
+                        "{write_difference:?}; file {:?} != {:?}: {}",
+                        left.key,
+                        right.key,
+                        byte_difference(&left.bytes, &right.bytes)
+                    ));
+                }
+            }
             return Err(format!(
-                "{name} byte {offset}: {:?} != {:?}",
-                left.get(offset),
-                right.get(offset)
+                "{write_difference:?}; {name}: {}",
+                byte_difference(left, right)
             ));
         }
     }
-    Ok(())
+    write_difference.map_or(Ok(()), Err)
+}
+
+fn byte_difference(left: &[u8], right: &[u8]) -> String {
+    let offset = left
+        .iter()
+        .zip(right)
+        .position(|(left, right)| left != right)
+        .unwrap_or(left.len().min(right.len()));
+    let context = |bytes: &[u8]| {
+        String::from_utf8_lossy(&bytes[offset.saturating_sub(64)..bytes.len().min(offset + 256)])
+            .into_owned()
+    };
+    format!("byte {offset}: {:?} != {:?}", context(left), context(right))
 }
 
 fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
