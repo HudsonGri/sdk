@@ -128,6 +128,11 @@ impl<'tcx> Visitor<'tcx> for Body<'_, 'tcx> {
             ExprKind::Call(callee, _) => {
                 let default = match self.types.expr_ty(callee).kind() {
                     rustc_middle::ty::FnDef(id, _) => types::default_call(self.tcx, *id),
+                    rustc_middle::ty::FnPtr(..) => {
+                        *self.verdict =
+                            Err("indeterminate: function pointer target is unresolved".to_string());
+                        false
+                    }
                     _ => false,
                 };
                 self.judge(self.types.expr_ty(expression), default);
