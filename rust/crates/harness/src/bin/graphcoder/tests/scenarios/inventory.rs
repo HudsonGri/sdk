@@ -1,4 +1,4 @@
-use super::{TestResult, root, scenario_data};
+use super::super::{TestResult, root, scenario_data};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -86,4 +86,18 @@ pub(super) fn check_catalog() -> TestResult {
         );
     }
     Ok(())
+}
+
+pub(super) fn check_generated_call(name: &str, text: &str) {
+    let required = BTreeSet::from([name.to_owned()]);
+    let mut case = serde_json::json!({"models":{"parent":[[
+        {"kind":"tool_call","name":format!("{name}@revision"),"arguments":{"text":text}}
+    ]]}});
+    assert!(covered(&[case.clone()], &required));
+    remove_call(&mut case["models"], name);
+    assert!(!covered(&[case], &required));
+    assert!(!covered(
+        &[serde_json::json!({"turns":[text,name]})],
+        &required
+    ));
 }

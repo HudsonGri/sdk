@@ -525,6 +525,11 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn binary_inventory_requires_a_real_scripted_call(name in "[a-z]{1,16}", text in ".{0,64}") {
+            super::inventory::check_generated_call(&name, &text);
+        }
+
         // Routing uses the exact user bytes. A user-role tool result, JSON
         // escaping or an incidental substring cannot redirect the parent.
         #[test]
