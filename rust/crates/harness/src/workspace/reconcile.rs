@@ -148,7 +148,21 @@ where
     {
         Ok(recorded) if recorded.value.as_ref() == policy.as_bytes() => return Ok(()),
         Ok(_) => {}
-        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+        // A legacy host could put any type or byte length at the marker
+        // path, or a non-directory at its parent. These are unrecognized
+        // markers, not storage failures. The bounded read never loads an
+        // oversized file; reconciliation below replaces every such shape.
+        Err(failure)
+            if matches!(
+                failure.error,
+                WorkspaceError::NotFound
+                    | WorkspaceError::NotRegularFile
+                    | WorkspaceError::ReadLimitExceeded
+                    | WorkspaceError::NotDirectory
+                    | WorkspaceError::Filesystem(acyclic_fs::FsError::Path(
+                        acyclic_fs::kernel::PathLookupError::NotDirectory
+                    ))
+            ) => {}
         Err(failure) => return Err(storage(failure.error)),
     }
     let config = view.workspace().volume_config();
@@ -160,9 +174,9 @@ where
     for name in super::RESERVED_NAMES {
         for (relative, file_id, kind) in authored(&head, name, &cancellation).await? {
             visited = true;
-            let imported = if !super::reserved::sdk_owned(&relative) {
+            let imported = if !super::reserved::sdk_owned(&relative, kind) {
                 true
-            } else if kind == FileKind::Directory || relative == MARKER {
+            } else if kind == FileKind::Directory {
                 // An owned directory holds SDK state; it is never removed.
                 false
             } else {

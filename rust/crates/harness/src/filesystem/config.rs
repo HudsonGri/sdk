@@ -131,7 +131,10 @@ mod reserved_tests {
         }
         for prefix in prefixes {
             assert!(
-                crate::workspace::sdk_owned(&format!("{prefix}entry")),
+                crate::workspace::sdk_owned(
+                    &format!("{prefix}entry"),
+                    acyclic_fs::kernel::FileKind::Regular
+                ),
                 "{prefix}"
             );
         }

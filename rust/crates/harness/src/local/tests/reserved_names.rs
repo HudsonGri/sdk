@@ -430,3 +430,51 @@ async fn reopen_removes_imported_reserved_entries_and_keeps_sdk_state() -> Resul
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn reopen_reconciles_legacy_marker_and_container_shapes() -> Result<()> {
+    // The host used to supply arbitrary types and sizes at these paths.
+    // Every incompatible shape must be replaced with the canonical marker;
+    // valid sibling SDK state and the host bytes must survive.
+    for (path, bytes) in [
+        (".system/reserved-names", vec![b'x'; 4096]),
+        (".system/reserved-names", Vec::new()),
+        (".system/reserved-names", b"old policy".to_vec()),
+        (".system/reserved-names/child", b"host".to_vec()),
+        (".system", b"host file at container".to_vec()),
+        (".system/execution", b"host file at subtree".to_vec()),
+    ] {
+        let directory = tempfile::tempdir().map_err(super::super::storage)?;
+        let state = tempfile::tempdir().map_err(super::super::storage)?;
+        let root = directory.path();
+        write(root, path, &bytes)?;
+        let harness = open(root, state.path(), 0).await?;
+        let mut writes = vec![(path.to_owned(), Some(bytes.as_slice()))];
+        if path != ".system" {
+            writes.push((".system/workflows/sdk".into(), Some(b"sdk")));
+        }
+        commit(&harness, &writes, &[]).await?;
+        harness.close().await?;
+
+        let harness = open(root, state.path(), 0).await?;
+        let current = head(&harness).await?;
+        let marker = read(&current, ".system/reserved-names").await?.unwrap();
+        assert!(marker.starts_with(b"acyclic-checkout-reserved-names-"));
+        assert_ne!(marker, bytes, "{path}");
+        if path != ".system" {
+            assert_eq!(
+                read(&current, ".system/workflows/sdk").await?.as_deref(),
+                Some(&b"sdk"[..]),
+                "{path}"
+            );
+        }
+        assert_eq!(host(root, path).as_deref(), Some(bytes.as_slice()));
+        let reconciled = current.id();
+        harness.close().await?;
+
+        let harness = open(root, state.path(), 0).await?;
+        assert_eq!(head(&harness).await?.id(), reconciled, "{path}");
+        harness.close().await?;
+    }
+    Ok(())
+}

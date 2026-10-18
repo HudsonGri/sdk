@@ -40,7 +40,6 @@ const RESERVED: [Reserved; 4] = [
             "harness-uploads",
             "inherited-conversation",
             "interactions",
-            "reserved-names",
             "workflows",
         ],
     },
@@ -67,17 +66,19 @@ const fn names() -> [&'static str; RESERVED.len()] {
 pub const RESERVED_NAMES: [&str; RESERVED.len()] = names();
 
 /// Whether the SDK owns `relative` in a checkout head: it lies within, or is
-/// an ancestor of, an owned subtree of a reserved name. A name without owned
-/// subtrees holds nothing the SDK wrote, so not even its own root.
+/// an ancestor of, an owned subtree of a reserved name. Containers must be
+/// directories. The policy marker is validated separately, never treated as
+/// an owned subtree. A name without owned subtrees holds no SDK state.
 #[cfg(feature = "native-execution")]
-pub(crate) fn sdk_owned(relative: &str) -> bool {
+pub(crate) fn sdk_owned(relative: &str, kind: acyclic_fs::kernel::FileKind) -> bool {
+    let directory = kind == acyclic_fs::kernel::FileKind::Directory;
     let (name, rest) = relative.split_once('/').unwrap_or((relative, ""));
     let Some(reserved) = RESERVED.iter().find(|reserved| reserved.name == name) else {
         return false;
     };
-    (rest.is_empty() && !reserved.owned.is_empty())
+    (directory && rest.is_empty() && !reserved.owned.is_empty())
         || reserved.owned.iter().any(|owned| {
-            rest == *owned
+            (directory && rest == *owned)
                 || rest
                     .strip_prefix(owned)
                     .is_some_and(|tail| tail.starts_with('/'))
@@ -106,14 +107,14 @@ mod tests {
 
     #[test]
     fn only_owned_subtrees_and_their_ancestors_are_sdk_owned() {
-        for owned in [
-            ".system",
-            ".system/execution",
-            ".system/execution/operation/digest.json",
-            ".system/inherited-conversation/prefix.json",
-            ".system/reserved-names",
+        use acyclic_fs::kernel::FileKind::*;
+        for (owned, kind) in [
+            (".system", Directory),
+            (".system/execution", Directory),
+            (".system/execution/operation/digest.json", Regular),
+            (".system/inherited-conversation/prefix.json", Regular),
         ] {
-            assert!(sdk_owned(owned), "{owned}");
+            assert!(sdk_owned(owned, kind), "{owned}");
         }
         for imported in [
             ".volumes",
@@ -124,8 +125,44 @@ mod tests {
             ".git",
             ".git/config",
             "docs/.system/execution",
+            ".system/reserved-names",
+            ".system/reserved-names/child",
         ] {
-            assert!(!sdk_owned(imported), "{imported}");
+            assert!(!sdk_owned(imported, Regular), "{imported}");
+            assert!(!sdk_owned(imported, Directory), "{imported}");
         }
+        let container_shapes_match = |ignore_kind| {
+            [
+                Regular,
+                Directory,
+                SymbolicLink,
+                Fifo,
+                Socket,
+                CharacterDevice,
+                BlockDevice,
+                ReparsePoint,
+                MountBoundary,
+            ]
+            .into_iter()
+            .all(|kind| {
+                [
+                    ".system",
+                    ".system/execution",
+                    ".system/harness-file-metadata",
+                    ".system/harness-uploads",
+                    ".system/inherited-conversation",
+                    ".system/interactions",
+                    ".system/workflows",
+                ]
+                .into_iter()
+                .all(|container| {
+                    sdk_owned(container, if ignore_kind { Directory } else { kind })
+                        == (kind == Directory)
+                })
+            })
+        };
+        assert!(container_shapes_match(false));
+        // Negative control: the old ownership decision discarded entry kind.
+        assert!(!container_shapes_match(true));
     }
 }
