@@ -87,7 +87,7 @@ export function qualifyCoreOwnersLoom(run = spawnSync) {
     "--no-default-features", "--features", "local,memory,model-checking",
   ], run, {
     kind: "--lib", filter: "core_state::owners::models::",
-    exact: false, expectedTests: 10, timeout: 9500,
+    exact: false, expectedTests: 12, timeout: 9500,
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom --cfg acyclic_loom` }, targetCfg: [],
   });
 }

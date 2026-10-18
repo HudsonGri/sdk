@@ -60,8 +60,7 @@ fn negative_control_detects_initialization_outside_the_registry_lock() {
     loom::model(race::<false>);
 }
 
-#[test]
-fn concurrent_reopen_preserves_the_joined_owner() {
+fn concurrent_reopen<const MODE: u8>() {
     loom::model(|| {
         let registry = Arc::new(Owners::new(BTreeMap::new()));
         let created = Arc::new(AtomicUsize::new(0));
@@ -71,7 +70,8 @@ fn concurrent_reopen_preserves_the_joined_owner() {
         .unwrap();
         let release = loom::thread::spawn(move || {
             loom::thread::yield_now();
-            drop(first);
+            let mut first = first;
+            release::<_, true, MODE>(&first.1, &mut first.0);
         });
         let opener = {
             let registry = registry.clone();
@@ -86,16 +86,29 @@ fn concurrent_reopen_preserves_the_joined_owner() {
         };
         let current = opener.join().unwrap();
         release.join().unwrap();
+        // Never panic while the namespace gate is held: loom would abort on
+        // the poisoned lock instead of reporting the failed invariant.
         let again = join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
-            panic!("lost the owner retained by the reopening caller")
+            Ok(Arc::new(usize::MAX))
         })
         .unwrap();
-        assert!(Arc::ptr_eq(
-            current.0.as_ref().unwrap(),
-            again.0.as_ref().unwrap()
-        ));
+        assert!(
+            Arc::ptr_eq(current.0.as_ref().unwrap(), again.0.as_ref().unwrap()),
+            "lost the owner retained by the reopening caller"
+        );
         assert!(matches!(created.load(Ordering::SeqCst), 1 | 2));
     });
+}
+
+#[test]
+fn concurrent_reopen_preserves_the_joined_owner() {
+    concurrent_reopen::<ATOMIC>();
+}
+
+#[test]
+#[should_panic(expected = "lost the owner retained by the reopening caller")]
+fn negative_control_detects_final_release_decided_outside_the_gate() {
+    concurrent_reopen::<UNGATED>();
 }
 
 struct NamespaceLock {
@@ -130,7 +143,7 @@ fn release_race<const FENCE: bool>() {
         let releasing = {
             loom::thread::spawn(move || {
                 let mut first = first;
-                release::<_, FENCE, true>(&first.1, &mut first.0);
+                release::<_, FENCE, ATOMIC>(&first.1, &mut first.0);
             })
         };
         // Force the final-strong-count window rather than letting reopen retain
@@ -172,7 +185,7 @@ fn negative_control_detects_last_release_outside_the_registry_fence() {
     release_race::<false>();
 }
 
-fn nonfinal_locks<const FAST: bool>() {
+fn nonfinal_locks<const MODE: u8>() {
     loom::model(|| {
         let registry = Owners::new(BTreeMap::new());
         let first = join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, || {
@@ -181,7 +194,7 @@ fn nonfinal_locks<const FAST: bool>() {
         .unwrap();
         let mut second = first.clone();
         let before = first.1.locks.load(Ordering::Relaxed);
-        release::<_, true, FAST>(&second.1, &mut second.0);
+        release::<_, true, MODE>(&second.1, &mut second.0);
         assert_eq!(
             first.1.locks.load(Ordering::Relaxed) - before,
             0,
@@ -192,17 +205,16 @@ fn nonfinal_locks<const FAST: bool>() {
 
 #[test]
 fn nonfinal_release_is_atomic_and_lock_free() {
-    nonfinal_locks::<true>();
+    nonfinal_locks::<ATOMIC>();
 }
 
 #[test]
 #[should_panic(expected = "nonfinal release acquired a namespace lock")]
 fn negative_control_detects_locking_nonfinal_releases() {
-    nonfinal_locks::<false>();
+    nonfinal_locks::<LOCKED>();
 }
 
-#[test]
-fn simultaneous_nonfinal_releases_cannot_bypass_teardown() {
+fn simultaneous_releases<const MODE: u8>() {
     loom::model(|| {
         let registry = Arc::new(Owners::new(BTreeMap::new()));
         let locked = Arc::new(AtomicBool::new(false));
@@ -218,16 +230,33 @@ fn simultaneous_nonfinal_releases_cannot_bypass_teardown() {
         };
         let first =
             join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
-        let second = first.clone();
-        let peer = loom::thread::spawn(move || drop(first));
-        drop(second);
+        let mut second = first.clone();
+        let peer = loom::thread::spawn(move || {
+            let mut first = first;
+            release::<_, true, MODE>(&first.1, &mut first.0);
+        });
+        release::<_, true, MODE>(&second.1, &mut second.0);
         let current =
             join::<_, true, true>(&registry, "namespace".into(), [1; 16], true, create).unwrap();
         peer.join().unwrap();
         assert!(locked.load(Ordering::SeqCst));
         drop(current);
-        assert!(!locked.load(Ordering::SeqCst));
+        assert!(
+            !locked.load(Ordering::SeqCst),
+            "final release leaked the owner"
+        );
     });
+}
+
+#[test]
+fn simultaneous_nonfinal_releases_cannot_bypass_teardown() {
+    simultaneous_releases::<ATOMIC>();
+}
+
+#[test]
+#[should_panic(expected = "final release leaked the owner")]
+fn negative_control_detects_split_nonfinal_decrements() {
+    simultaneous_releases::<SPLIT>();
 }
 
 fn exclusive_admission<const RETAIN: bool>() {

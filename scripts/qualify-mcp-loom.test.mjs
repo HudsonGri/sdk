@@ -203,7 +203,7 @@ test("summary checkpoint qualification instruments real locks and requires both 
 });
 
 test("owner qualification requires every real-lock model and control within ten seconds", () => {
-  for (const count of [0, 1, 5, 7, 8, 9, 10, 11]) {
+  for (const count of [0, 1, 5, 10, 11, 12, 13]) {
     const run = (command, args, options) => {
       if (command === "cargo") {
         assert.deepEqual(args, ["test", "--locked", "--message-format=json", "-p", "acyclic-fs",
@@ -216,7 +216,7 @@ test("owner qualification requires every real-lock model and control within ten 
       assert.equal(options.timeout, 9500);
       return { status: 0, stderr: "", stdout: summary(count, 0, 100) };
     };
-    if (count === 10) qualifyCoreOwnersLoom(run);
+    if (count === 12) qualifyCoreOwnersLoom(run);
     else assert.throws(() => qualifyCoreOwnersLoom(run), /requires a nonzero/);
   }
   assert.throws(() => qualifyCoreOwnersLoom((command) => command === "cargo"

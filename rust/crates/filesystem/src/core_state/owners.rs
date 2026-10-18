@@ -66,21 +66,39 @@ impl<T> std::ops::Deref for OwnerRef<T> {
 impl<T> Drop for OwnerRef<T> {
     fn drop(&mut self) {
         if self.0.is_some() {
-            release::<_, true, true>(&self.1, &mut self.0);
+            release::<_, true, ATOMIC>(&self.1, &mut self.0);
         }
     }
 }
 
-fn release<T, const FENCE: bool, const FAST: bool>(
+// Release strategies. Production always uses `ATOMIC`; every other mode is a
+// loom mutation whose model control must fail (owners/models.rs).
+const ATOMIC: u8 = 0;
+/// Control: every release, final or not, takes the namespace gate.
+#[cfg(all(test, acyclic_fs_loom))]
+const LOCKED: u8 = 1;
+/// Control: the nonfinal decrement is a separate load and store.
+const SPLIT: u8 = 2;
+/// Control: finality is decided before the namespace gate is held.
+const UNGATED: u8 = 3;
+
+fn release<T, const FENCE: bool, const MODE: u8>(
     lifecycle: &Lifecycle<T>,
     owner: &mut Option<Arc<T>>,
 ) {
     // Retire the handle's Arc before its count. The namespace keeps the final
     // Arc until all handles have retired, so teardown runs inside its own gate.
     drop(owner.take());
-    if FAST {
+    if MODE == ATOMIC || MODE == SPLIT {
         let mut references = lifecycle.references.load(Ordering::Relaxed);
         while references > 1 {
+            if MODE == SPLIT {
+                // Negative control: concurrent releases can store the same count.
+                lifecycle
+                    .references
+                    .store(references - 1, Ordering::Release);
+                return;
+            }
             match lifecycle.references.compare_exchange_weak(
                 references,
                 references - 1,
@@ -91,6 +109,14 @@ fn release<T, const FENCE: bool, const FAST: bool>(
                 Err(current) => references = current,
             }
         }
+    }
+    if MODE == UNGATED {
+        // Negative control: a reopen can join between the decision and teardown.
+        if lifecycle.references.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let retired = lifecycle.lock().take();
+            drop(retired);
+        }
+        return;
     }
     let mut guard = lifecycle.lock();
     if lifecycle.references.fetch_sub(1, Ordering::AcqRel) == 1 {
