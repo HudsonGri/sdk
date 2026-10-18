@@ -13,6 +13,18 @@ pub(super) async fn seal<G: AuthorityGuard>(
     Ok(())
 }
 
+/// Classifies an uncommitted proposal: a fenced epoch or rejected gate/lease
+/// is `Fenced`, so `Conflict` always names a head in the proposal's epoch.
+fn contended(actual: Head, epoch: Epoch, rejected: bool) -> FsAppendOutcome {
+    if rejected || actual.epoch != epoch {
+        FsAppendOutcome::Fenced {
+            actual_epoch: actual.epoch,
+        }
+    } else {
+        FsAppendOutcome::Conflict { actual }
+    }
+}
+
 impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     pub(super) async fn append<G: AuthorityGuard>(
         &self,
@@ -294,13 +306,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                         };
                         path == &gate || lease_path.as_ref().is_some_and(|lease| path == lease)
                     });
-                    Ok(if rejected || actual.epoch != epoch {
-                        FsAppendOutcome::Fenced {
-                            actual_epoch: actual.epoch,
-                        }
-                    } else {
-                        FsAppendOutcome::Conflict { actual }
-                    })
+                    Ok(contended(actual, epoch, rejected))
                 }
             },
             Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
@@ -312,10 +318,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 let Some(existing) = existing else {
                     // Another writer retained a rejected proposal in our slot.
                     // The next attempt selects its successor; no operation has
-                    // committed, so this is a conflict rather than corruption.
-                    return Ok(FsAppendOutcome::Conflict {
-                        actual: self.fork_snapshot(authority_id, work).await?.head,
-                    });
+                    // committed, so this is contention rather than corruption.
+                    let actual = self.fork_snapshot(authority_id, work).await?.head;
+                    return Ok(contended(actual, epoch, false));
                 };
                 seal(work, guard).await?;
                 Ok(if existing.fingerprint == commit.fingerprint {

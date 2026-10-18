@@ -214,8 +214,16 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             work.check()?;
             let key = operation_key(authority, operation, attempt, work)?;
             let key_bytes = key.as_bytes().len() as u64;
-            let observation = self.authority_inspect(key.clone(), work).await?;
-            work.check()?;
+            // Ordinary custody reports cancellation or exhaustion before a
+            // provider failure; native custody reports the provider result.
+            let observed = self.authority_inspect(key.clone(), work).await;
+            if !work.is_native() {
+                work.check()?;
+            }
+            let observation = observed?;
+            if work.is_native() {
+                work.check()?;
+            }
             let Some(observed) = &observation.0 else {
                 return Ok((key, None));
             };
