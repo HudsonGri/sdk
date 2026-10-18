@@ -156,6 +156,9 @@ mod macos_metadata_tests;
 #[cfg(all(test, unix))]
 #[path = "tests_unix.rs"]
 mod tests;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "tests_interrupted_sync.rs"]
+mod interrupted_sync_tests;
 #[cfg(all(test, windows))]
 #[path = "tests_windows_clone.rs"]
 mod windows_clone_tests;
