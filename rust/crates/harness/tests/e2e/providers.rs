@@ -136,8 +136,9 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
     let transport = Recorded::new(&case);
-    // The parse oracle replays successful exchanges one per step; refusals are task-level.
-    if case.unreachable == 0 && case.statuses.iter().all(|status| *status == 200) {
+    // The parse oracle replays completed exchanges one per step; refusals and stalls are
+    // task-level.
+    if case.unreachable == 0 && (0..case.responses.len()).all(|index| case.completes(index)) {
         parsed(&case, transport.clone()).await?;
         transport.restart()?;
     }
@@ -209,7 +210,11 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     }
     // Each refused connection was redelivered under the bounded policy until the script ran out.
     if transport.refused() != usize::from(case.unreachable) {
-        return Err(format!("provider task made {} refused attempts", transport.refused()).into());
+        return Err(format!(
+            "provider task made {} refused attempts",
+            transport.refused()
+        )
+        .into());
     }
     for (request, expected) in requests.iter().zip(&case.expect.requests) {
         let body: Value = serde_json::from_slice(&request.body)?;
