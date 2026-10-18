@@ -185,3 +185,64 @@ async fn skill_discovery_exhausts_pages_and_refreshes_after_reopen() -> Result<(
     }
     reopened.close().await
 }
+
+// A catalog larger than the render bound still starts turns: skills are listed
+// in discovery order until the budget is reached, and one line counts exactly
+// the rest. Negative control: the unbounded catalog fails to encode.
+#[tokio::test]
+async fn oversized_skill_catalog_is_counted_not_fatal() -> Result<()> {
+    const SKILLS: usize = 300;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let root = directory.path();
+    let mut catalog = Vec::new();
+    for index in 0..SKILLS {
+        let path = format!(".agents/skills/s{index:03}/SKILL.md");
+        let text = format!(
+            "---\nname: s{index:03}\ndescription: {}\n---\n",
+            "d".repeat(1000)
+        );
+        write(root, &path, &text)?;
+        catalog.extend(crate::local::context::skills::listed(text.as_bytes(), path));
+    }
+    // Negative control: an invalid entry is skipped without ending the scan.
+    write(root, ".agents/skills/r-broken/SKILL.md", "no frontmatter")?;
+    let limits = crate::conversation::Limits {
+        render_bytes: 256 * 1024,
+        ..crate::conversation::Limits::default()
+    };
+    let provider = scripted([ScriptedTurn::Text("first".into())]);
+    let config = crate::test_support::local_harness_config(root, (model()?, provider.clone()))?
+        .state_directory(state.path())
+        .clock(Arc::new(Clock))
+        .limits(limits);
+    let harness = LocalHarness::open(config).await?;
+    let operation = OperationId::new();
+    let task = super::context::admitted(harness.submit(operation, "hello").await?)?;
+    assert_eq!(harness.resume(task).await?.text, "first");
+    let (_, mut manifest) = super::context::manifest(&harness, operation).await?;
+    let index = manifest
+        .conventions
+        .iter()
+        .position(|text| text.starts_with("<skills_instructions>"))
+        .expect("skill catalog");
+    let block = &manifest.conventions[index];
+    let listed = block
+        .lines()
+        .filter(|line| line.contains(" (file: "))
+        .count();
+    assert!(listed > 0 && listed < SKILLS, "{listed}");
+    for (line, skill) in block
+        .lines()
+        .filter(|line| line.contains(" (file: "))
+        .zip(&catalog)
+    {
+        assert!(line.starts_with(&format!("- {}: ", skill.name)));
+    }
+    assert!(block.contains(&crate::local::context::skills::omission(SKILLS - listed)));
+    manifest.encode(limits)?;
+    manifest.conventions[index] =
+        crate::local::context::skills::frame(&catalog, u64::MAX).expect("catalog");
+    assert!(manifest.encode(limits).is_err());
+    harness.close().await
+}

@@ -11,12 +11,11 @@ pub(super) const ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
 const PAGE: u32 = 64;
 
 mod catalog;
-pub(super) use catalog::frame;
-use catalog::{Listed, listed};
+pub(in crate::local) use catalog::{Listed, frame, listed, omission};
 
 impl LocalHarness {
     /// Lists `<root>/<name>/SKILL.md` frontmatter from the selected checkout view.
-    pub(super) async fn checkout_skills(
+    pub(in crate::local) async fn checkout_skills(
         &self,
         workspace: &LocalWorkspace,
         maximum: u64,
