@@ -283,20 +283,20 @@ where
             WorkBudget::UNBOUNDED,
             self.authored.cancellation(),
         );
-        if self
-            .lazy
-            .publication_cut(None, &mut accounting)
+        if crate::in_heap(|| self.lazy.publication_cut(None, &mut accounting))
             .await
             .is_ok_and(|state| state.source == self.lazy.source_reference())
         {
-            let result = self.authored.advance_to_head_async().await;
+            let result = crate::in_heap(|| self.authored.advance_to_head_async()).await;
             self.cursors.clear();
             return result;
         }
         self.source_view.begin_transition();
         let result = async {
-            self.authored.advance_to_head_async().await?;
-            self.lazy.state(&mut accounting).await.map_err(lazy_error)?;
+            crate::in_heap(|| self.authored.advance_to_head_async()).await?;
+            crate::in_heap(|| self.lazy.state(&mut accounting))
+                .await
+                .map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.
             self.authored.record_projection_change(
                 &ViewChange::Everything,
