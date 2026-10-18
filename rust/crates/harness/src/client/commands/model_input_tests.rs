@@ -6,7 +6,7 @@ use crate::{
 
 fn selected_policy_survives(maximum_tokens: u32) {
     let base: FileRef =
-        serde_json::from_str(include_str!("../../../tests/fixtures/v2/file-ref.json")).unwrap();
+        serde_json::from_str(include_str!("../../../fixtures/v2/file-ref.json")).unwrap();
     let file = FileRef::new(
         base.volume().clone(),
         "image.png".into(),

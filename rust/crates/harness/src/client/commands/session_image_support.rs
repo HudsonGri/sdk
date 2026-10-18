@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::OwnedBytes;
 pub(super) struct Reader;
 impl ContentResidencyVerifier for Reader {
     fn read<'a>(
