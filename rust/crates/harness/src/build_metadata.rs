@@ -4,10 +4,11 @@
     reason = "explicit Cargo metadata only; user environment discovery is forbidden"
 )]
 
+/// Cargo manifest directory for checked-in fixtures.
 pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
-pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const DESCRIPTOR_DIGEST: &str = env!("HARNESS_DESCRIPTOR_DIGEST");
-pub const FILE_DESCRIPTOR_SET: &[u8] =
+pub(crate) const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/harness_descriptor.bin"));
 
 /// Generated Protobuf packages, nested as their package names are, so the harness messages resolve the shared protocol handshake they import.
