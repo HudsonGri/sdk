@@ -270,6 +270,13 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> NativeCompletion<V
 
 /// Resizes an already-held, ordered handle. Each retry is separately admitted.
 pub fn set_len(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Result<()> {
+    #[cfg(feature = "test-support")]
+    return testing::durable_operation("file:set_len", || set_len_impl(file, size, meter));
+    #[cfg(not(feature = "test-support"))]
+    set_len_impl(file, size, meter)
+}
+
+fn set_len_impl(file: &File, size: u64, meter: &dyn NativeReadMeter) -> io::Result<()> {
     i64::try_from(size).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     loop {
         meter.check()?;
@@ -307,37 +314,41 @@ pub(crate) fn write_bounded_in_place(
         meter.check()?;
         let length = bytes.len().min(1024 * 1024);
         let chunk = bytes.get(..length).ok_or(io::ErrorKind::InvalidData)?;
-        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-        let result = (|| {
-            use std::os::fd::AsRawFd as _;
-            validate_prepared_read_range(offset, length)?;
-            let mut transfer =
-                NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
-            meter.admit_write(0)?;
-            #[allow(
-                unsafe_code,
-                reason = "writes the validated borrowed range on a held descriptor"
-            )]
-            // SAFETY: the validated range and borrowed payload remain live through pwrite.
-            let count = unsafe {
-                libc::pwrite(
-                    file.as_raw_fd(),
-                    chunk.as_ptr().cast(),
-                    length,
-                    libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?,
-                )
-            };
-            if count < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let count = usize::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?;
-            transfer.record(count)?;
-            Ok(count)
-        })();
-        #[cfg(windows)]
-        let result = windows::write_at_known_overlapped(file, offset, chunk, meter);
-        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let result: io::Result<usize> = Err(io::Error::from(io::ErrorKind::Unsupported));
+        let result = write_file_with(chunk, |chunk| {
+            #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+            let result = (|| {
+                let length = chunk.len();
+                use std::os::fd::AsRawFd as _;
+                validate_prepared_read_range(offset, length)?;
+                let mut transfer =
+                    NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
+                meter.admit_write(0)?;
+                #[allow(
+                    unsafe_code,
+                    reason = "writes the validated borrowed range on a held descriptor"
+                )]
+                // SAFETY: the validated range and borrowed payload remain live through pwrite.
+                let count = unsafe {
+                    libc::pwrite(
+                        file.as_raw_fd(),
+                        chunk.as_ptr().cast(),
+                        length,
+                        libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?,
+                    )
+                };
+                if count < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let count = usize::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?;
+                transfer.record(count)?;
+                Ok(count)
+            })();
+            #[cfg(windows)]
+            let result = windows::write_at_known_overlapped(file, offset, chunk, meter);
+            #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+            let result: io::Result<usize> = Err(io::Error::from(io::ErrorKind::Unsupported));
+            result
+        });
         let count = match result {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,
