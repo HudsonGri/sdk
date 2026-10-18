@@ -93,15 +93,27 @@ const trustedSupport = (file, seen = new Set()) => {
   }
   return false;
 };
-// Privacy is the admission boundary: other modules must not call its factories.
+// Production input factories belong only to the oracle. The test-only factory
+// may be called directly by the four existing ordinary test consumers; it may
+// never be aliased or re-exported into a fuzz target's dependency graph.
+const inputTests = new Set([
+  'rust/crates/harness/src/projection/recorded_invocation_tests.rs',
+  'rust/crates/harness/tests/goal_files.rs',
+  'rust/crates/stream/tests/checked_session_contract.rs',
+  'rust/crates/test-support/src/fuzz_round_trip.rs',
+]);
 let factories = '';
-try { factories = git('grep', '-l', '-E', '__acyclic_(fuzz_entry|parsed_input)',
+try { factories = git('grep', '-l', '-w', '-E', '__acyclic_(fuzz_entry|parsed_input)|test_input',
   ...(commit ? [commit] : []), '--', '*.rs'); }
 catch (error) { if (error.status !== 1) throw error; }
 const factoryFiles = factories.split('\n').filter(Boolean)
   .map(path => commit ? path.slice(commit.length + 1) : path);
-for (const path of factoryFiles) if (path !== shared)
-  throw new Error('raw fuzz-input factory outside shared oracle: ' + path);
+for (const path of factoryFiles) if (path !== shared) {
+  const tokens = rustTokens(load(path));
+  if (!inputTests.has(path) || tokens.some((token, i) => token.text.startsWith('__acyclic_')
+    || token.text === 'test_input' && tokens[i + 1]?.text !== '('))
+    throw new Error('raw fuzz-input factory outside shared oracle: ' + path);
+}
 const sources = paths.map(path => expandFuzzIncludes(path, load(path), resolveInclude, load));
 const errors = [];
 for (let index = 0; index < paths.length; index++) {

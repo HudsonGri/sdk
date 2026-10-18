@@ -97,6 +97,14 @@ test('the actual CLI rejects working-tree controls while its main baseline passe
     const main = run(['main']);
     assert.equal(main.status, 0, main.stderr);
     assert.match(main.stdout, /1 Rust sources at [0-9a-f]+/);
+    writeFileSync(join(root, target), baseline);
+    const alias = 'rust/demo/facade.rs';
+    writeFileSync(join(root, alias), 'pub use acyclic_fuzz_support::test_input as admit;');
+    git(['add', '-N', alias]);
+    const reexport = run([]);
+    assert.equal(reexport.status, 1, reexport.stderr);
+    assert.match(reexport.stderr, /raw fuzz-input factory outside shared oracle/);
+    assert.equal(run(['main']).status, 0);
   } finally {
     assert.equal(dirname(resolve(root)), resolve(tmpdir()));
     rmSync(root, {recursive: true, force: true});
