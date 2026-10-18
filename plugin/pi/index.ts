@@ -176,6 +176,10 @@ export default function extension(pi: ExtensionAPI, send: Invoke = invoke, write
     }
     return undefined;
   });
-  pi.on("tool_result", async (event, ctx) => { await send("tool_result", { ...event, ...identity(ctx) }); });
+  pi.on("tool_result", async (event, ctx) => {
+    // Harness executions already published their authenticated result files.
+    // Only host-executed additive tools need a completion from this adapter.
+    if (!registered.has(event.toolName)) await send("tool_result", { ...event, ...identity(ctx) });
+  });
   pi.on("session_shutdown", async (_event, ctx) => { await send("session_shutdown", identity(ctx)); });
 }

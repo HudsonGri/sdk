@@ -53,6 +53,8 @@ test("Pi executes every registered tool exactly once through the harness", async
     assert.deepEqual(answer,{content:result.content,details:result.details});
     assert.deepEqual(calls.at(-1),{event:"tool_call",input:{toolCallId:"call",toolName:name,input:{},sessionId:"native-session",cwd:"/selected-project"}});
     assert.equal(calls.length,count+1);
+    await handlers.get("tool_result")!({toolName:name,toolCallId:"call",...answer,isError:false},context);
+    assert.equal(calls.length,count+1,"canonical harness results must not launch another hook or republish the result");
   }
   const foreign = {toolName:"foreign-mcp",toolCallId:"host-call",input:{query:"native"}};
   assert.equal(await handlers.get("tool_call")!(foreign,context),undefined);
@@ -62,6 +64,38 @@ test("Pi executes every registered tool exactly once through the harness", async
   assert.deepEqual(calls.at(-1),{event:"tool_result",input:{...completion,sessionId:"native-session",cwd:"/selected-project"}});
   await handlers.get("session_shutdown")!({},context);
   assert.equal(calls.at(-1)!.event,"session_shutdown");
+});
+
+test("only host-executed completions incur a hook, with unchanged result bytes",async () => {
+  await fc.assert(fc.asyncProperty(fc.array(fc.record({harness:fc.boolean(),index:fc.nat(4),text:fc.string(),error:fc.boolean()}),{maxLength:24}),async selected=>{
+    // The previous adapter forwards every result. Initialize it independently
+    // of the installed candidate; neither shares dispatch or fixture state.
+    const baselineCalls:unknown[]=[];
+    const baseline=async (event:Record<string,unknown>)=>{baselineCalls.push(event);};
+    const calls:unknown[]=[];
+    const candidate=setup(async (event,input)=>{
+      if(event==="catalog") return {tools:definitions};
+      if(event==="tool_result") calls.push(input);
+      return {};
+    });
+    await candidate.handlers.get("session_start")!({},candidate.context);
+    const expected:unknown[]=[];
+    for(const [index,item] of selected.entries()) {
+      const event={toolName:item.harness?definitions[item.index]!.name:"foreign-mcp",toolCallId:String(index),
+        content:[{type:"text",text:item.text}],isError:item.error};
+      const original=JSON.stringify(event);
+      const input={...event,sessionId:"native-session",cwd:"/selected-project"};
+      await baseline(input);
+      assert.equal(await candidate.handlers.get("tool_result")!(event,candidate.context),undefined);
+      assert.equal(JSON.stringify(event),original,"result rendering or history bytes were changed");
+      if(!item.harness) expected.push(input);
+    }
+    assert.deepEqual(calls,expected,"host completion identity, order or bytes changed");
+    assert.equal(calls.length,selected.filter(item=>!item.harness).length);
+    assert.equal(baselineCalls.length,selected.length);
+    // Adding the removed forwarding back must fail the exact same work gate.
+    if(selected.some(item=>item.harness)) assert.throws(()=>assert.deepEqual(baselineCalls,expected));
+  }),{numRuns:64});
 });
 
 test("native launch identity and seed survive exact retries without a memory cache",async () => {
