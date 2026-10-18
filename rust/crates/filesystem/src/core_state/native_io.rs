@@ -281,7 +281,7 @@ impl Write for MaterializationWriter<'_> {
             return Ok(0);
         }
         let Some(work) = self.work else {
-            return self.file.write(bytes);
+            return acyclic_native_runtime::write_file(&mut self.file, bytes);
         };
         let remaining = work.remaining().map_err(std::io::Error::other)?;
         let length = bytes
@@ -305,7 +305,8 @@ impl Write for MaterializationWriter<'_> {
             ..crate::WorkCounters::default()
         })
         .map_err(std::io::Error::other)?;
-        let count = self.file.write(
+        let count = acyclic_native_runtime::write_file(
+            &mut self.file,
             bytes
                 .get(..length)
                 .ok_or_else(|| std::io::Error::other("invalid journal write bound"))?,
