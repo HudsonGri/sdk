@@ -89,13 +89,17 @@ pub(super) fn transcript(lines: usize) -> String {
     let mut count = 0;
     let mut block = 0;
     while count < lines {
+        let appended = text.len();
         match block % 4 {
             0 => text.push_str(&format!("## Section {block}\n\n{prose}\n\n")),
             1 => text.push_str("```rust\nfn main() {\n    let value = compute(42);\n    println!(\"{value}\");\n}\n```\n\n"),
             2 => text.push_str("```text\n$ cargo test\n   Compiling graphcoder v0.2.0\n    Finished test target\ntest result: ok. 12 passed\n```\n\n"),
             _ => text.push_str(&format!("- item {block} with **bold** text\n- second item\n\n")),
         }
-        count = text.bytes().filter(|byte| *byte == b'\n').count();
+        count += text.as_bytes()[appended..]
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count();
         block += 1;
     }
     text
