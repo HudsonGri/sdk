@@ -11,13 +11,12 @@ const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> 
 fn draft_race(broken: bool) {
     loom::model(move || {
         let (volume, mut submitter, mut editor) = loom::future::block_on(Box::pin(async {
+            let seed = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("image-draft-model").unwrap();
             let volume = Arc::new(
-                files::TaskVolume::open(
-                    Arc::new(MemoryStream::default()),
-                    StreamPath::new("image-draft-model").unwrap(),
-                )
-                .await
-                .unwrap(),
+                files::TaskVolume::open(seed.clone(), path.clone())
+                    .await
+                    .unwrap(),
             );
             let session = uuid::Uuid::from_bytes([1; 16]);
             let mut submitter = CommandSession::open(volume.clone(), session, 65_536, 32)
@@ -32,6 +31,19 @@ fn draft_race(broken: bool) {
                     "attachments.json",
                     &json!([image(1)]),
                 )
+                .await
+                .unwrap();
+            // Streams models its own commit/follow implementation. Bound this
+            // composition to its atomic provider contract, retaining the real
+            // encoded files, volume locks, client fold and publication paths.
+            let provider =
+                Arc::new(files::model_checking::Journal::snapshot(&*seed, path.clone()).await);
+            let volume = Arc::new(
+                files::TaskVolume::open_existing(provider, path)
+                    .await
+                    .unwrap(),
+            );
+            let submitter = CommandSession::open(volume.clone(), session, 65_536, 32)
                 .await
                 .unwrap();
             let editor = CommandSession::open(volume.clone(), session, 65_536, 32)

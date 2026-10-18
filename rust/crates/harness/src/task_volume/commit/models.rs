@@ -9,12 +9,15 @@ const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> 
 
 fn competing_batch(broken: bool) {
     loom::model(move || {
+        let seed = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("batch-fence-model").unwrap();
+        loom::future::block_on(TaskVolume::open(seed.clone(), path.clone())).unwrap();
+        let provider = Arc::new(loom::future::block_on(model_checking::Journal::snapshot(
+            &*seed,
+            path.clone(),
+        )));
         let volume = Arc::new(
-            loom::future::block_on(Box::pin(TaskVolume::open(
-                Arc::new(MemoryStream::default()),
-                StreamPath::new("batch-fence-model").unwrap(),
-            )))
-            .unwrap(),
+            loom::future::block_on(Box::pin(TaskVolume::open_existing(provider, path))).unwrap(),
         );
         let cut = loom::future::block_on(Box::pin(volume.head())).unwrap();
         let writer = volume.clone();
@@ -47,16 +50,17 @@ fn competing_batch(broken: bool) {
                 .is_pending()
         );
         if broken {
-            model_checking::set_fault(model_checking::Fault::OmitPublicationFence);
+            model_checking::set_fault(model_checking::Fault::ResampleCommitFence);
         }
         let other = loom::thread::spawn(move || {
             if broken {
-                model_checking::set_fault(model_checking::Fault::OmitPublicationFence);
+                model_checking::set_fault(model_checking::Fault::ResampleCommitFence);
             }
             loom::future::block_on(single).is_ok()
         });
         let accepted = loom::future::block_on(batch).is_ok();
         let peer = other.join().unwrap();
+        assert!(!(accepted && peer), "two stale-cut writers accepted");
         assert_ne!(
             accepted, peer,
             "one generation fence has exactly one winner"
@@ -84,5 +88,8 @@ fn missing_batch_generation_fence_is_detected_negative_control() {
         .map(String::as_str)
         .or_else(|| panic.downcast_ref::<&str>().copied())
         .unwrap_or("");
-    assert!(message.contains("exactly one winner"), "{message}");
+    assert!(
+        message.contains("two stale-cut writers accepted"),
+        "{message}"
+    );
 }

@@ -30,11 +30,17 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         #[cfg(acyclic_harness_loom)]
         model_checking::publication_ready().await;
         #[cfg(acyclic_harness_loom)]
-        let request = if model_checking::enabled(model_checking::Fault::OmitPublicationFence) {
+        let request = if model_checking::enabled(model_checking::Fault::ResampleCommitFence) {
             let mut request = request;
-            request.conditions.retain(|condition| {
-                !matches!(condition, CommitCondition::Head { path, .. } if path == &self.path)
-            });
+            let tail = self.provider.watermarks(self.path.clone()).await?.accepted;
+            for condition in &mut request.conditions {
+                if matches!(condition, CommitCondition::Head { path, .. } if path == &self.path) {
+                    *condition = CommitCondition::Tail {
+                        path: self.path.clone(),
+                        expected: tail,
+                    };
+                }
+            }
             request
         } else {
             request

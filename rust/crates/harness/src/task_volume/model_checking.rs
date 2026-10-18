@@ -15,8 +15,8 @@ pub enum Fault {
     ResampleFollow,
     /// Replace the caller's original generation fence with a fresh tail sample.
     ResamplePublicationFence,
-    /// Commit without the originally captured task-volume generation fence.
-    OmitPublicationFence,
+    /// Resample a valid tail fence after preparing a single or batch publication.
+    ResampleCommitFence,
     /// Publish the request without consuming its selected image draft.
     OmitDraftConsumption,
     /// Keep an index from the replaced history.
