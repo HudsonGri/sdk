@@ -48,11 +48,7 @@ async fn put_tree_page(
 }
 
 fn only_page_name(page: &OwnedPage<TreeFormat>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let page = match &page.page {
-        PageLease::Owned(page) => page,
-        PageLease::Shared { page, .. } => page,
-    };
-    let Page::Leaf(entries) = page else {
+    let PageRef::Leaf(entries) = page.page.view() else {
         return Err("expected a leaf page".into());
     };
     let entry = entries.first().ok_or("expected one leaf entry")?;

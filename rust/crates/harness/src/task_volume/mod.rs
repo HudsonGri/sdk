@@ -1,4 +1,5 @@
 //! Logical task files over single-event appends and immutable segment views.
+mod acknowledgement;
 mod child;
 mod child_queries;
 mod child_result;
@@ -18,6 +19,10 @@ mod plan_name;
 mod publication;
 mod recent;
 pub(crate) use publication::publish;
+#[cfg(all(test, acyclic_harness_loom))]
+mod observer_models;
+#[cfg(all(test, feature = "test-support", not(acyclic_harness_loom)))]
+mod observer_tests;
 mod refresh;
 mod schema;
 mod segment;
@@ -265,12 +270,16 @@ pub struct TaskVolume<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
     // Lock order: index only; no provider I/O or stream poll holds this lock.
-    index: Mutex<Index>,
+    index: Arc<Mutex<Index>>,
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     pub(crate) async fn reopen(&self) -> Result<Self> {
-        Self::open_existing(self.provider.clone(), self.path.clone()).await
+        Ok(Self {
+            provider: self.provider.clone(),
+            path: self.path.clone(),
+            index: self.index.clone(),
+        })
     }
 
     /// Authenticated provider path bound to this volume's history identity.
@@ -361,13 +370,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let volume = Self {
             provider,
             path,
-            index: Mutex::new(Index {
+            index: Arc::new(Mutex::new(Index {
                 volume: scope,
                 epoch: header.epoch,
                 next: 1,
                 commit: record.commit_id,
                 ..Index::default()
-            }),
+            })),
         };
         volume.refresh().await?;
         Ok(volume)
@@ -555,24 +564,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             self.provider.commit(request).await?
         };
         match outcome {
-            CommitOutcome::Committed(envelope) => {
-                let mut index = self.index.lock().await;
-                let unchanged = self.generation(&index) == expected;
-                #[cfg(acyclic_harness_loom)]
-                let unchanged = unchanged
-                    || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
-                if unchanged {
-                    apply(&mut index, files, next);
-                    index.next = next;
-                    index.commit = envelope.commit_id;
-                }
-                Ok(Generation {
-                    volume: expected.volume,
-                    epoch: expected.epoch,
-                    position: next,
-                    commit: *envelope.commit_id.as_bytes(),
-                })
-            }
+            CommitOutcome::Committed(envelope) => Ok(self
+                .acknowledge(expected, files, next, envelope.commit_id)
+                .await),
             CommitOutcome::Conflict(_) => {
                 self.refresh().await?;
                 let index = self.index.lock().await;
@@ -765,13 +759,17 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
 impl<P: StreamProvider + 'static> TaskVolume<P> {
     pub(crate) async fn reopen_erased(&self) -> Result<TaskVolume<dyn StreamProvider>> {
         let provider: Arc<dyn StreamProvider> = self.provider.clone();
-        TaskVolume::open(provider, self.path.clone()).await
+        Ok(TaskVolume {
+            provider,
+            path: self.path.clone(),
+            index: self.index.clone(),
+        })
     }
 }
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 impl TaskVolume<dyn StreamProvider> {
     pub(crate) async fn reopen_erased(&self) -> Result<Self> {
-        Self::open(Arc::clone(&self.provider), self.path.clone()).await
+        self.reopen().await
     }
 }
