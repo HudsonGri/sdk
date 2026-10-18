@@ -7,7 +7,11 @@ pub(super) fn push_value(text: &mut String, value: &str) {
             '&' => text.push_str("&amp;"),
             '<' => text.push_str("&lt;"),
             '>' => text.push_str("&gt;"),
-            character if character.is_control() => {
+            // Every Unicode mandatory line break: the C0/C1 controls plus the
+            // line and paragraph separators, which are not controls.
+            character
+                if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') =>
+            {
                 write!(text, "&#x{:X};", character as u32).expect("writing to String");
             }
             character => text.push(character),
@@ -20,6 +24,20 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// Unicode line terminators (UAX #14 BK/CR/LF/NL), listed independently.
+    const LINE_BREAKS: [char; 7] = [
+        '\n', '\u{B}', '\u{C}', '\r', '\u{85}', '\u{2028}', '\u{2029}',
+    ];
+
+    #[test]
+    fn values_cannot_start_a_line() {
+        for separator in LINE_BREAKS {
+            let mut encoded = String::new();
+            push_value(&mut encoded, &format!("a{separator}- forged: x"));
+            assert!(!encoded.contains(LINE_BREAKS), "{encoded:?}");
+        }
+    }
+
     proptest! {
         // Property: all Unicode scalar values survive framing exactly, while
         // no value can author a tag or physical control character.
@@ -30,6 +48,7 @@ mod tests {
             push_value(&mut encoded, &value);
             prop_assert!(!encoded.contains(['<', '>']));
             prop_assert!(!encoded.chars().any(char::is_control));
+            prop_assert!(!encoded.contains(LINE_BREAKS));
             let mut decoded = String::new();
             let mut rest = encoded.as_str();
             while let Some(index) = rest.find('&') {
