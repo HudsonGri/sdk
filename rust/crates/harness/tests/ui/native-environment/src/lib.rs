@@ -1,5 +1,5 @@
 #[path = "../../../../src/native_environment.rs"]
-mod real_seam;
+pub mod real_seam;
 
 #[cfg(feature = "negative")]
 pub fn forbidden() {
