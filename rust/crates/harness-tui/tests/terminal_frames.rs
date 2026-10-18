@@ -27,6 +27,9 @@ use proptest::prelude::*;
 #[path = "terminal_frames/contents.rs"]
 mod contents;
 
+#[path = "terminal_frames/regions.rs"]
+mod regions;
+
 const WIDTH: u16 = 24;
 const HEIGHT: u16 = 6;
 
@@ -357,6 +360,9 @@ impl<W: Write> Write for Calls<W> {
     }
 }
 impl<W: Present> Present for Calls<W> {
+    fn supports_scroll_regions(&self) -> bool {
+        self.0.supports_scroll_regions()
+    }
     fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
         self.1.set(self.1.get() + 1);
         self.2.set(self.2.get() + frame.len() as u64);
@@ -390,16 +396,24 @@ fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std
     let drain = std::thread::spawn(move || {
         let mut bytes = [0; 65536];
         while matches!(controller.read(&mut bytes), Ok(count) if count > 0) {}
+        // A completed drainer retains the master in its JoinHandle result.
+        // The guard tuple drops/restores Tty before releasing that result.
+        controller
     });
-    let (tty, output) =
-        acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?.split();
+    let mut tty = acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?;
+    tty.negotiate(&acyclic_harness_tui::term::Environment(
+        [("TERM".into(), "xterm-256color".into())].into(),
+    ))?;
+    let (tty, output) = tty.split();
     Ok((output, Box::new((tty, drain))))
 }
 
 #[cfg(windows)]
 fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std::any::Any>)> {
     // The attached console (conhost or ConPTY) with VT processing enabled.
-    let (tty, output) = acyclic_harness_tui::term::Tty::open()?.split();
+    let mut tty = acyclic_harness_tui::term::Tty::open()?;
+    tty.negotiate(&acyclic_harness_tui::term::Environment::default())?;
+    let (tty, output) = tty.split();
     Ok((output, Box::new(tty)))
 }
 

@@ -183,9 +183,10 @@ fn visible_cells_have_one_authoritative_diff_and_reset() {
     let mut output = Vec::new();
     let guard = RestoreGuard::new(&mut output, &Capabilities::default());
     let mut terminal = FrameTerminal::new(guard, Size::new(100, 40)).unwrap();
+    let cluster = format!("a{}", "\u{301}".repeat(40));
     for size in [Size::new(100, 40), Size::new(200, 40), Size::new(1, 2)] {
         let cells = usize::from(size.width) * usize::from(size.height);
-        for symbol in ["a", "a", "b", "a\u{301}\u{302}\u{303}\u{304}\u{305}"] {
+        for symbol in ["a", "a", "b", cluster.as_str()] {
             terminal
                 .draw(size, |frame| {
                     frame.buffer_mut().content[0].set_symbol(symbol);
