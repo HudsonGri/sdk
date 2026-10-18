@@ -3,6 +3,213 @@ use super::{Error, wire};
 use prost::Message;
 use wire::ErrorCode::InvalidArgument;
 
+/// Validates every publication before admitting a batch.
+pub fn put_batch(header: &wire::PutObjectsHeader) -> Result<(), Error> {
+    batch_count(header.objects.len(), header.encoded_len())?;
+    for object in &header.objects {
+        put(object)?;
+    }
+    Ok(())
+}
+
+/// Validates every bounded selection before admitting a batch.
+pub fn get_batch(query: &wire::GetObjectsRequest) -> Result<(), Error> {
+    batch_count(query.objects.len(), query.encoded_len())?;
+    for object in &query.objects {
+        get(object
+            .request
+            .as_ref()
+            .ok_or(Error::from(InvalidArgument))?)?;
+    }
+    Ok(())
+}
+
+fn batch_count(count: usize, bytes: usize) -> Result<(), Error> {
+    if count == 0 {
+        return Err(InvalidArgument.into());
+    }
+    if count > 1000 || bytes > 16 * 1024 * 1024 {
+        return Err(wire::ErrorCode::QuotaExceeded.into());
+    }
+    Ok(())
+}
+
+/// Projects validated batch selections to their canonical per-object permissions.
+/// This performs no admission or work: callers verify one credential, check every
+/// selection, then admit the entire batch before executing any item.
+pub fn batch_requests(
+    route: &str,
+    bytes: &[u8],
+) -> Result<Option<(&'static str, Vec<Vec<u8>>)>, Error> {
+    let invalid = || Error::from(InvalidArgument);
+    match route {
+        "objects/put-batch" => {
+            let header = wire::PutObjectsHeader::decode(bytes).map_err(|_| invalid())?;
+            put_batch(&header)?;
+            Ok(Some((
+                "objects/put",
+                header.objects.iter().map(Message::encode_to_vec).collect(),
+            )))
+        }
+        "objects/get-batch" => {
+            let query = wire::GetObjectsRequest::decode(bytes).map_err(|_| invalid())?;
+            get_batch(&query)?;
+            Ok(Some((
+                "objects/get",
+                query
+                    .objects
+                    .into_iter()
+                    .map(|selection| {
+                        selection
+                            .request
+                            .ok_or_else(invalid)
+                            .map(|query| query.encode_to_vec())
+                    })
+                    .collect::<Result<_, _>>()?,
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Enforces ordered item completion followed by explicit batch completion and EOF.
+pub struct BatchUploadFraming {
+    count: usize,
+    index: usize,
+    item: UploadFraming,
+    complete: bool,
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    fn header() -> wire::PutObjectsHeader {
+        wire::PutObjectsHeader {
+            objects: (0..2)
+                .map(|index| wire::PutObjectHeader {
+                    bucket: Some(wire::BucketRef {
+                        name: "batch".into(),
+                    }),
+                    object_key: format!("key-{index}"),
+                    ..Default::default()
+                })
+                .collect(),
+        }
+    }
+
+    fn chunk(index: u32, frame: wire::put_objects_chunk::Frame) -> wire::PutObjectsRequest {
+        wire::PutObjectsRequest {
+            frame: Some(wire::put_objects_request::Frame::Chunk(
+                wire::PutObjectsChunk {
+                    index,
+                    frame: Some(frame),
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn batch_framing_requires_every_item_in_order_and_final_completion() {
+        use wire::put_objects_chunk::Frame as C;
+        let header = header();
+        let mut framing = BatchUploadFraming::new(&header).unwrap();
+        assert!(framing.accept(&chunk(1, C::Body(vec![1]))).is_err());
+        assert!(framing.accept(&chunk(0, C::Body(vec![0; 65_537]))).is_err());
+        assert!(framing.accept(&chunk(0, C::Complete(false))).is_err());
+        framing.accept(&chunk(0, C::Complete(true))).unwrap();
+        assert!(framing.accept(&chunk(0, C::Complete(true))).is_err());
+        let end = wire::PutObjectsRequest {
+            frame: Some(wire::put_objects_request::Frame::Complete(true)),
+        };
+        assert!(framing.accept(&end).is_err());
+        framing.accept(&chunk(1, C::Complete(true))).unwrap();
+        assert!(framing.finish().is_err());
+        let mut framing = BatchUploadFraming::new(&header).unwrap();
+        for index in 0..2 {
+            framing.accept(&chunk(index, C::Complete(true))).unwrap();
+        }
+        framing.accept(&end).unwrap();
+        assert!(framing.accept(&end).is_err());
+        framing.finish().unwrap();
+    }
+
+    #[test]
+    fn batch_validation_and_projection_cover_every_selection() {
+        let mut header = header();
+        let (route, requests) = batch_requests("objects/put-batch", &header.encode_to_vec())
+            .unwrap()
+            .unwrap();
+        assert_eq!(route, "objects/put");
+        assert_eq!(requests.len(), 2);
+        for (bytes, expected) in requests.iter().zip(&header.objects) {
+            assert_eq!(
+                wire::PutObjectHeader::decode(bytes.as_slice()).unwrap(),
+                *expected
+            );
+        }
+        header.objects.get_mut(1).unwrap().object_key.clear();
+        assert!(put_batch(&header).is_err());
+        assert!(put_batch(&wire::PutObjectsHeader::default()).is_err());
+        header.objects = vec![header.objects.first().unwrap().clone(); 1001];
+        assert!(put_batch(&header).is_err());
+        assert!(
+            get_batch(&wire::GetObjectsRequest {
+                objects: vec![wire::GetObjectSelection::default()]
+            })
+            .is_err()
+        );
+    }
+}
+
+impl BatchUploadFraming {
+    /// Starts after the batch header has been validated.
+    pub fn new(header: &wire::PutObjectsHeader) -> Result<Self, Error> {
+        put_batch(header)?;
+        Ok(Self {
+            count: header.objects.len(),
+            index: 0,
+            item: UploadFraming::default(),
+            complete: false,
+        })
+    }
+
+    /// Accepts the next bounded item frame or final batch completion marker.
+    pub fn accept(&mut self, frame: &wire::PutObjectsRequest) -> Result<(), Error> {
+        use wire::{put_objects_chunk::Frame as C, put_objects_request::Frame as F};
+        if self.complete {
+            return Err(InvalidArgument.into());
+        }
+        match &frame.frame {
+            Some(F::Chunk(chunk))
+                if self.index < self.count
+                    && usize::try_from(chunk.index).ok() == Some(self.index) =>
+            {
+                match &chunk.frame {
+                    Some(C::Body(body)) => self.item.body(body)?,
+                    Some(C::Complete(complete)) => {
+                        self.item.complete(*complete)?;
+                        std::mem::take(&mut self.item).finish()?;
+                        self.index += 1;
+                    }
+                    _ => return Err(InvalidArgument.into()),
+                }
+            }
+            Some(F::Complete(true)) if self.index == self.count => self.complete = true,
+            _ => return Err(InvalidArgument.into()),
+        }
+        Ok(())
+    }
+
+    /// Requires EOF after all declared items and the batch completion marker.
+    pub fn finish(self) -> Result<(), Error> {
+        if !self.complete {
+            return Err(InvalidArgument.into());
+        }
+        Ok(())
+    }
+}
+
 /// Canonical body/completion discipline after a validated upload header.
 #[derive(Default)]
 pub struct UploadFraming {
@@ -60,6 +267,8 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
         };
     }
     match route {
+        "objects/put-batch" => put_batch(&decode!(PutObjectsHeader))?,
+        "objects/get-batch" => get_batch(&decode!(GetObjectsRequest))?,
         "buckets/create" => {
             create_bucket_digest(&decode!(CreateBucketRequest))?;
         }

@@ -20,6 +20,13 @@ It has no public object versions, snapshots, or forks. The transport-independent
 memory and native local providers. Reads and listings may lag mutations; single-object publication
 and its conditions are atomic.
 
+`GrpcObjects::put_batch` and `get_batch` use the canonical `PutObjects` and
+`GetObjects` streaming RPCs. Each nonempty batch admits 1–1000 ordered objects
+once, authorizes every selection before work, and reports individual outcomes.
+Bodies retain the single-object framing and allocation bounds. Empty batches
+return immediately. Retrying a publication batch uses the original per-object
+mutation identities; cancellation can leave earlier items published.
+
 ```sh
 cargo add acyclic-objects
 ```
