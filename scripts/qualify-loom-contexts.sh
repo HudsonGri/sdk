@@ -33,6 +33,8 @@ RUSTFLAGS='--cfg acyclic_loom --cfg acyclic_fs_loom' \
   cargo test --locked -p acyclic-fs-fuzz --test model
 cargo test --locked --manifest-path rust/verification/loom-locks/Cargo.toml \
   --target-dir "$target/loom-locks" --lib
+cargo build --locked --manifest-path rust/verification/loom-locks/Cargo.toml \
+  --target-dir "$target/loom-locks"
 export LOOM_SOURCE_SCANNER="$target/loom-locks/debug/loom-lock-scan"
 node --test scripts/check-loom-repository.test.mjs
 harness_features=terminal,tui,filesystem-local,native-execution,grpc,test-support,search-http,model-checking

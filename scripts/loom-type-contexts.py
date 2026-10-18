@@ -120,7 +120,10 @@ def analyze(name, selection, flags, models, environment, rustc_flags=()):
     model_file.write_text("\n".join(models) + "\n")
     environment = dict(environment, LOOM_MODEL_ROOT=str(ROOT), LOOM_MODEL_FILES=str(model_file),
                        LOOM_MODEL_REPORTS=str(reports), LOOM_MODEL_REPLAY=str(commands), RUSTFLAGS=flags)
-    action = ["rustc"] if rustc_flags else ["check", "--tests"]
+    # Cargo --tests would broaden --lib into every integration test. Library
+    # models retain their exact test target; integration models can use check.
+    action = (["rustc"] if rustc_flags else
+              ["test", "--no-run"] if "--lib" in selection else ["check"])
     trailing = ["--", *rustc_flags] if rustc_flags else []
     process = subprocess.Popen(["cargo", "+" + TOOLCHAIN, *action, "--locked", *selection,
                                 "--message-format=json", *trailing],
