@@ -168,6 +168,76 @@ impl Handoff {
 mod reuse_tests {
     use super::*;
 
+    #[test]
+    fn recycled_batches_match_independent_vec_bytes_errors_and_order() {
+        use super::*;
+        const BATCH: usize = 1024;
+        use std::{
+            io,
+            task::{Context, Poll, Waker},
+        };
+        acyclic_test_support::differential(
+            || {
+                let mut storage = vec![0; BATCH];
+                let mut output = Vec::new();
+                let mut trace = Vec::new();
+                for read in [
+                    Ok(b"a".as_slice()),
+                    Ok(b"four".as_slice()),
+                    Err(io::ErrorKind::PermissionDenied),
+                ] {
+                    storage.resize(BATCH, 0);
+                    trace.push("read");
+                    let result = read
+                        .map(|bytes| {
+                            storage[..bytes.len()].copy_from_slice(bytes);
+                            storage.truncate(bytes.len());
+                            storage.clone()
+                        })
+                        .map_err(|kind| (kind, io::Error::from(kind).to_string()));
+                    trace.push("publish");
+                    output.push(result);
+                    trace.push("receive");
+                }
+                (output, trace)
+            },
+            || {
+                let channel = Handoff::new(BATCH);
+                let mut output = Vec::new();
+                let mut trace = Vec::new();
+                let mut cx = Context::from_waker(Waker::noop());
+                for read in [
+                    Ok(b"a".as_slice()),
+                    Ok(b"four".as_slice()),
+                    Err(io::ErrorKind::PermissionDenied),
+                ] {
+                    let mut storage = channel.storage().unwrap();
+                    trace.push("read");
+                    let result = read.map_err(io::Error::from).and_then(|bytes| {
+                        storage.storage_mut()[..bytes.len()].copy_from_slice(bytes);
+                        storage.finish(bytes.len())
+                    });
+                    assert!(channel.send(result));
+                    trace.push("publish");
+                    let Poll::Ready(Some(result)) = channel.poll_recv(&mut cx) else {
+                        panic!("missing batch")
+                    };
+                    output.push(
+                        result
+                            .map(|storage| {
+                                let bytes = storage.bytes().to_vec();
+                                channel.recycle(storage);
+                                bytes
+                            })
+                            .map_err(|error| (error.kind(), error.to_string())),
+                    );
+                    trace.push("receive");
+                }
+                (output, trace)
+            },
+        );
+    }
+
     fn reinitialized_after_one_byte(broken: bool) -> usize {
         const SIZE: usize = 1024;
         let handoff = Handoff::new(SIZE);
