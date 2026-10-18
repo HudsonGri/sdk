@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tarfile
 import urllib.request
@@ -85,7 +86,13 @@ def compiler():
         environment, stdout=sys.stderr)
     environment["LD_LIBRARY_PATH"] = str(sysroot / "lib")
     environment["DYLD_LIBRARY_PATH"] = str(sysroot / "lib")
-    environment["RUSTC_WORKSPACE_WRAPPER"] = str(TARGET / "loom-types/debug/loom-type-scan")
+    executable = TARGET / "loom-types/debug/loom-type-scan"
+    metadata_compiler = executable.with_name("loom-type-check")
+    if not metadata_compiler.is_file() or executable.read_bytes() != metadata_compiler.read_bytes():
+        shutil.copy2(executable, metadata_compiler)
+    # Cargo hashes the workspace wrapper path into its artifacts. Metadata
+    # analysis therefore cannot mark an older runtime test executable fresh.
+    environment["RUSTC_WORKSPACE_WRAPPER"] = str(metadata_compiler)
     environment["LOOM_MODEL_METADATA_ONLY"] = "1"
     environment.pop("RUSTC_WRAPPER", None)
     return environment
