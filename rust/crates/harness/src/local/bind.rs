@@ -67,7 +67,9 @@ impl LocalHarness {
         #[cfg(feature = "native-execution")]
         let workspace = if let Some(checkout) = checkout {
             let directory = owner::directory(&owner::state_directory(&config.project, None)?)?;
-            let identity = acyclic_fs::capture_root_identity(checkout).map_err(storage_error)?;
+            let root =
+                acyclic_fs::hold_root(&std::fs::canonicalize(checkout).map_err(storage_error)?)
+                    .map_err(storage_error)?;
             let digest = blake3::derive_key(
                 "acyclic.local.bound-checkout/v1",
                 &serde_json::to_vec(volume).map_err(storage_error)?,
@@ -80,9 +82,8 @@ impl LocalHarness {
                     &filesystem,
                     volume,
                     volume,
-                    checkout,
+                    root,
                     &directory,
-                    Some(identity.to_bytes()),
                     operation,
                     true,
                     false,
