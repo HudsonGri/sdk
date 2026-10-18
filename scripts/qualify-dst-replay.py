@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Run every DST test and the cross-process controls within one nine-second bound."""
+import itertools
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 executable, = sys.argv[1:]
 second_test = "digest::cross_process_seeded_replay_digest"
 started = time.monotonic()
+# Each process saves the canonical trace its digest hashed, so a mismatch can
+# name the first differing poll, boundary, write or 32-byte chunk.
+trace_directory = tempfile.mkdtemp(prefix="dst-trace-")
+environment = {**os.environ, "DST_TRACE_DIR": trace_directory}
 
 
 def run_pair():
@@ -22,7 +30,7 @@ def run_pair():
         # polls its own original tasks on one seeded thread. Neither waits for
         # the other's tests before starting, and both share the same deadline.
         for arguments in commands:
-            processes.append(subprocess.Popen([executable, *arguments],
+            processes.append(subprocess.Popen([executable, *arguments], env=environment,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE))
         outputs = []
         for process in processes:
@@ -50,16 +58,41 @@ def run_pair():
             process.stderr.close()
 
 
-def equal(left, right):
+def equal(left, right, locate=lambda: ""):
     if left != right:
-        raise AssertionError(f"cross-process trace diverged: {left!r} != {right!r}")
+        raise AssertionError(f"cross-process trace diverged: {left!r} != {right!r}{locate()}")
 
 
-def digest(output, label):
-    values = re.findall(rb"^" + label + rb"=([0-9a-f]{64})$", output, re.MULTILINE)
+def digest(output, label, pattern=rb"[0-9a-f]{64}"):
+    values = re.findall(rb"^" + label + rb"=(" + pattern + rb")$", output, re.MULTILINE)
     if len(values) != 1:
         sys.exit(f"Expected exactly one {label!r}, found {len(values)}")
     return values[0]
+
+
+SECTION = re.compile(rb"^(polls|boundaries|writes|requests|dispatches|files|jsonl|durable) ")
+
+
+def first_difference(left, right):
+    """Return the first differing canonical line, its section and durable file."""
+    section = file = b""
+    for number, (a, b) in enumerate(itertools.zip_longest(left, right), 1):
+        if a != b:
+            where = b" ".join(part for part in (section, file) if part)
+            return number, where.decode(errors="replace"), a, b
+        if SECTION.match(a):
+            section, file = a, b""
+        elif a.startswith(b"file "):
+            file = a
+    return None
+
+
+def describe(difference):
+    if difference is None:
+        return "\n  canonical traces are identical; only the digest lines differ"
+    number, where, a, b = difference
+    return (f"\n  first difference at canonical line {number} ({where}):"
+            f"\n  - {a!r}\n  + {b!r}")
 
 
 # The two command filters partition all tests: one has the turn/process/cut
@@ -69,7 +102,18 @@ first, second = run_pair()
 for output in (first, second):
     if not re.search(rb"test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;", output):
         sys.exit("Each process must execute its selected tests without ignored cases")
-equal(digest(first, b"DST_REPLAY_DIGEST"), digest(second, b"DST_REPLAY_DIGEST"))
+traces = []
+for output in (first, second):
+    with open(digest(output, b"DST_REPLAY_TRACE", rb".+"), "rb") as trace:
+        traces.append(trace.read().splitlines())
+# The locator must name a planted divergence in the real trace, in every run.
+middle = len(traces[0]) // 2
+planted = [*traces[0][:middle], traces[0][middle] + b"!", *traces[0][middle + 1:]]
+if (first_difference(traces[0], planted) or (0,))[0] != middle + 1:
+    sys.exit("First-divergence locator missed a planted canonical-line change")
+equal(digest(first, b"DST_REPLAY_DIGEST"), digest(second, b"DST_REPLAY_DIGEST"),
+      lambda: describe(first_difference(*traces)) + f"\n  traces kept in {trace_directory}")
+shutil.rmtree(trace_directory)
 print("Cross-process seeded trace: identical digest bytes", flush=True)
 
 # These digests add one host-random startup value, cached for the entire process.
