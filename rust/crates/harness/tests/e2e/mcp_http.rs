@@ -8,14 +8,20 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::{Request, Response, body::Incoming, service::service_fn};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::{
+    sync::oneshot,
+    task::{JoinHandle, JoinSet},
+};
 
-pub(super) struct Server(Option<JoinHandle<TestResult>>);
+pub(super) struct Server {
+    shutdown: Option<oneshot::Sender<()>>,
+    task: Option<JoinHandle<TestResult>>,
+}
 
 impl Drop for Server {
     fn drop(&mut self) {
-        if let Some(task) = &self.0 {
-            task.abort();
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
         }
     }
 }
@@ -47,12 +53,17 @@ impl Server {
         )?;
         let settings = SettingsConfig::new(directory, &home).codex_home(home.join(".codex"));
         let fixture = Arc::new(fixture);
+        let (shutdown, mut stopping) = oneshot::channel();
         let task = tokio::spawn(async move {
             // All fixture state is immutable. Tool effects use the real volume's
             // atomic publication path; there is no fixture lock or request counter.
             let mut connections = JoinSet::new();
             loop {
                 tokio::select! {
+                    _ = &mut stopping => {
+                        connections.shutdown().await;
+                        return Ok(());
+                    }
                     completed = connections.join_next(), if !connections.is_empty() => {
                         completed.ok_or("MCP connection set ended")???;
                     }
@@ -74,16 +85,19 @@ impl Server {
                 }
             }
         });
-        Ok((Self(Some(task)), settings))
+        Ok((
+            Self {
+                shutdown: Some(shutdown),
+                task: Some(task),
+            },
+            settings,
+        ))
     }
 
     pub(super) async fn close(mut self) -> TestResult {
-        let task = self.0.take().ok_or("MCP server already closed")?;
-        task.abort();
-        match task.await {
-            Err(error) if error.is_cancelled() => Ok(()),
-            result => result?,
-        }
+        let shutdown = self.shutdown.take().ok_or("MCP server already closed")?;
+        let _ = shutdown.send(());
+        self.task.take().ok_or("MCP server has no task")?.await?
     }
 }
 
