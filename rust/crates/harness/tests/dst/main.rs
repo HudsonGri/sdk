@@ -12,6 +12,8 @@ use acyclic_native_runtime::testing::DurableWrite;
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod clocks;
 mod digest;
 mod driver;
 mod features;

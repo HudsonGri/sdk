@@ -49,6 +49,8 @@ mod attribute_ops;
 mod file_ops;
 mod namespace_ops;
 mod paths;
+#[cfg(feature = "test-support")]
+pub(super) use paths::update_time;
 use paths::*;
 
 #[cfg(test)]

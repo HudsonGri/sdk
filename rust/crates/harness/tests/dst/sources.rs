@@ -1,9 +1,8 @@
 //! Every fresh identity, wall-clock read and entropy draw in the simulated
 //! crates crosses a seeded seam. A new direct source fails this scan.
 //!
-//! Monotonic waits are not listed: simulated paths use Tokio's paused clock, and
-//! host-only waits (process trees, mounts, lock retries) sit behind the process
-//! provider or outside the simulated stores.
+//! Monotonic mount callback reads are checked separately below; the only wall
+//! fallback is in the captured clock seam, never in a callback implementation.
 use std::{collections::BTreeMap, path::Path};
 
 /// Crates linked into the DST closure whose sources reach simulated paths.
@@ -38,7 +37,7 @@ const SOURCES: [&str; 17] = [
 ];
 
 /// Exact remaining direct sources: (file, source, count).
-const ALLOWED: [(&str, &str, usize); 17] = [
+const ALLOWED: [(&str, &str, usize); 11] = [
     // Seam fallbacks, reached only when no seeded scope is active.
     ("harness/src/identity.rs", "Uuid::new_v4(", 1),
     ("harness/src/local/owner.rs", "getrandom::fill(", 1),
@@ -55,37 +54,9 @@ const ALLOWED: [(&str, &str, usize); 17] = [
         1,
     ),
     ("stream/src/wasm/remote.rs", "Uuid::new_v4(", 1),
-    // Kernel-originated mount callbacks run on driver threads outside every
-    // simulation scope; simulated processes never write through a mount.
-    ("filesystem/src/native_mount/mod.rs", "SystemTime::now(", 1),
+    // The sole mount clock fallback is unreachable through a captured seeded clock.
     (
-        "filesystem/src/native_mount/adapter/mod.rs",
-        "SystemTime::now(",
-        1,
-    ),
-    (
-        "filesystem/src/native_mount/fuse/attributes.rs",
-        "SystemTime::now(",
-        1,
-    ),
-    (
-        "filesystem/src/native_mount/darwin_mount/paths.rs",
-        "SystemTime::now(",
-        1,
-    ),
-    // Probe directory names, removed on drop; never durable state.
-    (
-        "filesystem/src/native_mount/storage_accelerations.rs",
-        "SystemTime::now(",
-        1,
-    ),
-    (
-        "filesystem/src/native_mount/storage_accelerations_linux.rs",
-        "SystemTime::now(",
-        1,
-    ),
-    (
-        "filesystem/src/native_mount/storage_accelerations_macos.rs",
+        "filesystem/src/native_mount/clock.rs",
         "SystemTime::now(",
         1,
     ),
@@ -229,6 +200,57 @@ fn planted_unseeded_sources_fail_the_scan() {
     );
     assert!(test_only("harness/src/client/tests/history.rs"));
     assert!(!test_only("harness/src/local/owner.rs"));
+}
+
+#[test]
+fn mount_callbacks_cannot_read_host_clocks_directly() {
+    // Mount lifecycle subprocesses are refused/scripted by Driver. Inspect the
+    // callback implementations themselves, including every included adapter file
+    // and both POSIX attribute callbacks on every build platform.
+    let callback_source = |path: &str| {
+        path == "filesystem/src/native_mount/mod.rs"
+            || path.starts_with("filesystem/src/native_mount/adapter/")
+            || path.starts_with("filesystem/src/native_mount/projfs/")
+            || (path.starts_with("filesystem/src/native_mount/fuse/")
+                && !path.ends_with("/lifecycle.rs"))
+            || (path.starts_with("filesystem/src/native_mount/darwin_mount/")
+                && !["/cleanup.rs", "/session.rs", "/startup.rs"]
+                    .iter()
+                    .any(|suffix| path.ends_with(suffix)))
+    };
+    let host_clock = |source: &str| {
+        ["Instant::now(", "SystemTime::now("]
+            .iter()
+            .any(|clock| source.contains(clock))
+    };
+    let mut checked = 0;
+    for (path, text) in sources().iter().filter(|(path, _)| callback_source(path)) {
+        checked += 1;
+        assert!(!host_clock(text), "callback reads a host clock: {path}");
+        for call in ["std::time::Instant::now()", "std::time::SystemTime::now()"] {
+            assert!(
+                host_clock(&format!("{text}\n{call};")),
+                "host read escaped: {path}"
+            );
+        }
+    }
+    assert!(checked > 60, "mount callback scan lost its roots");
+    // Each provider constructor must capture time before handing callbacks to
+    // its driver. Defaulting the field would compile but lose the seed.
+    for path in [
+        "filesystem/src/native_mount/adapter/runtime.rs",
+        "filesystem/src/native_mount/fuse/core.rs",
+        "filesystem/src/native_mount/darwin_mount/context.rs",
+        "filesystem/src/native_mount/projfs/projector.rs",
+    ] {
+        let text = &sources().iter().find(|(name, _)| name == path).unwrap().1;
+        let captured = "clock: super::super::clock::Clock::capture(),";
+        let seeded = |text: &str| text.matches(captured).count() == 1;
+        assert!(seeded(text), "provider failed to capture its clock: {path}");
+        assert!(!seeded(
+            &text.replace(captured, "clock: Default::default(),")
+        ));
+    }
 }
 
 #[test]
