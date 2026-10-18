@@ -8,7 +8,8 @@ use prost::Message as _;
 
 fn canonical_action_matches_reference(fuzz_input: fuzz_support::FuzzInput<'_>) {
     let bytes = fuzz_input.bytes();
-    let Some(action) = fuzz_input.parse(serde_json::from_slice::<Action>) else {
+    let Some(action) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Action>)
+    else {
         return;
     };
     let mut value = fuzz_support::must_decode(serde_json::to_value(&action));
@@ -32,7 +33,8 @@ fn event_protocol_round_trip(fuzz_input: fuzz_support::FuzzInput<'_>) {
     if data.len() > acyclic_stream::MAX_RECORD_BYTES {
         return;
     }
-    let Some(event) = fuzz_input.parse(wire::EventEnvelope::decode) else {
+    let Some(event) = fuzz_support::FuzzInput::parse(fuzz_input, wire::EventEnvelope::decode)
+    else {
         return;
     };
     let expected = match event.protocol.as_ref() {

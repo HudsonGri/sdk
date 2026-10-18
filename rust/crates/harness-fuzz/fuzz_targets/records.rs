@@ -17,7 +17,7 @@ mod owner_record;
 mod turn_record;
 
 fn round_trip<T: Serialize + DeserializeOwned>(fuzz_input: fuzz_support::FuzzInput<'_>) {
-    if let Some(value) = fuzz_input.parse(serde_json::from_slice::<T>) {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<T>) {
         let encoded = serde_json::to_vec(&value).unwrap();
         let _ = fuzz_support::round_trip(
             &encoded,
@@ -27,7 +27,7 @@ fn round_trip<T: Serialize + DeserializeOwned>(fuzz_input: fuzz_support::FuzzInp
 }
 
 fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
-    if let Some(turn) = fuzz_input.parse(turn_record::decode) {
+    if let Some(turn) = fuzz_support::FuzzInput::parse(fuzz_input, turn_record::decode) {
         let bytes = serde_json::to_vec(&turn).unwrap();
         let _ = fuzz_support::round_trip(&(turn), turn_record::decode(&bytes));
     }

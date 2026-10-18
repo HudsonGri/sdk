@@ -16,22 +16,22 @@ use acyclic_auth::{
 pub use acyclic_fuzz_support as fuzz_support;
 use prost::Message;
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(value) = fuzz_input.parse(decode_caveat) {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, decode_caveat) {
         assert_eq!(CaveatProto::from(value).encode_to_vec(), bytes);
     }
-    if let Some(value) = fuzz_input.parse(decode_capability) {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, decode_capability) {
         let _ = fuzz_support::round_trip(
             &(value),
             decode_capability(&CapabilityProto::from(value.clone()).encode_to_vec()),
         );
     }
-    if let Some(value) = fuzz_input.parse(decode_block) {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, decode_block) {
         let _ = fuzz_support::round_trip(
             &(value),
             decode_block(&BlockProto::from(value.clone()).encode_to_vec()),
         );
     }
-    if let Some(value) = fuzz_input.parse(RecordAttributes::decode) {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, RecordAttributes::decode) {
         assert!(
             value
                 .as_slice()
@@ -89,7 +89,7 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
                 Err(Deny::NonCanonicalAudience)
             );
         }
-        if let Some(value) = fuzz_input.parse_text(|text| {
+        if let Some(value) = fuzz_support::FuzzInput::parse_text(fuzz_input, |text| {
             SocketHostRule::try_from(SocketHostRuleProto {
                 host: text.to_owned(),
                 ports: vec![],
@@ -101,7 +101,7 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
                 SocketHostRule::try_from(SocketHostRuleProto::decode(bytes.as_slice()).unwrap()),
             );
         }
-        if let Some(decoded) = fuzz_input.parse_text(decode_component) {
+        if let Some(decoded) = fuzz_support::FuzzInput::parse_text(fuzz_input, decode_component) {
             assert_eq!(encode_component(&decoded), text);
         }
     }

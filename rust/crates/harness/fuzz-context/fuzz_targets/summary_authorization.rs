@@ -9,7 +9,9 @@ mod origin_locator;
 mod summary_identity;
 
 fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
-    if let Some((sequence, key)) = fuzz_input.optional(origin_locator::decode) {
+    if let Some((sequence, key)) =
+        fuzz_support::FuzzInput::optional(fuzz_input, origin_locator::decode)
+    {
         let encoded = origin_locator::encode(sequence, key);
         assert_eq!(input, encoded);
     } else {
@@ -27,9 +29,10 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             );
         }
     }
-    if let Some(summary) =
-        fuzz_input.parse(serde_json::from_slice::<acyclic_harness::context::ContextSummary>)
-    {
+    if let Some(summary) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        serde_json::from_slice::<acyclic_harness::context::ContextSummary>,
+    ) {
         if summary.output.validate(&mut None).is_ok() {
             let encoded = serde_json::to_vec(&summary).unwrap();
             let _ = fuzz_support::round_trip(

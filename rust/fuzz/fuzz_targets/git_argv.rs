@@ -6,7 +6,7 @@ pub use acyclic_fuzz_support as fuzz_support;
 use acyclic_fs::{GitCommand, git_compat::parse_git_argv};
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(command) = fuzz_input.parse_text(|text| {
+    if let Some(command) = fuzz_support::FuzzInput::parse_text(fuzz_input, |text| {
         let argv: Vec<_> = text.split('\0').map(str::to_owned).collect();
         parse_git_argv::<std::convert::Infallible>(&argv, "agent", 0)
     }) {

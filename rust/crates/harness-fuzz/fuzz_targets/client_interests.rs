@@ -9,7 +9,9 @@ mod resume;
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     resume::exercise(bytes);
     // Arbitrary untrusted bytes exercise both rejection and successful parsing.
-    if let Some(document) = fuzz_input.parse(|raw_input| InterestDocument::decode(raw_input, 4096)) {
+    if let Some(document) = fuzz_support::FuzzInput::parse(fuzz_input, |raw_input| {
+        InterestDocument::decode(raw_input, 4096)
+    }) {
         let encoded = serde_json::to_vec(&document).unwrap();
         let _ = fuzz_support::round_trip(
             &(document),

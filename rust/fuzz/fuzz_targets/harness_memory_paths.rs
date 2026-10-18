@@ -8,7 +8,9 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     if data.len() > 65_536 {
         return;
     }
-    let Some(input) = fuzz_input.parse(serde_json::from_slice::<(Vec<String>, String)>) else {
+    let Some(input) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<(Vec<String>, String)>)
+    else {
         return;
     };
     if input.0.len() > 256 {

@@ -134,19 +134,21 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     if let Some((&selector, bytes)) = data.split_first() {
         frame(selector, bytes);
     }
-    if let Some(file) = fuzz_input.parse_text(jsonl::parse_request) {
+    if let Some(file) = fuzz_support::FuzzInput::parse_text(fuzz_input, jsonl::parse_request) {
         let line = jsonl::request(&file).unwrap();
         let value = fuzz_support::must_decode(serde_json::from_str(&line));
         assert!(!integer_array(&value));
         let _ = fuzz_support::round_trip(&file, jsonl::parse_request(&line));
     }
-    if let Some(change) = fuzz_input.parse_text(jsonl::parse_change) {
+    if let Some(change) = fuzz_support::FuzzInput::parse_text(fuzz_input, jsonl::parse_change) {
         let line = jsonl::change(&change).unwrap();
         let value = fuzz_support::must_decode(serde_json::from_str(&line));
         assert!(!integer_array(&value));
         let _ = fuzz_support::round_trip_by(&line, jsonl::parse_change(&line), jsonl::change);
     }
-    if let Some((query, head)) = fuzz_input.parse_text(jsonl::parse_snapshot) {
+    if let Some((query, head)) =
+        fuzz_support::FuzzInput::parse_text(fuzz_input, jsonl::parse_snapshot)
+    {
         let line = jsonl::snapshot(&query, &head).unwrap();
         let value = fuzz_support::must_decode(serde_json::from_str(&line));
         assert!(!integer_array(&value));

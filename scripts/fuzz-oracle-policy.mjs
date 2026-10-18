@@ -126,14 +126,18 @@ export function fuzzOracleViolations(file, source) {
       helpers.push([i + 3, tokens[i + 3].end]);
     }
   }
+  const rawMethods = new Set(['parse', 'parse_bounded', 'parse_text', 'parse_text_bounded',
+    'parse_lossy', 'optional', 'optional_view', 'optional_text']);
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].text === 'fuzz_input' && tokens[i + 1]?.text === '.'
-      && ['parse', 'parse_bounded', 'parse_text', 'parse_text_bounded', 'parse_lossy', 'optional', 'optional_view', 'optional_text'].includes(tokens[i + 2]?.text)
-      && tokens[i + 3]?.text === '(') helpers.push([i + 3, tokens[i + 3].end]);
+    if (tokens.slice(i, i + 4).map(t => t.text).join(' ') === 'fuzz_support :: FuzzInput ::'
+      && rawMethods.has(tokens[i + 4]?.text) && tokens[i + 5]?.text === '(')
+      helpers.push([i + 3, tokens[i + 5].end]);
   }
   const inHelper = index => helpers.some(([start, end]) => start < index && index < end);
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (rawMethods.has(token.text) && tokens[i - 1]?.text === '.' && tokens[i + 1]?.text === '(')
+      report(token, 'raw admission must name fuzz_support::FuzzInput explicitly');
     if (['parse_with', 'parse_text_with', 'parse_lossy_with', 'optional_with'].includes(token.text)
       && tokens[i - 1]?.text === '.') report(token, 'raw parser configuration cannot carry generated buffers');
     const protectedCrates = ['std', 'core', 'acyclic_fuzz_support', 'acyclic_harness', 'acyclic_stream', 'acyclic_harness_tui', 'serde', 'serde_json', 'libfuzzer_sys', 'tokio_util', 'bytes'];
@@ -183,7 +187,7 @@ export function fuzzOracleViolations(file, source) {
       report(token, 'do not shadow the shared oracle or assertions');
     if (/^(?:decode(?:_\w+)?|parse(?:_\w+)?|from_(?:slice|str|value|utf8)|deserialize(?:_\w+)?)$/.test(token.text)
       && tokens[i - 1]?.text !== 'fn' && !inHelper(i)
-      && !(tokens[i - 2]?.text === 'fuzz_input' && tokens[i - 1]?.text === '.') && (tokens[i + 1]?.text === '(' || tokens[i + 1]?.text === '::' && tokens[i + 2]?.text === '<')) {
+      && (tokens[i + 1]?.text === '(' || tokens[i + 1]?.text === '::' && tokens[i + 2]?.text === '<')) {
       report(token, 'decode results must go through fuzz_support');
     }
     if (token.text === 'use') {

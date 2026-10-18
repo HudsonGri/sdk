@@ -32,7 +32,10 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     if input.len() > limits.render_bytes as usize {
         return;
     }
-    if let Some(hooks) = fuzz_input.parse(serde_json::from_slice::<acyclic_harness::hooks::Hooks>) {
+    if let Some(hooks) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        serde_json::from_slice::<acyclic_harness::hooks::Hooks>,
+    ) {
         if let Ok(encoded) = acyclic_harness::hooks::Hooks::encode(&hooks, limits.file_bytes) {
             let decoded = fuzz_support::round_trip_by(
                 &encoded,
@@ -42,7 +45,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             assert_eq!(hooks.is_empty(), decoded.is_empty());
         }
     }
-    if let Some(command) = fuzz_input.parse(serde_json::from_slice::<ModelTaskCommand>) {
+    if let Some(command) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<ModelTaskCommand>)
+    {
         if command.context_manifest.validate(&mut None).is_ok() {
             let encoded = serde_json::to_vec(&command).unwrap();
             let _ = fuzz_support::round_trip(
@@ -51,13 +56,17 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             );
         }
     }
-    if let Some(source) = fuzz_input.parse(serde_json::from_slice::<Context>) {
+    if let Some(source) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Context>)
+    {
         let encoded = serde_json::to_vec(&source).unwrap();
         let _ = fuzz_support::round_trip(&(source), serde_json::from_slice::<Context>(&encoded));
     }
     macro_rules! round_trip {
         ($ty:ty) => {
-            if let Some(value) = fuzz_input.parse(serde_json::from_slice::<$ty>) {
+            if let Some(value) =
+                fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<$ty>)
+            {
                 let encoded = serde_json::to_vec(&value).unwrap();
                 let _ = fuzz_support::round_trip(&(value), serde_json::from_slice::<$ty>(&encoded));
             }
@@ -72,18 +81,22 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             path_bytes,
             ..limits
         };
-        if let Some(manifest) = fuzz_input.parse_bounded(path_bytes, |raw_input, path_bytes| {
-            ContextManifest::decode(
-                raw_input,
-                Limits {
-                    path_bytes,
-                    render_bytes: 4096,
-                    file_bytes: 4096,
-                    context_messages: 16,
-                    ..Default::default()
-                },
-            )
-        }) {
+        if let Some(manifest) = fuzz_support::FuzzInput::parse_bounded(
+            fuzz_input,
+            path_bytes,
+            |raw_input, path_bytes| {
+                ContextManifest::decode(
+                    raw_input,
+                    Limits {
+                        path_bytes,
+                        render_bytes: 4096,
+                        file_bytes: 4096,
+                        context_messages: 16,
+                        ..Default::default()
+                    },
+                )
+            },
+        ) {
             assert!(
                 manifest
                     .discovery

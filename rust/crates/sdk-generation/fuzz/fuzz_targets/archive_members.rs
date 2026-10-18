@@ -3,7 +3,7 @@
 pub use acyclic_fuzz_support as fuzz_support;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(members) = fuzz_input.parse(|raw_input| {
+    if let Some(members) = fuzz_support::FuzzInput::parse(fuzz_input, |raw_input| {
         sdk_generation::historical::decode_archive_members(raw_input, "fixture", "0.1.0")
     }) {
         for path in members.keys() {

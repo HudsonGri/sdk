@@ -53,7 +53,7 @@ pub fn check(fuzz_input: fuzz_support::FuzzInput<'_>) -> Result<()> {
     if data.len() as u64 > LIMIT {
         return Ok(());
     }
-    if let Some(Some(file)) = fuzz_input.parse(|bytes| {
+    if let Some(Some(file)) = fuzz_support::FuzzInput::parse(fuzz_input, |bytes| {
         let record = acyclic_stream::Record {
             sequence: 1,
             value: bytes.to_vec().into(),
@@ -65,7 +65,9 @@ pub fn check(fuzz_input: fuzz_support::FuzzInput<'_>) -> Result<()> {
         let json = serde_json::to_vec(&file).unwrap();
         let _ = fuzz_support::round_trip(&(file), serde_json::from_slice::<FileValue>(&json));
     }
-    let state = fuzz_input.parse_bounded(LIMIT, |data, limit| GoalState::from_bytes(data, limit));
+    let state = fuzz_support::FuzzInput::parse_bounded(fuzz_input, LIMIT, |data, limit| {
+        GoalState::from_bytes(data, limit)
+    });
     let expected_view = state
         .as_ref()
         .is_some_and(|state| state.markdown.len() + GOAL_METADATA_HEADROOM <= LIMIT as usize);
@@ -143,7 +145,7 @@ pub fn check(fuzz_input: fuzz_support::FuzzInput<'_>) -> Result<()> {
         assert_eq!(raw["root"], serde_json::to_value(progress.root).unwrap());
     }
     serde_json::to_value(combined).unwrap();
-    if let Some(key) = fuzz_input.parse_text(FileKey::parse) {
+    if let Some(key) = fuzz_support::FuzzInput::parse_text(fuzz_input, FileKey::parse) {
         let _ = fuzz_support::round_trip(&key, FileKey::parse(&key.path()));
     }
     if let Some(view) = view {

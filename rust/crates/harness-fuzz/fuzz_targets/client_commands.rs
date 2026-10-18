@@ -44,7 +44,10 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
                 64,
             )
             .await?;
-            if let Some(layout) = fuzz_input.parse(serde_json::from_slice::<serde_json::Value>) {
+            if let Some(layout) = fuzz_support::FuzzInput::parse(
+                fuzz_input,
+                serde_json::from_slice::<serde_json::Value>,
+            ) {
                 if layout.is_object() {
                     client
                         .write_state(
@@ -62,7 +65,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
                     value.optional_field(|value| value["command_key"].as_str().map(str::as_bytes))
                 {
                     let fuzz_input = path;
-                    if let Some(key) = fuzz_input.parse_text(FileKey::parse) {
+                    if let Some(key) =
+                        fuzz_support::FuzzInput::parse_text(fuzz_input, FileKey::parse)
+                    {
                         let cut = volume
                             .snapshot(&Query::File(key.clone()), 1)
                             .await
@@ -124,7 +129,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             Ok::<_, Error>(())
         });
     }
-    if let Some(value) = fuzz_input.parse(serde_json::from_slice::<serde_json::Value>) {
+    if let Some(value) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<serde_json::Value>)
+    {
         let machine = std::sync::Arc::new(command_machine::DirectTool::new());
         let definition = machine.definition().unwrap();
         assert_eq!(definition.identity().name, machine.identity().name);
@@ -139,27 +146,32 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
         }
         let _ = machine.transition(&value, &value);
     }
-    if let Some(control) = fuzz_input.parse_bounded(8192, |input, maximum| {
-        acyclic_harness::client::CommandControl::from_bytes(input, maximum)
-    }) {
+    if let Some(control) =
+        fuzz_support::FuzzInput::parse_bounded(fuzz_input, 8192, |input, maximum| {
+            acyclic_harness::client::CommandControl::from_bytes(input, maximum)
+        })
+    {
         let bytes = serde_json::to_vec(&control).unwrap();
         let _ = fuzz_support::round_trip(
             &control,
             acyclic_harness::client::CommandControl::from_bytes(&bytes, bytes.len() as u64),
         );
     }
-    if let Some(query) =
-        fuzz_input.parse(serde_json::from_slice::<acyclic_harness::task_volume::Query>)
-    {
+    if let Some(query) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        serde_json::from_slice::<acyclic_harness::task_volume::Query>,
+    ) {
         let encoded = serde_json::to_vec(&query).unwrap();
         let _ = fuzz_support::round_trip(
             &(query),
             serde_json::from_slice::<acyclic_harness::task_volume::Query>(&encoded),
         );
     }
-    if let Some(catalog) = fuzz_input.parse_bounded(8192, |input, maximum| {
-        CommandCatalog::from_bytes(input, maximum)
-    }) {
+    if let Some(catalog) =
+        fuzz_support::FuzzInput::parse_bounded(fuzz_input, 8192, |input, maximum| {
+            CommandCatalog::from_bytes(input, maximum)
+        })
+    {
         let specs: Vec<_> = catalog.commands().cloned().collect();
         let encoded = serde_json::to_vec(&specs).unwrap();
         let _ = fuzz_support::round_trip(
@@ -169,7 +181,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
         );
     }
     let catalog = CommandCatalog::builtins().unwrap();
-    if let Some(state) = fuzz_input.parse(serde_json::from_slice::<CommandPaletteState>) {
+    if let Some(state) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<CommandPaletteState>)
+    {
         let palette = catalog.palette(&state);
         for state in [palette.next(), palette.previous()] {
             assert!(state.selected < palette.entries().len().max(1) as u64);
@@ -180,12 +194,14 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             );
         }
     }
-    let snapshot: CommandFileSnapshot = fuzz_input.parse(serde_json::from_slice::<CommandFileSnapshot>).unwrap_or_else(|| fuzz_support::must_decode(serde_json::from_value(serde_json::json!({
+    let snapshot: CommandFileSnapshot = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<CommandFileSnapshot>).unwrap_or_else(|| fuzz_support::must_decode(serde_json::from_value(serde_json::json!({
             "config":{"settings.json":{"diff_mode":"auto","diff_modes":["auto","unified","split"]}},
             "task":{"settings.json":{"agent_mode":"code","agent_modes":["code","plan"]}},
             "session":{"layout.json":{"selected_task":"00000000-0000-0000-0000-000000000005"},"attention.json":{"tasks":["00000000-0000-0000-0000-000000000003"]}}
         }))));
-    if let Some(resolution) = fuzz_input.parse(serde_json::from_slice::<CommandResolution>) {
+    if let Some(resolution) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<CommandResolution>)
+    {
         if let Ok(changes) = acyclic_harness::client::CommandResolution::file_changes(
             &resolution,
             &snapshot,
@@ -199,9 +215,10 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             );
         }
     }
-    if let Some(request) =
-        fuzz_input.parse(serde_json::from_slice::<acyclic_harness::client::CommandRequest>)
-    {
+    if let Some(request) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        serde_json::from_slice::<acyclic_harness::client::CommandRequest>,
+    ) {
         let encoded = serde_json::to_vec(&request).unwrap();
         let _ = fuzz_support::round_trip(
             &(request),
@@ -211,7 +228,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     let Some(input) = fuzz_input.text() else {
         return;
     };
-    if let Some(query) = fuzz_input.parse_text(acyclic_harness::task_volume::Query::folder) {
+    if let Some(query) =
+        fuzz_support::FuzzInput::parse_text(fuzz_input, acyclic_harness::task_volume::Query::folder)
+    {
         let _ = fuzz_support::round_trip(
             &(query),
             serde_json::from_slice::<acyclic_harness::task_volume::Query>(
@@ -219,7 +238,10 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             ),
         );
     }
-    if let Some(key) = fuzz_input.parse_text(acyclic_harness::task_volume::FileKey::parse) {
+    if let Some(key) = fuzz_support::FuzzInput::parse_text(
+        fuzz_input,
+        acyclic_harness::task_volume::FileKey::parse,
+    ) {
         let _ = fuzz_support::round_trip(
             &(key),
             acyclic_harness::task_volume::FileKey::parse(&key.path()),

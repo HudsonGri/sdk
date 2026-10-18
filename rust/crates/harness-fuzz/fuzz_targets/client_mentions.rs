@@ -13,7 +13,9 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
         return;
     }
     workspace_media::exercise(data);
-    let Some(resolution) = fuzz_input.parse(serde_json::from_slice::<CommandResolution>) else {
+    let Some(resolution) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<CommandResolution>)
+    else {
         return;
     };
     let encoded = serde_json::to_vec(&resolution).unwrap();

@@ -10,7 +10,9 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         assert_eq!(result.unwrap_err().code, wire::ErrorCode::QuotaExceeded);
         return;
     }
-    if let Some(query) = fuzz_input.parse(wire::RestoreObjectsRequest::decode) {
+    if let Some(query) =
+        fuzz_support::FuzzInput::parse(fuzz_input, wire::RestoreObjectsRequest::decode)
+    {
         let canonical = query.encode_to_vec();
         let _ = fuzz_support::round_trip(
             &(query),

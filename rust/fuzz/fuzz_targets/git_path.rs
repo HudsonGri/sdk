@@ -17,9 +17,9 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     };
     let root = Path::new("/workspace");
     let destination = Path::new(argument);
-    if let Some(paths) = fuzz_input
-        .parse_text(|argument| acyclic_fs::native_mount_control_paths(Path::new(argument)))
-    {
+    if let Some(paths) = fuzz_support::FuzzInput::parse_text(fuzz_input, |argument| {
+        acyclic_fs::native_mount_control_paths(Path::new(argument))
+    }) {
         assert!(destination.is_absolute());
         assert!(
             !destination
@@ -37,9 +37,9 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         );
         let _ = fuzz_support::round_trip(&paths, acyclic_fs::native_mount_control_paths(&restored));
     }
-    if let Some(parsed) = fuzz_input
-        .parse_text(|argument| path::workspace_path_argument(Path::new("/workspace"), argument))
-    {
+    if let Some(parsed) = fuzz_support::FuzzInput::parse_text(fuzz_input, |argument| {
+        path::workspace_path_argument(Path::new("/workspace"), argument)
+    }) {
         assert!(!parsed.contains('\0'));
         assert!(parsed.starts_with('/'));
         assert!(

@@ -58,12 +58,13 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     {
         assert_eq!(menu.items().cloned().collect::<Vec<_>>(), before);
     }
-    if let Some(query) = fuzz_input.parse(serde_json::from_slice::<Query>) {
+    if let Some(query) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Query>)
+    {
         let encoded = serde_json::to_vec(&query).unwrap();
         let _ = fuzz_support::round_trip(&(query), serde_json::from_slice::<Query>(&encoded));
     }
     let operation = acyclic_harness::OperationId::from_bytes([9; 16]);
-    if let Some(request) = fuzz_input.parse_lossy(|text| {
+    if let Some(request) = fuzz_support::FuzzInput::parse_lossy(fuzz_input, |text| {
         acyclic_harness::client::parse_local_request(
             text,
             acyclic_harness::OperationId::from_bytes([9; 16]),
@@ -125,9 +126,9 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     let notifications = fields.next();
     let layout = fields.next();
     let expected_keymap = keymap.map_or(Some(InputKeymap::default()), |bytes| {
-        fuzz_input
-            .view(bytes)
-            .and_then(|fuzz_input| fuzz_input.parse_text(InputKeymap::parse))
+        fuzz_input.view(bytes).and_then(|fuzz_input| {
+            fuzz_support::FuzzInput::parse_text(fuzz_input, InputKeymap::parse)
+        })
     });
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -273,7 +274,10 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
             renderer.update(&documents, &owner);
             assert!(renderer.screen().transcript.is_empty());
             assert_eq!(renderer.screen().tools.len(), 1);
-            if let Some(value) = fuzz_input.parse(serde_json::from_slice::<serde_json::Value>) {
+            if let Some(value) = fuzz_support::FuzzInput::parse(
+                fuzz_input,
+                serde_json::from_slice::<serde_json::Value>,
+            ) {
                 // Raw duplicate fields may be rejected by the typed parser even
                 // though Value keeps the last one. Check its canonical form
                 // separately; the arbitrary original was already rendered above.
@@ -351,7 +355,10 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
             renderer.update(&documents, &owner);
             renderer.configure(&documents, &owner, &files).unwrap();
             assert!(renderer.screen().tools.len() <= 21);
-            if let Some(value) = fuzz_input.parse(serde_json::from_slice::<serde_json::Value>) {
+            if let Some(value) = fuzz_support::FuzzInput::parse(
+                fuzz_input,
+                serde_json::from_slice::<serde_json::Value>,
+            ) {
                 if value.as_object().is_some_and(|fields| {
                     fields.contains_key("stdout") || fields.contains_key("stderr")
                 }) {
@@ -362,7 +369,10 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
                 let expected = fuzz_input
                     .view(bytes)
                     .and_then(|fuzz_input| {
-                        fuzz_input.parse(serde_json::from_slice::<serde_json::Value>)
+                        fuzz_support::FuzzInput::parse(
+                            fuzz_input,
+                            serde_json::from_slice::<serde_json::Value>,
+                        )
                     })
                     .and_then(|value| {
                         if !value.is_object() {
@@ -388,9 +398,12 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
             let mut renderer = ClientRenderer::default();
             let result = renderer.screen_for(&files);
             let expected = notifications.map_or(Some(Vec::new()), |bytes| {
-                fuzz_input
-                    .view(bytes)
-                    .and_then(|fuzz_input| fuzz_input.parse(serde_json::from_slice::<Vec<String>>))
+                fuzz_input.view(bytes).and_then(|fuzz_input| {
+                    fuzz_support::FuzzInput::parse(
+                        fuzz_input,
+                        serde_json::from_slice::<Vec<String>>,
+                    )
+                })
             });
             let result = fuzz_support::accepts(expected.is_some(), result);
             if let Some((messages, screen)) = expected.zip(result) {

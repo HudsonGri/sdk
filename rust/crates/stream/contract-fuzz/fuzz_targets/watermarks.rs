@@ -8,13 +8,13 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     if input.len() > 4096 {
         return;
     }
-    if let Some(request) = fuzz_input.parse(wire::TailRequest::decode) {
+    if let Some(request) = fuzz_support::FuzzInput::parse(fuzz_input, wire::TailRequest::decode) {
         let _ = fuzz_support::round_trip(
             &(request),
             wire::TailRequest::decode(request.encode_to_vec().as_slice()),
         );
     }
-    if let Some(response) = fuzz_input.parse(wire::TailResponse::decode) {
+    if let Some(response) = fuzz_support::FuzzInput::parse(fuzz_input, wire::TailResponse::decode) {
         let _ = fuzz_support::round_trip(
             &(response),
             wire::TailResponse::decode(response.encode_to_vec().as_slice()),

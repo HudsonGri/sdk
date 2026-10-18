@@ -9,25 +9,33 @@ mod metadata;
 
 fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     metadata::check(input);
-    if let Some(result) = fuzz_input.parse(serde_json::from_slice::<GuestEventResult>) {
+    if let Some(result) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<GuestEventResult>)
+    {
         let encoded = serde_json::to_vec(&result).expect("event result must encode");
         let _ = fuzz_support::round_trip(
             &(result),
             serde_json::from_slice::<GuestEventResult>(&encoded),
         );
     }
-    if let Some(caller) = fuzz_input.parse(serde_json::from_slice::<AdmittedCaller>) {
+    if let Some(caller) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<AdmittedCaller>)
+    {
         let encoded = serde_json::to_vec(&caller).expect("caller projection must encode");
         let _ = fuzz_support::round_trip(
             &(caller),
             serde_json::from_slice::<AdmittedCaller>(&encoded),
         );
     }
-    if let Some(event) = fuzz_input.parse(serde_json::from_slice::<GuestEvent>) {
+    if let Some(event) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<GuestEvent>)
+    {
         let encoded = serde_json::to_vec(&event).expect("accepted event must encode");
         let _ = fuzz_support::round_trip(&(event), serde_json::from_slice::<GuestEvent>(&encoded));
     }
-    if let Some(checkpoint) = fuzz_input.parse(serde_json::from_slice::<Checkpoint>) {
+    if let Some(checkpoint) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Checkpoint>)
+    {
         let encoded = serde_json::to_vec(&checkpoint).expect("accepted checkpoint must encode");
         let _ = fuzz_support::round_trip(
             &(checkpoint),

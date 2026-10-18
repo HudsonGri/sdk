@@ -11,7 +11,7 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     if input.len() > 4096 {
         return;
     }
-    let Some(frame) = fuzz_input.parse(wire::SessionFrame::decode) else {
+    let Some(frame) = fuzz_support::FuzzInput::parse(fuzz_input, wire::SessionFrame::decode) else {
         return;
     };
     let _ = fuzz_support::round_trip(

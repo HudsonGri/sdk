@@ -9,14 +9,14 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         let _ = Query::folder(path);
     }
     if let Some(path) = fuzz_input.text()
-        && let Some(key) = fuzz_input.parse_text(FileKey::parse)
+        && let Some(key) = fuzz_support::FuzzInput::parse_text(fuzz_input, FileKey::parse)
     {
         assert_eq!(key.path(), path);
     }
-    let _ = fuzz_input.parse(serde_json::from_slice::<FileKey>);
-    let _ = fuzz_input.parse(serde_json::from_slice::<Query>);
-    let _ = fuzz_input.parse(serde_json::from_slice::<Cursor>);
-    let _ = fuzz_input.parse(serde_json::from_slice::<Generation>);
+    let _ = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<FileKey>);
+    let _ = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Query>);
+    let _ = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Cursor>);
+    let _ = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Generation>);
     for sequence in [0, 1] {
         let _ = FileValue::from_record(&Record {
             sequence,
@@ -33,9 +33,9 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
             wire_codec::commit_from_wire(wire_codec::commit_to_wire(&request)),
         );
     }
-    if let Some(observation) = fuzz_input
-        .parse(|raw_input| acyclic_stream::persistence::decode_observation(raw_input, 4096))
-    {
+    if let Some(observation) = fuzz_support::FuzzInput::parse(fuzz_input, |raw_input| {
+        acyclic_stream::persistence::decode_observation(raw_input, 4096)
+    }) {
         assert_eq!(
             acyclic_stream::persistence::encode_observation(&observation, 4096).as_deref(),
             Ok(bytes)

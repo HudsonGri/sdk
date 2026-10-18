@@ -6,7 +6,7 @@ pub use acyclic_fuzz_support as fuzz_support;
 mod oracle;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(record) = fuzz_input.parse(TimerRecord::decode) {
+    if let Some(record) = fuzz_support::FuzzInput::parse(fuzz_input, TimerRecord::decode) {
         oracle::check(&record);
         let _ = fuzz_support::round_trip(
             &(record.clone()),

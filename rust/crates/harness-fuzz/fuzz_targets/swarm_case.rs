@@ -6,7 +6,9 @@ pub use acyclic_fuzz_support as fuzz_support;
 mod swarm_case;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    let Some(case) = fuzz_input.parse(serde_json::from_slice::<swarm_case::SwarmCase>) else {
+    let Some(case) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<swarm_case::SwarmCase>)
+    else {
         return;
     };
     let encoded = serde_json::to_vec(&case).unwrap();

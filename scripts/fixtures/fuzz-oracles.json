@@ -46,12 +46,12 @@
   "bad_variable_alias.rs": "let first = serde_json::to_vec(&input).unwrap(); let second = first; let decoded = serde_json::from_slice::<Value>(&second); let again = decoded; if let Ok(value) = again { assert_eq!(value, input); }\n",
   "bad_weak_proof.rs": "let wire = serde_json::to_vec(&input).unwrap(); let result = serde_json::from_slice::<Value>(&wire); assert!(result.is_ok() || condition); if let Ok(restored) = result { assert_eq!(restored, input); }\n",
   "good_admission.rs": "fuzz_support::round_trip(&input, serde_json::from_slice::<Value>(&wire));\n",
-  "good_comments_strings.rs": "if let Some(input) = fuzz_input.parse(serde_json::from_slice::<Value>) { fuzz_support::round_trip(&input, serde_json::from_slice::<Value>(&encode(&input))); }\n",
+  "good_comments_strings.rs": "if let Some(input) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Value>) { fuzz_support::round_trip(&input, serde_json::from_slice::<Value>(&encode(&input))); }\n",
   "good_failure_comparison.rs": "let restored = fuzz_support::round_trip(&input, facade::read(&facade::save(&input))); assert_eq!(restored, input);\n",
   "good_final_result.rs": "fuzz_support::round_trip(&Err::<Value, _>(Invalid), Ok::<_, Infallible>(facade::read(&wire)));\n",
   "good_independent_pair.rs": "macro_rules! check { ($expected:expr, $decoded:expr) => { fuzz_support::round_trip($expected, $decoded) }; } check!(&input, read(&wire));\n",
   "good_matches_proof.rs": "let Some(text) = fuzz_input.text() else { return; }; assert_eq!(text.as_bytes(), input);\n",
-  "good_proven_success.rs": "let Some(value) = fuzz_input.parse_bounded(limit, |raw_input, limit| Model::decode(raw_input, limit)) else { return; }; fuzz_support::round_trip(&value, Model::decode(&wire, limit));\n",
+  "good_proven_success.rs": "let Some(value) = fuzz_support::FuzzInput::parse_bounded(fuzz_input, limit, |raw_input, limit| Model::decode(raw_input, limit)) else { return; }; fuzz_support::round_trip(&value, Model::decode(&wire, limit));\n",
   "good_total_error_match.rs": "let restored = fuzz_support::round_trip(&input, read(&wire)); assert_eq!(encode(&restored), wire);\n",
   "bad_qualified_reexport_r2.rs": "pub use external_codec::{save, read}; let wire = acyclic_facade::save(&input); if let Ok(value) = acyclic_facade::read(&wire) { assert_eq!(value, input); }",
   "bad_glob_assert_r2.rs": "use facade::*; let result = read(&save(&input)); assert!(result.is_ok()); if let Ok(value) = result { assert_eq!(value, input); }",
@@ -74,5 +74,7 @@
   "bad_import_std.rs": "use facade::{std}; std::assert_eq!(read(&save(&input)), Ok(input));",
   "bad_external_oracle_alias.rs": "extern crate facade as fuzz_support; fuzz_support::round_trip(&input, read(&wire));",
   "bad_path_oracle_module.rs": "#[path = \"replacement.rs\"] mod fuzz_support; fuzz_support::round_trip(&input, read(&wire));",
-  "bad_generated_buffer_context.rs": "let wire = encode(&input); if let Some(value) = fuzz_input.parse_with((&wire,), |_, (wire,)| Model::decode(wire)) { assert_eq!(value, input); }"
+  "bad_generated_buffer_context.rs": "let wire = encode(&input); if let Some(value) = fuzz_input.parse_with((&wire,), |_, (wire,)| Model::decode(wire)) { assert_eq!(value, input); }",
+  "bad_implicit_raw_parser.rs": "let fuzz_input = Facade::input(&wire); if let Some(value) = fuzz_input.parse(facade::read) { assert_eq!(value, input); }",
+  "bad_implicit_optional_parser.rs": "let fuzz_input = Facade::input(&wire); if let Some(value) = fuzz_input.optional(facade::read) { assert_eq!(value, input); }"
 }

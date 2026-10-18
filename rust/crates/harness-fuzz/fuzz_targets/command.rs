@@ -12,7 +12,7 @@ use command::parse_command;
 use fs_command::parse_fs_command;
 
 fuzz_support::fuzz_target!(|input: &str, fuzz_input| {
-    if let Some(arguments) = fuzz_input.parse_text(parse_command) {
+    if let Some(arguments) = fuzz_support::FuzzInput::parse_text(fuzz_input, parse_command) {
         assert!(!arguments.is_empty());
         let encoded = arguments
             .iter()
@@ -31,7 +31,7 @@ fuzz_support::fuzz_target!(|input: &str, fuzz_input| {
             fs_command::agent_diff(&arguments)
         );
     }
-    if let Some(parsed) = fuzz_input.parse_text(parse_fs_command) {
+    if let Some(parsed) = fuzz_support::FuzzInput::parse_text(fuzz_input, parse_fs_command) {
         let mut arguments = parsed.arguments.clone();
         if let Some(volume) = &parsed.volume {
             arguments.splice(0..0, ["--volume".into(), volume.clone()]);

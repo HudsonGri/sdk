@@ -9,7 +9,7 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     let digest = format!("sha256:{:x}", Sha256::digest(bytes));
     let encoded = cache_record::encode(&digest, &digest);
     let _ = fuzz_support::round_trip_option(&digest, cache_record::decode(&encoded, &digest));
-    if let Some((key, value)) = fuzz_input.optional_view(|fuzz_input| {
+    if let Some((key, value)) = fuzz_support::FuzzInput::optional_view(fuzz_input, |fuzz_input| {
         let bytes = fuzz_input.bytes();
         let split = bytes.iter().position(|byte| *byte == b'\n')?;
         let key = fuzz_input.slice(0..split)?.text()?;

@@ -5,7 +5,9 @@ use acyclic_fs::GitPendingTransition;
 pub use acyclic_fuzz_support as fuzz_support;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(pending) = fuzz_input.parse(serde_json::from_slice::<GitPendingTransition>) {
+    if let Some(pending) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<GitPendingTransition>)
+    {
         let encoded = fuzz_support::must_decode(serde_json::to_vec(&pending));
         let restored: GitPendingTransition =
             fuzz_support::round_trip(&pending, serde_json::from_slice(&encoded));

@@ -200,7 +200,7 @@ pub fn assert_replay(record: Record, limits: Limits) {
 }
 
 pub fn check(fuzz_input: fuzz_support::FuzzInput<'_>) {
-    if let Some(record) = fuzz_input.parse(|data| {
+    if let Some(record) = fuzz_support::FuzzInput::parse(fuzz_input, |data| {
         json_from_slice_bounded(
             PhantomData::<Record>,
             data,

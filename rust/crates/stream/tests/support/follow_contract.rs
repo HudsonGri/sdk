@@ -154,7 +154,9 @@ pub(super) fn check(
         .unwrap_or_else(|| unreachable!("tagged raw input slice"));
     match kind % 3 {
         0 => {
-            let Some(subscription) = fuzz_input.parse(wire::SessionSubscription::decode) else {
+            let Some(subscription) =
+                fuzz_support::FuzzInput::parse(fuzz_input, wire::SessionSubscription::decode)
+            else {
                 return Ok(());
             };
             round_trip(&subscription);
@@ -165,14 +167,18 @@ pub(super) fn check(
             }
         }
         1 => {
-            let Some(cursor) = fuzz_input.parse(wire::SessionCursor::decode) else {
+            let Some(cursor) =
+                fuzz_support::FuzzInput::parse(fuzz_input, wire::SessionCursor::decode)
+            else {
                 return Ok(());
             };
             round_trip(&cursor);
             snapshot(&cursor, fault)?;
         }
         _ => {
-            let Some(response) = fuzz_input.parse(wire::TailResponse::decode) else {
+            let Some(response) =
+                fuzz_support::FuzzInput::parse(fuzz_input, wire::TailResponse::decode)
+            else {
                 return Ok(());
             };
             round_trip(&response);

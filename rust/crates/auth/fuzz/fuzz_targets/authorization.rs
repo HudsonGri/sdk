@@ -4,7 +4,7 @@ mod authorization;
 pub use acyclic_fuzz_support as fuzz_support;
 use syn::parse::Parser;
 fuzz_support::fuzz_target!(|text: &str, fuzz_input| {
-    let _ = fuzz_input.parse_text(|text| {
+    let _ = fuzz_support::FuzzInput::parse_text(fuzz_input, |text| {
         let mut result = None;
         let parser = syn::meta::parser(|meta| {
             result = Some(authorization::fields(&meta)?);

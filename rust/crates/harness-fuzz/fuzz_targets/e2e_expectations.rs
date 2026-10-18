@@ -6,7 +6,10 @@ pub use acyclic_fuzz_support as fuzz_support;
 mod expectations;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    let Some(case) = fuzz_input.parse(serde_json::from_slice::<expectations::Expectations>) else {
+    let Some(case) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        serde_json::from_slice::<expectations::Expectations>,
+    ) else {
         return;
     };
     let _ = fuzz_support::round_trip(

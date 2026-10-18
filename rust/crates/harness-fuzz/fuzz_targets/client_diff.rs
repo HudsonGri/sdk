@@ -83,7 +83,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             }
         }
     }
-    if let Some(case) = fuzz_input.parse(serde_json::from_slice::<local_case::LocalCase>) {
+    if let Some(case) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<local_case::LocalCase>)
+    {
         let encoded = serde_json::to_vec(&case).expect("encode local case");
         let decoded = fuzz_support::round_trip_by(
             &serde_json::to_value(&case).unwrap(),
@@ -109,7 +111,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             serde_json::to_value(decoded).unwrap()
         );
     }
-    if let Some(case) = fuzz_input.parse(serde_json::from_slice::<diff_case::DiffCase>) {
+    if let Some(case) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<diff_case::DiffCase>)
+    {
         let encoded = serde_json::to_vec(&case).expect("encode diff case");
         let _ = fuzz_support::round_trip(
             &(case),
@@ -123,7 +127,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
             case.work.min(65_536),
         );
     }
-    if let Some(diff) = fuzz_input.parse(serde_json::from_slice::<FileDiff>) {
+    if let Some(diff) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<FileDiff>)
+    {
         let encoded = serde_json::to_vec(&diff).expect("encode parsed diff");
         let _ = fuzz_support::round_trip(&(diff), serde_json::from_slice::<FileDiff>(&encoded));
     }

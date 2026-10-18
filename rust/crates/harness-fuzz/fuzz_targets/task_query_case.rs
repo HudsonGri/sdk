@@ -24,7 +24,10 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
                 .path
                 .as_bytes()
         });
-        if let Some(key) = fuzz_input.parse_text(acyclic_harness::task_volume::FileKey::parse) {
+        if let Some(key) = fuzz_support::FuzzInput::parse_text(
+            fuzz_input,
+            acyclic_harness::task_volume::FileKey::parse,
+        ) {
             let file = fuzz_support::must_decode(input.write());
             assert_eq!(file.key, key);
             use acyclic_harness::task_volume::FileKey;

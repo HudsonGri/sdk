@@ -13,7 +13,9 @@ fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     let Some(fuzz_input) = fuzz_input.view(input) else {
         return;
     };
-    let Some(value) = fuzz_input.parse(serde_json::from_slice::<serde_json::Value>) else {
+    let Some(value) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<serde_json::Value>)
+    else {
         return;
     };
     let bounds = JsonBounds {

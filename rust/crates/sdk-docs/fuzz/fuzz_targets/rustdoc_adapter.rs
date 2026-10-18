@@ -8,7 +8,7 @@ mod decode;
 mod relative_spans;
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(decoded) = fuzz_input.parse(decode::from_slice) {
+    if let Some(decoded) = fuzz_support::FuzzInput::parse(fuzz_input, decode::from_slice) {
         let paths = relative_spans::sources(decoded.index.values());
         for item in decoded.index.values().filter(|item| item.crate_id == 0) {
             if let Some(span) = item

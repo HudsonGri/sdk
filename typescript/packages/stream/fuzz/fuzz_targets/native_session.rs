@@ -35,7 +35,10 @@ fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
         &(generated),
         acyclic_stream::wire_codec::session::decode_frame(&generated.encode_to_vec()),
     );
-    if let Some(frame) = fuzz_input.parse(acyclic_stream::wire_codec::session::decode_frame) {
+    if let Some(frame) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        acyclic_stream::wire_codec::session::decode_frame,
+    ) {
         let canonical = frame.encode_to_vec();
         let _ = fuzz_support::round_trip(
             &(frame),

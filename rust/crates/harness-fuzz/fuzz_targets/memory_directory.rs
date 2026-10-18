@@ -20,7 +20,8 @@ fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     if data.len() > 65_536 {
         return;
     }
-    let Some(case) = fuzz_input.parse(serde_json::from_slice::<Case>) else {
+    let Some(case) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Case>)
+    else {
         return;
     };
     if case.paths.len() > 256 {
