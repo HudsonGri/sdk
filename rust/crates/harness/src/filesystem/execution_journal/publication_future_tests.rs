@@ -474,21 +474,23 @@ fn journal_wrapper_observations(
                     let mut outcome = None;
                     let mut layouts = (0, 0);
                     let allocation = acyclic_test_support::measure(|| {
-                        (outcome, layouts) = crate::obs::observe_box_layouts(|| Some(
-                            runtime
-                                .block_on(
-                                    run(
-                                        &Choice(&journal, old),
-                                        mode,
-                                        0,
-                                        (operation, "key", &event),
-                                        &file,
-                                        &oversized,
+                        (outcome, layouts) = crate::obs::observe_box_layouts(|| {
+                            Some(
+                                runtime
+                                    .block_on(
+                                        run(
+                                            &Choice(&journal, old),
+                                            mode,
+                                            0,
+                                            (operation, "key", &event),
+                                            &file,
+                                            &oversized,
+                                        )
+                                        .unwrap(),
                                     )
-                                    .unwrap(),
-                                )
-                                .map_err(|e| e.to_string()),
-                        ));
+                                    .map_err(|e| e.to_string()),
+                            )
+                        });
                     });
                     (outcome.unwrap(), allocation, layouts)
                 },
