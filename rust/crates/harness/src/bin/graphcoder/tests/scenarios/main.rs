@@ -1,5 +1,6 @@
 //! The shared scenarios through the shipped main thread and real HTTP transport.
 mod assertions;
+mod history;
 #[path = "../../../../../tests/support/json_matchers.rs"]
 mod json_matchers;
 mod provider;

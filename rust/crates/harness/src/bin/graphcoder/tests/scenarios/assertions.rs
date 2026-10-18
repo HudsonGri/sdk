@@ -117,6 +117,7 @@ fn observe(
 }
 
 pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestResult {
+    super::history::check(case, recording, protocol)?;
     for text in case["expect"]["request_text"]
         .as_array()
         .into_iter()
