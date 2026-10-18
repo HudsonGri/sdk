@@ -13,3 +13,119 @@ proptest! {
             .and_then(std::io::Error::raw_os_error), Some(code));
     }
 }
+
+#[cfg(all(feature = "test-support", unix))]
+mod simulation {
+    use super::*;
+    use acyclic_native_runtime::testing::{Schedule, fill_seeded, unix_millis};
+    use std::{future::Future, pin::Pin, sync::OnceLock};
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Observed {
+        source: (bool, [u8; 16], Option<u64>),
+        trace: Vec<String>,
+        polls: Vec<(u64, &'static str)>,
+        stdout: Vec<u8>,
+    }
+
+    fn capture_probe(tracked: bool) -> Result<Observed> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        runtime.block_on(async {
+            tokio::time::pause();
+            let (schedule, mut boundaries) = Schedule::seeded(71);
+            let source = Arc::new(OnceLock::new());
+            let worker_source = Arc::clone(&source);
+            let invocation = Invocation {
+                executable: "/bin/sh".into(),
+                argv: vec!["-c".into(), "printf dst".into()],
+                cwd: "/".into(),
+                environment: Default::default(),
+                inherit_environment: false,
+                timeout_ms: 1000,
+                control_timeout_ms: 1000,
+                cancellation_poll_ms: 25,
+                maximum_output_bytes: 3,
+                mcp_stdio: None,
+                standard_input: None,
+            };
+            let handle = tokio::runtime::Handle::current();
+            let operation = capture_with_custody(
+                invocation,
+                |custody: &mut Vec<u8>, chunk| {
+                    if let acyclic_native_runtime::ProcessOutput::Stdout(bytes) = chunk {
+                        custody.extend_from_slice(bytes);
+                    }
+                    Ok(())
+                },
+                move || {
+                    if worker_source.get().is_none() {
+                        let mut bytes = [0; 16];
+                        let seeded = fill_seeded(&mut bytes);
+                        worker_source.set((seeded, bytes, unix_millis())).unwrap();
+                        // Exercise a real Pending ownership check. A worker
+                        // retaining its permit here deadlocks the seeded driver.
+                        wait_control(&handle, tokio::time::sleep(Duration::from_millis(3)));
+                    }
+                    Ok(())
+                },
+                Vec::new(),
+            );
+            type Capture<'a> = Pin<
+                Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>,
+            >;
+            let operation: Capture<'_> = if tracked {
+                Box::pin(operation)
+            } else {
+                // Reverting the worker handoff to plain Tokio loses the
+                // simulation context while leaving the native operation intact.
+                Box::pin(acyclic_native_runtime::testing::untracked(operation))
+            };
+            let mut operation = Box::pin(schedule.scope(operation));
+            let (output, custody) = loop {
+                tokio::select! {
+                    biased;
+                    boundary = boundaries.recv() => boundary.expect("lost process boundary").release(),
+                    output = &mut operation => break output?,
+                }
+            };
+            schedule.drained().await;
+            let output = output.expect("native capture was interrupted");
+            assert!(output.success, "{:?}", output.stop);
+            assert_eq!(output.exit_code, Some(0));
+            assert!(output.stderr.is_empty());
+            assert_eq!(output.stdout, b"dst");
+            assert_eq!(custody, output.stdout, "observer lost worker custody");
+            Ok(Observed {
+                source: *source.get().expect("ownership was never checked"),
+                trace: schedule.trace(),
+                polls: schedule.polls(),
+                stdout: output.stdout,
+            })
+        })
+    }
+
+    fn retained_sources(observed: &Observed) -> bool {
+        observed.source.0
+            && observed.source.2.is_some()
+            && observed
+                .trace
+                .iter()
+                .any(|event| event == "blocking:dispatch")
+    }
+
+    #[test]
+    fn capture_retains_seeded_worker_sources_and_custody() -> Result<()> {
+        let first = capture_probe(true)?;
+        let second = capture_probe(true)?;
+        assert!(retained_sources(&first));
+        assert_eq!(first, second, "real process handoff did not replay");
+        assert!(
+            !retained_sources(&capture_probe(false)?),
+            "source-erased process handoff escaped the same oracle"
+        );
+        Ok(())
+    }
+}

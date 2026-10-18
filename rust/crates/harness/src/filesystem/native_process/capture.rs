@@ -1,8 +1,12 @@
 use super::*;
+#[cfg(feature = "test-support")]
+use acyclic_native_runtime::testing::spawn_blocking;
 use std::{
     process::{Command, Stdio},
     time::Duration,
 };
+#[cfg(not(feature = "test-support"))]
+use tokio::task::spawn_blocking;
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =
@@ -19,15 +23,29 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
     let runtime = tokio::runtime::Handle::current();
     let control_timeout = Duration::from_millis(u64::from(invocation.control_timeout_ms));
     let check = move || {
-        runtime
-            .block_on(tokio::time::timeout(
-                control_timeout,
-                check_owner.verify(false, &mut None),
-            ))
-            .map_err(control_error)?
-            .map_err(control_error)
+        wait_control(
+            &runtime,
+            tokio::time::timeout(control_timeout, check_owner.verify(false, &mut None)),
+        )
+        .map_err(control_error)?
+        .map_err(control_error)
     };
     capture_checked(invocation, observer, check).await
+}
+
+// The same bounded ownership future runs on the worker in both cases. A
+// simulation worker yields its permit at Pending so the owner can make progress.
+pub(crate) fn wait_control<F: std::future::Future>(
+    runtime: &tokio::runtime::Handle,
+    future: F,
+) -> F::Output {
+    #[cfg(feature = "test-support")]
+    {
+        let _entered = runtime.enter();
+        acyclic_native_runtime::testing::blocking_on(future)
+    }
+    #[cfg(not(feature = "test-support"))]
+    runtime.block_on(future)
 }
 
 pub(crate) fn control_error(
@@ -71,7 +89,7 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
     custody: T,
 ) -> Result<(Option<NativeProcessResult>, T)> {
-    let (output, custody) = tokio::task::spawn_blocking(move || {
+    let (output, custody) = spawn_blocking(move || {
         with_custody(custody, |custody| {
             let mut command = Command::new(&invocation.executable);
             if !invocation.inherit_environment {
