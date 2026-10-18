@@ -5,6 +5,8 @@ use futures::FutureExt as _;
 use proptest::prelude::*;
 use std::{future::Future, time::Instant};
 
+mod baseline;
+
 fn ready<T>(future: impl Future<Output = T>) -> T {
     tokio::task::unconstrained(future)
         .now_or_never()
@@ -62,22 +64,30 @@ fn observe(volume: TaskVolume<MemoryStream>, old: bool) -> (u64, AllocationInfo)
     let mut output = None;
     let allocations = measure(|| {
         let (result, examined) = crate::test_support::measure_task_volume_work(|| {
-            let observer = if old {
-                // The old reopen, initialized independently by differential::pair.
-                ready(TaskVolume::open_existing(
+            let query = Query::File(FileKey::parse(".tasks/t/status.json").unwrap());
+            let (snapshot, limited) = if old {
+                let observer = ready(baseline::OldVolume::open_existing(
                     volume.provider.clone(),
                     volume.path.clone(),
                 ))
+                .unwrap();
+                (
+                    ready(observer.snapshot(&query, 1)).unwrap(),
+                    ready(observer.snapshot(&query, 0))
+                        .err()
+                        .unwrap()
+                        .to_string(),
+                )
             } else {
-                ready(volume.reopen())
-            }
-            .unwrap();
-            let query = Query::File(FileKey::parse(".tasks/t/status.json").unwrap());
-            let snapshot = ready(observer.snapshot(&query, 1)).unwrap();
-            let limited = ready(observer.snapshot(&query, 0))
-                .err()
-                .unwrap()
-                .to_string();
+                let observer = ready(volume.reopen()).unwrap();
+                (
+                    ready(observer.snapshot(&query, 1)).unwrap(),
+                    ready(observer.snapshot(&query, 0))
+                        .err()
+                        .unwrap()
+                        .to_string(),
+                )
+            };
             (serde_json::to_vec(&snapshot).unwrap(), limited)
         });
         work = examined;
