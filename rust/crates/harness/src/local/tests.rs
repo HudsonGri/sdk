@@ -20,13 +20,13 @@ use serde_json::{Value, json};
 mod compact;
 mod compaction;
 mod context;
-#[cfg(all(feature = "native-execution", unix))]
-mod path_tools;
 mod goals;
 #[cfg(feature = "hooks")]
 mod hook_configuration;
 #[cfg(all(feature = "native-execution", unix))]
 mod hook_lifecycle;
+#[cfg(all(feature = "native-execution", unix))]
+mod path_tools;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
