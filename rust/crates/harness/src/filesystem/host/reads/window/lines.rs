@@ -196,7 +196,7 @@ mod tests {
             assert_eq!(scan_chunks(crab, [cut], 1, None).1, Some("text/plain"));
             assert_eq!(
                 scan_chunks(&crab[..cut], [cut / 2], 1, None).1.is_some(),
-                cut == 0
+                cut == 0 || cut == crab.len()
             );
         }
         assert_eq!(scan_chunks(&[b'a', 0x80, b'\n'], [1, 2], 1, None).1, None);

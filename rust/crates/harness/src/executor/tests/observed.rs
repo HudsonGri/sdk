@@ -62,6 +62,16 @@ fn version(path: &str, bytes: &[u8]) -> Result<FileRef> {
 }
 
 async fn run(calls: &[(&str, &FileRef, bool)]) -> Result<(StockExecutor, Journal, OperationId)> {
+    let scope = RuntimeScope::new(
+        Capabilities::new([
+            "task:spawn:context-probe@1",
+            "model:generate",
+            "tool:call:example.echo",
+        ]),
+        Limits::default(),
+    )?;
+    let context = capture_admitted_context(scope.clone()).await?;
+    let operation = OperationId::from_bytes([7; 16]);
     let events = calls
         .iter()
         .map(|(call, file, fail)| echo_call(call, json!({"file": file, "fail": fail})));
@@ -79,23 +89,21 @@ async fn run(calls: &[(&str, &FileRef, bool)]) -> Result<(StockExecutor, Journal
         ContextPipeline::default(),
         tools,
     )
-    .with_tool_authority(
-        RuntimeScope::new(
-            Capabilities::new(["tool:call:example.echo"]),
-            Limits::default(),
-        )?,
-        None,
-    )?;
+    .with_tool_authority(scope, None)?
+    .with_task_context(&context, operation)?;
     let journal = Journal::default();
-    let operation = OperationId::from_bytes([7; 16]);
     let input = TurnInput {
         operation_id: operation,
         input: ModelContent::Text("edit".into()),
         selected_context: None,
         max_steps: 4,
     };
-    // The turn's own outcome is irrelevant: only its journal matters here.
-    let _ = executor.execute(input, &journal).await;
+    let outcome = executor.execute(input, &journal).await;
+    if calls.iter().any(|(_, _, fail)| *fail) {
+        assert!(outcome.is_err(), "the requested failed read must fail");
+    } else {
+        assert_eq!(outcome?.text, "done");
+    }
     Ok((executor, journal, operation))
 }
 
