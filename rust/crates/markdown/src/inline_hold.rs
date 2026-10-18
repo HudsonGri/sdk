@@ -262,6 +262,17 @@ impl Markdown {
             return self.advance_engine(previous, None).map(|c| c.min(changed));
         };
         let (row, classified) = (held.row, self.inline.as_ref()?.classified);
+        // A backslash hard break changes the engine's preceding line, so this
+        // preview cannot be derived from retained output. Reject it before
+        // advancing a truncated prefix that would immediately be discarded.
+        let hard = hard_break(&self.source, row - 1);
+        #[cfg(test)]
+        let reject_early = !LATE_REJECT_HOLD.get();
+        #[cfg(not(test))]
+        let reject_early = true;
+        if hard.is_none() && reject_early {
+            return self.advance_engine(previous, None).map(|c| c.min(changed));
+        }
         if classified < row {
             // The engine consumes only the bytes before the held row.
             let tail = self.source.split_off(row);
@@ -278,7 +289,7 @@ impl Markdown {
                 .get(index)
                 .is_some_and(|line| !line.spans.is_empty())
         });
-        let (Some(first), Some(hard)) = (first, hard_break(&self.source, row - 1)) else {
+        let (Some(first), Some(hard)) = (first, hard) else {
             return self
                 .advance_engine(previous.min(row), None)
                 .map(|c| c.min(changed));

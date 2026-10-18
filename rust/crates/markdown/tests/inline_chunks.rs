@@ -351,13 +351,16 @@ fn blank_start_items_reopen_as_items() {
 #[test]
 fn markers_after_escaped_breaks_have_linear_work() {
     let chunks = ["\n", "*", "\\"].map(str::to_owned);
+    let bound = |(used, bytes, parts): (usize, usize, [usize; 5])| {
+        assert!(used <= 128 * bytes + 4096, "{used} / {bytes}: {parts:?}");
+    };
     for count in [64, 128, 256, 512, 1024] {
-        let (used, bytes, parts) = units(&chunks, count);
-        assert!(
-            used <= 128 * bytes + 4096,
-            "{count}: {used} / {bytes}: {parts:?}"
-        );
+        bound(units(&chunks, count));
     }
+    crate::inline::LATE_REJECT_HOLD.set(true);
+    let redundant = units(&chunks, 256);
+    crate::inline::LATE_REJECT_HOLD.set(false);
+    assert!(std::panic::catch_unwind(|| bound(redundant)).is_err());
     let source = "\n*\\".repeat(86);
     replay(&source, &(1..source.len()).collect::<Vec<_>>());
 }

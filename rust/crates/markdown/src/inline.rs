@@ -513,3 +513,6 @@ thread_local! { pub(crate) static SKIP_CODE: std::cell::Cell<bool> = const { std
 thread_local! { pub(crate) static SKIP_UNDECIDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 #[cfg(test)]
 thread_local! { pub(super) static REPLAY_CLASSIFIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+thread_local! { pub(crate) static LATE_REJECT_HOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
