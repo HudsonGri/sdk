@@ -533,6 +533,40 @@ fn batch_reply_rejected_item_retires_capacity_before_the_next_item() {
         assert_eq!(counts.retained(), 0);
     }
 }
+#[cfg(feature = "local")]
+#[test]
+fn batch_reply_receipt_strings_retain_only_their_decoded_length() {
+    let counts = std::sync::Arc::new(crate::physical::read_tests::CountingMeter::default());
+    let mut decoder = metered_decoder(1, Some(counts.clone()));
+    std::sync::Arc::get_mut(&mut decoder.received)
+        .unwrap()
+        .value
+        .sizes
+        .value[0] = 7;
+    decoder.received.value.completed.sent();
+    let response = wire::PutObjectsResponse {
+        results: vec![object(7)],
+    };
+    let reply = decoder.bytes(&response.encode_to_vec()).unwrap();
+    assert!(reply.failure.is_none());
+    assert_eq!(reply.response.value, response);
+    let Some(wire::put_object_result::Result::Object(info)) = &reply.response.value.results[0].result
+    else {
+        panic!("receipt")
+    };
+    // A fixed per-string reservation capacity would retain 8 KiB per receipt.
+    assert_eq!(info.etag.capacity(), "receipt".len());
+    assert_eq!(
+        reply.response._allocation.as_ref().unwrap().bytes(),
+        (info_capacity(info).unwrap()
+            + reply.response.value.results.capacity()
+                * std::mem::size_of::<wire::PutObjectResult>()) as u64
+    );
+    drop(reply);
+    drop(decoder);
+    assert_eq!(counts.retained(), 0);
+}
+
 #[cfg(feature = "test-support")]
 #[test]
 fn batch_reply_fuzz_probe_checks_cancellation_and_custody_on_shared_seeds() {

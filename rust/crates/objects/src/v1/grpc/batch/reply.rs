@@ -310,11 +310,8 @@ impl Decode<'_> {
         }
         if target.capacity() < text.len() {
             let previous = target.capacity();
-            let capacity = if self.meter.is_some() {
-                TEXT_BYTES
-            } else {
-                text.len()
-            };
+            // Retain only the decoded length; the reserved credit returns its excess.
+            let capacity = text.len();
             let mut credit = if self.meter.is_some() {
                 let mut credit = self
                     .credits
