@@ -4,6 +4,8 @@
 mod fixture;
 mod observation;
 mod provider;
+mod restoration;
+mod setup;
 use super::confirmation::Barrier;
 use acyclic_test_support::differential::oracle::Oracle;
 use observation::Event;
@@ -95,6 +97,22 @@ fn oracle() -> Oracle<Input, Fault, Event> {
         },
         Fault::Refuse,
     )
+    .control(
+        "prefix-before-effect",
+        Input {
+            barrier: Barrier::Restoration,
+            concurrent: false,
+        },
+        Fault::Skip(Barrier::Restoration),
+    )
+    .control(
+        "confirmed-intent-progress",
+        Input {
+            barrier: Barrier::Restoration,
+            concurrent: false,
+        },
+        Fault::Refuse,
+    )
     .build()
 }
 
@@ -116,6 +134,14 @@ fn target_precedes_checkpoint_publication() {
 fn checkpoint_precedes_retirement() {
     oracle().check(&Input {
         barrier: Barrier::Checkpoint,
+        concurrent: true,
+    });
+}
+
+#[test]
+fn restoration_requires_its_confirmed_checkpoint() {
+    oracle().check(&Input {
+        barrier: Barrier::Restoration,
         concurrent: true,
     });
 }
