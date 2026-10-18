@@ -123,10 +123,12 @@ where
         result
     }
 
-    pub(super) async fn aggregate<'a>(
+    pub(in crate::filesystem) async fn aggregate<'a>(
         &self,
         io: Option<&'a PreparationIo>,
     ) -> Result<(StreamAggregate<P>, Option<DecodeReservation<'a>>)> {
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("interaction-reconstruction", 1_u64));
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|work| work as &mut dyn HistoryIo);

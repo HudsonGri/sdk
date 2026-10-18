@@ -46,9 +46,9 @@ where
         }
     }
 
-    /// Attaches the authorized file projection of this journal's private volume.
+    /// Attaches an owner-authorized private file projection on this stream provider.
     pub fn with_task_files(mut self, files: Arc<crate::task_volume::TaskFiles<P>>) -> Result<Self> {
-        if files.volume() != &self.volume
+        if files.volume().provider() != &self.host.provider
             || !files.inner.shares_provider(&self.stream)
             || files.maximum_bytes() < self.maximum_payload_bytes
         {
@@ -56,11 +56,11 @@ where
             if self._native_metadata.is_some() {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "task files differ from the journal's provider, volume or byte bound",
+                    reason: "task files differ from the journal's provider or byte bound",
                 });
             }
             return Err(Error::Unauthorized(
-                "task files differ from the journal's provider, volume or byte bound".into(),
+                "task files differ from the journal's provider or byte bound".into(),
             ));
         }
         self.task_files = Some(files);

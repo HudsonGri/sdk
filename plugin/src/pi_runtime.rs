@@ -115,10 +115,30 @@ pub(crate) struct PiTaskRuntime {
         FilesystemTaskRuntime<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     pub(crate) definition: Arc<TaskDefinition<PiTaskInput, FileRef>>,
     pub(crate) authority: PiRuntimeAuthority,
-    pub(crate) task_files: Arc<acyclic_harness::task_volume::TaskFiles<LocalStream>>,
+    task_files: Arc<acyclic_harness::task_volume::TaskFiles<LocalStream>>,
 }
 
 impl PiTaskRuntime {
+    pub(crate) fn execution_journal(
+        &self,
+        owner: acyclic_harness::durable_host::TaskJournalOwner<LocalStream>,
+        operation: OperationId,
+        turn: OperationId,
+        filesystem: Arc<FilesystemHost<crate::LocalAuthorityBackend, crate::LocalObjectBackend>>,
+        binding: acyclic_harness::filesystem::FilesystemJournalBinding<'_>,
+    ) -> acyclic_harness::Result<
+        acyclic_harness::filesystem::FilesystemExecutionJournal<
+            LocalStream,
+            crate::LocalAuthorityBackend,
+            crate::LocalObjectBackend,
+        >,
+    > {
+        acyclic_harness::filesystem::FilesystemExecutionJournal::for_task(
+            owner, operation, turn, filesystem, binding,
+        )?
+        .with_task_files(self.task_files.clone())
+    }
+
     pub(crate) async fn reopen(
         owner: &super::pi_owner::PiOwnerConfig,
         state: &super::AdapterState,

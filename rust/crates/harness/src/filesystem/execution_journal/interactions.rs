@@ -160,12 +160,18 @@ where
                 "task execution has no conversation interaction owner",
             )
         })?;
-        let outcome = match host.read_outcome(id, io).await? {
+        let aggregate = host.aggregate(io).await?;
+        let outcome = match host.read_outcome(&aggregate.0, id, io)? {
             // A verdict reaches execution only as a published decision.
-            Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {}) => {
-                Some(self.published_decision(id, io).await?.outcome())
+            Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {}) => Some(
+                self.published_decision_from(id, None, aggregate, io)
+                    .await?
+                    .outcome(),
+            ),
+            outcome => {
+                drop(aggregate);
+                outcome
             }
-            outcome => outcome,
         };
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;

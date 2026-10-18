@@ -90,6 +90,7 @@ where
     /// `None` for the receipt while any of them is only accepted.
     pub(crate) async fn read_durable<'io>(
         &self,
+        aggregate: &StreamAggregate<P>,
         id: InteractionId,
         binding: Option<(OperationId, [u8; 32])>,
         io: Option<&'io PreparationIo>,
@@ -98,10 +99,8 @@ where
         Option<acyclic_stream::DurableReceipt>,
         Option<DecodeReservation<'io>>,
     )> {
-        let aggregate = self.aggregate(io).await?;
         if let Some((operation, digest)) = binding {
             let Some((ticket, Some(resolution))) = aggregate
-                .0
                 .reducer()
                 .interaction(&Uuid::from_bytes(id.into_bytes()))
             else {
@@ -127,13 +126,13 @@ where
         // install an unrelated tool.
         let hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let read = Self::admitted(&aggregate.0, id, io)?;
+        let read = Self::admitted(aggregate, id, io)?;
         hold = io
             .map(|io| io.guard_owned(io.owned_since(before)?))
             .transpose()?;
         #[cfg(test)]
         acyclic_test_support::differential::record(("approval-receipt", 1_u64));
-        let receipt = aggregate.0.durable_receipt().await?;
+        let receipt = aggregate.durable_receipt().await?;
         Ok((read, receipt, hold))
     }
 
@@ -166,14 +165,13 @@ where
         .map(|(value, _)| Some(value))
     }
 
-    pub(crate) async fn read_outcome(
+    pub(crate) fn read_outcome(
         &self,
+        aggregate: &StreamAggregate<P>,
         id: InteractionId,
         io: Option<&PreparationIo>,
     ) -> Result<Option<InteractionOutcome>> {
-        let aggregate = self.aggregate(io).await?;
         let Some((_, Some(resolution))) = aggregate
-            .0
             .reducer()
             .interaction(&Uuid::from_bytes(id.into_bytes()))
         else {

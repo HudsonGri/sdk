@@ -45,14 +45,17 @@ async fn open(
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_policy(root_policy()).await
+    }
+
+    async fn with_policy(policy: crate::pi_owner::PiOwnerPolicy) -> Self {
         let session = tempfile::tempdir().unwrap();
         let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
             session.path().join("filesystem"),
         ))
         .await
         .unwrap();
-        let (owner, filesystem, request) =
-            root_input_fixture(session.path(), &raw, root_policy()).await;
+        let (owner, filesystem, request) = root_input_fixture(session.path(), &raw, policy).await;
         let work = work();
         let private = session.path().to_path_buf();
         let command = stage_root_command(&owner, &filesystem, &request, &work)
@@ -231,6 +234,118 @@ impl Fixture {
                 &serde_json::to_vec(&plan).unwrap(),
             )
             .await;
+    }
+}
+
+#[tokio::test]
+async fn pi_approval_journal_construction_always_attaches_checked_files() {
+    use acyclic_harness::{core::SchemaRegistry, filesystem::FilesystemExecutionJournal};
+    let mut policy = root_policy();
+    policy.grants = Capabilities::new(
+        policy.grants.iter().map(str::to_owned).chain([
+            "interaction:route".to_owned(),
+            "interaction:open".to_owned(),
+            policy
+                .journal
+                .capability(VolumeOperation::Read, &mut None)
+                .unwrap(),
+            policy
+                .journal
+                .capability(VolumeOperation::Write, &mut None)
+                .unwrap(),
+        ]),
+    );
+    let fixture = Fixture::with_policy(policy).await;
+    let task = fixture.request.binding.task_id;
+    fixture
+        .runtime
+        .admit_root(
+            &fixture.request.binding,
+            &fixture.request.root,
+            &fixture.command,
+            &fixture.work,
+        )
+        .await
+        .unwrap();
+    let lease = match fixture
+        .runtime
+        .runtime
+        .task_host()
+        .recover_work(task, &mut None)
+        .await
+        .unwrap()
+    {
+        acyclic_harness::distributed::WorkPull::Claimed(lease) => lease,
+        _ => panic!("expected the admitted root lease"),
+    };
+    let fence = acyclic_harness::scheduler::LeaseFence::from(&lease.reservation);
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&fixture.work).unwrap();
+    let storage = fixture.owner.authority(&fixture.work).unwrap();
+    let conversation = fixture
+        .owner
+        .conversation_authority_with_native_work(
+            task,
+            fixture.owner.policy.agent,
+            &fixture.owner.policy.grants,
+            &fixture.work,
+        )
+        .unwrap();
+    let verifier = conversation.0.1.verifier(&mut Some(&mut &io)).unwrap();
+    let binding = || acyclic_harness::filesystem::FilesystemJournalBinding {
+        volume: &fixture.owner.policy.journal,
+        verifier: &storage.verifier,
+        scope: &storage.signed,
+        maximum_bytes: fixture.owner.policy.maximum_payload_bytes,
+        io: Some(&io),
+    };
+    // Both Pi command and prepared-writeback callers use this constructor,
+    // then bind their selected private interaction content volume.
+    for private in [
+        &fixture.owner.policy.journal,
+        &fixture.request.binding.scratch.volume,
+    ] {
+        for attached in [false, true] {
+            let owner = fixture
+                .runtime
+                .runtime
+                .task_host()
+                .journal_owner(task, &fence, Some(&io))
+                .await
+                .unwrap();
+            let journal = if attached {
+                fixture
+                    .runtime
+                    .execution_journal(
+                        owner,
+                        fixture.command.operation_id,
+                        fixture.command.operation_id,
+                        fixture.filesystem.clone(),
+                        binding(),
+                    )
+                    .unwrap()
+            } else {
+                // Negative control restores the old caller construction.
+                FilesystemExecutionJournal::for_task(
+                    owner,
+                    fixture.command.operation_id,
+                    fixture.command.operation_id,
+                    fixture.filesystem.clone(),
+                    binding(),
+                )
+                .unwrap()
+            };
+            let result = journal.with_interaction_owner(
+                &verifier,
+                &SchemaRegistry::new(),
+                &conversation.0.2,
+                private,
+                Some(&io),
+            );
+            assert_eq!(result.is_ok(), attached);
+            if !attached {
+                assert!(matches!(result, Err(Error::Invalid(_))));
+            }
+        }
     }
 }
 
