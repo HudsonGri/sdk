@@ -109,6 +109,7 @@ pub(super) fn coordinator_stream<P: StreamProvider>(
     Ok(stream)
 }
 
+#[cfg(test)]
 pub(super) async fn read_intent<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     key: &str,

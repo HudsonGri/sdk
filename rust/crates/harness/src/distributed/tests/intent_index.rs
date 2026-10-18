@@ -154,6 +154,61 @@ async fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -
     Ok(())
 }
 
+#[tokio::test]
+async fn indexed_declarations_preserve_full_bytes_and_exact_errors() -> Result<()> {
+    let (owner, issuer) = owner_issuer();
+    let scope = grant(&issuer, "observe", &["operation:observe"])?;
+    let denied = issuer.issue("denied", &Capabilities::default(), None, None, &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
+    let foreign = Authority {
+        kind: AggregateKind::Task,
+        id: "foreign".into(),
+    };
+    let foreign_issuer = AuthorityIssuer::new("foreign-observer", [7; 32], foreign.clone());
+    let foreign_scope = grant(&foreign_issuer, "observe", &["operation:observe"])?;
+    let foreign_verifier = foreign_issuer.verifier(&mut None)?;
+    for count in [8_u8, 24] {
+        let (baseline, mut old) = seeded(count).await?;
+        let (_, mut candidate) = seeded(count).await?;
+        let operation = OperationId::from_bytes([1; 16]);
+        for coordinator in [&mut old, &mut candidate] {
+            publish(
+                coordinator,
+                "not-a-declaration",
+                SchedulerEvent::CancellationRequested {
+                    operation_id: operation,
+                    recursive: false,
+                },
+            )
+            .await?;
+        }
+        for (owner, scope, verifier) in [
+            (&owner, &scope, &verifier),
+            (&owner, &denied, &verifier),
+            (&foreign, &foreign_scope, &foreign_verifier),
+        ] {
+            for operation in [operation, OperationId::from_bytes([99; 16])] {
+                for key in ["history-00", "history-07", "absent", "not-a-declaration"] {
+                    let key = IdempotencyKey::new(key)?;
+                    let before = observe_declaration(
+                        &baseline, owner, scope, verifier, operation, &key, &mut None,
+                    )
+                    .await
+                    .and_then(|value| crate::contract::canonical_json_bytes(&value))
+                    .map_err(|error| format!("{error:?}"));
+                    let after = candidate
+                        .observe_declaration(owner, scope, verifier, operation, &key, &mut None)
+                        .await
+                        .and_then(|value| crate::contract::canonical_json_bytes(&value))
+                        .map_err(|error| format!("{error:?}"));
+                    assert_eq!(before, after);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn absent_intent_does_not_allocate_or_read_history() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()

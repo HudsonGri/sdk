@@ -54,6 +54,7 @@ pub(crate) use commit::{CommitPhase, add_condition, add_record, append, commit, 
 pub(crate) use completion::prepare_materialization_commit;
 pub use coordinator::DistributedCoordinator;
 pub use journal::read_coordinator_event_page;
+#[cfg(test)]
 pub(crate) use proof::observe_declaration;
 #[cfg(feature = "filesystem")]
 pub(crate) use proof::original_reservation_proof;
@@ -63,7 +64,9 @@ pub(crate) use serializer::{digest_key, execution_path};
 
 use authority::authorize_operation_scope;
 use commit::append_if_execution_idle;
-use journal::{coordinator_stream, next_record, read_intent, read_records};
+#[cfg(test)]
+use journal::read_intent;
+use journal::{coordinator_stream, next_record, read_records};
 use serializer::{
     decode, decode_json, encode, formatted_text, inspect_envelope, stream_key, stream_path,
     validate_idempotency_key,

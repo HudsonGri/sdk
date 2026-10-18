@@ -1,5 +1,52 @@
 use super::*;
 
+impl<P: StreamProvider> DistributedCoordinator<P> {
+    pub(crate) async fn observe_declaration(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        declaration_key: &IdempotencyKey,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<OperationSpec>> {
+        authorize_operation_scope(owner, scope, verifier, capability::OPERATION_OBSERVE, work)?;
+        self.refresh(work).await?;
+        let mut custody = CodecQuota::new(work, 0)?;
+        let Some((_, event, ..)) = self
+            .read_indexed_intent(declaration_key.as_str(), custody.work())
+            .await?
+        else {
+            return Ok(None);
+        };
+        if custody.work().is_some() {
+            custody.adopt(event.logical_owned_bytes()?)?;
+        }
+        let SchedulerEvent::Declared { spec } = event else {
+            return Err(guarded_boundary(
+                custody.work(),
+                wire::ErrorCode::Conflict,
+                "declaration key does not identify a declaration",
+            ));
+        };
+        if spec.operation_id != operation_id {
+            return Err(guarded_boundary(
+                custody.work(),
+                wire::ErrorCode::Conflict,
+                "declaration operation identity differs",
+            ));
+        }
+        spec.verify_owner(owner, verifier, custody.work())?;
+        let spec = *spec;
+        if custody.work().is_some() {
+            custody.relinquish(std::mem::size_of::<OperationSpec>() as u64)?;
+        }
+        custody.transfer();
+        Ok(Some(spec))
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn observe_declaration<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     owner: &Authority,
