@@ -191,6 +191,9 @@ def main():
         raise ValueError("invalid model paths")
     if len(set(models)) != len(models):
         raise ValueError("duplicate model paths")
+    for model in models:
+        if sum(model.startswith(prefix) for _, _, _, prefix, _ in CONTEXTS) > 1:
+            raise ValueError("ambiguous compilation context: " + model)
     environment = compiler()
     result = {}
     for name, selection, flags, prefix, check in CONTEXTS:
