@@ -22,6 +22,7 @@ export function decodeTypedVerdicts(response, paths) {
 // judged by the compiler in their Cargo target, including macro expansion,
 // lexical bindings, method resolution and included module bodies.
 export function typedVerdicts(sources, paths) {
+  if (!paths.length) return new Map();
   const reject = reason => new Map(paths.map(path => [path, `!indeterminate: ${reason}`]));
   const unchanged = () => [...sources].every(([path, source]) =>
     readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').replaceAll('\r\n', '\n') === source);

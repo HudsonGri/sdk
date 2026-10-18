@@ -168,7 +168,7 @@ def analyze(name, selection, flags, models, environment, check=False):
             result[model] = "!indeterminate: model was not compiled in " + name
         else:
             unknown = [body + ": " + verdict[1:] for body, verdict in bodies.items() if verdict.startswith("!")]
-            result[model] = "!" + "; ".join(unknown) if unknown else str(int("1" in bodies.values()))
+            result[model] = "!indeterminate: " + "; ".join(unknown) if unknown else str(int("1" in bodies.values()))
     return result
 
 
