@@ -1,4 +1,4 @@
-//! Unpushed pre-merge qualification of Cloud #5322 at 055987e839.
+//! Unpushed pre-merge qualification of Cloud #5322 at the requested candidate head.
 use super::*;
 use acyclic_harness::task_volume::{FileKey, TaskVolume, Write};
 use acyclic_stream::{CommitConflict, CommitMutation, OwnedBytes, wire};
@@ -112,7 +112,7 @@ pub(super) async fn required_pass() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "pre-merge Cloud request 10 qualification at 055987e839"]
+#[ignore = "pre-merge Cloud request 10 qualification"]
 async fn head_fenced_task_volume_publication_rejects_a_forged_head() -> TestResult {
     let remote = remote().await?;
     let path = StreamPath::new("cloud5322-fence/task")?;
@@ -159,7 +159,7 @@ async fn head_fenced_task_volume_publication_rejects_a_forged_head() -> TestResu
 }
 
 #[tokio::test]
-#[ignore = "pre-merge Cloud request 10 qualification at 055987e839"]
+#[ignore = "pre-merge Cloud request 10 qualification"]
 async fn latest_payload_matches_exactly() -> TestResult {
     let remote = remote().await?;
     let path = StreamPath::new("cloud5322-errors/status")?;
@@ -197,7 +197,7 @@ async fn latest_payload_matches_exactly() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "pre-merge Cloud request 10 qualification at 055987e839"]
+#[ignore = "pre-merge Cloud request 10 qualification"]
 async fn checked_follow_close_codes() -> TestResult {
     let remote = remote().await?;
     let path = StreamPath::new("cloud5322-errors/checked")?;
@@ -270,7 +270,7 @@ async fn checked_follow_close_codes() -> TestResult {
 }
 
 #[tokio::test]
-#[ignore = "pre-merge Cloud request 10 qualification at 055987e839"]
+#[ignore = "pre-merge Cloud request 10 qualification"]
 async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
     use wire::{session_frame::Body, session_subscription::Kind};
     let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD").ok_or("missing local Cloud endpoints")?;
