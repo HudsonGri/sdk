@@ -15,12 +15,12 @@ use futures::{
     FutureExt,
     future::{BoxFuture, poll_fn},
 };
-use shuttle::sync::{
-    Arc as ModelArc, Condvar, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use shuttle::sync::{Arc as ModelArc, Condvar, Mutex};
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Poll, Waker},
 };
 
@@ -85,7 +85,10 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
     shuttle::check_dfs(
         move || {
             shuttle::future::block_on(async {
-                let enabled = ModelArc::new(AtomicBool::new(false));
+                // Only the consumer arms and retires this local provider hook.
+                // Concurrent release/wakeup state lives solely in the modeled
+                // gate below; no schedule can change this flag from elsewhere.
+                let enabled = Arc::new(AtomicBool::new(false));
                 let gate =
                     ModelArc::new((Mutex::new((false, false, None::<Waker>)), Condvar::new()));
                 let pause = {
@@ -101,6 +104,9 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
                                     state.0 = true;
                                     gate.1.notify_all();
                                     if state.1 {
+                                        // This consumer has observed the permanent
+                                        // release. Later I/O cannot block here.
+                                        enabled.store(false, Ordering::SeqCst);
                                         Poll::Ready(())
                                     } else {
                                         state.2 = Some(cx.waker().clone());
@@ -194,17 +200,12 @@ fn model<const RETAIN: bool>(return_to_initial: bool) {
                 }
                 enabled.store(true, Ordering::SeqCst);
                 let releasing = gate.clone();
-                let enabled_on_release = enabled.clone();
                 let producer = shuttle::thread::spawn(move || {
                     let mut state = releasing.0.lock().unwrap();
                     while !state.0 {
                         state = releasing.1.wait(state).unwrap();
                     }
                     state.1 = true;
-                    // This gate opens permanently. Later provider calls cannot
-                    // block, so avoid re-entering its mutex after release. The
-                    // modeled atomic still explores calls racing this release.
-                    enabled_on_release.store(false, Ordering::SeqCst);
                     let waker = state.2.take();
                     drop(state);
                     if let Some(waker) = waker {
