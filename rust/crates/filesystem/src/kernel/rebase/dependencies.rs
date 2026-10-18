@@ -317,23 +317,36 @@ impl CheckoutDependencies {
         mut data: impl FnMut(u64, bool) -> Result<ProofDataClaim, E>,
         finish: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
+        let copied = Arc::strong_count(&self.captured) > 1;
+        let moved = !copied && Arc::weak_count(&self.captured) != 0;
+        let mut name_data_bytes = if copied {
+            self.cloned_name_data_bytes
+        } else {
+            self.name_data_bytes
+        };
+        let mut cloned_name_data_bytes = self.cloned_name_data_bytes;
         let mut changes = false;
-        for region in extension.staged.keys() {
+        for (region, state) in extension.staged.iter_mut() {
             admit(0, 0, 0, 1)?;
-            if self
-                .captured
-                .entries
-                .get(region)
-                .is_none_or(|state| state.usage.with(extension.usage) != state.usage)
-            {
-                changes = true;
+            match self.captured.entries.get(region) {
+                Some(existing) => changes |= existing.usage.with(extension.usage) != existing.usage,
+                None => {
+                    changes = true;
+                    let retained = dependency_name_bytes(region, false);
+                    name_data_bytes = name_data_bytes
+                        .checked_add(retained)
+                        .ok_or(WorkError::Overflow)?;
+                    cloned_name_data_bytes = cloned_name_data_bytes
+                        .checked_add(dependency_name_bytes(region, true))
+                        .ok_or(WorkError::Overflow)?;
+                    admit(retained, 0, 0, 0)?;
+                    state.data = data(retained, false)?;
+                }
             }
         }
         if !changes {
             return finish();
         }
-        let copied = Arc::strong_count(&self.captured) > 1;
-        let moved = !copied && Arc::weak_count(&self.captured) != 0;
         let generation = if copied || moved {
             self.data_generation
                 .checked_add(1)
@@ -343,8 +356,6 @@ impl CheckoutDependencies {
         };
         let mut replacement = None;
         let mut moved_control = None;
-        let mut name_data_bytes = self.name_data_bytes;
-        let mut cloned_name_data_bytes = self.cloned_name_data_bytes;
         if copied {
             let mut operations = 0_u64;
             for region in self.captured.entries.keys() {
@@ -369,28 +380,14 @@ impl CheckoutDependencies {
                 value.data = data(dependency_name_bytes(region, false), true)?;
             }
             replacement = Some(Arc::new(captured));
-            name_data_bytes = self.cloned_name_data_bytes;
         } else if moved {
             let control_bytes = Self::empty_logical_owned_bytes() as u64;
             admit(control_bytes, 1, 0, 0)?;
             moved_control = Some(control(control_bytes)?);
         }
-        // Fund every incoming key before changing the existing map. The staged
-        // nodes also carry their claims, so rollback needs no copy of old keys.
-        for (region, state) in extension.staged.iter_mut() {
-            admit(0, 0, 0, 1)?;
-            if !self.captured.entries.contains_key(region) {
-                let retained = dependency_name_bytes(region, false);
-                name_data_bytes = name_data_bytes
-                    .checked_add(retained)
-                    .ok_or(WorkError::Overflow)?;
-                cloned_name_data_bytes = cloned_name_data_bytes
-                    .checked_add(dependency_name_bytes(region, true))
-                    .ok_or(WorkError::Overflow)?;
-                admit(retained, 0, 0, 0)?;
-                state.data = data(retained, false)?;
-            }
-        }
+        // Reserve the installation visits before the last fallible handoff.
+        // The staged nodes already carry every incoming key's custody claim.
+        admit(0, 0, 0, extension.staged.len() as u64)?;
         let result = finish()?;
         // The caller holds exclusive proof access. All admission, custody
         // transfers and caller validation have succeeded; installation cannot fail.
