@@ -179,10 +179,7 @@ impl HostStat {
             raw.st_mode = metadata.mode();
             raw.st_dev = metadata.dev();
             raw.st_rdev = metadata.rdev();
-            raw.st_nlink = metadata
-                .nlink()
-                .try_into()
-                .map_err(|_| io::ErrorKind::InvalidData)?;
+            raw.st_nlink = checked_link_count(metadata.nlink())?;
             raw.st_blksize = metadata.blksize().cast_signed();
         }
         #[cfg(target_os = "macos")]
@@ -275,6 +272,11 @@ impl HostStat {
 #[cfg(target_os = "linux")]
 fn lossless<T, U: From<T>>(value: T) -> U {
     U::from(value)
+}
+
+#[cfg(target_os = "linux")]
+fn checked_link_count<T: TryFrom<u64>>(value: u64) -> io::Result<T> {
+    T::try_from(value).map_err(|_| io::ErrorKind::InvalidData.into())
 }
 
 #[cfg(unix)]
