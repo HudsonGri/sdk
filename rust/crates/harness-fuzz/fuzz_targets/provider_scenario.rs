@@ -67,6 +67,11 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         if let Ok(outputs) = wire::outputs(request, protocol) {
             let decoded = serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();
             assert_eq!(wire::outputs(&decoded, protocol).unwrap(), outputs);
+            if wire::unique_outputs(outputs.clone()).is_err() {
+                assert!(history::matches(
+                    &serde_json::json!({"messages":[]}), request, protocol,
+                ).is_err());
+            }
             if let Ok(unique) = wire::unique_outputs(outputs.clone()) {
                 assert_eq!(unique.len(), outputs.len());
                 if let Some(first) = outputs.first() {

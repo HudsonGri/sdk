@@ -1,7 +1,7 @@
 use super::{TestResult, json_matchers};
 use acyclic_harness::conversation::FileDescriptor;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn check(case: &Value, requests: &BTreeMap<String, Vec<Value>>, protocol: &str) -> TestResult {
     for (name, expected) in case["expect"]["model_requests"]
@@ -128,17 +128,24 @@ fn messages_on_wire(body: &Value, protocol: &str) -> TestResult<Vec<Value>> {
         }
     }
     let mut result = Vec::new();
+    let mut seen = BTreeSet::new();
     for message in messages {
         if message["type"] == "function_call_output" {
             result.push(tool_result(
                 &message["call_id"],
                 &message["output"],
                 &names,
+                &mut seen,
             )?);
         }
         for part in message["content"].as_array().into_iter().flatten() {
             if part["type"] == "tool_result" {
-                result.push(tool_result(&part["tool_use_id"], &part["content"], &names)?);
+                result.push(tool_result(
+                    &part["tool_use_id"],
+                    &part["content"],
+                    &names,
+                    &mut seen,
+                )?);
             } else if message["role"] == "user"
                 && matches!(part["type"].as_str(), Some("input_text" | "text"))
             {
@@ -154,8 +161,16 @@ fn messages_on_wire(body: &Value, protocol: &str) -> TestResult<Vec<Value>> {
     Ok(result)
 }
 
-fn tool_result(id: &Value, output: &Value, names: &BTreeMap<&str, &Value>) -> TestResult<Value> {
+fn tool_result<'a>(
+    id: &'a Value,
+    output: &Value,
+    names: &BTreeMap<&str, &Value>,
+    seen: &mut BTreeSet<&'a str>,
+) -> TestResult<Value> {
     let id = id.as_str().ok_or("HTTP result id missing")?;
+    if !seen.insert(id) {
+        return Err(format!("HTTP repeated tool result identity: {id}").into());
+    }
     let name = names
         .get(id)
         .ok_or_else(|| format!("HTTP result has no matching call: {id}"))?;
@@ -193,6 +208,28 @@ mod tests {
             let mut duplicate = expected.clone();
             duplicate["messages"].as_array_mut().unwrap().push(expected["messages"][0].clone());
             prop_assert!(!matches(&duplicate, &body, "responses").map_err(|error| TestCaseError::fail(error.to_string()))?);
+        }
+
+        #[test]
+        fn extra_result_delivery_cannot_hide_in_a_history_subsequence(text in ".{0,64}") {
+            let expected = json!({"messages":[{"role":"tool","content":{"kind":"tool_result",
+                "call_id":"call","name":"wait","content":{"kind":"json","value":{"answer":text}}}}]});
+            let output = serde_json::to_string(&json!({"answer":text}))?;
+            for (protocol, field, call, result) in [
+                ("responses", "input",
+                    json!({"type":"function_call","call_id":"call","name":"wait","arguments":"{}"}),
+                    json!({"type":"function_call_output","call_id":"call","output":output})),
+                ("anthropic", "messages",
+                    json!({"role":"assistant","content":[{"type":"tool_use","id":"call","name":"wait","input":{}}]}),
+                    json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"call","content":output}]})),
+            ] {
+                let mut body = json!({(field):[call,result]});
+                prop_assert!(matches(&expected, &body, protocol).map_err(|error| TestCaseError::fail(error.to_string()))?);
+                let duplicate = body[field][1].clone();
+                body[field].as_array_mut().unwrap().push(duplicate);
+                let error = matches(&expected, &body, protocol).unwrap_err();
+                prop_assert!(error.to_string().contains("repeated tool result identity"));
+            }
         }
 
         #[test]
