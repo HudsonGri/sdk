@@ -3,6 +3,16 @@ use proptest::prelude::*;
 
 thread_local! {
     static PREVIOUS_SORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PATH_COMPARISONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static FORCE_COUNTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(super) fn force_counting() -> bool {
+    FORCE_COUNTING.get()
+}
+
+pub(super) fn path_comparison() {
+    PATH_COMPARISONS.set(PATH_COMPARISONS.get() + 1);
 }
 
 pub(super) struct PreviousSort(bool);
@@ -206,7 +216,7 @@ proptest! {
             let (_, comparison_items, comparison_heap) =
                 charged(&kinds, states(&kinds, &reversed), comparison_sort);
             prop_assert_eq!(&fallback, &expected);
-            prop_assert_eq!(fallback_items, comparison_items);
+            prop_assert_eq!(fallback_items, comparison_items + u64::from(count >= 4));
             prop_assert_eq!((fallback_heap, comparison_heap), (0, 0));
         }
     }
@@ -258,6 +268,118 @@ fn deep_paths_take_a_measured_class_buffer() {
     assert!(kinds.meter.receipt().peak_allocation_bytes > live);
 }
 
+fn complete_capture(
+    runtime: &tokio::runtime::Runtime,
+    count: usize,
+    depth: usize,
+    budget: WorkBudget,
+    previous: bool,
+) -> (Result<CaptureReceipt, String>, WorkCounters) {
+    let source = tempfile::tempdir().unwrap();
+    let prefix = vec!["d"; depth].join("/");
+    let directory = source.path().join(prefix);
+    std::fs::create_dir_all(&directory).unwrap();
+    for index in 0..count {
+        std::fs::write(directory.join(format!("f{index:03}")), []).unwrap();
+    }
+    let setup =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+    let mut checkout = runtime
+        .block_on(super::capture_policy_tests::native_checkout(&setup))
+        .unwrap();
+    let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+    let options = CaptureOptions {
+        source_root: source.path().to_owned(),
+        expected_root_identity: capture_root_identity(source.path()).unwrap(),
+        maximum_paths: (count + depth + 8) as u32,
+        maximum_extent_spans: 8,
+    };
+    let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits).unwrap();
+    let _sort = previous_sort(previous);
+    let result = runtime
+        .block_on(capture_subtrees_with_native_work(
+            &mut checkout,
+            &[root],
+            &options,
+            &CapturePolicy::default(),
+            work.cancellation(),
+            None,
+            &work,
+        ))
+        .map(|receipt| receipt.value)
+        .map_err(|failure| format!("{:?}", failure.error));
+    (result, work.receipt())
+}
+
+#[test]
+fn complete_captures_preserve_the_previous_exact_allocation_operation_limit() {
+    let _subscriber =
+        tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    for (count, depth) in [(129, 1), (4, 16)] {
+        let (expected, receipt) =
+            complete_capture(&runtime, count, depth, WorkBudget::UNBOUNDED, true);
+        assert!(expected.is_ok());
+        let exact = receipt.allocation_operations;
+        for limit in [exact - 1, exact, exact + 1] {
+            let budget = WorkBudget {
+                allocation_operations: limit,
+                ..WorkBudget::UNBOUNDED
+            };
+            let (old, old_work) = complete_capture(&runtime, count, depth, budget, true);
+            let (new, work) = complete_capture(&runtime, count, depth, budget, false);
+            assert_eq!(new, old, "count={count} depth={depth} limit={limit}");
+            assert_eq!(new.is_ok(), limit >= exact);
+            assert_eq!(work.allocation_operations, old_work.allocation_operations);
+            assert_eq!(work.items_examined, old_work.items_examined);
+        }
+        // Scratch can be admitted at sorting time but consumes an operation
+        // needed by a later mandatory capture allocation.
+        FORCE_COUNTING.set(true);
+        let (broken, _) = complete_capture(
+            &runtime,
+            count,
+            depth,
+            WorkBudget {
+                allocation_operations: exact,
+                ..WorkBudget::UNBOUNDED
+            },
+            false,
+        );
+        FORCE_COUNTING.set(false);
+        assert!(broken.is_err(), "count={count} depth={depth}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn finite_parent_limits_remain_allocation_free_under_unbounded_child_views(
+        count in 4usize..150, depth in 1usize..25, finite_root in any::<bool>(),
+    ) {
+        let kinds = kinds();
+        let prefix = vec!["d"; depth].join("/");
+        let entries: Vec<_> = (0..count).map(|index| (format!("/{prefix}/{index:03}"), (index % 4) as u8)).collect();
+        let (expected, items, _) = charged(&kinds, states(&kinds, &entries), comparison_sort);
+        let finite = WorkBudget { allocation_operations: 10_000, ..WorkBudget::UNBOUNDED };
+        let root = NativeMaterializationWork::new(if finite_root { finite } else { WorkBudget::UNBOUNDED }, &CancellationToken::new()).unwrap();
+        let parent = root.native_volume_work(if finite_root { WorkBudget::UNBOUNDED } else { finite }).unwrap();
+        let child = parent.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
+        let before = child.receipt();
+        let mut input = states(&kinds, &entries);
+        PATH_COMPARISONS.set(0);
+        let heap = acyclic_test_support::measure(|| sort_capture_states(&mut input, &child).unwrap());
+        prop_assert_eq!(order(&input), expected);
+        prop_assert_eq!(heap.count_total, 0);
+        prop_assert_eq!(child.receipt().allocation_operations, before.allocation_operations);
+        prop_assert_eq!(child.receipt().items_examined - before.items_examined, items);
+        prop_assert_eq!(PATH_COMPARISONS.get(), 0);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     /// Any batch funded for the old exact item receipt still succeeds. When
@@ -298,7 +420,7 @@ proptest! {
         let work = meter.receipt();
         prop_assert!(work.items_examined <= old_items);
         let needs_heap = count > 128 || depth + 1 >= 16;
-        if count < 4 || (needs_heap && (no_bytes || no_operations)) {
+        if count < 4 || budget.items_examined != u64::MAX || (needs_heap && (no_bytes || no_operations)) {
             prop_assert_eq!(work.items_examined, old_items);
             prop_assert_eq!(work.allocation_operations, initial.allocation_operations);
             prop_assert_eq!(work.peak_allocation_bytes, initial.peak_allocation_bytes);
@@ -308,6 +430,29 @@ proptest! {
             prop_assert_eq!(heap.count_total, requests);
             prop_assert_eq!(work.allocation_operations, initial.allocation_operations + requests);
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn refused_work_never_scans_an_uncharged_path_prefix(count in 4usize..257) {
+        let kinds = kinds();
+        let entries: Vec<_> = (0..count).map(|index| (format!("/p{index:04}"), 3)).collect();
+        let work = NativeMaterializationWork::new(WorkBudget {
+            items_examined: 0, ..WorkBudget::UNBOUNDED
+        }, &CancellationToken::new()).unwrap();
+        let mut input = states(&kinds, &entries);
+        PATH_COMPARISONS.set(0);
+        prop_assert!(sort_capture_states(&mut input, &work).is_err());
+        let oracle = |comparisons, charged| comparisons == 0 && charged == 0;
+        prop_assert!(oracle(PATH_COMPARISONS.get(), work.receipt().items_examined));
+        // The rejected selector restores the old uncharged windows scan.
+        for pair in input.windows(2) {
+            path_comparison();
+            prop_assert!(pair[0].1 < pair[1].1);
+        }
+        prop_assert!(!oracle(PATH_COMPARISONS.get(), work.receipt().items_examined));
     }
 }
 

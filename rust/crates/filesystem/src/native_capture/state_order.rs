@@ -44,53 +44,58 @@ pub(super) fn sort_capture_states(
     if super::state_order_tests::use_previous_sort() {
         return super::state_order_tests::comparison_sort(states, meter);
     }
+    #[cfg(test)]
+    if super::state_order_tests::force_counting() {
+        capture_charge(
+            meter,
+            crate::materializer::NativeResourceCredit::Items
+                .delta(2 * states.len().saturating_sub(1) as u64),
+        )?;
+        return bucket_path_ordered_states(states, meter);
+    }
     // Even the cheapest heapsort costs less than the counting pass for two
     // or three states. Select it before inspecting paths or charging work.
     if states.len() < 4 {
         return capture_sort_by(states, capture_state_order, meter);
     }
-    let remaining = meter
-        .with_original_leaf(|work| work.remaining())
-        .map_err(capture_demand_error)?;
-    let slots = if states.len() > INLINE_SLOTS {
-        states.len()
-    } else {
-        0
-    };
-    if slots != 0 && remaining.allocation_operations == 0 {
-        return capture_sort_by(states, capture_state_order, meter);
-    }
-    let pairs = states.len() - 1;
-    if !states.windows(2).all(|pair| pair[0].1 < pair[1].1) {
-        return capture_sort_by(states, capture_state_order, meter);
-    }
-    let deepest = states
-        .iter()
-        .map(|state| state.1.depth())
-        .max()
-        .unwrap_or(0);
-    let classes = deepest.checked_add(1).and_then(|span| span.checked_mul(4));
-    let Some(classes) = classes else {
-        return capture_sort_by(states, capture_state_order, meter);
-    };
-    let starts = if classes > INLINE_CLASSES { classes } else { 0 };
-    let bytes = slots
-        .checked_add(starts)
-        .and_then(|slots| slots.checked_mul(std::mem::size_of::<usize>()));
-    let operations = u64::from(slots != 0) + u64::from(starts != 0);
-    let items = 2 * pairs as u64 + states.len() as u64;
-    if bytes.is_none_or(|bytes| bytes as u64 > remaining.peak_allocation_bytes)
-        || operations > remaining.allocation_operations
-        || items > remaining.items_examined
+    // Scratch consumes nonrefundable allocation operations, including credit
+    // needed after sorting. Finite invocation limits retain the original
+    // allocation-free path and its exact receipt, before any inspection.
+    let budget = meter.budget_ceiling();
+    if budget.allocation_operations != u64::MAX
+        || budget.peak_allocation_bytes != u64::MAX
+        || budget.items_examined != u64::MAX
     {
         return capture_sort_by(states, capture_state_order, meter);
     }
-    // Strategy selection does not spend a rejected strategy's allowance.
-    // Once selected, charge every path comparison and the keying pass.
-    capture_charge(
-        meter,
-        crate::materializer::NativeResourceCredit::Items.delta(2 * pairs as u64),
-    )?;
+    for pair in states.windows(2) {
+        capture_charge(
+            meter,
+            crate::materializer::NativeResourceCredit::Items.delta(1),
+        )?;
+        #[cfg(test)]
+        super::state_order_tests::path_comparison();
+        if pair[0].1 >= pair[1].1 {
+            return capture_sort_by(states, capture_state_order, meter);
+        }
+    }
+    // The first depth initializes the maximum; each later key is charged
+    // before it is inspected, so refusal never scans an uncharged tail.
+    let mut deepest = states[0].1.depth();
+    for state in &states[1..] {
+        capture_charge(
+            meter,
+            crate::materializer::NativeResourceCredit::Items.delta(1),
+        )?;
+        deepest = deepest.max(state.1.depth());
+    }
+    if deepest
+        .checked_add(1)
+        .and_then(|span| span.checked_mul(4))
+        .is_none()
+    {
+        return capture_sort_by(states, capture_state_order, meter);
+    }
     bucket_path_ordered_states(states, meter)
 }
 
