@@ -45,10 +45,19 @@ checks.extend(('stack_main', [f'stack_budget::{case}', '--exact']) for case in [
     'diff', 'commit', 'tools', 'merge-continue', 'merge-abort',
     'spawn', 'send', 'wait', 'archive', 'jsonl', 'tui', 'unboxed',
 ])
+failures = []
 for name, args in checks:
     started = time.monotonic()
-    subprocess.run([artifacts[name], *args, '--nocapture'], check=True)
+    try:
+        subprocess.run([artifacts[name], *args, '--nocapture'], check=True, timeout=10)
+        elapsed = time.monotonic()-started
+        if elapsed >= 10:
+            raise RuntimeError(f'suite exceeded 10 seconds: {elapsed:.3f}')
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
+        failures.append((name, args, str(error)))
     print(f'{name} {args}: wall={time.monotonic()-started:.3f} s', flush=True)
+if failures:
+    raise SystemExit(f'stack qualification failures: {failures}')
 PY
 /usr/bin/time -f 'windows-gnu compile wall=%e s' cargo check --locked \
   -p graphcoder -p acyclic-plugin -p acyclic-harness -p acyclic-fs -p acyclic-test-support -p acyclic-native-runtime -p acyclic-conformance \

@@ -266,26 +266,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                     .value,
             ));
         }
-        // Boxed: the join's poll frame is not reserved in this one.
-        let outcome = crate::in_heap(|| {
-            self.target_head.workspace.volume.fs.apply_workspace_join(
-                crate::facade::WorkspaceJoinRequest {
-                    target: &self.target_head.workspace.volume,
-                    base: self.base,
-                    source: &self.source_head,
-                    expected_target: options.if_target,
-                    expected_head: self.target_authority_head,
-                    history: self.history,
-                    operation_id: options.idempotency_key.operation_id(),
-                    permit,
-                    maximum_generations: self.maximum_generations,
-                    maximum_changes: self.maximum_changes,
-                    maximum_conflicts: self.maximum_conflicts,
-                    resolutions: crate::facade::WorkspaceJoinResolutions::Map(&resolutions),
-                },
-            )
-        })
-        .await?;
+        // The join boxes its own frame on its own ledger.
+        let outcome = self
+            .target_head
+            .workspace
+            .volume
+            .fs
+            .apply_workspace_join(crate::facade::WorkspaceJoinRequest {
+                target: &self.target_head.workspace.volume,
+                base: self.base,
+                source: &self.source_head,
+                expected_target: options.if_target,
+                expected_head: self.target_authority_head,
+                history: self.history,
+                operation_id: options.idempotency_key.operation_id(),
+                permit,
+                maximum_generations: self.maximum_generations,
+                maximum_changes: self.maximum_changes,
+                maximum_conflicts: self.maximum_conflicts,
+                resolutions: crate::facade::WorkspaceJoinResolutions::Map(&resolutions),
+            })
+            .await?;
         self.map_join_outcome(outcome)
     }
 

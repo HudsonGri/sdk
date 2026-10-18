@@ -42,7 +42,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     accounting.release_owned(&mut allocation, bytes)?;
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(original) = accounting.native_work() {
-                        return crate::in_heap(|| {
+                        return crate::heap_future::in_heap_claimed(original, || {
                             self.volume.fs.fork_workspace(
                                 name,
                                 &options.generation,
@@ -54,6 +54,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                                 Some(&mut guard),
                             )
                         })
+                        .map_err(|error| E::from(WorkspaceError::from(error)))?
                         .await;
                     }
                     // The facade takes over the name's payload; this operation retains its Arc control.
@@ -62,39 +63,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                         name.retained_bytes(),
                     )?;
                     let remaining = accounting.remaining()?;
-                    let forked = crate::in_heap(|| {
-                        self.volume.fs.fork_workspace(
-                            name,
-                            &options.generation,
-                            options.idempotency_key,
-                            options.paths,
-                            permit,
-                            remaining,
-                            cancellation,
-                            Some(&mut guard),
-                        )
-                    })
-                    .await;
-                    let backend = match &forked {
-                        Ok(receipt) => receipt.work,
-                        Err(failure) => *failure.work,
-                    };
-                    let (allocations, spent, budget, _) = accounting
-                        .standalone_parts()
-                        .ok_or_else(|| E::from(WorkspaceError::from(crate::WorkError::Overflow)))?;
-                    let prior = *spent;
-                    *spent = prior
-                        .with_backend(backend, allocations.live_bytes())
-                        .map_err(|error| {
-                            E::from(WorkspaceError::WorkMerge {
-                                prior: Box::new(prior),
-                                backend: Box::new(backend),
-                                error,
-                            })
-                        })?;
-                    spent
-                        .verify(budget)
-                        .map_err(|error| E::from(WorkspaceError::from(error)))?;
+                    // The frame stays reserved while its receipt joins the ledger.
+                    let (forked, reservation) =
+                        crate::heap_future::in_heap_metered(&mut *accounting, |_| {
+                            self.volume.fs.fork_workspace(
+                                name,
+                                &options.generation,
+                                options.idempotency_key,
+                                options.paths,
+                                permit,
+                                remaining,
+                                cancellation,
+                                Some(&mut guard),
+                            )
+                        })?
+                        .await;
+                    let merged = (|| {
+                        let backend = match &forked {
+                            Ok(receipt) => receipt.work,
+                            Err(failure) => *failure.work,
+                        };
+                        let (allocations, spent, budget, _) =
+                            accounting.standalone_parts().ok_or_else(|| {
+                                E::from(WorkspaceError::from(crate::WorkError::Overflow))
+                            })?;
+                        let prior = *spent;
+                        *spent = prior
+                            .with_backend(backend, allocations.live_bytes())
+                            .map_err(|error| {
+                                E::from(WorkspaceError::WorkMerge {
+                                    prior: Box::new(prior),
+                                    backend: Box::new(backend),
+                                    error,
+                                })
+                            })?;
+                        spent
+                            .verify(budget)
+                            .map_err(|error| E::from(WorkspaceError::from(error)))
+                    })();
+                    crate::heap_future::FrameLedger::release_frame(&mut *accounting, reservation)?;
+                    merged?;
                     forked
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)

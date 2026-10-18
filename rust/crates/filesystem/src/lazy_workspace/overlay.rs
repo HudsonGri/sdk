@@ -10,7 +10,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = crate::in_heap(|| self.state(ctx)).await?;
+            let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
             let overlay = self
                 .insert_overlay(state.overlay, path, change.clone(), ctx)
                 .await?;
