@@ -173,8 +173,9 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
+        let phase = &mut DispatchPhase::new();
         StockExecution::ordinary(self)
-            .summarize(journal, None, operation, 0, source, instruction)
+            .summarize(journal, None, operation, 0, source, instruction, phase)
             .await
             .map(|(summary, _)| summary)
     }
@@ -187,6 +188,7 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
+        let phase = &mut DispatchPhase::new();
         let execution = StockExecution::ordinary(self);
         execution.validate_turn_input(journal, input).await?;
         execution
@@ -197,6 +199,7 @@ impl StockExecutor {
                 step,
                 source,
                 instruction,
+                phase,
             )
             .await
             .map(|(summary, _)| summary)

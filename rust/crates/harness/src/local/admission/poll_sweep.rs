@@ -21,7 +21,7 @@ mod read_contention;
 mod read_profile;
 mod requests;
 mod seed;
-mod selected_history;
+pub(super) mod selected_history;
 use seed::Seed;
 
 type Harness = LocalHarness;
@@ -54,6 +54,11 @@ struct Fixture {
     history: RefCell<Option<crate::projection::SelectedModelContext>>,
 }
 
+pub(super) async fn conversation_harness() -> Result<(tempfile::TempDir, Harness)> {
+    let fixture = Fixture::new(Scenario::Compaction, None).await?;
+    let harness = fixture.open().await?;
+    Ok((fixture.directory, harness))
+}
 impl Fixture {
     async fn new(scenario: Scenario, seed: Option<&Seed>) -> Result<Self> {
         let (schedule, events) = Schedule::new();

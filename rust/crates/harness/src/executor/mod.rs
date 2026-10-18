@@ -58,8 +58,11 @@ mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;
 #[cfg(all(test, feature = "filesystem"))]
 pub(crate) use content::verify_model_contents_with_summary_authorization;
+mod phase;
 mod retained;
 mod turn;
+pub(crate) use phase::DispatchPhase;
+pub use phase::PreDispatchFailure;
 pub(crate) use retained::{completed_tool_projection, retained_model_step};
 mod checkpoint_selection;
 use checkpoint_selection::*;
@@ -366,6 +369,8 @@ pub struct TurnOutput {
 
 /// Execution progress with its settled value or original approval outcome.
 pub enum ExecutionProgress<T> {
+    /// Preparation failed before any provider attempt could start.
+    Failed(PreDispatchFailure),
     /// The operation settled with its complete result.
     Ready(T),
     /// The original approval operation is pending.
@@ -377,6 +382,7 @@ pub enum ExecutionProgress<T> {
 impl ExecutionProgress<TurnOutput> {
     pub(crate) fn into_output(self) -> Result<TurnOutput> {
         match self {
+            Self::Failed(failure) => Err(failure.into_error()),
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
             Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),

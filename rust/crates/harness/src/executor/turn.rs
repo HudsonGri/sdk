@@ -8,10 +8,23 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;
+        let mut phase = DispatchPhase::new();
+        let result = self.execute_turn(input, journal, &mut phase).await;
+        phase
+            .finish(result, journal, input.operation_id, self.io)
+            .await
+    }
+
+    async fn execute_turn(
+        &self,
+        input: &TurnInput,
+        journal: &dyn ExecutionJournal,
+        phase: &mut DispatchPhase,
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
         if let Some(source) = self.stock.summary_source.as_deref() {
             return crate::conversation::BoundedContentFuture::new(self.io, || {
-                self.summarize_file(journal, input, source)
+                self.summarize_file(journal, input, source, phase)
             })?
             .await;
         }
@@ -26,6 +39,7 @@ impl StockExecution<'_> {
                     step,
                     &prior_messages,
                     ModelPurpose::Response,
+                    phase,
                 )?
                 .await?;
             let (calls, metadata) = self.collect_turn_events(
@@ -61,6 +75,9 @@ impl StockExecution<'_> {
                     }
                     ExecutionProgress::Rejected(reason) => {
                         return Ok(ExecutionProgress::Rejected(reason));
+                    }
+                    ExecutionProgress::Failed(failure) => {
+                        return Err(failure.into_error());
                     }
                 }
             }

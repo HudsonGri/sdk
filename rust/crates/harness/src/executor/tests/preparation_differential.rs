@@ -97,7 +97,9 @@ fn pair(
                             .prepared_response_original(&journal, &input, 0, &[])
                             .await
                     } else {
-                        execution.prepared_response(&journal, &input, 0, &[]).await
+                        execution
+                            .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+                            .await
                     }
                 }));
             });

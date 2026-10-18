@@ -6,6 +6,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         source: &FileRef,
+        phase: &mut DispatchPhase,
     ) -> Result<ExecutionProgress<TurnOutput>> {
         let scope = self
             .original_context()
@@ -73,6 +74,7 @@ impl StockExecution<'_> {
                 0,
                 captured.context,
                 instruction,
+                phase,
             )
             .await?;
         let checkpoint = crate::context::SummaryCheckpoint {

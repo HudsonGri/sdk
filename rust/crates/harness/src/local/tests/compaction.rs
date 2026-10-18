@@ -203,12 +203,8 @@ async fn defaults_leave_input_room_when_output_capacity_equals_the_context() -> 
             assert!(input > 2);
             assert!(output > 0 && input + u64::from(output) <= u64::from(capacity.context_tokens));
         }
-        // The output-first control never settles its admitted turn.
-        if legacy {
-            harness.disconnect_unfinished().await?;
-        } else {
-            harness.close().await?;
-        }
+        // Capacity rejection is a known failed turn and must close normally.
+        harness.close().await?;
     }
     Ok(())
 }

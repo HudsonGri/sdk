@@ -5,8 +5,8 @@
   "model:dispatch": 1,
   "native:completed": 22,
   "native:submitted": 22,
-  "task:completed": 57,
-  "task:submitted": 57,
+  "task:completed": 59,
+  "task:submitted": 59,
   "stream:read:blocked": 2,
   "stream:read:completed": 2,
   "stream:read:ready": 2370
