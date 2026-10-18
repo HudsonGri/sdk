@@ -176,7 +176,10 @@ fn wake(broken: bool) {
     );
 }
 
-fn check(scenario: fn(bool), diagnostic: &str) {
+fn check<F>(scenario: F, diagnostic: &str)
+where
+    F: Fn(bool) + Copy + Send + Sync + std::panic::UnwindSafe + 'static,
+{
     loom::model(move || scenario(false));
     let error = std::panic::catch_unwind(move || loom::model(move || scenario(true)))
         .expect_err("broken control was accepted");
