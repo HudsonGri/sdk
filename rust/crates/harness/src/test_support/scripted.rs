@@ -4,7 +4,7 @@ use crate::{
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, ModelRequest, PreparedModelRequest},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{SeqAccess, Visitor, value::SeqAccessDeserializer},
@@ -94,14 +94,17 @@ struct State {
 }
 
 type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
+type ContentReader = (Arc<dyn crate::conversation::ContentResidencyVerifier>, u64);
 
 /// Replays responses once and retains the exact requests delivered by the executor.
 /// Exhaustion fails instead of silently repeating the final response.
 pub struct ScriptedModelProvider {
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
     dispatch_observer: Option<Arc<dyn Fn(ModelDispatch) + Send + Sync>>,
+    reads_content: bool,
+    content: Option<ContentReader>,
 }
 
 impl ScriptedModelProvider {
@@ -109,17 +112,29 @@ impl ScriptedModelProvider {
     #[must_use]
     pub fn new(turns: impl IntoIterator<Item = ScriptedTurn>) -> Self {
         Self {
-            state: Mutex::new(State {
+            state: Arc::new(Mutex::new(State {
                 turns: turns.into_iter().collect(),
                 ..State::default()
-            }),
+            })),
             capacity: Some(ModelContextCapacity {
                 context_tokens: 131_072,
                 output_tokens: 4_096,
             }),
             token_counter: Some(Arc::new(serialized_tokens)),
             dispatch_observer: None,
+            reads_content: false,
+            content: None,
         }
+    }
+
+    /// Reads every file part's bytes through the reader the harness binds for
+    /// the executing task before answering, as a real provider projects them.
+    /// An unbound or refused read fails the request; the script cursor is shared
+    /// with every bound copy.
+    #[must_use]
+    pub const fn reading_content(mut self) -> Self {
+        self.reads_content = true;
+        self
     }
 
     /// Replaces the model's advertised context and output capacities.
@@ -221,7 +236,68 @@ impl ScriptedModelProvider {
     }
 }
 
+/// Reads every file part a provider projects as bytes through `reader`, as the
+/// stock providers do; the first unbound or refused read fails. Reference parts
+/// travel as identities and are not read.
+pub async fn read_request_files(
+    reader: Option<(&dyn crate::conversation::ContentResidencyVerifier, u64)>,
+    request: &PreparedModelRequest,
+) -> Result<()> {
+    for message in &request.request().messages {
+        for (file, policy) in message.content.file_parts() {
+            if !matches!(
+                policy,
+                crate::model::FileProjectionPolicy::BoundedFull
+                    | crate::model::FileProjectionPolicy::ProjectInstructions(_)
+            ) {
+                continue;
+            }
+            let (reader, maximum) = reader.ok_or_else(|| {
+                Error::Unauthorized("scripted provider has no content reader".into())
+            })?;
+            reader.read(file, maximum, None)?.await?;
+        }
+    }
+    Ok(())
+}
+
+impl ScriptedModelProvider {
+    fn answer(
+        &self,
+        request: PreparedModelRequest,
+        dispatch: ModelDispatch,
+    ) -> BoxProviderStream<'_, Result<ModelEvent>> {
+        let turn = self.next(request, dispatch);
+        if turn.is_ok()
+            && let Some(observer) = &self.dispatch_observer
+        {
+            observer(dispatch);
+        }
+        match turn {
+            Ok(turn) => turn.stream(),
+            Err(error) => Box::pin(futures::stream::iter([Err(error)])),
+        }
+    }
+}
+
 impl ModelProvider for ScriptedModelProvider {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        maximum_bytes: u64,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        self.reads_content.then(|| {
+            Arc::new(Self {
+                state: Arc::clone(&self.state),
+                capacity: self.capacity,
+                token_counter: self.token_counter.clone(),
+                dispatch_observer: self.dispatch_observer.clone(),
+                reads_content: true,
+                content: Some((reader, maximum_bytes)),
+            }) as Arc<dyn ModelProvider>
+        })
+    }
+
     fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
         self.capacity.ok_or_else(|| {
             Error::Unsupported("selected model context capacity is unavailable".into())
@@ -245,16 +321,20 @@ impl ModelProvider for ScriptedModelProvider {
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-        let turn = self.next(request, dispatch);
-        if turn.is_ok()
-            && let Some(observer) = &self.dispatch_observer
-        {
-            observer(dispatch);
+        if !self.reads_content {
+            return self.answer(request, dispatch);
         }
-        match turn {
-            Ok(turn) => turn.stream(),
-            Err(error) => Box::pin(futures::stream::iter([Err(error)])),
-        }
+        Box::pin(
+            futures::stream::once(async move {
+                let reader = self
+                    .content
+                    .as_ref()
+                    .map(|(reader, maximum)| (reader.as_ref(), *maximum));
+                read_request_files(reader, &request).await?;
+                Ok::<_, Error>(self.answer(request, dispatch))
+            })
+            .try_flatten(),
+        )
     }
 
     fn reconcile<'a>(

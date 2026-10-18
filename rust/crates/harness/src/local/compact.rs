@@ -130,7 +130,13 @@ impl LocalHarness {
                 self.limits,
                 None,
             )?;
-            let count = self.provider.count_tokens(&request).await?;
+            // Compaction is admitted as a root task, so its pre-count reads the
+            // summarized input under the root's own authority.
+            let provider = self
+                .provider
+                .bind_content(self.context_reader()?, self.limits.file_bytes)
+                .unwrap_or_else(|| self.provider.clone());
+            let count = provider.count_tokens(&request).await?;
             summary_output_budget(
                 capacity.context_tokens,
                 ceiling,

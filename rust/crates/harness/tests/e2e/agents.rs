@@ -9,7 +9,8 @@ use acyclic_harness::{
     task_volume::{
         ChildFile, ChildState, ChildStatus, Component, Control, FileKey, FileValue, Query,
     },
-    test_support::{ScriptedModelProvider, ScriptedTurn},
+    conversation::ContentResidencyVerifier,
+    test_support::{ScriptedModelProvider, ScriptedTurn, read_request_files},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -29,8 +30,24 @@ struct Case {
     routes: BTreeMap<String, String>,
     #[serde(default)]
     actions: Vec<Action>,
+    #[serde(default)]
+    reader: Reader,
     expect: Expected,
 }
+
+/// Whose authority a model request's file parts are read under.
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Reader {
+    /// The executing task's own reader, as the harness binds it.
+    #[default]
+    Task,
+    /// The first reader bound, reused for every task: the former
+    /// composition-wide binding, kept only as a negative control.
+    Composition,
+}
+
+type BoundReader = (Arc<dyn ContentResidencyVerifier>, u64);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,11 +77,17 @@ struct Action {
     message: Option<String>,
 }
 
+#[derive(Clone)]
 struct Models {
-    scripts: BTreeMap<String, Arc<ScriptedModelProvider>>,
-    routes: BTreeMap<[u8; 32], String>,
-    actions: BTreeMap<(String, usize), Action>,
+    scripts: Arc<BTreeMap<String, Arc<ScriptedModelProvider>>>,
+    routes: Arc<BTreeMap<[u8; 32], String>>,
+    actions: Arc<BTreeMap<(String, usize), Action>>,
     events: tokio::sync::mpsc::UnboundedSender<(Action, tokio::sync::oneshot::Sender<()>)>,
+    /// The executing task's reader; every request reads its file parts through
+    /// it, as a provider projecting file bytes does.
+    content: Option<BoundReader>,
+    /// Set under [`Reader::Composition`]: the one reader every task reuses.
+    pinned: Option<Arc<std::sync::OnceLock<BoundReader>>>,
 }
 
 impl Models {
@@ -104,6 +127,20 @@ impl Models {
 }
 
 impl ModelProvider for Models {
+    fn bind_content(
+        &self,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        maximum_bytes: u64,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        let content = match &self.pinned {
+            Some(pinned) => pinned.get_or_init(|| (reader, maximum_bytes)).clone(),
+            None => (reader, maximum_bytes),
+        };
+        Some(Arc::new(Self {
+            content: Some(content),
+            ..self.clone()
+        }))
+    }
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.get(&model.name)?.context_capacity(model)
     }
@@ -130,6 +167,11 @@ impl ModelProvider for Models {
         );
         Box::pin(
             futures::stream::once(async move {
+                let reader = self
+                    .content
+                    .as_ref()
+                    .map(|(reader, maximum)| (reader.as_ref(), *maximum));
+                read_request_files(reader, &request).await?;
                 if let Some(action) = action {
                     let (accepted, reply) = tokio::sync::oneshot::channel();
                     self.events
@@ -219,8 +261,8 @@ pub(super) async fn run(value: Value) -> TestResult {
     let (events, mut actions) = tokio::sync::mpsc::unbounded_channel();
     let expected_actions = case.actions.len();
     let provider = Arc::new(Models {
-        scripts: case
-            .models
+        scripts: Arc::new(
+            case.models
             .into_iter()
             .map(|(name, turns)| {
                 (
@@ -234,20 +276,25 @@ pub(super) async fn run(value: Value) -> TestResult {
                 )
             })
             .collect(),
-        routes: case
-            .routes
+        ),
+        routes: Arc::new(
+            case.routes
             .into_iter()
             .map(|(body, name)| {
                 let hash: [u8; 32] = Sha256::digest(body.as_bytes()).into();
                 (hash, name)
             })
             .collect(),
-        actions: case
-            .actions
+        ),
+        actions: Arc::new(
+            case.actions
             .into_iter()
             .map(|action| ((action.model.clone(), action.request), action))
             .collect(),
+        ),
         events,
+        content: None,
+        pinned: matches!(case.reader, Reader::Composition).then(Default::default),
     });
     if provider.actions.len() != expected_actions {
         return Err("scenario actions must use distinct model request events".into());
@@ -419,4 +466,26 @@ fn file_path(root: &std::path::Path, path: &str) -> TestResult<std::path::PathBu
         return Err("scenario file must stay inside its workspace".into());
     }
     Ok(root.join(path))
+}
+
+/// Negative control: one reader bound for the whole composition, as the model
+/// provider was bound at open, cannot read the task a child received, so the
+/// child never reaches its model.
+#[test]
+fn a_composition_wide_reader_cannot_read_a_childs_task() -> TestResult {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/local-scenarios/agents/spawn-wait.json");
+    let mut case: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    let object = case.as_object_mut().ok_or("scenario must be an object")?;
+    object.remove("driver");
+    object.insert("reader".into(), "composition".into());
+    let error = super::scenario_runtime()?
+        .block_on(run(case))
+        .err()
+        .ok_or("a composition-wide reader read the child's task")?
+        .to_string();
+    if !error.contains(r#""worker": 0"#) {
+        return Err(format!("the child reached its model: {error}").into());
+    }
+    Ok(())
 }

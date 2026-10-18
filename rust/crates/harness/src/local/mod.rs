@@ -70,6 +70,7 @@ pub struct LocalHarness {
     issuer: Option<AuthorityIssuer>,
     signed: Scope,
     model: Model,
+    /// Unbound: each model command binds it to its executing task's reader.
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
     #[cfg(feature = "hooks")]
@@ -299,7 +300,7 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            let mut local = Self {
+            let local = Self {
                 files,
                 runtime,
                 task_files,
@@ -327,12 +328,6 @@ impl LocalHarness {
                 #[cfg(feature = "native-execution")]
                 workspace,
             };
-            if let Some(provider) = local
-                .provider
-                .bind_content(local.context_reader()?, local.limits.file_bytes)
-            {
-                local.provider = provider;
-            }
             Ok(local)
         })
     }

@@ -116,7 +116,7 @@ impl LocalHarness {
         } else {
             runtime
         };
-        let mut local = Self {
+        let local = Self {
             files,
             runtime: Arc::new(runtime),
             task_files,
@@ -144,12 +144,6 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             checkout_context: checkout.is_some(),
         };
-        if let Some(provider) = local
-            .provider
-            .bind_content(local.context_reader()?, local.limits.file_bytes)
-        {
-            local.provider = provider;
-        }
         Ok(local)
     }
 
