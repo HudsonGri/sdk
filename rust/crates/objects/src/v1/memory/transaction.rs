@@ -92,7 +92,13 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        journal.validate_bodies(next, next.object.as_ref())?;
+                        if let Some(value) = next
+                            .object
+                            .as_ref()
+                            .and_then(|change| change.value.as_ref())
+                        {
+                            journal.validate_body(&value.body)?;
+                        }
                     } else {
                         journal
                             .commit(
@@ -171,9 +177,9 @@ impl MemoryObjects {
                 .checked_sub(old_bytes)
                 .and_then(|n| n.checked_add(new_bytes))
                 .ok_or(Error::from(QuotaExceeded))?;
-            next.state.object_bytes = next
+            next.state.body_bytes = next
                 .state
-                .object_bytes
+                .body_bytes
                 .checked_sub(old_bytes)
                 .and_then(|n| n.checked_add(new_bytes))
                 .ok_or(Error::from(QuotaExceeded))?;
@@ -334,7 +340,13 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        journal.validate_bodies(next, next.object.as_ref())?;
+                        if let Some(value) = next
+                            .object
+                            .as_ref()
+                            .and_then(|change| change.value.as_ref())
+                        {
+                            journal.validate_body(&value.body)?;
+                        }
                     } else {
                         journal.commit(
                             before,

@@ -25,19 +25,14 @@ use acyclic_harness::{
 use acyclic_stream::{StreamProvider, grpc::Client};
 use serde_json::{Value, json};
 use std::{
-    io::BufRead as _,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 /// The child's configuration, passed in its environment.
 const CHILD: &str = "ACYCLIC_RESUME_CHILD";
 /// The line the child prints once its journal holds the streamed prefix.
 const JOURNALED: &str = "acyclic-resume: journaled";
-/// How long the child may take to journal its prefix. This bounds a hang. It
-/// is not a latency assertion.
-const HANG: Duration = Duration::from_secs(30);
 const INSTRUCTION: &str = "Resume after a kill.";
 const PREFIX: &str = "partial-";
 const REST: &str = "restored";
@@ -325,17 +320,27 @@ async fn child() -> TestResult {
         return Ok(());
     };
     let config: Child = serde_json::from_str(config.to_str().ok_or("child config is not UTF-8")?)?;
-    let identity = Identity::new(config.seed);
-    let stream = config.remote.connect().await?;
-    let journal = journal(stream, &config.files, &identity, true).await?;
-    executor(Arc::new(PausedPrefix {
-        journal: journal.clone(),
-        operation: identity.operation,
-        accounting: ScriptedModelProvider::new([]),
-    }))?
-    .execute(identity.input(), journal.as_ref())
-    .await?;
-    Err("the pending turn finished".into())
+    child_turn(async move {
+        let identity = Identity::new(config.seed);
+        let stream = config.remote.connect().await?;
+        let journal = journal(stream, &config.files, &identity, true).await?;
+        executor(Arc::new(PausedPrefix {
+            journal: journal.clone(),
+            operation: identity.operation,
+            accounting: ScriptedModelProvider::new([]),
+        }))?
+        .execute(identity.input(), journal.as_ref())
+        .await?;
+        Err("the pending turn finished".into())
+    })
+    .await
+}
+
+/// The child's liveness is judged where its work runs: its own progress guard
+/// sees its connection, journal and stream wakes. A stalled child returns, and
+/// its exit closes the stdout the parent follows.
+async fn child_turn(turn: impl std::future::Future<Output = TestResult>) -> TestResult {
+    super::stall::guarded(Path::new("resume child"), turn).await?
 }
 
 /// Runs a child turn on `remote`, kills it once its prefix is journaled, and
@@ -352,24 +357,23 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
         files: files.path().to_owned(),
         seed,
     })?;
-    let mut child = std::process::Command::new(std::env::current_exe()?)
+    let mut child = tokio::process::Command::new(std::env::current_exe()?)
         .args(["--exact", "resume::child", "--ignored", "--nocapture"])
         .env(CHILD, config)
         .env("RUST_TEST_THREADS", "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
         .spawn()?;
     let stdout = child.stdout.take().ok_or("child has no stdout")?;
-    let journaled = tokio::task::spawn_blocking(move || {
-        std::io::BufReader::new(stdout)
-            .lines()
-            .any(|line| line.is_ok_and(|line| line == JOURNALED))
-    });
-    let journaled = tokio::time::timeout(HANG, journaled).await;
+    // Readiness is the child's own event: its line, or end of file once it
+    // exits, including after its guard rejects a stall. No parent-side idle
+    // budget applies to work this process cannot observe.
+    let journaled = journaled(stdout).await;
     // Killed, not asked: nothing in the child runs after this point.
-    child.kill()?;
-    let status = child.wait()?;
-    if !matches!(journaled, Ok(Ok(true))) {
+    child.kill().await?;
+    let status = child.wait().await?;
+    if !journaled? {
         return Err(format!("the child exited ({status}) without journaling its prefix").into());
     }
     let identity = Identity::new(seed);
@@ -457,3 +461,19 @@ pub(super) async fn resume_unjournaled<P: StreamProvider + 'static>(stream: Arc<
     }
     Ok(())
 }
+
+async fn journaled(reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<bool> {
+    use tokio::io::AsyncBufReadExt as _;
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if line == JOURNALED {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+// Virtual-clock controls live with the other guard controls, outside the
+// deadline scan of scenario sources.
+#[path = "../support/resume_readiness_tests.rs"]
+mod readiness_tests;

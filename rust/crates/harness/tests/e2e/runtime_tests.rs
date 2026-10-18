@@ -90,7 +90,7 @@ pub(super) fn admission_capacity(count: usize) -> usize {
     ADMISSION_CAP.get().unwrap_or(count)
 }
 
-fn probe_admission(count: usize, broken: bool) -> (usize, Vec<usize>) {
+fn probe_admission(count: usize, capacity: usize, broken: bool) -> (usize, Vec<usize>) {
     use futures::{FutureExt as _, Stream as _, StreamExt as _, channel::oneshot};
     use std::{cell::Cell, pin::pin, rc::Rc, task::Context};
     struct Restore(Option<usize>);
@@ -116,7 +116,7 @@ fn probe_admission(count: usize, broken: bool) -> (usize, Vec<usize>) {
             }
         })
         .collect::<Vec<_>>();
-    let mut admitted = pin!(super::scenario_admission(cases.into_iter()));
+    let mut admitted = pin!(super::scenario_admission(cases.into_iter(), capacity));
     let mut context = Context::from_waker(futures::task::noop_waker_ref());
     assert!(admitted.as_mut().poll_next(&mut context).is_pending());
     let started = entered.get();
@@ -136,13 +136,23 @@ proptest::proptest! {
     #[test]
     fn all_blocked_cases_are_admitted_before_any_finishes(count in 9usize..32) {
         for broken in [false, true] {
-            let (started, results) = probe_admission(count, broken);
+            let (started, results) = probe_admission(count, count, broken);
             proptest::prop_assert_eq!(results, (0..count).collect::<Vec<_>>());
             proptest::prop_assert_eq!(started, if broken { 8 } else { count });
             // Both paths finish every case; only the admission assertion rejects
             // the old cap, independently of worker creation and elapsed time.
             let accepted = std::panic::catch_unwind(|| assert_eq!(started, count)).is_ok();
             proptest::prop_assert_eq!(accepted, !broken);
+        }
+    }
+
+    #[test]
+    fn admission_fills_the_requested_capacity_without_exceeding_it(count in 9usize..32, capacity in 1usize..8) {
+        for broken in [false, true] {
+            let (started, results) = probe_admission(count, capacity, broken);
+            proptest::prop_assert_eq!(results, (0..count).collect::<Vec<_>>());
+            proptest::prop_assert_eq!(started, if broken { 8 } else { capacity });
+            proptest::prop_assert_eq!(started == capacity, !broken);
         }
     }
 }

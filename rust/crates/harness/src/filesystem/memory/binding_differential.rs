@@ -13,7 +13,7 @@ type Output = (
 );
 const KEY: &str = "00000000-0000-0000-0000-000000000021";
 
-async fn initialize(old: bool, denied: bool, unbound: bool) -> State {
+async fn initialize(old: bool, denied: bool, unbound: bool, reference: bool) -> State {
     let agent = AgentId::from_bytes([7; 16]);
     let (mut host, volume, memory_store) = if old {
         original::content(KEY.to_owned(), agent, 4096, Fs::memory())
@@ -23,6 +23,16 @@ async fn initialize(old: bool, denied: bool, unbound: bool) -> State {
         MEMORY_VOLUME_KEY.set(Some(KEY));
         new_memory_content(agent, 4096, Fs::memory()).await.unwrap()
     };
+    if reference {
+        // Independently bind the original fixture at its declared volume. This
+        // does not call the candidate's memory-content constructor, and owns a
+        // separate filesystem, proof cache, stream and publisher.
+        let workspace =
+            super::super::fork_preparer_io::content_workspace(&host.provider, &volume, None)
+                .unwrap();
+        let opened = host.open(&workspace, None).await.unwrap();
+        host = host.for_workspace(&volume, opened).unwrap();
+    }
     if !old && unbound {
         // Restore the removed opens through the actual original host path.
         host = FilesystemHost::new(host.filesystem.clone(), &host.provider, None).unwrap();
@@ -99,6 +109,15 @@ fn pair(
     denied: bool,
     unbound: bool,
 ) -> [(Output, Vec<(&'static str, u64)>); 2] {
+    paired(bytes, denied, unbound, false)
+}
+
+fn paired(
+    bytes: &[Vec<u8>; 2],
+    denied: bool,
+    unbound: bool,
+    reference: bool,
+) -> [(Output, Vec<(&'static str, u64)>); 2] {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -106,34 +125,43 @@ fn pair(
             crate::executor::json::baseline::LEGACY.set(false);
         }
     }
-    let _reset = Reset;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let mut old = true;
-    differential::pair::<_, _, (&'static str, u64)>(
-        || {
-            crate::executor::json::baseline::LEGACY.set(old);
-            let state = runtime.block_on(initialize(old, denied, unbound));
-            old = false;
-            state
-        },
-        |(publisher, verifier), old| {
-            crate::executor::json::baseline::LEGACY.set(old);
-            let mut result = None;
-            let allocations = acyclic_test_support::measure(|| {
-                if let Ok(publisher) = &publisher {
-                    result = Some(runtime.block_on(exercise(publisher, &verifier, bytes)));
-                }
-            });
-            let result = match (publisher, result) {
-                (Err(error), None) | (Ok(_), Some(Err(error))) => Err(format!("{error:?}")),
-                (Ok(_), Some(Ok(result))) => Ok(result),
-                _ => unreachable!("only successful publishers execute"),
-            };
-            (result, allocations)
-        },
-    )
+    // Separate threads also isolate lazy thread-local instrumentation. Neither
+    // side inherits allocations or warmed state from the other's first write.
+    std::thread::scope(|scope| {
+        [true, false].map(|old| {
+            scope
+                .spawn(move || {
+                    let _reset = Reset;
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .unwrap();
+                    crate::executor::json::baseline::LEGACY.set(old && !reference);
+                    differential::observe::<_, _, (&'static str, u64)>(
+                        || runtime.block_on(initialize(old, denied, unbound, old && reference)),
+                        |(publisher, verifier)| {
+                            let mut result = None;
+                            let allocations = acyclic_test_support::measure(|| {
+                                if let Ok(publisher) = &publisher {
+                                    result = Some(
+                                        runtime.block_on(exercise(publisher, &verifier, bytes)),
+                                    );
+                                }
+                            });
+                            let result = match (publisher, result) {
+                                (Err(error), None) | (Ok(_), Some(Err(error))) => {
+                                    Err(format!("{error:?}"))
+                                }
+                                (Ok(_), Some(Ok(result))) => Ok(result),
+                                _ => unreachable!("only successful publishers execute"),
+                            };
+                            (result, allocations)
+                        },
+                    )
+                })
+                .join()
+                .unwrap()
+        })
+    })
 }
 
 fn check(bytes: &[Vec<u8>; 2], denied: bool) -> TestCaseResult {
@@ -180,30 +208,29 @@ proptest! {
         bytes in prop::array::uniform2(prop::collection::vec(any::<u8>(), 0..32)),
     ) {
         for denied in [false, true] { check(&bytes, denied)?; }
+        exact_for(&bytes, false)?;
     }
 }
 
 fn exact(unbound: bool) -> TestCaseResult {
     let bytes = [b"first".to_vec(), b"second".to_vec()];
-    let [(old, _), (new, trace)] = pair(&bytes, false, unbound);
-    let expected: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/filesystem/memory/binding_expected.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let actual = serde_json::json!(differential::allocation_counts(new.1));
-    prop_assert!(
-        old.0 == new.0
-            && actual == expected
-            && trace
-                .iter()
-                .filter(|(op, _)| *op == "open workspace")
-                .count()
-                == 0,
-        "exact binding allocation differs: actual={actual}, expected={expected}"
+    exact_for(&bytes, unbound)
+}
+
+fn exact_for(bytes: &[Vec<u8>; 2], unbound: bool) -> TestCaseResult {
+    let [(old, expected_trace), (new, trace)] = paired(bytes, false, unbound, true);
+    let expected = differential::allocation_counts(old.1);
+    let actual = differential::allocation_counts(new.1);
+    prop_assert_eq!(old.0, new.0, "binding outputs differ");
+    prop_assert_eq!(actual, expected, "exact binding allocation differs");
+    prop_assert_eq!(&trace, &expected_trace, "binding operation trace differs");
+    prop_assert_eq!(
+        trace
+            .iter()
+            .filter(|(op, _)| *op == "open workspace")
+            .count(),
+        0,
+        "binding performed a redundant workspace open"
     );
     Ok(())
 }
@@ -231,7 +258,7 @@ fn binding_accounting_measurements() {
     eprintln!(
         "PERF_ACCOUNTING {}",
         serde_json::json!({
-            "case": "binding", "allocations": differential::allocation_counts(new.1),
+            "case": "binding", "baseline": differential::allocation_counts(old.1), "allocations": differential::allocation_counts(new.1),
         })
     );
 }

@@ -1,6 +1,8 @@
 use super::*;
 use crate::v1::tests::get;
 
+mod body_validation;
+
 pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "recovery".into(),
@@ -469,8 +471,15 @@ fn view(state: &State) -> Result<View, Error> {
         .values()
         .flat_map(|bucket| bucket.objects.values())
         .map(|object| object.body.len())
+        .chain(
+            state
+                .uploads
+                .values()
+                .flat_map(|upload| upload.parts.values())
+                .map(|(_, body)| body.len()),
+        )
         .sum::<usize>();
-    if bytes != state.object_bytes {
+    if bytes != state.body_bytes {
         return Err(Unavailable.into());
     }
     let mut buckets = Vec::new();
