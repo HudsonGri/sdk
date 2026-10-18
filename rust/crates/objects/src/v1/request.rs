@@ -5,7 +5,10 @@ use wire::ErrorCode::InvalidArgument;
 
 /// Validates every publication before admitting a batch.
 pub fn put_batch(header: &wire::PutObjectsHeader) -> Result<(), Error> {
-    batch_count(header.objects.len(), header.encoded_len())?;
+    batch_count(
+        header.objects.len(),
+        prost::encoding::message::encoded_len(1, header),
+    )?;
     for object in &header.objects {
         put(object)?;
     }
@@ -132,6 +135,73 @@ mod batch_tests {
         framing.accept(&end).unwrap();
         assert!(framing.accept(&end).is_err());
         framing.finish().unwrap();
+    }
+
+    #[test]
+    fn batch_header_limit_includes_its_request_envelope() {
+        let mut object = header().objects.into_iter().next().unwrap();
+        object.metadata = Some(wire::ObjectMetadata {
+            content_type: "x".repeat(8192),
+            ..Default::default()
+        });
+        object.preconditions = Some(wire::Preconditions {
+            condition: Some(wire::preconditions::Condition::IfMatch("x".repeat(8192))),
+        });
+        let mut header = wire::PutObjectsHeader {
+            objects: vec![object; 1000],
+        };
+        let limit = 16 * 1024 * 1024;
+        let mut last = 0;
+        for index in 0..header.objects.len() {
+            let remaining = limit - header.encoded_len();
+            header
+                .objects
+                .get_mut(index)
+                .unwrap()
+                .metadata
+                .as_mut()
+                .unwrap()
+                .user
+                .insert("a".into(), "x".repeat(remaining.min(2047)));
+            let size = header.encoded_len();
+            if size >= limit {
+                let value = header
+                    .objects
+                    .get_mut(index)
+                    .unwrap()
+                    .metadata
+                    .as_mut()
+                    .unwrap()
+                    .user
+                    .get_mut("a")
+                    .unwrap();
+                value.truncate(value.len() - (size - limit));
+                last = index;
+                break;
+            }
+        }
+        for object in &header.objects {
+            put(object).unwrap();
+        }
+        assert!(header.encoded_len() <= limit);
+        assert!(prost::encoding::message::encoded_len(1, &header) > limit);
+        assert_eq!(
+            put_batch(&header).unwrap_err().code,
+            wire::ErrorCode::QuotaExceeded
+        );
+        let value = header
+            .objects
+            .get_mut(last)
+            .unwrap()
+            .metadata
+            .as_mut()
+            .unwrap()
+            .user
+            .get_mut("a")
+            .unwrap();
+        value.truncate(value.len() - 8);
+        assert!(prost::encoding::message::encoded_len(1, &header) <= limit);
+        put_batch(&header).unwrap();
     }
 
     #[test]

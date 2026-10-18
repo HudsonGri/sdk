@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createSourceInspector } from "./public-rpc-source.mjs";
+import { createSourceInspector, publicRpcComplete } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
 import { ObjectsService } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
@@ -24,6 +24,26 @@ missing("missing Rust-owned Actors gRPC operation", ActorsService, ActorsService
 missing("missing Actors WASM bridge", ActorsService, "CreateActor", "rust/crates/actors-wasm/src/lib.rs", s => s.replace("pub struct ActorsClient", "pub struct Removed"), "typescriptGrpcWeb");
 missing("server implementation cannot substitute for Rust client", StreamService, "Read", "rust/crates/stream/src/grpc/client.rs", s => s.replace("async fn read(", "async fn removed_read("), "rustGrpc");
 missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject", "typescript/packages/objects/src/v1.ts", s => s.replace("put(", "async removed_put("), "typescriptHttp");
+
+for (const [rpc, name] of [["PutObjects", "put_batch"], ["GetObjects", "get_batch"]]) {
+  missing(`missing Objects batch gRPC operation ${rpc}`, ObjectsService, rpc, "rust/crates/objects/src/v1/grpc.rs", s => s.replace(`async fn ${name}(`, "async fn removed_batch("), "rustGrpc");
+  test(`${rpc} advertises gRPC without an HTTP provider`, () => {
+    const method = ObjectsService.methods.find(method => method.name === rpc);
+    assert.ok(method);
+    const exposure = createSourceInspector(root)(ObjectsService, method);
+    assert.equal(exposure.rustGrpc, true);
+    assert.equal(exposure.typescriptGrpcNodeBun, true);
+    assert.equal(exposure.rustHttp, false);
+    assert.equal(exposure.typescriptHttp, false);
+    const row = { rpc: `${ObjectsService.typeName}/${rpc}`, httpOperation: null, ...exposure };
+    assert.equal(publicRpcComplete(row), true);
+    for (const field of ["rustGrpc", "typescriptGrpcNodeBun", "typescriptPackageExported"]) {
+      assert.equal(publicRpcComplete({ ...row, [field]: false }), false, field);
+    }
+    assert.equal(publicRpcComplete({ ...row, httpOperation: "v1/objects/objects/batch" }), false);
+    assert.equal(publicRpcComplete({ ...row, httpOperation: undefined }), false);
+  });
+}
 
 test("missing generated Actors operation removes both TypeScript capability flags", () => {
   const method = ActorsService.methods[0];

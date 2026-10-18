@@ -17,8 +17,6 @@ must not forward credentials. No client automatically retries a mutation.
 | buckets/delete | DeleteBucketRequest | DeleteBucketResponse |
 | objects/put | PutObjectRequest frames | ObjectInfo |
 | objects/get | GetObjectRequest | GetObjectResponse frames |
-| objects/put-batch | PutObjectsRequest frames | PutObjectsResponse |
-| objects/get-batch | GetObjectsRequest | GetObjectsResponse frames |
 | objects/head | HeadObjectRequest | HeadObjectResponse |
 | objects/delete | DeleteObjectRequest | DeleteObjectResponse |
 | objects/restore | RestoreObjectsRequest | RestoreObjectsResponse |

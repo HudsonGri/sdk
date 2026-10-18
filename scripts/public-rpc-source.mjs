@@ -20,7 +20,11 @@ function body(source, declaration) {
 
 const objectMethods = {
   PutObject: "put", GetObject: "get", HeadObject: "head", DeleteObject: "delete", ListObjects: "list", RestoreObjects: "restore",
+  PutObjects: "putBatch", GetObjects: "getBatch",
 };
+
+export const publicRpcComplete = row => row.rustGrpc && row.typescriptGrpcNodeBun && row.typescriptPackageExported &&
+  (row.httpOperation === null || (row.rustHttp && (row.rpc.startsWith("acyclic.actors.") ? row.typescriptGrpcWeb : row.typescriptHttp)));
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 const rustMethod = (source, name) => new RegExp(`^\\s*(?:pub\\s+)?async\\s+fn\\s+${name}\\s*\\(`, "m").test(source);
 const rustImpl = (source, header) => source.match(new RegExp(`${header}\\s*\\{([\\s\\S]*?)^\\}`, "m"))?.[1] ?? "";
