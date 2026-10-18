@@ -31,6 +31,8 @@ pub struct FileViews {
     stream_order: Vec<FileKey>,
     stream_positions: std::collections::BTreeMap<FileKey, (u64, usize)>,
     task_streams: std::collections::BTreeMap<(Component, u64, usize), FileKey>,
+    stream_updates: std::collections::BTreeMap<FileKey, (u64, usize)>,
+    task_updates: std::collections::BTreeMap<(Component, u64, usize), (FileKey, (u64, usize))>,
     limits: QueryViewLimits,
     segments: usize,
     pub(super) bytes: u64,
@@ -70,6 +72,16 @@ impl FileViews {
     fn stream_index_consistent(&self) -> bool {
         self.stream_positions.len() == self.task_streams.len()
             && self.stream_positions.len() == self.stream_order.len()
+            && self.stream_updates.len() == self.stream_positions.len()
+            && self.task_updates.len() == self.stream_positions.len()
+            && self
+                .task_updates
+                .iter()
+                .all(|((task, cut, ordinal), (key, position))| {
+                    matches!(key, FileKey::Task { task: owner, .. } if owner == task)
+                        && self.stream_positions.get(key) == Some(position)
+                        && self.stream_updates.get(key) == Some(&(*cut, *ordinal))
+                })
             && self
                 .task_streams
                 .iter()
@@ -105,6 +117,8 @@ impl FileViews {
             stream_order: Vec::new(),
             stream_positions: Default::default(),
             task_streams: Default::default(),
+            stream_updates: Default::default(),
+            task_updates: Default::default(),
             limits,
             segments: 0,
             bytes: 0,
@@ -192,16 +206,26 @@ impl FileViews {
     // Cursor cut plus ordinal preserves the authoritative vector order without
     // inventing a second durable clock. Both indexes are bounded by retained files.
     fn index_stream(&mut self, key: &FileKey, position: (u64, usize)) {
-        if !stream_key(key) || self.stream_positions.contains_key(key) {
+        if !stream_key(key) {
             return;
         }
         let FileKey::Task { task, .. } = key else {
             unreachable!()
         };
-        self.stream_order.push(key.clone());
-        self.stream_positions.insert(key.clone(), position);
-        self.task_streams
-            .insert((task.clone(), position.0, position.1), key.clone());
+        let first = if let Some(first) = self.stream_positions.get(key) {
+            *first
+        } else {
+            self.stream_order.push(key.clone());
+            self.stream_positions.insert(key.clone(), position);
+            self.task_streams
+                .insert((task.clone(), position.0, position.1), key.clone());
+            position
+        };
+        if let Some(old) = self.stream_updates.insert(key.clone(), position) {
+            self.task_updates.remove(&(task.clone(), old.0, old.1));
+        }
+        self.task_updates
+            .insert((task.clone(), position.0, position.1), (key.clone(), first));
     }
     fn remove_stream(&mut self, key: &FileKey) {
         if let Some(position) = self.stream_positions.remove(key) {
@@ -210,8 +234,37 @@ impl FileViews {
             };
             self.task_streams
                 .remove(&(task.clone(), position.0, position.1));
+            if let Some(old) = self.stream_updates.remove(key) {
+                self.task_updates.remove(&(task.clone(), old.0, old.1));
+            }
             self.stream_order.retain(|old| old != key);
         }
+    }
+    // Each retained head has one latest update. The range visits only heads
+    // changed since this reader's cut, even when the reader skips publications.
+    pub(super) fn text_changed_before(
+        &self,
+        task: &Component,
+        from: &FileKey,
+        since: u64,
+        channel: Channel,
+    ) -> bool {
+        #[cfg(feature = "test-support")]
+        crate::test_support::task_volume_item_examined();
+        let Some(from) = self.stream_positions.get(from) else {
+            return true;
+        };
+        use std::ops::Bound::{Excluded, Included};
+        let earliest = self.task_updates.range((
+            Excluded((task.clone(), since, usize::MAX)),
+            Included((task.clone(), u64::MAX, usize::MAX)),
+        )).inspect(|_| {
+            #[cfg(feature = "test-support")]
+            crate::test_support::task_volume_item_examined();
+        }).filter(|(_, (key, _))| !matches!(key,
+            FileKey::Task { file: TaskFile::TextHead { channel: found, .. }, .. } if *found != channel
+        )).map(|(_, (_, position))| position).min();
+        earliest.is_some_and(|position| position < from)
     }
     pub(super) fn text_files<'a>(
         &'a self,

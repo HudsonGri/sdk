@@ -20,6 +20,7 @@ pub(super) struct StreamText {
     prefix: Option<(FileKey, usize, acyclic_stream::OwnedBytes)>,
     last: Option<FileKey>,
     segments: usize,
+    cut: u64,
     turn: Option<(crate::OperationId, u64)>,
     tool_limit: usize,
     tool_lines: usize,
@@ -101,6 +102,10 @@ impl StreamText {
             .as_ref()
             .is_some_and(|source| Arc::ptr_eq(source, task.source))
             || self
+                .last
+                .as_ref()
+                .is_some_and(|last| task.text_changed_before(last, self.cut, channel))
+            || self
                 .first
                 .as_ref()
                 .is_some_and(|key| task.file(key).is_none())
@@ -155,6 +160,7 @@ impl StreamText {
         }) {
             changed = changed.min(self.boundary());
         }
+        self.cut = task.cursor.position;
         changed
     }
     pub(super) fn tool_lines(&self) -> usize {

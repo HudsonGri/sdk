@@ -59,6 +59,8 @@ proptest! {
             *followed.stream_positions.get_mut(key).unwrap() = position;
             let FileKey::Task { task, .. } = key else { unreachable!() };
             followed.task_streams.insert((task.clone(), position.0, position.1), key.clone());
+            let changed = followed.stream_updates[key];
+            followed.task_updates.get_mut(&(task.clone(), changed.0, changed.1)).unwrap().1 = position;
         }
         // Restoring derived equality rejects two equivalent production layouts.
         prop_assert_ne!(&followed.stream_positions, &reopened.stream_positions);

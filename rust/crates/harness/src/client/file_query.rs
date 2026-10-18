@@ -270,6 +270,17 @@ impl FileQueryView {
         self.storage.text_files(task, from)
     }
 
+    #[cfg(feature = "tui")]
+    pub(super) fn text_changed_before(
+        &self,
+        task: &Component,
+        from: &FileKey,
+        since: u64,
+        channel: crate::task_volume::Channel,
+    ) -> bool {
+        self.storage.text_changed_before(task, from, since, channel)
+    }
+
     /// Borrows model identities; rendering never reparses request bytes.
     pub fn models(&self) -> impl Iterator<Item = super::ModelQueryView<'_>> {
         self.models.iter().filter_map(|(key, model)| {

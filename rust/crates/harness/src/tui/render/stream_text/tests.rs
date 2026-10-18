@@ -170,6 +170,52 @@ fn decode_task(
 ) {
     decoder.update(&views.selections().next().unwrap().1.task(task), channel);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+    #[test]
+    fn interleaved_heads_render_identically_live_and_reopened(
+        text in "[a-z日€🙂]{1,8}", reasoning in any::<bool>(),
+        rest in prop::collection::vec(any::<bool>(), 0..12), batch in 1usize..5,
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use crate::{client::TaskFileClient, task_volume::TaskVolume};
+            use acyclic_stream::{MemoryStream, StreamPath};
+            let task_id=crate::TaskId::from_bytes([7;16]);
+            let task=Component::new(task_id.to_string()).unwrap();
+            let owner=crate::wire::Authority {kind:crate::wire::AggregateKind::Task as i32,id:task_id.to_string()};
+            let volume=TaskVolume::open(Arc::new(MemoryStream::default()),StreamPath::new("interleaved").unwrap()).await.unwrap();
+            let mut client=TaskFileClient::observe_task(&volume,&owner,task_id,32,4096).await.unwrap();
+            let channel=if reasoning {Channel::Reasoning} else {Channel::Text};
+            let schedule:Vec<_>=[false,true,false].into_iter().chain(rest).collect();
+            let mut live=StreamText::default();
+            let mut broken=StreamText::default();
+            let mut rows=Vec::new();
+            for (index, execution) in schedule.iter().enumerate() {
+                let mut file=FileValue::new(FileKey::Task {task:task.clone(),file:TaskFile::Chunk {
+                    turn:0,execution:crate::OperationId::from_bytes([if *execution {1}else{255};16]),sequence:index as u64}},text.as_bytes().to_vec());
+                file.channel=Some(channel);
+                volume.append(volume.head().await.unwrap(),&file).await.unwrap();
+                client.next_change().await.unwrap();
+                if index>2 && index%batch!=0 && index+1<schedule.len() {continue;}
+                let selection=client.views().selections().next().unwrap().1;
+                let query=selection.task(&task);
+                let changed=live.update(&query,channel);
+                rows.truncate(changed);
+                rows.extend(live.rows(changed));
+                // Restore the former last-head-only resume: pretend every
+                // earlier-head update is already consumed by this reader.
+                broken.cut=query.cursor.position;
+                broken.update(&query,channel);
+                let reopened=TaskFileClient::observe_task(&volume.reopen().await.unwrap(),&owner,task_id,32,4096).await.unwrap();
+                let mut replay=StreamText::default();
+                decode_task(&mut replay,reopened.views(),&task,channel);
+                assert_eq!(rows,replay.rows(0),"interleaved prefix {index}");
+                if index==2 {assert_ne!(broken.rows(0),rows,"last-head-only negative control escaped");}
+            }
+        });
+    }
+}
 #[test]
 fn restarted_execution_and_old_completion_preserve_stream_boundaries() {
     for channel in [Channel::Text, Channel::Reasoning] {
@@ -250,6 +296,84 @@ proptest! {
             assert!(broken.pending_len>0,"omitted completion negative control escaped");
             assert_ne!(broken.pending_len,replay.pending_len);
         });
+    }
+}
+
+#[test]
+fn changed_head_lookup_has_exact_work_independent_of_unrelated_history() {
+    use acyclic_test_support::{differential, measure};
+    for n in [64, 128] {
+        let [baseline, candidate] = differential::pair::<_, _, bool>(
+            || {
+                let mut views = crate::test_support::empty_client_views();
+                for index in 0..n {
+                    let mut file = FileValue::new(
+                        FileKey::Task {
+                            task: Component::new(if index % 2 == 0 { "target" } else { "other" })
+                                .unwrap(),
+                            file: TaskFile::Chunk {
+                                execution: crate::OperationId::from_bytes([2; 16]),
+                                turn: index as u64,
+                                sequence: 0,
+                            },
+                        },
+                        b"noise".to_vec(),
+                    );
+                    file.channel = Some(Channel::Text);
+                    publish(&mut views, file);
+                }
+                let task = Component::new("target").unwrap();
+                let key = |execution| FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::TextHead {
+                        execution: crate::OperationId::from_bytes([execution; 16]),
+                        turn: 0,
+                        channel: Channel::Text,
+                    },
+                };
+                for execution in [255, 1] {
+                    let mut file = FileValue::new(key(execution), b"first".to_vec());
+                    file.channel = Some(Channel::Text);
+                    publish(&mut views, file);
+                }
+                let since = views.selections().next().unwrap().1.cursor().position;
+                let mut file = FileValue::new(key(255), b"extended".to_vec());
+                file.channel = Some(Channel::Text);
+                publish(&mut views, file);
+                (views, task.clone(), key(1), since)
+            },
+            |(views, task, last, since), scan| {
+                let selection = views.selections().next().unwrap().1;
+                let query = selection.task(&task);
+                let mut rewind = false;
+                let (allocations, work) = crate::test_support::measure_task_volume_work(|| {
+                    measure(|| {
+                        if scan {
+                            for _ in selection.files().values() {
+                                crate::test_support::task_volume_item_examined();
+                            }
+                        }
+                        rewind = query.text_changed_before(&last, since, Channel::Text);
+                    })
+                });
+                differential::record(rewind);
+                (
+                    rewind,
+                    work,
+                    allocations.count_total,
+                    allocations.bytes_total,
+                )
+            },
+        );
+        // pair calls the old branch first: it deliberately restores the scan.
+        assert_eq!(baseline.1, candidate.1);
+        assert!(baseline.0.0 && candidate.0.0);
+        assert_eq!((candidate.0.1, candidate.0.2, candidate.0.3), (2, 0, 0));
+        assert_eq!(baseline.0.1, n + 4);
+        assert_ne!(
+            baseline.0.1, candidate.0.1,
+            "full-history scan negative escaped"
+        );
     }
 }
 

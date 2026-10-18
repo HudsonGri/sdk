@@ -74,6 +74,11 @@ impl ClientViews {
 }
 impl<'a> TaskQueryView<'a> {
     #[cfg(feature = "tui")]
+    pub(crate) fn text_changed_before(&self, from: &FileKey, since: u64, channel: Channel) -> bool {
+        self.selection
+            .text_changed_before(self.task, from, since, channel)
+    }
+    #[cfg(feature = "tui")]
     pub(crate) fn selection(&self) -> &'a FileQueryView {
         self.selection
     }
