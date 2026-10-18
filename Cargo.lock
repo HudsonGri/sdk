@@ -2895,6 +2895,7 @@ dependencies = [
  "acyclic-harness-providers",
  "acyclic-stream",
  "acyclic-test-support",
+ "alacritty_terminal",
  "axum",
  "clap",
  "futures",

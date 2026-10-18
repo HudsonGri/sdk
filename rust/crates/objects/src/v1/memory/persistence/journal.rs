@@ -6,31 +6,8 @@ impl Journal {
         Ok(tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
             && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
     }
-    pub(in crate::v1::memory) fn validate_bodies(
-        &self,
-        state: &State,
-        pending: Option<&PendingObject>,
-    ) -> Result<(), Error> {
-        let bodies = state
-            .buckets
-            .values()
-            .flat_map(|bucket| bucket.objects.values())
-            .map(|object| &object.body)
-            .chain(
-                state
-                    .uploads
-                    .values()
-                    .flat_map(|upload| upload.parts.values())
-                    .map(|(_, body)| body),
-            );
-        if bodies
-            .chain(
-                pending
-                    .and_then(|change| change.value.as_ref())
-                    .map(|value| &value.body),
-            )
-            .any(|body| body.len() as u64 > self.limits.maximum_object_bytes)
-        {
+    pub(in crate::v1::memory) fn validate_body(&self, body: &StoredBody) -> Result<(), Error> {
+        if body.len() as u64 > self.limits.maximum_object_bytes {
             return Err(QuotaExceeded.into());
         }
         Ok(())
@@ -135,9 +112,6 @@ impl Journal {
                     .objects
                     .get_mut(&key)
                     .ok_or(Error::from(Unavailable))?;
-                if object.body.len() as u64 > self.limits.maximum_object_bytes {
-                    return Err(Error::from(QuotaExceeded).into());
-                }
                 object.body = self.prepare_inline(&object.body, &mut inline_data, publication)?;
             }
         }
@@ -152,9 +126,6 @@ impl Journal {
             }
         }
         if let Some(value) = pending.and_then(|change| change.value.as_mut()) {
-            if value.body.len() as u64 > self.limits.maximum_object_bytes {
-                return Err(Error::from(QuotaExceeded).into());
-            }
             value.body = self.prepare_inline(&value.body, &mut inline_data, publication)?;
         }
         Ok(inline_data)
