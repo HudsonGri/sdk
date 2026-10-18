@@ -558,6 +558,19 @@ fn measure_inline_paired() -> Result<(), Box<dyn Error>> {
     let mut ratios = Vec::new();
     let mut old_total = 0;
     let mut new_total = 0;
+    let mut old_cycles_total = 0;
+    let mut new_cycles_total = 0;
+    let mut cycle_ratios = Vec::new();
+    let cycles = || {
+        #[cfg(windows)]
+        {
+            crate::native_host::YieldingFile::measurement_cycles()
+        }
+        #[cfg(not(windows))]
+        {
+            0_u64
+        }
+    };
     // Fresh independent fixtures in alternating creation order control both
     // file placement and drift. ABBA/BAAB blocks give each path equal exposure
     // to the beginning and end of each measurement window.
@@ -572,12 +585,13 @@ fn measure_inline_paired() -> Result<(), Box<dyn Error>> {
             (&second, &first)
         };
         let run = |file: &dyn DemandFile| {
+            let before = cycles();
             let started = std::time::Instant::now();
-            for round in 0..64 {
+            for round in 0..256 {
                 let (bytes, _, _) = production_read(file, (round % 16) * 4096, 4096);
                 assert_eq!(bytes.unwrap(), contents[..4096]);
             }
-            started.elapsed().as_nanos()
+            (started.elapsed().as_nanos(), cycles() - before)
         };
         run(old.as_ref());
         run(new.as_ref());
@@ -588,34 +602,59 @@ fn measure_inline_paired() -> Result<(), Box<dyn Error>> {
         };
         let mut old_ns = 0;
         let mut new_ns = 0;
+        let mut old_cycles = 0;
+        let mut new_cycles = 0;
         for baseline in order {
-            let elapsed = run(if baseline { old.as_ref() } else { new.as_ref() });
+            let (elapsed, cycles) = run(if baseline { old.as_ref() } else { new.as_ref() });
             if baseline {
                 old_ns += elapsed;
+                old_cycles += cycles;
             } else {
                 new_ns += elapsed;
+                new_cycles += cycles;
             }
         }
         old_total += old_ns;
         new_total += new_ns;
+        old_cycles_total += old_cycles;
+        new_cycles_total += new_cycles;
+        if old_cycles > 0 {
+            cycle_ratios.push(new_cycles as f64 / old_cycles as f64);
+            eprintln!(
+                "pair {pair}: old {} cycles/read, new {} cycles/read",
+                old_cycles / 512,
+                new_cycles / 512
+            );
+        }
         ratios.push(new_ns as f64 / old_ns as f64);
         eprintln!(
             "pair {pair}: old {} ns/read, new {} ns/read, ratio {:.4}",
-            old_ns / 128,
-            new_ns / 128,
+            old_ns / 512,
+            new_ns / 512,
             ratios[pair]
         );
     }
     ratios.sort_by(f64::total_cmp);
     eprintln!(
         "4 KiB ABBA/BAAB: old {} ns/read, new {} ns/read; paired median ratio {:.4}, range {:.4}..{:.4}; {} of 20 pairs faster",
-        old_total / 2560,
-        new_total / 2560,
+        old_total / 10240,
+        new_total / 10240,
         (ratios[9] + ratios[10]) / 2.0,
         ratios[0],
         ratios[19],
         ratios.iter().filter(|&&ratio| ratio <= 1.0).count()
     );
+    if !cycle_ratios.is_empty() {
+        cycle_ratios.sort_by(f64::total_cmp);
+        eprintln!(
+            "4 KiB thread CPU: old {} cycles/read, new {} cycles/read; paired median ratio {:.4}, range {:.4}..{:.4}",
+            old_cycles_total / 10240,
+            new_cycles_total / 10240,
+            (cycle_ratios[9] + cycle_ratios[10]) / 2.0,
+            cycle_ratios[0],
+            cycle_ratios[19]
+        );
+    }
     Ok(())
 }
 

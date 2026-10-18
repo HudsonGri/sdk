@@ -2,6 +2,20 @@
 use super::*;
 use windows::Win32::Storage::FileSystem::ReadFile;
 impl YieldingFile {
+    pub(crate) fn measurement_cycles() -> u64 {
+        let mut cycles = 0;
+        // SAFETY: the pseudo-handle refers to this live thread and the output
+        // points to initialized, writable storage for the duration of the call.
+        unsafe {
+            windows::Win32::System::WindowsProgramming::QueryThreadCycleTime(
+                windows::Win32::System::Threading::GetCurrentThread(),
+                &raw mut cycles,
+            )
+        }
+        .expect("query measurement thread cycles");
+        cycles
+    }
+
     pub(crate) fn baseline_read_at<W: SourceDemandReadWork>(
         &self,
         offset: u64,
