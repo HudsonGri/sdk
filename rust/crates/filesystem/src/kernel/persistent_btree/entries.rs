@@ -133,6 +133,11 @@ impl<T> Clone for Entries<'_, T> {
         *self
     }
 }
+impl<T> Default for Entries<'_, T> {
+    fn default() -> Self {
+        Self::Plain(&[])
+    }
+}
 impl<'a, T> From<&'a [T]> for Entries<'a, T> {
     fn from(values: &'a [T]) -> Self {
         Self::Plain(values)
@@ -159,6 +164,12 @@ impl<'a, T> Entries<'a, T> {
             Self::Shared(values) => values.get(index).map(|value| &value.value),
         }
     }
+    pub(crate) fn slice(self, range: std::ops::Range<usize>) -> Option<Self> {
+        match self {
+            Self::Plain(values) => values.get(range).map(Self::Plain),
+            Self::Shared(values) => values.get(range).map(Self::Shared),
+        }
+    }
     pub(crate) fn first(self) -> Option<&'a T> {
         self.get(0)
     }
@@ -178,6 +189,9 @@ impl<'a, T> Entries<'a, T> {
         mut compare: impl FnMut(&T) -> std::cmp::Ordering,
     ) -> Result<Result<usize, usize>, FsError> {
         use crate::kernel::search::binary_search_from_with_accounting;
+        if self.is_empty() && known_before == 0 {
+            return Ok(Err(0));
+        }
         match self {
             Self::Plain(values) => {
                 binary_search_from_with_accounting(values, known_before, accounting, compare)

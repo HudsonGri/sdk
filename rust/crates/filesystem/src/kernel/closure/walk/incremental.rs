@@ -309,7 +309,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         root: ObjectId,
         before: Option<ObjectId>,
     ) -> Result<(), crate::FsError> {
-        use crate::kernel::persistent_btree::Page;
+        use crate::kernel::persistent_btree::PageRef;
         Self::require_kind(root, F::kind())?;
         let mut pending: ProofVec<'_, (PendingPage<F::Key>, Option<ObjectId>)> =
             ProofVec::new(&self.meter);
@@ -346,9 +346,9 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 .map(|(bytes, id)| self.decoded_page::<F>(id, &bytes.0))
                 .transpose()?;
             drop(old_bytes);
-            let old_children = old.as_ref().and_then(|page| match page.0.as_page() {
-                Page::Internal(children) => Some(children.as_slice()),
-                Page::Leaf(_) => None,
+            let old_children = old.as_ref().and_then(|page| match page.0.view() {
+                PageRef::Internal(children) => Some(children),
+                PageRef::Leaf(_) => None,
             });
             let mut reused = before == Some(id);
             if !reused {
@@ -362,11 +362,11 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             }
             let lower = lower.as_ref().map(|key| &key.0);
             let upper = upper.as_ref().map(|key| &key.0);
-            match page.0.as_page() {
-                Page::Leaf(values) => {
+            match page.0.view() {
+                PageRef::Leaf(values) => {
                     validate_ordered_bounds(values.iter().map(F::key), lower, upper)?;
                 }
-                Page::Internal(children) => {
+                PageRef::Internal(children) => {
                     validate_ordered_bounds(
                         children.iter().map(|child| &child.first),
                         lower,
@@ -415,7 +415,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
 
     fn match_child<'c, K: Ord>(
         &self,
-        old: &'c [crate::kernel::Child<K>],
+        old: crate::kernel::persistent_btree::entries::Entries<'c, crate::kernel::Child<K>>,
         cursor: &mut usize,
         child: &crate::kernel::Child<K>,
     ) -> Result<Option<&'c crate::kernel::Child<K>>, crate::FsError> {

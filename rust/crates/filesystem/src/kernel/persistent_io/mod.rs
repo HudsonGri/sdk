@@ -5,7 +5,7 @@ use super::allocation::{
 };
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::file_read::{ReadOwned, read_store_error, release_read_allocation};
-use super::persistent_btree::{Child, Format, Page};
+use super::persistent_btree::{Child, Format, Page, PageRef};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::FsError;
 use crate::async_storage::{
@@ -39,6 +39,13 @@ pub(crate) enum PageLease<F: Format> {
 }
 
 impl<F: Format> PageLease<F> {
+    pub(crate) fn view(&self) -> PageRef<'_, F> {
+        match self.as_page() {
+            Page::Leaf(values) => PageRef::Leaf(values.into()),
+            Page::Internal(children) => PageRef::Internal(children.into()),
+        }
+    }
+
     pub(crate) fn as_page(&self) -> &Page<F> {
         match self {
             Self::Owned(page) => page,

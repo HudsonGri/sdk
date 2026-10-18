@@ -53,6 +53,8 @@ proptest! {
         mut values in prop::collection::vec(any::<u8>(), 0..65),
         cursor in any::<u8>(),
         inclusive in any::<bool>(),
+        start in 0_usize..70,
+        end in 0_usize..70,
     ) {
         values.sort_unstable();
         let cancellation = CancellationToken::new();
@@ -73,6 +75,27 @@ proptest! {
         let actual = Entries::Shared(&shared.value).partition(&mut candidate, |value| {
             actual_probes.push(*value);
             *value < cursor || (inclusive && *value == cursor)
+        }).unwrap();
+        prop_assert_eq!(actual, expected);
+        prop_assert_eq!(actual_probes, expected_probes);
+        prop_assert_eq!(candidate.spent().items_examined - before.items_examined,
+            baseline.spent().items_examined);
+        prop_assert_eq!(Entries::Shared(&shared.value).slice(start..end)
+            .map(|view| view.iter().copied().collect::<Vec<_>>()),
+            values.get(start..end).map(|slice| slice.to_vec()));
+        let mut baseline = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut expected_probes = Vec::new();
+        let expected = crate::kernel::search::binary_search_with_accounting(
+            &values, &mut baseline, |value| {
+                expected_probes.push(*value);
+                value.cmp(&cursor)
+            },
+        ).unwrap();
+        let before = candidate.spent();
+        let mut actual_probes = Vec::new();
+        let actual = Entries::Shared(&shared.value).search(0, &mut candidate, |value| {
+            actual_probes.push(*value);
+            value.cmp(&cursor)
         }).unwrap();
         prop_assert_eq!(actual, expected);
         prop_assert_eq!(actual_probes, expected_probes);

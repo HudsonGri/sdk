@@ -1,5 +1,5 @@
 use super::*;
-use crate::kernel::persistent_btree::Page;
+use crate::kernel::persistent_btree::{Page, PageRef};
 use crate::kernel::persistent_io::OwnedPage;
 
 impl<F: Format> Machine<'_, '_, F> {
@@ -21,9 +21,9 @@ impl<F: Format> Machine<'_, '_, F> {
                     .accept_internal_owned(children, logical_bytes, &mut allocation, &mut pending),
                 shared @ persistent_io::PageLease::Shared { .. } => {
                     // Keep the decoded cache's original guard through the entire callback.
-                    let result = match shared.as_page() {
-                        Page::Leaf(values) => self.accept_shared_leaf(values, &pending),
-                        Page::Internal(children) => {
+                    let result = match shared.view() {
+                        PageRef::Leaf(values) => self.accept_shared_leaf(values, &pending),
+                        PageRef::Internal(children) => {
                             self.accept_shared_internal_state(children, &mut pending)
                         }
                     };
@@ -42,7 +42,7 @@ impl<F: Format> Machine<'_, '_, F> {
 
     fn accept_shared_leaf(
         &mut self,
-        values: &[F::Value],
+        values: Entries<'_, F::Value>,
         pending: &Pending<F::Key>,
     ) -> Result<(), Failure> {
         if !self.leaf_bounds(values, pending)? {
@@ -81,7 +81,7 @@ impl<F: Format> Machine<'_, '_, F> {
 
     fn accept_shared_internal_state(
         &mut self,
-        children: &[Child<F::Key>],
+        children: Entries<'_, Child<F::Key>>,
         pending: &mut Pending<F::Key>,
     ) -> Result<(), Failure> {
         if !self.child_bounds(children, pending)? {

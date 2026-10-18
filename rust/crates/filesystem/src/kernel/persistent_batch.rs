@@ -4,7 +4,7 @@ use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSe
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io;
 use super::persistent_point::{Owned, project_failure, query_error, split_allocation};
-use super::search::{binary_search_with_accounting, partition_point_with_accounting};
+use super::search::binary_search_with_accounting;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
