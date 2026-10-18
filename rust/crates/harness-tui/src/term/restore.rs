@@ -23,8 +23,8 @@ pub struct RestoreGuard<W: Write> {
 
 /// xterm has two independent exclusive selections: reporting protocol and
 /// encoding. Both must restore the selection displaced by the session.
-const MOUSE_PROTOCOLS: [u16; 5] = [9, 1000, 1001, 1002, 1003];
-const MOUSE_ENCODINGS: [u16; 4] = [1005, 1006, 1015, 1016];
+pub(super) const MOUSE_PROTOCOLS: [u16; 5] = [9, 1000, 1001, 1002, 1003];
+pub(super) const MOUSE_ENCODINGS: [u16; 4] = [1005, 1006, 1015, 1016];
 const MOUSE_SELECTIONS: [&[u16]; 2] = [&MOUSE_PROTOCOLS, &MOUSE_ENCODINGS];
 
 impl<W: Write> RestoreGuard<W> {

@@ -174,3 +174,33 @@ fn an_already_selected_encoding_needs_no_displacement_or_reselection() {
         assert_restored(0, 1006, &bytes);
     }
 }
+
+fn assert_complete_queries(bytes: &[u8]) {
+    for mode in PROTOCOLS.into_iter().chain(ENCODINGS) {
+        let query = format!("\x1b[?{mode}$p");
+        assert_eq!(
+            bytes
+                .windows(query.len())
+                .filter(|bytes| *bytes == query.as_bytes())
+                .count(),
+            1,
+            "every exclusive mouse selection is queried exactly once"
+        );
+    }
+}
+#[test]
+fn negotiation_queries_every_exclusive_selection() {
+    assert_complete_queries(&Probe::batch(Multiplexer::None));
+}
+#[test]
+#[should_panic(expected = "every exclusive mouse selection is queried exactly once")]
+fn negative_control_omitting_a_displaced_encoding_query_is_detected() {
+    let mut batch = Probe::batch(Multiplexer::None);
+    let query = b"\x1b[?1016$p";
+    let at = batch
+        .windows(query.len())
+        .position(|bytes| bytes == query)
+        .unwrap();
+    batch.drain(at..at + query.len());
+    assert_complete_queries(&batch);
+}
