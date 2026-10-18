@@ -89,13 +89,12 @@ fuzz_target!(|bytes: &[u8]| {
         let decoded: HookOutput = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(output, decoded);
     }
-    for event in [
-        HookEvent::SessionStart,
-        HookEvent::UserPromptSubmit,
-        HookEvent::PreToolUse,
-        HookEvent::PostToolUse,
-        HookEvent::Stop,
-    ] {
+    for event in HookEvent::ALL {
+        // Each event is fired by exactly one site, and a single-event site names it.
+        assert_eq!(HookEvent::at(event.site()).filter(|fired| *fired == event).count(), 1);
+        if let Ok(fired) = HookEvent::only(event.site()) {
+            assert_eq!(fired, event);
+        }
         let mut reports = HookOutput::default();
         apply(
             &mut reports,
@@ -165,13 +164,7 @@ fuzz_target!(|bytes: &[u8]| {
     }
     // All event-specific deltas, including replacement arguments, must obey
     // the retained file bound and keep folding a following explicit denial.
-    for event in [
-        HookEvent::SessionStart,
-        HookEvent::UserPromptSubmit,
-        HookEvent::PreToolUse,
-        HookEvent::PostToolUse,
-        HookEvent::Stop,
-    ] {
+    for event in HookEvent::ALL {
         // Exercise the production ledger with arbitrary output followed by a guard.
         // This must stay bounded and cannot abandon a deny after exhaustion.
         let mut ledger = budget::Budget::new(4096).unwrap();

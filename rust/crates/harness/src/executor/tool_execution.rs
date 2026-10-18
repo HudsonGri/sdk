@@ -61,7 +61,7 @@ impl StockExecution<'_> {
             let mut output = self
                 .tool_hook(
                     operation_id,
-                    crate::hooks::HookEvent::PreToolUse,
+                    crate::hooks::HookSite::BeforeTool,
                     &invocation,
                     None,
                     started.is_some(),
@@ -431,7 +431,7 @@ impl StockExecution<'_> {
         );
         let feedback = self.tool_hook(
             identity.0,
-            crate::hooks::HookEvent::PostToolUse,
+            crate::hooks::HookSite::AfterTool,
             invocation,
             Some(result),
             false,
@@ -654,7 +654,7 @@ impl StockExecution<'_> {
         let feedback = self
             .tool_hook(
                 _operation,
-                crate::hooks::HookEvent::PostToolUse,
+                crate::hooks::HookSite::AfterTool,
                 _invocation,
                 Some(&result.0),
                 false,

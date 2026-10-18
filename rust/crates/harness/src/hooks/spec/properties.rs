@@ -37,3 +37,25 @@ proptest! {
         prop_assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
     }
 }
+
+// Every declared event is fired by exactly one site, and a single-event site
+// names it; the two-event prompt site cannot be mistaken for one.
+#[test]
+fn each_event_is_fired_by_exactly_one_site() {
+    for event in HookEvent::ALL {
+        let site = event.site();
+        assert_eq!(HookEvent::at(site).filter(|fired| *fired == event).count(), 1);
+    }
+    for (site, event) in [
+        (HookSite::BeforeTool, HookEvent::PreToolUse),
+        (HookSite::AfterTool, HookEvent::PostToolUse),
+        (HookSite::TurnEnd, HookEvent::Stop),
+    ] {
+        assert!(matches!(HookEvent::only(site), Ok(fired) if fired == event));
+    }
+    assert!(HookEvent::only(HookSite::Prompt).is_err());
+    assert_eq!(
+        HookEvent::at(HookSite::Prompt).collect::<Vec<_>>(),
+        [HookEvent::SessionStart, HookEvent::UserPromptSubmit]
+    );
+}

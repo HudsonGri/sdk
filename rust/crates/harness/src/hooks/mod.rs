@@ -14,6 +14,7 @@ mod plan;
 mod snapshot;
 mod spec;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
+pub(crate) use spec::HookSite;
 mod input;
 pub use input::HookInput;
 

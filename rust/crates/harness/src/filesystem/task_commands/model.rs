@@ -125,10 +125,7 @@ where
                 // Hook dispatch precedes provider dispatch. Cancellation must
                 // retain a claimed hook even when no model request was sent.
                 let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
-                for event in [
-                    crate::hooks::HookEvent::SessionStart,
-                    crate::hooks::HookEvent::UserPromptSubmit,
-                ] {
+                for event in crate::hooks::HookEvent::at(crate::hooks::HookSite::Prompt) {
                     let issued = ToolContext::new(
                         Arc::clone(&owned),
                         operation,
@@ -184,7 +181,7 @@ where
         .await?;
         #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
         let (pipeline, hooks) = if command.summary_source.is_none() {
-            BoundedContentFuture::new(io, || {
+            match BoundedContentFuture::new(io, || {
                 self.prompt_hooks(
                     pipeline,
                     &tools,
@@ -195,6 +192,12 @@ where
                 )
             })?
             .await?
+            {
+                super::hooks::PromptHooks::Ready(pipeline, hooks) => (pipeline, hooks),
+                super::hooks::PromptHooks::Blocked(message) => {
+                    return ready(Outcome::<Value>::Failed { message }, io);
+                }
+            }
         } else {
             (pipeline, None)
         };

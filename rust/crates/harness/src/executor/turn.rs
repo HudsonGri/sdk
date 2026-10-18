@@ -18,7 +18,11 @@ impl StockExecution<'_> {
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
         let mut text = String::new();
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut stop_active = false;
         for step in 0..input.max_steps {
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let answer_start = text.len();
             let model_events = self
                 .run_model_step(
                     journal,
@@ -36,6 +40,19 @@ impl StockExecution<'_> {
                 &mut prior_messages,
             )?;
             if calls.is_empty() {
+                // A Stop block continues the turn only within its step budget.
+                #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(reason) =
+                    Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
+                    && step + 1 < input.max_steps
+                {
+                    // The superseded answer moves into history; the turn's
+                    // output is the answer given after the hook's reason.
+                    let answer = text.split_off(answer_start);
+                    self.continue_after_stop(&mut prior_messages, &answer, reason)?;
+                    stop_active = true;
+                    continue;
+                }
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),

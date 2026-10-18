@@ -146,10 +146,11 @@ proptest::proptest! {
         let file = json!({"volume":{"provider":{"namespace":"fixture","family":"filesystem","version":"1"},
             "id":"project","class":"project","owner":{"kind":"project","id":"fixture"}},
             "path":"result","version":"v1","descriptor":{"sha256":vec![0;32],"byte_length":0,"media_type":"text/plain"},"display_name":"result"});
-        for outcome in [ExpectedOutcome::Succeeded,ExpectedOutcome::Indeterminate] {
+        for outcome in [ExpectedOutcome::Succeeded,ExpectedOutcome::Indeterminate,ExpectedOutcome::Failed] {
             let completed = match outcome {
                 ExpectedOutcome::Succeeded => json!({"Succeeded":file}),
                 ExpectedOutcome::Indeterminate => json!({"Indeterminate":{"operation_id":operation}}),
+                ExpectedOutcome::Failed => json!({"Failed":{"message":"expected failure"}}),
             };
             let frames = vec![json!({"kind":"declared"}),json!({"kind":"admitted"}),json!({"kind":"completed","operation_id":operation,"outcome":completed,"fence":null})];
             let check = |frames:&[serde_json::Value]| super::local_execution::check_frames(&expected,frames,operation,outcome);
@@ -158,7 +159,7 @@ proptest::proptest! {
             proptest::prop_assert!(check(&duplicate).is_err());
             proptest::prop_assert!(check(&frames[..2]).is_err());
             let mut failed = frames.clone();failed[2]["outcome"]=json!({"Failed":{"message":"expected failure"}});
-            proptest::prop_assert!(check(&failed).is_err());
+            proptest::prop_assert_eq!(check(&failed).is_ok(), outcome == ExpectedOutcome::Failed);
             let mut foreign = id;foreign[0]^=1;
             proptest::prop_assert!(super::local_execution::check_frames(&expected,&frames,acyclic_harness::OperationId::from_bytes(foreign),outcome).is_err());
             let other = if outcome == ExpectedOutcome::Succeeded {ExpectedOutcome::Indeterminate} else {ExpectedOutcome::Succeeded};

@@ -229,13 +229,37 @@ async fn session_only_hooks_preserve_the_existing_tool_execution_identity() -> R
     Ok(())
 }
 
+/// Integers that tool artifacts represent exactly; larger magnitudes are
+/// rejected below, before any tool dispatch.
+const EXACT_JSON_INTEGER: std::ops::Range<i64> = -(1 << 53) + 1..(1 << 53);
+
+#[tokio::test]
+async fn inexact_hook_replacements_are_rejected_before_dispatch() -> Result<()> {
+    for replacement in [1 << 53, i64::MIN] {
+        let (executor, _, tool, hooks) =
+            fixture(0, "inexact".into(), replacement, false, false).await?;
+        let result = executor.execute(input(), hooks.journal.as_ref()).await;
+        assert!(
+            matches!(&result, Err(Error::Invalid(message)) if message.contains("inexact number")),
+            "{result:?}"
+        );
+        assert_eq!(tool.0.load(Ordering::SeqCst), 0);
+    }
+    // Control: the largest exact magnitude is dispatched.
+    let (executor, _, tool, hooks) =
+        fixture(0, "exact".into(), EXACT_JSON_INTEGER.end - 1, false, false).await?;
+    executor.execute(input(), hooks.journal.as_ref()).await?;
+    assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
 #[test]
 fn provider_requests_preserve_guard_results_across_every_tool_hook_cut() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(Error::process_io)?;
-    proptest!(|(cut in 0u8..4, reason in "[a-z]{1,32}", replacement in any::<i64>(), denied in any::<bool>())| {
+    proptest!(|(cut in 0u8..4, reason in "[a-z]{1,32}", replacement in EXACT_JSON_INTEGER, denied in any::<bool>())| {
         runtime.block_on(async {
             let (executor, provider, tool, hooks) = fixture(cut, reason.clone(), replacement, denied, false).await?;
             let first = executor.execute(input(), hooks.journal.as_ref()).await;

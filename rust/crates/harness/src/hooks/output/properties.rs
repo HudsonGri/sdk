@@ -4,13 +4,7 @@ use proptest::prelude::*;
 use serde_json::json;
 
 fn event(index: usize) -> HookEvent {
-    [
-        HookEvent::SessionStart,
-        HookEvent::PreToolUse,
-        HookEvent::PostToolUse,
-        HookEvent::Stop,
-        HookEvent::UserPromptSubmit,
-    ][index]
+    HookEvent::ALL[index]
 }
 
 fn json_value() -> impl Strategy<Value = Value> {
@@ -123,7 +117,7 @@ proptest! {
     // including strings requiring escaping and nested replacement tool arguments.
     #[test]
     fn structured_output_round_trip_preserves_decisions(
-        index in 0usize..5,
+        index in 0usize..HookEvent::ALL.len(),
         continue_run in any::<bool>(),
         deny in any::<bool>(),
         permission in 0usize..3,
@@ -181,7 +175,7 @@ proptest! {
     // context or argument mutation; apply then implements the failure policy.
     #[test]
     fn invalid_fields_are_atomic_and_obey_failure_policy(
-        index in 0usize..5,
+        index in 0usize..HookEvent::ALL.len(),
         field in 0usize..11,
         invalid in prop_oneof![Just(Value::Null), any::<bool>().prop_map(Value::Bool), any::<i64>().prop_map(|n| json!(n))],
         reason in ".{0,48}",
@@ -220,7 +214,7 @@ proptest! {
     // first denial. This is the runner's deterministic config-order merge rule.
     #[test]
     fn first_denial_is_monotonic(
-        index in 0usize..5,
+        index in 0usize..HookEvent::ALL.len(),
         bytes in prop::collection::vec(any::<u8>(), 0..512),
         code in prop::option::of(-3i32..5),
         block_failure in any::<bool>(),

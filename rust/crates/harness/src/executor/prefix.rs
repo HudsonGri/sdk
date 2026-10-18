@@ -64,7 +64,7 @@ impl StockExecution<'_> {
             let mut guard = self
                 .tool_hook(
                     input.operation_id,
-                    crate::hooks::HookEvent::PreToolUse,
+                    crate::hooks::HookSite::BeforeTool,
                     &invocation,
                     None,
                     true,
@@ -114,7 +114,7 @@ impl StockExecution<'_> {
             } else {
                 self.tool_hook(
                     input.operation_id,
-                    crate::hooks::HookEvent::PostToolUse,
+                    crate::hooks::HookSite::AfterTool,
                     &invocation,
                     None,
                     true,
