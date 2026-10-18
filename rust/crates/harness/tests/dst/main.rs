@@ -1,4 +1,5 @@
 //! Seeded production replays: compare bytes, never rewrite identities or errors.
+#![cfg(not(target_arch = "wasm32"))]
 use acyclic_harness::{
     Error, LocalHarness, Result, client,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
@@ -13,6 +14,7 @@ use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod digest;
 mod driver;
+mod features;
 mod manifest;
 mod process;
 mod recovery;

@@ -17,7 +17,7 @@ build = "build.rs"
 [[test]]
 name = "dst"
 path = "tests/dst/main.rs"
-required-features = ["filesystem-local", "test-support"]
+required-features = ["filesystem-local", "native-execution", "test-support"]
 
 [[test]]
 name = "client-mention-attachments"
