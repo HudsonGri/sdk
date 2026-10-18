@@ -52,8 +52,9 @@ pub(crate) async fn resolve(
     if source.len() as u64 > maximum {
         return Ok(message_error(ResolutionError::TooLarge, source));
     }
+    // Two recognition passes each inspect markdown exclusions and directives.
     io.charge(WorkCounters {
-        items_examined: (source.len() as u64).saturating_mul(2),
+        items_examined: (source.len() as u64).saturating_mul(4),
         ..Default::default()
     })?;
     let mut count = 0;
