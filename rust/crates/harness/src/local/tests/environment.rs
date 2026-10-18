@@ -124,3 +124,64 @@ async fn checkout_turns_carry_environment_facts_and_discovered_skills() -> Resul
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn skill_discovery_exhausts_pages_and_refreshes_after_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let root = directory.path();
+    // Empty skill directories must not consume an arbitrary discovery limit.
+    for index in 0..129 {
+        std::fs::create_dir_all(root.join(format!(".agents/skills/a{index:03}")))
+            .map_err(super::super::storage)?;
+    }
+    write(
+        root,
+        ".agents/skills/z-last/SKILL.md",
+        "---\nname: last\ndescription: original\n---\nBODY",
+    )?;
+    let provider = scripted([
+        ScriptedTurn::Text("first".into()),
+        ScriptedTurn::Text("second".into()),
+    ]);
+    let config = || {
+        crate::test_support::local_harness_config(root, (model()?, provider.clone()))
+            .map(|config| config.state_directory(state.path()).clock(Arc::new(Clock)))
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let operation = OperationId::new();
+    let task = super::context::admitted(harness.submit(operation, "first").await?)?;
+    let (reference, before) = super::context::manifest(&harness, operation).await?;
+    assert!(
+        before
+            .conventions
+            .iter()
+            .any(|text| text.contains("- last: original"))
+    );
+    write(
+        root,
+        ".agents/skills/z-last/SKILL.md",
+        "---\nname: last\ndescription: replacement\n---\nBODY",
+    )?;
+    harness.disconnect_unfinished().await?;
+    let reopened = LocalHarness::open(config()?).await?;
+    let (retained, captured) = super::context::manifest(&reopened, operation).await?;
+    assert_eq!(retained, reference);
+    assert_eq!(captured, before);
+    assert_eq!(reopened.resume(task).await?.text, "first");
+    assert_eq!(reopened.run("second").await?.text, "second");
+    let requests = provider.requests();
+    for (index, expected, absent) in [
+        (0, "- last: original", "replacement"),
+        (1, "- last: replacement", "original"),
+    ] {
+        let (texts, _) = system_text(&requests[index]);
+        let skills = texts
+            .iter()
+            .find(|text| text.starts_with("<skills_instructions>"))
+            .unwrap();
+        assert!(skills.contains(expected));
+        assert!(!skills.contains(absent));
+    }
+    reopened.close().await
+}

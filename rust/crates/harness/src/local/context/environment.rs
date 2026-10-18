@@ -2,7 +2,10 @@
 //!
 //! The block is rendered once into the turn's context manifest, so a resumed
 //! or replayed turn sees the facts that were true when it was admitted.
+use super::text::push_value;
 use std::path::Path;
+mod porcelain;
+use porcelain::summarize;
 use std::time::Duration;
 
 /// Porcelain bytes summarized; larger repositories report a partial count.
@@ -51,15 +54,7 @@ pub(super) fn frame(cwd: &str, os: &str, now_unix_millis: u64, git: Option<&str>
         text.push_str("  <");
         text.push_str(tag);
         text.push('>');
-        for character in value.chars() {
-            match character {
-                '&' => text.push_str("&amp;"),
-                '<' => text.push_str("&lt;"),
-                '>' => text.push_str("&gt;"),
-                '\n' | '\r' => text.push(' '),
-                character => text.push(character),
-            }
-        }
+        push_value(&mut text, value);
         text.push_str("</");
         text.push_str(tag);
         text.push_str(">\n");
@@ -130,66 +125,61 @@ async fn git_status(cwd: &Path) -> Option<String> {
     Some(summarize(&collected.0, collected.1))
 }
 
-/// Summarizes NUL-separated porcelain v1 records with a branch header.
-pub(super) fn summarize(porcelain: &[u8], truncated: bool) -> String {
-    let mut records = porcelain.split(|byte| *byte == 0);
-    let mut branch = None;
-    let [mut staged, mut modified, mut untracked, mut conflicted] = [0_u64; 4];
-    let mut complete = !truncated;
-    while let Some(record) = records.next() {
-        if let Some(header) = record.strip_prefix(b"## ") {
-            branch = Some(String::from_utf8_lossy(header).into_owned());
-            continue;
-        }
-        let [index, tree, b' ', ..] = record else {
-            // An empty tail follows the final NUL; anything else is a cut record.
-            complete &= record.is_empty();
-            continue;
-        };
-        match (index, tree) {
-            (b'?', b'?') => untracked += 1,
-            (b'!', b'!') => {}
-            (b'D', b'D') | (b'A', b'A') | (b'U', _) | (_, b'U') => conflicted += 1,
-            _ => {
-                staged += u64::from(*index != b' ');
-                modified += u64::from(*tree != b' ');
-            }
-        }
-        // A rename or copy carries its source path as the next record.
-        if matches!(index, b'R' | b'C') {
-            records.next();
-        }
-    }
-    let mut summary = branch.map_or_else(String::new, |branch| format!("branch {branch}"));
-    let mut counts = Vec::new();
-    for (count, label) in [
-        (staged, "staged"),
-        (modified, "modified"),
-        (untracked, "untracked"),
-        (conflicted, "conflicted"),
-    ] {
-        if count != 0 {
-            counts.push(format!("{count} {label}"));
-        }
-    }
-    if !summary.is_empty() {
-        summary.push_str("; ");
-    }
-    if counts.is_empty() && complete {
-        summary.push_str("clean");
-    } else {
-        summary.push_str(&counts.join(", "));
-    }
-    if !complete {
-        summary.push_str(if counts.is_empty() { "" } else { ", " });
-        summary.push_str("more changes not counted");
-    }
-    summary
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn reference_date(millis: u64) -> String {
+        let mut days = millis / 86_400_000;
+        let mut year = 1970 + (days / 146_097) * 400;
+        days %= 146_097;
+        let leap = |year: u64| {
+            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+        };
+        while days >= if leap(year) { 366 } else { 365 } {
+            days -= if leap(year) { 366 } else { 365 };
+            year += 1;
+        }
+        let mut month = 1;
+        for length in [
+            31,
+            if leap(year) { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
+        ] {
+            if days < length {
+                break;
+            }
+            days -= length;
+            month += 1;
+        }
+        format!("{year:04}-{month:02}-{:02}", days + 1)
+    }
+
+    proptest! {
+        #[test]
+        fn dates_match_independent_calendar(millis in any::<u64>()) {
+            prop_assert_eq!(date(millis), reference_date(millis));
+        }
+
+        #[test]
+        fn windows_display_preserves_drive_and_share_paths(drive in "[A-Z]", suffix in "[a-zA-Z0-9\\\\]{0,60}") {
+            let local = format!(r"{drive}:\{suffix}");
+            prop_assert_eq!(display(Path::new(&format!(r"\\?\{local}"))), local.clone());
+            prop_assert_eq!(display(Path::new(&local)), local);
+            let share = format!(r"server\share\{suffix}");
+            prop_assert_eq!(display(Path::new(&format!(r"\\?\UNC\{share}"))), format!(r"\\{share}"));
+        }
+    }
 
     #[test]
     fn dates_follow_the_gregorian_calendar_in_utc() {
@@ -212,7 +202,7 @@ mod tests {
         assert_eq!(summarize(b"## main\0", false), "branch main; clean");
         assert_eq!(
             summarize(b"## main\0?? a\0?? b", true),
-            "branch main; 2 untracked, more changes not counted"
+            "branch main; 1 untracked, more changes not counted"
         );
         // A rename's source path is not a change, even when it reads like one.
         assert_eq!(summarize(b"R  new.rs\0?? old\0", false), "1 staged");
