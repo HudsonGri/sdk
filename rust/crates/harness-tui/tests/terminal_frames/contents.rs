@@ -36,7 +36,8 @@ fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool, 
             }
         })
         .unwrap();
-    let mut recovered = device.take().concat();
+    let mut writes = device.take();
+    let recovered = writes.last_mut().unwrap();
     if !supported {
         assert!(
             !recovered.windows(3).any(|bytes| bytes == b"\x1b[r"),
@@ -44,12 +45,31 @@ fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool, 
         );
     }
     if !KEEP_CELLS {
-        // Preserve real outside writes, checked presentation, attributes and
-        // cursor recovery; omit only the retained cell's recovery paint.
+        // Preserve outside writes, checked presentation and all recovery commands;
+        // omit only the retained cell, failing the same complete-byte assertion.
         let at = recovered.iter().rposition(|&byte| byte == b'Z').unwrap();
         recovered.remove(at);
     }
-    bytes.extend(recovered);
+    let mut expected_frame = b"\x1b[?2026h\x1b[0m".to_vec();
+    if during_render && supported {
+        expected_frame.extend_from_slice(b"\x1b[r");
+    }
+    expected_frame.extend_from_slice(b"\x1b[2J");
+    expected_frame.extend_from_slice(&expected);
+    expected_frame.extend_from_slice(b"\x1b[?2026l");
+    assert_eq!(
+        recovered, &expected_frame,
+        "outside output must not invalidate retained screen contents"
+    );
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|write| write.starts_with(b"\x1b[?2026h"))
+            .count(),
+        1,
+        "one complete recovery frame reaches the device"
+    );
+    bytes.extend(writes.concat());
     assert_eq!(
         screen(&bytes),
         screen(&expected),
