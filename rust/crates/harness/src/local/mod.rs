@@ -90,6 +90,9 @@ pub struct LocalHarness {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(feature = "native-execution")]
     checkout_context: bool,
+    /// Dates the environment block in each turn's context manifest.
+    #[cfg(feature = "native-execution")]
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
 impl LocalHarness {
@@ -297,7 +300,7 @@ impl LocalHarness {
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
                 concurrency: config.concurrency,
-                clock: config.clock,
+                clock: config.clock.clone(),
             })
             .await?;
             let mut local = Self {
@@ -327,6 +330,8 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
+                #[cfg(feature = "native-execution")]
+                clock: config.clock,
             };
             if let Some(provider) = local
                 .provider
