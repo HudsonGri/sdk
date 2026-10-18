@@ -7,6 +7,26 @@ use crate::{
 };
 
 #[tokio::test]
+async fn headless_embedded_binding_keeps_bounded_unsupported_image_fallback() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::new(directory.path(), (model()?, text())).without_default_tools(),
+    )
+    .await?;
+    let commands =
+        crate::client::CommandSession::open_local(&harness, uuid::Uuid::new_v4(), 65_536, 128)
+            .await?;
+    assert_eq!(
+        commands
+            .state(CommandFileRoot::Config, "image-input.json")?
+            .unwrap()["models"]["scripted/test"],
+        serde_json::to_value(crate::model::ImageInput::default()).unwrap(),
+    );
+    drop(commands);
+    harness.close().await
+}
+
+#[tokio::test]
 async fn wrapper_only_image_initialization_is_detected_negative_control() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = Arc::new(

@@ -15,9 +15,9 @@ impl LocalHarness {
         if OMIT_IMAGE_POLICY.with(std::cell::Cell::get) {
             return Ok(());
         }
-        let Some(policy) = self.provider.image_input(&self.model)? else {
-            return Ok(());
-        };
+        // Unsupported models still accept bounded attachments for the provider's
+        // text fallback; declaring admission does not claim native image support.
+        let policy = self.provider.image_input(&self.model)?.unwrap_or_default();
         policy.validate()?;
         let name = format!("{}/{}", self.model.provider, self.model.name);
         let mut catalog = files
