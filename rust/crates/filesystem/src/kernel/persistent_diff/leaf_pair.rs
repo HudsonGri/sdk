@@ -43,7 +43,7 @@ pub(super) fn compare<F: Format, const PREFIX: bool, const RESET: bool>(
     maximum: usize,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<(), FsError> {
+) -> Result<bool, FsError> {
     let mut left = shared_leaf(left)
         .ok_or(FsError::InvalidDiff)?
         .iter()
@@ -59,6 +59,9 @@ pub(super) fn compare<F: Format, const PREFIX: bool, const RESET: bool>(
     };
     let (mut before_cursor, mut after_cursor) = (initial, initial);
     while left.peek().is_some() || right.peek().is_some() {
+        if exceeds_bound(values.value.len(), maximum) {
+            return Ok(true);
+        }
         accounting.charge(WorkCounters {
             items_examined: 1,
             ..WorkCounters::UNCHARGED
@@ -103,5 +106,18 @@ pub(super) fn compare<F: Format, const PREFIX: bool, const RESET: bool>(
             }
         }
     }
-    Ok(())
+    Ok(values.value.len() > maximum)
+}
+
+fn exceeds_bound(count: usize, maximum: usize) -> bool {
+    #[cfg(all(
+        test,
+        feature = "memory",
+        not(acyclic_fs_loom),
+        not(target_arch = "wasm32")
+    ))]
+    if super::tests::borrowed::restore_unbounded_pair() {
+        return false;
+    }
+    count > maximum
 }

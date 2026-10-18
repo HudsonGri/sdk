@@ -6,14 +6,19 @@ use std::cell::Cell;
 
 thread_local! {
     static RESTORE_CLONES: Cell<bool> = const { Cell::new(false) };
+    static RESTORE_UNBOUNDED_PAIR: Cell<bool> = const { Cell::new(false) };
 }
 pub(crate) fn restore_clones() -> bool {
     RESTORE_CLONES.get()
+}
+pub(crate) fn restore_unbounded_pair() -> bool {
+    RESTORE_UNBOUNDED_PAIR.get()
 }
 struct Restore;
 impl Drop for Restore {
     fn drop(&mut self) {
         RESTORE_CLONES.set(false);
+        RESTORE_UNBOUNDED_PAIR.set(false);
     }
 }
 
@@ -255,6 +260,40 @@ fn compare<F: Format, const EARLY_EQUAL: bool>(
     }
 }
 
+fn bounded_pair<F: Format>(before: &[F::Value], after: &[F::Value], maximum: u32, broken: bool)
+where
+    F::Key: std::fmt::Debug,
+    F::Value: std::fmt::Debug,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    for native in [false, true] {
+        let [((old, _, _), old_trace), ((new, _, _), new_trace)] = differential::pair::<_, _, Event>(
+            || runtime.block_on(initialize::<F>(before, after)),
+            |fixture, baseline| {
+                RESTORE_UNBOUNDED_PAIR.set(broken && !baseline);
+                run::<F, true>(
+                    &runtime,
+                    fixture,
+                    baseline,
+                    if baseline { 128 } else { maximum },
+                    native,
+                )
+            },
+        );
+        let mut expected = old.unwrap();
+        let maximum = maximum as usize;
+        expected.1 = expected.0.len() > maximum;
+        expected.0.truncate(maximum);
+        expected.2.truncate(2 * maximum);
+        let actual = new.expect("bounded paired diff must truncate rather than fail allocation");
+        assert_eq!(actual, expected);
+        assert_eq!(new_trace, old_trace);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     #[test]
@@ -275,6 +314,31 @@ proptest! {
         compare::<FileTableFormat, true>(&records(&before), &records(&after), 128, widths);
         }
     }
+
+    #[test]
+    fn bounded_proof_leaf_matches_the_complete_old_diff_prefix(
+        before in prop::collection::btree_map(0_u8..32, 1_u8..4, 0..25),
+        after in prop::collection::btree_map(0_u8..32, 1_u8..4, 0..25),
+        maximum in 1_u32..33,
+    ) {
+        let trees = |values: &std::collections::BTreeMap<u8,u8>| values.iter().map(|(&key, &value)| entry(&format!("key-{key:02}"), value).unwrap()).collect::<Vec<_>>();
+        bounded_pair::<TreeFormat>(&trees(&before), &trees(&after), maximum, false);
+        let records = |values: &std::collections::BTreeMap<u8,u8>| values.iter().map(|(&key, &value)| { let mut record=file_record(key).unwrap(); record.link_count=u64::from(value); record }).collect::<Vec<_>>();
+        bounded_pair::<FileTableFormat>(&records(&before), &records(&after), maximum, false);
+    }
+}
+
+#[test]
+#[should_panic(expected = "bounded paired diff must truncate rather than fail allocation")]
+fn removed_pair_bound_breaks_the_same_complete_diff_prefix_property() {
+    let before = (0..8)
+        .map(|key| file_record(key).unwrap())
+        .collect::<Vec<_>>();
+    let mut after = before.clone();
+    for record in &mut after {
+        record.link_count = 2;
+    }
+    bounded_pair::<FileTableFormat>(&before, &after, 1, true);
 }
 
 fn allocation_pin(baseline: bool) {

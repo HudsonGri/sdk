@@ -160,7 +160,7 @@ async fn diff_with_accounting<
                         let retired_right = right.retire(accounting);
                         retired_left?;
                         retired_right?;
-                        compared?;
+                        truncated |= compared?;
                     } else if let (Some(left_children), Some(right_children)) = (
                         internal_children(&left.value),
                         internal_children(&right.value),
