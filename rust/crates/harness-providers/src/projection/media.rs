@@ -119,7 +119,10 @@ pub(super) fn file_part<'a>(
     allowed: bool,
     text_files: &mut crate::files::FileText,
 ) -> Result<Item<'a>> {
-    if matches!(policy, FileProjectionPolicy::BoundedFull) {
+    if matches!(
+        policy,
+        FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_)
+    ) {
         return Ok(text_part(
             provider.config.adapter,
             &text_files.project(file, policy)?,

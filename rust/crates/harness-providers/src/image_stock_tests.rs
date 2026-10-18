@@ -274,7 +274,11 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
         } else {
             ModelContent::Text("question".into())
         };
-        let provider = Arc::new(provider);
+        let stages = Arc::new(probe::Stages::default());
+        let provider = Arc::new(probe::Probe {
+            provider,
+            stages: stages.clone(),
+        });
         let command = ModelTaskCommand {
             summary_source: None,
             context_manifest: ContextManifest::default()
@@ -384,7 +388,8 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
             runtime
                 .commands()
                 .with_model(&model, provider.clone(), &policy, Some(&io))?;
-        let (attempt, custody) = runtime
+        let before_resume = work.receipt().items_examined;
+        let result = runtime
             .resume_task_with_native_work(
                 lease,
                 recovery,
@@ -392,7 +397,12 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
                 if with_images { 1 } else { 2 },
                 &work,
             )
-            .await?;
+            .await;
+        eprintln!(
+            "{adapter:?} image items: prepared={before_resume}, first={}, provider={stages:?}",
+            work.receipt().items_examined - before_resume,
+        );
+        let (attempt, custody) = result?;
         assert!(custody.work().shares_allocation_context(&work));
         let attempt = if with_images {
             let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = attempt else {
@@ -487,7 +497,8 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
                 runtime
                     .commands()
                     .with_model(&model, provider, &policy, Some(&next_io))?;
-            let (attempt, custody) = runtime
+            let before_resume = next.receipt().items_examined;
+            let result = runtime
                 .resume_task_with_native_work(
                     recovered,
                     history.into_custody()?,
@@ -495,7 +506,12 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
                     1,
                     &next,
                 )
-                .await?;
+                .await;
+            eprintln!(
+                "{adapter:?} image recovery items: prepared={before_resume}, second={}, provider={stages:?}",
+                next.receipt().items_examined - before_resume,
+            );
+            let (attempt, custody) = result?;
             assert!(custody.work().shares_allocation_context(&next));
             drop(custody);
             attempt
