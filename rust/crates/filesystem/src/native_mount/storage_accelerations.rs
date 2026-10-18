@@ -92,7 +92,7 @@ impl ProbeDirectory {
     fn create(root: &Path) -> Result<Self, std::io::Error> {
         use std::time::UNIX_EPOCH;
 
-        let nonce = super::clock::Clock::capture()
+        let nonce = crate::native_mount::clock::Clock::capture()
             .now()
             .duration_since(UNIX_EPOCH)
             .map_err(std::io::Error::other)?
