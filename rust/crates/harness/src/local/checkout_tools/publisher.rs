@@ -5,9 +5,10 @@ use crate::conversation::{
 };
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
+mod pin;
 
-fn publication_operation(operation: OperationId, path: &str) -> acyclic_fs::OperationId {
-    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-publication/v2");
+fn path_operation(domain: &str, operation: OperationId, path: &str) -> acyclic_fs::OperationId {
+    let mut hash = blake3::Hasher::new_derive_key(domain);
     hash.update(&operation.into_bytes());
     hash.update(path.as_bytes());
     let mut identity = [0; 16];
@@ -211,6 +212,9 @@ impl CheckoutPublisher {
                 .source
                 .as_ref()
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+            if mount.view.source.is_none() {
+                pin::path(view, operation, &relative, maximum).await?;
+            }
             let (file, bytes, _) = self
                 .writer_for(&mount.view.volume, workspace)?
                 .current(operation, &relative, maximum, window, None)?
@@ -260,7 +264,11 @@ impl CheckoutPublisher {
             &self.tools.workspace.path,
             self.tools.workspace.identity,
             &self.tools.workspace.store,
-            publication_operation(operation, file.path()),
+            path_operation(
+                "acyclic.local.checkout-publication/v2",
+                operation,
+                file.path(),
+            ),
             from,
             to,
             &|| std::future::ready(Ok(())),

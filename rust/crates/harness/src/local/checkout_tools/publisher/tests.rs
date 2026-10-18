@@ -6,8 +6,25 @@ async fn fixture() -> Result<(
     LocalHarness,
     CheckoutPublisher,
 )> {
+    fixture_with_source(None).await
+}
+
+async fn fixture_with_source(
+    source: Option<(&str, &[u8])>,
+) -> Result<(
+    tempfile::TempDir,
+    tempfile::TempDir,
+    LocalHarness,
+    CheckoutPublisher,
+)> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
+    if let Some((path, bytes)) = source {
+        let target = directory.path().join(path);
+        std::fs::create_dir_all(target.parent().unwrap()).map_err(storage)?;
+        std::fs::write(target, bytes).map_err(storage)?;
+        std::fs::write(directory.path().join("untouched.txt"), b"unselected").map_err(storage)?;
+    }
     let model = Model::new(
         "scripted".into(),
         "publication".into(),
@@ -319,7 +336,11 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         directory.path(),
         publisher.tools.workspace.identity,
         &publisher.tools.workspace.store,
-        publication_operation(operation, original.path()),
+        path_operation(
+            "acyclic.local.checkout-publication/v2",
+            operation,
+            original.path(),
+        ),
         head.clone(),
         head,
         &|| std::future::ready(Ok(())),
@@ -390,11 +411,12 @@ proptest::proptest! {
         path in "[a-z]{1,16}(/[a-z]{1,16}){0,3}",
     ) {
         let original = OperationId::from_bytes(operation);
-        let first = publication_operation(original, &path);
-        proptest::prop_assert_eq!(first, publication_operation(original, &path));
-        proptest::prop_assert_ne!(first, publication_operation(original, &format!("{path}x")));
+        let first = path_operation("acyclic.local.checkout-publication/v2", original, &path);
+        proptest::prop_assert_eq!(first, path_operation("acyclic.local.checkout-publication/v2", original, &path));
+        proptest::prop_assert_ne!(first, path_operation("acyclic.local.checkout-read/v1", original, &path));
+        proptest::prop_assert_ne!(first, path_operation("acyclic.local.checkout-publication/v2", original, &format!("{path}x")));
         let mut other = operation; other[0] ^= 1;
-        proptest::prop_assert_ne!(first, publication_operation(OperationId::from_bytes(other), &path));
+        proptest::prop_assert_ne!(first, path_operation("acyclic.local.checkout-publication/v2", OperationId::from_bytes(other), &path));
     }
 }
 
@@ -489,4 +511,91 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             .is_err()
     );
     Ok(())
+}
+
+async fn source_path_is_pinned(path: &str, body: &[u8]) -> Result<()> {
+    let (directory, _state, harness, publisher) = fixture_with_source(Some((path, body))).await?;
+    let (file, bytes) = publisher
+        .current_file(OperationId::new(), path, 1024, None)
+        .await?;
+    assert_eq!(bytes.as_ref(), body);
+    assert_eq!(
+        std::fs::read(directory.path().join(path)).map_err(storage)?,
+        body
+    );
+    let (again, _) = publisher
+        .current_file(OperationId::new(), path, 1024, None)
+        .await?;
+    assert_eq!(
+        again, file,
+        "an authored path must not publish a second generation"
+    );
+    let grant = crate::conversation::ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &harness.signed,
+        &harness.project,
+        "",
+        &mut None,
+    )?;
+    assert_eq!(
+        harness
+            .files
+            .read_content(&file, &grant, 1024, None)
+            .await?
+            .as_ref(),
+        body
+    );
+    let view = harness.workspace.as_ref().unwrap().view();
+    let stop = acyclic_fs::CancellationToken::new();
+    let head = view
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .await
+        .map_err(storage)?
+        .value;
+    assert!(matches!(
+        head.stat("/untouched.txt", acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+            .await,
+        Err(acyclic_fs::OperationFailure {
+            error: acyclic_fs::WorkspaceError::NotFound,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    // Initial lazy source files become durable references one path at a time;
+    // repetition does not author again and unrelated files stay unmaterialized.
+    #[test]
+    fn initial_source_reads_pin_only_the_selected_path(
+        name in "[a-z]{1,12}", nested in proptest::prelude::any::<bool>(), body in "[a-zλ\n]{0,64}",
+    ) {
+        let path = format!("{}{name}.txt", if nested { "nested/" } else { "" });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(source_path_is_pinned(&path, body.as_bytes())).unwrap();
+    }
+}
+
+#[test]
+fn negative_control_detects_a_lazy_path_without_promotion() {
+    pin::OMIT.with(|flag| flag.set(true));
+    let detected = std::panic::catch_unwind(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(source_path_is_pinned("initial.txt", b"source bytes"))
+            .unwrap();
+    });
+    pin::OMIT.with(|flag| flag.set(false));
+    let panic = detected.expect_err("reading only authored files must fail the source-path oracle");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("NotFound"), "{message}");
 }
