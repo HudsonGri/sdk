@@ -42,11 +42,13 @@ proptest! {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
-    // The skill catalog bounds tokens by bytes: with byte-level BPE a token
-    // covers at least one byte. Each provider's tokenizer fixture must charge a
-    // rendered block no more than its JSON-string bytes, quotes excluded.
+    // Contract-level model, not a provider tokenizer: the fixture counter
+    // charges one token per encoded byte, as a byte-level BPE bound would.
+    // Under that model a rendered block costs no more than its JSON-string
+    // bytes, quotes excluded. Admission itself rests on the counting contract
+    // (`contract_tests`), never on this model.
     #[test]
-    fn rendered_skill_catalogs_cost_no_more_tokens_than_bytes(
+    fn byte_model_counter_charges_a_catalog_at_most_its_bytes(
         skills in prop::collection::vec(("[a-z]{1,8}", "\\PC{1,60}", "[ -~é]{1,30}"), 1..24),
         budget in 512u64..8192,
     ) {

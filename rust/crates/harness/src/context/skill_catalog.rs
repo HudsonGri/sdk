@@ -96,12 +96,12 @@ pub(crate) const CATALOG_SHARE_DIVISOR: u64 = 20;
 
 /// The catalog's token allowance for one model: 5% of its usable input.
 ///
-/// Bytes bound tokens without a provider round trip. Every supported provider
-/// tokenizes with byte-level BPE (or byte-fallback SentencePiece), where each
-/// token covers at least one UTF-8 byte of the text it encodes. A block whose
-/// JSON-string bytes, which are never fewer than its UTF-8 bytes, fit this
-/// allowance therefore costs at most this many tokens. The per-provider
-/// tokenizer fixtures enforce the assumption in `acyclic-harness-providers`.
+/// The block is sized in bytes, without a provider round trip; this sizes the
+/// catalog's share and is not what keeps a request within capacity. Admission
+/// counts the complete request, catalog included, with the selected
+/// provider's counter, whose contract is to report at least the input tokens
+/// the provider charges, and compacts or rejects a request that does not fit
+/// (`acyclic-harness-providers` `counting::contract_tests`).
 #[must_use]
 pub(crate) fn token_allowance(context_tokens: u32, reserve_tokens: u32) -> u64 {
     u64::from(context_tokens.saturating_sub(reserve_tokens)) / CATALOG_SHARE_DIVISOR
