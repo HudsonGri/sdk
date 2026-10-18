@@ -10,6 +10,13 @@ use std::path::PathBuf;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 mod paused;
+// The e2e runner's progress guard: a stalled follow fails typed, never on a clock.
+#[path = "../support/progress_guard.rs"]
+mod progress_guard;
+#[path = "../support/progress_registry.rs"]
+mod progress_registry;
+#[path = "../e2e/stall.rs"]
+mod stall;
 
 fn observation_path(actor: &str) -> TestResult<StreamPath> {
     let scope = serde_json::to_vec(&["staging", "00000000-0000-4000-8000-0000000000e1", actor])?;
@@ -28,11 +35,12 @@ async fn followed_observation(
     from: u64,
     accept: impl Fn(&wire::ActorObservation) -> bool,
 ) -> TestResult<(wire::ActorObservation, u64)> {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let session = streams.session_client()?;
-        let mut follow = session.follow(observation_path(actor_id)?, from).await?;
+    let session = streams.session_client()?;
+    let path = observation_path(actor_id)?;
+    let followed = async {
+        let mut follow = session.follow(path, from).await?;
         let mut next = from;
-        while let Some(record) = follow.next().await {
+        while let Some(record) = stall::waiting("actor observation", follow.next()).await {
             let record = record?;
             assert_eq!(
                 record.sequence, next,
@@ -43,12 +51,14 @@ async fn followed_observation(
             assert_eq!(actor.actor_id, actor_id);
             eprintln!("Cloud5326 observation {}: {actor:?}", record.sequence);
             if accept(&actor) {
-                return Ok((actor, next));
+                return TestResult::Ok((actor, next));
             }
         }
         Err("observation Session ended before the required snapshot".into())
-    })
-    .await?
+    };
+    stall::guarded(std::path::Path::new(actor_id), followed)
+        .await
+        .map_err(|stalled| format!("observation follow: {stalled}"))?
 }
 const ACTOR: &str = "e2e-actor";
 const EVENTS: &str = "e2e-root/actor-events";

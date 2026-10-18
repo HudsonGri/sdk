@@ -34,8 +34,11 @@ fn deadlines(source: &str) -> Vec<String> {
 fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut sources = Vec::new();
-    for entry in std::fs::read_dir(tests.join("e2e"))? {
-        sources.push(entry?.path());
+    // The live Actors qualification shares the same rule and progress guard.
+    for directory in ["e2e", "local_cloud_actors"] {
+        for entry in std::fs::read_dir(tests.join(directory))? {
+            sources.push(entry?.path());
+        }
     }
     // The shared support modules main.rs includes by path.
     // The single infrastructure guard and its virtual-clock controls live in
@@ -61,7 +64,7 @@ fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
     assert!(sources.len() > 40, "scanned only {} sources", sources.len());
     assert!(
         found.is_empty(),
-        "wall-clock deadlines in e2e sources:\n{}",
+        "wall-clock deadlines in live qualification sources:\n{}",
         found.join("\n")
     );
     Ok(())
@@ -80,5 +83,11 @@ fn the_scan_rejects_each_former_deadline_shape() {
         "::from_secs("
     );
     assert_eq!(deadlines(&wrapped).len(), 2);
+    // The former Actors observation follow deadline.
+    let observation = format!(
+        "    {time}timeout(std::time::Duration{}10), async {{",
+        "::from_secs("
+    );
+    assert_eq!(deadlines(&observation).len(), 1);
     assert!(deadlines("drivers::run(case).await?;").is_empty());
 }
