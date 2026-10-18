@@ -738,11 +738,12 @@ pub(crate) fn within_bounds<K: Ord>(
         && !matches!((last, upper), (Some(last), Some(upper)) if last >= upper)
 }
 
-pub(crate) fn leaf_within<F: Format>(
-    values: &[F::Value],
+pub(crate) fn leaf_within<'a, F: Format>(
+    values: impl Into<entries::Entries<'a, F::Value>>,
     lower: Option<&F::Key>,
     upper: Option<&F::Key>,
 ) -> bool {
+    let values = values.into();
     within_bounds(
         values.first().map(F::key),
         values.last().map(F::key),
@@ -751,11 +752,12 @@ pub(crate) fn leaf_within<F: Format>(
     )
 }
 
-pub(crate) fn children_within<K: Ord>(
-    children: &[Child<K>],
+pub(crate) fn children_within<'a, K: Ord + 'a>(
+    children: impl Into<entries::Entries<'a, Child<K>>>,
     lower: Option<&K>,
     upper: Option<&K>,
 ) -> bool {
+    let children = children.into();
     let (first, last) = (children.first(), children.last());
     within_bounds(
         first.map(|child| &child.first),

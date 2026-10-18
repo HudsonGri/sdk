@@ -194,15 +194,13 @@ impl<'a, T> Entries<'a, T> {
         accounting: &mut KernelAccounting<'_>,
         mut before: impl FnMut(&T) -> bool,
     ) -> Result<usize, FsError> {
-        use std::cmp::Ordering;
-        let (Ok(index) | Err(index)) = self.search(0, accounting, |value| {
-            if before(value) {
-                Ordering::Less
-            } else {
-                Ordering::Greater
+        use crate::kernel::search::partition_point_with_accounting;
+        match self {
+            Self::Plain(values) => partition_point_with_accounting(values, accounting, before),
+            Self::Shared(values) => {
+                partition_point_with_accounting(values, accounting, |entry| before(&entry.value))
             }
-        })?;
-        Ok(index)
+        }
     }
 }
 

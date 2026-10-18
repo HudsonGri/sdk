@@ -47,4 +47,38 @@ proptest! {
         shared.retire(&mut accounting).unwrap();
         prop_assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
     }
+
+    #[test]
+    fn shared_partitions_preserve_slice_results_probes_and_charges(
+        mut values in prop::collection::vec(any::<u8>(), 0..65),
+        cursor in any::<u8>(),
+        inclusive in any::<bool>(),
+    ) {
+        values.sort_unstable();
+        let cancellation = CancellationToken::new();
+        let mut baseline = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut expected_probes = Vec::new();
+        let expected = crate::kernel::search::partition_point_with_accounting(
+            &values, &mut baseline, |value| {
+                expected_probes.push(*value);
+                *value < cursor || (inclusive && *value == cursor)
+            },
+        ).unwrap();
+        let mut candidate = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut owned = Owned::allocate(values.len(), &mut candidate).unwrap();
+        owned.value.extend_from_slice(&values);
+        let (shared, _) = share_values(owned, |_| 0, &mut candidate).unwrap();
+        let before = candidate.spent();
+        let mut actual_probes = Vec::new();
+        let actual = Entries::Shared(&shared.value).partition(&mut candidate, |value| {
+            actual_probes.push(*value);
+            *value < cursor || (inclusive && *value == cursor)
+        }).unwrap();
+        prop_assert_eq!(actual, expected);
+        prop_assert_eq!(actual_probes, expected_probes);
+        prop_assert_eq!(candidate.spent().items_examined - before.items_examined,
+            baseline.spent().items_examined);
+        shared.retire(&mut candidate).unwrap();
+        prop_assert_eq!(candidate.standalone_parts().unwrap().0.live_bytes(), 0);
+    }
 }

@@ -4,10 +4,10 @@ use super::allocation::{
     AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet,
 };
 use super::list::{DirectoryReadError as Error, DirectoryReadFailure as Failure};
+use super::persistent_btree::entries::Entries;
 use super::persistent_btree::{Child, Format, children_within, leaf_within};
 use super::persistent_io;
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
-use super::search::partition_point_with_accounting;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
@@ -410,11 +410,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok(bytes)
     }
 
-    fn leaf_bounds(
+    fn leaf_bounds<'b>(
         &mut self,
-        values: &[F::Value],
+        values: impl Into<Entries<'b, F::Value>>,
         pending: &Pending<F::Key>,
     ) -> Result<bool, Failure> {
+        let values = values.into();
         let examined = WorkCounters {
             items_examined: if values.is_empty() { 0 } else { 2 },
             ..WorkCounters::default()
@@ -431,11 +432,12 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok(within)
     }
 
-    fn child_bounds(
+    fn child_bounds<'b>(
         &mut self,
-        children: &[Child<F::Key>],
+        children: impl Into<Entries<'b, Child<F::Key>>>,
         pending: &Pending<F::Key>,
     ) -> Result<bool, Failure> {
+        let children = children.into();
         let examined = WorkCounters {
             items_examined: if children.is_empty() { 0 } else { 2 },
             ..WorkCounters::default()
@@ -452,12 +454,16 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         Ok(within)
     }
 
-    fn value_start(&mut self, values: &[F::Value]) -> Result<usize, Failure> {
+    fn value_start<'b>(
+        &mut self,
+        values: impl Into<Entries<'b, F::Value>>,
+    ) -> Result<usize, Failure> {
+        let values = values.into();
         let bound = self.bound;
         if matches!(bound, Bound::Unbounded) {
             return Ok(0);
         }
-        let result = partition_point_with_accounting(values, self.accounting, |value| {
+        let result = values.partition(self.accounting, |value| {
             let key = F::key(value);
             match bound {
                 Bound::Included(cursor) => key < cursor,
@@ -468,14 +474,16 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         result.map_err(|error| self.failure(error))
     }
 
-    fn child_start(&mut self, children: &[Child<F::Key>]) -> Result<usize, Failure> {
+    fn child_start<'b>(
+        &mut self,
+        children: impl Into<Entries<'b, Child<F::Key>>>,
+    ) -> Result<usize, Failure> {
+        let children = children.into();
         let cursor = match self.bound {
             Bound::Included(cursor) | Bound::Excluded(cursor) => cursor,
             Bound::Unbounded => return Ok(0),
         };
-        let result = partition_point_with_accounting(children, self.accounting, |child| {
-            child.first <= *cursor
-        });
+        let result = children.partition(self.accounting, |child| child.first <= *cursor);
         result
             .map(|index| index.saturating_sub(1))
             .map_err(|error| self.failure(error))
