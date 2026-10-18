@@ -137,6 +137,23 @@ fn durable_bytes(directory: &Path) -> Result<Vec<u8>> {
     serde_json::to_vec(&files).map_err(storage)
 }
 
+fn integer_array(root: &serde_json::Value) -> bool {
+    let mut pending = vec![root];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Array(items) => {
+                if !items.is_empty() && items.iter().all(serde_json::Value::is_number) {
+                    return true;
+                }
+                pending.extend(items);
+            }
+            serde_json::Value::Object(fields) => pending.extend(fields.values()),
+            _ => (),
+        }
+    }
+    false
+}
+
 fn prompt<'a>(
     harness: &'a Arc<LocalHarness>,
     prompt: &'a str,
@@ -164,6 +181,13 @@ fn prompt<'a>(
         assert_eq!(entry(connection.finish(outcome)).await?.exit_code(), 0);
         assert_eq!(jsonl.last(), Some(&b'\n'), "incomplete JSONL frame");
         let text = std::str::from_utf8(&jsonl).map_err(storage)?;
+        for line in text.lines() {
+            let frame: serde_json::Value = serde_json::from_str(line).map_err(storage)?;
+            assert!(
+                !integer_array(&frame),
+                "F17: integer-array bytes on the wire"
+            );
+        }
         let mut lines = text.lines();
         client::jsonl::parse_snapshot(lines.next().expect("missing initial frame"))?;
         let mut completed = false;
@@ -335,7 +359,7 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
 }
 
 #[test]
-fn seeded_headless_entrypoint_replays_complete_jsonl() -> Result<()> {
+fn seeded_live_f17_jsonl_never_emits_byte_arrays() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -346,6 +370,15 @@ fn seeded_headless_entrypoint_replays_complete_jsonl() -> Result<()> {
         let second = replay(71, false, true).await?;
         same_trace(&first, &second).expect("headless same seed diverged");
         assert!(!first.jsonl.is_empty(), "headless output bypassed");
+        // F17's old production route derived serde directly from the stored
+        // snapshot. The independent wire oracle must reject that same route.
+        let text = std::str::from_utf8(&first.jsonl).map_err(storage)?;
+        let snapshot = client::jsonl::parse_snapshot(text.lines().next().expect("initial frame"))?;
+        let mutant = serde_json::to_value(snapshot).map_err(storage)?;
+        assert!(
+            integer_array(&mutant),
+            "F17: bypassing the production wire codec escaped the oracle"
+        );
         Ok(())
     })
 }
