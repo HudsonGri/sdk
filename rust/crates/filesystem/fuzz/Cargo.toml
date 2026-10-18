@@ -75,3 +75,10 @@ path = "fuzz_targets/encoder_work.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "session_fs"
+path = "fuzz_targets/session_fs.rs"
+test = false
+doc = false
+bench = false
