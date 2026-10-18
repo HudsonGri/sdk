@@ -10,6 +10,7 @@ mod capability;
 mod durable;
 pub use durable::{
     flush_file_all, flush_file_data, rename_file, truncate_file, write_file, write_file_all,
+    write_file_with,
 };
 mod destination;
 pub(crate) use destination::ReadDestination;

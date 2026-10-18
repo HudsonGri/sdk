@@ -7,9 +7,12 @@ use acyclic_harness::{
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
 };
-use acyclic_native_runtime::testing::{DurableWrite, Schedule};
+use acyclic_native_runtime::testing::DurableWrite;
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
+
+mod driver;
+mod recovery;
 
 // Keep each simulator layer independent of the production future's layout.
 type EntryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -189,12 +192,12 @@ fn prompt<'a>(
     })
 }
 
-fn scenario(
+fn scenario<'a>(
+    directory: &'a Path,
     headless: bool,
-) -> EntryFuture<'static, Result<(tempfile::TempDir, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>> {
+) -> EntryFuture<'a, Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>> {
     entry(async move {
         // The independently initialized stores and settings never discover HOME.
-        let directory = tempfile::tempdir().map_err(storage)?;
         let reference =
             ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(
@@ -204,11 +207,9 @@ fn scenario(
             VolumeOwner::Project("dst".into()),
             &mut None,
         )?;
-        let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
-            directory.path().join("filesystem"),
-        ))
-        .await
-        .map_err(storage)?;
+        let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.join("filesystem")))
+            .await
+            .map_err(storage)?;
         FilesystemHost::new(fs, &reference, None)?
             .create_volume(&volume)
             .await?;
@@ -224,11 +225,11 @@ fn scenario(
         ]));
         let config = || -> Result<_> {
             Ok(local_harness_config(
-                directory.path().join("filesystem"),
+                directory.join("filesystem"),
                 (model.clone(), provider.clone()),
             )?
             .volume(volume.clone())
-            .state_directory(directory.path().join("state")))
+            .state_directory(directory.join("state")))
         };
         let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
         let mut jsonl = prompt(&harness, "finish this turn", "done", headless).await?;
@@ -261,7 +262,6 @@ fn scenario(
             .ok_or_else(|| Error::Invalid("missing final snapshot".into()))?
             .files;
         Ok((
-            directory,
             serde_json::to_vec(&provider.requests()).map_err(storage)?,
             serde_json::to_vec(&provider.dispatches()).map_err(storage)?,
             serde_json::to_vec(&files).map_err(storage)?,
@@ -273,40 +273,17 @@ fn scenario(
 fn replay(seed: u64, erase_source: bool, headless: bool) -> EntryFuture<'static, Result<Trace>> {
     entry(async move {
         // Negative control removes seeded execution, preserving real barriers.
-        let (schedule, mut events) = if erase_source {
-            Schedule::new()
-        } else {
-            Schedule::seeded(seed)
+        let mut driver = driver::Driver::new((!erase_source).then_some(seed), None);
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let result = driver.run(scenario(directory.path(), headless)).await;
+        let driver::Outcome::Completed(result) = result else {
+            panic!("uncut replay crashed");
         };
-        let mut turn = entry(schedule.scope(scenario(headless)));
-        let mut boundaries = Vec::new();
-        let (directory, requests, dispatches, files, jsonl) = loop {
-            tokio::select! {
-                biased;
-                event = events.recv() => {
-                    let event = event.ok_or_else(|| Error::Invalid("lost boundary driver".into()))?;
-                    boundaries.push((event.name.into(), event.detail.to_string()));
-                    event.release();
-                },
-                result = &mut turn => break result?,
-            }
-        };
-        drop(turn);
-        loop {
-            tokio::select! {
-                biased;
-                event = events.recv() => {
-                    let event = event.ok_or_else(|| Error::Invalid("lost drain driver".into()))?;
-                    boundaries.push((event.name.into(), event.detail.to_string()));
-                    event.release();
-                },
-                () = schedule.drained() => break,
-            }
-        }
+        let (requests, dispatches, files, jsonl) = result?;
         Ok(Trace {
-            polls: schedule.polls(),
-            boundaries,
-            writes: schedule.durable_writes(),
+            polls: driver.schedule.polls(),
+            boundaries: driver.boundaries,
+            writes: driver.schedule.durable_writes(),
             requests,
             dispatches,
             files,

@@ -84,6 +84,49 @@ fn every_write_cut_preserves_its_exact_prefix_and_cause() {
     }
 }
 
+#[test]
+fn physical_write_accounting_precedes_acknowledgement_loss() {
+    for fault in [
+        DurableFault::Before,
+        DurableFault::After,
+        DurableFault::Torn(2),
+        DurableFault::Failed,
+        DurableFault::DiskFull,
+    ] {
+        let (schedule, _) = Schedule::seeded(71);
+        schedule.cut_at(0, fault);
+        let mut file = tempfile::tempfile().unwrap();
+        let mut operations = 0;
+        let mut transferred = 0;
+        let result = runtime().block_on(schedule.scope(async {
+            crate::write_file_with(b"retained", |bytes| {
+                let result = file.write(bytes);
+                operations += 1;
+                transferred += result.as_ref().copied().unwrap_or(0);
+                result
+            })
+        }));
+        let expected = match fault {
+            DurableFault::After => 8,
+            DurableFault::Torn(count) => count,
+            _ => 0,
+        };
+        assert_eq!(transferred, expected);
+        assert_eq!(operations, usize::from(expected != 0));
+        assert_eq!(file.metadata().unwrap().len(), transferred as u64);
+        assert_eq!(
+            schedule.durable_writes()[0].transferred,
+            (operations != 0).then_some(transferred)
+        );
+        assert_eq!(
+            schedule.storage_fault().unwrap().fault,
+            fault,
+            "crash cause disappeared before reopen"
+        );
+        assert_eq!(result.is_ok(), matches!(fault, DurableFault::Torn(_)));
+    }
+}
+
 fn native_control_fault(fault: DurableFault, forget_context: bool) {
     let mut original = tempfile::tempfile().unwrap();
     original.write_all(b"retained").unwrap();
