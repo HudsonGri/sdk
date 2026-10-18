@@ -266,3 +266,7 @@ impl<'a, T> IntoIterator for Entries<'a, T> {
         self.iter()
     }
 }
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[path = "../tests/persistent_btree/entry_custody.rs"]
+mod custody_models;
