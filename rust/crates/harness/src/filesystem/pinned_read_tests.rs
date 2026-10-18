@@ -4,6 +4,7 @@ use proptest::prelude::*;
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 mod legacy;
+pub(super) mod retained;
 
 async fn fixture(bytes: &[u8]) -> Result<(Arc<Host>, FileRef)> {
     let provider = ProviderRef::new("pinned".into(), "filesystem".into(), "2".into(), &mut None)?;
