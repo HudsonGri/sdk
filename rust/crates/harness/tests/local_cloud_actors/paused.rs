@@ -131,7 +131,7 @@ struct Configured {
     max_attempts: u32,
 }
 
-async fn configure(remote: &Remote, bearer: &str) -> TestResult {
+async fn configure(remote: &Remote, bearer: &str, max_attempts: u32) -> TestResult {
     let channel = tonic::transport::Endpoint::from_shared(remote.endpoint.clone())?
         .tls_config(tonic::transport::ClientTlsConfig::new().ca_certificate(
             tonic::transport::Certificate::from_pem(std::fs::read(&remote.ca_file)?),
@@ -142,7 +142,7 @@ async fn configure(remote: &Remote, bearer: &str) -> TestResult {
     client.ready().await?;
     let mut request = tonic::Request::new(Configure {
         actor_id: ID.into(),
-        max_attempts: Some(1),
+        max_attempts: Some(max_attempts),
     });
     request
         .metadata_mut()
@@ -156,7 +156,7 @@ async fn configure(remote: &Remote, bearer: &str) -> TestResult {
             tonic_prost::ProstCodec::default(),
         )
         .await?;
-    assert_eq!(response.into_inner().max_attempts, 1);
+    assert_eq!(response.into_inner().max_attempts, max_attempts);
     Ok(())
 }
 
@@ -226,7 +226,7 @@ pub(super) async fn qualify() -> TestResult {
         .actor
         .ok_or("created actor missing")?;
     assert_eq!(created.actor_id, ID);
-    configure(remote, &bearer).await?;
+    configure(remote, &bearer, 1).await?;
     let boundary = observed.tail(observation_path(ID)?).await?;
     source.append(append(b"poison")).await?;
     let (before, next) = followed_observation(&observed, ID, boundary, |actor| {
@@ -237,7 +237,7 @@ pub(super) async fn qualify() -> TestResult {
     })
     .await?;
     subscriptions(&before, &[paused()])?;
-    configure(remote, &bearer).await?;
+    configure(remote, &bearer, 2).await?;
     // One public read after the acknowledged Configure, never an Inspect polling loop.
     let configured = actors
         .inspect_actor(wire::InspectActorRequest {
