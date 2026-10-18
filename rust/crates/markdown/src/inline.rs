@@ -53,8 +53,7 @@ impl Inline {
         if self.rows.closed() {
             return None;
         }
-        let classify =
-            foreign || row.is_some() || self.rows.foreign_breaks() && appended.contains('\n');
+        let classify = foreign || row.is_some();
         #[cfg(test)]
         let classify = classify || REPLAY_ROWS.get() && appended.contains('\n');
         #[cfg(test)]
