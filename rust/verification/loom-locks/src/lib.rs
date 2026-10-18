@@ -138,6 +138,9 @@ impl<'ast> Names<'ast> {
                 | ("rc", "Rc" | "Weak")
                 | ("sync", "Arc" | "Weak")
                 | ("marker", "PhantomData")
+                | ("default", "Default")
+                | ("convert", "From" | "Into" | "TryFrom" | "TryInto")
+                | ("mem", "take")
                 | (
                     "collections",
                     "VecDeque" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
@@ -163,6 +166,14 @@ impl<'ast> Names<'ast> {
                         | "f64"
                 )
         )
+    }
+
+    fn standard_trait(&self, spelling: &str) -> bool {
+        self.standard(spelling)
+            && matches!(
+                spelling.rsplit("::").next(),
+                Some("Default" | "From" | "Into" | "TryFrom" | "TryInto")
+            )
     }
 
     fn declare(&mut self, name: &str) {
@@ -300,6 +311,11 @@ impl<'ast> Names<'ast> {
 }
 
 impl<'ast> Visit<'ast> for Names<'ast> {
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        self.declare(&crate::name(&item.ident));
+        visit::visit_item_trait(self, item);
+    }
+
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         self.declare(&crate::name(&item.ident));
         visit::visit_item_mod(self, item);

@@ -22,7 +22,6 @@ const EMPTY: [&str; 9] = [
     "PhantomData",
     "Weak",
 ];
-const TRAITS: [&str; 5] = ["Default", "From", "Into", "TryFrom", "TryInto"];
 const INFERRED: [&str; 5] = ["default", "from", "into", "try_from", "try_into"];
 const GENERIC: [&str; 4] = ["new", "default", "from", "try_from"];
 const PLAIN: [&str; 22] = [
@@ -350,7 +349,8 @@ impl<'ast> Finder<'_, 'ast> {
             .map(|segment| crate::name(&segment.ident))
             .collect::<Vec<_>>()
             .join("::");
-        if matches!(spelling.as_str(), "std::mem::take" | "core::mem::take")
+        if (self.names.standard(&spelling)
+            && matches!(spelling.as_str(), "std::mem::take" | "core::mem::take"))
             || (segments.len() == 1
                 && (INFERRED.contains(&name.as_str()) || GENERIC.contains(&name.as_str())))
         {
@@ -360,9 +360,11 @@ impl<'ast> Finder<'_, 'ast> {
             return false;
         };
         let owner_name = crate::name(&owner.ident);
-        (INFERRED.contains(&name.as_str())
-            && TRAITS.contains(&owner_name.rsplit("::").next().unwrap_or(&owner_name)))
-            || (name == "take" && owner_name == "mem")
+        let owner_path = spelling
+            .rsplit_once("::")
+            .map(|(owner, _)| owner)
+            .unwrap_or("");
+        (INFERRED.contains(&name.as_str()) && self.names.standard_trait(owner_path))
             || (segments.len() == 2
                 && self.generic(&owner_name)
                 && GENERIC.contains(&name.as_str()))
@@ -390,7 +392,7 @@ impl<'ast> Finder<'_, 'ast> {
                     .map(|segment| crate::name(&segment.ident))
                     .collect::<Vec<_>>()
                     .join("::");
-                if !TRAITS.contains(&owner.rsplit("::").next()?) {
+                if !self.names.standard_trait(&owner) {
                     return None;
                 }
             }
