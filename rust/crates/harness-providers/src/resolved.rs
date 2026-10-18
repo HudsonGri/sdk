@@ -15,7 +15,7 @@ pub struct ResolvedModel {
     pub(crate) model: Model,
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
-    pub(crate) key: Option<String>,
+    pub(crate) key: Option<Arc<str>>,
     pub(crate) transport: Arc<dyn HttpTransport>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_count: crate::codex_count::Counter,
