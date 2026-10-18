@@ -552,6 +552,75 @@ fn held_file_reads_have_one_uninitialized_read() {
 /// demand::native_read_tests::measure -- --ignored --nocapture`.
 #[test]
 #[ignore = "measurement"]
+fn measure_inline_paired() -> Result<(), Box<dyn Error>> {
+    let runtime = runtime();
+    let contents = vec![37_u8; 128 * 1024];
+    let mut ratios = Vec::new();
+    let mut old_total = 0;
+    let mut new_total = 0;
+    // Fresh independent fixtures in alternating creation order control both
+    // file placement and drift. ABBA/BAAB blocks give each path equal exposure
+    // to the beginning and end of each measurement window.
+    for pair in 0..20 {
+        let first_old = pair % 2 == 0;
+        let (_first_dir, _first_source, first) = held_mode(&runtime, &contents, false, first_old)?;
+        let (_second_dir, _second_source, second) =
+            held_mode(&runtime, &contents, false, !first_old)?;
+        let (old, new) = if first_old {
+            (&first, &second)
+        } else {
+            (&second, &first)
+        };
+        let run = |file: &dyn DemandFile| {
+            let started = std::time::Instant::now();
+            for round in 0..64 {
+                let (bytes, _, _) = production_read(file, (round % 16) * 4096, 4096);
+                assert_eq!(bytes.unwrap(), contents[..4096]);
+            }
+            started.elapsed().as_nanos()
+        };
+        run(old.as_ref());
+        run(new.as_ref());
+        let order = if first_old {
+            [true, false, false, true]
+        } else {
+            [false, true, true, false]
+        };
+        let mut old_ns = 0;
+        let mut new_ns = 0;
+        for baseline in order {
+            let elapsed = run(if baseline { old.as_ref() } else { new.as_ref() });
+            if baseline {
+                old_ns += elapsed;
+            } else {
+                new_ns += elapsed;
+            }
+        }
+        old_total += old_ns;
+        new_total += new_ns;
+        ratios.push(new_ns as f64 / old_ns as f64);
+        eprintln!(
+            "pair {pair}: old {} ns/read, new {} ns/read, ratio {:.4}",
+            old_ns / 128,
+            new_ns / 128,
+            ratios[pair]
+        );
+    }
+    ratios.sort_by(f64::total_cmp);
+    eprintln!(
+        "4 KiB ABBA/BAAB: old {} ns/read, new {} ns/read; paired median ratio {:.4}, range {:.4}..{:.4}; {} of 20 pairs faster",
+        old_total / 2560,
+        new_total / 2560,
+        (ratios[9] + ratios[10]) / 2.0,
+        ratios[0],
+        ratios[19],
+        ratios.iter().filter(|&&ratio| ratio <= 1.0).count()
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "measurement"]
 fn measure_held_file_reads() -> Result<(), Box<dyn Error>> {
     let runtime = runtime();
     let contents: Vec<u8> = (0..2_000_000_u32).map(|byte| (byte * 7) as u8).collect();
