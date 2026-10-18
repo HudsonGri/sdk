@@ -12,6 +12,8 @@ use crate::{
 use acyclic_fs::{MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::MemoryStream;
 
+#[path = "approval_binding_tests.rs"]
+mod binding;
 #[path = "approval_install_tests.rs"]
 mod install;
 
@@ -95,7 +97,7 @@ async fn journal(
             fixture.owner(TASK).await?,
             OperationId::from_bytes([TASK; 16]),
         )?
-        .with_task_files(Some(files))
+        .with_task_files(files)?
         .with_interaction_owner(
             &conversation.verifier(&mut None)?,
             &SchemaRegistry::new(),
@@ -198,8 +200,11 @@ async fn approval_files_are_owner_copies_published_before_execution_sees_a_decis
         }
     };
     let lost = open_files(Arc::new(MemoryStream::default())).await?;
-    let unpublished = journal(&fixture, &conversation, lost).await?;
     let files = open_files(fixture.stream.clone()).await?;
+    let mut unpublished = journal(&fixture, &conversation, files.clone()).await?;
+    // Deliberate fault injection after the checked production binding: lose
+    // publications on an independent scratch provider at each crash cut.
+    unpublished.task_files = Some(lost);
     let trail = journal(&fixture, &conversation, files.clone()).await?;
     let (id, denied) = (
         InteractionId::from_bytes([82; 16]),

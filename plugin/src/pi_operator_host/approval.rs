@@ -117,6 +117,7 @@ pub(crate) fn open_prepared_approval<'a>(
                 io: Some(&io),
             },
         )?
+        .with_task_files(runtime.task_files.clone())?
         .with_interaction_owner(
             &verifier,
             &SchemaRegistry::new(),

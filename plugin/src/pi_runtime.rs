@@ -115,6 +115,7 @@ pub(crate) struct PiTaskRuntime {
         FilesystemTaskRuntime<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     pub(crate) definition: Arc<TaskDefinition<PiTaskInput, FileRef>>,
     pub(crate) authority: PiRuntimeAuthority,
+    pub(crate) task_files: Arc<acyclic_harness::task_volume::TaskFiles<LocalStream>>,
 }
 
 impl PiTaskRuntime {
@@ -159,6 +160,16 @@ impl PiTaskRuntime {
             journal,
             &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )?;
+        let task_files = Arc::new(
+            acyclic_harness::task_volume::TaskFiles::open(
+                stream.clone(),
+                journal,
+                &authority.verifier,
+                &authority.signed,
+                authority.maximum_payload_bytes,
+            )
+            .await?,
+        );
         let (tools, _tools_custody) = ToolRegistry::new(work)?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         let mut slot = work.claim(
@@ -191,7 +202,7 @@ impl PiTaskRuntime {
             dyn acyclic_harness::resource_preparation::ResourceCreationProvider,
         >; 1] = [creation];
         let io = PreparationIo::from_native_work(work)?;
-        let runtime = FilesystemTaskRuntime::open(
+        let mut runtime = FilesystemTaskRuntime::open(
             stream,
             filesystem,
             journal,
@@ -211,10 +222,12 @@ impl PiTaskRuntime {
             Some(&io),
         )
         .await?;
+        runtime.bind_task_files(Some(task_files.clone()));
         Ok(Self {
             runtime,
             definition,
             authority,
+            task_files,
         })
     }
 
