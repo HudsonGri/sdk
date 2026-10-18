@@ -13,6 +13,8 @@ mod guidance;
 pub(super) mod environment;
 #[cfg(feature = "native-execution")]
 mod skills;
+#[cfg(feature = "native-execution")]
+mod text;
 
 fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();

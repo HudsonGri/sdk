@@ -14,6 +14,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+const SKILLS: &str = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n- fixture: Read fixture files. (file: .agents/skills/fixture/SKILL.md)\n</skills_instructions>";
+
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
 #[derive(Clone, Copy)]
@@ -21,6 +23,7 @@ enum Mode {
     Prompt,
     Instructions,
     FsRefusals,
+    Skills,
     Jsonl,
     OpenJsonl,
     Dumb,
@@ -45,7 +48,7 @@ async fn execute_with(
     expected: (&str, i32),
 ) -> Vec<u8> {
     let (prompt, exit) = expected;
-    let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions | Mode::FsRefusals);
+    let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions | Mode::FsRefusals | Mode::Skills);
     let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
@@ -182,7 +185,7 @@ fn utc_dates_count_whole_years_and_months() {
 }
 
 async fn scenario(mode: Mode) {
-    let instructions = matches!(mode, Mode::Instructions);
+    let instructions = matches!(mode, Mode::Instructions | Mode::Skills);
     let fs_refusals = matches!(mode, Mode::FsRefusals);
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
@@ -194,6 +197,7 @@ async fn scenario(mode: Mode) {
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let counter = requests.clone();
+    let generations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = Router::new()
         .route(
             "/count",
@@ -210,8 +214,16 @@ async fn scenario(mode: Mode) {
             post(move |Json(body): Json<Value>| {
                 let requests = requests.clone();
                 let cwd = cwd.clone();
+                let generations = generations.clone();
                 async move {
                     assert!(body.to_string().contains("hello"));
+                    let generation = generations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if matches!(mode, Mode::Skills) && generation == 1 {
+                        let output = body["input"].as_array().unwrap().iter().find(|item| item["type"] == "function_call_output").unwrap();
+                        assert!(output["output"].as_str().unwrap().contains("BODY MUST STAY ON DISK"));
+                        requests.send("model").unwrap();
+                        return ([("content-type", "text/event-stream")], ANSWER.to_owned());
+                    }
                     if instructions {
                         // The block is dated when the turn is admitted, at most a minute earlier.
                         let environment = [0, 60_000].map(|earlier| environment(&cwd, earlier));
@@ -220,8 +232,10 @@ async fn scenario(mode: Mode) {
                             "{} not in {environment:?}",
                             body["input"][1]
                         );
+                        let skills = if generation == 0 { SKILLS.to_owned() } else { SKILLS.replace("Read fixture files.", "Read updated files.") };
                         let mut input = body["input"].clone();
                         input.as_array_mut().unwrap().remove(1);
+                        assert_eq!(input.as_array_mut().unwrap().remove(1), json!({"type":"message","role":"system","content":[{"type":"input_text","text":skills}]}));
                         assert_eq!(input, json!([
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
@@ -233,8 +247,16 @@ async fn scenario(mode: Mode) {
                         assert!(body.get("instructions").is_none());
                     }
                     requests.send("model").unwrap();
-                    let answer = if fs_refusals { fs_answer(&body) } else { ANSWER.to_owned() };
-                    ([("content-type", "text/event-stream")], answer)
+                    let response = if matches!(mode, Mode::Skills) {
+                        let bash = body["tools"].as_array().unwrap().iter().find(|tool| tool["description"].as_str().is_some_and(|description| description.starts_with("Run a bash command"))).unwrap();
+                        let call = json!({"type":"response.output_item.done", "output_index":0,
+                            "item":{"type":"function_call","call_id":"read-skill","name":bash["name"],
+                            "arguments":json!({"command":"cat .agents/skills/fixture/SKILL.md"}).to_string()}});
+                        format!("data: {call}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\",\"usage\":{{\"input_tokens\":64,\"output_tokens\":2}}}}}}\n\n")
+                    } else if fs_refusals {
+                        fs_answer(&body)
+                    } else { ANSWER.to_owned() };
+                    ([("content-type", "text/event-stream")], response)
                 }
             }),
         );
@@ -248,6 +270,12 @@ async fn scenario(mode: Mode) {
             .unwrap();
     });
     if instructions {
+        std::fs::create_dir_all(workspace.join(".agents/skills/fixture")).unwrap();
+        std::fs::write(
+            workspace.join(".agents/skills/fixture/SKILL.md"),
+            "---\nname: fixture\ndescription: Read fixture files.\n---\nBODY MUST STAY ON DISK",
+        )
+        .unwrap();
         std::fs::write(
             workspace.join("AGENTS.md"),
             "Reply using the workspace instructions. λ\n",
@@ -306,8 +334,20 @@ async fn scenario(mode: Mode) {
             _ => unreachable!(),
         }
     }
-    assert_eq!(generated, if fs_refusals { 2 } else { 1 });
+    assert_eq!(generated, if fs_refusals || matches!(mode, Mode::Skills) { 2 } else { 1 });
     assert!(counted > 0);
+    if matches!(mode, Mode::Instructions) {
+        std::fs::write(workspace.join(".agents/skills/fixture/SKILL.md"), "---\nname: fixture\ndescription: Read updated files.\n---\nCHANGED BODY MUST STAY ON DISK").unwrap();
+        execute(&workspace, &catalog, &settings, OperationId::new(), mode).await;
+        let mut generated = 0;
+        while let Ok(kind) = observed.try_recv() {
+            generated += usize::from(kind == "model");
+        }
+        assert_eq!(
+            generated, 1,
+            "new operation must capture updated skill metadata"
+        );
+    }
     stop.send(()).unwrap();
     server.await.unwrap();
 }
@@ -386,4 +426,10 @@ async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
 #[tokio::test]
 async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn skill_paths_are_followed_through_the_real_shell_and_http_provider() {
+    scenario(Mode::Skills).await;
 }
