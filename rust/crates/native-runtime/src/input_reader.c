@@ -47,6 +47,9 @@ static void *run_input(void *argument) {
         while (poll_error == 0) {
             count = read(ops->fd, bytes, length);
             if (count >= 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) break;
+            /* An unwatchable device cannot wake poll after WouldBlock.
+               Preserve that error instead of spinning on POLLNVAL. */
+            if (errno != EINTR && (source.revents & POLLNVAL)) break;
             do { ready = poll(&source, 1, -1); } while (ready < 0 && errno == EINTR);
             if (ready < 0) poll_error = errno;
         }
