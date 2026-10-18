@@ -7,6 +7,7 @@ mod error {
     use thiserror::Error;
     include!("../src/lib/error.rs");
 }
+pub use acyclic_stream::wire;
 pub use error::StreamError;
 #[path = "../src/session/sync.rs"]
 mod sync;
@@ -188,10 +189,9 @@ proptest::proptest! {
         frames in 2_usize..1024, largest in 1_usize..65536,
     ) {
         let room = policy::room(frames, 4 * largest, frames - 1, 0, largest, true);
-        proptest::prop_assert!(!policy::enabled(true, 0, room, false));
-        proptest::prop_assert!(policy::enabled(false, 0, room, true));
+        proptest::prop_assert_eq!(room, (false, true, true));
         let full = policy::room(frames, 4 * largest, frames, 0, largest, true);
-        proptest::prop_assert!(!policy::enabled(false, 0, full, true));
+        proptest::prop_assert_eq!(full, (false, false, true));
     }
 }
 

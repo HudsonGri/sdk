@@ -16,6 +16,8 @@ use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 mod sources;
 #[cfg(acyclic_stream_loom)]
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
+#[cfg(acyclic_stream_loom)]
+pub use sources::model::{verify_source_disable, verify_source_saturation};
 mod children;
 mod client;
 mod connection;

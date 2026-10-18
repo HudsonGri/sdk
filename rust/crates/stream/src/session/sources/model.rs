@@ -8,6 +8,136 @@ impl ArcWake for Root {
     }
 }
 
+fn admitted(latest: bool, pending: usize) -> Option<usize> {
+    Channel {
+        generation: 1,
+        latest,
+        children: false,
+        pending: (0..pending)
+            .map(|_| Pending {
+                frame: Default::default(),
+                key: None,
+            })
+            .collect(),
+        indexed: None,
+        credit: wire::SessionWindow {
+            frames: 1,
+            bytes: 100,
+        },
+        sent: Default::default(),
+        applied: Default::default(),
+        ending: None,
+    }
+    .source_mode()
+}
+
+fn waiting(identity: wire::SessionChannel, records: Arc<signal::Signal<u8>>) -> Source {
+    futures::stream::once(async move { (identity, Ok(Event::Opened(None))) })
+        .chain(futures::stream::once(async move {
+            let value = records.next().await.unwrap();
+            (
+                identity,
+                Ok(Event::Record(crate::Record {
+                    sequence: 0,
+                    value: vec![value].into(),
+                    commit_id: crate::CommitId::from_bytes([1; 32]),
+                    committed_at_micros: 0,
+                })),
+            )
+        }))
+        .boxed()
+}
+
+/// One blocked channel must leave the reserved lossless slot runnable.
+pub fn verify_source_saturation(broken: bool) {
+    for latest in [false, true] {
+        loom::model(move || {
+            let slow = wire::SessionChannel {
+                channel_id: 1,
+                generation: 1,
+            };
+            let healthy = wire::SessionChannel {
+                channel_id: 2,
+                generation: 1,
+            };
+            let mut sources = Sources::new();
+            sources.insert(
+                slow,
+                waiting(slow, Arc::new(signal::Signal::new())),
+                admitted(latest, if latest { 3 } else { 1 }),
+            );
+            let records = Arc::new(signal::Signal::new());
+            sources.insert(
+                healthy,
+                waiting(healthy, records.clone()),
+                admitted(false, 0),
+            );
+            let root = Arc::new(Root(AtomicU64::new(0)));
+            let waker = futures::task::waker(root);
+            let mut cx = Context::from_waker(&waker);
+            for _ in 0..2 {
+                assert!(matches!(
+                    sources.poll((true, true, true), &mut cx),
+                    Poll::Ready(Ok(Some((_, Ok(Event::Opened(_))))))
+                ));
+            }
+            let room = policy::room(3, 1000, 2, 200, 100, true);
+            let selected = if broken {
+                (room.0, room.0, room.2)
+            } else {
+                room
+            };
+            let writer = loom::thread::spawn(move || records.send(7).unwrap());
+            let first = sources.poll(selected, &mut cx);
+            writer.join().unwrap();
+            let result = if first.is_pending() {
+                sources.poll(selected, &mut cx)
+            } else {
+                first
+            };
+            assert!(
+                matches!(result, Poll::Ready(Ok(Some((identity, Ok(Event::Record(record)))))) if identity == healthy && record.value.as_ref() == [7]),
+                "the reserved slot must enable the healthy channel"
+            );
+        });
+    }
+}
+
+/// Disabling a parked provider preserves a publication until it is re-admitted.
+pub fn verify_source_disable(broken: bool) {
+    loom::model(move || {
+        let identity = wire::SessionChannel {
+            channel_id: 1,
+            generation: 1,
+        };
+        let records = Arc::new(signal::Signal::new());
+        let mut sources = Sources::new();
+        sources.insert(
+            identity,
+            waiting(identity, records.clone()),
+            admitted(false, 0),
+        );
+        let root = Arc::new(Root(AtomicU64::new(0)));
+        let waker = futures::task::waker(root);
+        let mut cx = Context::from_waker(&waker);
+        assert!(sources.poll((true, true, true), &mut cx).is_ready());
+        assert!(sources.poll((true, true, true), &mut cx).is_pending());
+        let writer = loom::thread::spawn(move || records.send(7).unwrap());
+        if !broken {
+            sources.mode(1, None);
+        }
+        writer.join().unwrap();
+        assert!(
+            sources.poll((true, true, true), &mut cx).is_pending(),
+            "a disabled source must not consume a record"
+        );
+        sources.mode(1, admitted(false, 0));
+        assert!(
+            matches!(sources.poll((true, true, true), &mut cx), Poll::Ready(Ok(Some((actual, Ok(Event::Record(record)))))) if actual == identity && record.value.as_ref() == [7])
+        );
+    });
+}
+
 /// Explores provider publication racing source and session waiter registration.
 pub fn verify_source_wakes(omit_signal: bool) {
     loom::model(move || {
