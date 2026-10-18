@@ -814,3 +814,20 @@ fn hard_break_emphasis_autolink_storage_stays_linear() {
         "control {small:?} -> {large:?}"
     );
 }
+
+#[test]
+fn reference_and_table_capacity_boundary_storage_is_linear() {
+    for (actions, count, length, padding, separators) in [
+        (vec![0], 1, 837, 2, vec![4]),
+        (vec![3], 1, 828, 4, vec![0]),
+        (vec![14], 22, 460, 2, vec![1, 3, 3, 0]),
+    ] {
+        let (small, large) =
+            measure_pair(&actions, count, &"x".repeat(length), padding, &separators);
+        eprintln!("capacity {actions:?}: {small:?} -> {large:?}");
+        assert!(
+            large.1 <= 2 * small.1 + 1024,
+            "{actions:?}: {small:?} -> {large:?}"
+        );
+    }
+}
