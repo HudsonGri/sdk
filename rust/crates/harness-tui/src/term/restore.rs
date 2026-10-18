@@ -20,10 +20,12 @@ pub struct RestoreGuard<W: Write> {
     modes: std::collections::BTreeMap<u16, ModeState>,
     desired: Vec<u16>,
     scroll_regions: bool,
+    /// Device accesses other than presented frames (see `Present`).
+    outside: u64,
 }
 
 impl<W: Write> RestoreGuard<W> {
-    /// No terminal changes occur until setup or enable_mode is called.
+    /// No terminal changes occur until setup or `enable_mode` is called.
     pub fn new(writer: W, caps: &Capabilities) -> Self {
         Self {
             writer,
@@ -31,12 +33,14 @@ impl<W: Write> RestoreGuard<W> {
             modes: caps.modes.clone(),
             desired: Vec::new(),
             scroll_regions: caps.scroll_regions,
+            outside: 0,
         }
     }
 
     /// Enable focus, paste, grapheme clustering, and the requested screen.
     /// Unknown/permanent states are preserved; no speculative reset on exit.
     pub fn setup(&mut self, screen: ScreenMode) -> io::Result<()> {
+        self.outside = self.outside.wrapping_add(1);
         for mode in [1004, 2004, 2027] {
             self.enable_mode(mode)?;
         }
@@ -52,6 +56,7 @@ impl<W: Write> RestoreGuard<W> {
 
     /// Enable a queried DEC private mode, remembering its exact prior state.
     pub fn enable_mode(&mut self, mode: u16) -> io::Result<()> {
+        self.outside = self.outside.wrapping_add(1);
         if self.modes.get(&mode) != Some(&ModeState::Reset) {
             return Ok(());
         }
@@ -71,7 +76,22 @@ impl<W: Write> RestoreGuard<W> {
 
     /// Write application output using this guard's terminal connection.
     pub fn writer(&mut self) -> &mut W {
+        self.outside = self.outside.wrapping_add(1);
         &mut self.writer
+    }
+
+    /// Input cannot mutate the displayed state. Keep this operation narrow:
+    /// exposing the writer here would also permit untracked output changes.
+    #[cfg(all(unix, not(acyclic_harness_tui_loom)))]
+    pub(crate) fn receive(
+        &mut self,
+        bytes: &mut [u8],
+        deadline: std::time::Instant,
+    ) -> io::Result<usize>
+    where
+        W: super::ProbeIo,
+    {
+        self.writer.receive(bytes, deadline)
     }
 
     pub(crate) fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
@@ -94,6 +114,7 @@ impl<W: Write> RestoreGuard<W> {
     /// Attempt every undo even if one fails. Failed undo records remain for a
     /// subsequent retry (including Drop), and a second successful call is inert.
     pub fn restore(&mut self) -> io::Result<()> {
+        self.outside = self.outside.wrapping_add(1);
         let mut first_error = None;
         let mut failed = Vec::new();
         while let Some((mode, undo)) = self.undo.pop() {
@@ -118,8 +139,8 @@ impl<W: Write> RestoreGuard<W> {
     }
 }
 
-const SHOW_CURSOR: (u16, &'static [u8]) = (25, b"[?25h");
-const END_SYNCHRONIZED: (u16, &'static [u8]) = (2026, b"[?2026l");
+const SHOW_CURSOR: (u16, &[u8]) = (25, b"[?25h");
+const END_SYNCHRONIZED: (u16, &[u8]) = (2026, b"[?2026l");
 const BEGIN_SYNCHRONIZED: &[u8] = b"[?2026h";
 /// Full-screen margins (DECSTBM without parameters). Margins are not a DEC
 /// mode; 0 is no mode number, so the key cannot collide with one.
@@ -232,6 +253,23 @@ impl<W: Write> super::Present for RestoreGuard<W> {
                 Err(error)
             }
         }
+    }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        effects: super::FrameEffects,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        if expected.is_some_and(|expected| expected != self.outside) {
+            return Ok(None);
+        }
+        if !frame.is_empty() {
+            self.present(frame, effects)?;
+        }
+        Ok(Some(self.outside))
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        Some(self.outside)
     }
 }
 

@@ -47,18 +47,17 @@ pub async fn run(
     // The transcript band and its top line in the frame on the device.
     let mut shown = None;
     let start = Instant::now();
-    let mut documents = client::local_documents(&local, &authority).await?;
+    client.follow_commands(&commands).await?;
+    let mut documents = client::local_documents(&local, client.views_mut()).await?;
     loop {
         client
             .follow_task(
                 local.task_files().as_ref(),
-                &authority,
                 commands
                     .active_task()
                     .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
             )
             .await?;
-        client.project_commands(&commands, &authority)?;
         renderer.update_files(&client, &authority);
         if commands.exit_requested()? {
             return Ok(());

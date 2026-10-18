@@ -686,3 +686,44 @@ fn heap_backed_graphemes_do_not_allocate_a_second_screen() {
 fn negative_control_cloning_heap_backed_cells_is_detected() {
     grapheme_allocations::<true>();
 }
+
+fn assert_changed_body_cursor<const KEEP_POSITION: bool>() {
+    let region = Rect::new(0, 0, WIDTH, HEIGHT);
+    for moved in [None, Some(RegionScroll { region, rows: 1 })] {
+        let mut first = window(0, HEIGHT);
+        let mut next = window(1, HEIGHT);
+        first.1 = Some((3, 2));
+        next.1 = first.1;
+        let old = per_command(&[first.clone(), next.clone(), next.clone()]);
+        let mut actual = scrolled(
+            &[(first, None), (next.clone(), moved), (next, None)],
+            Size::new(WIDTH, HEIGHT),
+        );
+        if !KEEP_POSITION {
+            // Preserve every cell and the checked presentation; restore only
+            // the stale cursor-position cache after manually encoding a body.
+            let command = b"\x1b[3;4H";
+            let at = actual[1]
+                .windows(command.len())
+                .rposition(|part| part == command)
+                .unwrap();
+            actual[1].drain(at..at + command.len());
+        }
+        assert_eq!(
+            screens(&actual),
+            screens(&old),
+            "body encoding must restore the requested cursor"
+        );
+        assert!(actual[2].is_empty(), "an identical frame reaches no device");
+    }
+}
+
+#[test]
+fn changed_and_scrolled_bodies_restore_an_unchanged_cursor_position() {
+    assert_changed_body_cursor::<true>();
+}
+#[test]
+#[should_panic(expected = "body encoding must restore the requested cursor")]
+fn negative_control_caching_the_position_across_body_encoding_is_detected() {
+    assert_changed_body_cursor::<false>();
+}

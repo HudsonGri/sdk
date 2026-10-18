@@ -425,6 +425,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-stream",
  "base64 0.22.1",
  "blake3",
@@ -2892,9 +2893,9 @@ version = "0.2.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-harness-providers",
- "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
+ "alacritty_terminal",
  "axum",
  "clap",
  "futures",
