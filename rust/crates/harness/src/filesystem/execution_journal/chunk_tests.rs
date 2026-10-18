@@ -435,11 +435,13 @@ fn chunk_projection_has_exact_linear_work_and_allocations() {
     // payload copies nor prefix scans fit. Naming plus fenced recheck adds one
     // anchor read and task-tail lookup; rebuilding the tail adds one index step:
     // exactly 3 items, 6/7 ordinary/native allocations per accepted delta.
+    // Main #821 changed the shared native bounded encoder and its charges;
+    // exact native pins include that codec, while the unmetered path is unchanged.
     let expected = [
         [[136, 219, 27944, 0, 0, 0, 0], [272, 445, 66672, 0, 0, 0, 0]],
         [
-            [136, 307, 32240, 192, 6152, 2768, 13440],
-            [272, 621, 75272, 384, 12320, 5552, 26888],
+            [136, 315, 34152, 208, 7464, 1384, 13440],
+            [272, 637, 79088, 416, 14944, 2776, 26888],
         ],
     ];
     for (mode, measured) in modes.into_iter().enumerate() {
@@ -576,15 +578,18 @@ fn entire_append_has_exact_linear_work_with_prefix_replay_negative() {
     // Whole-append physical and original-ledger receipts. N/2N includes
     // fixed initial replay and the real index/map splits; no projection gap.
     // Shared StreamPath clones remove 5*N+2 allocations from the old path owner.
+    // Native pins include the main #821 single-pass bounded encoder and charges.
     let expected = [
         [
             [25, 136, 10542, 3407159, 0, 0, 0, 0, 0],
             [49, 272, 20498, 6669719, 0, 0, 0, 0, 0],
         ],
         [
-            [25, 136, 14081, 6160177, 12843, 408770, 305002, 290950, 7115],
             [
-                49, 272, 24333, 11390699, 22446, 727948, 540802, 523560, 13579,
+                25, 136, 14578, 6274200, 13348, 493688, 178747, 290950, 27751,
+            ],
+            [
+                49, 272, 25222, 11595576, 23351, 880886, 315735, 523560, 54145,
             ],
         ],
     ];

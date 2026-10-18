@@ -171,6 +171,114 @@ fn decode_task(
     decoder.update(&views.selections().next().unwrap().1.task(task), channel);
 }
 
+async fn journal_chunk(
+    volume: &crate::task_volume::TaskVolume<acyclic_stream::MemoryStream>,
+    provider: &acyclic_stream::MemoryStream,
+    task: Component,
+    (execution, turn, channel): (u8, u64, Channel),
+    bytes: &[u8],
+    attempt: &str,
+) -> acyclic_stream::wire::SessionData {
+    use acyclic_stream::{
+        CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, StreamProvider,
+    };
+    let cut = volume.head().await.unwrap().position;
+    let key = volume
+        .next_chunk_key(
+            task,
+            crate::OperationId::from_bytes([execution; 16]),
+            turn,
+            None,
+        )
+        .await
+        .unwrap();
+    let prepared = volume
+        .prepare_named_chunk(key, channel, bytes, None)
+        .await
+        .unwrap()
+        .unwrap();
+    let outcome = provider
+        .commit(CommitRequest {
+            conditions: vec![prepared.condition],
+            mutations: vec![CommitMutation::Append {
+                path: prepared.path,
+                records: vec![prepared.record],
+            }],
+            idempotency_key: IdempotencyKey::new(attempt.as_bytes().to_vec()).unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+    use futures::StreamExt as _;
+    let record = provider
+        .read(acyclic_stream::ReadRequest {
+            path: acyclic_stream::StreamPath::new("swarm/a/files").unwrap(),
+            from: cut,
+            limit: 1,
+        })
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
+    let cursor = volume.heads(&Query::Root, None, 512).await.unwrap().cursor;
+    acyclic_stream::wire::SessionData {
+        after: Some(acyclic_stream::wire::SessionCursor {
+            next: record.sequence + 1,
+            ..Default::default()
+        }),
+        accepted: cursor.accepted,
+        durable: cursor.durable,
+        item: Some(acyclic_stream::wire::session_data::Item::Record(
+            acyclic_stream::wire_codec::record_wire(record),
+        )),
+    }
+}
+
+fn head_views(snapshot: crate::task_volume::HeadSnapshot) -> crate::client::ClientViews {
+    use crate::client::{
+        ClientInterests, ClientViewLimits, ClientViews, QueryViewLimits, SwarmUpdate,
+    };
+    use acyclic_stream::StreamPath;
+    let root = StreamPath::new("swarm").unwrap();
+    let agent = StreamPath::new("swarm/a").unwrap();
+    let mut views = ClientViews::new(
+        root.clone(),
+        ClientViewLimits {
+            agents: 1,
+            selected: 1,
+            overview_values: 8,
+            overview_bytes: 8192,
+            query: QueryViewLimits {
+                files: 512,
+                segments: 1024,
+                bytes: 65536,
+            },
+        },
+    )
+    .unwrap();
+    views
+        .apply(SwarmUpdate::Layout(
+            ClientInterests::from_layout(root, [agent.clone()], [], 1).unwrap(),
+        ))
+        .unwrap();
+    views
+        .apply(SwarmUpdate::Snapshot { agent, snapshot })
+        .unwrap();
+    views
+}
+
+fn follow_head(views: &mut crate::client::ClientViews, data: acyclic_stream::wire::SessionData) {
+    views
+        .apply(crate::client::SwarmUpdate::Data {
+            agent: acyclic_stream::StreamPath::new("swarm/a").unwrap(),
+            overview: false,
+            data,
+        })
+        .unwrap();
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
     #[test]
@@ -179,27 +287,25 @@ proptest! {
         rest in prop::collection::vec(any::<bool>(), 0..12), batch in 1usize..5,
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-            use crate::{client::TaskFileClient, task_volume::TaskVolume};
+            use crate::task_volume::TaskVolume;
             use acyclic_stream::{MemoryStream, StreamPath};
             let task_id=crate::TaskId::from_bytes([7;16]);
             let task=Component::new(task_id.to_string()).unwrap();
-            let owner=crate::wire::Authority {kind:crate::wire::AggregateKind::Task as i32,id:task_id.to_string()};
-            let volume=TaskVolume::open(Arc::new(MemoryStream::default()),StreamPath::new("interleaved").unwrap()).await.unwrap();
-            let mut client=TaskFileClient::observe_task(&volume,&owner,task_id,32,4096).await.unwrap();
+            let provider=Arc::new(MemoryStream::default());
+            let volume=TaskVolume::open(provider.clone(),StreamPath::new("swarm/a/files").unwrap()).await.unwrap();
+            let mut views=head_views(volume.heads(&Query::Root,None,512).await.unwrap());
             let channel=if reasoning {Channel::Reasoning} else {Channel::Text};
-            let schedule:Vec<_>=[false,true,false].into_iter().chain(rest).collect();
+            let schedule:Vec<_>=[false,true,false,false,true].into_iter().chain(rest).collect();
             let mut live=StreamText::default();
             let mut broken=StreamText::default();
             let mut rows=Vec::new();
             for (index, execution) in schedule.iter().enumerate() {
-                let mut file=FileValue::new(FileKey::Task {task:task.clone(),file:TaskFile::Chunk {
-                    turn:0,execution:crate::OperationId::from_bytes([if *execution {1}else{255};16]),sequence:index as u64}},text.as_bytes().to_vec());
-                file.channel=Some(channel);
-                volume.append(volume.head().await.unwrap(),&file).await.unwrap();
-                client.next_change().await.unwrap();
-                if index>2 && index%batch!=0 && index+1<schedule.len() {continue;}
-                let selection=client.views().selections().next().unwrap().1;
+                let data=journal_chunk(&volume,&provider,task.clone(),(if *execution {1}else{255},0,channel),text.as_bytes(),&index.to_string()).await;
+                follow_head(&mut views,data);
+                if index==3 || (index>4 && index%batch!=0 && index+1<schedule.len()) {continue;}
+                let selection=views.selections().next().unwrap().1;
                 let query=selection.task(&task);
+                assert!(query.text().all(|text| matches!(text.file.key,FileKey::Task {file:TaskFile::TextHead {..},..})), "fixture must exercise materialized heads");
                 let changed=live.update(&query,channel);
                 rows.truncate(changed);
                 rows.extend(live.rows(changed));
@@ -207,9 +313,9 @@ proptest! {
                 // earlier-head update is already consumed by this reader.
                 broken.cut=query.cursor.position;
                 broken.update(&query,channel);
-                let reopened=TaskFileClient::observe_task(&volume.reopen().await.unwrap(),&owner,task_id,32,4096).await.unwrap();
+                let reopened=head_views(volume.reopen().await.unwrap().heads(&Query::Root,None,512).await.unwrap());
                 let mut replay=StreamText::default();
-                decode_task(&mut replay,reopened.views(),&task,channel);
+                decode_task(&mut replay,&reopened,&task,channel);
                 assert_eq!(rows,replay.rows(0),"interleaved prefix {index}");
                 if index==2 {assert_ne!(broken.rows(0),rows,"last-head-only negative control escaped");}
             }
@@ -302,45 +408,86 @@ proptest! {
 #[test]
 fn changed_head_lookup_has_exact_work_independent_of_unrelated_history() {
     use acyclic_test_support::{differential, measure};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     for n in [64, 128] {
         let [baseline, candidate] = differential::pair::<_, _, bool>(
             || {
-                let mut views = crate::test_support::empty_client_views();
-                for index in 0..n {
-                    let mut file = FileValue::new(
-                        FileKey::Task {
-                            task: Component::new(if index % 2 == 0 { "target" } else { "other" })
-                                .unwrap(),
-                            file: TaskFile::Chunk {
-                                execution: crate::OperationId::from_bytes([2; 16]),
-                                turn: index as u64,
-                                sequence: 0,
+                runtime.block_on(async {
+                    use crate::task_volume::TaskVolume;
+                    use acyclic_stream::{MemoryStream, StreamPath};
+                    let task_id = crate::TaskId::from_bytes([7; 16]);
+                    let task = Component::new(task_id.to_string()).unwrap();
+                    let other =
+                        Component::new(crate::TaskId::from_bytes([8; 16]).to_string()).unwrap();
+                    let provider = Arc::new(MemoryStream::default());
+                    let volume = TaskVolume::open(
+                        provider.clone(),
+                        StreamPath::new("swarm/a/files").unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                    let mut views =
+                        head_views(volume.heads(&Query::Root, None, 512).await.unwrap());
+                    for index in 0..n {
+                        let data = journal_chunk(
+                            &volume,
+                            &provider,
+                            if index % 2 == 0 {
+                                task.clone()
+                            } else {
+                                other.clone()
                             },
-                        },
-                        b"noise".to_vec(),
-                    );
-                    file.channel = Some(Channel::Text);
-                    publish(&mut views, file);
-                }
-                let task = Component::new("target").unwrap();
-                let key = |execution| FileKey::Task {
-                    task: task.clone(),
-                    file: TaskFile::TextHead {
-                        execution: crate::OperationId::from_bytes([execution; 16]),
-                        turn: 0,
-                        channel: Channel::Text,
-                    },
-                };
-                for execution in [255, 1] {
-                    let mut file = FileValue::new(key(execution), b"first".to_vec());
-                    file.channel = Some(Channel::Text);
-                    publish(&mut views, file);
-                }
-                let since = views.selections().next().unwrap().1.cursor().position;
-                let mut file = FileValue::new(key(255), b"extended".to_vec());
-                file.channel = Some(Channel::Text);
-                publish(&mut views, file);
-                (views, task.clone(), key(1), since)
+                            (2, index as u64, Channel::Text),
+                            b"noise",
+                            &format!("noise-{index}"),
+                        )
+                        .await;
+                        follow_head(&mut views, data);
+                    }
+                    for execution in [255, 1] {
+                        let data = journal_chunk(
+                            &volume,
+                            &provider,
+                            task.clone(),
+                            (execution, 0, Channel::Text),
+                            b"first",
+                            &format!("initial-{execution}"),
+                        )
+                        .await;
+                        follow_head(&mut views, data);
+                    }
+                    let selection = views.selections().next().unwrap().1;
+                    let since = selection.cursor().position;
+                    let last = selection
+                        .task(&task)
+                        .text()
+                        .last()
+                        .unwrap()
+                        .file
+                        .key
+                        .clone();
+                    assert!(matches!(
+                        last,
+                        FileKey::Task {
+                            file: TaskFile::TextHead { .. },
+                            ..
+                        }
+                    ));
+                    let data = journal_chunk(
+                        &volume,
+                        &provider,
+                        task.clone(),
+                        (255, 0, Channel::Text),
+                        b"extended",
+                        "extend-a",
+                    )
+                    .await;
+                    follow_head(&mut views, data);
+                    (views, task, last, since)
+                })
             },
             |(views, task, last, since), scan| {
                 let selection = views.selections().next().unwrap().1;
