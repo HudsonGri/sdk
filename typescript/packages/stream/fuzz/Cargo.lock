@@ -79,6 +79,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
