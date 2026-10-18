@@ -14,6 +14,7 @@ impl Journal {
         bytes: &mut Vec<u8>,
         publication: &mut Publication,
     ) -> Result<StoredBody, NativeObjectsError> {
+        self.validate_body(body)?;
         if !unpersisted(body) {
             return Ok(body.clone());
         }

@@ -9,6 +9,8 @@ pub(super) fn bodies(
         out: &mut Vec<BodyRecord>,
         publication: &mut Publication,
     ) -> Result<(), NativeObjectsError> {
+        #[cfg(test)]
+        work::encoded();
         match body {
             StoredBody::Local {
                 digest,
