@@ -380,6 +380,40 @@ mod tests {
     }
 
     #[test]
+    fn stolen_console_read_child() -> Result<(), Box<dyn std::error::Error>> {
+        let Ok(report) = std::env::var("ACYCLIC_CONSOLE_STDIN_CHILD") else {
+            return Ok(());
+        };
+        let path = PathBuf::from(report);
+        let tty = Tty::open()?;
+        let console = Arc::clone(&tty.console);
+        let stolen = console.reader.try_clone()?;
+        let (admitted, observed) = std::sync::mpsc::sync_channel(0);
+        let reader = std::thread::spawn(move || {
+            ffi::with_console_peek_hook(
+                move || {
+                    ffi::consume_console_record(stolen.as_raw_handle() as usize).unwrap();
+                    admitted.send(()).unwrap();
+                },
+                || console.read(&mut [0; 16], None),
+            )
+        });
+        std::fs::write(path.with_extension("ready"), b"ready")?;
+        observed.recv()?;
+        // The competing reader has consumed the only key. The real ReadFile
+        // can now block past the event check; close must cancel and acknowledge.
+        tty.console.close()?;
+        let result = reader
+            .join()
+            .map_err(|_| io::Error::other("reader panicked"))?;
+        assert!(matches!(result, Err(error) if error.raw_os_error() == Some(995)));
+        assert!(matches!(tty.console.read(&mut [0; 1], None),
+                         Err(error) if error.kind() == io::ErrorKind::NotConnected));
+        std::fs::write(path, b"stolen key read cancelled and acknowledged")?;
+        Ok(())
+    }
+
+    #[test]
     fn windows_lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
         let Ok(report) = std::env::var("ACYCLIC_TERMINAL_WINDOWS_REPORT") else {
             return Ok(());

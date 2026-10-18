@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Binary)
+param([Parameter(Mandatory=$true)][string]$Binary, [switch]$Cancellation)
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path -LiteralPath $Binary).ProviderPath
 $artifactRoot = Join-Path (Split-Path -Parent $PSScriptRoot) ('target/console-stdin-' + [Guid]::NewGuid().ToString('N'))
@@ -49,7 +49,7 @@ public static class ConsoleStdinConPty {
     // Runs the harness console child in a pseudoconsole, so its stdin is a
     // real console input buffer. The child holds std's stdin lock while it
     // drops the console reader, then reads typed text through it.
-    public static void Run(string binary,string report) {
+    public static void Run(string binary,string report,bool cancellation) {
         IntPtr ir=IntPtr.Zero,iw=IntPtr.Zero,orr=IntPtr.Zero,ow=IntPtr.Zero,console=IntPtr.Zero,attributes=IntPtr.Zero;
         ProcessInfo process=new ProcessInfo(); bool initialized=false; Thread drain=null;
         try {
@@ -65,7 +65,7 @@ public static class ConsoleStdinConPty {
             IntPtr parentInput=GetStdHandle(-10),parentOutput=GetStdHandle(-11),parentError=GetStdHandle(-12);
             try {
                 Require(SetStdHandle(-10,IntPtr.Zero)&&SetStdHandle(-11,IntPtr.Zero)&&SetStdHandle(-12,IntPtr.Zero),"clear inherited handles");
-                Require(CreateProcessW(binary,new StringBuilder("\""+binary+"\" --exact client::native_input::windows_tests::console_stdin_child --nocapture"),
+                Require(CreateProcessW(binary,new StringBuilder("\""+binary+"\" --exact "+(cancellation?"term::windows::tests::stolen_console_read_child":"client::native_input::windows_tests::console_stdin_child")+" --nocapture"),
                     IntPtr.Zero,IntPtr.Zero,false,0x80000|4,IntPtr.Zero,Path.GetDirectoryName(binary),ref startup,out process),"ConPTY child");
             } finally {
                 Require(SetStdHandle(-10,parentInput)&&SetStdHandle(-11,parentOutput)&&SetStdHandle(-12,parentError),"restore host handles");
@@ -76,6 +76,14 @@ public static class ConsoleStdinConPty {
             drain.IsBackground=true;drain.Start();
             Require(ResumeThread(process.thread)!=UInt32.MaxValue,"resume child");
             WaitFor(Path.ChangeExtension(report,"ready"),process.process,"console reader");
+            if(cancellation) {
+                uint count; byte[] key=new byte[]{0x78};
+                Require(WriteFile(iw,key,1,out count,IntPtr.Zero)&&count==1,"racing key");
+                Require(WaitForSingleObject(process.process,3000)==0,"cancellation child exit");
+                Require(File.ReadAllText(report)=="stolen key read cancelled and acknowledged","cancellation acknowledgement");
+                Console.WriteLine("ConPTY: stolen key read cancelled and acknowledged");
+                return;
+            }
             // UTF-8 into the pseudoconsole arrives as UTF-16 key events; the
             // emoji is a surrogate pair. Ctrl+Z on its own line ends input.
             byte[] typed=Encoding.UTF8.GetBytes("h\u00e9llo \U0001F600\r");
@@ -106,7 +114,7 @@ $previousReport = $env:ACYCLIC_CONSOLE_STDIN_CHILD
 try {
     $report = Join-Path $artifactRoot 'console.txt'
     $env:ACYCLIC_CONSOLE_STDIN_CHILD = $report
-    [ConsoleStdinConPty]::Run($Binary,$report)
+    [ConsoleStdinConPty]::Run($Binary,$report,$Cancellation.IsPresent)
 } finally {
     $env:ACYCLIC_CONSOLE_STDIN_CHILD = $previousReport
 }

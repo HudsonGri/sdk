@@ -366,6 +366,12 @@ pub fn console_read(
                 && (key.uChar.UnicodeChar != 0
                     || matches!(vk, 0x20 | 0x1b | 0x21..=0x28 | 0x2d | 0x2e | 0x70..=0x87))
             {
+                #[cfg(feature = "test-support")]
+                PEEK_HOOK.with(|hook| {
+                    if let Some(hook) = hook.borrow_mut().take() {
+                        hook();
+                    }
+                });
                 if ReadFile(
                     input as HANDLE,
                     bytes.as_mut_ptr(),
@@ -383,4 +389,37 @@ pub fn console_read(
             }
         }
     }
+}
+
+#[cfg(feature = "test-support")]
+thread_local! {
+    static PEEK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+/// Run a native-console test with a one-shot hook at the readiness/read boundary.
+#[cfg(feature = "test-support")]
+pub fn with_console_peek_hook<T>(hook: impl FnOnce() + 'static, run: impl FnOnce() -> T) -> T {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            PEEK_HOOK.with(|hook| {
+                hook.borrow_mut().take();
+            });
+        }
+    }
+    PEEK_HOOK.with(|slot| assert!(slot.borrow_mut().replace(Box::new(hook)).is_none()));
+    let _clear = Clear;
+    run()
+}
+/// Consume one console record, modelling a competing input reader.
+#[cfg(feature = "test-support")]
+pub fn consume_console_record(input: usize) -> io::Result<()> {
+    let mut event: INPUT_RECORD = unsafe { zeroed() };
+    let mut count = 0;
+    // SAFETY: caller retains the input handle; outputs are initialized stack storage.
+    if unsafe { ReadConsoleInputW(input as HANDLE, &mut event, 1, &mut count) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }

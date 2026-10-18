@@ -2,7 +2,7 @@ use super::*;
 use std::io::{Seek, Write};
 
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Counts {
     reads: u64,
     polls: u64,
@@ -13,6 +13,21 @@ struct Counts {
     error: i32,
     bytes: [u8; 64],
     length: usize,
+}
+impl Default for Counts {
+    fn default() -> Self {
+        Self {
+            reads: 0,
+            polls: 0,
+            acquires: 0,
+            publishes: 0,
+            finishes: 0,
+            last_count: 0,
+            error: 0,
+            bytes: [0; 64],
+            length: 0,
+        }
+    }
 }
 unsafe extern "C" {
     fn acyclic_input_counts(fd: c_int, redundant: c_int, blocked: c_int, out: *mut Counts);
