@@ -1,0 +1,2 @@
+# Local Vec default must initialize the Arc pointee, regardless of re-exports.
+cc 17cb0cd626efa5b5ac929fbb7a5a49d323ce26efc7dcc242105e8ca1716af1c5

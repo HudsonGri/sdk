@@ -1,6 +1,16 @@
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::ty::{self, Ty, TyCtxt, TypingEnv};
 
+fn definition_path(tcx: TyCtxt<'_>, id: DefId) -> String {
+    // Diagnostic paths follow visible re-exports (for example std::sync::Arc).
+    // Ownership contracts attach to the defining item, independent of imports.
+    format!(
+        "{}::{}",
+        tcx.crate_name(id.krate),
+        tcx.def_path(id).to_string_no_crate_verbose()
+    )
+}
+
 pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
     let symbol = tcx.item_name(method);
     let name = symbol.as_str();
@@ -44,7 +54,7 @@ pub(super) fn lock<'tcx>(
             if !default {
                 return Some(false);
             }
-            let path = tcx.def_path_str(definition.did());
+            let path = definition_path(tcx, definition.did());
             if matches!(
                 path.as_str(),
                 "core::option::Option"
