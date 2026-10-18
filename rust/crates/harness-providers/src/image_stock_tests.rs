@@ -75,6 +75,32 @@ async fn image_versions_and_fallback_survive_native_task_recovery() -> Result<()
     Ok(())
 }
 
+#[tokio::test]
+async fn repeated_framework_array_scan_exceeds_original_image_budget_negative_control() -> Result<()>
+{
+    let cases = image_cases()?;
+    acyclic_harness::test_support::rebuild_json_array_index(true);
+    let result = image_stock_turn(cases.first()).await;
+    acyclic_harness::test_support::rebuild_json_array_index(false);
+    assert!(
+        matches!(
+            result,
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded {
+                        counter: "items_examined",
+                        maximum: 65_536,
+                        ..
+                    }
+                ),
+                ..
+            })
+        ),
+        "the original framework scan must exhaust the unchanged ledger: {result:?}"
+    );
+    Ok(())
+}
+
 async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
     let with_images = image_case.is_some();
     for (adapter, response) in [
@@ -511,6 +537,7 @@ async fn image_stock_turn(image_case: Option<&ImageCase>) -> Result<()> {
                 "{adapter:?} image recovery items: prepared={before_resume}, second={}, provider={stages:?}",
                 next.receipt().items_examined - before_resume,
             );
+            assert!(next.receipt().items_examined <= 65_536);
             let (attempt, custody) = result?;
             assert!(custody.work().shares_allocation_context(&next));
             drop(custody);
