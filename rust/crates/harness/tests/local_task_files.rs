@@ -53,6 +53,30 @@ async fn direct_test_support_compositions_default_to_private_state() -> Result<(
     second.close().await
 }
 
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[tokio::test]
+async fn integration_compositions_cannot_discover_the_real_settings_home() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let model = Model::new(
+        "scripted".into(),
+        "test".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let config = acyclic_harness::LocalHarnessConfig::new(
+        directory.path(),
+        (model, Arc::new(ScriptedModelProvider::new([]))),
+    )
+    .without_default_tools();
+    // This compiles Harness as a dependency, without cfg(test). Bypassing the
+    // fixture helper must still fail before reading the real user's settings.
+    assert!(matches!(
+        LocalHarness::open(config).await,
+        Err(Error::Unsupported(message)) if message == "user settings directory is unavailable"
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn private_request_files_follow_immediately_and_survive_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
