@@ -40,6 +40,38 @@ proptest::proptest! {
     fn same_seed_replays_every_original_task_poll(seed in proptest::prelude::any::<u64>()) {
         proptest::prop_assert_eq!(script(seed).unwrap(), script(seed).unwrap());
     }
+
+    #[test]
+    fn every_continuously_ready_task_runs_in_each_round(seed in proptest::prelude::any::<u64>()) {
+        fair_rounds(seed, false);
+    }
+}
+
+fn fair_rounds(seed: u64, forget_round: bool) {
+    let executor = Executor::new(seed);
+    lock(&executor.0).forget_round = forget_round;
+    let tasks: Vec<_> = (0..4).map(|_| executor.register(None)).collect();
+    let driver = Waker::noop();
+    let cx = PollContext::from_waker(driver);
+    for _ in 0..8 {
+        let mut seen = BTreeSet::new();
+        for _ in 0..tasks.len() {
+            let (id, work, cancelled) = executor.next(&cx).unwrap();
+            assert!(work.is_none() && !cancelled);
+            assert!(seen.insert(id), "ready task starved within a round");
+            executor.ready(id);
+        }
+        assert_eq!(seen.len(), tasks.len());
+    }
+    for task in tasks {
+        executor.retire(task.id);
+    }
+}
+
+#[test]
+#[should_panic(expected = "ready task starved within a round")]
+fn negative_control_removing_rounds_allows_a_ready_task_to_starve() {
+    fair_rounds(0, true);
 }
 
 #[test]
