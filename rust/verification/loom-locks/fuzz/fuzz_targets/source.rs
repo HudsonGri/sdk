@@ -12,5 +12,9 @@ fuzz_target!(|source: &str| {
             loom_lock_scan::bounds::bounded(source).ok(),
             loom_lock_scan::bounds::bounded(&rendered).ok()
         );
+        assert_eq!(
+            loom_lock_scan::entries::present(source).ok(),
+            loom_lock_scan::entries::present(&rendered).ok()
+        );
     }
 });

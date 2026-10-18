@@ -1,4 +1,4 @@
-use loom_lock_scan::{bounds, records, scan};
+use loom_lock_scan::{bounds, entries, records, scan};
 use std::{
     io::{Read, Write},
     process::ExitCode,
@@ -22,7 +22,11 @@ fn main() -> ExitCode {
             Ok(value) => u8::from(value).to_string(),
             Err(_) => "!invalid Rust tokens".to_string(),
         };
-        output.push_str(&format!("{index}\t{verdict}\t{bound}\n"));
+        let entry = match entries::present(source) {
+            Ok(value) => u8::from(value).to_string(),
+            Err(_) => "!invalid Rust tokens".to_string(),
+        };
+        output.push_str(&format!("{index}\t{verdict}\t{bound}\t{entry}\n"));
     }
     match std::io::stdout().write_all(output.as_bytes()) {
         Ok(()) => ExitCode::SUCCESS,

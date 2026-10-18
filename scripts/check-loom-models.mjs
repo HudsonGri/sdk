@@ -113,7 +113,7 @@ export const models = {
   "typescript/packages/stream/models/schedules.rs": { grade: "external", scope: "Loom enumerates external event orders only, then session_model.rs replays them through real JS/WASM driver. No JS or Tokio lock is instrumented by this model." },
 };
 
-const entry = /\bloom::model\b|\bcheck_with_bound\(|preemption_bound/;
+const candidate = /\bloom\b|\bcheck_with_bound\b|\bpreemption_bound\b/;
 // Any bound other than a literal `None` counts, whether a number, a constant
 // or a forwarded parameter: a named bound is still a bound.
 const exhaustive = /exhaust|every (?:interleaving|schedule)|all (?:interleavings|schedules)/i;
@@ -199,9 +199,9 @@ export function violations(sources, registry = models, active = rules) {
   const typed = registry === models && active.locks
     ? typedVerdicts(sources, Object.keys(models).filter(path => models[path].grade === 'real' && sources.has(path)))
     : new Map();
-  if (active.locks || active.bound || active.exhaustive) scan([...sources].filter(([, source]) => entry.test(source)).map(([, source]) => source));
+  scan([...sources.values()].filter(source => candidate.test(source)));
   for (const [path, source] of sources) {
-    if (!entry.test(source)) continue;
+    if (!candidate.test(source) || verdicts.get(source).entry === '0') continue;
     discovered.add(path);
     for (const [name, rule] of Object.entries(active)) {
       if (name !== 'missing') found.push(...rule(path, source, registry[path], typed.get(path)));

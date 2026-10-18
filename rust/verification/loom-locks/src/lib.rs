@@ -12,8 +12,9 @@
 //! attributes may appear, and their arguments are parsed with their grammar.
 //!
 //! stdin: counted byte-length-delimited UTF-8 records ([`records`]). stdout:
-//! `index\tlock-verdict\tbound-verdict` per record, in input order.
+//! `index\tlock-verdict\tbound-verdict\tentry-verdict` per record, in input order.
 pub mod bounds;
+pub mod entries;
 pub mod records;
 mod finder;
 mod items;

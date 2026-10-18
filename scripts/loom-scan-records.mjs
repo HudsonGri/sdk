@@ -17,16 +17,16 @@ export function decodeVerdicts(output, count) {
   const rows = new Map();
   for (const line of lines) {
     const fields = line.split('\t');
-    if (fields.length !== 3) throw new Error('invalid scanner response fields');
-    const [key, lock, bound] = fields;
+    if (fields.length !== 4) throw new Error('invalid scanner response fields');
+    const [key, lock, bound, entry] = fields;
     const index = Number(key);
     if (!/^(0|[1-9][0-9]*)$/.test(key) || !Number.isSafeInteger(index) || index >= count || rows.has(index)) {
       throw new Error('invalid scanner response index');
     }
-    if (![lock, bound].every(value => /^(?:[01]|![^\t\r\n]+)$/.test(value))) {
+    if (![lock, bound, entry].every(value => /^(?:[01]|![^\t\r\n]+)$/.test(value))) {
       throw new Error('invalid scanner verdict');
     }
-    rows.set(index, {lock, bound});
+    rows.set(index, {lock, bound, entry});
   }
   return rows;
 }

@@ -70,6 +70,9 @@ test('every repository Loom model is classified and clean', () => {
 
 test('the healthy fixture passes every rule', () => {
   assert.deepEqual(violations(new Map([[path, healthy]]), {[path]: {grade: 'real'}}), []);
+  const raw = healthy.replace('loom::model', 'r#loom /* path */ :: r#model');
+  assert.deepEqual(violations(new Map([[path, raw]]), real), []);
+  assert.deepEqual(violations(new Map([[path, 'fn plain() { let text = "loom::model preemption_bound check_with_bound"; }']]), {}), []);
   assert.deepEqual(violations(new Map([[path, bounded + healthy]]), {[path]: {grade: 'real', bound: 'two preemptions'}}), []);
   // Defining the bounded runner or disabling the bound is not itself a bound.
   const runner = 'pub fn check_with_bound(\n    preemptions: Option<usize>,\n) {}\nfn unbounded() { builder.preemption_bound = None; }\n';

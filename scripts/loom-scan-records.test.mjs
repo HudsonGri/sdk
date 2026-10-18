@@ -18,8 +18,8 @@ test('source framing preserves NUL and uses UTF-8 byte lengths', () => {
 });
 
 test('only complete, unique, well-formed scanner responses are accepted', () => {
-  assert.deepEqual([...decodeVerdicts('1\t!unresolved\t0\n0\t1\t1\n', 2)], [[1, {lock: '!unresolved', bound: '0'}], [0, {lock: '1', bound: '1'}]]);
-  for (const response of ['', '0\t0\t0', '0\t0\t0\n', '0\t0\t0\n0\t1\t1\n', '0\t0\t0\n2\t0\t0\n', '00\t0\t0\n1\t0\t0\n', '0\t\t0\n1\t0\t0\n', '0\t0\t0\textra\n1\t0\t0\n', '0\t0\t0\n1\t0\t2\n']) {
+  assert.deepEqual([...decodeVerdicts('1\t!unresolved\t0\t1\n0\t1\t1\t1\n', 2)], [[1, {lock: '!unresolved', bound: '0', entry: '1'}], [0, {lock: '1', bound: '1', entry: '1'}]]);
+  for (const response of ['', '0\t0\t0\t0', '0\t0\t0\t0\n', '0\t0\t0\t0\n0\t1\t1\t1\n', '0\t0\t0\t0\n2\t0\t0\t0\n', '00\t0\t0\t0\n1\t0\t0\t0\n', '0\t\t0\t0\n1\t0\t0\t0\n', '0\t0\t0\t0\textra\n1\t0\t0\t0\n', '0\t0\t0\t0\n1\t0\t2\t0\n', '0\t0\t0\t0\n1\t0\t0\t2\n']) {
     assert.throws(() => decodeVerdicts(response, 2), response);
   }
 });
