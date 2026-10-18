@@ -75,6 +75,16 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 .ok()
         );
     }
+    if let Some(canonical) = value["pinned"].as_str() {
+        let result = bindings::pinned(request, canonical).map(str::to_owned);
+        let decoded = serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();
+        assert_eq!(
+            result.ok(),
+            bindings::pinned(&decoded, canonical)
+                .map(str::to_owned)
+                .ok()
+        );
+    }
     for protocol in ["responses", "anthropic"] {
         if let Ok(outputs) = wire::outputs(request, protocol) {
             let decoded = serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();

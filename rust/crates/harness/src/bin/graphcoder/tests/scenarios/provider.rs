@@ -135,17 +135,6 @@ impl Script {
         if !raw && let Some(events) = turn.as_array_mut() {
             let outputs = wire::outputs(&body, protocol)?;
             for event in events {
-                if let Some(description) =
-                    event["name"].as_str().and_then(|name| bindings.get(name))
-                {
-                    event["name"] = super::bindings::tool(
-                        &body,
-                        description
-                            .as_str()
-                            .ok_or("wire tool description must be text")?,
-                    )?
-                    .into();
-                }
                 if matches!(
                     event["name"]
                         .as_str()
@@ -167,6 +156,23 @@ impl Script {
                         return Err(format!("seed write returned no FileRef: {result}").into());
                     }
                     event["arguments"]["file"] = result["file"].clone();
+                }
+                if let Some(name) = event["name"].as_str() {
+                    let alias = if let Some(description) = bindings.get(name) {
+                        Some(super::bindings::tool(
+                            &body,
+                            description
+                                .as_str()
+                                .ok_or("wire tool description must be text")?,
+                        )?)
+                    } else if name.contains('@') {
+                        Some(super::bindings::pinned(&body, name)?)
+                    } else {
+                        None
+                    };
+                    if let Some(alias) = alias {
+                        event["name"] = alias.into();
+                    }
                 }
             }
         }
