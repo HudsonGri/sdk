@@ -5,13 +5,11 @@
 use super::text;
 use super::*;
 
-/// Repository skill roots, in precedence order for duplicate names.
-pub(super) const ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
 /// Directory entries examined per page.
 const PAGE: u32 = 64;
 
 mod catalog;
-pub(in crate::local) use catalog::{Listed, frame, listed, omission};
+pub(in crate::local) use catalog::{Listed, ROOTS, frame, listed, omission};
 
 impl LocalHarness {
     /// Lists `<root>/<name>/SKILL.md` frontmatter from the selected checkout view.

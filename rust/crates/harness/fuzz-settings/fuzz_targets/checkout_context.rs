@@ -36,7 +36,7 @@ fuzz_target!(|input: &[u8]| {
             Some(skill)
         );
         let skill = catalog::listed(input, String::from_utf8_lossy(input).into_owned()).unwrap();
-        let rendered = catalog::frame(&[skill]).unwrap();
+        let rendered = catalog::frame(&[skill], u64::MAX).unwrap();
         assert_eq!(rendered.matches('<').count(), 2);
         assert_eq!(rendered.lines().count(), 6);
         assert!(!rendered.contains(['\u{B}', '\u{C}', '\r', '\u{85}', '\u{2028}', '\u{2029}']));
