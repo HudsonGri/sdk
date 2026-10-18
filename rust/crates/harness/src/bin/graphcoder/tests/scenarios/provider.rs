@@ -152,11 +152,6 @@ impl Script {
                     }
                     event["arguments"]["file"] = result["file"].clone();
                 }
-                if let Some(name) = event["name"].as_str()
-                    && let Some((base, _)) = name.split_once('@')
-                {
-                    event["name"] = base.to_owned().into();
-                }
             }
         }
         if raw {
@@ -211,11 +206,7 @@ pub async fn start(case: &Value, protocol: &str) -> TestResult<Provider> {
                 _ = &mut stopped => break,
                 request = receive.recv() => {
                     let Some(request) = request else { break };
-                    let input = if protocol == "responses" { &request.body["input"] } else { &request.body["messages"] };
-                    let user = input.as_array().into_iter().flatten().filter(|item| item["role"] == "user")
-                        .map(Value::to_string).collect::<Vec<_>>();
-                    let route = routes.iter().find(|(text, _)| user.iter().any(|item| item.contains(text.as_str())))
-                        .and_then(|(_, model)| model.as_str()).unwrap_or("parent");
+                    let route = route(&request.body, &protocol, &routes);
                     let reply = match scripts.get_mut(route) {
                         Some(script) => script.reply(request.body, &seed, &protocol, raw),
                         None => Err(format!("unknown scripted route: {route}").into()),
@@ -284,6 +275,38 @@ pub async fn start(case: &Value, protocol: &str) -> TestResult<Provider> {
     })
 }
 
+fn route<'a>(body: &Value, protocol: &str, routes: &'a serde_json::Map<String, Value>) -> &'a str {
+    let field = if protocol == "responses" {
+        "input"
+    } else {
+        "messages"
+    };
+    let mut selected = "parent";
+    for message in body[field]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|message| message["role"] == "user")
+    {
+        if let Some(text) = message["content"].as_str()
+            && let Some(model) = routes.get(text).and_then(Value::as_str)
+        {
+            selected = model;
+        }
+        for part in message["content"].as_array().into_iter().flatten() {
+            if matches!(part["type"].as_str(), Some("input_text" | "text"))
+                && let Some(model) = part["text"]
+                    .as_str()
+                    .and_then(|text| routes.get(text))
+                    .and_then(Value::as_str)
+            {
+                selected = model;
+            }
+        }
+    }
+    selected
+}
+
 async fn serve(body: Value, send: mpsc::UnboundedSender<Request>, width: usize) -> Response<Body> {
     let (reply, result) = oneshot::channel();
     send.send(Request { body, reply }).unwrap();
@@ -329,5 +352,60 @@ impl Drop for Provider {
     fn drop(&mut self) {
         self.server.abort();
         self.actor.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // Routing uses the exact user bytes. A user-role tool result, JSON
+        // escaping or an incidental substring cannot redirect the parent.
+        #[test]
+        fn routing_preserves_unicode_and_excludes_tool_results(text in ".{1,64}") {
+            let routes = serde_json::Map::from_iter([(text.clone(), json!("worker"))]);
+            for (protocol, field, kind) in [("responses", "input", "input_text"), ("anthropic", "messages", "text")] {
+                let request = json!({(field):[{"role":"user","content":[{"type":kind,"text":text}]}]});
+                let bytes = serde_json::to_vec(&request)?;
+                let decoded: Value = serde_json::from_slice(&bytes)?;
+                prop_assert_eq!(route(&decoded, protocol, &routes), "worker");
+                let tool = json!({(field):[{"role":"user","content":[{"type":"tool_result","content":text,"text":text}]}]});
+                prop_assert_eq!(route(&tool, protocol, &routes), "parent");
+                let substring = json!({(field):[{"role":"user","content":[{"type":kind,"text":format!("prefix{text}suffix")}]}]});
+                prop_assert_eq!(route(&substring, protocol, &routes), "parent");
+            }
+        }
+
+        #[test]
+        fn both_wires_preserve_pinned_tool_names_and_argument_bytes(
+            base in "[a-z]{1,16}", revision in "[a-z0-9-]{1,12}", text in ".{0,64}",
+        ) {
+            let name = format!("{base}@{revision}");
+            let arguments = json!({"text":text});
+            let turn = json!([
+                {"type":"event","kind":"tool_call","call_id":"call","name":name,"arguments":arguments},
+                {"type":"event","kind":"completed","metadata":null}
+            ]);
+            for protocol in ["responses", "anthropic"] {
+                let (parts, pending) = wire::encode(&turn, protocol).map_err(TestCaseError::fail)?;
+                prop_assert!(!pending);
+                let frames: Vec<Value> = parts.iter().map(|part| serde_json::from_str(part.strip_prefix("data: ").unwrap().trim())).collect::<Result<_, _>>()?;
+                let (actual_name, actual_arguments) = if protocol == "responses" {
+                    let item = frames.iter().find(|frame| frame["type"] == "response.output_item.added").unwrap();
+                    let args: String = frames.iter().filter(|frame| frame["type"] == "response.function_call_arguments.delta")
+                        .filter_map(|frame| frame["delta"].as_str()).collect();
+                    (item["item"]["name"].clone(), args)
+                } else {
+                    let block = frames.iter().find(|frame| frame["type"] == "content_block_start").unwrap();
+                    let args: String = frames.iter().filter(|frame| frame["type"] == "content_block_delta")
+                        .filter_map(|frame| frame["delta"]["partial_json"].as_str()).collect();
+                    (block["content_block"]["name"].clone(), args)
+                };
+                prop_assert_eq!(&actual_name, &json!(name));
+                prop_assert_eq!(serde_json::from_str::<Value>(&actual_arguments)?, arguments.clone());
+            }
+        }
     }
 }
