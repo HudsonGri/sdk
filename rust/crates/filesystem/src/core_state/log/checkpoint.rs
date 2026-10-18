@@ -149,7 +149,7 @@ impl CoreLog {
         self.length = 0;
         self.flushed = 0;
         crash_point("log truncated", self.flushed);
-        self.epoch = Uuid::now_v7();
+        self.epoch = crate::identity::fresh_time_uuid();
         self.sequence = 0;
         self.dirty.clear();
         truncate_recorded?;
