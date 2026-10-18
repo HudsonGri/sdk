@@ -25,18 +25,18 @@ pub fn deepest_stack<T>(callback: impl FnOnce() -> T) -> (T, usize) {
 }
 
 #[inline(never)]
+#[forbid(unsafe_code)]
 fn measure<const BYTES: usize, T>(callback: impl FnOnce() -> T) -> (T, usize) {
+    // Allocate the destination before painting: neither allocation nor scanning
+    // should contribute to the callback's high-water mark.
+    let mut snapshot = vec![0; BYTES];
     let lowest = paint::<BYTES>();
     let result = callback();
-    let untouched = (0..BYTES)
-        .take_while(|offset| {
-            // SAFETY: the region is this thread's own stack below
-            // every live frame, still mapped, and written by
-            // nothing else; it is only read, byte by byte.
-            let byte = unsafe { std::ptr::read_volatile((lowest + offset) as *const u8) };
-            byte == PATTERN
-        })
-        .count();
+    // `lowest` names mapped stack memory, but paint's Rust allocation is dead.
+    // Only the OS may read it; constructing/dereferencing a Rust pointer to that
+    // expired allocation is undefined behaviour, even with read_volatile.
+    snapshot_stack(lowest, &mut snapshot);
+    let untouched = snapshot.iter().take_while(|byte| **byte == PATTERN).count();
     (
         result,
         if untouched == 0 {
@@ -45,6 +45,73 @@ fn measure<const BYTES: usize, T>(callback: impl FnOnce() -> T) -> (T, usize) {
             BYTES - untouched
         },
     )
+}
+
+#[cfg(target_os = "linux")]
+fn snapshot_stack(address: usize, output: &mut [u8]) {
+    use std::os::unix::fs::FileExt as _;
+    std::fs::File::open("/proc/self/mem")
+        .unwrap()
+        .read_exact_at(output, address as u64)
+        .unwrap();
+}
+
+#[cfg(windows)]
+fn snapshot_stack(address: usize, output: &mut [u8]) {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn ReadProcessMemory(
+            process: *mut c_void,
+            address: *const c_void,
+            output: *mut c_void,
+            length: usize,
+            read: *mut usize,
+        ) -> i32;
+    }
+    let mut read = 0;
+    // SAFETY: the OS interprets the source address; output and read are live,
+    // writable allocations and the requested length is output's exact extent.
+    let success = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            address as *const c_void,
+            output.as_mut_ptr().cast(),
+            output.len(),
+            &mut read,
+        )
+    };
+    assert_ne!(success, 0, "{}", std::io::Error::last_os_error());
+    assert_eq!(read, output.len());
+}
+
+#[cfg(target_os = "macos")]
+fn snapshot_stack(address: usize, output: &mut [u8]) {
+    unsafe extern "C" {
+        static mach_task_self_: u32;
+        fn mach_vm_read_overwrite(
+            task: u32,
+            address: u64,
+            size: u64,
+            data: u64,
+            read: *mut u64,
+        ) -> i32;
+    }
+    let mut read = 0;
+    // SAFETY: the kernel copies from this task's mapped stack into the live
+    // output allocation; it never dereferences an expired Rust allocation.
+    let status = unsafe {
+        mach_vm_read_overwrite(
+            mach_task_self_,
+            address as u64,
+            output.len() as u64,
+            output.as_mut_ptr() as u64,
+            &mut read,
+        )
+    };
+    assert_eq!(status, 0, "mach_vm_read_overwrite failed");
+    assert_eq!(read, output.len() as u64);
 }
 
 #[cfg(test)]
@@ -65,5 +132,11 @@ mod tests {
         assert!(empty < 16 << 10, "an empty callback used {empty} bytes");
         assert!(held >= 256 << 10, "a 256 KiB frame measured {held} bytes");
         assert!(held < 320 << 10, "a 256 KiB frame measured {held} bytes");
+    }
+
+    #[test]
+    fn exhausting_the_snapshot_cannot_pass_the_budget() {
+        let (_, used) = measure::<{ 64 << 10 }, _>(hold::<{ 128 << 10 }>);
+        assert_eq!(used, usize::MAX, "an exhausted oracle must fail closed");
     }
 }
