@@ -118,9 +118,6 @@ const entry = /\bloom::model\b|\bcheck_with_bound\(|preemption_bound/;
 const exhaustive = /exhaust|every (?:interleaving|schedule)|all (?:interleavings|schedules)/i;
 const grades = new Set(['real', 'abstract', 'external', 'runner']);
 
-// Comments and `const _: fn(Shim) -> loom::sync::Mutex` identity assertions
-// do not state a bound; strip them before looking for one.
-
 // Lock ownership is decided on parsed Rust, never on text: the scanner in
 // rust/verification/loom-locks resolves lock aliases and Loom lock imports,
 // finds every constructor spelling, and decides context-typed constructors

@@ -7,11 +7,10 @@ use syn::{
 };
 
 pub fn bounded(source: &str) -> Result<bool, proc_macro2::LexError> {
-    let stream: TokenStream = source.parse()?;
-    let Ok(file) = syn::parse2::<syn::File>(stream.clone()) else {
+    let Ok(file) = syn::parse_file(source) else {
         // Invalid Rust cannot execute; token analysis still catches caps in
         // fragments while the lock classifier reports the syntax failure.
-        return Ok(tokens(stream));
+        return Ok(tokens(source.parse()?));
     };
     let mut check = Bounds(false);
     check.visit_file(&file);
@@ -81,7 +80,10 @@ fn tokens(stream: TokenStream) -> bool {
     for (index, token) in input.iter().enumerate() {
         if ident(Some(token), "preemption_bound")
             && matches!(input.get(index + 1), Some(TokenTree::Punct(p)) if matches!(p.as_char(), '=' | ':'))
-            && !ident(input.get(index + 2), "None")
+            && !(ident(input.get(index + 2), "None")
+                && input.get(index + 3).is_none_or(
+                    |next| matches!(next, TokenTree::Punct(p) if matches!(p.as_char(), ';' | ',')),
+                ))
         {
             return true;
         }
@@ -131,5 +133,25 @@ mod tests {
     #[test]
     fn literals_comments_and_definitions_are_not_bounds() {
         assert_eq!(bounded("fn check_with_bound(_: Option<usize>) {} fn f() { let s = \"preemption_bound = Some(2)\"; /* preemption_bound = Some(2) */ }").ok(), Some(false));
+    }
+
+    #[test]
+    fn only_a_complete_none_expression_disables_a_bound() {
+        for body in [
+            "builder.preemption_bound = None.or(Some(2));",
+            "builder.preemption_bound.replace(2);",
+            "check_with_bound::<()>(Some(2), run);",
+            "wrapper! { builder.preemption_bound = None.or(Some(2)); }",
+        ] {
+            assert_eq!(
+                bounded(&format!("fn f() {{ {body} }}")).ok(),
+                Some(true),
+                "{body}"
+            );
+        }
+        assert_eq!(
+            bounded("#!/bin/preemption_bound=Some(2)\nfn f() {}").ok(),
+            Some(false)
+        );
     }
 }
