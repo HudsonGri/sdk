@@ -5,7 +5,7 @@ mod runtime;
 #[cfg(all(not(target_arch = "wasm32"), feature = "runtime"))]
 pub use runtime::*;
 
-#[cfg(feature = "task-context")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "task-context"))]
 pub mod task;
 
 #[cfg(feature = "codegen")]

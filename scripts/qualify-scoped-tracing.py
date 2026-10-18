@@ -20,6 +20,7 @@ FEATURES = (
     "acyclic-harness/mcp-http,acyclic-harness/test-support,"
     "acyclic-grpc-observability/task-context"
 )
+WINDOWS_FEATURES = FEATURES + ",acyclic-harness/terminal,acyclic-harness/tui,acyclic-harness/mcp-stdio,acyclic-harness/grpc"
 PACKAGES = [
     "acyclic-harness", "acyclic-fs", "acyclic-actors",
     "acyclic-grpc-observability", "acyclic-test-support",
@@ -76,6 +77,54 @@ def run(name, command, env=None, rejected=False):
     elif result.returncode:
         raise RuntimeError(content[-16000:])
     return content
+
+
+def windows_check():
+    content = run("windows-gnu", [
+        "cargo", "check", "--locked", *SELECTION, "--lib", "--tests",
+        "--features", WINDOWS_FEATURES, "--target", "x86_64-pc-windows-gnu",
+        "--message-format=json",
+    ])
+    artifacts = [json.loads(line) for line in content.splitlines() if line.startswith("{")]
+    harness = [a for a in artifacts if a.get("reason") == "compiler-artifact"
+               and a["target"]["name"] == "acyclic_harness"]
+    required = {"terminal", "tui", "mcp-stdio", "grpc"}
+    assert harness and all(required <= set(a["features"]) for a in harness)
+    assert {"e2e", "projfs_profile"} <= {
+        a["target"]["name"] for a in artifacts if a.get("reason") == "compiler-artifact"
+    }, "changed diagnostic targets were not compiled"
+    for artifact in harness:
+        for missing in required:
+            assert not required <= (set(artifact["features"]) - {missing}), "omitted entry point escaped"
+
+
+if "--windows-only" in sys.argv:
+    windows_check()
+    print("SCOPED_TRACING_WINDOWS_PASS", flush=True)
+    sys.exit(0)
+
+
+# Native spawn helpers must not expand the browser's runtime feature closure.
+# The manifest oracle also rejects the original misplaced dependency in memory.
+def native_dependency(manifest, name):
+    return name not in manifest.get("dependencies", {}) and name in manifest.get(
+        "target", {}).get('cfg(not(target_arch = "wasm32"))', {}).get("dependencies", {})
+
+
+for crate, dependency in [("harness", "acyclic-grpc-observability"), ("grpc-observability", "tokio")]:
+    manifest = tomllib.loads((ROOT / f"rust/crates/{crate}/Cargo.toml").read_text())
+    assert native_dependency(manifest, dependency)
+    misplaced = dict(manifest, dependencies=dict(manifest["dependencies"], **{dependency: {}}))
+    assert not native_dependency(misplaced, dependency), "browser dependency mutation escaped"
+for package, features, forbidden in [
+    ("acyclic-harness", [], "acyclic-grpc-observability"),
+    ("acyclic-grpc-observability", ["--no-default-features", "--features", "task-context"], "tokio"),
+]:
+    tree = run(package + "-browser-tree", [
+        "cargo", "tree", "--locked", "-p", package, *features,
+        "--target", "wasm32-unknown-unknown", "-e", "normal", "--prefix", "none", "--format", "{p} {f}",
+    ])
+    assert not re.search(rf"^{forbidden} v", tree, re.M), tree
 
 
 content = (LOGS / "native-build.log").read_text() if "--reuse" in sys.argv else run("native-build", [
@@ -146,8 +195,46 @@ with tempfile.TemporaryDirectory(prefix="spawn-policy-", dir=LOGS) as temporary:
             *dependencies, str(source),
         ], env=env, rejected=index != 0)
 
-run("windows-gnu", [
-    "cargo", "check", "--locked", *SELECTION, "--lib", "--tests",
-    "--features", FEATURES, "--target", "x86_64-pc-windows-gnu",
+# Compile the actual filesystem synchronization shim in both dedicated model
+# domains, using the already-built dependencies rather than rebuilding the
+# workspace under different RUSTFLAGS. Its worker touches real loom state.
+# The original regression routed loom's Builder into the std-only helper;
+# compiling that mutation must fail the very same type check.
+with tempfile.TemporaryDirectory(prefix="spawn-model-", dir=LOGS) as temporary:
+    temporary = Path(temporary)
+    shim = (ROOT / "rust/crates/filesystem/src/sync.rs").read_text()
+    modeled = "thread::Builder::new().spawn(acyclic_grpc_observability::task::blocking(work))"
+    assert shim.count(modeled) == 1
+    mutant = shim.replace(modeled, "acyclic_grpc_observability::task::named_thread(thread::Builder::new(), work)")
+    dependencies = ["-L", f"dependency={rlib('loom').parent}"]
+    for crate in ["loom", "acyclic_grpc_observability"]:
+        dependencies.extend(["--extern", f"{crate}={rlib(crate)}"])
+    for domain in ["acyclic_fs_loom", "acyclic_fs_native_loom"]:
+        for broken, source in [(False, shim), (True, mutant)]:
+            name = f"{domain}-{'control' if broken else 'shim'}"
+            path = temporary / (name + ".rs")
+            path.write_text(source)
+            binary = temporary / name
+            command = [
+                "rustc", "--edition=2024", "--test", "--cfg", domain,
+                "--cfg", 'feature="native-mount"', *dependencies,
+                str(path), "-o", str(binary),
+            ]
+            if broken:
+                result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+                output = result.stdout + result.stderr
+                (LOGS / (name + ".log")).write_text(output)
+                assert result.returncode and "error[E0308]" in output, output
+                assert "loom::thread::Builder" in output and "std::thread::Builder" in output, output
+                print(f"{name}: original builder mismatch rejected", flush=True)
+            else:
+                run(name + "-build", command)
+                output = run(name, [str(binary), "modeled_native_spawn_keeps_worker_in_scheduler"])
+                assert "test result: ok. 1 passed;" in output, output
+
+run("browser-check", [
+    "cargo", "check", "--locked", "-p", "acyclic-harness", "-p", "acyclic-grpc-observability",
+    "--lib", "--features", "acyclic-grpc-observability/task-context", "--target", "wasm32-unknown-unknown",
 ])
+windows_check()
 print("SCOPED_TRACING_QUALIFICATION_PASS", flush=True)

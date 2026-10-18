@@ -201,12 +201,9 @@ impl NativeMountRecoveryOwner {
                 ..Default::default()
             },
         )?;
-        drop(acyclic_grpc_observability::task::named_thread(
-            crate::sync::native::thread::Builder::new(),
-            move || {
-                retire_recovery(worker);
-            },
-        )?);
+        drop(crate::sync::native::spawn(move || {
+            retire_recovery(worker);
+        })?);
         let mut owner = Self {
             shared,
             retirement: Some(retirement),
