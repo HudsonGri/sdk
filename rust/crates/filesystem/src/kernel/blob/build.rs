@@ -385,6 +385,7 @@ pub(super) struct BlobBatchStore<'a, S> {
     writes: ReadOwned<Vec<HashedObject>>,
     bytes: u64,
     prior: Option<(ObjectId, DecodeLimits, u64)>,
+    prior_pages: ReadOwned<Vec<(ObjectId, ReadOwned<BlobPage>)>>,
 }
 
 impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
@@ -402,6 +403,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             writes,
             bytes: 0,
             prior: None,
+            prior_pages: empty_blob_vec(),
         })
     }
 
@@ -411,6 +413,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             writes: empty_blob_vec(),
             bytes: 0,
             prior: Some(prior),
+            prior_pages: empty_blob_vec(),
         }
     }
 
@@ -486,12 +489,19 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             let present = super::reuse::matches_prior(
                 self.inner,
                 prior,
+                &mut self.prior_pages,
                 object.object_id(),
                 range,
                 accounting,
                 cancellation,
             )
             .await;
+            #[cfg(all(test, feature = "memory"))]
+            let present = if super::tests::force_prior_match() {
+                Ok(true)
+            } else {
+                present
+            };
             match present {
                 Ok(true) => {
                     drop(object);
@@ -525,6 +535,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
 
     pub(super) fn release(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         let bytes = self.bytes;
+        super::reuse::release_pages(self.prior_pages, accounting)?;
         release_blob_vec(self.writes, accounting)?;
         release_blob_bytes(bytes, accounting)
     }

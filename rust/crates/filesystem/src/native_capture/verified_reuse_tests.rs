@@ -38,19 +38,22 @@ pub(super) fn repeat_read(sparse: bool) -> bool {
     mode() == Reuse::ReadTwice || (sparse && mode() == Reuse::VerifySparse)
 }
 
-struct Mode;
+struct Mode(Reuse);
 
 impl Mode {
     fn enter(mode: Reuse) -> Self {
-        MODE.with(|cell| cell.set(mode));
-        Self
+        Self(MODE.with(|cell| cell.replace(mode)))
     }
 }
 
 impl Drop for Mode {
     fn drop(&mut self) {
-        MODE.with(|cell| cell.set(Reuse::Verified));
+        MODE.with(|cell| cell.set(self.0));
     }
+}
+
+pub(super) fn single_read() -> impl Drop {
+    Mode::enter(Reuse::Verified)
 }
 
 const FILES: [(&str, usize); 3] = [("/empty", 0), ("/d/body", 96), ("/d/large", 70_000)];
@@ -480,16 +483,32 @@ fn exact_metadata(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), 
     } else {
         491
     };
+    let counters = [
+        "objectBytesWritten",
+        "bytesHashed",
+        "bytesEncoded",
+        "bytesCopied",
+        "objectProbes",
+        "allocationOperations",
+    ];
+    let expected_work = if cfg!(windows) {
+        [500, 73_946, 1_245, 19_990, 16, 460]
+    } else if cfg!(target_os = "macos") {
+        [516, 73_638, 1_286, 22_115, 14, 474]
+    } else {
+        [516, 73_846, 1_158, 20_678, 17, 480]
+    };
+    let actual_work = counters.map(|name| work[name].as_u64().unwrap());
     let observed = (
         heap.count_total,
         work["sourceBytesRead"].as_u64(),
-        work["objectBytesWritten"].as_u64(),
+        actual_work,
     );
-    if observed == (expected, Some(70_117), Some(516)) {
+    if observed == (expected, Some(70_117), expected_work) {
         Ok(())
     } else {
         Err(format!(
-            "metadata capture {observed:?}, expected heap={expected}, source=70117, written=516"
+            "metadata capture {observed:?}, expected heap={expected}, source=70117, work={expected_work:?}"
         ))
     }
 }
@@ -554,8 +573,11 @@ proptest::proptest! {
         let _inline = acyclic_native_runtime::InlineBlocking::enter();
         let runtime = setup();
         for index in [1, 2] {
-            for budget in [70_135, u64::MAX] {
-                let [((old, old_work, _, _), old_trace), ((new, work, _, _), trace)] = differential::pair::<_, _, &'static str>(|| {
+            // Collection reads 21 path bytes. Three mutation clones cost
+            // 15 bytes for d/body or 18 bytes for d/large.
+            let exact = if index == 1 { 70_132 } else { 70_135 };
+            for budget in [exact, u64::MAX] {
+                let [((old, old_work, old_heap, _), old_trace), ((new, work, heap, _), trace)] = differential::pair::<_, _, &'static str>(|| {
                     let mut state = fixture(&runtime);
                     std::fs::write(state.source.path().join(FILES[index].0.trim_start_matches('/')), body(FILES[index].1, seed)).unwrap();
                     state.budget.source_bytes_read = budget;
@@ -572,15 +594,18 @@ proptest::proptest! {
                 proptest::prop_assert_eq!((&old.result, &old.bytes), (&new.result, &new.bytes));
                 proptest::prop_assert_eq!(&new.bytes[index], &body(FILES[index].1, seed));
                 proptest::prop_assert_eq!(old_trace, trace);
-                proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(70_135));
-                proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), Some(70_135));
+                proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(exact));
+                proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), Some(exact));
+                if budget == u64::MAX {
+                    eprintln!("CHANGED_REUSE index={index} heap={} old_heap={} work={work} old_work={old_work}", heap.count_total, old_heap.count_total);
+                }
             }
             let mut broken = fixture(&runtime);
             std::fs::write(broken.source.path().join(FILES[index].0.trim_start_matches('/')), body(FILES[index].1, seed)).unwrap();
             let (output, work, _, _) = rescan(&runtime, &mut broken, Reuse::ReadTwice, false);
             proptest::prop_assert!(output.result.is_ok());
-            proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(140_231));
-            broken.budget.source_bytes_read = 70_135;
+            proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(exact + 70_096));
+            broken.budget.source_bytes_read = exact;
             let (output, _, _, _) = rescan(&runtime, &mut broken, Reuse::ReadTwice, false);
             proptest::prop_assert!(output.result.is_err());
         }

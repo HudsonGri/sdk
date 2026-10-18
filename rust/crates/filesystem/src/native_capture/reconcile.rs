@@ -450,9 +450,18 @@ impl CaptureBatch<'_> {
                 verify
             }
         };
-        let mut verified_bytes = 0;
-        let mut persist = !verify;
-        let prior_root = if verify {
+        let prepared = prepare_regular_body(
+            self.source_root,
+            &host_path,
+            metadata,
+            self.maximum_extent_spans,
+            self.meter,
+        )
+        .await?;
+        let dense = prepared.as_ref().is_some_and(|(_, ranges)| ranges.as_ref().is_none_or(|ranges| {
+            matches!(ranges.as_slice(), [range] if range.offset == 0 && range.length == logical_bytes)
+        }));
+        let prior_root = if verify && dense {
             prior_regular_root(
                 checkout,
                 existing.0.ok_or(WorkError::Overflow)?,
@@ -464,25 +473,21 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        // Staging opens the file once and proves it is still the observed node before reading a byte.
-        let (staged, prior_root) = read_regular_body(
-            checkout,
-            self.source_root,
-            &host_path,
-            metadata,
-            (self.maximum_extent_spans, &mut persist, prior_root),
-            self.meter,
-            &mut verified_bytes,
-        )
-        .await?;
-        if persist {
-            self.receipt.staged_file_bytes = self
-                .receipt
-                .staged_file_bytes
-                .checked_add(verified_bytes)
-                .ok_or(WorkError::Overflow)?;
-            verified_bytes = 0;
-        }
+        let staged = match prepared {
+            Some(prepared) => {
+                read_prepared_body(
+                    checkout,
+                    self.source_root,
+                    &host_path,
+                    metadata,
+                    (prepared, prior_root, self.maximum_extent_spans),
+                    self.meter,
+                    &mut self.receipt.staged_file_bytes,
+                )
+                .await?
+            }
+            None => Vec::new(),
+        };
         // Reuse persists differences while reading; every returned root exists.
         capture_drop_host_path(host_path, self.meter)?;
         let ranges = staged;
@@ -519,11 +524,6 @@ impl CaptureBatch<'_> {
                 .clone()
                 .release(ranges_bytes)
                 .map_err(capture_demand_error)?;
-            self.receipt.staged_file_bytes = self
-                .receipt
-                .staged_file_bytes
-                .checked_add(verified_bytes)
-                .ok_or(WorkError::Overflow)?;
             #[cfg(test)]
             // The old negative control trusts the entire prior node, including metadata.
             let metadata_unchanged = existing.1

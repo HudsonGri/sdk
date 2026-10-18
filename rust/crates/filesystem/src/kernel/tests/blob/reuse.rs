@@ -3,6 +3,21 @@ struct ReuseSource<'a> {
     offset: usize,
 }
 
+thread_local! {
+    static FORCE_PRIOR_MATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(super) fn force_prior_match() -> bool {
+    FORCE_PRIOR_MATCH.get()
+}
+
+struct PriorMatchControl;
+impl Drop for PriorMatchControl {
+    fn drop(&mut self) {
+        FORCE_PRIOR_MATCH.set(false);
+    }
+}
+
 impl AsyncBlobSource for ReuseSource<'_> {
     async fn read<'a>(
         &'a mut self,
@@ -137,10 +152,80 @@ fn reuse_matches_independent_staging_for_leaf_and_multilevel_changes() {
                 } else {
                     prop_assert!(new.4 > 0);
                 }
-                // Restoring the second pass fails the same exact byte oracle.
-                prop_assert_ne!(new.3 + bytes.len() as u64, bytes.len() as u64);
                 Ok(())
             },
         )
         .unwrap();
+}
+
+#[test]
+fn pretending_a_changed_chunk_matches_fails_the_complete_output_oracle() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let options = BlobBuildOptions {
+        chunk_bytes: 2,
+        page_items: 2,
+        page_bytes: 256,
+        maximum_blob_bytes: 9,
+    };
+    let initialize = || {
+        let store = MemoryObjectStore::default();
+        let prior = runtime
+            .block_on(build_blob(
+                &store,
+                &mut std::io::Cursor::new(b"abcdefghi"),
+                options,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))
+            .unwrap();
+        (store, prior.root)
+    };
+    let (baseline, _) = initialize();
+    let expected = runtime
+        .block_on(build_blob(
+            &baseline,
+            &mut std::io::Cursor::new(b"abcdXfghi"),
+            options,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .unwrap();
+    let (candidate, prior) = initialize();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let broken = {
+        FORCE_PRIOR_MATCH.set(true);
+        let _control = PriorMatchControl;
+        runtime
+            .block_on(reuse_blob_with_accounting(
+                &candidate,
+                &mut std::io::Cursor::new(b"abcdXfghi"),
+                options,
+                (prior, DecodeLimits::default()),
+                &mut accounting,
+                &cancellation,
+            ))
+            .unwrap()
+    };
+    assert_eq!(broken.root, expected.root);
+    let read = |store: &MemoryObjectStore, root| {
+        runtime
+            .block_on(read_blob_range(
+                store,
+                root,
+                ByteRange {
+                    offset: 0,
+                    length: 9,
+                },
+                DecodeLimits::default(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))
+            .map(|read| read.bytes.as_ref().to_vec())
+    };
+    assert_eq!(read(&baseline, expected.root).unwrap(), b"abcdXfghi");
+    assert!(read(&candidate, broken.root).is_err());
 }
