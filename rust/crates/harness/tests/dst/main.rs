@@ -419,7 +419,10 @@ fn seeded_production_turn_and_live_f17_replay_exact_bytes() -> Result<()> {
         );
         Ok(())
     });
-    eprintln!("direct/headless/F17 replay elapsed: {:?}", started.elapsed());
+    eprintln!(
+        "direct/headless/F17 replay elapsed: {:?}",
+        started.elapsed()
+    );
     result
 }
 
