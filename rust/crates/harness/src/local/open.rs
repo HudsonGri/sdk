@@ -129,6 +129,11 @@ impl Opening {
             &self.state_directory,
             checkout.as_ref().map(|checkout| checkout.path.as_path()),
         )?;
+        #[cfg(test)]
+        let checkout = match (&self.config.project, owner::RECAPTURE.get()) {
+            (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
+            _ => checkout,
+        };
         let owner = owner::Owner::open(&directory, &self.config.project, checkout.as_ref())?;
         let options = acyclic_fs::LocalOptions::new(match &self.config.project {
             LocalProject::Workspace(_) => directory.join("filesystem"),
@@ -151,7 +156,7 @@ impl Opening {
         } = PrivateVolumes::open(&files, &owner).await?;
         #[cfg(feature = "native-execution")]
         let workspace = self
-            .workspace(&filesystem, &directory, &owner, &scratch)
+            .workspace(&filesystem, &directory, &owner, &scratch, checkout)
             .await?;
         #[cfg(feature = "native-execution")]
         let files = match &workspace {
@@ -196,6 +201,7 @@ impl Opening {
         directory: &Path,
         owner: &owner::Owner,
         scratch: &VolumeRef,
+        checkout: Option<owner::Checkout>,
     ) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
         // This standalone composition owns its private companion namespace.
         // Retain the existing owned WAL instead of reopening/checkpointing it
@@ -204,14 +210,15 @@ impl Opening {
             .map_err(storage)?
             .with_ownership_anchor(self.config.test_state.clone());
         let workspace = match &self.config.project {
-            LocalProject::Workspace(path) => Some(
+            LocalProject::Workspace(_) => Some(
                 workspace::open(
                     filesystem,
                     &owner.project,
                     scratch,
-                    path,
+                    checkout
+                        .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
+                        .root,
                     directory,
-                    owner.workspace_identity,
                     workspace::attach_operation(owner.task),
                     false,
                     self.native_mounts,
