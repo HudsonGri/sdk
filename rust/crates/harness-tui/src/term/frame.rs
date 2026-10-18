@@ -353,28 +353,25 @@ impl<D: Present> FrameTerminal<D> {
     ) -> io::Result<()> {
         let backend = self.terminal.backend_mut();
         let outside = backend.output.device.outside_writes();
-        if outside.is_none() || outside != backend.ours || backend.size != size {
+        let invalidated = outside.is_none() || outside != backend.ours;
+        if invalidated || backend.size != size {
             backend.shown = Shown::default();
         }
+        self.invalid |= invalidated;
         backend.ours = outside;
         backend.size = size;
         let drawn = self.scroll_and_draw(scroll, render);
-        let backend = self.terminal.backend_mut();
-        let committed = match backend.output.commit(backend.ours) {
+        let expected = self.terminal.backend_mut().ours;
+        let presented = self.terminal.backend_mut().output.commit(expected);
+        let committed = match presented {
             Ok(None) => {
-                // Nothing reached the device. Keep the diff bytes and encode
-                // the cursor without cached assumptions; any further outside
-                // change before presentation is then harmless.
-                let desired = backend.shown;
-                backend.shown = Shown::default();
-                // The retained diff was encoded before the outside access.
-                // Repair attributes BEFORE its cells, not just the cursor after.
-                backend
-                    .output
-                    .frame
-                    .splice(0..0, b"\x1b[0m".iter().copied());
-                backend.shown.attributes = true;
-                let repair = match desired.visible {
+                // Outside output can change cells as well as attributes/cursor.
+                // Re-encode the retained target against the empty staging buffer;
+                // no second render, screen clone, or assumed device baseline.
+                let desired = self.terminal.backend_mut().shown;
+                let restored = self.recover_contents();
+                let backend = self.terminal.backend_mut();
+                let repair = restored.and_then(|()| match desired.visible {
                     Some(true) => backend.show_cursor().and_then(|()| {
                         desired
                             .position
@@ -382,12 +379,13 @@ impl<D: Present> FrameTerminal<D> {
                     }),
                     Some(false) => backend.hide_cursor(),
                     None => Ok(()),
-                };
+                });
                 repair.and_then(|()| backend.output.commit(None))
             }
             result => result,
         }
         .and_then(|count| count.ok_or_else(|| io::ErrorKind::Interrupted.into()));
+        let backend = self.terminal.backend_mut();
         if let Ok(count) = committed.as_ref() {
             backend.ours = Some(*count);
         }
@@ -399,13 +397,31 @@ impl<D: Present> FrameTerminal<D> {
         drawn.and(committed.map(|_| ()))
     }
 
+    fn recover_contents(&mut self) -> io::Result<()> {
+        let mut bytes = std::mem::take(&mut self.terminal.backend_mut().output.frame);
+        bytes.clear();
+        // Restate every device assumption before repainting: attributes,
+        // margins, cells, then the requested cursor at the checked boundary.
+        bytes.extend_from_slice(b"\x1b[0m\x1b[r\x1b[2J");
+        let encoded = encode_diff(self.terminal.current_buffer_mut(), &self.shown, &mut bytes);
+        let backend = self.terminal.backend_mut();
+        backend.output.frame = bytes;
+        backend.output.effects.margins = true;
+        backend.shown = Shown {
+            attributes: true,
+            ..Shown::default()
+        };
+        encoded
+    }
+
     fn scroll_and_draw(
         &mut self,
         scroll: Option<RegionScroll>,
         render: impl FnOnce(&mut Frame<'_>),
     ) -> io::Result<()> {
+        let previous_area = self.terminal.current_buffer_mut().area;
         self.terminal.autoresize()?;
-        if self.invalid {
+        if self.invalid && self.terminal.current_buffer_mut().area == previous_area {
             // We own the retained baseline. Clear through the backend without
             // Terminal::clear's synchronous cursor query on the output path.
             self.terminal.backend_mut().clear()?;
@@ -446,12 +462,7 @@ impl<D: Present> FrameTerminal<D> {
                 repair_wide_trails(shown, next, repaired);
                 // Ratatui's Buffer::diff_iter remains the encoder input. Owning its
                 // baseline lets scrolling rotate cells and retain heap symbols.
-                {
-                    let mut content = shown.diff_iter(next).peekable();
-                    if content.peek().is_some() {
-                        encoded = CrosstermBackend::new(&mut bytes).draw(content);
-                    }
-                }
+                encoded = encode_diff(shown, next, &mut bytes);
                 for &index in repaired.iter() {
                     next.content[index].diff_option = CellDiffOption::None;
                 }
@@ -478,6 +489,16 @@ impl<D: Present> FrameTerminal<D> {
         output.effects.margins = margins;
         drawn.and(encoded)
     }
+}
+
+// Empty diffs must not invoke crossterm's formatting/reset path. Both ordinary
+// rendering and checked full-screen recovery use this encoder choke point.
+fn encode_diff(previous: &Buffer, next: &Buffer, bytes: &mut Vec<u8>) -> io::Result<()> {
+    let mut content = previous.diff_iter(next).peekable();
+    if content.peek().is_none() {
+        return Ok(());
+    }
+    CrosstermBackend::new(bytes).draw(content)
 }
 
 /// A wide glyph paints its style over trailing cells even though the logical
