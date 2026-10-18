@@ -217,8 +217,6 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
         ScriptedTurn::Text("first".into()),
         ScriptedTurn::Text("second".into()),
     ]);
-    // The reopen below shares this state directory outside the checkout.
-    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let config =
         crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state.path());
