@@ -409,10 +409,28 @@ fn publication_cost(count: u8, restore: bool) -> acyclic_test_support::Allocatio
     };
     RESTORE.set(restore);
     let _reset = Reset;
+    let timestamp = prost_types::Timestamp {
+        seconds: 1_700_000_000,
+        nanos: 300_000_000,
+    };
     let measured = measure(|| {
-        core.put_locked(&mut state, &query, OwnedBytes::from_static(b"new"))
-            .unwrap();
+        test_clock::with(&timestamp, || {
+            core.put_locked(&mut state, &query, OwnedBytes::from_static(b"new"))
+                .unwrap();
+        });
     });
+    assert_eq!(
+        state
+            .buckets
+            .get("target")
+            .unwrap()
+            .objects
+            .get("value")
+            .unwrap()
+            .info
+            .last_modified,
+        Some(timestamp)
+    );
     recount(&state);
     let expected = snapshot(&state);
     drop(state);

@@ -221,6 +221,10 @@ fn successor(prefix: &str) -> Option<String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn timestamp() -> Result<prost_types::Timestamp, Error> {
+    #[cfg(all(test, not(objects_loom)))]
+    if let Some(timestamp) = test_clock::current() {
+        return Ok(timestamp);
+    }
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| Error::from(Unavailable))?;
@@ -269,3 +273,5 @@ use transaction::{PendingObject, Transaction};
 
 #[cfg(test)]
 mod bootstrap_tests;
+#[cfg(all(test, not(target_arch = "wasm32"), not(objects_loom)))]
+mod test_clock;
