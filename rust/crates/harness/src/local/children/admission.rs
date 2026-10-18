@@ -165,8 +165,18 @@ impl LocalHarness {
             .workspace
             .as_ref()
             .ok_or_else(|| Error::Unsupported("child agents require a lazy workspace".into()))?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let _invocation = crate::filesystem::InvocationCancellation(cancellation.clone());
+        let invocation = bound
+            .and_then(|(context, _, _)| context.owned_mailbox.as_ref())
+            .and_then(|owner| owner.invocation_cancellation())
+            .cloned();
+        let (cancellation, _invocation) = match invocation {
+            Some(token) => (token, None),
+            None => {
+                let token = acyclic_fs::CancellationToken::new();
+                let guard = crate::filesystem::InvocationCancellation(token.clone());
+                (token, Some(guard))
+            }
+        };
         let io = PreparationIo::from_budget(
             acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
             &cancellation,

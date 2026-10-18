@@ -601,7 +601,7 @@ where
             .await
     }
 
-    pub(in crate::filesystem) async fn bind_task_owner_cancellable(
+    pub(crate) async fn bind_task_owner_cancellable(
         &self,
         mut context: TaskContext,
         task: TaskId,

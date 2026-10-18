@@ -7,6 +7,9 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 
+#[cfg(all(feature = "native-execution", feature = "hooks"))]
+mod cancellation;
+
 struct Published<'a> {
     commands: RequestCommands<'a, LocalStream, LocalAuthorityBackend, LocalObjectBackend>,
     reached: &'a tokio::sync::Notify,

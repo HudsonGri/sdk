@@ -194,117 +194,150 @@ where
                 }
                 Ok(_) => None,
             };
-            let mut cancelled = None;
-            let progress = if let Some(rejected) = rejected {
-                TaskCommandProgress::Ready(
-                    serde_json::to_value(rejected.outcome())
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
+            // Every tool, including native child preparation, has one original
+            // invocation token. Establish its push cut before polling dispatch.
+            let cancellation = if matches!(request.action, ExternalAction::RunTool { .. }) {
+                Some(
+                    super::cancellation::prepare(
+                        self.requests,
+                        &request,
+                        Component::new(owner.task_id().to_string()).map_err(storage)?,
+                    )
+                    .await?,
                 )
-            } else if super::launch::requested(&request) {
-                let Ok(ExternalRequest {
-                    action: ExternalAction::Attach { workspace },
-                    ..
-                }) = attachment
-                else {
-                    return Err(Error::Conflict(
-                        "authenticated attachment is missing".into(),
-                    ));
-                };
-                self.native_spawn(&context, &fence, &owner, &request, &workspace, reconcile)
-                    .await?
-            } else if command.kind == LIFECYCLE
-                && matches!(request.action, ExternalAction::Attach { .. })
-            {
-                self.native_process(&context, &fence, &owner, &request, reconcile)
-                    .await?
-            } else if command.kind == LIFECYCLE
-                && matches!(request.action, ExternalAction::Fork { .. })
-            {
-                let Ok(ExternalRequest {
-                    action: ExternalAction::Attach { workspace },
-                    ..
-                }) = attachment
-                else {
-                    return Err(Error::Conflict(
-                        "authenticated attachment is missing".into(),
-                    ));
-                };
-                self.fork(
-                    &context, &fence, &owner, &request, &workspace, None, reconcile,
-                )
-                .await?
-            } else if command.kind == LIFECYCLE {
-                if let ExternalAction::ToolFinished { call_id, .. } = &request.action {
-                    let result_key = request
-                        .original_tool_result_key(
-                            Component::new(owner.task_id().to_string()).map_err(storage)?,
-                            call_id,
-                        )
-                        .map_err(storage)?;
-                    if self
-                        .results
-                        .snapshot(&Query::File(result_key), 1)
-                        .await
-                        .map_err(storage)?
-                        .files
-                        .is_empty()
-                    {
-                        failure = Some("native completion has no original settled tool result");
-                    }
-                }
-                let value = match failure {
-                    Some(message) => serde_json::to_value(crate::Outcome::<Value>::Failed {
-                        message: message.into(),
-                    })
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                    None => {
-                        serde_json::json!({"task":owner.task_id(),"operation_id":request.operation_id})
-                    }
-                };
-                TaskCommandProgress::Ready(value)
-            } else if !matches!(request.action, ExternalAction::RunTool { .. }) {
-                let commands = self.runtime.commands();
-                if reconcile {
-                    commands.reconcile(context, fence, command, payload).await?
-                } else {
-                    commands.execute(context, fence, command, payload).await?
-                }
             } else {
-                let context = if command.kind == TOOL_TASK_COMMAND_KIND
-                    && payload.get("name").and_then(Value::as_str) == Some("write")
+                None
+            };
+            let token = cancellation
+                .as_ref()
+                .map(|_| acyclic_fs::CancellationToken::new());
+            let _invocation = token.clone().map(crate::filesystem::InvocationCancellation);
+            let execution = async {
+                let progress = if token
+                    .as_ref()
+                    .is_some_and(acyclic_fs::CancellationToken::is_cancelled)
+                    && !reconcile
                 {
-                    context.with_created_project_output()?
-                } else {
-                    context
-                };
-                // Establish the cancellation cut before polling any execution.
-                let follow = super::cancellation::prepare(
-                    self.requests,
-                    &request,
-                    Component::new(owner.task_id().to_string()).map_err(storage)?,
-                )
-                .await?;
-                drop(request);
-                let token = acyclic_fs::CancellationToken::new();
-                let commands = self.runtime.commands().with_execution_cancellation(&token);
-                let execution = async {
-                    if token.is_cancelled() && !reconcile {
-                        Ok(TaskCommandProgress::Ready(
-                            serde_json::to_value(crate::Outcome::<Value>::Failed {
-                                message: "native tool cancelled before execution".into(),
-                            })
+                    TaskCommandProgress::Ready(
+                        serde_json::to_value(crate::Outcome::<Value>::Failed {
+                            message: "native tool cancelled before execution".into(),
+                        })
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    )
+                } else if let Some(rejected) = rejected {
+                    TaskCommandProgress::Ready(
+                        serde_json::to_value(rejected.outcome())
                             .map_err(|error| Error::Invalid(error.to_string()))?,
-                        ))
-                    } else if reconcile {
-                        commands.reconcile(context, fence, command, payload).await
+                    )
+                } else if super::launch::requested(&request) {
+                    let context = self
+                        .runtime
+                        .bind_task_owner_cancellable(
+                            context,
+                            owner.task_id(),
+                            fence.clone(),
+                            token.as_ref(),
+                        )
+                        .await?;
+                    let Ok(ExternalRequest {
+                        action: ExternalAction::Attach { workspace },
+                        ..
+                    }) = attachment
+                    else {
+                        return Err(Error::Conflict(
+                            "authenticated attachment is missing".into(),
+                        ));
+                    };
+                    self.native_spawn(&context, &fence, &owner, &request, &workspace, reconcile)
+                        .await?
+                } else if command.kind == LIFECYCLE
+                    && matches!(request.action, ExternalAction::Attach { .. })
+                {
+                    self.native_process(&context, &fence, &owner, &request, reconcile)
+                        .await?
+                } else if command.kind == LIFECYCLE
+                    && matches!(request.action, ExternalAction::Fork { .. })
+                {
+                    let Ok(ExternalRequest {
+                        action: ExternalAction::Attach { workspace },
+                        ..
+                    }) = attachment
+                    else {
+                        return Err(Error::Conflict(
+                            "authenticated attachment is missing".into(),
+                        ));
+                    };
+                    self.fork(
+                        &context, &fence, &owner, &request, &workspace, None, reconcile,
+                    )
+                    .await?
+                } else if command.kind == LIFECYCLE {
+                    if let ExternalAction::ToolFinished { call_id, .. } = &request.action {
+                        let result_key = request
+                            .original_tool_result_key(
+                                Component::new(owner.task_id().to_string()).map_err(storage)?,
+                                call_id,
+                            )
+                            .map_err(storage)?;
+                        if self
+                            .results
+                            .snapshot(&Query::File(result_key), 1)
+                            .await
+                            .map_err(storage)?
+                            .files
+                            .is_empty()
+                        {
+                            failure = Some("native completion has no original settled tool result");
+                        }
+                    }
+                    let value = match failure {
+                        Some(message) => serde_json::to_value(crate::Outcome::<Value>::Failed {
+                            message: message.into(),
+                        })
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                        None => {
+                            serde_json::json!({"task":owner.task_id(),"operation_id":request.operation_id})
+                        }
+                    };
+                    TaskCommandProgress::Ready(value)
+                } else if !matches!(request.action, ExternalAction::RunTool { .. }) {
+                    let commands = self.runtime.commands();
+                    if reconcile {
+                        commands.reconcile(context, fence, command, payload).await?
                     } else {
-                        commands.execute(context, fence, command, payload).await
+                        commands.execute(context, fence, command, payload).await?
+                    }
+                } else {
+                    let context = if command.kind == TOOL_TASK_COMMAND_KIND
+                        && payload.get("name").and_then(Value::as_str) == Some("write")
+                    {
+                        context.with_created_project_output()?
+                    } else {
+                        context
+                    };
+                    drop(request);
+                    let commands = self.runtime.commands().with_execution_cancellation(
+                        token.as_ref().ok_or_else(|| {
+                            Error::Unauthorized("tool invocation has no cancellation owner".into())
+                        })?,
+                    );
+                    if reconcile {
+                        commands.reconcile(context, fence, command, payload).await?
+                    } else {
+                        commands.execute(context, fence, command, payload).await?
                     }
                 };
-                let (progress, cancel) =
-                    super::cancellation::settle(execution, follow, || token.cancel()).await?;
-                cancelled = cancel;
-                progress
+                Ok(progress)
+            };
+            let (progress, cancelled) = if let Some(cancellation) = cancellation {
+                super::cancellation::settle(execution, cancellation, || {
+                    if let Some(token) = &token {
+                        token.cancel();
+                    }
+                })
+                .await?
+            } else {
+                (execution.await?, None)
             };
             if let TaskCommandProgress::Ready(value) = &progress {
                 let result = FileValue::new(result_key, volume::encode(value).map_err(storage)?);
