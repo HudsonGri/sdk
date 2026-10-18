@@ -87,7 +87,14 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
         panic!("expected prompt")
     };
     assert_eq!(mentions[0].file, pins[0]);
-    run_local_command(&mut commands, &harness, &request).await?;
+    let mut executor = crate::client::CommandSession::open_local(
+        &harness,
+        uuid::Uuid::from_bytes(session.into_bytes()),
+        65_536,
+        128,
+    )
+    .await?;
+    run_local_command(&mut executor, &harness, &request).await?;
     let requests = provider.requests();
     let images: Vec<_> = requests[0]
         .messages
@@ -103,7 +110,10 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
         .collect();
     assert_eq!(images, vec![&pins[0]]);
     drop(commands);
-    drop(harness);
+    drop(executor);
+    drop(reader);
+    drop(publisher);
+    harness.close().await?;
     let reopened = LocalHarness::open(
         LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
             .without_default_tools()
@@ -119,6 +129,8 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
         jpeg.as_slice()
     );
     assert_eq!(provider.requests().len(), 1);
+    drop(reader);
+    reopened.close().await?;
     Ok(())
 }
 
