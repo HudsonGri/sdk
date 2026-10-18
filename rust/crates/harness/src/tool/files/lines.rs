@@ -8,30 +8,6 @@ const NUMBER_WIDTH: usize = 6;
 /// Rendering of a selection that contains no lines (only an empty file).
 pub(super) const EMPTY_FILE: &str = "(empty file)";
 
-/// Selects `limit` lines starting at one-based `offset`, keeping terminators.
-/// `None` means the offset names no line; an empty file has only line 1.
-pub(super) fn select(source: &str, offset: u64, limit: Option<u64>) -> Option<&str> {
-    if offset == 0 || limit == Some(0) {
-        return None;
-    }
-    if source.is_empty() {
-        return (offset == 1).then_some("");
-    }
-    let mut starts = std::iter::once(0).chain(
-        source
-            .match_indices('\n')
-            .map(|(index, _)| index + 1)
-            .filter(|start| *start < source.len()),
-    );
-    let first = usize::try_from(offset - 1).ok()?;
-    let start = starts.nth(first)?;
-    let end = match limit.and_then(|limit| usize::try_from(limit - 1).ok()) {
-        Some(skip) => starts.nth(skip).unwrap_or(source.len()),
-        None => source.len(),
-    };
-    source.get(start..end)
-}
-
 /// Renders selected lines as `cat -n` text: a right-aligned one-based number,
 /// a tab and the line without its `\n` terminator, joined by `\n`.
 pub(super) fn numbered(text: &str, offset: u64, work: &mut NativeCustody) -> Result<String> {
@@ -90,27 +66,6 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
-        // Property: a selection is exactly the requested window of
-        // terminator-inclusive lines, and offsets past the end select nothing.
-        #[test]
-        fn selection_is_the_requested_line_window(
-            source in "[ab\\n\\ré🦀]{0,24}", offset in 0_u64..30, limit in proptest::option::of(0_u64..30),
-        ) {
-            let lines = model_lines(&source);
-            let expected = if offset == 0 || limit == Some(0) {
-                None
-            } else if lines.is_empty() {
-                (offset == 1).then(String::new)
-            } else if offset as usize > lines.len() {
-                None
-            } else {
-                let start = offset as usize - 1;
-                let end = limit.map_or(lines.len(), |limit| (start + limit as usize).min(lines.len()));
-                Some(lines[start..end].concat())
-            };
-            prop_assert_eq!(select(&source, offset, limit).map(str::to_owned), expected);
-        }
-
         // Property: removing the number column restores the exact selected
         // text (up to its final terminator), and numbers count up from offset.
         #[test]
@@ -134,8 +89,6 @@ mod tests {
 
     #[test]
     fn empty_files_render_a_marker_that_no_numbered_line_can_equal() -> Result<()> {
-        assert_eq!(select("", 1, None), Some(""));
-        assert_eq!(select("", 2, None), None);
         assert_eq!(numbered("", 1, &mut None)?, EMPTY_FILE);
         assert_eq!(rendered_len("", 1), EMPTY_FILE.len());
         assert_eq!(

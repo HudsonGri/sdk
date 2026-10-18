@@ -33,22 +33,19 @@ impl ToolProjection for FileProjection {
                 let read = &value.0;
                 // Executors and projections are replaceable independently, so
                 // the projection checks the result answers this exact request:
-                // its window starts at the requested line, holds no more than
-                // the requested lines, and a whole-file result is the file.
+                // its window starts at the requested line and holds no more
+                // than the requested lines. A request for the whole file must
+                // return the file, verified against its descriptor on the
+                // caller's work ledger whatever length was returned.
                 let request = decode::<ReadFileInput>(&invocation.arguments, work)?;
-                let length = read.file.descriptor().byte_length();
-                let whole = read.offset == 1 && read.text.len() as u64 == length;
-                if read.text.len() as u64 > length
+                let whole = request.0.offset.unwrap_or(1) == 1 && request.0.limit.is_none();
+                if read.text.len() as u64 > read.file.descriptor().byte_length()
                     || read.offset != request.0.offset.unwrap_or(1)
                     || request
                         .0
                         .limit
                         .is_some_and(|limit| read.text.split_inclusive('\n').count() as u64 > limit)
-                    || (whole
-                        && !read
-                            .file
-                            .descriptor()
-                            .matches_bytes(read.text.as_bytes(), &mut None)?)
+                    || (whole && !matches_file(&read.file, &read.text, work)?)
                 {
                     let allocation = edit::allocation(work, 0)?;
                     return Err(edit::invalid(
@@ -118,4 +115,19 @@ impl ToolProjection for FileProjection {
             }
         }
     }
+}
+
+/// Whether `text` is exactly `file`'s content, hashing on the caller's ledger.
+fn matches_file(file: &FileRef, text: &str, work: crate::NativeWork<'_>) -> Result<bool> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        return file
+            .descriptor()
+            .matches_bytes(text.as_bytes(), &mut Some(&mut io));
+    }
+    let _ = work;
+    file.descriptor().matches_bytes(text.as_bytes(), &mut None)
 }

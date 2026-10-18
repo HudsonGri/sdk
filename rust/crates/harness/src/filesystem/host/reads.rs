@@ -1,5 +1,6 @@
 use super::*;
 mod media_type;
+mod window;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -257,6 +258,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             path,
             expected_generation,
             maximum_bytes,
+            None,
             io,
         )
         .await
@@ -270,6 +272,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         maximum_bytes: u64,
+        window: Option<crate::conversation::LineWindow>,
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         crate::executor::with_history_io(io, |work| volume.validate(work))?;
@@ -282,7 +285,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let (file, bytes, _) = self
-            .resolve_path(volume, PathGrant::Write, path, None, maximum_bytes, io)
+            .resolve_path(
+                volume,
+                PathGrant::Write,
+                path,
+                None,
+                maximum_bytes,
+                window,
+                io,
+            )
             .await?;
         Ok((file, bytes))
     }
@@ -294,6 +305,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         expected_generation: Option<&GenerationRef>,
         maximum_bytes: u64,
+        window: Option<crate::conversation::LineWindow>,
         io: Option<&PreparationIo>,
     ) -> Result<(
         FileRef,
@@ -330,7 +342,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let _requested_hold = io.guard_owned(requested.capacity() as u64)?;
-        let bytes = read_generation(&generation, &requested, maximum_bytes, Some(io)).await?;
+        // A line window streams the file: the whole body is hashed and
+        // classified to identify the version, but only its lines are kept.
+        let (bytes, scanned) = match window {
+            None => (
+                read_generation(&generation, &requested, maximum_bytes, Some(io)).await?,
+                None,
+            ),
+            Some(window) => {
+                let (lines, scanned) =
+                    window::scan(&generation, &requested, maximum_bytes, window, io).await?;
+                (lines, Some(scanned))
+            }
+        };
         let metadata_path = content_metadata_path_io(path, true, Some(io))?;
         let _metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
         let metadata = read_generation(
@@ -357,9 +381,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "private file metadata does not match the file",
                 ));
             }
-            crate::executor::with_history_io(Some(io), |work| {
-                staged.descriptor().verify(&bytes, work)
-            })?;
+            match &scanned {
+                Some(scanned)
+                    if scanned.length != staged.descriptor().byte_length()
+                        || &scanned.sha256 != staged.descriptor().sha256() =>
+                {
+                    return Err(stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Invalid,
+                        "file content does not match its descriptor",
+                    ));
+                }
+                Some(_) => {}
+                None => crate::executor::with_history_io(Some(io), |work| {
+                    staged.descriptor().verify(&bytes, work)
+                })?,
+            }
             (
                 FileDescriptor::new(
                     *staged.descriptor().sha256(),
@@ -369,12 +406,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 stock_string_copy(staged.display_name(), Some(io))?,
             )
         } else {
-            (
-                crate::executor::with_history_io(Some(io), |work| {
+            let descriptor = match &scanned {
+                Some(scanned) => FileDescriptor::new(
+                    scanned.sha256,
+                    scanned.length,
+                    stock_string_copy(scanned.media_type, Some(io))?,
+                )?,
+                None => crate::executor::with_history_io(Some(io), |work| {
                     FileDescriptor::from_bytes(&bytes, media_type::classify(&bytes), work)
                 })?,
-                stock_string_copy(name, Some(io))?,
-            )
+            };
+            (descriptor, stock_string_copy(name, Some(io))?)
         };
         let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;
         let reference = crate::executor::with_history_io(Some(io), |work| {

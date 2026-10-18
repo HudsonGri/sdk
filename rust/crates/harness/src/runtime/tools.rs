@@ -609,12 +609,22 @@ impl ToolContext {
         path: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        self.current_lines(path, None, io).await
+    }
+
+    /// [`Self::current_file`], retaining only `window`'s lines of the file.
+    pub async fn current_lines(
+        &self,
+        path: &str,
+        window: Option<crate::conversation::LineWindow>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         let task = self.task();
         let scope = self.effective_scope();
         task.authorize_path_read(path, scope, io)?;
         let (file, bytes, hold) = self
             .path_writer(io)?
-            .current(self.operation_id, path, scope.limits.file_bytes, io)?
+            .current(self.operation_id, path, scope.limits.file_bytes, window, io)?
             .await?;
         task.authorize_file_read(&file, scope, io)?;
         #[cfg(feature = "filesystem")]

@@ -61,7 +61,7 @@ user edit. Changed retry bytes/preconditions and stale fresh operations conflict
 Unsupported generation-aware publishers reject before ordinary staging. There is
 no separate receipt ledger or merge engine.
 
-`tool::files::patch_file(work,hunks)` selects optional revision `portable-patch-4`.
+`tool::files::patch_file(work,hunks)` selects optional revision `portable-patch-5`, whose projection is text like `write` and `edit`.
 Its pure `tool::patch::apply_update` accepts bounded V4A update-file fragments:
 ordered `@@` hunks, exact context/add/delete lines, optional exact anchors and EOF.
 It rejects missing/ambiguous context, unknown syntax and out-of-order changes.

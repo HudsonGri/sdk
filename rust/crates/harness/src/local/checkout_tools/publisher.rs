@@ -165,6 +165,7 @@ impl CheckoutPublisher {
         operation: OperationId,
         path: &str,
         maximum: u64,
+        window: Option<crate::conversation::LineWindow>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         let (mount, relative) = self.tools.workspace.mounts.admit(
             None,
@@ -212,7 +213,7 @@ impl CheckoutPublisher {
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
             let (file, bytes, _) = self
                 .writer_for(&mount.view.volume, workspace)?
-                .current(operation, &relative, maximum, None)?
+                .current(operation, &relative, maximum, window, None)?
                 .await?;
             Ok((file, bytes))
         })
@@ -374,13 +375,14 @@ impl ContentPublisher for CheckoutPublisher {
         operation: OperationId,
         path: &'a str,
         maximum: u64,
+        window: Option<crate::conversation::LineWindow>,
         io: Option<&'a ContentIo>,
     ) -> Result<
         BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
     > {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
-            let (file, bytes) = self.current_file(operation, path, maximum).await?;
+            let (file, bytes) = self.current_file(operation, path, maximum, window).await?;
             Ok((file, bytes, None))
         })
     }

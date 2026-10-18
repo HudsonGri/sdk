@@ -233,6 +233,16 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// Lines a path-addressed read keeps: resolution streams the whole file to
+/// identify it, but retains only lines `offset..offset + limit` (one-based).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LineWindow {
+    /// One-based first line.
+    pub offset: u64,
+    /// Maximum number of lines; `None` keeps every line from `offset`.
+    pub limit: Option<u64>,
+}
+
 /// Owner-bound, bounded publication on the caller's existing ledger.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Resolves the exact destination before the caller checks write authority.
@@ -316,11 +326,14 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     }
     /// Resolves the file currently at a destination path through this writer's
     /// task view, so path-addressed tools read and replace what the task sees.
+    /// With a `window`, the returned bytes are exactly those lines of the
+    /// UTF-8 file and nothing else of it is retained.
     fn current<'a>(
         &'a self,
         _operation_id: OperationId,
         _path: &'a str,
         _maximum_bytes: u64,
+        _window: Option<LineWindow>,
         io: Option<&'a ContentIo>,
     ) -> Result<
         BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,

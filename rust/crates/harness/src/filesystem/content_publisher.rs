@@ -258,6 +258,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         _operation: OperationId,
         path: &'a str,
         maximum: u64,
+        window: Option<crate::conversation::LineWindow>,
         io: Option<&'a PreparationIo>,
     ) -> Result<
         BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
@@ -271,6 +272,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     &self.grant,
                     path,
                     maximum.min(self.maximum_bytes),
+                    window,
                     io,
                 )
                 .await?;

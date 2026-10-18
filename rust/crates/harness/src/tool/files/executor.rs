@@ -189,12 +189,19 @@ impl FileTool {
         };
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        let (file, bytes) = context.current_file(&input.0.path, io).await?;
+        let offset = input.0.offset.unwrap_or(1);
+        // A ranged read streams the file and retains only the selected lines;
+        // a whole-file read retains the file, which is its selection.
+        let window = (input.0.offset.is_some() || input.0.limit.is_some()).then_some(
+            crate::conversation::LineWindow {
+                offset,
+                limit: input.0.limit,
+            },
+        );
+        let (file, bytes) = context.current_lines(&input.0.path, window, io).await?;
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("file read requires UTF-8 content"))?;
-        let offset = input.0.offset.unwrap_or(1);
-        let selected = super::lines::select(source, offset, input.0.limit)
-            .ok_or_else(|| invalid("read offset is past the end of the file"))?;
+        let selected = source;
         let limits = context.effective_scope().limits();
         if super::lines::rendered_len(selected, offset) as u64
             > limits.render_bytes.min(limits.file_bytes)

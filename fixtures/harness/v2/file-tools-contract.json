@@ -3319,267 +3319,91 @@
         },
         "projection_schema": {
           "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "FileResult": {
-              "additionalProperties": false,
-              "description": "Canonical successful write/edit result, independent of model projection.",
-              "properties": {
-                "file": {
-                  "$ref": "#/$defs/FileRef",
-                  "description": "Exact retained publication result with workspace and content identity."
-                }
-              },
-              "required": [
-                "file"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+            "TextPart": {
               "oneOf": [
                 {
                   "additionalProperties": false,
-                  "description": "Project workspace owner.",
                   "properties": {
-                    "id": {
+                    "kind": {
+                      "const": "text",
                       "type": "string"
                     },
-                    "kind": {
-                      "const": "project",
+                    "text": {
                       "type": "string"
                     }
                   },
                   "required": [
                     "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
+                    "text"
                   ],
                   "type": "object"
                 }
               ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "description": "Text the model reads verbatim; providers never JSON-quote a parts result.",
           "oneOf": [
             {
               "additionalProperties": false,
               "properties": {
                 "kind": {
-                  "const": "json",
+                  "const": "parts",
                   "type": "string"
                 },
-                "value": {
-                  "$ref": "#/$defs/FileResult"
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/TextPart"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array"
                 }
               },
               "required": [
                 "kind",
-                "value"
+                "parts"
               ],
               "type": "object"
             }
           ],
-          "title": "JsonProjection"
+          "title": "TextProjection"
         },
-        "revision": "portable-patch-4"
+        "revision": "portable-patch-5"
       },
       "definition_digest": [
-        18,
-        102,
-        141,
-        132,
-        67,
-        181,
-        121,
-        126,
-        46,
-        38,
-        92,
-        157,
-        112,
-        166,
-        198,
-        112,
-        44,
-        59,
-        36,
-        74,
-        155,
-        22,
-        54,
-        231,
-        106,
-        191,
-        107,
-        62,
-        195,
+        101,
+        33,
+        39,
+        110,
+        83,
+        5,
+        245,
+        236,
+        224,
         30,
-        167,
-        89
+        34,
+        147,
+        233,
+        127,
+        6,
+        43,
+        144,
+        38,
+        69,
+        107,
+        158,
+        185,
+        104,
+        192,
+        239,
+        67,
+        103,
+        80,
+        55,
+        65,
+        1,
+        69
       ],
       "variant": "patch_edit_full"
     },
