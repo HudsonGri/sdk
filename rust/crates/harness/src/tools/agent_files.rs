@@ -33,81 +33,156 @@ pub(super) async fn files(context: &ToolContext) -> Result<Arc<TaskFiles<dyn Str
     Ok(root.clone())
 }
 
+/// An fs operand the model must correct. It is only ever reported through
+/// `super::rejected_input`, never returned to the executor.
+struct Rejected(Error);
+
+/// Answers the registered-agent inspections `fs ls`/`fs cat` under the exact
+/// `.volumes/agents` namespace. Anything else, including a command that does
+/// not parse, is left to the fs facade owner.
 pub(super) async fn inspect(
     context: &ToolContext,
     command: &str,
 ) -> Result<Option<crate::tool::ToolResult>> {
-    use crate::task_volume::{FileQuerySource, Query};
-    let command = super::parse_fs_command(command)?;
-    let [verb, path] = command.arguments.as_slice() else {
+    let Some(inspection) = super::agent_selection::selection(command) else {
         return Ok(None);
     };
-    if command.volume.is_some() || !path.starts_with(".volumes/agents") {
-        return Ok(None);
-    }
-    let query = match (verb.as_str(), path.as_str()) {
-        ("ls", ".volumes/agents") => Query::Children,
-        ("ls", path) => Query::Child(
-            Component::new(
-                path.strip_prefix(".volumes/agents/")
-                    .ok_or_else(|| Error::Invalid("invalid child directory".into()))?,
-            )
-            .map_err(storage)?,
-        ),
-        ("cat", path) => Query::File(
-            FileKey::parse(
-                path.strip_prefix(".volumes/")
-                    .ok_or_else(|| Error::Invalid("invalid child file".into()))?,
-            )
-            .map_err(storage)?,
-        ),
-        _ => return Ok(None),
-    };
-    let limits = context.effective_scope().limits();
-    let files = files(context).await?;
-    let stdout = if verb == "cat" {
-        let snapshot = files
-            .observe_files(
-                query,
-                None,
-                limits.attachments,
-                usize::try_from(limits.render_bytes).map_err(storage)?,
-            )
-            .await
-            .map_err(storage)?
-            .snapshot
-            .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
-        let [file] = snapshot.files.as_slice() else {
-            return Err(Error::NotFound(path.clone()));
-        };
-        std::str::from_utf8(&file.bytes)
-            .map_err(storage)?
-            .to_owned()
-    } else {
-        listing(&files.inner, &query, limits.attachments).await?
-    };
-    if stdout.len() as u64 > limits.render_bytes {
-        return Err(Error::Invalid(
-            "child inspection exceeds the original render bound".into(),
-        ));
-    }
-    Ok(Some(crate::tool::ToolResult {
-        value: json!({"success":true,"exit_code":0,"stdout":stdout,"stderr":""}),
+    Ok(Some(match read(context, inspection).await? {
+        Ok(stdout) => crate::tool::ToolResult {
+            value: json!({"success":true,"exit_code":0,"stdout":stdout,"stderr":""}),
+        },
+        Err(Rejected(error)) => super::rejected_input(error),
     }))
 }
 
+fn query(
+    inspection: &super::agent_selection::AgentInspection,
+) -> std::result::Result<crate::task_volume::Query, Rejected> {
+    use super::agent_selection::AgentTarget;
+    use crate::task_volume::Query;
+    Ok(match inspection.target {
+        AgentTarget::Children => Query::Children,
+        AgentTarget::Child => Query::Child(Component::new(inspection.operand()).map_err(invalid)?),
+        AgentTarget::File => Query::File(FileKey::parse(inspection.operand()).map_err(invalid)?),
+    })
+}
+
+fn invalid(error: impl std::fmt::Display) -> Rejected {
+    Rejected(Error::Invalid(error.to_string()))
+}
+
+/// The outer error is the executor's; the inner one is the model's input.
+async fn read(
+    context: &ToolContext,
+    inspection: super::agent_selection::AgentInspection,
+) -> Result<std::result::Result<String, Rejected>> {
+    let query = match query(&inspection) {
+        Ok(query) => query,
+        Err(rejected) => return Ok(Err(rejected)),
+    };
+    let limits = context.effective_scope().limits();
+    let render_bytes = usize::try_from(limits.render_bytes).map_err(storage)?;
+    let files = files(context).await?;
+    answer(
+        &*files,
+        &files.inner,
+        inspection,
+        query,
+        limits.attachments,
+        render_bytes,
+    )
+    .await
+}
+
+/// Answers one selected inspection from the authorized file source and its
+/// volume. Every query bound, missing file and non-text body is the model's
+/// to correct; only storage and integrity failures reach the executor.
+async fn answer<S, P>(
+    source: &S,
+    volume: &crate::task_volume::TaskVolume<P>,
+    inspection: super::agent_selection::AgentInspection,
+    query: crate::task_volume::Query,
+    maximum_files: usize,
+    render_bytes: usize,
+) -> Result<std::result::Result<String, Rejected>>
+where
+    S: crate::task_volume::FileQuerySource + ?Sized,
+    P: StreamProvider + ?Sized,
+{
+    let stdout = if inspection.target == super::agent_selection::AgentTarget::File {
+        let observed = match source
+            .observe_files(query, None, maximum_files, render_bytes)
+            .await
+        {
+            Ok(observed) => observed,
+            Err(error) => return classify(error).map(Err),
+        };
+        let snapshot = observed
+            .snapshot
+            .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
+        let [file] = snapshot.files.as_slice() else {
+            return Ok(Err(Rejected(Error::NotFound(inspection.path))));
+        };
+        match std::str::from_utf8(&file.bytes) {
+            Ok(text) => text.to_owned(),
+            Err(_) => return Ok(Err(invalid("agent file is not UTF-8 text"))),
+        }
+    } else {
+        match volume.list_files(&query, maximum_files).await {
+            Ok(keys) => rendered(&keys),
+            Err(error) => return classify(error).map(Err),
+        }
+    };
+    if stdout.len() > render_bytes {
+        return Ok(Err(invalid(
+            "child inspection exceeds the original render bound",
+        )));
+    }
+    Ok(Ok(stdout))
+}
+
+/// Splits a task-volume failure by who must act. A bound or operand the model
+/// can narrow is `Rejected`; storage, authority and integrity failures stay the
+/// executor's. The match is exhaustive, so a new variant must be classified.
+fn classify(error: crate::task_volume::Error) -> Result<Rejected> {
+    use crate::task_volume::Error as Volume;
+    match error {
+        Volume::LimitExceeded => Ok(invalid(
+            "agent inspection exceeds its file-count or render bound; inspect a narrower path",
+        )),
+        Volume::InvalidPath => Ok(invalid(error)),
+        #[cfg(feature = "filesystem")]
+        Volume::FileRead(error) => Err(error),
+        Volume::Unauthorized
+        | Volume::Storage(_)
+        | Volume::InvalidSegment
+        | Volume::ImmutableConflict(_)
+        | Volume::SequenceConflict(_)
+        | Volume::Conflict(_)
+        | Volume::FenceConflict
+        | Volume::ResetRequired => Err(storage(error)),
+    }
+}
+
+fn rendered(keys: &[FileKey]) -> String {
+    keys.iter()
+        .map(|key| format!(".volumes/{}\n", key.path()))
+        .collect()
+}
+
+/// The selected listing, or the volume's typed failure.
+#[cfg(all(test, not(acyclic_harness_loom)))]
 async fn listing<P: StreamProvider + ?Sized>(
     files: &crate::task_volume::TaskVolume<P>,
     query: &crate::task_volume::Query,
     maximum_files: usize,
 ) -> Result<String> {
-    Ok(files
-        .list_files(query, maximum_files)
-        .await
-        .map_err(storage)?
-        .iter()
-        .map(|key| format!(".volumes/{}\n", key.path()))
-        .collect())
+    Ok(rendered(
+        &files
+            .list_files(query, maximum_files)
+            .await
+            .map_err(storage)?,
+    ))
 }
 
 #[cfg(all(test, not(acyclic_harness_loom)))]

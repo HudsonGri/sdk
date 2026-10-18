@@ -23,6 +23,7 @@ enum Fault {
     Corrupt,
     OmitCharge,
     OmitScanCharge,
+    ByteScanCharge,
 }
 fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
     let calls = Cell::new(0);
@@ -43,7 +44,14 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
                 encoded += bytes
             }
             JsonCodecCharge::Inspect { items } if !matches!(fault, Fault::OmitScanCharge) => {
-                inspected += items
+                // At this boundary only the original serialization has run,
+                // so `encoded` is its document byte length. Restore the old
+                // byte-based funding at the real scan charge boundary.
+                inspected += if matches!(fault, Fault::ByteScanCharge) {
+                    encoded
+                } else {
+                    items
+                }
             }
             _ => {}
         }
@@ -78,7 +86,7 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
             && encoded == minimum * if canonical { 2 } else { 1 }
             && inspected
                 == if canonical && has_array(value) {
-                    minimum
+                    lexical_items(&expected)
                 } else {
                     0
                 }
@@ -96,6 +104,34 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
         allocations
     );
     Ok(())
+}
+// Independent count of the items a compact document's scan examines: each
+// string, opened container and scalar literal.
+fn lexical_items(document: &[u8]) -> u64 {
+    let (mut items, mut string, mut escape, mut atom) = (0, false, false, false);
+    for &byte in document {
+        if string {
+            (string, escape) = match (escape, byte) {
+                (true, _) => (true, false),
+                (false, b'\\') => (true, true),
+                (false, b'"') => (false, false),
+                _ => (true, false),
+            };
+            continue;
+        }
+        let starts = match byte {
+            b'"' => {
+                string = true;
+                true
+            }
+            b'[' | b'{' => true,
+            b']' | b'}' | b':' | b',' => false,
+            _ => !atom,
+        };
+        atom = !matches!(byte, b'"' | b'[' | b'{' | b']' | b'}' | b':' | b',');
+        items += u64::from(starts);
+    }
+    items
 }
 fn has_array(value: &Value) -> bool {
     match value {
@@ -123,6 +159,7 @@ fn single_pass_negative_controls() {
         let mut faults = vec![Fault::Repeat, Fault::Corrupt, Fault::OmitCharge];
         if canonical {
             faults.push(Fault::OmitScanCharge);
+            faults.push(Fault::ByteScanCharge);
         }
         for fault in faults {
             let error = check(&value, canonical, fault).unwrap_err();
@@ -131,6 +168,37 @@ fn single_pass_negative_controls() {
                     .to_string()
                     .contains("single serialization, funded storage or canonical output differs")
             );
+        }
+    }
+}
+
+// The index scan is funded with exactly the serializer's item count; funding
+// one item fewer or more is rejected rather than silently absorbed.
+#[test]
+fn index_scan_examines_exactly_its_admitted_items() {
+    let document = br#"{"a":7,"z":["a",["b\"]"],[],true]}"#;
+    let items = lexical_items(document);
+    let bounds = JsonBounds {
+        maximum_bytes: 65536,
+        maximum_items: 65536,
+        maximum_depth: 256,
+    };
+    for (funded, reason) in [
+        (items, None),
+        (items - 1, Some("scan exceeds its admission")),
+        (items + 1, Some("scan differs from its admission")),
+    ] {
+        let mut inspected = 0;
+        let result = super::super::arrays::build(document, 3, funded, bounds, None, &mut |event| {
+            if let JsonCodecCharge::Inspect { items } = event {
+                inspected += items;
+            }
+            Ok(())
+        });
+        assert_eq!(inspected, funded);
+        match reason {
+            None => assert!(result.is_ok()),
+            Some(reason) => assert!(format!("{:?}", result.unwrap_err()).contains(reason)),
         }
     }
 }

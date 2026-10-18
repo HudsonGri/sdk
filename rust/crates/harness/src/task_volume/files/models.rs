@@ -47,33 +47,11 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
     // Both views begin at the same real publication cut. Copy only this serial
     // setup; competing refreshes, validation, locks and commits remain the
     // production paths. Open/replay itself is covered by the handoff models.
-    let source = loom::future::block_on(Box::pin(files.inner.index.lock()));
-    let mut values = super::super::FileIndex::default();
-    for (key, value) in source.files.range(..) {
-        values.insert(
-            key.clone(),
-            super::super::StoredFile {
-                file: value.file.clone(),
-                position: value.position,
-            },
-        );
-    }
+    let index = loom::future::block_on(Box::pin(files.inner.index.lock())).clone();
     let inner = TaskVolume {
         provider: files.inner.provider.clone(),
         path: files.inner.path.clone(),
-        index: crate::sync::Mutex::new(super::super::Index {
-            volume: source.volume,
-            epoch: source.epoch,
-            next: source.next,
-            commit: source.commit,
-            files: values,
-            executions: source.executions.clone(),
-            pending_commands: source.pending_commands.clone(),
-            view_order: source.view_order.clone(),
-            view_revisions: source.view_revisions.clone(),
-            overviews: source.overviews.clone(),
-            child_inputs: source.child_inputs.clone(),
-        }),
+        index: crate::sync::Mutex::new(index),
     };
     Arc::new(TaskFiles {
         inner,
@@ -143,31 +121,30 @@ fn wake(broken: bool) {
     let snapshot = observation.snapshot.take().unwrap();
     assert!(snapshot.files.is_empty());
     let expected = request();
+    let woken = Arc::new(Woken(AtomicBool::new(false)));
+    let waker = Waker::from(woken.clone());
+    // This case starts after registration; gap covers publication before it.
+    // Complete the initial read before the writer can contend with its probe.
+    assert!(
+        next(
+            &mut observation.changes,
+            if broken { Waker::noop() } else { &waker },
+        )
+        .is_pending()
+    );
     let writer = files.clone();
     let write = expected.clone();
     let producer = loom::thread::spawn(move || {
         loom::future::block_on(Box::pin(writer.write(snapshot.generation, &write))).unwrap()
     });
-    let woken = Arc::new(Woken(AtomicBool::new(false)));
-    let waker = Waker::from(woken.clone());
-    let first = next(
-        &mut observation.changes,
-        if broken { Waker::noop() } else { &waker },
-    );
     producer.join().unwrap();
-    let observed = match first {
+    assert!(
+        woken.0.load(Ordering::SeqCst),
+        "accepted request did not wake its follower"
+    );
+    let observed = match next(&mut observation.changes, &waker) {
         Poll::Ready(Some(Ok(change))) => change.file,
-        Poll::Pending => {
-            assert!(
-                woken.0.load(Ordering::SeqCst),
-                "accepted request did not wake its follower"
-            );
-            match next(&mut observation.changes, &waker) {
-                Poll::Ready(Some(Ok(change))) => change.file,
-                _ => None,
-            }
-        }
-        other => panic!("unexpected follow result: {other:?}"),
+        _ => None,
     };
     assert_eq!(
         observed.as_ref(),
