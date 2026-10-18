@@ -225,7 +225,7 @@ proptest! {
     #[test]
     fn constructor_spellings_never_become_a_lock_free_verdict(
         raw_type in any::<bool>(), raw_method in any::<bool>(),
-        aliases in 0usize..5, wrapper in 0usize..11,
+        aliases in 0usize..5, wrapper in 0usize..12,
     ) {
         let lock = if raw_type { "r#Mutex" } else { "Mutex" };
         let method = if raw_method { "r#default" } else { "default" };
@@ -247,8 +247,9 @@ proptest! {
             7 => format!("mod visible {{ #[path = \"hidden{aliases}.rs\"] mod r#hidden; }} fn p() {{}}"),
             8 => format!("fn consume(_: u8) {{}} fn p(consume: fn({ty})) {{ consume({constructor}); }} {prefix}"),
             9 => format!("fn consume(_: u8) {{}} fn p(f: fn({ty})) {{ let consume = f; consume({constructor}); }} {prefix}"),
-            _ => format!("#[derive(Default)] struct {}(std::sync::Arc<{ty}>); fn p() {{ {}::{method}(); }}",
+            10 => format!("#[derive(Default)] struct {}(std::sync::Arc<{ty}>); fn p() {{ {}::{method}(); }}",
                 if raw_type { "r#Option" } else { "Vec" }, if raw_type { "r#Option" } else { "Vec" }),
+            _ => format!("struct Consume(u8); fn p(Consume: fn({ty})) {{ Consume({constructor}); }} {prefix}"),
         };
         match scan(&source) {
             Ok(true) => {},

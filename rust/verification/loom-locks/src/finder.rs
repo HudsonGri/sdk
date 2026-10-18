@@ -419,13 +419,6 @@ impl<'ast> Finder<'_, 'ast> {
 
     fn signature(&self, func: &Expr) -> Option<&'ast Signature> {
         let Expr::Path(path) = func else { return None };
-        if self
-            .items
-            .values
-            .contains(&crate::name(&path.path.segments.first()?.ident))
-        {
-            return None;
-        }
         let resolved = self.names.path(&path.path)?;
         let segments: Vec<String> = resolved
             .segments
@@ -476,6 +469,14 @@ fn any(verdicts: impl Iterator<Item = Option<bool>>) -> Option<bool> {
 impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
     fn visit_expr(&mut self, expr: &'ast Expr) {
         match expr {
+            Expr::Call(call)
+                if matches!(&*call.func, Expr::Path(path)
+                if path.qself.is_none() && path.path.segments.len() == 1
+                    && self.items.values.contains(&crate::name(&path.path.segments[0].ident))) =>
+            {
+                self.callees.insert(key(&call.func));
+                self.unresolved.push(expr.to_token_stream().to_string());
+            }
             Expr::Call(call) => {
                 if let Expr::Path(path) = &*call.func {
                     self.callees.insert(key(&call.func));

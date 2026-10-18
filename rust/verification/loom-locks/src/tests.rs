@@ -330,6 +330,7 @@ fn lexical_values_and_local_containers_do_not_inherit_library_bindings() {
     for source in [
         "fn consume(_: u8) {} fn p(consume: fn(std::sync::Mutex<()>)) { consume(Default::default()); }",
         "fn helper(_: u8) {} use helper as consume; fn p(consume: fn(std::sync::Mutex<()>)) { consume(Default::default()); }",
+        "struct Consume(u8); fn p(Consume: fn(std::sync::Mutex<()>)) { Consume(Default::default()); }",
         "#[derive(Default)] struct Vec(std::sync::Arc<std::sync::Mutex<()>>); fn p() { Vec::default(); }",
         "#[derive(Default)] struct Option(std::sync::Arc<std::sync::Mutex<()>>); fn p() { Option::default(); }",
         "mod std { pub mod vec { pub struct Vec; } } fn p() { std::vec::Vec::default(); }",
