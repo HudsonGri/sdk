@@ -268,7 +268,7 @@ impl GrpcObjects {
                 .checked_mul(std::mem::size_of::<
                     Result<ObjectsPutReceipt, NativeObjectsError>,
                 >())
-                .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
             let mut allocation = ReadAllocation::new(&meter, bytes)?;
             let mut results = Vec::new();
             results
@@ -284,7 +284,7 @@ impl GrpcObjects {
             let maximum = input.data().iter().try_fold(0usize, |total, (_, body)| {
                 total
                     .checked_add(body.len())
-                    .ok_or(std::io::ErrorKind::InvalidInput)
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))
             })?;
             meter.admit_write(maximum)?;
             let requests = std::mem::take(&mut input.data);
@@ -304,11 +304,11 @@ impl GrpcObjects {
                 .iter()
                 .filter_map(|result| result.as_ref().ok())
                 .try_fold(0usize, |total, info| {
-                    let size =
-                        usize::try_from(info.size).map_err(|_| std::io::ErrorKind::InvalidData)?;
+                    let size = usize::try_from(info.size)
+                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
                     total
                         .checked_add(size)
-                        .ok_or(std::io::ErrorKind::InvalidData)
+                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))
                 })?;
             let recorded = meter.record_write(completed);
             for value in values.value.drain(..) {
