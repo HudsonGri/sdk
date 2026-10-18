@@ -42,10 +42,11 @@ where
         Ok(result)
     }
 
-    pub(super) async fn write_internal_chunks(
+    pub(super) async fn write_internal_chunks<'a>(
         &mut self,
-        children: &[Child<F::Key>],
+        children: impl Into<Entries<'a, Child<F::Key>>>,
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
+        let children = children.into();
         let child_length = |child: &Child<F::Key>| F::internal_item_encoded_length(&child.first);
         let (mut counted, examined) =
             PageChunks::new(children, self.limits, child_length).map_err(Self::error)?;
@@ -70,9 +71,16 @@ where
                     .ok_or_else(|| Self::error(Error::MutationContract))?
                     .first,
             )?;
-            let page = self
-                .write_page(&PageRef::<F>::Internal(chunk.into()))
-                .await?;
+            let page = self.write_page(&PageRef::<F>::Internal(chunk)).await?;
+            if let Entries::Shared(children) = chunk {
+                persistent_io::retain_written_internal::<S, F>(
+                    self.store,
+                    page,
+                    self.limits,
+                    children,
+                    self.accounting,
+                )?;
+            }
             push_summary(&mut result, first, page, self.accounting)?;
         }
         Ok(result)
@@ -94,7 +102,9 @@ where
             if height > self.limits.maximum_page_height {
                 return Err(Self::error(Error::HeightExceeded));
             }
-            let next = self.write_internal_chunks(&summaries.value).await?;
+            let next = self
+                .write_internal_chunks(summaries.value.as_slice())
+                .await?;
             summaries.retire(self.accounting)?;
             summaries = next;
         }

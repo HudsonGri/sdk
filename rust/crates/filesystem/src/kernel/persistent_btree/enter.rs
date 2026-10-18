@@ -28,6 +28,31 @@ where
         }
         let decoded = self.read_page(request.page).await?;
         if let PageLease::Shared { page, .. } = &decoded.value
+            && let SharedPage::Internal { children, .. } = page.as_ref()
+        {
+            if !children_within(
+                Entries::Shared(children),
+                request.lower.value.as_ref(),
+                request.upper.value.as_ref(),
+            ) {
+                decoded.retire(self.accounting)?;
+                return Err(Self::error(Error::ChildBoundsMismatch));
+            }
+            let entries = self.shared_internal_entries(children);
+            decoded.retire(self.accounting)?;
+            let entries = entries?;
+            request.lower.retire(self.accounting)?;
+            return Ok(EnteredNode::Internal(InternalFrame {
+                original: request.page,
+                entries,
+                inherited_upper: request.upper,
+                next_child: 0,
+                mutation_cursor: request.mutations.start,
+                mutation_end: request.mutations.end,
+                height: request.height,
+            }));
+        }
+        if let PageLease::Shared { page, .. } = &decoded.value
             && let SharedPage::Leaf { entries, .. } = page.as_ref()
         {
             if !leaf_within::<F>(
@@ -89,13 +114,15 @@ where
                 request.lower.retire(self.accounting)?;
                 Ok(EnteredNode::Internal(InternalFrame {
                     original: request.page,
-                    children,
+                    entries: super::internal::InternalEntries::Owned {
+                        children,
+                        rewritten: Owned::allocate(0, self.accounting)?,
+                    },
                     inherited_upper: request.upper,
                     next_child: 0,
                     mutation_cursor: request.mutations.start,
                     mutation_end: request.mutations.end,
                     height: request.height,
-                    rewritten: Owned::allocate(0, self.accounting)?,
                 }))
             }
         }

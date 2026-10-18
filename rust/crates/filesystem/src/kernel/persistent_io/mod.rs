@@ -111,7 +111,7 @@ mod batch;
 mod cache;
 mod decode;
 mod publish;
-pub(crate) use publish::retain_written_leaf;
+pub(crate) use publish::{retain_written_internal, retain_written_leaf};
 
 pub(crate) use batch::read_pages_with_accounting;
 use cache::admit_decoded_with_accounting;

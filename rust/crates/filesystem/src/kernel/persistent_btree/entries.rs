@@ -82,6 +82,32 @@ fn share_with_control<T>(
     ))
 }
 
+pub(crate) fn copy_entries<T>(
+    entries: &[Arc<Entry<T>>],
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(Owned<Vec<Arc<Entry<T>>>>, u64), FsError> {
+    let mut copied = Owned::allocate(entries.len(), accounting)?;
+    let mut logical_bytes = copied.bytes;
+    let result = (|| {
+        for entry in entries {
+            logical_bytes = logical_bytes
+                .checked_add(entry.bytes)
+                .ok_or(WorkError::Overflow)?;
+            accounting.charge(WorkCounters {
+                bytes_copied: usize_to_u64(size_of::<Arc<Entry<T>>>()),
+                ..WorkCounters::UNCHARGED
+            })?;
+            copied.value.push(Arc::clone(entry));
+        }
+        Ok::<_, FsError>(())
+    })();
+    if let Err(error) = result {
+        copied.retire(accounting)?;
+        return Err(error);
+    }
+    Ok((copied, logical_bytes))
+}
+
 pub(crate) fn share_values<T>(
     mut values: Owned<Vec<T>>,
     nested_bytes: impl Fn(&T) -> u64,

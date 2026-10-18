@@ -149,13 +149,12 @@ struct NodeRequest<K> {
 
 struct InternalFrame<F: Format> {
     original: ObjectId,
-    children: Owned<Vec<Child<F::Key>>>,
+    entries: internal::InternalEntries<F>,
     inherited_upper: Owned<Option<F::Key>>,
     next_child: usize,
     mutation_cursor: usize,
     mutation_end: usize,
     height: u16,
-    rewritten: Owned<Vec<Child<F::Key>>>,
 }
 
 #[allow(
@@ -487,7 +486,7 @@ where
                     stack.retire(self.accounting)?;
                     return Ok(result);
                 };
-                append_owned(&mut frame.rewritten, result, self.accounting)?;
+                frame.entries.append(result, self.accounting)?;
                 if let Some(next) = self.advance_frame(&mut frame, mutations)? {
                     stack.ensure_for_push(
                         usize::from(self.limits.maximum_page_height),
@@ -500,87 +499,6 @@ where
                 result = self.finish_frame(frame).await?;
             }
         }
-    }
-
-    fn advance_frame(
-        &mut self,
-        frame: &mut InternalFrame<F>,
-        mutations: &[(usize, &M)],
-    ) -> Result<Option<NodeRequest<F::Key>>, crate::FsError> {
-        while let Some(child) = frame.children.value.get(frame.next_child) {
-            let index = frame.next_child;
-            frame.next_child += 1;
-            let selected_start = frame.mutation_cursor;
-            if let Some(next) = frame.children.value.get(index + 1) {
-                while frame.mutation_cursor < frame.mutation_end {
-                    self.charge_items(1)?;
-                    let mutation = mutations
-                        .get(frame.mutation_cursor)
-                        .ok_or_else(|| Self::error(Error::MutationContract))?;
-                    if mutation.1.key() >= &next.first {
-                        break;
-                    }
-                    frame.mutation_cursor += 1;
-                }
-            } else {
-                frame.mutation_cursor = frame.mutation_end;
-            }
-            self.charge_items(1)?;
-            if selected_start == frame.mutation_cursor {
-                let first = self.clone_key(&child.first)?;
-                push_summary(&mut frame.rewritten, first, child.page, self.accounting)?;
-                continue;
-            }
-            let lower = self.clone_bound(Some(&child.first))?;
-            let upper = self.clone_bound(
-                frame
-                    .children
-                    .value
-                    .get(index + 1)
-                    .map(|next| &next.first)
-                    .or(frame.inherited_upper.value.as_ref()),
-            )?;
-            return Ok(Some(NodeRequest {
-                page: child.page,
-                lower,
-                upper,
-                mutations: selected_start..frame.mutation_cursor,
-                height: frame
-                    .height
-                    .checked_add(1)
-                    .ok_or_else(|| Self::error(Error::HeightExceeded))?,
-            }));
-        }
-        Ok(None)
-    }
-
-    async fn finish_frame(
-        &mut self,
-        frame: InternalFrame<F>,
-    ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
-        let result = if frame.rewritten.value.is_empty() {
-            frame.rewritten
-        } else if frame.rewritten.value == frame.children.value {
-            let mut result = Owned::allocate(1, self.accounting)?;
-            let first = frame
-                .children
-                .value
-                .first()
-                .ok_or_else(|| Self::error(Error::MutationContract))?;
-            let first = self.clone_key(&first.first)?;
-            push_summary(&mut result, first, frame.original, self.accounting)?;
-            frame.rewritten.retire(self.accounting)?;
-            result
-        } else if frame.height == 1 && frame.rewritten.value.len() == 1 {
-            frame.rewritten
-        } else {
-            let result = self.write_internal_chunks(&frame.rewritten.value).await?;
-            frame.rewritten.retire(self.accounting)?;
-            result
-        };
-        frame.children.retire(self.accounting)?;
-        frame.inherited_upper.retire(self.accounting)?;
-        Ok(result)
     }
 }
 
@@ -707,6 +625,7 @@ mod tests;
 
 mod enter;
 pub(crate) mod entries;
+mod internal;
 mod leaf;
 mod pages;
 pub(crate) mod shared;

@@ -47,15 +47,34 @@ fn encoded<F: Format>(page: PageRef<'_, F>) -> Vec<u8> {
 }
 
 async fn seed<S: AsyncObjectStore, F: Format>(store: &S, values: &[F::Value]) -> ObjectId {
-    let object = crate::storage::HashedObject::new(
-        F::kind(),
-        encoded::<F>(PageRef::Leaf(values.into())).into(),
-    );
+    seed_page::<S, F>(store, PageRef::Leaf(values.into())).await
+}
+
+async fn seed_page<S: AsyncObjectStore, F: Format>(store: &S, page: PageRef<'_, F>) -> ObjectId {
+    let object = crate::storage::HashedObject::new(F::kind(), encoded::<F>(page).into());
     let root = object.object_id();
     let cancellation = CancellationToken::new();
     let mut authority = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     store.put_hashed(object, &mut authority).await.unwrap();
     root
+}
+
+async fn seed_layout<S: AsyncObjectStore, F: Format>(
+    store: &S,
+    values: &[F::Value],
+    width: usize,
+) -> ObjectId {
+    if values.len() <= width {
+        return seed::<S, F>(store, values).await;
+    }
+    let mut children = Vec::new();
+    for chunk in values.chunks(width) {
+        children.push(Child {
+            first: F::key(&chunk[0]).clone(),
+            page: seed::<S, F>(store, chunk).await,
+        });
+    }
+    seed_page::<S, F>(store, PageRef::Internal(children.as_slice().into())).await
 }
 
 async fn canonical_tree<S: AsyncObjectStore, F: Format>(
@@ -91,13 +110,14 @@ async fn history<S, F, M>(
     initial: Vec<F::Value>,
     operations: Vec<M>,
     native: bool,
+    width: usize,
 ) -> Trace
 where
     S: AsyncObjectStore,
     F: Format,
     M: persistent_btree::Mutation<F>,
 {
-    let mut root = seed::<_, F>(&store, &initial).await;
+    let mut root = seed_layout::<_, F>(&store, &initial, width).await;
     let mut output = Vec::new();
     let mut originals = Vec::new();
     for (index, mutation) in operations.into_iter().enumerate() {
@@ -170,7 +190,7 @@ where
     output
 }
 
-fn paired<F, M>(fixture: impl Fn() -> (Vec<F::Value>, Vec<M>))
+fn paired<F, M>(width: usize, fixture: impl Fn() -> (Vec<F::Value>, Vec<M>))
 where
     F: Format,
     M: persistent_btree::Mutation<F>,
@@ -193,6 +213,7 @@ where
                             initial,
                             operations,
                             native,
+                            width,
                         )
                         .await
                     } else {
@@ -207,7 +228,7 @@ where
                         .unwrap();
                         #[cfg(not(feature = "local"))]
                         let store = cached();
-                        history::<_, F, M>(store, initial, operations, native).await
+                        history::<_, F, M>(store, initial, operations, native, width).await
                     }
                 })
             },
@@ -252,9 +273,10 @@ proptest! {
     #[test]
     fn cached_histories_preserve_all_canonical_pages_errors_and_events(
         count in prop_oneof![Just(8_u8), Just(24_u8)],
+        width in prop_oneof![Just(usize::MAX), 1_usize..9],
         operations in prop::collection::vec((0_u8..3, 0_u8..32, 1_u8..4), 0..17),
     ) {
-        paired::<TreeFormat, TreeMutation>(|| {
+        paired::<TreeFormat, TreeMutation>(width, || {
             let mut changes = vec![TreeMutation::Replace { entry: tree(0, 2), expected_file_id: tree(0, 1).file_id }];
             changes.extend(operations.iter().map(|&(op, key, value)| match op {
                 0 => TreeMutation::Insert(tree(key, value)),
@@ -263,7 +285,7 @@ proptest! {
             }));
             ((0..count).map(|key| tree(key, 1)).collect(), changes)
         });
-        paired::<FileTableFormat, FileTableMutation>(|| {
+        paired::<FileTableFormat, FileTableMutation>(width, || {
             let mut changes = vec![FileTableMutation::Replace { expected: record(0, 1), replacement: record(0, 2) }];
             changes.extend(operations.iter().map(|&(op, key, value)| match op {
                 0 => FileTableMutation::Insert(record(key, value)),
@@ -272,7 +294,7 @@ proptest! {
             }));
             ((0..count).map(|key| record(key, 1)).collect(), changes)
         });
-        paired::<AttributeFormat, AttributeMutation>(|| {
+        paired::<AttributeFormat, AttributeMutation>(width, || {
             let mut changes = vec![AttributeMutation::Replace { expected: attribute(0, 1), replacement: attribute(0, 2) }];
             changes.extend(operations.iter().map(|&(op, key, value)| match op {
                 0 => AttributeMutation::Insert(attribute(key, value)),
