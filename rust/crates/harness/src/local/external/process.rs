@@ -256,6 +256,7 @@ impl Commands<'_> {
                 .map_err(storage)?;
             let transcript = context
                 .stage_private_file_once(
+                    context.private_summaries(None)?,
                     artifact(task, b"session"),
                     "native/session.jsonl",
                     &bytes,
