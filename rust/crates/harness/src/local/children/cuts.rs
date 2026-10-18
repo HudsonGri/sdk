@@ -9,10 +9,32 @@ use crate::{
     tool::ToolInvocation,
 };
 use acyclic_fs::facade::FsWork as _;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 thread_local! {
     pub(super) static CUT: Cell<Option<&'static str>> = const { Cell::new(None) };
+    static CANCEL: RefCell<Option<(&'static str, tokio::sync::oneshot::Sender<()>)>> = const { RefCell::new(None) };
+}
+
+pub(in crate::local) fn cancel_at(point: &'static str) -> tokio::sync::oneshot::Receiver<()> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    CANCEL.with(|cut| assert!(cut.replace(Some((point, sender))).is_none()));
+    receiver
+}
+
+pub(super) async fn await_cancellation(point: &str, token: &acyclic_fs::CancellationToken) {
+    let sender = CANCEL.with(|cut| {
+        let mut cut = cut.borrow_mut();
+        if cut.as_ref().is_some_and(|(selected, _)| *selected == point) {
+            cut.take().map(|(_, sender)| sender)
+        } else {
+            None
+        }
+    });
+    if let Some(sender) = sender {
+        sender.send(()).expect("cancellation probe retained");
+        token.cancelled().await;
+    }
 }
 
 pub(super) fn arm(point: &'static str) {

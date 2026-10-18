@@ -10,6 +10,45 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 
 impl ChildAdmission for LocalHarness {
+    fn cancel_preparation<'a>(
+        &'a self,
+        parent: TaskId,
+        fence: &'a LeaseFence,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let host = self.runtime.task_host();
+            host.journal_owner(parent, fence, None)
+                .await?
+                .verify(true, &mut None)
+                .await?;
+            let preparation = admission::child_operation(
+                self.task_files.volume(),
+                &operation.to_string(),
+                b"preparation",
+            )?;
+            for phase in [preparation, operation] {
+                let Some((task, retained)) = host.reconcile_admission(phase).await? else {
+                    continue;
+                };
+                if retained.parent != Some(parent) {
+                    return Err(Error::Unauthorized(
+                        "cancelled preparation parent changed".into(),
+                    ));
+                }
+                let state = host
+                    .cancel_child_owned(parent, fence, task, phase, &mut None)
+                    .await?;
+                if state.reservation.is_some() {
+                    // The executing worker must retire its own lease. Never
+                    // adopt an observed reservation to fabricate settlement.
+                    return Err(Error::Indeterminate(phase));
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn native_workspace(&self, task: TaskId) -> Result<PathBuf> {
         let workspace = self
             .workspace
@@ -44,19 +83,31 @@ impl ChildAdmission for LocalHarness {
                 .await?
                 .verify(reconcile, &mut None)
                 .await?;
-            self.admit_child(
-                &self.task_files,
-                reference,
-                parent,
-                admission::ChildInput::Native {
-                    context,
-                    fence,
-                    child,
-                    inputs,
-                    reconcile,
-                },
-            )
-            .await
+            let task = self
+                .admit_child(
+                    &self.task_files,
+                    reference,
+                    parent,
+                    admission::ChildInput::Native {
+                        context,
+                        fence,
+                        child,
+                        inputs,
+                        reconcile,
+                    },
+                )
+                .await?;
+            if let Some(cancellation) = context
+                .owned_mailbox
+                .as_ref()
+                .and_then(|owner| owner.invocation_cancellation())
+            {
+                // Retained admissions take an early return too. Reconciliation
+                // must never turn a cancelled, partly admitted launch into a
+                // successful spawn when publication is retried.
+                cancellation.check()?;
+            }
+            Ok(task)
         })
     }
 }

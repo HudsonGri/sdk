@@ -5,6 +5,7 @@ pub(crate) async fn settle<T, C>(
     execution: impl Future<Output = Result<T>>,
     cancelled: impl Future<Output = Result<C>>,
     stop: impl FnOnce(),
+    cancelled_outcome: impl FnOnce() -> Result<T>,
 ) -> Result<(T, Option<C>)> {
     tokio::pin!(execution, cancelled);
     tokio::select! {
@@ -16,10 +17,35 @@ pub(crate) async fn settle<T, C>(
             // when the cancellation follow itself failed.
             let settled = execution.await;
             let cancelled = cancelled?;
+            let settled = cancellation_outcome(settled, cancelled_outcome);
             settled.map(|value| (value, Some(cancelled)))
         }
         settled = &mut execution => settled.map(|value| (value, None)),
     }
+}
+
+pub(crate) fn cancellation_outcome<T>(
+    settled: Result<T>,
+    cancelled: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    match settled {
+        // Only the owner that has drained its execution can supply a definite
+        // outcome. Ownership and publication failures must remain errors.
+        Err(crate::Error::Cancelled) => cancelled(),
+        other => other,
+    }
+}
+
+/// Cancellation cannot escape an admission until its accepted prefix is reconciled.
+pub(crate) async fn reconcile_cancelled<T>(
+    admission: impl Future<Output = Result<T>>,
+    reconcile: impl Future<Output = Result<()>>,
+) -> Result<T> {
+    let admitted = admission.await;
+    if matches!(admitted, Err(crate::Error::Cancelled)) {
+        reconcile.await?;
+    }
+    admitted
 }
 
 pub(crate) async fn prepare<P: acyclic_stream::StreamProvider + ?Sized>(

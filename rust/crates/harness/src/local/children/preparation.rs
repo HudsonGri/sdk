@@ -26,6 +26,27 @@ impl Commands<'_> {
         payload: Value,
         reconcile: bool,
     ) -> Result<TaskCommandProgress> {
+        let settled = self
+            .run_owned(context, fence, command, payload, reconcile)
+            .await;
+        crate::external_executor::cancellation::cancellation_outcome(settled, || {
+            // Return the command result to its executing worker. Its existing
+            // workflow boundary retires the exact lease before parent admission
+            // can acknowledge cancellation, including after partial allocation.
+            serde_json::to_value(crate::Outcome::<crate::fork::ForkReport>::Cancelled)
+                .map(TaskCommandProgress::Ready)
+                .map_err(storage)
+        })
+    }
+
+    async fn run_owned(
+        &self,
+        context: TaskContext,
+        fence: LeaseFence,
+        command: WorkflowCommand,
+        payload: Value,
+        reconcile: bool,
+    ) -> Result<TaskCommandProgress> {
         let task = context
             .durable_task_id()
             .ok_or_else(|| Error::Unauthorized("child preparation has no task".into()))?;
@@ -50,6 +71,9 @@ impl Commands<'_> {
                 .await?,
         );
         let fork = serde_json::from_value(payload).map_err(storage)?;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        super::cuts::await_cancellation("running", self.io.cancellation()).await;
+        self.io.check_cancellation()?;
         if reconcile {
             return Ok(
                 if self

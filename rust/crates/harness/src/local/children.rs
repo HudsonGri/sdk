@@ -9,6 +9,8 @@ mod commands;
 mod controller;
 #[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
 mod cuts;
+#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+pub(in crate::local) use cuts::cancel_at;
 #[cfg(feature = "native-execution")]
 mod lazy;
 #[cfg(feature = "native-execution")]

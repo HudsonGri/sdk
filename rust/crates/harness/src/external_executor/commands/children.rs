@@ -5,6 +5,13 @@ use crate::{Admission, TaskId, durable_host::TaskJournalOwner, runtime::TaskSpaw
 /// Binds a native child to the same resource preparation as other child tasks.
 pub(crate) trait ChildAdmission: Send + Sync {
     fn native_workspace(&self, task: TaskId) -> Result<std::path::PathBuf>;
+    /// Cancels accepted preparation/child tasks after the admission future has drained.
+    fn cancel_preparation<'a>(
+        &'a self,
+        parent: TaskId,
+        fence: &'a LeaseFence,
+        operation: crate::OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>>;
     /// Retains the supplied identity and inputs under the parent's current fence.
     fn admit<'a>(
         &'a self,
@@ -128,9 +135,11 @@ where
             if let Some(children) = self.children {
                 admission.resource_proofs.clear();
                 let reference = Component::new(task.to_string()).map_err(storage)?;
-                let admitted = match children
-                    .admit(context, fence, &reference, admission, inputs, reconcile)
-                    .await
+                let admitted = match super::super::cancellation::reconcile_cancelled(
+                    children.admit(context, fence, &reference, admission, inputs, reconcile),
+                    children.cancel_preparation(owner.task_id(), fence, operation),
+                )
+                .await
                 {
                     Ok(task) => task,
                     Err(Error::Indeterminate(_)) => return Ok(TaskCommandProgress::Indeterminate),

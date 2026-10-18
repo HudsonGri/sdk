@@ -330,11 +330,22 @@ where
                 Ok(progress)
             };
             let (progress, cancelled) = if let Some(cancellation) = cancellation {
-                super::cancellation::settle(execution, cancellation, || {
-                    if let Some(token) = &token {
-                        token.cancel();
-                    }
-                })
+                super::cancellation::settle(
+                    execution,
+                    cancellation,
+                    || {
+                        if let Some(token) = &token {
+                            token.cancel();
+                        }
+                    },
+                    || {
+                        serde_json::to_value(crate::Outcome::<Value>::Failed {
+                            message: "native tool cancelled during execution".into(),
+                        })
+                        .map(TaskCommandProgress::Ready)
+                        .map_err(|error| Error::Invalid(error.to_string()))
+                    },
+                )
                 .await?
             } else {
                 (execution.await?, None)

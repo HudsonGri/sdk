@@ -177,6 +177,8 @@ impl LocalHarness {
                 (token, Some(guard))
             }
         };
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        super::cuts::await_cancellation("budget", &cancellation).await;
         let io = PreparationIo::from_budget(
             acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
             &cancellation,
@@ -523,6 +525,9 @@ impl LocalHarness {
                 return Err(Error::Indeterminate(operation_id));
             }
         }
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        super::cuts::await_cancellation("preparation", &cancellation).await;
+        io.check_cancellation()?;
         let commands = preparation::Commands {
             harness: self,
             source: &source,
@@ -537,6 +542,7 @@ impl LocalHarness {
             &commands,
         )
         .await?;
+        io.check_cancellation()?;
         if !matches!(
             host.terminal_status(TaskId::from_bytes(preparation_operation.into_bytes()))
                 .await?,
@@ -568,6 +574,9 @@ impl LocalHarness {
         };
         #[cfg(all(test, not(acyclic_harness_loom)))]
         super::cuts::stop("admitted", operation)?;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        super::cuts::await_cancellation("child", &cancellation).await;
+        io.check_cancellation()?;
         Ok(task)
     }
     #[cfg(test)]

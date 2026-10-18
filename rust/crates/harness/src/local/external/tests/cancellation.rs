@@ -5,6 +5,31 @@ use serde_json::json;
 
 #[tokio::test]
 async fn cancelled_native_launch_admits_no_child_and_keeps_the_parent_usable() -> Result<()> {
+    cancelled_launch(None).await
+}
+
+#[tokio::test]
+async fn cancelled_native_preparation_budget_settles_original_call_and_acknowledgement()
+-> Result<()> {
+    cancelled_launch(Some("budget")).await
+}
+
+#[tokio::test]
+async fn cancelled_native_partial_preparation_reconciles_before_acknowledgement() -> Result<()> {
+    cancelled_launch(Some("preparation")).await
+}
+
+#[tokio::test]
+async fn cancelled_native_running_preparation_releases_its_drained_lease() -> Result<()> {
+    cancelled_launch(Some("running")).await
+}
+
+#[tokio::test]
+async fn cancelled_native_admitted_child_is_cancelled_before_acknowledgement() -> Result<()> {
+    cancelled_launch(Some("child")).await
+}
+
+async fn cancelled_launch(point: Option<&'static str>) -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let harness = LocalHarness::open(LocalHarnessConfig::external(directory.path())).await?;
     let session = "cancelled-native-preparation";
@@ -34,33 +59,80 @@ async fn cancelled_native_launch_admits_no_child_and_keeps_the_parent_usable() -
             }}
         }),
     )?;
-    // Publish the accepted cancellation directly to the request volume before
-    // driving this call. There is no race or sleep hiding an untested branch.
     let volumes = harness.external_volumes(parent.task_id()).await?;
     let task = Component::new(parent.task_id().to_string()).map_err(storage)?;
-    volumes
-        .requests
-        .append(
-            volumes.requests.head().await.map_err(storage)?,
-            &cancel.to_file(task.clone()).map_err(storage)?,
-        )
+    let publish_cancel = async {
+        volumes
+            .requests
+            .append(
+                volumes.requests.head().await.map_err(storage)?,
+                &cancel.to_file(task.clone()).map_err(storage)?,
+            )
+            .await
+            .map_err(storage)?;
+        Ok::<(), Error>(())
+    };
+    let rejected = if let Some(point) = point {
+        // Pause the shipping admission path only at the chosen boundary. The
+        // accepted cancellation file must wake its existing push follow and
+        // cancel the actual invocation token before preparation continues.
+        let reached = super::super::super::children::cancel_at(point);
+        let (result, cancelled) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(harness.external_request(&spawn), async {
+                reached.await.map_err(storage)?;
+                publish_cancel.await
+            })
+        })
         .await
-        .map_err(storage)?;
-    let rejected = harness.external_request(&spawn).await?;
+        .expect("preparation cancellation must settle through the request handler");
+        cancelled?;
+        result?
+    } else {
+        publish_cancel.await?;
+        harness.external_request(&spawn).await?
+    };
     assert_eq!(
         rejected,
-        json!({"Failed":{"message":"native tool cancelled before execution"}})
+        json!({"Failed":{"message":if point.is_some() {
+            "native tool cancelled during execution"
+        } else {
+            "native tool cancelled before execution"
+        }}})
     );
     assert_eq!(harness.external_request(&spawn).await?, rejected);
-    assert!(
-        harness
-            .runtime
-            .harness()
-            .children(parent.task_id(), None, None, 8)
-            .await?
-            .entries
-            .is_empty()
+    let descendants = harness
+        .runtime
+        .harness()
+        .children(parent.task_id(), None, None, 8)
+        .await?;
+    assert_eq!(
+        descendants.entries.len(),
+        match point {
+            Some("preparation" | "running") => 1,
+            Some("child") => 2,
+            _ => 0,
+        }
     );
+    for descendant in descendants.entries {
+        let terminal = harness
+            .runtime
+            .task_host()
+            .terminal_status(descendant.task_id)
+            .await?;
+        if point == Some("running") {
+            assert_eq!(
+                terminal,
+                Some(crate::Outcome::Failed {
+                    message: "fork preparation cancelled; allocation may remain uncertain".into(),
+                })
+            );
+        } else {
+            assert!(matches!(
+                terminal,
+                Some(crate::Outcome::Succeeded(()) | crate::Outcome::Cancelled)
+            ));
+        }
+    }
     let acknowledgement = volumes
         .results
         .snapshot(&Query::File(cancel.result_key(task).map_err(storage)?), 1)
