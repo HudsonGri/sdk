@@ -17,6 +17,8 @@ pub enum Fault {
     ResamplePublicationFence,
     /// Commit without the originally captured task-volume generation fence.
     OmitPublicationFence,
+    /// Publish the request without consuming its selected image draft.
+    OmitDraftConsumption,
     /// Keep an index from the replaced history.
     RetainObsoleteIndex,
     /// Apply an old acknowledgement over a rebuilt index.

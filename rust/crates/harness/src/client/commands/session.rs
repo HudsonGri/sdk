@@ -14,8 +14,25 @@ mod archive;
 mod confirmation;
 #[path = "session_consume.rs"]
 mod consumption;
+#[cfg(all(
+    test,
+    feature = "terminal",
+    feature = "tui",
+    not(target_arch = "wasm32"),
+    acyclic_harness_loom
+))]
+#[path = "session_images_models.rs"]
+mod image_models;
 #[path = "session_image_policy.rs"]
 mod image_policy;
+#[cfg(all(
+    test,
+    feature = "terminal",
+    feature = "tui",
+    not(target_arch = "wasm32")
+))]
+#[path = "session_image_support.rs"]
+mod image_test_support;
 #[cfg(all(
     test,
     feature = "terminal",

@@ -7,6 +7,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         &mut self,
         writes: &[files::FileValue],
     ) -> Result<()> {
+        #[cfg(acyclic_harness_loom)]
+        let writes =
+            if files::model_checking::enabled(files::model_checking::Fault::OmitDraftConsumption) {
+                &writes[..writes.len() - 1]
+            } else {
+                writes
+            };
         for file in writes {
             if file.bytes.len() as u64 > self.maximum_bytes
                 || files::record_bytes(file)? > acyclic_stream::MAX_RECORD_BYTES
