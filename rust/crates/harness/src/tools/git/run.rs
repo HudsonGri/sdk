@@ -32,15 +32,8 @@ pub struct Output {
 }
 
 /// Runs one git-facade command against the task-selected workspace.
-///
-/// The command is erased behind its own allocation: its concrete body, the
-/// whole materialization and publication chain, never nests in a caller's
-/// frame or future layout.
-pub fn run<'a>(
-    workspace: Workspace<'a>,
-    args: &'a [String],
-) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Output>> {
-    Box::pin(run_with_guard(workspace, args, || std::future::ready(Ok(()))))
+pub async fn run(workspace: Workspace<'_>, args: &[String]) -> crate::Result<Output> {
+    run_with_guard(workspace, args, || std::future::ready(Ok(()))).await
 }
 
 pub(crate) async fn run_with_guard<F, Fut>(
