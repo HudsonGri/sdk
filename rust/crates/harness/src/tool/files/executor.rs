@@ -310,6 +310,10 @@ impl ToolExecutor for FileTool {
         serde_json::from_value(result.value.get("file")?.clone()).ok()
     }
 
+    fn reports_observed_files(&self) -> bool {
+        !matches!(self, Self::Search { .. })
+    }
+
     fn uses_observed_files(&self) -> bool {
         matches!(self, Self::Edit)
     }

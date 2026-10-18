@@ -84,3 +84,35 @@ fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch()
     );
     Ok(())
 }
+
+#[test]
+fn read_projection_rejects_results_that_do_not_answer_the_request() -> Result<()> {
+    let file = crate::tool::tests::file(b"a\nb\nc\n")?;
+    let project = |arguments: Value, offset: u64, text: &str| {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "read".into(),
+            name: "read".into(),
+            arguments,
+        };
+        let result = ToolResult {
+            value: serde_json::to_value(ReadFileResult {
+                file: file.clone(),
+                offset,
+                text: text.into(),
+            })
+            .unwrap(),
+        };
+        FileProjection::Read(schema::ProjectionMode::Full).project(&invocation, &result, None)
+    };
+    let path = file.path();
+    // Controls: the exact window and the exact whole file project.
+    assert!(project(json!({"path":path,"offset":2,"limit":1}), 2, "b\n").is_ok());
+    assert!(project(json!({"path":path}), 1, "a\nb\nc\n").is_ok());
+    // A window that starts elsewhere, holds more lines than requested, or
+    // whole-file text that differs from the file at the same length.
+    assert!(project(json!({"path":path,"offset":2,"limit":1}), 3, "c\n").is_err());
+    assert!(project(json!({"path":path,"offset":2,"limit":1}), 2, "b\nc\n").is_err());
+    assert!(project(json!({"path":path}), 1, "x\ny\nz\n").is_err());
+    Ok(())
+}

@@ -5,6 +5,10 @@ use super::*;
 struct Observer;
 
 impl crate::tool::ToolExecutor for Observer {
+    fn reports_observed_files(&self) -> bool {
+        true
+    }
+
     fn observed_file(&self, result: &ToolResult) -> Option<FileRef> {
         serde_json::from_value(result.value.get("file")?.clone()).ok()
     }

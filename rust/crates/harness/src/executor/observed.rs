@@ -65,6 +65,11 @@ impl StockExecution<'_> {
             else {
                 continue;
             };
+            // Tools that never name a file (bash, search, ...) are skipped
+            // without loading their possibly large results.
+            if !tool.executor.reports_observed_files() {
+                continue;
+            }
             let (result, _) = load_json::<ToolResult>(journal, result, self.io).await?;
             if let Some(file) = tool.executor.observed_file(&result) {
                 observed

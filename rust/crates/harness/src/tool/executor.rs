@@ -48,6 +48,12 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// Whether results of this tool can name an observed file; when false,
+    /// deriving observations never loads its results.
+    fn reports_observed_files(&self) -> bool {
+        false
+    }
+
     /// Whether this tool checks its input against the versions the model
     /// observed earlier in its turn.
     fn uses_observed_files(&self) -> bool {

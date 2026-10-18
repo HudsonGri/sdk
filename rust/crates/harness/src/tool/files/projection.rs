@@ -23,7 +23,7 @@ impl ToolProjection for FileProjection {
     }
     fn project(
         &self,
-        _invocation: &ToolInvocation,
+        invocation: &ToolInvocation,
         result: &ToolResult,
         work: crate::NativeWork<'_>,
     ) -> Result<(Value, crate::NativeCustody)> {
@@ -31,7 +31,24 @@ impl ToolProjection for FileProjection {
             Self::Read(mode) => {
                 let value = decode::<ReadFileResult>(&result.value, work)?;
                 let read = &value.0;
-                if read.text.len() as u64 > read.file.descriptor().byte_length() || read.offset == 0
+                // Executors and projections are replaceable independently, so
+                // the projection checks the result answers this exact request:
+                // its window starts at the requested line, holds no more than
+                // the requested lines, and a whole-file result is the file.
+                let request = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                let length = read.file.descriptor().byte_length();
+                let whole = read.offset == 1 && read.text.len() as u64 == length;
+                if read.text.len() as u64 > length
+                    || read.offset != request.0.offset.unwrap_or(1)
+                    || request
+                        .0
+                        .limit
+                        .is_some_and(|limit| read.text.split_inclusive('\n').count() as u64 > limit)
+                    || (whole
+                        && !read
+                            .file
+                            .descriptor()
+                            .matches_bytes(read.text.as_bytes(), &mut None)?)
                 {
                     let allocation = edit::allocation(work, 0)?;
                     return Err(edit::invalid(
