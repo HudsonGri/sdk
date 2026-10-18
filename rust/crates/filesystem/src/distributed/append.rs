@@ -27,10 +27,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             commit,
             permit,
         } = request;
-        if let Some(existing) = self
-            .authority_find_operation(authority_id, commit.operation_id, work)
-            .await?
-        {
+        let (idempotency_key, existing) = self
+            .operation_slot(authority_id, commit.operation_id, work)
+            .await?;
+        if let Some(existing) = existing {
             seal(work, guard).await?;
             return Ok(if existing.fingerprint == commit.fingerprint {
                 FsAppendOutcome::AlreadyCommitted(existing)
@@ -210,13 +210,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        let idempotency_key = work.key(
-            b"operation\0",
-            &[
-                &authority_id.into_bytes(),
-                &commit.operation_id.into_bytes(),
-            ],
-        )?;
         let result = self
             .commit(
                 CommitRequest {
@@ -315,16 +308,22 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ))) => {
                 let existing = self
                     .authority_find_operation(authority_id, commit.operation_id, work)
-                    .await?
-                    .ok_or_else(|| {
-                        authority_corrupt(
-                            "Stream idempotency mismatch has no operation record",
-                            work,
-                        )
-                    })?;
+                    .await?;
+                let Some(existing) = existing else {
+                    // Another writer retained a rejected proposal in our slot.
+                    // The next attempt selects its successor; no operation has
+                    // committed, so this is a conflict rather than corruption.
+                    return Ok(FsAppendOutcome::Conflict {
+                        actual: self.fork_snapshot(authority_id, work).await?.head,
+                    });
+                };
                 seal(work, guard).await?;
-                Ok(FsAppendOutcome::IdempotencyConflict {
-                    committed_fingerprint: existing.fingerprint,
+                Ok(if existing.fingerprint == commit.fingerprint {
+                    FsAppendOutcome::AlreadyCommitted(existing)
+                } else {
+                    FsAppendOutcome::IdempotencyConflict {
+                        committed_fingerprint: existing.fingerprint,
+                    }
                 })
             }
             Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
