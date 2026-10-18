@@ -265,12 +265,11 @@ fn short_paragraphs_stay_within_the_total_work_bound() {
 
 #[test]
 fn short_delimiter_paragraphs_keep_compact_opener_snapshots() {
-    // Retain the historical classifier workload so this isolates snapshot
-    // copying even after unrelated parser work has been eliminated.
-    crate::inline::REPLAY_ROWS.set(true);
     let chunks = ["*".to_owned(), "!".to_owned(), "\n".to_owned()];
+    let mut retained = (0, 0, [0; 5]);
     for count in [128, 256, 512, 1024] {
         let measured = units(&chunks, count);
+        retained = measured;
         if std::env::var_os("GC_WORK_REPORT").is_some() {
             println!("delimiter paragraphs {count}: {measured:?}");
         }
@@ -279,7 +278,7 @@ fn short_delimiter_paragraphs_keep_compact_opener_snapshots() {
     crate::spans::COPY_SHARED_TAIL.set(true);
     let copied = units(&chunks, 1024);
     crate::spans::COPY_SHARED_TAIL.set(false);
-    crate::inline::REPLAY_ROWS.set(false);
+    eprintln!("shared-tail work candidate={retained:?} copied={copied:?}");
     assert!(copied.0 > 128 * copied.1 + 4096, "{copied:?}");
 }
 
