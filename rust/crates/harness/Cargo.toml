@@ -190,7 +190,7 @@ test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-r
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
-terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui", "dep:rustix", "tokio/net"]
+terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui", "dep:rustix", "tokio/net", "acyclic-native-runtime/async-stdin"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]

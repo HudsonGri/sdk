@@ -1,5 +1,4 @@
-//! Console input admission. Restoration must not race a read: a read that
-//! starts after cooked mode returns would consume the shell's input.
+//! Console reads register cancellation before admission; restoration waits for acknowledgement.
 use std::io;
 
 #[cfg(acyclic_harness_tui_loom)]
@@ -7,102 +6,97 @@ use loom::sync::{Condvar, Mutex, MutexGuard};
 #[cfg(not(acyclic_harness_tui_loom))]
 use std::sync::{Condvar, Mutex, MutexGuard};
 
-#[derive(Default)]
-struct State {
+struct State<C> {
     closed: bool,
-    reading: bool,
+    reader: Option<C>,
 }
 
-/// Admits reads until close. `close` returns only once no admitted read is in
-/// flight, so the caller restores modes with input fenced and acknowledged.
-/// Lock order: this lock is a leaf; reads run outside it.
-#[derive(Default)]
-pub(crate) struct InputFence {
-    state: Mutex<State>,
+/// Lock order: fence -> native cancellation. Cancellation never acquires the
+/// fence; the read runs outside it and unregisters before returning to its caller.
+pub(crate) struct InputFence<C> {
+    state: Mutex<State<C>>,
     idle: Condvar,
 }
 
-impl InputFence {
-    /// Run one read unless the fence is closed. The read must return once the
-    /// closer's wake is signalled.
-    pub(crate) fn read<T>(&self, read: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+impl<C> Default for InputFence<C> {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(State {
+                closed: false,
+                reader: None,
+            }),
+            idle: Condvar::new(),
+        }
+    }
+}
+
+struct Admitted<'a, C>(&'a InputFence<C>);
+impl<C> Drop for Admitted<'_, C> {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.reader = None;
+        self.0.idle.notify_all();
+    }
+}
+
+impl<C> InputFence<C> {
+    pub(crate) fn read<T>(
+        &self,
+        cancellation: C,
+        read: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
         {
             let mut state = self.lock()?;
             if state.closed {
                 return Err(io::ErrorKind::NotConnected.into());
             }
-            state.reading = true;
+            if state.reader.is_some() {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            state.reader = Some(cancellation);
         }
-        let result = read();
-        let mut state = self.lock()?;
-        state.reading = false;
-        self.idle.notify_all();
-        result
+        let _admitted = Admitted(self);
+        read()
     }
 
-    /// Admit no further reads and wait for the admitted one to finish. The
-    /// caller signals the read's wake first.
-    pub(crate) fn close(&self) -> io::Result<()> {
+    /// CancelSynchronousIo does not retain an early cancellation. Retry across
+    /// read admission, and keep its thread registered until the read acknowledges.
+    pub(crate) fn close(&self, cancel: impl Fn(&C)) -> io::Result<()> {
         let mut state = self.shut()?;
-        while state.reading {
-            state = self.idle.wait(state).map_err(|_| io::ErrorKind::Other)?;
+        while let Some(reader) = state.reader.as_ref() {
+            cancel(reader);
+            #[cfg(not(acyclic_harness_tui_loom))]
+            {
+                state = self
+                    .idle
+                    .wait_timeout(state, std::time::Duration::from_millis(1))
+                    .map_err(|_| io::ErrorKind::Other)?
+                    .0;
+            }
+            #[cfg(acyclic_harness_tui_loom)]
+            {
+                drop(state);
+                loom::thread::yield_now();
+                state = self.lock()?;
+            }
         }
         Ok(())
     }
 
-    fn shut(&self) -> io::Result<MutexGuard<'_, State>> {
+    fn shut(&self) -> io::Result<MutexGuard<'_, State<C>>> {
         let mut state = self.lock()?;
         state.closed = true;
         Ok(state)
     }
-
-    fn lock(&self) -> io::Result<MutexGuard<'_, State>> {
+    fn lock(&self) -> io::Result<MutexGuard<'_, State<C>>> {
         self.state.lock().map_err(|_| io::ErrorKind::Other.into())
     }
 }
 
 #[cfg(all(test, acyclic_harness_tui_loom))]
-mod tests {
-    use super::*;
-    use loom::sync::Arc;
-    use loom::sync::atomic::{AtomicBool, Ordering};
-
-    // A reader loops on the fence while another thread closes it and then
-    // restores modes. No read may observe restored modes.
-    fn model(broken: bool) {
-        loom::model(move || {
-            let fence = Arc::new(InputFence::default());
-            let restored = Arc::new(AtomicBool::new(false));
-            let (reading, observed) = (Arc::clone(&fence), Arc::clone(&restored));
-            let reader = loom::thread::spawn(move || {
-                for _ in 0..2 {
-                    let read = reading.read(|| {
-                        loom::thread::yield_now();
-                        assert!(!observed.load(Ordering::SeqCst), "read ran after restore");
-                        Ok(())
-                    });
-                    if read.is_err() {
-                        return;
-                    }
-                }
-            });
-            if broken {
-                // Negative control: closing without waiting for the admitted read.
-                drop(fence.shut().unwrap());
-            } else {
-                fence.close().unwrap();
-            }
-            restored.store(true, Ordering::SeqCst);
-            reader.join().unwrap();
-        });
-    }
-
-    #[test]
-    fn close_waits_for_the_admitted_read_before_restore() {
-        model(false);
-    }
-    #[test]
-    fn negative_control_detects_restore_racing_an_admitted_read() {
-        assert!(std::panic::catch_unwind(|| model(true)).is_err());
-    }
-}
+#[path = "input_fence_tests.rs"]
+mod tests;

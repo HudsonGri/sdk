@@ -5,6 +5,7 @@
 //! between the waiter and the stream, so a warm batch allocates nothing and
 //! is decoded where the console wrote it.
 use std::io;
+#[cfg(test)]
 use std::os::windows::io::AsRawHandle;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
@@ -94,18 +95,8 @@ impl Tty {
     /// Follow input through the decoder retained by negotiation. Must be
     /// called within a Tokio runtime with time enabled.
     pub fn events(mut self) -> io::Result<Events> {
-        let reader = self.reader.try_clone()?;
         let console = Arc::clone(&self.console);
-        let waiter = Waiter::spawn(move |bytes| {
-            console.input.read(|| {
-                ffi::console_read(
-                    reader.as_raw_handle() as usize,
-                    bytes,
-                    None,
-                    Some(&console.closed),
-                )
-            })
-        })?;
+        let waiter = Waiter::spawn(move |bytes| console.read(bytes, None))?;
         let decoder = std::mem::take(&mut self.decoder);
         Ok(Events::new(Source { waiter, tty: self }, decoder))
     }

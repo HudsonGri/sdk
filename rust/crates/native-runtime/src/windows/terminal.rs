@@ -6,15 +6,16 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use windows_sys::Win32::{
     Foundation::{ERROR_NOT_FOUND, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    Storage::FileSystem::ReadFile,
+    Storage::FileSystem::{FILE_TYPE_CHAR, FILE_TYPE_PIPE, GetFileType, ReadFile},
     System::{
         Console::{
-            CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetConsoleCP, GetConsoleMode,
-            GetConsoleOutputCP, INPUT_RECORD, KEY_EVENT, PeekConsoleInputW, ReadConsoleInputW,
-            SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
+            CONSOLE_READCONSOLE_CONTROL, CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetConsoleCP,
+            GetConsoleMode, GetConsoleOutputCP, INPUT_RECORD, KEY_EVENT, PeekConsoleInputW,
+            ReadConsoleInputW, ReadConsoleW, SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode,
+            SetConsoleOutputCP,
         },
         IO::CancelSynchronousIo,
-        Threading::{INFINITE, SetEvent, WaitForMultipleObjects},
+        Threading::{INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject},
     },
 };
 
@@ -113,6 +114,121 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
     }
 }
 
+/// A live thread's synchronous-I/O cancellation handle. Cached per thread so
+/// warm input batches neither allocate nor reopen a kernel handle.
+pub struct ReadThread(OwnedHandle);
+impl ReadThread {
+    /// Capture the calling thread before admitting its synchronous read.
+    pub fn current() -> io::Result<std::sync::Arc<Self>> {
+        use std::{cell::OnceCell, os::windows::io::FromRawHandle, sync::Arc};
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThreadId, OpenThread, THREAD_TERMINATE,
+        };
+        thread_local! { static CURRENT: OnceCell<Arc<ReadThread>> = const { OnceCell::new() }; }
+        CURRENT.with(|current| {
+            if let Some(handle) = current.get() {
+                return Ok(Arc::clone(handle));
+            }
+            // SAFETY: queries the calling live thread, requesting only cancellation rights.
+            let handle = unsafe { OpenThread(THREAD_TERMINATE, 0, GetCurrentThreadId()) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful OpenThread transfers one owned handle here.
+            let thread = Arc::new(Self(unsafe { OwnedHandle::from_raw_handle(handle) }));
+            let _ = current.set(Arc::clone(&thread));
+            Ok(thread)
+        })
+    }
+    /// Request cancellation; the admission fence must still await acknowledgement
+    /// and retry if the read had not yet reached the kernel.
+    pub fn cancel(&self) {
+        // SAFETY: this owned handle keeps the registered read's thread live.
+        unsafe { CancelSynchronousIo(self.0.as_raw_handle().cast()) };
+    }
+}
+
+/// How a process input handle can be awaited without polling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputKind {
+    /// A pipe opened for overlapped I/O: completions arrive on the IOCP.
+    Overlapped,
+    /// Any other pipe, file or device: a synchronous read may wait on a
+    /// peer, a disk or a network share, and `CancelSynchronousIo` releases
+    /// it. The file type cannot tell NUL from a serial port, so no device
+    /// is assumed to answer at once.
+    Blocking,
+    /// A console input buffer: waitable, and its text is UTF-16.
+    Console,
+}
+
+/// Classify a live input handle.
+pub fn input_kind(file: &std::fs::File) -> InputKind {
+    let handle = file.as_raw_handle() as HANDLE;
+    let mut mode = 0;
+    // SAFETY: the borrowed file keeps the handle live for both queries, and
+    // the mode output outlives the console query.
+    let (kind, console) = unsafe { (GetFileType(handle), GetConsoleMode(handle, &raw mut mode)) };
+    match kind {
+        FILE_TYPE_PIPE if super::io::is_overlapped(file) => InputKind::Overlapped,
+        FILE_TYPE_CHAR if console != 0 => InputKind::Console,
+        _ => InputKind::Blocking,
+    }
+}
+
+/// Process input, opened so it can be awaited without polling.
+#[cfg(feature = "async-stdin")]
+pub enum AsyncInput {
+    /// An overlapped pipe registered with the runtime's IOCP.
+    Overlapped(tokio::net::windows::named_pipe::NamedPipeClient),
+    /// Anything else but a console, for a dedicated reader that
+    /// `cancel_thread` releases.
+    Blocking(std::fs::File),
+    /// A console input buffer, for a dedicated reader that waits with
+    /// `console_wait` and reads text with `console_read_text`.
+    Console(std::fs::File),
+}
+
+/// Classify an owned input handle and open it accordingly. An overlapped pipe
+/// is registered with the current Tokio runtime, so this must run inside one.
+#[cfg(feature = "async-stdin")]
+pub fn async_input(file: std::fs::File) -> io::Result<AsyncInput> {
+    use std::os::windows::io::IntoRawHandle as _;
+    Ok(match input_kind(&file) {
+        // SAFETY: the file owned the handle and gives up ownership to the
+        // client, and the classification confirmed a pipe opened for
+        // overlapped I/O, which is what the client requires.
+        InputKind::Overlapped => AsyncInput::Overlapped(unsafe {
+            tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
+                file.into_raw_handle(),
+            )
+        }?),
+        InputKind::Blocking => AsyncInput::Blocking(file),
+        InputKind::Console => AsyncInput::Console(file),
+    })
+}
+
+/// Bytes queued in a pipe and not yet read by anyone.
+pub fn pipe_bytes_available(pipe: &std::fs::File) -> io::Result<u32> {
+    let mut available = 0;
+    // SAFETY: the borrowed file keeps the handle live, the optional buffers
+    // are null, and the count output outlives the call.
+    let peeked = unsafe {
+        windows_sys::Win32::System::Pipes::PeekNamedPipe(
+            pipe.as_raw_handle() as HANDLE,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &raw mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if peeked == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(available)
+}
+
 /// Manual-reset event that every unbounded console input wait includes, so
 /// closing the terminal releases a waiting reader without input arriving.
 pub struct ConsoleWake(OwnedHandle);
@@ -133,6 +249,59 @@ impl ConsoleWake {
         }
         Ok(())
     }
+}
+
+impl ConsoleWake {
+    /// Whether `signal` has been called.
+    pub fn is_signalled(&self) -> bool {
+        // SAFETY: the owned event handle is live for this zero-timeout wait.
+        unsafe { WaitForSingleObject(self.0.as_raw_handle() as HANDLE, 0) == WAIT_OBJECT_0 }
+    }
+}
+
+/// Wait until console input is pending (true) or `wake` is signalled
+/// (false). When both are, `wake` wins.
+pub fn console_wait(input: &std::fs::File, wake: &ConsoleWake) -> io::Result<bool> {
+    let handles = [
+        wake.0.as_raw_handle() as HANDLE,
+        input.as_raw_handle() as HANDLE,
+    ];
+    // SAFETY: both handles are borrowed live for the call and the array
+    // outlives it.
+    match unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) } {
+        WAIT_OBJECT_0 => Ok(false),
+        result if result == WAIT_OBJECT_0 + 1 => Ok(true),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// UTF-16 code units of console text, read as the console's input mode
+/// delivers them (a line, in line input mode). A Ctrl+Z typed at any point
+/// ends the read with the 0x1A unit last, which the caller treats as end of
+/// input. `CancelSynchronousIo` on the reading thread ends a pending read.
+pub fn console_read_text(input: &std::fs::File, units: &mut [u16]) -> io::Result<usize> {
+    let control = CONSOLE_READCONSOLE_CONTROL {
+        nLength: size_of::<CONSOLE_READCONSOLE_CONTROL>() as u32,
+        nInitialChars: 0,
+        dwCtrlWakeupMask: 1 << 0x1a,
+        dwControlKeyState: 0,
+    };
+    let mut count = 0;
+    // SAFETY: the borrowed file keeps the handle live; the slice, count and
+    // control outlive the call, and the length is the slice's own.
+    let read = unsafe {
+        ReadConsoleW(
+            input.as_raw_handle() as HANDLE,
+            units.as_mut_ptr().cast(),
+            u32::try_from(units.len()).unwrap_or(u32::MAX),
+            &raw mut count,
+            &raw const control,
+        )
+    };
+    if read == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(count as usize)
 }
 
 impl AsRawHandle for ConsoleWake {

@@ -32,28 +32,26 @@ static void *run_input(void *argument) {
        can unwind only this C stack, never a Rust callback or owned value. */
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
     for (;;) {
-        struct pollfd source = { ops->fd, POLLIN, 0 };
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-        int ready;
-        do { ready = poll(&source, 1, -1); } while (ready < 0 && errno == EINTR);
-        int poll_error = ready < 0 ? errno : 0;
-        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
         size_t length;
         unsigned char *bytes = ops->acquire(ops->context, &length);
         if (bytes == NULL) break;
         pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
         pthread_testcancel();
-        ssize_t count = -1;
-        while (poll_error == 0) {
+        ssize_t count;
+        int error = 0;
+        for (;;) {
             count = read(ops->fd, bytes, length);
-            if (count >= 0 || (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)) break;
-            /* An unwatchable device cannot wake poll after WouldBlock.
-               Preserve that error instead of spinning on POLLNVAL. */
-            if (errno != EINTR && (source.revents & POLLNVAL)) break;
+            if (count >= 0) { error = 0; break; }
+            error = errno;
+            if (error == EINTR) continue;
+            if (error != EAGAIN && error != EWOULDBLOCK) break;
+            struct pollfd source = { ops->fd, POLLIN, 0 };
+            int ready;
             do { ready = poll(&source, 1, -1); } while (ready < 0 && errno == EINTR);
-            if (ready < 0) poll_error = errno;
+            if (ready < 0) { error = errno; break; }
+            /* An unwatchable device cannot wake poll after WouldBlock. */
+            if (source.revents & POLLNVAL) break;
         }
-        int error = poll_error != 0 ? poll_error : (count < 0 ? errno : 0);
         pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
         if (!ops->publish(ops->context, (intptr_t)count, error)) break;
     }

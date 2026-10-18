@@ -1,3 +1,5 @@
+use super::Utf16;
+
 #[cfg(not(acyclic_harness_loom))]
 fn reinitialized_after_one_byte(broken: bool) -> usize {
     use super::{BATCH, Channel, publish};
@@ -115,6 +117,51 @@ fn recycled_batches_match_independent_vec_bytes_errors_and_order() {
             (output, trace)
         },
     );
+}
+
+fn decode(reads: &[&[u16]]) -> (String, bool) {
+    let mut text = Utf16::default();
+    let mut bytes = Vec::new();
+    for units in reads {
+        let mut out = vec![0; units.len() * 3 + 3];
+        let written = text.decode(units, &mut out);
+        bytes.extend_from_slice(&out[..written]);
+    }
+    (String::from_utf8(bytes).unwrap_or_default(), text.ended)
+}
+
+#[test]
+fn console_text_keeps_a_surrogate_pair_split_across_reads() {
+    let units: Vec<u16> = "héllo 😀\r\n".encode_utf16().collect();
+    // The emoji's two units straddle the reads.
+    let split = units.len() - 3;
+    assert_eq!(
+        decode(&[&units[..split], &units[split..]]),
+        ("héllo 😀\r\n".into(), false)
+    );
+}
+
+#[test]
+fn negative_control_detects_per_read_decoding_of_a_split_pair() {
+    let units: Vec<u16> = "😀".encode_utf16().collect();
+    let naive = String::from_utf16_lossy(&units[..1]) + &String::from_utf16_lossy(&units[1..]);
+    assert_ne!(naive, "😀");
+}
+
+#[test]
+fn unpaired_surrogates_become_replacement_characters() {
+    assert_eq!(decode(&[&[0xd800, 0x61]]), ("\u{fffd}a".into(), false));
+    assert_eq!(decode(&[&[0xdc00, 0x61]]), ("\u{fffd}a".into(), false));
+    assert_eq!(
+        decode(&[&[0xd800, 0xd801, 0xdc00]]),
+        ("\u{fffd}𐐀".into(), false)
+    );
+}
+
+#[test]
+fn ctrl_z_ends_console_input_after_the_text_before_it() {
+    assert_eq!(decode(&[&[0x61, 0x1a, 0x62]]), ("a".into(), true));
+    assert_eq!(decode(&[&[0xd83d], &[0x1a]]), ("\u{fffd}".into(), true));
 }
 
 /// Shutdown models over the production channel and pump. The cancel object
@@ -288,4 +335,37 @@ mod model {
         assert!(child_deadlocks("edge")?);
         Ok(())
     }
+}
+
+proptest::proptest! {
+    #[test]
+    fn utf16_chunks_match_lossy_decoding_through_eof(
+        units in proptest::collection::vec(proptest::num::u16::ANY, 0..128),
+        chunk in 1usize..16,
+    ) {
+        let units: Vec<_> = units.into_iter().take_while(|unit| *unit != 0x1a).collect();
+        let mut decoder = Utf16::default();
+        let mut output = Vec::new();
+        let mut buffer = [0; 51];
+        for part in units.chunks(chunk) {
+            let count = decoder.decode(part, &mut buffer);
+            output.extend_from_slice(&buffer[..count]);
+        }
+        let count = decoder.decode(&[], &mut buffer);
+        output.extend_from_slice(&buffer[..count]);
+        proptest::prop_assert_eq!(output, String::from_utf16_lossy(&units).into_bytes());
+        proptest::prop_assert!(decoder.ended);
+    }
+}
+
+#[test]
+fn a_carried_high_surrogate_reserves_a_full_replacement_character() {
+    let mut decoder = Utf16::default();
+    let mut output = [0; 6];
+    assert_eq!(decoder.decode(&[0xd800], &mut output), 0);
+    let count = decoder.decode(&[0x800], &mut output);
+    assert_eq!(count, 6);
+    assert_eq!(&output, "\u{fffd}\u{800}".as_bytes());
+    // The old bound allowed four bytes here; the required six expose it.
+    assert!(count > 3 + 1);
 }

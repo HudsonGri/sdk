@@ -132,3 +132,7 @@ impl Drop for InputReader {
         drop(unsafe { Box::from_raw(self.context as *mut Context) });
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "input_reader_counts.rs"]
+mod counts;

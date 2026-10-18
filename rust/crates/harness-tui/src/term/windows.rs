@@ -50,15 +50,26 @@ impl Write for ConsoleIo {
 /// `Console::close`, so a closed console never leaves a reader blocked.
 pub(super) struct Console {
     owner: Arc<Owner<ConsoleIo>>,
-    pub(super) input: InputFence,
-    pub(super) closed: ffi::ConsoleWake,
+    input: InputFence<Arc<ffi::ReadThread>>,
+    closed: ffi::ConsoleWake,
+    reader: File,
 }
 impl Console {
+    pub(super) fn read(&self, bytes: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
+        self.input.read(ffi::ReadThread::current()?, || {
+            ffi::console_read(
+                self.reader.as_raw_handle() as usize,
+                bytes,
+                deadline,
+                Some(&self.closed),
+            )
+        })
+    }
     pub(super) fn close(&self) -> io::Result<()> {
         // Release a waiting reader, refuse further reads and wait for the
         // admitted one, then restore: no read runs under restored modes.
         let wake = self.closed.signal();
-        let fenced = self.input.close();
+        let fenced = self.input.close(|thread| thread.cancel());
         Owner::close(&self.owner, ConsoleIo::restore)
             .and(wake)
             .and(fenced)
@@ -81,7 +92,6 @@ fn console_control(event: u32) -> bool {
 /// restoration waits for cancellation acknowledgement before undoing modes.
 pub struct Tty {
     pub(super) console: Arc<Console>,
-    pub(super) reader: File,
     pub(super) decoder: Decoder,
     capabilities: Option<Capabilities>,
 }
@@ -219,6 +229,7 @@ impl Tty {
             owner: Owner::new(guard, ffi::cancel_thread),
             input: InputFence::default(),
             closed: ffi::ConsoleWake::new()?,
+            reader,
         });
         CONSOLE
             .set(Arc::clone(&console))
@@ -232,7 +243,6 @@ impl Tty {
         }
         Ok(Self {
             console,
-            reader,
             decoder: Decoder::default(),
             capabilities: None,
         })
@@ -297,14 +307,10 @@ impl ProbeIo for Tty {
             if now >= deadline {
                 return Ok(0);
             }
-            let count = self.console.input.read(|| {
-                ffi::console_read(
-                    self.reader.as_raw_handle() as usize,
-                    bytes,
-                    Some(deadline.min(now + std::time::Duration::from_millis(1))),
-                    None,
-                )
-            })?;
+            let count = self.console.read(
+                bytes,
+                Some(deadline.min(now + std::time::Duration::from_millis(1))),
+            )?;
             if count != 0 || bytes.is_empty() {
                 return Ok(count);
             }
