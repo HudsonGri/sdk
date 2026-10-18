@@ -228,7 +228,10 @@ pub(super) async fn qualify() -> TestResult {
     assert_eq!(created.actor_id, ID);
     configure(remote, &bearer, 1).await?;
     let boundary = observed.tail(observation_path(ID)?).await?;
-    source.append(append(b"poison")).await?;
+    let AppendOutcome::Committed(poison) = source.append(append(b"poison")).await? else {
+        return Err("poison append did not commit".into());
+    };
+    assert_eq!((poison.start, poison.end), (1, 2));
     let (before, next) = followed_observation(&observed, ID, boundary, |actor| {
         actor
             .subscriptions
