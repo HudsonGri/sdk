@@ -1,5 +1,6 @@
 //! Thread-local allocation measurements and independent differential runs.
 pub mod differential;
+pub mod stack;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
