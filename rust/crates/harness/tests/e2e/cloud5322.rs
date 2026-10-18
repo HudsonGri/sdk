@@ -4,7 +4,6 @@ use acyclic_harness::task_volume::{FileKey, TaskVolume, Write};
 use acyclic_stream::{CommitConflict, CommitMutation, OwnedBytes, wire};
 use futures::StreamExt as _;
 use prost::Message as _;
-use std::time::Duration;
 
 async fn remote() -> TestResult<Arc<Client>> {
     let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD").ok_or("missing local Cloud endpoints")?;
@@ -186,7 +185,7 @@ async fn latest_payload_matches_exactly() -> TestResult {
             0,
         )
         .await?;
-    let observed = tokio::time::timeout(Duration::from_secs(10), data.next())
+    let observed = wait(&mut 1, "LATEST value", data.next())
         .await?
         .ok_or("LATEST ended")??;
     if observed.item != Some(wire::session_data::Item::LatestValue(latest.clone())) {
@@ -233,17 +232,7 @@ async fn checked_follow_close_codes() -> TestResult {
         let observed = match opened {
             Err(error) => Some(error),
             Ok(mut follow) => {
-                let item = match tokio::time::timeout(Duration::from_secs(10), follow.next()).await
-                {
-                    Ok(item) => item,
-                    Err(_) => {
-                        errors.push(format!(
-                            "expected Closed {} -> {expected:?}; no terminal frame within 10s",
-                            expected.code()
-                        ));
-                        continue;
-                    }
-                };
+                let item = wait(&mut 1, "checked follow close", follow.next()).await?;
                 match item {
                     Some(Err(error)) => Some(error),
                     Some(Ok(record)) => {
@@ -315,7 +304,7 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
         format!("Bearer {}", endpoints.streams.bearer).parse()?,
     );
     let mut output = client.session(request).await?.into_inner();
-    let welcome = tokio::time::timeout(Duration::from_secs(10), output.message())
+    let welcome = wait(&mut 1, "Session Welcome", output.message())
         .await??
         .ok_or("raw Session ended before Welcome")?;
     if !matches!(welcome.body, Some(Body::Welcome(_))) {
@@ -358,8 +347,11 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
     let mut closed = std::collections::BTreeMap::new();
     let mut healthy_opened = false;
     let mut healthy_delivered = false;
+    // One InterestApplied, one Closed per refused sibling, and the healthy
+    // sibling's Opened plus Data. Extra frames cannot extend the exchange.
+    let mut remaining = 1 + expected.len() + 2;
     while closed.len() < expected.len() || !healthy_delivered {
-        let frame = tokio::time::timeout(Duration::from_secs(10), output.message())
+        let frame = wait(&mut remaining, "Session sibling outcomes", output.message())
             .await??
             .ok_or("raw Session ended before Closed frames")?;
         eprintln!("Cloud5322 raw frame {frame:?}");
@@ -423,4 +415,97 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
     }
     eprintln!("Cloud5322 PASS exact raw Closed frames and healthy sibling Opened/data");
     Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+enum WaitError {
+    #[error("{operation}: Session response frame budget exhausted")]
+    FramesExhausted { operation: &'static str },
+    #[error("{operation}: {detail}")]
+    Stalled {
+        operation: &'static str,
+        detail: String,
+    },
+}
+
+/// Each expected response consumes a protocol frame, independently of host
+/// speed. The shared runner guard attributes missing wakeups/frames and drains
+/// accepted I/O; scenario semantics carry no clock or per-response deadline.
+async fn wait<T>(
+    remaining: &mut usize,
+    operation: &'static str,
+    response: impl std::future::Future<Output = T>,
+) -> Result<T, WaitError> {
+    *remaining = remaining
+        .checked_sub(1)
+        .ok_or(WaitError::FramesExhausted { operation })?;
+    super::super::stall::guarded(
+        Path::new("cloud5322"),
+        super::super::stall::waiting(operation, response),
+    )
+    .await
+    .map_err(|detail| WaitError::Stalled { operation, detail })
+}
+
+#[tokio::test(start_paused = true)]
+async fn response_waits_fail_with_typed_stalls_and_reject_an_unguarded_wait() {
+    fn typed_stall(result: Result<Result<(), WaitError>, String>, operation: &str) -> bool {
+        matches!(result, Ok(Err(WaitError::Stalled { operation: actual, detail }))
+            if actual == operation && detail == format!("stalled: cloud5322 at {operation}"))
+    }
+    for operation in [
+        "LATEST value",
+        "checked follow close",
+        "Session Welcome",
+        "Session sibling outcomes",
+    ] {
+        // The independent outer guard makes removing the real wait guard a
+        // finite negative control: that returns an infrastructure failure,
+        // rather than the required operation-specific typed Session failure.
+        let mut guard = super::super::progress_guard::Guard::new();
+        assert!(typed_stall(
+            guard
+                .run(wait(&mut 1, operation, std::future::pending::<()>()))
+                .await,
+            operation,
+        ));
+        let mut guard = super::super::progress_guard::Guard::new();
+        assert!(!typed_stall(
+            guard
+                .run(async { Ok::<(), WaitError>(std::future::pending().await) })
+                .await,
+            operation,
+        ));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn response_budget_is_exact_and_rejects_a_restored_frame() {
+    fn exhausted(result: Result<(), WaitError>) -> bool {
+        matches!(
+            result,
+            Err(WaitError::FramesExhausted {
+                operation: "frames"
+            })
+        )
+    }
+    for frames in 0..=8 {
+        let mut remaining = frames;
+        for delivered in 0..frames {
+            assert_eq!(
+                wait(&mut remaining, "frames", std::future::ready(delivered))
+                    .await
+                    .unwrap(),
+                delivered
+            );
+        }
+        assert!(exhausted(
+            wait(&mut remaining, "frames", std::future::ready(())).await
+        ));
+        // Restoring a consumed frame must fail the same exact-budget oracle.
+        remaining += 1;
+        assert!(!exhausted(
+            wait(&mut remaining, "frames", std::future::ready(())).await
+        ));
+    }
 }
