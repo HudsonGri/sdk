@@ -131,33 +131,44 @@ fn baseline_finish(
 fn std_descriptor_metadata_preserves_native_capture_facts_without_allocating() {
     use std::os::unix::fs::PermissionsExt as _;
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(64));
-    runner.run(&(0u64..131073, 0u32..0o1000, any::<bool>()), |(length, mode, linked)| {
-        let source = tempfile::tempdir().unwrap();
-        let path = source.path().join("file");
-        let file = std::fs::File::create(&path).unwrap();
-        file.set_len(length).unwrap();
-        file.set_permissions(std::fs::Permissions::from_mode(mode)).unwrap();
-        if linked {
-            std::fs::hard_link(&path, source.path().join("alias")).unwrap();
-        }
-        let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work()).unwrap();
-        let expected = root.stat_file_metadata(&file, &mut crate::native_host::ordinary_work()).unwrap();
-        let observed = file.metadata().unwrap();
-        let mut actual = None;
-        let heap = acyclic_test_support::measure(|| actual = Some(HostStat::from_std_metadata(&observed)));
-        let actual = actual.unwrap().unwrap();
-        prop_assert_eq!(heap.count_total, 0);
-        prop_assert_eq!(actual.identity(), expected.identity());
-        prop_assert_eq!(actual.nlink(), expected.nlink());
-        prop_assert_eq!(actual.file_type(), expected.file_type());
-        prop_assert_eq!(actual.len(), expected.len());
-        prop_assert_eq!(capture_metadata(&actual), capture_metadata(&expected));
-        prop_assert!(ensure_same_host_node(&expected, &actual).is_ok());
-        let mut wrong = actual.clone();
-        wrong.raw.st_ino ^= 1;
-        prop_assert!(ensure_same_host_node(&expected, &wrong).is_err());
-        Ok(())
-    }).unwrap();
+    runner
+        .run(
+            &(0u64..131073, 0u32..0o1000, any::<bool>()),
+            |(length, mode, linked)| {
+                let source = tempfile::tempdir().unwrap();
+                let path = source.path().join("file");
+                let file = std::fs::File::create(&path).unwrap();
+                file.set_len(length).unwrap();
+                file.set_permissions(std::fs::Permissions::from_mode(mode))
+                    .unwrap();
+                if linked {
+                    std::fs::hard_link(&path, source.path().join("alias")).unwrap();
+                }
+                let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
+                    .unwrap();
+                let expected = root
+                    .stat_file_metadata(&file, &mut crate::native_host::ordinary_work())
+                    .unwrap();
+                let observed = file.metadata().unwrap();
+                let mut actual = None;
+                let heap = acyclic_test_support::measure(|| {
+                    actual = Some(HostStat::from_std_metadata(&observed))
+                });
+                let actual = actual.unwrap().unwrap();
+                prop_assert_eq!(heap.count_total, 0);
+                prop_assert_eq!(actual.identity(), expected.identity());
+                prop_assert_eq!(actual.nlink(), expected.nlink());
+                prop_assert_eq!(actual.file_type(), expected.file_type());
+                prop_assert_eq!(actual.len(), expected.len());
+                prop_assert_eq!(capture_metadata(&actual), capture_metadata(&expected));
+                prop_assert!(ensure_same_host_node(&expected, &actual).is_ok());
+                let mut wrong = actual.clone();
+                wrong.raw.st_ino ^= 1;
+                prop_assert!(ensure_same_host_node(&expected, &wrong).is_err());
+                Ok(())
+            },
+        )
+        .unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -165,9 +176,13 @@ fn std_descriptor_metadata_preserves_native_capture_facts_without_allocating() {
 fn missing_std_birth_time_stays_allocation_free() {
     let file = std::fs::File::open("/proc/self/stat").unwrap();
     let metadata = file.metadata().unwrap();
-    assert_eq!(metadata.created().unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+    assert_eq!(
+        metadata.created().unwrap_err().kind(),
+        std::io::ErrorKind::Unsupported
+    );
     let mut result = None;
-    let heap = acyclic_test_support::measure(|| result = Some(HostStat::from_std_metadata(&metadata)));
+    let heap =
+        acyclic_test_support::measure(|| result = Some(HostStat::from_std_metadata(&metadata)));
     assert!(result.unwrap().unwrap().birth_time().is_none());
     assert_eq!(heap.count_total, 0);
 }
@@ -178,10 +193,13 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
     use crate::native_host::stat_probe::Probe;
     use acyclic_test_support::{differential, measure};
     use std::os::unix::fs::PermissionsExt as _;
-    let _subscriber = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+    let _subscriber =
+        tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
-    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     let check = |(body, sparse, cancelled, stale): (Vec<u8>, bool, bool, bool)| {
         let paired = differential::pair::<_, _, &'static str>(
             || {
@@ -195,26 +213,64 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
                 } else {
                     std::fs::write(&path, &body).unwrap();
                 }
-                let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work()).unwrap();
-                let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+                let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
+                    .unwrap();
+                let setup = NativeMaterializationWork::new(
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
                 let fs = crate::Fs::memory();
-                let workspace = runtime.block_on(fs.create_workspace("import-pair", WorkBudget::UNBOUNDED, setup.cancellation())).unwrap().value;
-                let checkout = runtime.block_on(workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), &setup, setup.cancellation())).unwrap();
-                let health = acyclic_native_runtime::NativeFile::from_file(std::fs::File::open(&path).unwrap(), None).map_err(|(error, _)| error).unwrap();
+                let workspace = runtime
+                    .block_on(fs.create_workspace(
+                        "import-pair",
+                        WorkBudget::UNBOUNDED,
+                        setup.cancellation(),
+                    ))
+                    .unwrap()
+                    .value;
+                let checkout = runtime
+                    .block_on(workspace.checkout(
+                        crate::model::GenerationSelector::Head,
+                        crate::model::CheckoutMode::tracking_transaction(),
+                        &setup,
+                        setup.cancellation(),
+                    ))
+                    .unwrap();
+                let health = acyclic_native_runtime::NativeFile::from_file(
+                    std::fs::File::open(&path).unwrap(),
+                    None,
+                )
+                .map_err(|(error, _)| error)
+                .unwrap();
                 let snapshot = test_host_stat(&root, Path::new("file")).unwrap();
                 let mut bytes = 0;
                 // Warm the same immutable objects independently in each store.
-                runtime.block_on(baseline_stage(&checkout, &root, &path_only(), &snapshot, 8, &setup, &mut bytes)).unwrap();
+                runtime
+                    .block_on(baseline_stage(
+                        &checkout,
+                        &root,
+                        &path_only(),
+                        &snapshot,
+                        8,
+                        &setup,
+                        &mut bytes,
+                    ))
+                    .unwrap();
                 if stale {
-                    file.set_permissions(std::fs::Permissions::from_mode(0o400)).unwrap();
+                    file.set_permissions(std::fs::Permissions::from_mode(0o400))
+                        .unwrap();
                 }
                 (source, root, snapshot, setup, fs, checkout, health)
             },
             |(_source, root, snapshot, _setup, fs, checkout, _health), old| {
                 let cancellation = CancellationToken::new();
-                let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+                let work =
+                    NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
                 let scope = CaptureWorkScope::new(&work).unwrap();
-                if cancelled { cancellation.cancel(); }
+                if cancelled {
+                    cancellation.cancel();
+                }
                 let before = work.receipt();
                 let live = work.live_allocation_bytes();
                 let probe = Probe::rescan(false);
@@ -222,15 +278,34 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
                 let mut staged = 17;
                 let mut result = None;
                 let path = path_only();
-                let mut future = std::pin::pin!(async {
-                    if old {
-                        baseline_stage(&checkout, &root, &path, &snapshot, 8, &scope.native, &mut staged).await
-                    } else {
-                        stage_regular_body(&checkout, &root, &path, &snapshot, 8, &scope.native, &mut staged).await
-                    }
-                });
-                let heap = measure(|| result = Some(runtime.block_on(future.as_mut())));
-                drop(future);
+                let heap = {
+                    let mut future = std::pin::pin!(async {
+                        if old {
+                            baseline_stage(
+                                &checkout,
+                                &root,
+                                &path,
+                                &snapshot,
+                                8,
+                                &scope.native,
+                                &mut staged,
+                            )
+                            .await
+                        } else {
+                            stage_regular_body(
+                                &checkout,
+                                &root,
+                                &path,
+                                &snapshot,
+                                8,
+                                &scope.native,
+                                &mut staged,
+                            )
+                            .await
+                        }
+                    });
+                    measure(|| result = Some(runtime.block_on(future.as_mut())))
+                };
                 probe.publish();
                 let health_items = probe.examinations();
                 drop(probe);
@@ -241,19 +316,44 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
                 if let Ok(ranges) = &result {
                     for (_, content) in ranges {
                         let cancellation = CancellationToken::new();
-                        let mut accounting = crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-                        let read = runtime.block_on(crate::kernel::read_blob_range_with_accounting(fs.objects(), content.root(), crate::ByteRange { offset: 0, length: content.logical_bytes() }, crate::kernel::DecodeLimits::for_volume(checkout.volume_config()), &mut accounting, &cancellation, true)).unwrap();
+                        let mut accounting = crate::kernel::KernelAccounting::standalone(
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        );
+                        let read = runtime
+                            .block_on(crate::kernel::read_blob_range_with_accounting(
+                                fs.objects(),
+                                content.root(),
+                                crate::ByteRange {
+                                    offset: 0,
+                                    length: content.logical_bytes(),
+                                },
+                                crate::kernel::DecodeLimits::for_volume(checkout.volume_config()),
+                                &mut accounting,
+                                &cancellation,
+                                true,
+                            ))
+                            .unwrap();
                         bytes.extend_from_slice(read.bytes.as_ref());
                     }
                 }
-                drop(result.as_ref().ok());
                 let mut delta = serde_json::to_value(receipt).unwrap();
                 let initial = serde_json::to_value(before).unwrap();
                 for (name, value) in delta.as_object_mut().unwrap() {
-                    *value = serde_json::json!(value.as_u64().unwrap() - initial[name].as_u64().unwrap());
+                    *value = serde_json::json!(
+                        value.as_u64().unwrap() - initial[name].as_u64().unwrap()
+                    );
                 }
-                delta["itemsExamined"] = serde_json::json!(delta["itemsExamined"].as_u64().unwrap() - health_items);
-                (result, staged, bytes, delta, heap.count_total, live_after - live)
+                delta["itemsExamined"] =
+                    serde_json::json!(delta["itemsExamined"].as_u64().unwrap() - health_items);
+                (
+                    result,
+                    staged,
+                    bytes,
+                    delta,
+                    heap.count_total,
+                    live_after - live,
+                )
             },
         );
         let [(mut old, old_trace), (new, trace)] = paired;
@@ -265,7 +365,8 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
         let imported = !cancelled && !stale && !sparse && !body.is_empty();
         if imported {
             prop_assert_eq!(&new.2, &body);
-            old.3["backendReadOperations"] = serde_json::json!(old.3["backendReadOperations"].as_u64().unwrap() - 1);
+            old.3["backendReadOperations"] =
+                serde_json::json!(old.3["backendReadOperations"].as_u64().unwrap() - 1);
         }
         prop_assert_eq!(old.3, new.3);
         let mut expected = old_trace.clone();
@@ -276,7 +377,9 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
         expected.retain(|event| *event != "identity");
         prop_assert_eq!(&trace, &expected);
         let oracle = |events: &[&str]| {
-            events == expected && events.iter().filter(|event| **event == "metadata").count() == usize::from(!cancelled)
+            events == expected
+                && events.iter().filter(|event| **event == "metadata").count()
+                    == usize::from(!cancelled)
         };
         prop_assert!(oracle(&trace));
         if !cancelled {
@@ -296,7 +399,17 @@ fn staging_import_reuses_only_its_held_metadata_and_preserves_complete_output() 
             }
         }
     }
-    proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32)).run(&(prop::collection::vec(any::<u8>(), 0..96), any::<bool>(), any::<bool>(), any::<bool>()), check).unwrap();
+    proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
+        .run(
+            &(
+                prop::collection::vec(any::<u8>(), 0..96),
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+            ),
+            check,
+        )
+        .unwrap();
 }
 
 #[cfg(target_os = "linux")]
