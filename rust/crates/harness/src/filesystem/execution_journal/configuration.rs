@@ -286,8 +286,10 @@ where
         // Task approvals are followed as task files: an owner-bound task journal
         // without them could never prove a decision published.
         if self.owner.is_some() && self.task_files.is_none() {
-            return Err(Error::Invalid(
-                "task interaction owner requires private task files".into(),
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "task interaction owner requires private task files",
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]

@@ -2,7 +2,10 @@ use super::*;
 use acyclic_test_support::differential;
 use proptest::prelude::*;
 
-async fn initialized(reason: &str) -> Result<(Journal, InteractionId, OperationId, Vec<u8>, u64)> {
+async fn initialized(
+    reason: &str,
+    io: Option<&PreparationIo>,
+) -> Result<(Journal, InteractionId, OperationId, Vec<u8>, u64)> {
     let fixture = Fixture::new(
         Arc::new(MemoryStream::default()),
         acyclic_fs::Fs::memory(),
@@ -31,7 +34,7 @@ async fn initialized(reason: &str) -> Result<(Journal, InteractionId, OperationI
         "Install".into(),
         operation,
         [5; 32],
-        ApprovalSubject::Opaque {},
+        crate::interaction::ApprovalSubject::Opaque {},
     )?;
     journal.open_interaction(id, &request, None)?.await?;
     let request = approvals(&files).await?.remove(0).bytes;
@@ -41,6 +44,11 @@ async fn initialized(reason: &str) -> Result<(Journal, InteractionId, OperationI
     journal
         .write_approval_decision(&decision, &responder(&conversation, "human", &[id])?)
         .await?;
+    let journal = if io.is_some() {
+        journal_with_io(&fixture, &conversation, files, io).await?
+    } else {
+        journal
+    };
     Ok((
         journal,
         id,
@@ -60,21 +68,23 @@ proptest! {
                 for duplicate in [false, true] {
                     let (outcome, trace) = differential::observe::<_,_,(&'static str,u64)>(
                         || runtime.block_on(async {
-                            let (journal, approved, operation, _, _) = initialized(&reason).await.unwrap();
-                            let id = if pending {
-                                let id = InteractionId::from_bytes([87;16]);
-                                journal.open_interaction(id, &Interaction::approval(
-                                    "Pending".into(), operation, [5;32], crate::interaction::ApprovalSubject::Opaque {},
-                                ).unwrap(), None).unwrap().await.unwrap();
-                                id
-                            } else { approved };
-                            (journal, id)
-                        }),
-                        |(journal, id)| {
                             let cancellation = acyclic_fs::CancellationToken::new();
                             let work = acyclic_fs::NativeMaterializationWork::new(
                                 acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
                             ).unwrap();
+                            let io = native.then(|| PreparationIo::from_native_work(&work).unwrap());
+                            let (journal, approved, operation, _, _) = initialized(&reason, io.as_ref()).await.unwrap();
+                            let id = if pending {
+                                let id = InteractionId::from_bytes([87;16]);
+                                journal.open_interaction(id, &Interaction::approval(
+                                    "Pending".into(), operation, [5;32], crate::interaction::ApprovalSubject::Opaque {},
+                                ).unwrap(), io.as_ref()).unwrap().await.unwrap();
+                                id
+                            } else { approved };
+                            drop(io);
+                            (journal, id, work)
+                        }),
+                        |(journal, id, work)| {
                             let io = native.then(|| PreparationIo::from_native_work(&work).unwrap());
                             if duplicate {
                                 // Restore the removed, real history reconstruction
@@ -117,25 +127,34 @@ proptest! {
         for duplicate in [false, true] {
             // Each run owns fresh conversation, decoder and task-file state.
             let ((result, rejected, expected, request, decision), trace) = differential::observe::<_,_,(&'static str,u64)>(
-                || runtime.block_on(initialized(&reason)).unwrap(),
-                |(journal, id, operation, encoded, request)| {
+                || runtime.block_on(async {
+                    let ordinary = initialized(&reason, None).await.unwrap();
+                    let cancellation = acyclic_fs::CancellationToken::new();
+                    let work = acyclic_fs::NativeMaterializationWork::new(
+                        acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
+                    ).unwrap();
+                    let io = PreparationIo::from_native_work(&work).unwrap();
+                    let native = initialized(&reason, Some(&io)).await.unwrap();
+                    drop(io);
+                    (ordinary, native.0, work)
+                }),
+                |((journal, id, operation, encoded, request), native_journal, work)| {
                     let expected = acyclic_test_support::measure(|| {
                         drop(crate::contract::json_from_slice::<ApprovalDecisionFile>(&encoded).unwrap());
                     });
                     let rejected = matches!(runtime.block_on(
                         journal.verify_tool_approval_with_io(id, operation, [6;32], None)),
-                        Err(Error::Unauthorized(_)));
-                    let cancellation = acyclic_fs::CancellationToken::new();
-                    let work = acyclic_fs::NativeMaterializationWork::new(
-                        acyclic_fs::performance::work_budget(65_536, 64 << 20), &cancellation,
-                    ).unwrap();
+                        Err(Error::Unauthorized(ref reason)) if reason == "approval does not authorize this definition");
                     let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
                     let held = work.live_allocation_bytes();
                     let owned = io.owned_bytes().unwrap();
-                    let native = runtime.block_on(journal.verify_tool_approval_with_io(
+                    let native = runtime.block_on(native_journal.verify_tool_approval_with_io(
                         id, operation, [6;32], Some(&io),
-                    )).map_err(|error| error.code());
-                    let rejected = rejected && native == Err(crate::wire::ErrorCode::Unauthorized)
+                    ));
+                    let rejected = rejected && matches!(native, Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "approval does not authorize this definition",
+                    }))
                         && io.owned_bytes().unwrap() == owned && work.live_allocation_bytes() == held;
                     drop(io);
                     // Negative control restores the redundant verification on
