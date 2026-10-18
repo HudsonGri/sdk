@@ -186,6 +186,9 @@ proptest! {
 #[path = "transaction_batch_exact.rs"]
 mod exact;
 
+#[path = "transaction_batch_rebase.rs"]
+mod rebase;
+
 #[test]
 fn staging_accounting_measurements() {
     for invalid in [false, true] {

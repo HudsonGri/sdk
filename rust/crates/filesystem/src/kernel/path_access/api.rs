@@ -61,7 +61,7 @@ pub async fn lookup_paths<S: AsyncObjectStore>(
         store,
         generation,
         PathQueries::Owned(paths),
-        false,
+        PathObservation::None,
         config,
         budget,
         cancellation,
@@ -85,7 +85,7 @@ pub async fn observe_paths_async<S: AsyncObjectStore>(
         store,
         generation,
         PathQueries::Owned(paths),
-        true,
+        PathObservation::RECORDS,
         config,
         budget,
         cancellation,
@@ -108,7 +108,7 @@ pub async fn lookup_path_refs<S: AsyncObjectStore>(
         store,
         generation,
         PathQueries::Borrowed(paths),
-        false,
+        PathObservation::None,
         config,
         budget,
         cancellation,
@@ -117,6 +117,31 @@ pub async fn lookup_path_refs<S: AsyncObjectStore>(
     )
     .await
     .map(|observed| observed.lookup)
+}
+
+/// What a path batch records for a later rebase.
+#[derive(Clone, Copy)]
+pub(crate) enum PathObservation {
+    /// Nothing: a plain read.
+    None,
+    /// Every name binding and kind. Queries at or after `records_from` also
+    /// record their terminal file record, like a single lookup that captures
+    /// its terminal. Earlier queries are directory prefixes, so sibling
+    /// additions under them stay rebase-safe.
+    Paths { records_from: usize },
+}
+
+impl PathObservation {
+    /// Every query also records its terminal file record.
+    pub(crate) const RECORDS: Self = Self::Paths { records_from: 0 };
+
+    pub(super) const fn bindings(self) -> bool {
+        matches!(self, Self::Paths { .. })
+    }
+
+    pub(super) const fn record(self, index: usize) -> bool {
+        matches!(self, Self::Paths { records_from } if index >= records_from)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -194,7 +219,7 @@ pub(crate) async fn lookup_paths_with_accounting<S: AsyncObjectStore>(
         store,
         generation,
         paths,
-        false,
+        PathObservation::None,
         config,
         accounting,
         cancellation,
@@ -205,29 +230,6 @@ pub(crate) async fn lookup_paths_with_accounting<S: AsyncObjectStore>(
     Ok((value.lookup, allocation))
 }
 
-pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
-    store: &S,
-    generation: &crate::kernel::GenerationRoot,
-    paths: &[NamespacePath],
-    config: VolumeConfig,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-    custody: Option<&crate::kernel::ProofDataCustody>,
-) -> Result<(ObservedPathBatch, KernelOwnedAllocation), crate::FsError> {
-    path_queries_with_accounting(
-        store,
-        generation,
-        PathQueries::Owned(paths),
-        true,
-        config,
-        accounting,
-        cancellation,
-        custody,
-        PathBatchMode::NoFollow,
-    )
-    .await
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
@@ -236,7 +238,7 @@ pub(super) async fn lookup_path_queries_async<S: AsyncObjectStore>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,
     paths: PathQueries<'_>,
-    observe: bool,
+    observation: PathObservation,
     config: VolumeConfig,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -248,7 +250,7 @@ pub(super) async fn lookup_path_queries_async<S: AsyncObjectStore>(
         store,
         generation,
         paths,
-        observe,
+        observation,
         config,
         &mut accounting,
         cancellation,

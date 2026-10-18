@@ -89,11 +89,11 @@ impl<'a> PathQueries<'a> {
     clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
-pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
+pub(crate) async fn path_queries_with_accounting<S: AsyncObjectStore>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,
     paths: PathQueries<'_>,
-    observe: bool,
+    observation: PathObservation,
     config: VolumeConfig,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -137,7 +137,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 let count = paths.len();
                 let limits = DecodeLimits::for_volume(config);
                 let mut dependencies = reserve_slots::<Dependency>(
-                    if observe {
+                    if observation.bindings() {
                         total_components
                             .checked_add(count)
                             .ok_or(WorkError::Overflow)?
@@ -187,7 +187,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     if is_root {
                         entries.value[index].record = Some(root);
                         done.value[index] = 1;
-                        if observe {
+                        if observation.record(index) {
                             let expected =
                                 crate::kernel::probe::capture_file_record_state_with_accounting(
                                     root,
@@ -275,7 +275,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                                 value: name,
                                 custody: mut guard,
                             } = copied;
-                            let owner = if observe {
+                            let owner = if observation.bindings() {
                                 &mut dependencies.custody
                             } else {
                                 &mut names.custody
@@ -309,7 +309,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             .zip(bindings.value.iter())
                             .zip(names.value.drain(..))
                         {
-                            if observe {
+                            if observation.bindings() {
                                 let expected = match binding {
                                 Some(binding) => {
                                     crate::kernel::probe::capture_directory_name_state_with_accounting(
@@ -347,7 +347,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             }
                         }
                         drop_bindings(bindings, accounting)?;
-                        if !observe {
+                        if !observation.bindings() {
                             retire_name_bytes(&mut names.custody, accounting, copied_bytes)?;
                         }
                     }
@@ -383,7 +383,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         }
                         let next_depth = depth + 1;
                         if next_depth == paths.get(binding.path_index).depth() {
-                            if observe {
+                            if observation.record(binding.path_index) {
                                 let expected =
                                 crate::kernel::probe::capture_file_record_state_with_accounting(
                                     record,

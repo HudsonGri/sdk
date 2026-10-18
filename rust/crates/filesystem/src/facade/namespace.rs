@@ -297,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> W::OwnedOutput<PathBatchLookup> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
-            .lookup_batch_no_follow_with_accounting(paths, false, &mut accounting, cancellation)
+            .lookup_batch_no_follow_with_accounting(paths, 0, false, &mut accounting, cancellation)
             .await;
         let work = accounting.spent();
         let result = result.map(|(mut lookup, allocation)| {
@@ -307,9 +307,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish_owned(result, &accounting)
     }
 
+    /// A tracking checkout records every name binding and kind. Only queries
+    /// at or after `records_from` also record their terminal file record, so
+    /// earlier queries can name directory prefixes that siblings may extend.
     pub(crate) async fn lookup_batch_no_follow_with_accounting(
         &mut self,
         paths: &[NamespacePath],
+        records_from: usize,
         selected_restore: bool,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -354,14 +358,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             // The unchanged root answers and observes in the same shared walk.
             if *self.root == self.base_root {
-                let (value, allocation) = crate::kernel::observe_paths_async_with_accounting(
+                let (value, allocation) = crate::kernel::path_queries_with_accounting(
                     &self.volume.fs.inner.objects,
                     &self.root,
-                    paths,
+                    crate::kernel::PathQueries::Owned(paths),
+                    crate::kernel::PathObservation::Paths { records_from },
                     config,
                     accounting,
                     cancellation,
                     Some(&self.dependencies.data_custody),
+                    crate::kernel::PathBatchMode::NoFollow,
                 )
                 .await?;
                 let mut observed = (value, allocation);
@@ -413,14 +419,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
             let lookup = (value, allocation);
-            let (value, allocation) = crate::kernel::observe_paths_async_with_accounting(
+            let (value, allocation) = crate::kernel::path_queries_with_accounting(
                 &self.volume.fs.inner.objects,
                 &self.base_root,
-                paths,
+                crate::kernel::PathQueries::Owned(paths),
+                crate::kernel::PathObservation::Paths { records_from },
                 config,
                 accounting,
                 cancellation,
                 Some(&self.dependencies.data_custody),
+                crate::kernel::PathBatchMode::NoFollow,
             )
             .await?;
             let mut observed = (value, allocation);

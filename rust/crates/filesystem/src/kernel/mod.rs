@@ -193,8 +193,9 @@ pub use path_access::{
     observe_path_async, observe_paths_async,
 };
 pub(crate) use path_access::{
-    PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
-    observe_path_async_with_accounting, observe_paths_async_with_accounting,
+    PathBatchMode, PathObservation, PathQueries, lookup_path_async_with_accounting,
+    lookup_paths_with_accounting, observe_path_async_with_accounting,
+    path_queries_with_accounting,
 };
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
