@@ -68,7 +68,12 @@ pub fn capture_mount_clock_callbacks() -> impl FnOnce(u64, bool) -> Vec<u8> + Se
         }
         let _restore = Restore(HOST_MILLIS.replace(Some(host_millis)));
         let metadata = super::create_metadata(&clock, 0o644, libc::S_IFREG as u32, 1, 2);
-        let mut bytes = serde_json::to_vec(&metadata).expect("metadata trace");
+        let mut bytes = crate::kernel::encode_file_metadata(
+            metadata,
+            |_| Ok::<_, crate::FsError>(()),
+            |_| crate::FsError::from(crate::kernel::CanonicalDecodeError::AllocationFailed),
+        )
+        .expect("canonical metadata trace");
         bytes.extend_from_slice(
             &super::adapter::content_change_time(&clock)
                 .unwrap()
