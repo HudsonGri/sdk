@@ -101,7 +101,7 @@ impl LocalHarness {
 
     /// Opens durable local state and assembles the stock host before admitting work.
     pub fn open(config: LocalHarnessConfig) -> impl Future<Output = Result<Self>> {
-        Box::pin(async move {
+        acyclic_fs::in_heap(move || async move {
             config.limits.validate(&mut None)?;
             config.session_limits.validate(&mut None)?;
             if config.concurrency == 0 {
@@ -141,13 +141,15 @@ impl LocalHarness {
                 .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
-            let compaction = compaction::select(
-                config.compaction,
-                &model,
-                provider.as_ref(),
-                &tools,
-                config.limits,
-            )
+            let compaction = acyclic_fs::in_heap(|| {
+                compaction::select(
+                    config.compaction,
+                    &model,
+                    provider.as_ref(),
+                    &tools,
+                    config.limits,
+                )
+            })
             .await?;
             #[cfg(feature = "native-execution")]
             let native_mounts = tools.get("bash", None, None)?.is_some();
@@ -209,9 +211,9 @@ impl LocalHarness {
                 VolumeOwner::Agent(owner.agent),
                 &mut None,
             )?;
-            files.create_volume(&task_volume).await?;
-            files.create_volume(&scratch).await?;
-            files.create_volume(&journal).await?;
+            acyclic_fs::in_heap(|| files.create_volume(&task_volume)).await?;
+            acyclic_fs::in_heap(|| files.create_volume(&scratch)).await?;
+            acyclic_fs::in_heap(|| files.create_volume(&journal)).await?;
             // This standalone composition owns its private companion namespace.
             // Retain the existing owned WAL instead of reopening/checkpointing it
             // for every transaction. Embedded bind() retains shared-store semantics.
@@ -223,30 +225,34 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
-                    workspace::open(
-                        &filesystem,
-                        &owner.project,
-                        &scratch,
-                        path,
-                        &directory,
-                        owner.workspace_identity,
-                        workspace::attach_operation(owner.task),
-                        false,
-                        native_mounts,
-                        store,
-                    )
+                    acyclic_fs::in_heap(|| {
+                        workspace::open(
+                            &filesystem,
+                            &owner.project,
+                            &scratch,
+                            path,
+                            &directory,
+                            owner.workspace_identity,
+                            workspace::attach_operation(owner.task),
+                            false,
+                            native_mounts,
+                            store,
+                        )
+                    })
                     .await?,
                 ),
                 LocalProject::Volume { .. } => Some(
-                    workspace::open_volume(
-                        &filesystem,
-                        &owner.project,
-                        &scratch,
-                        &directory,
-                        workspace::attach_operation(owner.task),
-                        native_mounts,
-                        store,
-                    )
+                    acyclic_fs::in_heap(|| {
+                        workspace::open_volume(
+                            &filesystem,
+                            &owner.project,
+                            &scratch,
+                            &directory,
+                            workspace::attach_operation(owner.task),
+                            native_mounts,
+                            store,
+                        )
+                    })
                     .await?,
                 ),
             };
@@ -259,15 +265,11 @@ impl LocalHarness {
                 None => files,
             };
             // A configured project is opened, never silently replaced by an empty volume.
-            files
-                .resolve(
-                    &crate::filesystem::workspace_ref(
-                        provider_ref.clone(),
-                        &owner.project.storage_name(&mut None)?,
-                    )?,
-                    None,
-                )
-                .await?;
+            let project_ref = crate::filesystem::workspace_ref(
+                provider_ref.clone(),
+                &owner.project.storage_name(&mut None)?,
+            )?;
+            acyclic_fs::in_heap(|| files.resolve(&project_ref, None)).await?;
             #[cfg(feature = "native-execution")]
             let workspace = workspace.map(Arc::new);
             let stream = Arc::new(
@@ -289,26 +291,28 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
-            let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
-                files: files.clone(),
-                #[cfg(feature = "native-execution")]
-                workspace: workspace.as_ref().map(Arc::clone),
-                stream,
-                task_volume: &task_volume,
-                issuer: &issuer,
-                verifier: &verifier,
-                agent: owner.agent,
-                project: &owner.project,
-                scratch: &scratch,
-                journal: &journal,
-                tools: &tools,
-                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-                capabilities: &installation.capabilities,
-                limits: config.limits,
-                run_limits: config.run_limits,
-                session_limits: config.session_limits,
-                concurrency: config.concurrency,
-                clock: config.clock,
+            let (runtime, signed, task_files) = acyclic_fs::in_heap(|| {
+                runtime::open(runtime::Configuration {
+                    files: files.clone(),
+                    #[cfg(feature = "native-execution")]
+                    workspace: workspace.as_ref().map(Arc::clone),
+                    stream,
+                    task_volume: &task_volume,
+                    issuer: &issuer,
+                    verifier: &verifier,
+                    agent: owner.agent,
+                    project: &owner.project,
+                    scratch: &scratch,
+                    journal: &journal,
+                    tools: &tools,
+                    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                    capabilities: &installation.capabilities,
+                    limits: config.limits,
+                    run_limits: config.run_limits,
+                    session_limits: config.session_limits,
+                    concurrency: config.concurrency,
+                    clock: config.clock,
+                })
             })
             .await?;
             let local = Self {

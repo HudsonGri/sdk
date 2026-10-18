@@ -539,15 +539,19 @@ where
         turn: OperationId,
     ) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
-        Ok(Arc::new(
+        Ok(Arc::from(
             self.open_execution_journal(task, fence, turn, &admission)
                 .await?,
         ))
     }
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
-    pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        self.task_context_with_cancellation(task, fence, None).await
+    pub fn task_context(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<TaskContext>> {
+        acyclic_fs::in_heap(|| self.task_context_with_cancellation(task, fence, None))
     }
 
     pub(crate) async fn task_context_with_cancellation(

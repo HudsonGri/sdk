@@ -14,7 +14,7 @@ where
         responder: &Scope,
     ) -> Result<()> {
         let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
-        traced(span, async {
+        traced(span, || async {
             let host = self.interactions()?;
             host.verify_responder_scope(id, responder, None)?;
             if let Some((owner, _)) = &self.owner {

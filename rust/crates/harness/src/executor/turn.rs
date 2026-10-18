@@ -7,15 +7,15 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.verify_task_context_binding(input.operation_id)?;
-        self.verify_execution_owner().await?;
-        self.validate_turn_input(journal, input).await?;
+        acyclic_fs::in_heap(|| self.verify_execution_owner()).await?;
+        acyclic_fs::in_heap(|| self.validate_turn_input(journal, input)).await?;
         if let Some(source) = self.stock.summary_source.as_deref() {
             return crate::conversation::BoundedContentFuture::new(self.io, || {
                 self.summarize_file(journal, input, source)
             })?
             .await;
         }
-        self.ensure_started(journal, input).await?;
+        acyclic_fs::in_heap(|| self.ensure_started(journal, input)).await?;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
         let mut text = String::new();
@@ -63,8 +63,8 @@ impl StockExecution<'_> {
                 }));
             }
             for (invocation, invocation_index) in calls {
-                match self
-                    .resolve_tool_call(
+                match acyclic_fs::in_heap(|| {
+                    self.resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
@@ -73,7 +73,8 @@ impl StockExecution<'_> {
                         &mut prior_messages,
                         &mut hook_context,
                     )
-                    .await?
+                })
+                .await?
                 {
                     ExecutionProgress::Ready(()) => {}
                     ExecutionProgress::Pending(wait) => {
