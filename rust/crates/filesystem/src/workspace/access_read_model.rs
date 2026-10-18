@@ -201,47 +201,62 @@ fn missing_policy_head_confirmation_negative_control() {
 }
 
 fn native_return_model(fence: bool) {
-    for now in 0..=1 {
-        loom::model(move || {
-            let store = Arc::new(MemoryAuthorityStore::default());
-            let cancel = CancellationToken::new();
-            let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
-            ready(|| store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>))
+    for policy_changed in [true, false] {
+        for now in 0..=1 {
+            loom::model(move || {
+                let store = Arc::new(MemoryAuthorityStore::default());
+                let cancel = CancellationToken::new();
+                let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+                ready(|| {
+                    store.create_authority(AUTHORITY, Epoch::GENESIS, &mut work, None::<&mut ()>)
+                })
                 .unwrap();
-            assert!(publish(&store, head(&store), 1));
-            let initial = head(&store);
-            let published = Arc::new(AccessView::new(view_with_expiry(initial, true, Some(1))));
-            let selected = published.current().unwrap();
-            // Authority and compiled-view locks are terminal; neither guard
-            // survives a backend call or another lock acquisition.
-            let writer = loom::thread::spawn({
-                let store = store.clone();
-                let published = published.clone();
-                move || {
-                    assert!(publish(&store, initial, 2));
-                    published
-                        .publish(view_with_expiry(head(&store), false, Some(1)))
-                        .unwrap();
+                assert!(publish(&store, head(&store), 1));
+                let initial = head(&store);
+                let published = Arc::new(AccessView::new(view_with_expiry(initial, true, Some(1))));
+                let selected = published.current().unwrap();
+                // Authority and compiled-view locks are terminal; neither guard
+                // survives a backend call or another lock acquisition.
+                let writer = loom::thread::spawn({
+                    let store = store.clone();
+                    let published = published.clone();
+                    move || {
+                        assert!(publish(&store, initial, 2));
+                        if policy_changed {
+                            published
+                                .publish(view_with_expiry(head(&store), false, Some(1)))
+                                .unwrap();
+                        }
+                    }
+                });
+                let observed = head(&store);
+                let current_view = published.current().unwrap();
+                let valid = published
+                    .confirms_disclosure(
+                        &selected,
+                        Some((
+                            GenerationId::new(observed.digest),
+                            if policy_changed {
+                                revision(observed)
+                            } else {
+                                revision(initial)
+                            },
+                        )),
+                        now,
+                    )
+                    .unwrap();
+                let returned = !fence || valid;
+                writer.join().unwrap();
+                if returned {
+                    assert!(
+                        (!policy_changed || observed == initial)
+                            && Arc::ptr_eq(&selected, &current_view)
+                            && now < 1,
+                        "native result escaped current authority"
+                    );
                 }
             });
-            let observed = head(&store);
-            let current_view = published.current().unwrap();
-            let valid = published
-                .confirms_disclosure(
-                    &selected,
-                    Some((GenerationId::new(observed.digest), revision(observed))),
-                    now,
-                )
-                .unwrap();
-            let returned = !fence || valid;
-            writer.join().unwrap();
-            if returned {
-                assert!(
-                    observed == initial && Arc::ptr_eq(&selected, &current_view) && now < 1,
-                    "native result escaped current authority"
-                );
-            }
-        });
+        }
     }
 }
 

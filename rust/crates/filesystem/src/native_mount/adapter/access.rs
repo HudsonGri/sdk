@@ -2,6 +2,10 @@ use super::*;
 use crate::access::{AccessView, Action, PinnedPath};
 
 pub(in crate::native_mount) fn access_time() -> Result<u64, MountSourceError> {
+    #[cfg(test)]
+    if let Some(now) = super::tests::return_fence::now() {
+        return Ok(now);
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|time| time.as_secs())
@@ -96,14 +100,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         if super::tests::return_fence::omitted() {
             return result;
         }
-        let revision = self
-            .checkout
-            .volume
-            .current_access_policy_revision_accounted(
-                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
-                work.cancellation(),
-            )
-            .await?;
+        let revision = loop {
+            let observed = self
+                .checkout
+                .volume
+                .current_access_policy_revision_accounted(
+                    &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                    work.cancellation(),
+                )
+                .await?;
+            if observed.is_some() {
+                break observed;
+            }
+            #[cfg(test)]
+            if super::tests::return_fence::skip_retry() {
+                break observed;
+            }
+            // A data-only publication may have overtaken metadata IO. Retry
+            // only this accounted observation; the data future runs once.
+        };
         let valid = self
             .access_view
             .as_ref()

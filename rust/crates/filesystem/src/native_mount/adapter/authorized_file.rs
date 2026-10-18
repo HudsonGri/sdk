@@ -86,7 +86,15 @@ macro_rules! checked {
     ($action:ident; $($name:ident($($arg:ident: $ty:ty),*) -> $result:ty;)*) => {
         $(fn $name(&self, $($arg: $ty),*) -> $result {
             self.require(Action::$action)?;
-            self.file.$name($($arg),*)
+            let result = self.file.$name($($arg),*);
+            #[cfg(test)]
+            if super::tests::return_fence::omitted() {
+                return result;
+            }
+            // Policy stays pinned; its original time window does not extend
+            // merely because storage was pending when the credential expired.
+            self.require(Action::$action)?;
+            result
         })*
     };
 }
