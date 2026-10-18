@@ -1,3 +1,4 @@
+use super::entries::Entries;
 use super::*;
 use crate::kernel::persistent_io::PageLease;
 use crate::storage::{HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES};
@@ -8,10 +9,11 @@ where
     F: Format,
     M: Mutation<F>,
 {
-    pub(super) async fn write_leaf_chunks(
+    pub(super) async fn write_leaf_chunks<'a>(
         &mut self,
-        entries: &[F::Value],
+        entries: impl Into<Entries<'a, F::Value>>,
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
+        let entries = entries.into();
         let (mut chunks, examined) =
             PageChunks::new(entries, self.limits, F::leaf_item_encoded_length)
                 .map_err(Self::error)?;
@@ -25,7 +27,16 @@ where
                     .ok_or_else(|| Self::error(Error::MutationContract))?,
             ))?;
             result.ensure_for_push(entries.len(), self.accounting)?;
-            let page = self.write_page(&PageRef::<F>::Leaf(chunk.into())).await?;
+            let page = self.write_page(&PageRef::<F>::Leaf(chunk)).await?;
+            if let Entries::Shared(entries) = chunk {
+                persistent_io::retain_written_leaf::<S, F>(
+                    self.store,
+                    page,
+                    self.limits,
+                    entries,
+                    self.accounting,
+                )?;
+            }
             push_summary(&mut result, first, page, self.accounting)?;
         }
         Ok(result)
@@ -99,7 +110,7 @@ where
     pub(super) async fn read_page(
         &mut self,
         page: ObjectId,
-    ) -> Result<Owned<Page<F>>, crate::FsError> {
+    ) -> Result<Owned<PageLease<F>>, crate::FsError> {
         let (decoded, allocation) = persistent_io::read_page_with_accounting::<S, F>(
             self.store,
             page,
@@ -109,43 +120,7 @@ where
             None,
         )
         .await?;
-        let bytes = decoded.logical_bytes;
-        match decoded.page {
-            PageLease::Owned(page) => Ok(Owned::new(page, allocation, bytes)),
-            shared @ PageLease::Shared { .. } => {
-                let result = match shared.view() {
-                    PageRef::Leaf(entries) => {
-                        let mut output = Owned::allocate(entries.len(), self.accounting)?;
-                        for entry in entries {
-                            let cloned = self.clone_value(entry)?;
-                            push_value(&mut output, cloned)?;
-                        }
-                        let Owned {
-                            value,
-                            allocation,
-                            bytes,
-                        } = output;
-                        Owned::new(Page::Leaf(value), allocation, bytes)
-                    }
-                    PageRef::Internal(children) => {
-                        let mut output = Owned::allocate(children.len(), self.accounting)?;
-                        for child in children {
-                            let first = self.clone_key(&child.first)?;
-                            push_summary(&mut output, first, child.page, self.accounting)?;
-                        }
-                        let Owned {
-                            value,
-                            allocation,
-                            bytes,
-                        } = output;
-                        Owned::new(Page::Internal(value), allocation, bytes)
-                    }
-                };
-                drop(shared);
-                retire_allocation(allocation, bytes, self.accounting)?;
-                Ok(result)
-            }
-        }
+        Ok(Owned::new(decoded.page, allocation, decoded.logical_bytes))
     }
 
     async fn write_page(&mut self, page: &PageRef<'_, F>) -> Result<ObjectId, crate::FsError> {
@@ -234,7 +209,7 @@ pub(crate) const TARGET_PAGE_BYTES: usize = 2 * 1024;
 const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
 
 pub(super) struct PageChunks<'a, T, L> {
-    items: &'a [T],
+    items: Entries<'a, T>,
     encoded_length: L,
     start: usize,
     remaining_bytes: usize,
@@ -247,10 +222,11 @@ where
     L: Fn(&T) -> Result<usize, CanonicalDecodeError>,
 {
     pub(super) fn new<E: std::error::Error>(
-        items: &'a [T],
+        items: impl Into<Entries<'a, T>>,
         limits: DecodeLimits,
         encoded_length: L,
     ) -> Result<(Self, u64), Error<E>> {
+        let items = items.into();
         let mut remaining_bytes = 0_usize;
         for item in items {
             remaining_bytes = remaining_bytes
@@ -274,9 +250,12 @@ where
 
     pub(super) fn next<E: std::error::Error>(
         &mut self,
-    ) -> Result<Option<(&'a [T], u64)>, Error<E>> {
+    ) -> Result<Option<(Entries<'a, T>, u64)>, Error<E>> {
         let items = self.items;
-        let Some(rest) = items.get(self.start..).filter(|rest| !rest.is_empty()) else {
+        let Some(rest) = items
+            .slice(self.start..items.len())
+            .filter(|rest| !rest.is_empty())
+        else {
             return Ok(None);
         };
         let pages = self
@@ -302,7 +281,7 @@ where
             count += 1;
         }
         let page = rest
-            .get(..count)
+            .slice(0..count)
             .filter(|page| !page.is_empty())
             .ok_or(Error::PageItemTooLarge)?;
         self.start += count;

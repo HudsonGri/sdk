@@ -1,4 +1,4 @@
-use super::super::allocation::{KernelAccounting, KernelOwnedAllocation};
+use super::super::allocation::{KernelAccounting, KernelOwnedAllocation, arc_control_bytes};
 use crate::FsError;
 use crate::foundation::usize_to_u64;
 use crate::kernel::persistent_point::{Owned, split_allocation};
@@ -29,16 +29,25 @@ impl<T: PartialEq> PartialEq for Entry<T> {
 impl<T: Eq> Eq for Entry<T> {}
 
 pub(crate) fn share<T>(
-    mut value: Owned<T>,
+    value: Owned<T>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Owned<Arc<Entry<T>>>, FsError> {
+    share_with_control(value, accounting, arc_control_bytes::<Entry<T>>())
+}
+
+fn share_with_control<T>(
+    mut value: Owned<T>,
+    accounting: &mut KernelAccounting<'_>,
+    control_bytes: Result<u64, WorkError>,
+) -> Result<Owned<Arc<Entry<T>>>, FsError> {
     let result = (|| {
+        let control_bytes = control_bytes?;
         let bytes = value
             .bytes
-            .checked_add(usize_to_u64(size_of::<Entry<T>>()))
+            .checked_add(control_bytes)
             .ok_or(WorkError::Overflow)?;
         let empty = accounting.claim_owned(0, 0)?;
-        let mut controls = accounting.claim_owned(usize_to_u64(size_of::<Entry<T>>()), 1)?;
+        let mut controls = accounting.claim_owned(control_bytes, 1)?;
         value.allocation.absorb(&mut controls)?;
         value.bytes = bytes;
         accounting.charge(WorkCounters {
@@ -309,3 +318,7 @@ mod custody_models;
 #[cfg(all(test, not(acyclic_fs_loom)))]
 #[path = "../tests/persistent_btree/entry_views.rs"]
 mod view_properties;
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+#[path = "../tests/persistent_btree/entry_allocations.rs"]
+mod allocation_properties;

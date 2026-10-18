@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::allocation::arc_control_bytes;
 
 pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S,
@@ -254,6 +255,17 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
         }
         (Err(error), _) => return Err(error),
     };
+    admit_shared_page(store, key, owned, empty, accounting)
+}
+
+pub(super) fn admit_shared_page<S: AsyncObjectStore, F: Format>(
+    store: &S,
+    key: DecodedCacheKey,
+    owned: crate::kernel::persistent_point::Owned<SharedPage<F>>,
+    empty: KernelOwnedAllocation,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(OwnedPage<F>, KernelOwnedAllocation), FsError> {
+    let standalone = matches!(owned.allocation, KernelOwnedAllocation::Standalone);
     let logical_bytes = owned.value.logical_bytes();
     let local_bytes = owned.bytes;
     #[cfg(not(target_arch = "wasm32"))]
@@ -321,19 +333,26 @@ fn prepare_shared_page<F: Format>(
     let PageLease::Owned(page) = decoded.0.page else {
         unreachable!("shared leases return before admission");
     };
-    let mut shared = SharedPage::from_owned(
+    let shared = SharedPage::from_owned(
         Owned::new(page, decoded.1, decoded.0.logical_bytes),
         accounting,
     )?;
+    reserve_shared_controls(shared, accounting)
+}
+
+pub(super) fn reserve_shared_controls<F: Format>(
+    mut shared: crate::kernel::persistent_point::Owned<SharedPage<F>>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<crate::kernel::persistent_point::Owned<SharedPage<F>>, FsError> {
     let (controls, operations) = match &shared.allocation {
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(_) => (
-            usize_to_u64(size_of::<SharedPage<F>>())
-                .checked_add(usize_to_u64(size_of::<crate::NativeAllocation>()))
+            arc_control_bytes::<SharedPage<F>>()?
+                .checked_add(arc_control_bytes::<crate::NativeAllocation>()?)
                 .ok_or(WorkError::Overflow)?,
             2,
         ),
-        KernelOwnedAllocation::Standalone => (usize_to_u64(size_of::<SharedPage<F>>()), 1),
+        KernelOwnedAllocation::Standalone => (arc_control_bytes::<SharedPage<F>>()?, 1),
     };
     let Some(bytes) = shared.bytes.checked_add(controls) else {
         shared.retire(accounting)?;
