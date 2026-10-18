@@ -1,0 +1,184 @@
+use super::*;
+use proptest::prelude::*;
+
+thread_local! {
+    static RESTORE_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+pub(in crate::distributed) fn restore_scan() -> bool {
+    RESTORE_SCAN.get()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(96))]
+    #[test]
+    fn compressed_index_matches_independent_map(
+        keys in prop::collection::vec("[a-zA-Z0-9]{0,40}", 0..96)
+    ) {
+        let mut index = super::super::intent_index::IntentIndex::default();
+        let mut oracle = BTreeMap::new();
+        for (sequence, key) in keys.iter().enumerate() {
+            assert_eq!(index.get(key), oracle.get(key).copied());
+            let mut work = None;
+            let mut quota = CodecQuota::new(&mut work, 0).unwrap();
+            if oracle.contains_key(key) {
+                assert!(index.insert_with(key, sequence as u64, &mut quota, |_| Ok(())).is_err());
+            } else {
+                index.insert_with(key, sequence as u64, &mut quota, |_| Ok(())).unwrap();
+                oracle.insert(key.clone(), sequence as u64);
+            }
+            for (key, expected) in &oracle {
+                assert_eq!(index.get(key), Some(*expected));
+            }
+        }
+    }
+}
+
+#[test]
+fn index_insert_allocations_are_exact_and_aborted_preparation_is_invisible() -> Result<()> {
+    let mut costs = Vec::new();
+    for count in [8_u8, 24] {
+        let mut index = super::super::intent_index::IntentIndex::default();
+        let mut work = None;
+        let mut quota = CodecQuota::new(&mut work, 0)?;
+        for value in 0..count {
+            let key = format!("history-{value:02}");
+            index.insert_with(&key, u64::from(value), &mut quota, |_| Ok(()))?;
+        }
+        assert!(
+            index
+                .insert_with("aborted", 100, &mut quota, |_| Err::<(), _>(
+                    Error::Storage("aborted".into())
+                ))
+                .is_err()
+        );
+        assert_eq!(index.get("aborted"), None);
+        let mut inserted = None;
+        let cost = acyclic_test_support::measure(|| {
+            inserted = Some(index.insert_with("target", 101, &mut quota, |_| Ok(())));
+        });
+        inserted.unwrap()?;
+        assert_eq!(index.get("target"), Some(101));
+        costs.push((cost.count_total, cost.bytes_total));
+    }
+    assert_eq!(costs[0], costs[1]);
+    assert_eq!(costs[0].0, 3);
+    Ok(())
+}
+
+async fn seeded(count: u8) -> Result<(Arc<MemoryStream>, DistributedCoordinator<MemoryStream>)> {
+    let client = Arc::new(MemoryStream::default());
+    let stream = Stream::new(Arc::clone(&client), COORDINATOR_PATH)?;
+    for value in 0..count {
+        let operation = OperationId::from_bytes([value + 1; 16]);
+        let key = format!("history-{value:02}");
+        let event = SchedulerEvent::Declared {
+            spec: Box::new(spec(operation, 0)?),
+        };
+        let canonical = crate::contract::canonical_json_bytes(&event)?;
+        let bytes = encode(
+            u64::from(value) + 1,
+            operation,
+            &key,
+            *blake3::hash(&canonical).as_bytes(),
+            canonical,
+            u64::from(value) + 1,
+            &mut None,
+        )?;
+        stream
+            .append_batch(
+                vec![OwnedBytes::from(bytes)],
+                Some(u64::from(value)),
+                Some(StreamIdempotencyKey::new(OwnedBytes::from(
+                    key.as_bytes().to_vec(),
+                ))?),
+            )
+            .await?;
+    }
+    let coordinator = open(&client).await?;
+    Ok((client, coordinator))
+}
+
+#[tokio::test]
+async fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Result<()> {
+    for count in [8_u8, 24] {
+        let (baseline, _) = seeded(count).await?;
+        let (candidate, coordinator) = seeded(count).await?;
+        let reopened = open(&candidate).await?;
+        for key in ["history-00", "history-07", "absent"] {
+            let before = read_intent(&baseline, key, Some(coordinator.revision), &mut None).await?;
+            let after = coordinator.read_indexed_intent(key, &mut None).await?;
+            let restored = reopened.read_indexed_intent(key, &mut None).await?;
+            assert_eq!(before, after);
+            assert_eq!(
+                restored,
+                coordinator.read_indexed_intent(key, &mut None).await?
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn absent_intent_does_not_allocate_or_read_history() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    for count in [8_u8, 24] {
+        let (_, coordinator) = runtime.block_on(seeded(count))?;
+        let cost = acyclic_test_support::measure(|| {
+            assert!(
+                runtime
+                    .block_on(coordinator.read_indexed_intent("absent", &mut None))
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        assert_eq!(cost.count_total, 0);
+        assert_eq!(cost.bytes_total, 0);
+    }
+    Ok(())
+}
+
+#[test]
+#[should_panic(expected = "assertion `left == right` failed")]
+fn restored_full_journal_scan_fails_the_same_absent_intent_pin() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RESTORE_SCAN.set(false);
+        }
+    }
+    let _restore = Restore;
+    RESTORE_SCAN.set(true);
+    absent_intent_does_not_allocate_or_read_history().unwrap();
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn index_native_custody_outlives_its_preparation_and_retires_with_the_tree() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1024 * 1024, 1024 * 1024),
+        &cancellation,
+    )
+    .expect("original ledger");
+    let mut observer =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
+    let baseline = work.live_allocation_bytes();
+    let mut index = super::super::intent_index::IntentIndex::default();
+    {
+        let mut work = Some(&mut observer as &mut dyn HistoryIo);
+        let mut quota = CodecQuota::new(&mut work, 0)?;
+        for (sequence, key) in ["a", "ab", "abc", "b", "é", "éx"].into_iter().enumerate() {
+            index.insert_with(key, sequence as u64, &mut quota, |_| Ok(()))?;
+        }
+        assert_eq!(quota.retained(), 0);
+    }
+    assert_eq!(observer.into_custody()?.bytes(), 0);
+    assert_eq!(index.get("éx"), Some(5));
+    drop(index);
+    // All native allocations must have returned to this original owner.
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
