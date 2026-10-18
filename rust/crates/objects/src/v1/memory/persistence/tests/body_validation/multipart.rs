@@ -97,7 +97,7 @@ fn prefix_work(prefix: u32, native: bool, rewalk: bool) -> Vec<usize> {
             bucket: bucket(),
             object_key: "upload".into(),
             upload_id: upload.upload_id,
-            limit: 100,
+            page_size: 100,
             ..Default::default()
         }))
         .unwrap()
@@ -209,7 +209,7 @@ fn dropping_part_accounting_is_rejected_by_the_same_total_oracle() {
             key: "key".to_owned().into(),
             metadata: None.into(),
             parts: OrdMap::from_iter([(
-                1,
+                1_u32,
                 (
                     wire::UploadedPart {
                         part_number: 1,
