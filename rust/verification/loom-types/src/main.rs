@@ -7,6 +7,7 @@ extern crate rustc_middle;
 extern crate rustc_span;
 
 mod ownership;
+mod replay;
 mod types;
 
 use rustc_driver::{Callbacks, Compilation};
@@ -50,6 +51,9 @@ struct Check {
 
 impl Callbacks for Check {
     fn after_analysis<'tcx>(&mut self, _: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
+        if self.models.is_empty() {
+            return Compilation::Continue;
+        }
         let mut verdicts: BTreeMap<(String, String), Result<bool, String>> = BTreeMap::new();
         let roots = ownership::roots(tcx, &self.root, &self.models);
         for (file, item, owned) in ownership::declarations(tcx, &roots) {
@@ -149,6 +153,8 @@ impl<'tcx> Visitor<'tcx> for Body<'_, 'tcx> {
 
 fn main() -> std::process::ExitCode {
     let mut args: Vec<_> = std::env::args().collect();
+    let direct = args.iter().any(|arg| arg == "--loom-direct");
+    args.retain(|arg| arg != "--loom-direct");
     if args.get(1).is_some_and(|arg| {
         Path::new(arg)
             .file_stem()
@@ -157,7 +163,9 @@ fn main() -> std::process::ExitCode {
         args.remove(1);
     }
     let mut check = Check::default();
-    if let Ok(root) = std::env::var("LOOM_MODEL_ROOT") {
+    if (direct || args.iter().any(|arg| arg == "--test"))
+        && let Ok(root) = std::env::var("LOOM_MODEL_ROOT")
+    {
         check.root = PathBuf::from(root)
             .canonicalize()
             .expect("resolve model source root");
@@ -170,6 +178,9 @@ fn main() -> std::process::ExitCode {
         let directory =
             PathBuf::from(std::env::var("LOOM_MODEL_REPORTS").expect("report directory"));
         check.report = Some(directory.join(format!("{}.tsv", std::process::id())));
+        if let Some(directory) = std::env::var_os("LOOM_MODEL_REPLAY") {
+            replay::record(Path::new(&directory), &args).expect("record compiler invocation");
+        }
     }
     rustc_driver::catch_with_exit_code(|| rustc_driver::run_compiler(&args, &mut check))
 }
