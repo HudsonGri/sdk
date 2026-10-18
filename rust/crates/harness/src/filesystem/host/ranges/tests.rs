@@ -344,3 +344,130 @@ fn negative_control_detects_native_absence_rejection() {
         "{message}"
     );
 }
+
+async fn captured_payload(body: &[u8]) -> Result<()> {
+    let (host, original) = published(b"uploaded").await?;
+    let reference = fork_preparer_io::content_workspace(&host.provider, original.volume(), None)?;
+    let workspace = host.open(&reference, None).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    // Native capture authors payload mutations while excluding .system. Use
+    // that same SDK transaction boundary, preserving the old metadata verbatim.
+    let mut transaction = workspace
+        .begin_transaction(FilesystemKey::from_bytes([7; 16]), budget, &cancellation)
+        .await
+        .map_err(|failure| map_error(failure.error))?
+        .value;
+    transaction
+        .write(
+            "/file.txt",
+            bytes::Bytes::copy_from_slice(body).into(),
+            budget,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| map_error(failure.error))?;
+    transaction
+        .commit(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<Error>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    let (current, bytes) = host
+        .read_private_path(
+            original.volume(),
+            &grant(original.volume(), VolumeOperation::Read)?,
+            "file.txt",
+            None,
+            body.len() as u64,
+            None,
+        )
+        .await?;
+    assert_eq!(bytes.as_ref(), body);
+    assert_eq!(current.descriptor().byte_length(), body.len() as u64);
+    assert_ne!(current.descriptor(), original.descriptor());
+    let range = acyclic_fs::ByteRange {
+        offset: 0,
+        length: body.len() as u64,
+    };
+    assert_eq!(
+        host.read_pinned_range(&current, range, None)
+            .await?
+            .as_ref(),
+        body
+    );
+    assert_eq!(
+        host.read_pinned_range(
+            &original,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 8
+            },
+            None
+        )
+        .await?
+        .as_ref(),
+        b"uploaded"
+    );
+    let forged = FileRef::new(
+        original.volume().clone(),
+        "file.txt".into(),
+        current.version().into(),
+        original.descriptor().clone(),
+        original.display_name().into(),
+        &mut None,
+    )?;
+    assert!(
+        host.read_pinned_range(
+            &forged,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 0
+            },
+            None
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn captured_payloads_never_select_a_different_publications_descriptor(
+        mut body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256),
+    ) {
+        body.push(0);
+        futures::executor::block_on(captured_payload(&body)).unwrap();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn negative_control_detects_stale_metadata_authority() {
+    super::super::metadata::TRUST_STALE_METADATA.with(|flag| flag.set(true));
+    let detected = std::panic::catch_unwind(|| {
+        futures::executor::block_on(captured_payload(b"native edit")).unwrap()
+    });
+    super::super::metadata::TRUST_STALE_METADATA.with(|flag| flag.set(false));
+    let panic = detected.expect_err("stale descriptor selection must fail the same payload oracle");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("descriptor"), "{message}");
+}

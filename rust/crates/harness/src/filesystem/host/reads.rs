@@ -355,20 +355,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 (lines, Some(scanned))
             }
         };
-        let metadata_path = content_metadata_path_io(path, true, Some(io))?;
-        let _metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
-        let metadata = read_generation(
-            &generation,
-            &metadata_path,
-            io.remaining()?.source_bytes_read,
-            Some(io),
-        )
-        .await;
-        let staged: Option<FileRef> = match metadata {
-            Ok(metadata) => Some(io.decode_json(&metadata)?),
-            Err(error) if crate::filesystem::fork_preparer::path_absent(&error) => None,
-            Err(error) => return Err(error),
-        };
+        let staged = self
+            .publication_range(
+                &workspace,
+                &generation,
+                volume,
+                path,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                io,
+            )
+            .await?
+            .map(|(file, _)| file);
         let _staged_hold = staged
             .as_ref()
             .map(|file| io.guard_owned(file.logical_owned_bytes()?))
@@ -431,19 +431,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         if let PathGrant::Read(grant) = grant {
             grant.require_file_read(&reference, Some(io))?;
-        }
-        if staged.is_some() {
-            // Upload metadata carries the publication operation, not a sentinel.
-            // Reuse range authentication to bind it to the original atomic write.
-            self.read_pinned_range(
-                &reference,
-                acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: 0,
-                },
-                Some(io),
-            )
-            .await?;
         }
         let publication = staged
             .as_ref()

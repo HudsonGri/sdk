@@ -101,6 +101,69 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
 }
 
 #[tokio::test]
+async fn native_edits_replace_the_current_descriptor_without_changing_pinned_uploads() -> Result<()>
+{
+    let (directory, _state, harness, publisher) = fixture().await?;
+    let (original, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "edited.txt",
+            b"uploaded",
+            "text/plain",
+            "edited.txt",
+            None,
+        )?
+        .await?;
+    // The shell and an editor both write this checkout. Its real watcher and
+    // capture path must retire the descriptor's authority over changed bytes.
+    std::fs::write(directory.path().join("edited.txt"), b"native edit").map_err(storage)?;
+    let (current, bytes) = publisher
+        .current_file(OperationId::new(), "edited.txt", 64, None)
+        .await?;
+    assert_eq!(bytes.as_ref(), b"native edit");
+    assert_ne!(
+        current.descriptor().sha256(),
+        original.descriptor().sha256()
+    );
+    let grant = crate::conversation::ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &harness.signed,
+        &harness.project,
+        "",
+        &mut None,
+    )?;
+    assert_eq!(
+        harness
+            .files
+            .read_content(&original, &grant, 64, None)
+            .await?
+            .as_ref(),
+        b"uploaded"
+    );
+    assert_eq!(
+        harness
+            .files
+            .read_content(&current, &grant, 64, None)
+            .await?
+            .as_ref(),
+        b"native edit"
+    );
+    let (_, lines) = publisher
+        .current_file(
+            OperationId::new(),
+            "edited.txt",
+            64,
+            Some(crate::conversation::LineWindow {
+                offset: 1,
+                limit: Some(1),
+            }),
+        )
+        .await?;
+    assert_eq!(lines.as_ref(), b"native edit");
+    Ok(())
+}
+
+#[tokio::test]
 async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> {
     let (_directory, _state, harness, publisher) = fixture().await?;
     let workspace = publisher.tools.workspace.clone();
