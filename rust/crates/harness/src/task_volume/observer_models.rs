@@ -30,6 +30,16 @@ fn check(broken: bool) {
         else {
             unreachable!()
         };
+        // G1 is visible to observers before its writer acknowledges acceptance.
+        // Put that completed refresh in the serial prefix; the conflicting
+        // interval is G1's delayed acknowledgement versus the G2 suffix fold.
+        let first = loom::future::block_on(observer.snapshot(&Query::Root, 1)).unwrap();
+        assert_eq!(first.files, vec![file]);
+        assert_eq!(first.generation.position, next);
+        assert_eq!(
+            first.generation.commit,
+            *accepted_receipt.commit_id.as_bytes()
+        );
         let latest = FileValue::new(FileKey::Goal, b"second".to_vec());
         let (record, _) = segment::encode(&latest, None).unwrap();
         let outcome = loom::future::block_on(source.provider.append(AppendRequest {
