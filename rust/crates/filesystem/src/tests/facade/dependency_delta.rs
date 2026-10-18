@@ -65,7 +65,7 @@ fn content_mutation_preserves_history_without_copying_it() -> TestResult {
         }
         assert_eq!(
             runtime
-                .block_on(read(&mut checkout, file, 0, 6, &cancel))?
+                .block_on(read(&mut checkout, file, 0, 3, &cancel))?
                 .as_ref(),
             b"bef"
         );
