@@ -343,7 +343,10 @@ async fn pi_approval_journal_construction_always_attaches_checked_files() {
             );
             assert_eq!(result.is_ok(), attached);
             if !attached {
-                assert!(matches!(result, Err(Error::Invalid(_))));
+                assert_eq!(
+                    result.err().map(|error| error.code()),
+                    Some(acyclic_harness::wire::ErrorCode::Invalid)
+                );
             }
         }
     }
