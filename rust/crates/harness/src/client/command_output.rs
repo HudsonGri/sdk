@@ -146,7 +146,13 @@ impl Projection {
                 .and_then(serde_json::Value::as_str)
             {
                 self.segments.push(std::sync::Arc::from(text));
-                self.segment_tasks.push(files.output_task(sequence));
+                self.segment_tasks.push(
+                    value
+                        .get("ok")
+                        .and_then(|outcome| outcome.get("task"))
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|task| crate::TaskId::parse(task).ok()),
+                );
             }
             self.after = sequence;
             changed = true;
