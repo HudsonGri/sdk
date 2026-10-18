@@ -56,6 +56,11 @@ async fn model<const ALWAYS_SCAN: bool>(retained: usize) {
         )
         .await
         .unwrap();
+    session
+        .write_state(CommandFileRoot::Task, "custom.json", &json!({"old":true}))
+        .await
+        .unwrap();
+    session.settings_visits = 0;
     let next = TaskId::from_bytes([3; 16]);
     session
         .write_state(
@@ -69,6 +74,15 @@ async fn model<const ALWAYS_SCAN: bool>(retained: usize) {
         !session
             .files
             .contains_key(&ui(&format!("task-{task}"), "settings.json").unwrap())
+    );
+    assert!(
+        !session
+            .files
+            .contains_key(&ui(&format!("task-{task}"), "custom.json").unwrap())
+    );
+    assert_eq!(
+        session.settings_visits, 2,
+        "task changes visit only that task's two UI files"
     );
     assert_eq!(session.loaded_task, Some(Some(next)));
     session

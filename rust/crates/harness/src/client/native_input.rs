@@ -25,7 +25,7 @@ pub async fn next_file_tui_event<P: acyclic_stream::StreamProvider + ?Sized>(
     renderer: &mut crate::tui::ClientRenderer,
     documents: &mut crate::task_volume::ChangeStream,
 ) -> Result<Option<InputBatch>> {
-    next_event::<P, false>(
+    next_event::<P, false, true>(
         client,
         input,
         completions,
@@ -39,7 +39,11 @@ pub async fn next_file_tui_event<P: acyclic_stream::StreamProvider + ?Sized>(
 }
 
 #[cfg(all(feature = "tui", feature = "filesystem-local"))]
-async fn next_event<P: acyclic_stream::StreamProvider + ?Sized, const REDRAW_CHECKPOINTS: bool>(
+async fn next_event<
+    P: acyclic_stream::StreamProvider + ?Sized,
+    const REDRAW_CHECKPOINTS: bool,
+    const RETAIN: bool,
+>(
     client: &mut super::TaskFileClient,
     input: &mut (impl futures::Stream<Item = Result<InputBatch>> + Unpin),
     completions: &mut crate::tui_files::CompletionFiles,
@@ -66,7 +70,7 @@ async fn next_event<P: acyclic_stream::StreamProvider + ?Sized, const REDRAW_CHE
                 client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
                 if REDRAW_CHECKPOINTS || client.presentation_revision() != revision { return Ok(None); }
             },
-            change = commands.observe_change_visible() => {
+            change = commands.observe_change_visible::<RETAIN>() => {
                 if change? || REDRAW_CHECKPOINTS { return Ok(None); }
             },
             change = completions.read_change() => {
@@ -137,3 +141,12 @@ pub fn terminal_events(
 ))]
 #[path = "native_input/multiplexer.rs"]
 mod multiplexer;
+
+#[cfg(all(
+    test,
+    feature = "tui",
+    feature = "filesystem-local",
+    not(acyclic_harness_loom)
+))]
+#[path = "native_input/cancellation.rs"]
+mod cancellation;

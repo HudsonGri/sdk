@@ -80,7 +80,7 @@ async fn model<const BROKEN: bool>(motions: usize) {
         })
         .collect())])
     .chain(futures::stream::pending());
-    let mut batch = next_event::<_, BROKEN>(
+    let mut batch = next_event::<_, BROKEN, true>(
         &mut client,
         &mut input,
         &mut completions,
@@ -101,7 +101,7 @@ async fn model<const BROKEN: bool>(motions: usize) {
         .unwrap();
     render(&prompt);
     loop {
-        let ready = tokio::task::unconstrained(next_event::<_, BROKEN>(
+        let ready = tokio::task::unconstrained(next_event::<_, BROKEN, true>(
             &mut client,
             &mut input,
             &mut completions,
@@ -124,6 +124,37 @@ async fn model<const BROKEN: bool>(motions: usize) {
     // every external follow. The input publication has already drawn once.
     assert_eq!(draws, 1, "checkpoint-only wakes must not draw");
     assert_eq!(crate::client::tui_scroll(&commands).unwrap(), motions * 3);
+    // Matching the broad command query is insufficient: another task's UI
+    // file is rejected by its fold and must not request a frame either.
+    let cut = volume.snapshot(&Query::Root, 128).await.unwrap().generation;
+    let other = TaskId::from_bytes([7; 16]);
+    volume
+        .append(
+            cut,
+            &FileValue::new(
+                FileKey::Ui {
+                    directory: crate::task_volume::Component::new(format!("task-{other}")).unwrap(),
+                    name: crate::task_volume::Component::new("settings.json").unwrap(),
+                },
+                b"{}".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(
+        tokio::task::unconstrained(next_event::<_, BROKEN, true>(
+            &mut client,
+            &mut input,
+            &mut completions,
+            &mut prompt,
+            &mut commands,
+            false,
+            &mut renderer,
+            &mut documents
+        ))
+        .now_or_never()
+        .is_none()
+    );
     // A real matching completion publication still wakes.
     let cut = volume.snapshot(&Query::Root, 128).await.unwrap().generation;
     volume
@@ -137,7 +168,7 @@ async fn model<const BROKEN: bool>(motions: usize) {
         .await
         .unwrap();
     assert!(
-        tokio::task::unconstrained(next_event::<_, BROKEN>(
+        tokio::task::unconstrained(next_event::<_, BROKEN, true>(
             &mut client,
             &mut input,
             &mut completions,

@@ -131,35 +131,32 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     async fn load_task_settings_impl<const ALWAYS_SCAN: bool>(&mut self) -> Result<()> {
-        let selected = self.selected_task()?;
-        if !ALWAYS_SCAN && self.loaded_task == Some(selected) {
-            return Ok(());
-        }
-        if ALWAYS_SCAN {
-            self.files.retain(|key, _| {
-                #[cfg(test)]
-                {
-                    self.settings_visits += 1;
-                }
-                !matches!(key, files::FileKey::Ui { directory, .. }
-                    if directory.as_str().starts_with("task-")
-                    && selected.is_none_or(|task| directory.as_str() != format!("task-{task}")))
-            });
-        }
-        if let Some(Some(previous)) = self.loaded_task {
-            self.files
-                .remove(&ui(&format!("task-{previous}"), "settings.json")?);
-        }
-        if let Some(task) = selected {
-            let key = ui(&format!("task-{task}"), "settings.json")?;
-            if !self.files.contains_key(&key) {
+        loop {
+            let selected = self.selected_task()?;
+            if !ALWAYS_SCAN && self.loaded_task == Some(selected) {
+                return Ok(());
+            }
+            self.loaded_task = None;
+            let directory = selected.map(|task| format!("task-{task}"));
+            if ALWAYS_SCAN {
+                self.files.retain(|key, _| {
+                    #[cfg(test)]
+                    { self.settings_visits += 1; }
+                    !matches!(key, files::FileKey::Ui { directory: dir, .. }
+                        if dir.as_str().starts_with("task-") && Some(dir.as_str()) != directory.as_deref())
+                });
+            }
+            if let Some(directory) = directory {
+                let key = ui(&directory, "settings.json")?;
                 if let Some(file) = self.read_file(&key).await? {
                     self.fold(file)?;
                 }
             }
+            if self.selected_task()? == selected {
+                self.loaded_task = Some(selected);
+                return Ok(());
+            }
         }
-        self.loaded_task = Some(selected);
-        Ok(())
     }
 
     fn evict_oldest(&mut self) -> bool {

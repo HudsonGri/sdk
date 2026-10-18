@@ -42,6 +42,7 @@ pub struct CommandSession<P: ?Sized> {
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
     loaded_task: Option<Option<TaskId>>,
+    observed_change: Option<bool>,
     #[cfg(test)]
     settings_visits: usize,
     session: uuid::Uuid,
@@ -135,6 +136,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             activity_cursor: None,
             catalog: CommandCatalog::builtins()?,
             loaded_task: None,
+            observed_change: None,
             #[cfg(test)]
             settings_visits: 0,
             session,
@@ -198,14 +200,24 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Observe one pushed file publication, including presentation-only changes.
     pub async fn observe_change(&mut self) -> Result<()> {
-        self.advance().await?;
-        self.load_task_settings().await
+        self.observe_change_visible::<true>().await.map(|_| ())
     }
 
-    /// Observe one publication and report whether it changes presentation.
-    pub(crate) async fn observe_change_visible(&mut self) -> Result<bool> {
-        let visible = self.advance_visible().await?;
+    /// Retain the observation through metadata I/O, including cancellation by
+    /// another multiplexer branch. RETAIN=false restores the lost-change bug.
+    pub(crate) async fn observe_change_visible<const RETAIN: bool>(&mut self) -> Result<bool> {
+        let visible = match self.observed_change {
+            Some(visible) => visible,
+            None => {
+                let visible = self.advance_visible().await?;
+                if RETAIN {
+                    self.observed_change = Some(visible);
+                }
+                visible
+            }
+        };
         self.load_task_settings().await?;
+        self.observed_change = None;
         Ok(visible)
     }
 
@@ -462,15 +474,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(operation)
     }
 
-    fn fold(&mut self, file: files::FileValue) -> Result<()> {
+    fn fold(&mut self, file: files::FileValue) -> Result<bool> {
         if matches!(&file.key, files::FileKey::Task { .. })
             && !files::command_query::matches(&component(self.session.to_string())?, &file.key)
         {
-            return Ok(());
+            return Ok(false);
         }
         if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
         {
-            return Ok(());
+            return Ok(false);
         }
         if let files::FileKey::Ui { directory, .. } = &file.key {
             if directory.as_str().starts_with("task-")
@@ -478,12 +490,21 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     .selected_task()?
                     .is_none_or(|task| directory.as_str() != format!("task-{task}"))
             {
-                return Ok(());
+                return Ok(false);
             }
         }
         if file.bytes.len() as u64 > self.maximum_bytes {
             return Err(Error::Invalid("command file exceeds byte bound".into()));
         }
+        let previous = match &file.key {
+            files::FileKey::Ui { directory, name }
+                if name.as_str() == "layout.json"
+                    && directory.as_str() == format!("session-{}", self.session) =>
+            {
+                Some(self.selected_task()?)
+            }
+            _ => None,
+        };
         self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
         self.fold_activity_file(&file)?;
         if file.key == ui("config", "commands.json")? {
@@ -583,8 +604,27 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         }
         self.fold_pending_execution(&file.key);
         self.files.insert(file.key.clone(), file);
+        if let Some(previous) = previous
+            && previous != self.selected_task()?
+        {
+            self.loaded_task = None;
+            if let Some(previous) = previous {
+                let query = files::Query::UiDirectory(component(format!("task-{previous}"))?);
+                for range in query.ranges() {
+                    self.files
+                        .extract_if(range, |_, _| {
+                            #[cfg(test)]
+                            {
+                                self.settings_visits += 1;
+                            }
+                            true
+                        })
+                        .for_each(drop);
+                }
+            }
+        }
         self.trim_archive();
-        Ok(())
+        Ok(true)
     }
 
     async fn advance(&mut self) -> Result<()> {
@@ -601,18 +641,18 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     .map_err(storage)?,
             );
         }
-        if let Some(file) = self
+        let visible = match self
             .next_change
             .as_ref()
             .and_then(|change| change.file.clone())
         {
-            self.fold(file)?;
-        }
+            Some(file) => self.fold(file)?,
+            None => false,
+        };
         let change = self
             .next_change
             .take()
             .ok_or_else(|| Error::Conflict("command change missing".into()))?;
-        let visible = !change.is_checkpoint();
         self.generation = files::Generation {
             volume: change.cursor.volume,
             epoch: change.cursor.epoch,
