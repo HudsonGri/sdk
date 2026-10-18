@@ -62,6 +62,7 @@ fn output(protocol: u16, encoding: u16, fail: usize, nested: bool) -> Vec<u8> {
         if guard.setup(ScreenMode::Alternate).is_ok() && nested {
             for mode in [1003, 1016, 9, 1005, 1001, 1015] {
                 if guard.enable_mode(mode).is_err() {
+                    assert_restored(protocol, encoding, &guard.writer().bytes);
                     break;
                 }
             }
@@ -71,6 +72,67 @@ fn output(protocol: u16, encoding: u16, fail: usize, nested: bool) -> Vec<u8> {
         }
     }
     writer.bytes
+}
+
+#[test]
+fn nested_switch_failure_restores_before_any_later_setup() {
+    for group in [&PROTOCOLS[..], &ENCODINGS[..]] {
+        for &first in group {
+            for &second in group {
+                if first == second {
+                    continue;
+                }
+                for offset in 0..=format!("\x1b[?{second}h").len() {
+                    let mut caps = Capabilities::default();
+                    for &mode in group {
+                        caps.modes.insert(mode, ModeState::Reset);
+                    }
+                    let mut writer = FailOnce {
+                        bytes: Vec::new(),
+                        at: usize::MAX,
+                        failed: false,
+                    };
+                    {
+                        let mut guard = RestoreGuard::new(&mut writer, &caps);
+                        guard.enable_mode(first).unwrap();
+                        let at = guard.writer().bytes.len() + offset;
+                        guard.writer().at = at;
+                        if guard.enable_mode(second).is_ok() {
+                            guard.restore().ok();
+                            // A failure during explicit restoration is retried.
+                            guard.restore().unwrap();
+                        }
+                        assert_restored(0, 0, &guard.writer().bytes);
+                    }
+                    assert_restored(0, 0, &writer.bytes);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "both mouse selections must be restored")]
+fn negative_control_replacing_pending_selection_before_set_completes() {
+    let mut caps = Capabilities::default();
+    for mode in ENCODINGS {
+        caps.modes.insert(mode, ModeState::Reset);
+    }
+    let mut writer = FailOnce {
+        bytes: Vec::new(),
+        at: usize::MAX,
+        failed: false,
+    };
+    let mut guard = RestoreGuard::new(&mut writer, &caps);
+    guard.enable_mode(1006).unwrap();
+    guard.writer().at = guard.writer().bytes.len();
+    assert!(guard.enable_mode(1016).is_err());
+    let mut bytes = guard.writer().bytes.clone();
+    // Reintroduce the old journal's premature replacement in the real output.
+    let reset = b"\x1b[?1006l";
+    let at = bytes.windows(reset.len()).position(|b| b == reset).unwrap();
+    bytes.drain(at..at + reset.len());
+    assert_restored(0, 0, &bytes);
 }
 
 fn assert_restored(protocol: u16, encoding: u16, bytes: &[u8]) {

@@ -139,10 +139,19 @@ impl<W: Write> RestoreGuard<W> {
             Some(previous) => format!("\x1b[?{previous}h"),
             None => format!("\x1b[?{mode}l"),
         };
+        let mut pending = Vec::new();
+        if original.is_none()
+            && let Some(index) = existing
+        {
+            // Until SET completes, either the old or new selection can be
+            // active. RESET only affects the matching selection in xterm.
+            pending.extend_from_slice(&self.undo[index].1);
+        }
+        pending.extend_from_slice(undo.as_bytes());
         // One record per exclusive selection, installed before writing. Keeping
         // intermediate switches as separate undos could replay a failed inner
         // undo AFTER the original selection had already been restored.
-        let record = (mode, Cow::Owned(undo.into_bytes()), original);
+        let record = (mode, Cow::Owned(pending), original);
         if let Some(index) = existing {
             self.undo[index] = record;
         } else {
@@ -158,6 +167,11 @@ impl<W: Write> RestoreGuard<W> {
         if let Err(error) = self.writer.write_all(format!("\x1b[?{mode}h").as_bytes()) {
             let _ = self.restore();
             return Err(error);
+        }
+        // A completed SET proves the new exclusive selection displaced every
+        // earlier candidate. Only now may its undo replace the pending union.
+        if let Some(index) = existing {
+            self.undo[index].1 = Cow::Owned(undo.into_bytes());
         }
         Ok(())
     }
