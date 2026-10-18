@@ -53,10 +53,30 @@ fn old(entries: &[TreeEntry], mutations: &[Observed]) -> Result<Vec<TreeEntry>, 
     for mutation in mutations {
         let found = output.binary_search_by(|entry| entry.name.cmp(mutation.key()));
         let current = found.ok().and_then(|index| output.get(index));
-        let next = mutation
-            .replacement(current)
-            .map_err(|error| format!("{error:?}"))?
-            .cloned();
+        differential::record((mutation.0, current.map(|entry| (entry.file_id, entry.kind))));
+        let next = match &mutation.1 {
+            TreeMutation::Insert(_) if current.is_some() => return Err("AlreadyExists".into()),
+            TreeMutation::Insert(entry) => Some(entry.clone()),
+            TreeMutation::Remove {
+                expected_file_id, ..
+            } => {
+                let current = current.ok_or("Missing")?;
+                if expected_file_id.is_some_and(|id| id != current.file_id) {
+                    return Err("FileIdentityConflict".into());
+                }
+                None
+            }
+            TreeMutation::Replace {
+                entry,
+                expected_file_id,
+            } => {
+                let current = current.ok_or("Missing")?;
+                if current.file_id != *expected_file_id {
+                    return Err("FileIdentityConflict".into());
+                }
+                Some(entry.clone())
+            }
+        };
         match (found, next) {
             (Ok(index), Some(next)) => output[index] = next,
             (Ok(index), None) => {
@@ -67,6 +87,37 @@ fn old(entries: &[TreeEntry], mutations: &[Observed]) -> Result<Vec<TreeEntry>, 
         }
     }
     Ok(output)
+}
+
+// Frozen v1 wire writer: no candidate page view, codec, or decoder is used.
+fn old_bytes(entries: &[TreeEntry]) -> Vec<u8> {
+    let mut output = b"ACYFSTRE".to_vec();
+    output.extend_from_slice(&1_u16.to_le_bytes());
+    output.push(1);
+    output.extend_from_slice(&u32::try_from(entries.len()).unwrap().to_le_bytes());
+    for entry in entries {
+        output.push(match entry.name.encoding() {
+            NameEncoding::Utf8 => 1,
+            NameEncoding::PosixBytes => 2,
+            NameEncoding::WindowsUtf16Le => 3,
+        });
+        let name = entry.name.as_bytes();
+        output.extend_from_slice(&u32::try_from(name.len()).unwrap().to_le_bytes());
+        output.extend_from_slice(name);
+        output.extend_from_slice(&entry.file_id.into_bytes());
+        output.push(match entry.kind {
+            FileKind::Regular => 1,
+            FileKind::Directory => 2,
+            FileKind::SymbolicLink => 3,
+            FileKind::Fifo => 4,
+            FileKind::Socket => 5,
+            FileKind::CharacterDevice => 6,
+            FileKind::BlockDevice => 7,
+            FileKind::ReparsePoint => 8,
+            FileKind::MountBoundary => 9,
+        });
+    }
+    output
 }
 
 fn bytes(entries: Entries<'_, TreeEntry>) -> Vec<u8> {
@@ -168,7 +219,7 @@ proptest! {
                 (entries, mutations)
             },
             |(entries, mutations), baseline| {
-                if baseline { old(&entries, &mutations).map(|output| bytes((&output).into())) }
+                if baseline { old(&entries, &mutations).map(|output| old_bytes(&output)) }
                 else { candidate(&entries, &mutations, false).0 }
             },
         );
