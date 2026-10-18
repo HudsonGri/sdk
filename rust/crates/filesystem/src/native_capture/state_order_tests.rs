@@ -396,7 +396,9 @@ proptest! {
             let _sort = previous_sort(previous);
             let heap = acyclic_test_support::measure(|| sort_capture_states(&mut input, &child).unwrap());
             prop_assert_eq!(order(&input), expected.clone());
-            prop_assert_eq!(heap.count_total, 0, "previous={}", previous);
+            // macOS pthread mutexes lazily allocate on their first lock: one
+            // for each fresh allowance, equally in baseline and candidate.
+            prop_assert_eq!(heap.count_total, if cfg!(target_os = "macos") { 2 } else { 0 }, "previous={}", previous);
             prop_assert_eq!(child.receipt().allocation_operations, before.allocation_operations);
             prop_assert_eq!(child.receipt().items_examined - before.items_examined, items);
             prop_assert_eq!(PATH_COMPARISONS.get(), 0);
