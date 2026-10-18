@@ -17,6 +17,7 @@ enum Phase {
 struct State {
     phase: Phase,
     ready: bool,
+    io_ready: bool,
     driver: Option<Waker>,
     #[cfg(test)]
     forget_ready: bool,
@@ -35,6 +36,7 @@ impl Host {
             state: Mutex::new(State {
                 phase: Phase::Starting,
                 ready: false,
+                io_ready: false,
                 driver: None,
                 #[cfg(test)]
                 forget_ready: false,
@@ -77,33 +79,55 @@ impl Host {
     // Root/owned futures can then satisfy that wait without any recursive poll.
     pub(super) async fn drive<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
         let mut future = std::pin::pin!(future);
+        let io_waker = Waker::from(Arc::new(IoWake(self.clone())));
+        let mut io_cx = PollContext::from_waker(&io_waker);
         std::future::poll_fn(|cx| {
-            if let Poll::Ready(output) = future.as_mut().poll(cx) {
-                return Poll::Ready(output);
-            }
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.driver = Some(cx.waker().clone());
-            loop {
-                match state.phase {
-                    Phase::Finished => {
-                        drop(state);
-                        return Poll::Ready(executor::complete_io(future.as_mut()));
-                    }
-                    Phase::Parked if state.ready => {
-                        state.ready = false;
-                        state.phase = Phase::Running;
-                        self.changed.notify_one();
-                    }
-                    Phase::Parked => return Poll::Pending,
-                    _ => (),
+            'poll_io: loop {
+                if let Poll::Ready(output) = future.as_mut().poll(&mut io_cx) {
+                    return Poll::Ready(output);
                 }
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.driver = Some(cx.waker().clone());
+                loop {
+                    if state.io_ready {
+                        state.io_ready = false;
+                        drop(state);
+                        continue 'poll_io;
+                    }
+                    match state.phase {
+                        Phase::Finished => {
+                            drop(state);
+                            return Poll::Ready(executor::complete_io(future.as_mut()));
+                        }
+                        Phase::Parked if state.ready => {
+                            state.ready = false;
+                            state.phase = Phase::Running;
+                            self.changed.notify_one();
+                        }
+                        Phase::Parked => return Poll::Pending,
+                        _ => (),
+                    }
+                    state = self
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
             }
         })
         .await
+    }
+}
+
+// Queue capacity and physical completion wakes stay inside the I/O step;
+// device latency must not enqueue an extra simulated task poll.
+struct IoWake(Arc<Host>);
+impl Wake for IoWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        lock(&self.0.state).io_ready = true;
+        self.0.changed.notify_one();
     }
 }
 
