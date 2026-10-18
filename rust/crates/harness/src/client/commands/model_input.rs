@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
+thread_local! {
+    static IGNORE_IMAGE_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl CommandResolution {
     /// Moves a resolved prompt into the stock model command's input. Mentioned
     /// files retain their pinned revisions and use verified bounded text projection.
@@ -23,8 +28,8 @@ impl CommandResolution {
         for (index, mention) in mentions.iter().enumerate() {
             let file = &mention.file;
             let identity = (file.volume(), file.path(), file.version());
-            if let Some(previous) = seen.insert(identity, file) {
-                if previous != file {
+            if let Some(previous) = seen.insert(identity, mention) {
+                if previous.file != mention.file || previous.image_input != mention.image_input {
                     return Err(Error::Conflict("mentioned file identity changed".into()));
                 }
             } else {
@@ -40,12 +45,25 @@ impl CommandResolution {
                 selected.next();
                 parts.push(ModelContentPart::File {
                     policy: if mention.file.descriptor().media_type().starts_with("image/") {
+                        let image = mention.image_input.ok_or_else(|| {
+                            Error::Unsupported(
+                                "image mention has no selected admission policy".into(),
+                            )
+                        })?;
+                        image.validate()?;
+                        let maximum_work = u64::from(image.maximum_tokens);
+                        #[cfg(all(test, not(acyclic_harness_loom)))]
+                        let maximum_work = if IGNORE_IMAGE_POLICY.with(std::cell::Cell::get) {
+                            16_384
+                        } else {
+                            maximum_work
+                        };
                         FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
                             intent: crate::model::NativeMediaIntent::Image {
                                 detail: crate::model::ImageDetail::Auto,
                             },
-                            maximum_bytes: mention.file.descriptor().byte_length(),
-                            maximum_work: 16_384,
+                            maximum_bytes: image.maximum_bytes,
+                            maximum_work,
                             configuration: None,
                         }))
                     } else {
@@ -60,3 +78,7 @@ impl CommandResolution {
         Ok(content)
     }
 }
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+#[path = "model_input_tests.rs"]
+mod tests;

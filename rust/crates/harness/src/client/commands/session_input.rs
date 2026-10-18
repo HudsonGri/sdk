@@ -97,7 +97,19 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                         start,
                         end: text.len(),
                         file,
+                        image_input: None,
                     });
+                }
+            }
+            if let CommandResolution::Prompt { mentions, .. } = &mut resolution {
+                let mut image_policy = None;
+                for mention in mentions {
+                    if mention.file.descriptor().media_type().starts_with("image/") {
+                        if image_policy.is_none() {
+                            image_policy = Some(self.image_policy()?);
+                        }
+                        mention.image_input = image_policy.clone();
+                    }
                 }
             }
             self.load_task_settings().await?;

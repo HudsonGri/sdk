@@ -8,42 +8,6 @@ use crate::{
 use acyclic_stream::StreamProvider;
 use std::io::Read;
 
-pub(super) fn image_policy<P: StreamProvider + ?Sized>(
-    files: &CommandSession<P>,
-) -> Result<crate::model::ImageInput> {
-    let catalog = files
-        .state(CommandFileRoot::Config, "image-input.json")?
-        .ok_or_else(|| Error::Unsupported("selected model has no image admission policy".into()))?;
-    let default = catalog["default"]
-        .as_str()
-        .ok_or_else(|| Error::Invalid("image catalog has no default model".into()))?;
-    let configured = files
-        .state(CommandFileRoot::Task, "settings.json")?
-        .and_then(|s| s["model"].as_str().map(str::to_owned))
-        .or(files
-            .state(CommandFileRoot::Config, "settings.json")?
-            .and_then(|s| s["model"].as_str().map(str::to_owned)))
-        .unwrap_or_else(|| default.into());
-    let selection = if configured.contains('/') {
-        configured
-    } else {
-        format!(
-            "{}/{}",
-            default.split_once('/').map_or(default, |(p, _)| p),
-            configured
-        )
-    };
-    let policy: crate::model::ImageInput = serde_json::from_value(
-        catalog["models"]
-            .get(&selection)
-            .unwrap_or(&catalog["fallback"])
-            .clone(),
-    )
-    .map_err(|_| Error::Unsupported("selected model has no image admission policy".into()))?;
-    policy.validate()?;
-    Ok(policy)
-}
-
 pub(super) fn draft_images<P: StreamProvider + ?Sized>(
     files: &CommandSession<P>,
 ) -> Result<Vec<FileRef>> {
@@ -73,7 +37,7 @@ async fn publish<P: StreamProvider + ?Sized>(
     mime: &str,
     extension: &str,
 ) -> Result<()> {
-    let policy = image_policy(files)?;
+    let policy = files.image_policy()?;
     policy.parse(bytes, Some(mime))?;
     let mut images = draft_images(files)?;
     let total = images.iter().try_fold(0u64, |total, file| {
@@ -163,7 +127,7 @@ async fn apply_host_input<P: StreamProvider + ?Sized>(
                 arboard::Clipboard::new().map_err(|e| Error::Unsupported(e.to_string()))?;
             match clipboard.get_image() {
                 Ok(image) => {
-                    let policy = image_policy(files)?;
+                    let policy = files.image_policy()?;
                     let decoded = u64::from(policy.maximum_dimension)
                         .checked_pow(2)
                         .and_then(|n| n.checked_mul(4))
@@ -207,11 +171,11 @@ async fn apply_host_input<P: StreamProvider + ?Sized>(
         } if text.trim_start().starts_with('/') => {
             match files
                 .catalog()
-                .resolve(text, reader, image_policy(files)?.maximum_bytes)
+                .resolve(text, reader, files.image_policy()?.maximum_bytes)
                 .await?
             {
                 CommandResolution::Sdk { command, arguments } if command == "attach" => {
-                    let policy = image_policy(files)?;
+                    let policy = files.image_policy()?;
                     let (bytes, mime, ext) = attached(arguments.trim().trim_matches('"'), &policy)?;
                     publish(files, publisher, &bytes, mime, ext).await
                 }

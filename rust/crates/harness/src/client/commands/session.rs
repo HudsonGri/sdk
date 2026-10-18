@@ -14,6 +14,8 @@ mod archive;
 mod confirmation;
 #[path = "session_consume.rs"]
 mod consumption;
+#[path = "session_image_policy.rs"]
+mod image_policy;
 #[cfg(all(
     test,
     feature = "terminal",
