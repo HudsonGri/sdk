@@ -5,6 +5,8 @@ fn reinitialized_after_one_byte(broken: bool) -> usize {
     let channel = Channel::new(BATCH);
     let mut storage = channel.storage().unwrap();
     storage.storage_mut().fill(0xa5);
+    // Warm the native condition variable before measuring repeated handoffs.
+    channel.space.notify_one();
     let mut changed = 0;
     let allocations = acyclic_test_support::measure(|| {
         assert!(publish(&channel, storage.finish(1)));

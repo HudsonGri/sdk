@@ -173,6 +173,8 @@ mod reuse_tests {
         let handoff = Handoff::new(SIZE);
         let mut storage = handoff.storage().unwrap();
         storage.storage_mut().fill(0xa5);
+        // Darwin initializes its native condition variable on first notification.
+        handoff.space.notify_one();
         let mut changed = 0;
         let allocations = acyclic_test_support::measure(|| {
             assert!(handoff.send(storage.finish(1)));
