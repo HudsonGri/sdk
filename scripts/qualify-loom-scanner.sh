@@ -38,6 +38,24 @@ node --test scripts/loom-scan-records.test.mjs scripts/loom-type-contexts.test.m
 cargo check --locked --manifest-path rust/verification/loom-locks/Cargo.toml \
   --target-dir "$target/loom-locks" --lib --tests --target x86_64-pc-windows-gnu
 
+library="$(x86_64-w64-mingw32-g++ -print-file-name=libstdc++.a)"
+test -f "$library"
+headers="$(dirname "$library")/include/c++"
+windows_cpp_flags=(-fms-extensions -fdeclspec -isystem "$headers"
+  -isystem "$headers/x86_64-w64-mingw32" -isystem "$headers/backward")
+clang++ --target=x86_64-pc-windows-gnu "${windows_cpp_flags[@]}" \
+  -std=c++17 -fsyntax-only -x c++ - <<'CPP'
+#include <cstddef>
+void probe() {}
+__pragma(comment(linker,"/alternatename:foo=bar"))
+auto address = __builtin_function_start(probe);
+CPP
+export CXX_x86_64_pc_windows_gnu=clang++
+printf -v CXXFLAGS_x86_64_pc_windows_gnu '%q ' "${windows_cpp_flags[@]}"
+export CXXFLAGS_x86_64_pc_windows_gnu
+RUSTFLAGS='--cfg acyclic_loom --cfg acyclic_fs_loom' \
+  cargo check --locked -p acyclic-fs-fuzz --test model --target x86_64-pc-windows-gnu
+
 CARGO_TARGET_DIR="$target/loom-source-fuzz" cargo "+$toolchain" fuzz build --dev \
   --fuzz-dir rust/verification/loom-locks/fuzz
 for entry in source:863 records:864; do
