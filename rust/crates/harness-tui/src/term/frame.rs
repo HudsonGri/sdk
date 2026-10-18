@@ -353,13 +353,12 @@ impl<D: Present> FrameTerminal<D> {
     ) -> io::Result<()> {
         let backend = self.terminal.backend_mut();
         let outside = backend.output.device.outside_writes();
-        let invalidated = outside.is_none() || outside != backend.ours;
-        if invalidated || backend.size != size {
-            backend.shown = Shown::default();
-        }
-        self.invalid |= invalidated;
+        let invalidated = outside.is_none() || outside != backend.ours || backend.size != size;
         backend.ours = outside;
         backend.size = size;
+        if invalidated {
+            self.invalidate();
+        }
         let drawn = self.scroll_and_draw(scroll, render);
         let expected = self.terminal.backend_mut().ours;
         let presented = self.terminal.backend_mut().output.commit(expected);
@@ -391,10 +390,15 @@ impl<D: Present> FrameTerminal<D> {
         }
         if drawn.is_err() || committed.is_err() {
             // The device may hold any part of the frame.
-            backend.shown = Shown::default();
-            self.invalid = true;
+            self.invalidate();
         }
         drawn.and(committed.map(|_| ()))
+    }
+
+    // Cell, cursor and attribute assumptions share one invalidation path.
+    fn invalidate(&mut self) {
+        self.invalid = true;
+        self.terminal.backend_mut().shown = Shown::default();
     }
 
     fn recover_contents(&mut self) -> io::Result<()> {
