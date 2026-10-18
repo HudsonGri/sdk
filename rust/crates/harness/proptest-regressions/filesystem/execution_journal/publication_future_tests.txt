@@ -1,0 +1,2 @@
+# Persisted regressions for the journal differential properties.
+cc b96c1f3b20929f8ad1d6efafe189bf558cd5d8fda15889ae6eb3f5957e288518
