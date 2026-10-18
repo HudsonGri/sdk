@@ -52,3 +52,10 @@ pub fn local_task_stream(
 pub(crate) mod model_view_work;
 #[cfg(feature = "test-support")]
 pub use model_view_work::measure as measure_model_view_work;
+
+/// Exercises native MCP declaration parsing, normalization and round-trip preservation.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub use crate::mcp::config::fuzz::check as check_mcp_configuration;

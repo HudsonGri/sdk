@@ -1,5 +1,6 @@
 //! Native client declarations, normalized before opening any connection.
 
+use super::McpSchemaExposure;
 use crate::{Error, Result};
 use serde::Deserialize;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
@@ -22,6 +23,8 @@ pub struct McpServer {
     pub enabled_tools: Option<Vec<String>>,
     /// Server-local tools excluded even when allowlisted.
     pub disabled_tools: Vec<String>,
+    /// Model-visible schemas; hidden revisions remain available for explicit admission.
+    pub schema_exposure: McpSchemaExposure,
     /// Whether connection failure prevents session startup.
     pub required: bool,
     pub(super) dialect: Dialect,
@@ -62,6 +65,10 @@ pub(crate) enum Dialect {
 }
 
 #[derive(Default, Deserialize)]
+#[cfg_attr(
+    any(test, feature = "test-support"),
+    derive(Clone, serde::Serialize, PartialEq)
+)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ImportedServer {
     #[serde(rename = "type")]
@@ -80,6 +87,7 @@ pub(crate) struct ImportedServer {
     tool_timeout_sec: Option<f64>,
     enabled_tools: Option<Vec<String>>,
     disabled_tools: Vec<String>,
+    schema_exposure: McpSchemaExposure,
     required: bool,
     enabled: Option<bool>,
 }
@@ -189,6 +197,7 @@ impl ImportedServer {
             tool_timeout_ms: milliseconds(self.tool_timeout_sec.unwrap_or(60.0))?,
             enabled_tools: self.enabled_tools,
             disabled_tools: self.disabled_tools,
+            schema_exposure: self.schema_exposure,
             required: self.required,
             dialect,
         })
@@ -207,3 +216,8 @@ fn milliseconds(seconds: f64) -> Result<u32> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod fuzz;
+#[cfg(test)]
+mod policy_tests;

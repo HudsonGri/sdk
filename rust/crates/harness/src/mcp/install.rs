@@ -1,8 +1,7 @@
 //! Native configuration to ordinary, additive registered tools.
 
 use super::{
-    McpCatalog, McpConfig, McpDiscoveryPolicy, McpSchemaExposure, McpServer, McpToolDefinition,
-    McpToolTransport,
+    McpCatalog, McpConfig, McpDiscoveryPolicy, McpServer, McpToolDefinition, McpToolTransport,
 };
 use crate::{
     Capabilities, Error, Result,
@@ -208,11 +207,15 @@ fn register(
     let mut catalog = McpCatalog {
         server: name,
         revision: String::new(),
-        schema_exposure: McpSchemaExposure::Eager,
+        schema_exposure: server.schema_exposure.clone(),
         discovery: McpDiscoveryPolicy::Disabled,
         projection_schema: crate::tool::json_projection_schema(json!({})),
         tools: std::mem::take(&mut connected.tools),
     };
+    #[cfg(test)]
+    if policy_tests::ignore_exposure() {
+        catalog.schema_exposure = super::McpSchemaExposure::Eager;
+    }
     catalog.tools.retain(|tool| {
         server
             .enabled_tools
@@ -262,3 +265,6 @@ fn register(
 mod path_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod policy_tests;

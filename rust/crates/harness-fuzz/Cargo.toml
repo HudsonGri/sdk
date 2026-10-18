@@ -24,7 +24,7 @@ notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/fil
 
 [dependencies]
 blake3.workspace = true
-acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
+acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http", "mcp-http"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -301,6 +301,14 @@ bench = false
 [[bin]]
 name = "client_swarm_views"
 path = "fuzz_targets/client_swarm_views.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_configuration"
+path = "fuzz_targets/mcp_configuration.rs"
 required-features = ["runtime"]
 test = false
 doc = false
