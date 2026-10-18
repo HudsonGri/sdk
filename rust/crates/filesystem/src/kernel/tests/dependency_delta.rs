@@ -71,10 +71,10 @@ fn run_cut(count: u8, input: &[u8], shared: bool, weak: bool, cut: usize) -> usi
     let weak = weak.then(|| Arc::downgrade(&proof.captured));
     let owner = Arc::new(ProofDataCustody::default());
     let calls = Cell::new(0);
-    let step = || {
+    let step = || -> Result<(), crate::FsError> {
         calls.set(calls.get() + 1);
         if calls.get() == cut {
-            Err(WorkError::Overflow)
+            Err(WorkError::Overflow.into())
         } else {
             Ok(())
         }
@@ -82,7 +82,7 @@ fn run_cut(count: u8, input: &[u8], shared: bool, weak: bool, cut: usize) -> usi
     let extension = proof
         .prepare_mutations(input.iter().copied().map(dependency).collect(), 128)
         .expect("consistent bounded input");
-    let result = proof.commit_with_data_claims(
+    let result = proof.commit_with_data_claims::<true, _, _>(
         extension,
         |_, _, _, _| step(),
         |bytes| {
@@ -159,7 +159,7 @@ fn measured_upgrade(count: u8, old_clone: bool) -> (AllocationInfo, WorkCounters
         // production COW path, including actual map nodes and name buffers.
         let held = old_clone.then(|| proof.clone());
         proof
-            .commit_with_data_custody::<WorkError>(
+            .commit_with_data_custody::<crate::FsError>(
                 extension,
                 None,
                 |_, operations, copied, items| {
@@ -217,7 +217,7 @@ fn install_before_fallible_finish_is_detected() {
         .expect("new key");
     // Mutate the ordering by using a successful finish, then reject afterward.
     proof
-        .commit_with_data_custody::<WorkError>(extension, None, |_, _, _, _| Ok(()))
+        .commit_with_data_custody::<crate::FsError>(extension, None, |_, _, _, _| Ok(()))
         .expect("unbounded admission");
     let rejected: Result<(), WorkError> = Err(WorkError::Overflow);
     assert!(rejected.is_err());
@@ -232,20 +232,28 @@ fn install_before_fallible_finish_is_detected() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn original_owner(
+    cancel: &CancellationToken,
+) -> (crate::NativeMaterializationWork, Arc<ProofDataCustody>) {
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, cancel)
+        .expect("original work");
+    let mut header = original
+        .claim_root_metadata(std::mem::size_of::<ProofDataCustody>() as u64)
+        .expect("header");
+    let owner = Arc::new(ProofDataCustody::default());
+    original
+        .register_native_checkout_control(&owner, &mut header)
+        .expect("registered producer");
+    (original, owner)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_native_upgrade_has_no_copy_or_allocation_and_rejects_snapshot_control() {
     for count in [8, 24] {
         for old_clone in [false, true] {
             let cancel = CancellationToken::new();
-            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
-                .expect("original work");
-            let owner = Arc::new(ProofDataCustody::default());
-            let mut header = original
-                .claim_root_metadata(owner.logical_owned_bytes())
-                .expect("header");
-            original
-                .register_native_checkout_control(&owner, &mut header)
-                .expect("registered producer");
+            let (original, owner) = original_owner(&cancel);
             let mut proof = initial(count);
             let extension = proof
                 .prepare_mutations(vec![dependency(count - 1)], 128)
@@ -287,4 +295,117 @@ fn original_native_upgrade_has_no_copy_or_allocation_and_rejects_snapshot_contro
             );
         }
     }
+}
+
+#[test]
+fn stale_extensions_revalidate_current_count_and_expected_state_before_finish() {
+    for contradictory in [false, true] {
+        let mut proof = initial(0);
+        let first = dependency(0);
+        let stale = proof
+            .prepare_mutations(vec![first.clone()], 1)
+            .expect("initial admission");
+        let mut observed = if contradictory { first } else { dependency(1) };
+        if contradictory {
+            observed.expected = DependencyState::Present(Digest::from_bytes([3; 32]));
+        }
+        let observation = proof
+            .prepare_observations(vec![observed], 1)
+            .expect("observation");
+        proof
+            .commit_with_data_custody::<crate::FsError>(observation, None, |_, _, _, _| Ok(()))
+            .expect("first region fits");
+        let before = semantics(&proof);
+        let owner = Arc::new(ProofDataCustody::default());
+        let mut finished = false;
+        let result = proof.commit_with_data_custody_then::<crate::FsError, _>(
+            stale,
+            Some(&owner),
+            |_, _, _, _| Ok(()),
+            || {
+                finished = true;
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(
+            !finished,
+            "rejected stale admission cannot transfer the root"
+        );
+        assert_eq!(semantics(&proof), before);
+    }
+}
+
+#[test]
+fn omitted_revalidation_control_breaks_the_same_dependency_bound() {
+    let mut proof = initial(0);
+    let stale = proof
+        .prepare_mutations(vec![dependency(0)], 1)
+        .expect("initial admission");
+    let observation = proof
+        .prepare_observations(vec![dependency(1)], 1)
+        .expect("observation");
+    proof
+        .commit_with_data_custody::<crate::FsError>(observation, None, |_, _, _, _| Ok(()))
+        .expect("first region fits");
+    proof
+        .commit_with_data_claims::<false, crate::FsError, _>(
+            stale,
+            |_, _, _, _| Ok(()),
+            |_| Ok(ProofDataClaim::default()),
+            |_, _| Ok(ProofDataClaim::default()),
+            || Ok(()),
+        )
+        .expect("omitted validation wrongly accepts the stale extension");
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert!(proof.len() <= 1)))
+            .is_err()
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_stale_admission_retires_new_names_before_any_copy_or_root_transfer() {
+    let cancel = CancellationToken::new();
+    let (original, owner) = original_owner(&cancel);
+    let mut proof = initial(0);
+    let stale = proof
+        .prepare_mutations(vec![dependency(0)], 1)
+        .expect("initial admission");
+    let observation = proof
+        .prepare_observations(vec![dependency(1)], 1)
+        .expect("observation");
+    proof
+        .commit_with_data_custody::<crate::FsError>(observation, None, |_, _, _, _| Ok(()))
+        .expect("first region fits");
+    let held = proof.clone();
+    let mut staged = original
+        .claim(8, 1, WorkCounters::UNCHARGED)
+        .expect("incoming name");
+    let before = original.receipt();
+    let mut finished = false;
+    assert!(
+        proof
+            .commit_with_original_data_custody_then(
+                stale,
+                &owner,
+                &mut staged,
+                &original,
+                &cancel,
+                |_| {
+                    finished = true;
+                    Ok(())
+                },
+            )
+            .is_err()
+    );
+    assert!(!finished);
+    assert_eq!(proof, held);
+    assert!(Arc::ptr_eq(&proof.captured, &held.captured));
+    assert_eq!(owner.retained_payload_bytes(), 0);
+    assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
+    assert_eq!(
+        original.receipt().allocation_operations,
+        before.allocation_operations
+    );
 }

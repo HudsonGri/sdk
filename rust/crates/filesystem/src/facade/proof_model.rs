@@ -23,7 +23,7 @@ fn model<const SPLIT: bool>(reject: bool) {
                     .prepare_mutations(vec![dependency(1)], 8)
                     .expect("mutation");
                 prepared
-                    .commit_with_data_custody::<WorkError>(extension, None, |_, _, _, _| Ok(()))
+                    .commit_with_data_custody::<FsError>(extension, None, |_, _, _, _| Ok(()))
                     .expect("unbounded work");
                 if !reject {
                     writer.proof().dependencies = prepared;
@@ -35,13 +35,13 @@ fn model<const SPLIT: bool>(reject: bool) {
                 let extension = proof
                     .prepare_mutations(vec![dependency(1)], 8)
                     .expect("mutation");
-                let result = proof.commit_with_data_custody_then(
+                let result = proof.commit_with_data_custody_then::<FsError, _>(
                     extension,
                     Some(&writer.data_custody),
                     |_, _, _, _| Ok(()),
                     || {
                         if reject {
-                            Err(WorkError::Overflow)
+                            Err(WorkError::Overflow.into())
                         } else {
                             Ok(())
                         }
@@ -89,4 +89,56 @@ fn rejected_root_handoff_preserves_concurrent_observation() {
 #[should_panic(expected = "committing a delta cannot lose an observation")]
 fn split_snapshot_install_loses_observation_control() {
     model::<true>(false);
+}
+
+#[test]
+fn observation_between_prepare_and_commit_cannot_exceed_the_dependency_limit() {
+    loom::model(|| {
+        let ledger = Arc::new(DependencyLedger::sharing_with_custody(
+            Proof::new(CheckoutDependencies::new([], [], 1).expect("empty proof")),
+            Arc::new(ProofDataCustody::default()),
+        ));
+        let (prepared, wait_prepared) = loom::sync::mpsc::channel();
+        let (observed, wait_observed) = loom::sync::mpsc::channel();
+        let writer = ledger.clone();
+        let mutation = loom::thread::spawn(move || {
+            let extension = writer
+                .proof()
+                .prepare_mutations(vec![dependency(1)], 1)
+                .expect("prepared mutation");
+            prepared.send(()).expect("prepared signal");
+            wait_observed.recv().expect("observation signal");
+            let mut finished = false;
+            let result = writer.proof().commit_with_data_custody_then::<FsError, _>(
+                extension,
+                Some(&writer.data_custody),
+                |_, _, _, _| Ok(()),
+                || {
+                    finished = true;
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(!finished, "limit denial precedes root transfer");
+        });
+        let reader = ledger.clone();
+        let observation = loom::thread::spawn(move || {
+            wait_prepared.recv().expect("prepared signal");
+            let token = CancellationToken::new();
+            reader
+                .extend_observations(
+                    vec![dependency(2)],
+                    &mut KernelOwnedAllocation::Standalone,
+                    1,
+                    &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token),
+                    &token,
+                )
+                .expect("observation fits");
+            observed.send(()).expect("observation signal");
+        });
+        mutation.join().expect("mutation");
+        observation.join().expect("observation");
+        assert_eq!(ledger.proof().len(), 1);
+        assert!(ledger.proof().observes(&dependency(2).region));
+    });
 }

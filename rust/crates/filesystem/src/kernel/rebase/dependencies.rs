@@ -191,7 +191,7 @@ impl CheckoutDependencies {
         self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
     }
 
-    pub(crate) fn commit_with_data_custody<E: From<WorkError>>(
+    pub(crate) fn commit_with_data_custody<E: From<WorkError> + From<DependencyError>>(
         &mut self,
         extension: DependencyExtension,
         owner: Option<&Arc<ProofDataCustody>>,
@@ -200,14 +200,14 @@ impl CheckoutDependencies {
         self.commit_with_data_custody_then(extension, owner, admit, || Ok(()))
     }
 
-    pub(crate) fn commit_with_data_custody_then<E: From<WorkError>, T>(
+    pub(crate) fn commit_with_data_custody_then<E: From<WorkError> + From<DependencyError>, T>(
         &mut self,
         extension: DependencyExtension,
         owner: Option<&Arc<ProofDataCustody>>,
         admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
         finish: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        self.commit_with_data_claims(
+        self.commit_with_data_claims::<true, _, _>(
             extension,
             admit,
             |bytes| {
@@ -260,7 +260,7 @@ impl CheckoutDependencies {
         // The guard owns only this invocation's new COW buffers. Physical
         // map cloning and replacement happen outside every original-root loan.
         let copied_allocation = std::cell::RefCell::new(None::<crate::NativeAllocation>);
-        self.commit_with_data_claims(
+        self.commit_with_data_claims::<true, _, _>(
             extension,
             |bytes, operations, copied, items| {
                 cancellation.check()?;
@@ -309,7 +309,11 @@ impl CheckoutDependencies {
         )
     }
 
-    fn commit_with_data_claims<E: From<WorkError>, T>(
+    fn commit_with_data_claims<
+        const REVALIDATE: bool,
+        E: From<WorkError> + From<DependencyError>,
+        T,
+    >(
         &mut self,
         mut extension: DependencyExtension,
         mut admit: impl FnMut(u64, u64, u64, u64) -> Result<(), E>,
@@ -326,12 +330,19 @@ impl CheckoutDependencies {
         };
         let mut cloned_name_data_bytes = self.cloned_name_data_bytes;
         let mut changes = false;
+        let mut distinct_new = 0usize;
         for (region, state) in extension.staged.iter_mut() {
             admit(0, 0, 0, 1)?;
             match self.captured.entries.get(region) {
-                Some(existing) => changes |= existing.usage.with(extension.usage) != existing.usage,
+                Some(existing) => {
+                    if REVALIDATE && existing.expected != state.expected {
+                        return Err(DependencyError::ContradictoryState.into());
+                    }
+                    changes |= existing.usage.with(extension.usage) != existing.usage;
+                }
                 None => {
                     changes = true;
+                    distinct_new = distinct_new.checked_add(1).ok_or(WorkError::Overflow)?;
                     let retained = dependency_name_bytes(region, false);
                     name_data_bytes = name_data_bytes
                         .checked_add(retained)
@@ -343,6 +354,17 @@ impl CheckoutDependencies {
                     state.data = data(retained, false)?;
                 }
             }
+        }
+        // Preparation may precede an await. Shared observers can have added
+        // regions since then; admission must use the current proof under its lock.
+        if REVALIDATE
+            && self.captured.entries.len().saturating_add(distinct_new)
+                > extension.maximum_dependencies as usize
+        {
+            return Err(DependencyError::TooManyDependencies {
+                maximum: extension.maximum_dependencies,
+            }
+            .into());
         }
         if !changes {
             return finish();
@@ -631,7 +653,11 @@ impl CheckoutDependencies {
                 maximum: maximum_dependencies,
             });
         }
-        Ok(DependencyExtension { staged, usage })
+        Ok(DependencyExtension {
+            staged,
+            usage,
+            maximum_dependencies,
+        })
     }
 }
 
@@ -639,6 +665,7 @@ impl CheckoutDependencies {
 pub(crate) struct DependencyExtension {
     staged: BTreeMap<DependencyRegion, CapturedState>,
     usage: DependencyUse,
+    maximum_dependencies: u32,
 }
 
 impl DependencyExtension {

@@ -21,7 +21,7 @@ impl CheckoutDependencies {
         Ok(())
     }
     fn commit(&mut self, extension: super::dependencies::DependencyExtension) {
-        self.commit_with_data_custody::<WorkError>(extension, None, |_, _, _, _| Ok(()))
+        self.commit_with_data_custody::<crate::FsError>(extension, None, |_, _, _, _| Ok(()))
             .expect("live dependency data fits the addressable memory space");
     }
     fn merged(&self, other: &Self) -> Option<Self> {
@@ -443,7 +443,7 @@ fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
         peak_allocation_bytes: 3,
         ..WorkBudget::UNBOUNDED
     };
-    let denied = proof.commit_with_data_custody::<WorkError>(
+    let denied = proof.commit_with_data_custody::<crate::FsError>(
         extension,
         Some(&owner),
         |bytes, operations, copied, _| {
