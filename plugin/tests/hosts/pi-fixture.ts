@@ -29,7 +29,9 @@ export function piEnvironment(directory: string): NodeJS.ProcessEnv {
     XDG_STATE_HOME: join(directory, "state"), XDG_CONFIG_HOME: join(directory, "config"),
     ACYCLIC_LOCAL_OWNER_DIR: join(directory, "owner"),
   };
-  for (const name of ["SystemRoot", "TEMP", "TMP"]) {
+  // Native executors resolve declared programs (bash, rustc) through the host's
+  // public executable path. Isolate credentials and configuration, not that binding.
+  for (const name of ["PATH", "SystemRoot", "TEMP", "TMP"]) {
     if (process.env[name]) environment[name] = process.env[name];
   }
   return environment;
