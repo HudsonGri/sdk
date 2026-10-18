@@ -87,6 +87,7 @@ impl Script {
         seed: &Value,
         protocol: &str,
         raw: bool,
+        bindings: &Value,
     ) -> TestResult<(Vec<String>, bool)> {
         self.attempts += 1;
         if !self.pins.is_empty() && !self.prepared {
@@ -134,24 +135,16 @@ impl Script {
         if !raw && let Some(events) = turn.as_array_mut() {
             let outputs = wire::outputs(&body, protocol)?;
             for event in events {
-                if event["name"]
-                    .as_str()
-                    .is_some_and(|name| name.starts_with("mcp."))
+                if let Some(description) =
+                    event["name"].as_str().and_then(|name| bindings.get(name))
                 {
-                    let offered: Vec<_> = body["tools"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|tool| tool["name"].as_str())
-                        .filter(|name| name.starts_with("harness_tool_"))
-                        .collect();
-                    let [name] = offered.as_slice() else {
-                        return Err(format!(
-                            "MCP fixture needs one advertised wire alias, got {offered:?}"
-                        )
-                        .into());
-                    };
-                    event["name"] = (*name).into();
+                    event["name"] = super::bindings::tool(
+                        &body,
+                        description
+                            .as_str()
+                            .ok_or("wire tool description must be text")?,
+                    )?
+                    .into();
                 }
                 if matches!(
                     event["name"]
@@ -200,6 +193,7 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
     let (send, mut receive) = mpsc::unbounded_channel::<Request>();
     let (stop, mut stopped) = oneshot::channel();
     let seed = case["seed"].clone();
+    let bindings = case["wire_tools"].clone();
     let routes = case["routes"].as_object().cloned().unwrap_or_default();
     let protocol = protocol.to_owned();
     let raw = case.get("responses").is_some();
@@ -273,7 +267,7 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
                             publish_action(&workspace, &action)?;
                             actions_applied += 1;
                         }
-                        script.reply(request.body, &seed, &protocol, raw)
+                        script.reply(request.body, &seed, &protocol, raw, &bindings)
                             .map(|(parts, pending)| Reply::Model(parts, pending))
                     })();
                     if let Err(error) = &reply {

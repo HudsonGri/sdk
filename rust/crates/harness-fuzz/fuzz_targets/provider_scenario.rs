@@ -1,4 +1,6 @@
 #![no_main]
+#[path = "../../harness/src/bin/graphcoder/tests/scenarios/bindings.rs"]
+mod bindings;
 #[path = "../../harness/src/bin/graphcoder/tests/scenarios/faults.rs"]
 mod faults;
 #[path = "../../harness/src/bin/graphcoder/tests/scenarios/history.rs"]
@@ -63,14 +65,25 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         }
     }
     let request = value.get("wire_request").unwrap_or(&value);
+    if let Some(description) = value["description"].as_str() {
+        let result = bindings::tool(request, description).map(str::to_owned);
+        let decoded = serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();
+        assert_eq!(
+            result.ok(),
+            bindings::tool(&decoded, description)
+                .map(str::to_owned)
+                .ok()
+        );
+    }
     for protocol in ["responses", "anthropic"] {
         if let Ok(outputs) = wire::outputs(request, protocol) {
             let decoded = serde_json::from_slice(&serde_json::to_vec(request).unwrap()).unwrap();
             assert_eq!(wire::outputs(&decoded, protocol).unwrap(), outputs);
             if wire::unique_outputs(outputs.clone()).is_err() {
-                assert!(history::matches(
-                    &serde_json::json!({"messages":[]}), request, protocol,
-                ).is_err());
+                assert!(
+                    history::matches(&serde_json::json!({"messages":[]}), request, protocol,)
+                        .is_err()
+                );
             }
             if let Ok(unique) = wire::unique_outputs(outputs.clone()) {
                 assert_eq!(unique.len(), outputs.len());
