@@ -374,13 +374,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map(|file| io.guard_owned(file.logical_owned_bytes()?))
             .transpose()?;
         let (descriptor, display_name) = if let Some(staged) = &staged {
-            if staged.volume() != volume || staged.path() != path {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Storage,
-                    "private file metadata does not match the file",
-                ));
-            }
             match &scanned {
                 Some(scanned)
                     if scanned.length != staged.descriptor().byte_length()

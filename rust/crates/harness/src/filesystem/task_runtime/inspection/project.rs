@@ -345,11 +345,6 @@ where
         let raw_descriptor;
         let _descriptor_hold;
         let (descriptor, display_name) = if let Some(staged) = &staged {
-            if staged.volume() != volume || staged.path() != path {
-                return Err(Error::Storage(
-                    "selected file metadata does not match immutable data".into(),
-                ));
-            }
             staged.descriptor().verify(&bytes, &mut None)?;
             _descriptor_hold = None;
             (staged.descriptor(), staged.display_name())
