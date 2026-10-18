@@ -224,7 +224,7 @@ fn read_runtime(path: &std::path::Path) -> Result<String, String> {
 fn runtime_files(
     read: impl Fn(&std::path::Path) -> Result<String, String>,
 ) -> Result<std::collections::BTreeMap<std::path::PathBuf, (String, Fixtures)>, String> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = std::path::Path::new(crate::build_metadata::MANIFEST_DIR);
     modules::sources(
         &[
             (root.join("src/local/mod.rs"), Fixtures::Local),

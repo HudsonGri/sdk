@@ -5,7 +5,7 @@ use std::path::Path;
 
 #[tokio::test(start_paused = true)]
 async fn direct_swarm_dispatch_rejects_a_permanently_pending_reopen() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let mut value =
         crate::scenario::load_value(&root, &root.join("swarm/prefetch-promotion.json"))?;
     run(value.clone()).await?;
