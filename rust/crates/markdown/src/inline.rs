@@ -53,7 +53,9 @@ impl Inline {
         if self.rows.closed() {
             return None;
         }
-        let classify = foreign || row.is_some() || appended.contains('\n');
+        let classify = foreign || row.is_some();
+        #[cfg(test)]
+        let classify = classify || REPLAY_ROWS.get() && appended.contains('\n');
         #[cfg(test)]
         let classify = if REPLAY_CLASSIFIER.get() {
             base = self.start;
@@ -515,4 +517,4 @@ thread_local! { pub(crate) static SKIP_UNDECIDED: std::cell::Cell<bool> = const 
 thread_local! { pub(super) static REPLAY_CLASSIFIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 #[cfg(test)]
-thread_local! { pub(crate) static LATE_REJECT_HOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! { pub(crate) static REPLAY_ROWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

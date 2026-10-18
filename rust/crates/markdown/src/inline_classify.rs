@@ -169,6 +169,10 @@ impl Rows {
     }
     pub(super) fn push(&mut self, source: &str) -> Option<usize> {
         let mut probe = None;
+        #[cfg(test)]
+        let broad_probes = super::REPLAY_ROWS.get();
+        #[cfg(not(test))]
+        let broad_probes = false;
         for (relative, c) in source.get(self.read..)?.char_indices() {
             #[cfg(test)]
             crate::work::scan(c.len_utf8());
@@ -218,9 +222,21 @@ impl Rows {
                         );
                     }
                 }
+                // Asterisks can interrupt only as a three-marker rule or a
+                // bullet followed by horizontal whitespace and content.
+                // Once another byte disqualifies both, this row is inline.
+                let star = self.first.and_then(|at| source.as_bytes().get(at)) == Some(&b'*');
+                let bullet = self
+                    .first
+                    .and_then(|at| source.as_bytes().get(at + 1))
+                    .is_some_and(|byte| matches!(byte, b' ' | b'\t'));
+                if !broad_probes && star && !bullet && !white && c != '*' {
+                    self.marker = false;
+                }
                 // An interrupt is decided within a marker, nine ordered-list
                 // digits, or </blockquote> (the longest block tag), plus content.
                 if self.marker
+                    && (broad_probes || !star || bullet || self.significant >= 3)
                     && self.significant <= "</blockquote>".len() + 1
                     && (!white || !self.space)
                 {

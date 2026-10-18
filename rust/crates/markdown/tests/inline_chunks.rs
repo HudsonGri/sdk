@@ -359,9 +359,9 @@ fn markers_after_escaped_breaks_have_linear_work() {
         eprintln!("escaped-break marker {count}: {measured:?}");
         bound(measured);
     }
-    crate::inline::LATE_REJECT_HOLD.set(true);
+    crate::inline::REPLAY_ROWS.set(true);
     let redundant = units(&chunks, 256);
-    crate::inline::LATE_REJECT_HOLD.set(false);
+    crate::inline::REPLAY_ROWS.set(false);
     assert!(std::panic::catch_unwind(|| bound(redundant)).is_err());
     let source = "\n*\\".repeat(86);
     replay(&source, &(1..source.len()).collect::<Vec<_>>());

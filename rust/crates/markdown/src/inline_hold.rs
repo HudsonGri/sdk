@@ -266,11 +266,7 @@ impl Markdown {
         // preview cannot be derived from retained output. Reject it before
         // advancing a truncated prefix that would immediately be discarded.
         let hard = hard_break(&self.source, row - 1);
-        #[cfg(test)]
-        let reject_early = !LATE_REJECT_HOLD.get();
-        #[cfg(not(test))]
-        let reject_early = true;
-        if hard.is_none() && reject_early {
+        if hard.is_none() {
             return self.advance_engine(previous, None).map(|c| c.min(changed));
         }
         if classified < row {
