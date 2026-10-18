@@ -1,6 +1,24 @@
 // Original factories: retain their native branches and concrete frame layouts.
 use super::*;
 
+thread_local! {
+    pub(super) static FRAME_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn original_frame<'a, T, F>(
+    io: Option<&'a PreparationIo>,
+    build: impl FnOnce() -> F,
+) -> Result<crate::conversation::BoundedContentFuture<'a, T>>
+where
+    F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+{
+    crate::conversation::BoundedContentFuture::new(io, || {
+        let future = build();
+        FRAME_BYTES.set(std::mem::size_of_val(&future) as u64);
+        future
+    })
+}
+
 pub(super) fn append<'a>(
     journal: &'a Journal,
     operation: OperationId,
@@ -8,7 +26,7 @@ pub(super) fn append<'a>(
     event: &'a ExecutionEvent,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-    crate::conversation::BoundedContentFuture::new(io, || async move {
+    original_frame(io, || async move {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let local = PreparationIo::from_native_work(work)?;
@@ -45,7 +63,7 @@ pub(super) fn append_if_tail<'a>(
     event: &'a ExecutionEvent,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-    crate::conversation::BoundedContentFuture::new(io, || async move {
+    original_frame(io, || async move {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let local = PreparationIo::from_native_work(work)?;
@@ -75,7 +93,7 @@ pub(super) fn replay<'a>(
     maximum: u32,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
-    crate::conversation::BoundedContentFuture::new(io, || async move {
+    original_frame(io, || async move {
         if io.is_none() {
             let span = obs_span!(
                 "acyclic.harness.journal.replay",
@@ -103,7 +121,7 @@ pub(super) fn load<'a>(
     reference: &'a FileRef,
     io: Option<&'a PreparationIo>,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-    crate::conversation::BoundedContentFuture::new(io, || async move {
+    original_frame(io, || async move {
         if io.is_none() {
             let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
             return traced(span, async move {
@@ -152,7 +170,7 @@ pub(super) fn stage<'a>(
         }
         None => None,
     };
-    crate::conversation::BoundedContentFuture::new(io, || async move {
+    original_frame(io, || async move {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some((owner, work)) = native {
             let local = PreparationIo::from_native_work(work)?;

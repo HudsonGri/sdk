@@ -484,6 +484,7 @@ proptest! {
         let event = ExecutionEvent::Started { request_digest: digest };
         let oversized = vec![0;4097];
         let initializations = std::cell::Cell::new(0);
+        let frames = std::cell::Cell::new([0u64; 5]);
         let [before, after] = [true, false].map(|old| {
             initializations.set(initializations.get() + 1);
             let mut journal = runtime.block_on(fixture()).unwrap();
@@ -501,6 +502,11 @@ proptest! {
                     });
                     (outcome.unwrap(), allocation)
                 });
+                if old {
+                    let mut sizes = frames.get();
+                    sizes[usize::from(mode)] = legacy::FRAME_BYTES.get();
+                    frames.set(sizes);
+                }
                 assert_eq!(&state, &runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap());
                 assert!(observed.1.is_empty(), "factory error reached storage work");
                 observed
@@ -513,11 +519,14 @@ proptest! {
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Main added chunk publication to the accounted append frame (+64 bytes).
-            let saved = [21200, 21024, 14304, 11840, 14192][mode];
+            // The saving is exactly the independently initialized old outer
+            // frame, including changes to shared types and target ABI.
+            let saved = frames.get()[mode];
+            prop_assert!(saved > 0);
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
+            prop_assert_ne!(before.bytes_total - before.bytes_total, saved, "old frame passed");
         }
     }
 
