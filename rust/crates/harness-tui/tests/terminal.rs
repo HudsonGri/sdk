@@ -125,6 +125,7 @@ fn profile_detection_and_setup_matrix() -> Result<(), Box<dyn std::error::Error>
             sent: Vec::new(),
             replies: profile.replies(),
             reads: 0,
+            native_scroll: false,
         };
         let (detected, _) = detect(&mut responder, &profile.env())?;
         assert_eq!(responder.sent, Probe::batch(detected.multiplexer));
@@ -204,8 +205,12 @@ struct Script {
     sent: Vec<u8>,
     replies: Vec<u8>,
     reads: usize,
+    native_scroll: bool,
 }
 impl ProbeIo for Script {
+    fn native_scroll_regions(&self) -> bool {
+        self.native_scroll
+    }
     fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
         assert!(deadline <= Instant::now() + PROBE_TIMEOUT);
         self.sent.extend_from_slice(bytes);
@@ -234,6 +239,7 @@ fn batch_deadline_sentinel_and_replay() -> io::Result<()> {
         sent: Vec::new(),
         replies: b"typed\x1b[?62;4cafter".to_vec(),
         reads: 0,
+        native_scroll: false,
     };
     let (_, mut decoder) = detect(&mut io, &Environment::default())?;
     assert_eq!(decoder.take_events(), keys("typedafter"));
@@ -403,6 +409,7 @@ fn quiet_dumb_timeout_and_incomplete_input() -> io::Result<()> {
         sent: Vec::new(),
         replies: Vec::new(),
         reads: 0,
+        native_scroll: false,
     };
     let (caps, _) = detect(&mut script, &env)?;
     assert!(caps.dumb);
@@ -762,3 +769,51 @@ proptest! {
 
 #[path = "terminal/mouse.rs"]
 mod mouse;
+#[test]
+fn scrolling_requires_a_screen_oracle_and_dumb_always_disables_it() {
+    for native in [false, true] {
+        for term in ["", "dumb"] {
+            let mut script = Script {
+                sent: Vec::new(),
+                replies: Vec::new(),
+                reads: 0,
+                native_scroll: native,
+            };
+            let env = Environment([("TERM".into(), term.into())].into());
+            let (caps, _) = detect(&mut script, &env).unwrap();
+            assert_eq!(caps.scroll_regions, native && term != "dumb");
+        }
+    }
+    for identity in [
+        "alacritty",
+        "tmux",
+        "screen",
+        "kitty",
+        "wezterm",
+        "ghostty",
+        "iTerm2",
+        "foot",
+        "Windows Terminal",
+        "xterm",
+        "xterm-256color",
+        "Apple_Terminal",
+        "VTE(7800)",
+        "konsole",
+        "",
+        "vt100",
+        "unknown",
+    ] {
+        for term in ["", "dumb"] {
+            let caps = ProbeReplies {
+                identity: Some(identity.into()),
+                ..ProbeReplies::default()
+            }
+            .capabilities(&Environment([("TERM".into(), term.into())].into()));
+            assert_eq!(
+                caps.scroll_regions,
+                term != "dumb" && ["alacritty", "tmux", "screen"].contains(&identity),
+                "{identity} {term}"
+            );
+        }
+    }
+}

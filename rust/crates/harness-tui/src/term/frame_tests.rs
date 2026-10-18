@@ -21,7 +21,7 @@ fn parts(len: usize, chunk: usize) -> (Vec<usize>, Vec<u8>) {
         let mut guard = RestoreGuard::new(&mut device, &synchronized());
         present_parts(&frame, chunk, |part| {
             sizes.push(part.bytes.len());
-            part.apply(&mut guard, false)
+            part.apply(&mut guard, FrameEffects::default())
         })
         .unwrap_or_else(|error| panic!("{error}"));
         assert!(
@@ -99,7 +99,15 @@ fn a_failed_part_is_closed_by_the_abort() {
             fail,
         };
         let mut guard = RestoreGuard::new(device, &synchronized());
-        let result = present_parts(&frame, CHUNK, |part| part.apply(&mut guard, true));
+        let result = present_parts(&frame, CHUNK, |part| {
+            part.apply(
+                &mut guard,
+                FrameEffects {
+                    cursor_hidden: true,
+                    margins: false,
+                },
+            )
+        });
         assert!(result.is_err());
         assert!(
             guard.frame_open(),
@@ -167,5 +175,101 @@ fn negative_control_byte_chunks_split_a_character() {
     for frame in straddling() {
         let calls: Vec<Vec<u8>> = frame.chunks(CHUNK).map(<[u8]>::to_vec).collect();
         assert_whole_characters(&frame, &calls);
+    }
+}
+
+#[test]
+fn visible_cells_have_one_authoritative_diff_and_reset() {
+    let mut output = Vec::new();
+    let guard = RestoreGuard::new(&mut output, &Capabilities::default());
+    let mut terminal = FrameTerminal::new(guard, Size::new(100, 40)).unwrap();
+    let cluster = format!("a{}", "\u{301}".repeat(40));
+    for size in [Size::new(100, 40), Size::new(200, 40), Size::new(1, 2)] {
+        let cells = usize::from(size.width) * usize::from(size.height);
+        for symbol in ["a", "a", "b", cluster.as_str()] {
+            terminal
+                .draw(size, |frame| {
+                    frame.buffer_mut().content[0].set_symbol(symbol);
+                })
+                .unwrap();
+            assert_eq!(
+                terminal.work,
+                FrameWork {
+                    diff: cells,
+                    reset: cells,
+                    terminal_diff: 0,
+                    terminal_reset: 0,
+                },
+                "one diff/reset lifecycle, including idle and heap-backed symbols"
+            );
+            assert_eq!(terminal.terminal.current_buffer_mut().content.len(), 0);
+            assert_eq!(terminal.staging.content.len(), cells);
+            assert_eq!(terminal.shown.content.len(), cells);
+        }
+    }
+}
+
+#[test]
+fn render_unwind_returns_and_clears_the_only_render_buffer() {
+    let mut output = Vec::new();
+    let guard = RestoreGuard::new(&mut output, &Capabilities::default());
+    let size = Size::new(4, 2);
+    let mut terminal = FrameTerminal::new(guard, size).unwrap();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        terminal
+            .draw(size, |frame| {
+                frame.buffer_mut().content[3].set_symbol("partial");
+                panic!("render failed");
+            })
+            .unwrap();
+    }));
+    assert!(failed.is_err());
+    assert!(terminal.terminal.current_buffer_mut().content.is_empty());
+    assert!(
+        terminal
+            .staging
+            .content
+            .iter()
+            .all(|cell| cell.symbol() == " ")
+    );
+    terminal.draw(size, |_| {}).unwrap();
+    assert!(
+        terminal
+            .shown
+            .content
+            .iter()
+            .all(|cell| cell.symbol() == " ")
+    );
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Resizes that fit the original allocation keep exactly the same two cell
+    // stores, including shrinking then growing and heap-backed cell contents.
+    #[test]
+    fn resizing_reuses_the_owned_cell_storage(
+        sizes in proptest::collection::vec((1u16..101, 1u16..41), 1..16),
+    ) {
+        let guard = RestoreGuard::new(io::sink(), &Capabilities::default());
+        let mut terminal = FrameTerminal::new(guard, Size::new(100, 40)).unwrap();
+        let cluster = format!("a{}", "\u{301}".repeat(40));
+        let mut draw = |size| {
+            terminal.draw(size, |frame| {
+                frame.buffer_mut().content[0].set_symbol(&cluster);
+            }).unwrap();
+            let mut stores = [
+                terminal.shown.content.as_ptr() as usize,
+                terminal.staging.content.as_ptr() as usize,
+            ];
+            stores.sort_unstable();
+            stores
+        };
+        let stores = draw(Size::new(100, 40));
+        for (width, height) in sizes.into_iter().chain([(100, 40)]) {
+            proptest::prop_assert_eq!(
+                draw(Size::new(width, height)), stores,
+                "resize must retain both owned cell stores"
+            );
+        }
     }
 }

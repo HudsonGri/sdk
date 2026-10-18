@@ -137,6 +137,8 @@ pub struct Capabilities {
     pub modes: BTreeMap<u16, ModeState>,
     /// Underline style and colour support (XTGETTCAP Smulx).
     pub styled_underline: bool,
+    /// DECSTBM margins and SU/SD row scrolling are supported together.
+    pub scroll_regions: bool,
     /// OSC 8 hyperlinks.
     pub hyperlinks: bool,
     /// OSC 52 clipboard copy.
@@ -304,6 +306,8 @@ impl Capabilities {
         } else {
             NotificationProtocol::Bell
         };
+        // Each enabled profile has a screen oracle, not just a byte-count test.
+        self.scroll_regions = alacritty || name.contains("tmux") || name.contains("screen");
         self.hyperlinks = modern;
         self.clipboard = modern || xterm;
         self.progress = windows || ghostty || iterm;

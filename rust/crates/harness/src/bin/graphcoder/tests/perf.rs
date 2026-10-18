@@ -11,7 +11,7 @@ use acyclic_harness::{
             Frame, Terminal,
             backend::{Backend, ClearType, CrosstermBackend, WindowSize},
             buffer::Cell,
-            layout::{Position, Size},
+            layout::{Position, Rect, Size},
         },
         term::{Capabilities, FrameTerminal, RestoreGuard},
     },
@@ -122,6 +122,10 @@ pub(super) struct Rig {
     areas: ScreenAreas,
     maximum_scroll: usize,
     pub frames: u64,
+    /// The transcript band and its top line on the device.
+    shown: Option<(Rect, usize)>,
+    /// Whether moved bands are scrolled on the device, as view.rs does.
+    regions: bool,
     /// Device length after each frame.
     boundaries: Vec<usize>,
 }
@@ -132,9 +136,19 @@ enum Output {
 }
 
 impl Output {
-    fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) {
+    fn draw(
+        &mut self,
+        size: Size,
+        shown: &mut Option<(Rect, usize)>,
+        regions: bool,
+        position: (Rect, usize),
+        render: impl FnOnce(&mut Frame<'_>),
+    ) {
         match self {
-            Self::Frame(terminal) => terminal.draw(size, render).unwrap(),
+            Self::Frame(terminal) => {
+                super::super::view::present(terminal, size, shown, regions, position, render)
+                    .unwrap()
+            }
             Self::PerCommand(terminal) => {
                 terminal.backend_mut().size = size;
                 terminal.draw(render).unwrap();
@@ -208,7 +222,13 @@ impl Rig {
             } else {
                 Output::Frame(
                     FrameTerminal::new(
-                        RestoreGuard::new(output.clone(), &Capabilities::default()),
+                        RestoreGuard::new(
+                            output.clone(),
+                            &Capabilities {
+                                scroll_regions: true,
+                                ..Capabilities::default()
+                            },
+                        ),
                         Size::new(width, height),
                     )
                     .unwrap(),
@@ -219,6 +239,8 @@ impl Rig {
             areas: ScreenAreas::default(),
             maximum_scroll: 0,
             frames: 0,
+            shown: None,
+            regions: true,
             boundaries: Vec::new(),
         };
         rig.frame();
@@ -237,6 +259,8 @@ impl Rig {
             screen,
             viewport,
             size,
+            shown,
+            regions,
             ..
         } = self;
         renderer.update(views, owner);
@@ -249,12 +273,13 @@ impl Rig {
         renderer
             .layout(files, input, size.width, size.height)
             .unwrap();
-        let mut maximum_scroll = 0;
         let mut areas = ScreenAreas::default();
         let view = renderer.screen_for(files).unwrap();
-        screen.draw(size, |frame| {
-            maximum_scroll = view.tail_scroll(frame.area(), input);
-            let scroll = maximum_scroll.saturating_sub(back);
+        let area = Rect::from((Position::ORIGIN, size));
+        let maximum_scroll = view.tail_scroll(area, input);
+        let scroll = maximum_scroll.saturating_sub(back);
+        let transcript = view.areas(area, input).transcript;
+        screen.draw(size, shown, *regions, (transcript, scroll), |frame| {
             areas = view.render(frame, input, viewport, scroll, 1000);
         });
         self.areas = areas;
@@ -562,7 +587,10 @@ fn every_changed_frame_is_one_device_write_independent_of_transcript_length() {
     for lines in [150, 300] {
         // The removed per-command path is the independent baseline.
         let mut old = Rig::with_output(lines, 100, 40, true);
+        // Region scrolls change the bytes; their screens are proven equal
+        // in harness-tui's terminal_frames property.
         let mut new = Rig::with_output(lines, 100, 40, false);
+        new.regions = false;
         // One pass grows the retained frame buffer to the scenario's largest
         // frame (a full scrolled repaint); the measured pass is steady state.
         old.measure(mixed);
@@ -618,4 +646,124 @@ fn negative_control_per_command_output_is_detected() {
     let mut rig = Rig::with_output(150, 100, 40, true);
     let work = rig.measure(mixed);
     assert_one_write_per_changed_frame(&rig, &work);
+}
+
+/// Screen rows a frame's bytes address with cursor moves (`CSI row;col H`).
+fn rows_addressed(bytes: &[u8]) -> std::collections::BTreeSet<u16> {
+    let text = String::from_utf8_lossy(bytes);
+    text.split("\x1b[")
+        .filter_map(|sequence| {
+            let (position, _) = sequence.split_once('H')?;
+            let (row, column) = position.split_once(';')?;
+            column.parse::<u16>().ok()?;
+            row.parse().ok()
+        })
+        .collect()
+}
+
+/// Rows addressed by each of four frames streaming a paragraph at the tail.
+fn streamed_rows(height: u16, regions: bool) -> Vec<usize> {
+    let mut rig = Rig::with_output(600, 100, height, false);
+    rig.regions = regions;
+    (0..4)
+        .map(|_| {
+            let start = rig.output.0.borrow().0.len();
+            let work = rig.measure(|rig| {
+                rig.stream("A streamed paragraph line.\n\n");
+                rig.frame();
+            });
+            assert_eq!((work.frames, work.writes), (1, 1));
+            rows_addressed(&rig.output.0.borrow().0[start..]).len()
+        })
+        .collect()
+}
+
+/// Streaming at the tail moves the transcript band up: the device scrolls
+/// the band in place and only the rows it exposes (and rows whose content
+/// changed) are repainted: exactly two rows at a height of N and 2N.
+#[test]
+fn streaming_at_the_tail_repaints_only_the_rows_it_exposes() {
+    // The new paragraph's row and the row exposed beneath it, per frame.
+    assert_eq!(streamed_rows(40, true), [2; 4]);
+    assert_eq!(streamed_rows(80, true), [2; 4]);
+}
+
+#[test]
+fn negative_control_without_regions_every_moved_row_is_repainted() {
+    // Every row whose content moved, growing with the height.
+    assert_eq!(streamed_rows(40, false), [35, 33, 31, 29]);
+    assert_eq!(streamed_rows(80, false), [73, 71, 69, 67]);
+}
+
+/// One decoder read follows exactly the production burst fold and file publish.
+fn wheel_rows(height: u16, regions: bool, notches: usize) -> usize {
+    let mut rig = Rig::with_output(600, 100, height, false);
+    rig.regions = regions;
+    rig.views = super::file_views::empty();
+    let body = format!(
+        "```text\n{}```\n",
+        (0..600)
+            .map(|row| format!("row{row:04}\n"))
+            .collect::<String>()
+    );
+    super::file_views::append_text(&mut rig.views, &rig.owner.id, false, &body);
+    rig.frame();
+    rig.scroll_back(100);
+    let start = rig.output.0.borrow().0.len();
+    let mut batch = client::InputBatch::new();
+    batch.extend((0..notches).map(|_| wheel(true)));
+    let mut effects = Vec::new();
+    let work = rig.measure(|rig| {
+        let area = PromptBox::input_area(rig.areas.prompt);
+        let page = usize::from(rig.areas.transcript.height);
+        client::input_burst(&mut batch, page, &mut effects, |event| {
+            rig.input.event(event, area, &mut rig.viewport, 1000)
+        });
+        rig.runtime
+            .block_on(client::file_tui_inputs(
+                &mut rig.files,
+                &NoFiles,
+                effects.drain(..),
+                page,
+                rig.maximum_scroll,
+            ))
+            .unwrap();
+        rig.frame();
+    });
+    assert!(batch.is_empty());
+    assert_eq!((work.frames, work.writes), (1, 1));
+    let addressed = rows_addressed(&rig.output.0.borrow().0[start..]);
+    let band = rig.areas.transcript;
+    let transcript = (band.y + 1)..=band.bottom();
+    let outside: Vec<_> = addressed
+        .iter()
+        .copied()
+        .filter(|row| !transcript.contains(row))
+        .collect();
+    // Scrolling homes the device cursor. Its one return to the unchanged
+    // prompt is positioning, not another transcript row being repainted.
+    assert_eq!(outside, [PromptBox::input_area(rig.areas.prompt).y + 1]);
+    addressed
+        .iter()
+        .filter(|row| transcript.contains(row))
+        .count()
+}
+
+#[test]
+fn wheel_bursts_repaint_exactly_three_exposed_rows_per_notch() {
+    for height in [40, 80] {
+        for notches in 1..=4 {
+            assert_eq!(wheel_rows(height, true, notches), 3 * notches);
+        }
+    }
+}
+
+#[test]
+fn negative_control_wheel_without_regions_repaints_with_screen_height() {
+    for notches in 1..=4 {
+        let small = wheel_rows(40, false, notches);
+        let large = wheel_rows(80, false, notches);
+        assert!(small > 3 * notches);
+        assert!(large > small);
+    }
 }
