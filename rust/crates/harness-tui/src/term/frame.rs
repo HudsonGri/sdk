@@ -315,8 +315,6 @@ pub struct FrameTerminal<D: Present> {
     cursor: Vec<u8>,
     #[cfg(test)]
     work: FrameWork,
-    #[cfg(test)]
-    terminal_previous_cells: usize,
 }
 
 #[cfg(test)]
@@ -365,8 +363,6 @@ impl<D: Present> FrameTerminal<D> {
             cursor: Vec::new(),
             #[cfg(test)]
             work: FrameWork::default(),
-            #[cfg(test)]
-            terminal_previous_cells: 0,
         })
     }
 
@@ -474,10 +470,6 @@ impl<D: Present> FrameTerminal<D> {
             self.staging = std::mem::take(self.terminal.current_buffer_mut());
             self.terminal.swap_buffers();
             *self.terminal.current_buffer_mut() = Buffer::default();
-            #[cfg(test)]
-            {
-                self.terminal_previous_cells = 0;
-            }
         }
         if self.staging.area != area {
             self.staging.resize(area);
@@ -512,8 +504,6 @@ impl<D: Present> FrameTerminal<D> {
         #[cfg(test)]
         let mut work = FrameWork::default();
         #[cfg(test)]
-        let previous_cells = self.terminal_previous_cells;
-        #[cfg(test)]
         let mut returned_cells = 0;
         let mut encoded = Ok(());
         terminal.backend_mut().position_written = false;
@@ -542,20 +532,19 @@ impl<D: Present> FrameTerminal<D> {
                 drop(render_buffer);
                 #[cfg(test)]
                 {
-                    // The pinned ratatui lifecycle zips these buffers for diff
-                    // and resets the previous one. Count its actual input sizes.
                     returned_cells = frame.buffer_mut().content.len();
-                    work.terminal_diff = previous_cells.min(returned_cells);
-                    work.terminal_reset = previous_cells;
                 }
             })
             .map(drop);
         #[cfg(test)]
         {
-            self.work = work;
             if drawn.is_ok() {
-                self.terminal_previous_cells = returned_cells;
+                // After ratatui's swap, current is the buffer it just reset.
+                // These are the actual operands of its diff and reset passes.
+                work.terminal_reset = terminal.current_buffer_mut().content.len();
+                work.terminal_diff = work.terminal_reset.min(returned_cells);
             }
+            self.work = work;
         }
         let backend = terminal.backend_mut();
         if !bytes.is_empty() && !backend.position_written {

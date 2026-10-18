@@ -185,7 +185,7 @@ fn visible_cells_have_one_authoritative_diff_and_reset() {
     let mut terminal = FrameTerminal::new(guard, Size::new(100, 40)).unwrap();
     for size in [Size::new(100, 40), Size::new(200, 40), Size::new(1, 2)] {
         let cells = usize::from(size.width) * usize::from(size.height);
-        for symbol in ["a", "a", "b", "界\u{301}\u{302}\u{303}\u{304}\u{305}"] {
+        for symbol in ["a", "a", "b", "a\u{301}\u{302}\u{303}\u{304}\u{305}"] {
             terminal
                 .draw(size, |frame| {
                     frame.buffer_mut().content[0].set_symbol(symbol);
@@ -202,7 +202,6 @@ fn visible_cells_have_one_authoritative_diff_and_reset() {
                 "one diff/reset lifecycle, including idle and heap-backed symbols"
             );
             assert_eq!(terminal.terminal.current_buffer_mut().content.len(), 0);
-            assert_eq!(terminal.terminal_previous_cells, 0);
             assert_eq!(terminal.staging.content.len(), cells);
             assert_eq!(terminal.shown.content.len(), cells);
         }
