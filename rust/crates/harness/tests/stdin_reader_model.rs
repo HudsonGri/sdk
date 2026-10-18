@@ -1,6 +1,5 @@
-//! Compile with cfg only on this test target; model the production reader
-//! without enabling unrelated Harness models in its library dependencies.
-#![cfg(acyclic_harness_loom)]
+//! Compile with cfg only on this target for the production reader models.
+//! Without cfg, exercise its native worker and buffer reuse directly.
 
 mod sync {
     include!("../src/sync/arc.rs");

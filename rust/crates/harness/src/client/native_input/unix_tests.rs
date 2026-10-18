@@ -299,7 +299,7 @@ fn child_exits(mode: &str, within: Duration) -> io::Result<bool> {
 
 #[test]
 fn a_parked_reader_never_delays_process_exit() -> io::Result<()> {
-    assert!(child_exits("detached", Duration::from_secs(5))?);
+    assert!(child_exits("cancelled", Duration::from_secs(5))?);
     Ok(())
 }
 

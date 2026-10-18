@@ -1,5 +1,52 @@
 use super::Utf16;
 
+#[cfg(not(acyclic_harness_loom))]
+fn reinitialized_after_one_byte(broken: bool) -> usize {
+    use super::{BATCH, Channel, publish};
+    use std::task::{Context, Poll, Waker};
+    let channel = Channel::new(BATCH);
+    let mut storage = channel.storage().unwrap();
+    storage.storage_mut().fill(0xa5);
+    let mut changed = 0;
+    let allocations = acyclic_test_support::measure(|| {
+        assert!(publish(&channel, storage.finish(1)));
+        let mut cx = Context::from_waker(Waker::noop());
+        let Poll::Ready(Some(Ok(storage))) = channel.poll_recv(&mut cx) else {
+            panic!("published input disappeared");
+        };
+        assert_eq!(storage.bytes(), [0xa5]);
+        channel.recycle(storage);
+        let mut storage = channel.storage().unwrap();
+        if broken {
+            // Restore the old resize's writes to the already initialized tail.
+            storage.storage_mut()[1..].fill(0);
+        }
+        assert_eq!(storage.storage_mut().len(), BATCH);
+        changed = storage
+            .storage_mut()
+            .iter()
+            .filter(|byte| **byte != 0xa5)
+            .count();
+    });
+    assert_eq!(allocations.count_total, 0);
+    changed
+}
+
+#[cfg(not(acyclic_harness_loom))]
+#[test]
+fn recycled_one_byte_reads_initialize_exactly_zero_bytes() {
+    assert_eq!(reinitialized_after_one_byte(false), 0);
+}
+
+#[cfg(not(acyclic_harness_loom))]
+#[test]
+fn negative_control_detects_reinitializing_the_recycled_tail() {
+    assert_eq!(reinitialized_after_one_byte(true), super::BATCH - 1);
+    assert!(
+        std::panic::catch_unwind(|| assert_eq!(reinitialized_after_one_byte(true), 0)).is_err()
+    );
+}
+
 fn decode(reads: &[&[u16]]) -> (String, bool) {
     let mut text = Utf16::default();
     let mut bytes = Vec::new();
@@ -158,7 +205,7 @@ mod model {
                 })
                 .await
                 {
-                    bytes.extend(batch.unwrap());
+                    bytes.extend_from_slice(batch.unwrap().bytes());
                 }
                 bytes
             }));

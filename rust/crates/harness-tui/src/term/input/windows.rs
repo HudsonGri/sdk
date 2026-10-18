@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 use std::thread::{self, JoinHandle};
 
-use acyclic_native_runtime::terminal as ffi;
+use acyclic_native_runtime::{input_batch::InputBatch, terminal as ffi};
 
 use super::super::Tty;
 use super::super::handoff::Handoff;
@@ -22,7 +22,7 @@ const BATCH: usize = 1024;
 /// The persistent waiter, its handoff and the stream's current batch.
 struct Waiter {
     handoff: Arc<Handoff>,
-    current: Vec<u8>,
+    current: InputBatch,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -39,7 +39,7 @@ impl Waiter {
             .spawn(move || pump(&mut read, &reader))?;
         Ok(Self {
             handoff,
-            current: Vec::new(),
+            current: InputBatch::new(0),
             thread: Some(thread),
         })
     }
@@ -49,7 +49,7 @@ impl Waiter {
             Some(Ok(batch)) => {
                 let spent = std::mem::replace(&mut self.current, batch);
                 self.handoff.recycle(spent);
-                Poll::Ready(Ok(&self.current))
+                Poll::Ready(Ok(self.current.bytes()))
             }
             Some(Err(error)) => Poll::Ready(Err(error)),
             None => Poll::Ready(Ok(&[])),
@@ -76,11 +76,7 @@ impl Drop for Waiter {
 /// stream is gone.
 fn pump(read: &mut impl FnMut(&mut [u8]) -> io::Result<usize>, handoff: &Handoff) {
     while let Some(mut batch) = handoff.storage() {
-        batch.resize(BATCH, 0);
-        let batch = read(&mut batch).map(|count| {
-            batch.truncate(count);
-            batch
-        });
+        let batch = read(batch.storage_mut()).and_then(|count| batch.finish(count));
         let failed = batch.is_err();
         if !handoff.send(batch) || failed {
             break;
@@ -257,7 +253,7 @@ mod tests {
         let handoff = Arc::new(Handoff::new(BATCH));
         let mut waiter = Waiter {
             handoff: Arc::clone(&handoff),
-            current: Vec::new(),
+            current: InputBatch::new(0),
             thread: None,
         };
         std::thread::scope(|scope| {
@@ -268,7 +264,7 @@ mod tests {
                         Poll::Ready(Ok(bytes)) => {
                             assert_eq!(bytes, [expected]);
                             if !recycle {
-                                drop(std::mem::take(&mut waiter.current));
+                                waiter.current = InputBatch::new(0);
                             }
                             return;
                         }

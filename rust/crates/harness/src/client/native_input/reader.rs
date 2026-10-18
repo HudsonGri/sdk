@@ -5,10 +5,9 @@
 //! Shutdown never depends on a lock someone else holds. Dropping the stream
 //! closes the channel, which releases a thread waiting for queue space, and
 //! signals a level-triggered cancel object the thread's every wait includes:
-//! an explicit byte on a private pipe on Unix, an event on Windows. A read admitted before the
-//! cancel is released by `CancelSynchronousIo` on Windows; on Unix a read
-//! starts only once poll reports input, and the thread is detached, holding
-//! nothing that could delay process exit.
+//! a pending POSIX cancellation on Unix, an event on Windows. Native reads
+//! can be cancelled after admission as well as before it. Drop joins the
+//! worker before releasing its file or initialized storage.
 use std::collections::VecDeque;
 use std::io;
 use std::task::{Context, Poll, Waker, ready};
@@ -16,14 +15,16 @@ use std::task::{Context, Poll, Waker, ready};
 use tokio::io::ReadBuf;
 
 use crate::sync::{Arc, SyncCondvar, SyncGuard, SyncMutex};
+use acyclic_native_runtime::input_batch::InputBatch;
 
 const BATCH: usize = 64 * 1024;
 /// Filled batches waiting for the stream.
 const QUEUED: usize = 2;
 
-type Batch = io::Result<Vec<u8>>;
+type Batch = io::Result<InputBatch>;
 
 /// Input the dedicated reader waits on.
+#[cfg(any(windows, acyclic_harness_loom))]
 pub(super) trait Source: Send + 'static {
     /// Fill `bytes`; `None` once the stream has cancelled the wait.
     fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>>;
@@ -40,7 +41,7 @@ pub(super) struct Channel {
 
 struct State {
     ready: VecDeque<Batch>,
-    spare: Vec<Vec<u8>>,
+    spare: Vec<InputBatch>,
     waker: Option<Waker>,
     /// The stream is gone; the reader stops at its next channel call.
     closed: bool,
@@ -71,7 +72,7 @@ impl Channel {
 
     /// Reader: storage for the next read once the queue has room, or `None`
     /// once the stream is gone.
-    pub(super) fn storage(&self) -> Option<Vec<u8>> {
+    pub(super) fn storage(&self) -> Option<InputBatch> {
         let mut state = self.lock();
         while state.ready.len() == QUEUED && !state.closed {
             state = self
@@ -82,10 +83,9 @@ impl Channel {
         if state.closed {
             return None;
         }
-        let mut batch = state.spare.pop().unwrap_or_default();
+        let spare = state.spare.pop();
         drop(state);
-        batch.resize(self.batch, 0);
-        Some(batch)
+        Some(spare.unwrap_or_else(|| InputBatch::new(self.batch)))
     }
 
     /// Reader: hand over a batch; false once the stream is gone.
@@ -150,7 +150,7 @@ impl Channel {
     }
 
     /// Stream: return spent storage for reuse.
-    pub(super) fn recycle(&self, batch: Vec<u8>) {
+    pub(super) fn recycle(&self, batch: InputBatch) {
         let mut state = self.lock();
         if state.spare.len() < QUEUED + 1 {
             state.spare.push(batch);
@@ -174,33 +174,37 @@ impl Channel {
 
 /// The reader thread's whole life: read into circulating storage until the
 /// input ends, a read fails, or the stream cancels or goes away.
+#[cfg(any(windows, acyclic_harness_loom))]
 pub(super) fn pump(source: &mut impl Source, channel: &Channel) {
     while let Some(mut batch) = channel.storage() {
-        let result = match source.read_input(&mut batch) {
+        let result = match source.read_input(batch.storage_mut()) {
             Ok(None) => break,
-            Ok(Some(count)) => {
-                batch.truncate(count);
-                Ok(batch)
-            }
+            Ok(Some(count)) => batch.finish(count),
             Err(error) => Err(error),
         };
-        let last = !matches!(&result, Ok(batch) if !batch.is_empty());
-        if !channel.send(result) || last {
+        if !publish(channel, result) {
             break;
         }
     }
     channel.finish();
 }
 
+/// Shared by the native Unix callbacks and the Windows/model pump.
+fn publish(channel: &Channel, batch: Batch) -> bool {
+    let more = matches!(&batch, Ok(batch) if !batch.bytes().is_empty());
+    channel.send(batch) && more
+}
+
 /// The stream side: the current batch and what stops the thread.
 pub(super) struct Reader {
     channel: Arc<Channel>,
-    current: Vec<u8>,
+    current: InputBatch,
     offset: usize,
     stop: Stop,
 }
 
 impl Reader {
+    #[cfg(windows)]
     fn start(
         mut source: impl Source,
         stop: impl FnOnce(std::thread::JoinHandle<()>) -> Stop,
@@ -212,7 +216,7 @@ impl Reader {
             .spawn(move || pump(&mut source, &reader))?;
         Ok(Self {
             channel,
-            current: Vec::new(),
+            current: InputBatch::new(0),
             offset: 0,
             stop: stop(thread),
         })
@@ -223,19 +227,21 @@ impl Reader {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        if self.offset == self.current.len() {
+        if self.offset == self.current.bytes().len() {
             let batch = match ready!(self.channel.poll_recv(cx)) {
                 Some(batch) => batch?,
                 None => return Poll::Ready(Ok(())),
             };
-            let spent = std::mem::replace(&mut self.current, batch);
+            let mut spent = std::mem::replace(&mut self.current, batch);
             self.offset = 0;
-            if spent.capacity() != 0 {
+            if !spent.storage_mut().is_empty() {
                 self.channel.recycle(spent);
             }
         }
-        let count = buf.remaining().min(self.current.len() - self.offset);
-        buf.put_slice(&self.current[self.offset..self.offset + count]);
+        let count = buf
+            .remaining()
+            .min(self.current.bytes().len() - self.offset);
+        buf.put_slice(&self.current.bytes()[self.offset..self.offset + count]);
         self.offset += count;
         Poll::Ready(Ok(()))
     }
@@ -250,122 +256,53 @@ impl Drop for Reader {
 
 #[cfg(unix)]
 mod unix {
+    use super::{Arc, BATCH, Channel, InputBatch, Reader, Stop, publish};
+    use acyclic_native_runtime::input_reader::InputReader;
     use std::fs::File;
-    use std::io::{self, Read, Write};
+    use std::io;
 
-    use super::{Reader, Source, Stop};
-
-    /// Explicit cancellation is independent of duplicated or inherited writers.
     pub(in super::super) struct Stopper {
-        cancel: Option<io::PipeWriter>,
-        // Keep a read peer alive until cancellation, even if the worker ended.
-        // Writing the cancel byte therefore cannot raise SIGPIPE.
-        _reader: io::PipeReader,
+        worker: Option<InputReader>,
     }
 
     impl Stopper {
         pub(super) fn stop(&mut self) {
-            // The private pipe receives exactly this one byte. Hangup alone
-            // can be delayed by a writer inherited across a concurrent spawn.
-            if let Some(mut cancel) = self.cancel.take() {
-                let _ = cancel.write_all(&[0]);
-            }
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        fn cancel_with_a_retained_writer(hangup_only: bool) -> io::Result<Option<usize>> {
-            let (input, mut write) = io::pipe()?;
-            let mut input = File::from(std::os::fd::OwnedFd::from(input));
-            let (cancelled, cancel) = io::pipe()?;
-            let _inherited_writer = cancel.try_clone()?;
-            let mut stop = Stopper {
-                cancel: Some(cancel),
-                _reader: cancelled.try_clone()?,
-            };
-            if !hangup_only {
-                stop.stop();
-            }
-            drop(stop);
-            write.write_all(b"x")?;
-            // Both input and cancellation may be ready before admission.
-            // A retained writer prevents HUP but cannot hide the cancel byte.
-            read_until_cancelled(&mut input, &cancelled, &mut [0; 1])
-        }
-
-        #[test]
-        fn explicit_cancel_survives_an_inherited_pipe_writer() -> io::Result<()> {
-            assert_eq!(cancel_with_a_retained_writer(false)?, None);
-            Ok(())
-        }
-
-        #[test]
-        fn negative_control_detects_hangup_delayed_by_an_inherited_writer() -> io::Result<()> {
-            assert_eq!(cancel_with_a_retained_writer(true)?, Some(1));
-            Ok(())
-        }
-    }
-
-    struct Polled {
-        file: File,
-        cancelled: io::PipeReader,
-    }
-
-    impl Source for Polled {
-        fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
-            read_until_cancelled(&mut self.file, &self.cancelled, bytes)
+            // The channel has already closed, releasing a callback waiting
+            // for queue space. Native cancellation releases read, then joins.
+            drop(self.worker.take());
         }
     }
 
     impl Reader {
         pub(in super::super) fn spawn(file: File) -> io::Result<Self> {
-            let (cancelled, cancel) = io::pipe()?;
-            let reader = cancelled.try_clone()?;
-            // Detached: an explicit cancel byte ends its wait.
-            Reader::start(Polled { file, cancelled }, |_detached| {
-                Stop(Stopper {
-                    cancel: Some(cancel),
-                    _reader: reader,
-                })
-            })
+            Self::spawn_after_ready(file, || {})
         }
-    }
 
-    /// Read once the input is ready, or `None` once `cancel` is hung up or
-    /// written. The wait is in poll, so a read starts only with input
-    /// present and a cancel seen in the same wake wins. An inherited
-    /// description may be nonblocking (a socket, say): WouldBlock waits
-    /// again instead of ending input, without changing the shared flags.
-    pub(in super::super) fn read_until_cancelled(
-        file: &mut File,
-        cancel: &io::PipeReader,
-        bytes: &mut [u8],
-    ) -> io::Result<Option<usize>> {
-        use rustix::event::{PollFd, PollFlags, poll};
-        loop {
-            let mut fds = [
-                PollFd::new(&*file, PollFlags::IN),
-                PollFd::new(cancel, PollFlags::IN),
-            ];
-            match poll(&mut fds, None) {
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(error) => return Err(error.into()),
-                Ok(_) => {}
-            }
-            if !fds[1].revents().is_empty() {
-                return Ok(None);
-            }
-            // A device poll cannot watch (macOS reports some as invalid)
-            // answers reads at once; waiting on it again would spin.
-            let unwatchable = fds[0].revents().contains(PollFlags::NVAL);
-            match file.read(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock && !unwatchable => {}
-                read => return read.map(Some),
-            }
+        pub(in super::super) fn spawn_after_ready(
+            file: File,
+            mut after_ready: impl FnMut() + Send + 'static,
+        ) -> io::Result<Self> {
+            let channel = Arc::new(Channel::new(BATCH));
+            let acquire = Arc::clone(&channel);
+            let send = Arc::clone(&channel);
+            let finish = Arc::clone(&channel);
+            let worker = InputReader::spawn(
+                file,
+                move || {
+                    after_ready();
+                    acquire.storage()
+                },
+                move |batch| publish(&send, batch),
+                move || finish.finish(),
+            )?;
+            Ok(Self {
+                channel,
+                current: InputBatch::new(0),
+                offset: 0,
+                stop: Stop(Stopper {
+                    worker: Some(worker),
+                }),
+            })
         }
     }
 }
@@ -541,3 +478,7 @@ use utf16::Utf16;
 #[cfg(test)]
 #[path = "reader_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix, not(acyclic_harness_loom)))]
+#[path = "reader_unix_tests.rs"]
+mod unix_tests;
