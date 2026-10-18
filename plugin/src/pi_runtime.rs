@@ -180,16 +180,15 @@ impl PiTaskRuntime {
             journal,
             &mut Some(&mut &PreparationIo::from_native_work(work)?),
         )?;
-        let task_files = Arc::new(
-            acyclic_harness::task_volume::TaskFiles::open(
-                stream.clone(),
-                journal,
-                &authority.verifier,
-                &authority.signed,
-                authority.maximum_payload_bytes,
-            )
-            .await?,
-        );
+        let task_files = acyclic_harness::task_volume::TaskFiles::open_with_native_work(
+            stream.clone(),
+            journal,
+            &authority.verifier,
+            &authority.signed,
+            authority.maximum_payload_bytes,
+            work,
+        )
+        .await?;
         let (tools, _tools_custody) = ToolRegistry::new(work)?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         let mut slot = work.claim(

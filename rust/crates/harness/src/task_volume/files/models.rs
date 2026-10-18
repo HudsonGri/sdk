@@ -37,6 +37,8 @@ fn files() -> Arc<TaskFiles<MemoryStream>> {
         inner,
         volume,
         maximum_bytes: 4096,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _native_custody: None,
     })
 }
 
@@ -55,6 +57,8 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
             super::super::StoredFile {
                 file: value.file.clone(),
                 position: value.position,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                native_metadata_bytes: 0,
             },
         );
     }
@@ -79,6 +83,8 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
         inner,
         volume: files.volume.clone(),
         maximum_bytes: files.maximum_bytes,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _native_custody: None,
     })
 }
 
@@ -497,6 +503,8 @@ fn child_terminal_freeze(broken: bool) {
                             Control::Resume.bytes().to_vec(),
                         ),
                         position: cut.position,
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        native_metadata_bytes: 0,
                     },
                 );
         }
