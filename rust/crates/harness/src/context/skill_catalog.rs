@@ -42,6 +42,11 @@ fn is_zero(value: &u64) -> bool {
 }
 
 impl SkillCatalog {
+    /// Exact count, or no representable count for malformed manifest data.
+    pub(crate) fn total(&self) -> Option<u64> {
+        (self.skills.len() as u64).checked_add(self.unlisted)
+    }
+
     /// True when discovery accepted no skill.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -55,7 +60,9 @@ impl SkillCatalog {
         let mut kept = 0;
         for skill in &skills {
             let size = serde_json::to_vec(skill).map_or(u64::MAX, |bytes| bytes.len() as u64);
-            used = used.saturating_add(size).saturating_add(u64::from(kept > 0));
+            used = used
+                .saturating_add(size)
+                .saturating_add(u64::from(kept > 0));
             if used > available {
                 break;
             }
@@ -71,7 +78,7 @@ impl SkillCatalog {
     /// every skill, or the longest prefix in discovery order followed (when
     /// one is listed) by a line counting exactly the rest. Below the framed
     /// block's size only the minimal pointer remains. `None` when there is no
-    /// skill or not even the minimal pointer fits.
+    /// skill, the total count overflows, or not even the minimal pointer fits.
     #[must_use]
     pub fn render(&self, budget: u64) -> Option<String> {
         let mut text = String::new();
@@ -125,7 +132,7 @@ pub(crate) fn json_bytes(text: &str) -> u64 {
 
 pub(crate) fn entry(skill: &CatalogSkill, line: &mut String) {
     line.push_str("- ");
-    line.push_str(&skill.name);
+    push_value(line, &skill.name);
     line.push_str(": ");
     push_value(line, &skill.description);
     line.push_str(" (file: ");
@@ -166,7 +173,9 @@ pub(crate) fn render_into<E>(
     text: &mut String,
     mut push: impl FnMut(&mut String, &str) -> Result<(), E>,
 ) -> Result<bool, E> {
-    let total = catalog.skills.len() as u64 + catalog.unlisted;
+    let Some(total) = catalog.total() else {
+        return Ok(false);
+    };
     if total == 0 {
         return Ok(false);
     }
@@ -269,7 +278,9 @@ mod tests {
 
     /// The old renderer, which dropped the block whenever no entry fit.
     fn dropping(catalog: &SkillCatalog, budget: u64) -> Option<String> {
-        catalog.render(budget).filter(|text| text.contains(" (file: "))
+        catalog
+            .render(budget)
+            .filter(|text| text.contains(" (file: "))
     }
 
     /// Checks one render against the contract, derived independently of the
@@ -282,7 +293,12 @@ mod tests {
         catalog: &SkillCatalog,
         budget: u64,
     ) -> std::result::Result<(), TestCaseError> {
-        let total = catalog.skills.len() as u64 + catalog.unlisted;
+        let total = catalog.skills.len() as u128 + u128::from(catalog.unlisted);
+        if total > u128::from(u64::MAX) {
+            prop_assert_eq!(render(catalog, budget), None);
+            return Ok(());
+        }
+        let total = total as u64;
         let encoded = |text: &str| serde_json::to_string(text).unwrap().len() as u64;
         let entries = catalog
             .skills
@@ -295,8 +311,16 @@ mod tests {
             .collect::<Vec<_>>();
         let framed = |kept: usize| {
             let omitted = total - kept as u64;
-            let count = if kept > 0 && omitted > 0 { omission(omitted) } else { String::new() };
-            format!("{HEADER}{}{}{count}{FOOTER}", pointer(total), entries[..kept].concat())
+            let count = if kept > 0 && omitted > 0 {
+                omission(omitted)
+            } else {
+                String::new()
+            };
+            format!(
+                "{HEADER}{}{}{count}{FOOTER}",
+                pointer(total),
+                entries[..kept].concat()
+            )
         };
         // Preference order: more listed skills first, then the bare pointer.
         let expected = if total == 0 {
@@ -355,13 +379,32 @@ mod tests {
                 ("[a-z][a-z0-9-]{0,12}", "[ -~\t\n\"\\\\\u{1}-\u{1f}é→]{1,80}", "[ -~é]{1,40}"),
                 0..40,
             ),
-            unlisted in prop_oneof![Just(0u64), 1u64..20],
+            unlisted in prop_oneof![Just(0u64), any::<u64>(), (u64::MAX - 40)..=u64::MAX],
             budget in prop_oneof![0u64..64, 300u64..700, 0u64..8192],
         ) {
             let catalog = SkillCatalog { skills: skills.into_iter().map(skill).collect(), unlisted };
             let render = |catalog: &SkillCatalog, budget| catalog.render(budget);
             check(render, &catalog, u64::MAX)?;
             check(render, &catalog, budget)?;
+        }
+
+        // Public and decoded catalogs need the same framing guarantee as
+        // checkout-discovered entries: every field is data, including names.
+        #[test]
+        fn every_catalog_field_is_framed(
+            fields in prop::collection::vec(
+                prop::collection::vec(any::<char>(), 0..32).prop_map(|chars| chars.into_iter().collect::<String>()),
+                3..=3,
+            ),
+        ) {
+            let catalog = SkillCatalog {
+                skills: vec![CatalogSkill { name: fields[0].clone(), description: fields[1].clone(), path: fields[2].clone() }],
+                unlisted: 0,
+            };
+            let rendered = catalog.render(u64::MAX).unwrap();
+            prop_assert_eq!(rendered.matches('<').count(), 2);
+            prop_assert_eq!(rendered.lines().count(), 7);
+            prop_assert!(!rendered.contains(['\u{B}', '\u{C}', '\r', '\u{85}', '\u{2028}', '\u{2029}']), "catalog contains a line break");
         }
 
         // Property: the carried prefix fits the stated room as the manifest

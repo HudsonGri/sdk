@@ -29,6 +29,17 @@ fuzz_target!(|input: &[u8]| {
     if input.len() > 65_536 {
         return;
     }
+    // Manifest catalogs bypass checkout frontmatter validation. Exercise their
+    // arbitrary fields and counts through the same renderer as projection.
+    if let Ok(catalog) = serde_json::from_slice::<skill_catalog::SkillCatalog>(input) {
+        for budget in [input.len() as u64, u64::MAX] {
+            if let Some(rendered) = catalog.render(budget) {
+                assert!(serde_json::to_vec(&rendered).unwrap().len() as u64 <= budget);
+                assert!(rendered.matches('<').count() <= 2);
+                assert!(!rendered.contains(['\u{B}', '\u{C}', '\r', '\u{85}', '\u{2028}', '\u{2029}']));
+            }
+        }
+    }
     if let Some(skill) = catalog::listed(input, "SKILL.md".into()) {
         let canonical = format!(
             "---\n{}---\n",
