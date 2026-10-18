@@ -389,8 +389,7 @@ fn seeded_production_turn_and_live_f17_trace_controls() -> Result<()> {
         // (digest::cross_process_seeded_replay_digest). All four worlds still
         // cover direct submit, cold reopen and the headless entry.
         let first = replay(71, false).await?;
-        let first_digest = digest::pair(&first);
-        digest::emit(first_digest);
+        let first_digest = digest::emit(&first);
         live_f17_jsonl_never_emits_byte_arrays(&first)?;
         // Comparing held bytes must still detect even a one-bit disk mutation.
         let mut corrupted = first.clone();
