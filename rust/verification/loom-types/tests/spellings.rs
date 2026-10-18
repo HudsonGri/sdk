@@ -86,20 +86,24 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
-    fn compiled_spellings_never_report_a_false_zero(raw in any::<bool>(), aliases in 0usize..5, wrapper in 0usize..4) {
+    fn compiled_spellings_never_report_a_false_zero(raw in any::<bool>(), aliases in 0usize..5, wrapper in 0usize..6) {
         let ty = if raw { "std::sync::r#Mutex<u8>" } else { "std::sync::Mutex<u8>" };
         let method = if raw { "r#new" } else { "new" };
         let mut source = "use std::default::Default as D0;\n".to_string();
         for index in 0..aliases { source.push_str(&format!("use D{index} as D{};\n", index + 1)); }
         source.push_str(&format!("trait Factory {{ type Lock: Default; }} impl Factory for () {{ type Lock = {ty}; }}\n"));
         source.push_str("macro_rules! wrap { ($value:expr) => {{ $value }} }\n");
+        source.push_str(&format!("#[derive(Default)] struct Vec(std::sync::Arc<{ty}>); #[derive(Default)] struct Option(std::sync::Arc<{ty}>);\n"));
         let value = match wrapper {
             0 => format!("std::sync::Mutex::{method}(0u8)"),
             1 => format!("D{aliases}::default()"),
             2 => "<() as Factory>::Lock::default()".to_string(),
-            _ => format!("wrap!(D{aliases}::default())"),
+            3 => format!("wrap!(D{aliases}::default())"),
+            4 => "Vec::default()".to_string(),
+            _ => "Option::default()".to_string(),
         };
-        source.push_str(&format!("pub fn constructed() {{ let _: {ty} = {value}; }}\n"));
+        let binding = match wrapper { 4 => "Vec", 5 => "Option", _ => ty };
+        source.push_str(&format!("pub fn constructed() {{ let _: {binding} = {value}; }}\n"));
         source.push_str("pub fn plain() -> u8 { Default::default() }\n");
         let found = compile(&source).map_err(TestCaseError::fail)?;
         let body = |name: &str| found.iter().find_map(|(path, verdict)| (path.rsplit("::").next() == Some(name)).then_some(verdict.as_str()));
@@ -141,4 +145,11 @@ fn included_module_bodies_are_analyzed() {
             .any(|(path, verdict)| path.ends_with("hidden::child") && verdict == "1"),
         "{found:?}"
     );
+}
+
+#[test]
+fn marker_type_arguments_do_not_construct_their_argument() {
+    let found = compile("#[derive(Default)] struct Marker(std::marker::PhantomData<std::sync::Mutex<()>>); pub fn plain() { let _ = Marker::default(); }").unwrap();
+    assert!(!found.is_empty());
+    assert!(found.values().all(|verdict| verdict == "0"), "{found:?}");
 }
