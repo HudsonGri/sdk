@@ -13,6 +13,7 @@ pub struct CountingMeter {
     counts: Mutex<Counts>,
     retained: std::sync::atomic::AtomicU64,
     pub written: std::sync::atomic::AtomicU64,
+    pub codec_copied: std::sync::atomic::AtomicU64,
     pub allocations: std::sync::atomic::AtomicU64,
     pub allocation_limit: std::sync::atomic::AtomicU64,
     pub byte_limit: std::sync::atomic::AtomicU64,
@@ -125,7 +126,9 @@ impl NativeReadMeter for CountingMeter {
     fn reserve_codec(&self, _: u64, _: u64) -> std::io::Result<()> {
         self.check()
     }
-    fn record_reserved_codec(&self, _: u64, _: u64) -> std::io::Result<()> {
+    fn record_reserved_codec(&self, _: u64, copied: u64) -> std::io::Result<()> {
+        self.codec_copied
+            .fetch_add(copied, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn record_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> {
