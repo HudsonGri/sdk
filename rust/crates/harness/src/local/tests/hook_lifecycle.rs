@@ -497,14 +497,44 @@ async fn hook_and_bash_turns_leave_a_clean_checkout() -> Result<()> {
     for (name, bash) in [("hooked", false), ("bash", true)] {
         let workspace = root.path().join(name);
         std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+        // A Git checkout sees no untracked mount point while one is live.
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&workspace)
+            .status()
+            .map_err(super::super::storage)?;
+        assert!(status.success());
         let turns = bash
-            .then(|| super::checked_commands::call(0, "bash", "printf ran"))
+            .then(|| {
+                super::checked_commands::call(
+                    0,
+                    "bash",
+                    "test -d .volumes/scratch && printf 'MOUNTED STATUS[%s]'                      \"$(git status --porcelain --untracked-files=all)\"",
+                )
+            })
             .into_iter()
             .chain([ScriptedTurn::Text("done".into())]);
         let provider = scripted(turns);
         let harness = open_checkout(root.path(), name, &home, &provider).await?;
         harness.run("go").await?;
         assert!(request_has(&provider, 0, "hook-ran")?);
+        if bash {
+            assert!(request_has(&provider, 1, "MOUNTED STATUS[]")?);
+        }
+        let exclude = std::fs::read_to_string(workspace.join(".git/info/exclude"))
+            .map_err(super::super::storage)?;
+        assert_eq!(
+            exclude
+                .matches(
+                    "
+/.volumes/
+"
+                )
+                .count(),
+            1,
+            "{name}"
+        );
+        assert!(!workspace.join(".gitignore").exists());
         assert_eq!(volume_residue(&workspace)?, Vec::<String>::new(), "{name}");
         harness.disconnect().await?;
         assert_eq!(volume_residue(&workspace)?, Vec::<String>::new(), "{name}");

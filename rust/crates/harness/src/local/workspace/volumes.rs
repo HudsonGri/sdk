@@ -5,6 +5,7 @@ pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
 #[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
 mod recovery_tests;
+mod exclude;
 
 #[cfg(target_os = "linux")]
 pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
@@ -334,6 +335,13 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
 // the exclusive destination fence before probing or detaching the driver, so
 // a live owner is rejected and authored host residue is retained.
 pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+    if let Some(std::path::Component::Normal(first)) = relative.components().next()
+        && let Some(first) = first.to_str()
+        && let Err(error) = exclude::exclude_mount_point(root, first)
+    {
+        // Visibility in `git status` only; the projection itself is unaffected.
+        tracing::warn!(?error, "volume mount point exclusion failed");
+    }
     if let Some(parent) = relative.parent() {
         create_mount_directory(root, parent)?;
     }
