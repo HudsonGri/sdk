@@ -86,6 +86,7 @@ def compiler():
     environment["LD_LIBRARY_PATH"] = str(sysroot / "lib")
     environment["DYLD_LIBRARY_PATH"] = str(sysroot / "lib")
     environment["RUSTC_WORKSPACE_WRAPPER"] = str(TARGET / "loom-types/debug/loom-type-scan")
+    environment["LOOM_MODEL_METADATA_ONLY"] = "1"
     environment.pop("RUSTC_WRAPPER", None)
     return environment
 
@@ -97,7 +98,11 @@ def replay(executable, commands, directory, environment):
         suffix = next((arg.split("=", 1)[1] for arg in fields if arg.startswith("extra-filename=")), None)
         if suffix and Path(executable).stem.endswith(suffix):
             candidates.append((command, fields))
-    if len(candidates) != 1:
+    def identity(fields):
+        return tuple(argument for index, argument in enumerate(fields)
+                     if not argument.startswith("--emit=") and argument != "--out-dir"
+                     and (index == 0 or fields[index - 1] != "--out-dir"))
+    if not candidates or len({identity(fields) for _, fields in candidates}) != 1:
         raise ValueError("missing or ambiguous compiler invocation for " + executable)
     command, (cwd, *arguments) = candidates[0]
     metadata = directory / "metadata"
@@ -108,6 +113,7 @@ def replay(executable, commands, directory, environment):
         if argument == "--out-dir":
             arguments[index + 1] = str(metadata)
     restored = dict(environment)
+    restored.pop("LOOM_MODEL_REPLAY", None)
     for record in command.with_suffix(".env").read_text().split("\0"):
         if record:
             key, value = record.split("=", 1)

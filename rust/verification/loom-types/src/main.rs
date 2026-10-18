@@ -200,6 +200,13 @@ fn main() -> std::process::ExitCode {
         let directory =
             PathBuf::from(std::env::var("LOOM_MODEL_REPORTS").expect("report directory"));
         check.report = Some(directory.join(format!("{}.tsv", std::process::id())));
+        if std::env::var("LOOM_MODEL_METADATA_ONLY").as_deref() == Ok("1") {
+            for argument in &mut args {
+                if argument.starts_with("--emit=") {
+                    *argument = "--emit=dep-info,metadata".to_string();
+                }
+            }
+        }
         if let Some(directory) = std::env::var_os("LOOM_MODEL_REPLAY") {
             replay::record(Path::new(&directory), &args).expect("record compiler invocation");
         }
