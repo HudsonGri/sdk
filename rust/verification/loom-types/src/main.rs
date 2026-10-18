@@ -6,6 +6,7 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_span;
 
+mod ownership;
 mod types;
 
 use rustc_driver::{Callbacks, Compilation};
@@ -24,8 +25,15 @@ fn source(tcx: TyCtxt<'_>, root: &Path, span: Span) -> Option<String> {
     else {
         return None;
     };
+    let file = file.local_path()?;
+    let file = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(file)
+    };
     Some(
-        file.local_path()?
+        file.canonicalize()
+            .ok()?
             .strip_prefix(root)
             .ok()?
             .to_string_lossy()
@@ -43,20 +51,21 @@ struct Check {
 impl Callbacks for Check {
     fn after_analysis<'tcx>(&mut self, _: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
         let mut verdicts: BTreeMap<(String, String), Result<bool, String>> = BTreeMap::new();
+        let roots = ownership::roots(tcx, &self.root, &self.models);
+        for (file, item, owned) in ownership::declarations(tcx, &roots) {
+            verdicts.insert((file, item), Ok(owned));
+        }
         for owner in tcx.hir_body_owners() {
-            let Some(file) = source(tcx, &self.root, tcx.def_span(owner)) else {
+            let Some(file) = ownership::model(tcx, &roots, owner) else {
                 continue;
             };
-            if !self.models.contains(&file) {
-                continue;
-            }
             let body = tcx.hir_body_owned_by(owner);
             let mut check = Body {
                 tcx,
                 types: tcx.typeck(owner),
                 owner,
                 verdict: verdicts
-                    .entry((file, tcx.def_path_str(owner.to_def_id())))
+                    .entry((file.clone(), tcx.def_path_str(owner.to_def_id())))
                     .or_insert(Ok(false)),
             };
             check.visit_body(body);
