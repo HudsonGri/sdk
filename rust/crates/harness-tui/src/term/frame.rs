@@ -344,6 +344,7 @@ impl<D: Present> FrameTerminal<D> {
         self.draw_scrolled(size, None, render)
     }
 
+    /// Draw a frame, using a supported row-scroll hint before its diff.
     pub fn draw_scrolled(
         &mut self,
         size: Size,
@@ -443,7 +444,12 @@ impl<D: Present> FrameTerminal<D> {
                 repair_wide_trails(shown, next, repaired);
                 // Ratatui's Buffer::diff_iter remains the encoder input. Owning its
                 // baseline lets scrolling rotate cells and retain heap symbols.
-                encoded = CrosstermBackend::new(&mut bytes).draw(shown.diff_iter(next));
+                {
+                    let mut content = shown.diff_iter(next).peekable();
+                    if content.peek().is_some() {
+                        encoded = CrosstermBackend::new(&mut bytes).draw(content);
+                    }
+                }
                 for &index in repaired.iter() {
                     next.content[index].diff_option = CellDiffOption::None;
                 }
