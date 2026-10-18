@@ -195,6 +195,14 @@ async fn resolved_with_reader(
             cost.bytes_hashed < body.len() as u64,
             "bounded prefix must not hash the unrelated suffix: {cost:?}"
         );
+        assert_eq!(
+            cost.backend_write_operations, 0,
+            "reading must not publish project retention"
+        );
+        assert_eq!(
+            cost.authority_records_appended, 0,
+            "reading must not append project authority"
+        );
     }
     let encoded = serde_json::to_vec(&snapshot).unwrap();
     drop(snapshot);
