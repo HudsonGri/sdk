@@ -60,32 +60,39 @@ enum Ownership {
     /// Each transaction is admitted by a shared `owner.lock`.
     Shared,
     /// Sole owner; clones share its lock and record cache.
-    Owned(Arc<Owner>),
+    Owned(owners::OwnerRef),
 }
 
 /// Lifetime-long exclusive ownership of one namespace.
 #[derive(Debug)]
 struct Owner {
-    _lock: OwnerLock,
     /// Cached logged records, `None` when absent. Joinable owners bound this cache.
     residents: Arc<RwLock<Residents>>,
     /// Core-state log, opened by the first logged transaction. Its mutex
     log: Mutex<Option<CoreLog>>,
     cache_limit: Option<usize>,
+    // Last: another process may enter only after WAL/cache teardown completes.
+    _lock: OwnerLock,
 }
 
 /// One held `owner.lock`, released when dropped.
 #[derive(Debug)]
-struct OwnerLock(File, Option<crate::materializer::NativeCleanupWrite>);
+struct OwnerLock(
+    Option<File>,
+    Option<crate::materializer::NativeCleanupWrite>,
+);
 
 impl OwnerLock {
     fn unlock(&mut self) -> Result<(), LocalCoreStateStoreError> {
+        let Some(file) = self.0.take() else {
+            return Ok(());
+        };
         if let Some(cleanup) = self.1.take() {
-            let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&self.0));
+            let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&file));
             recorded?;
             unlocked?;
         } else {
-            FileExt::unlock(&self.0)?;
+            FileExt::unlock(&file)?;
         }
         Ok(())
     }
@@ -103,7 +110,7 @@ impl OwnerLock {
             LockMode::Exclusive => lock.try_lock_exclusive(),
         };
         match locked {
-            Ok(()) => Ok(Self(lock, None)),
+            Ok(()) => Ok(Self(Some(lock), None)),
             Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Err(
                 LocalCoreStateStoreError::OwnershipConflict(root.to_path_buf()),
             ),
@@ -114,9 +121,9 @@ impl OwnerLock {
 
 impl Drop for OwnerLock {
     fn drop(&mut self) {
-        if let Some(cleanup) = self.1.take() {
-            let _ = cleanup.attempt(|| FileExt::unlock(&self.0));
-        }
+        // Closing our descriptor is insufficient: fork/dup may retain the same
+        // locked file description after this logical admission has ended.
+        let _ = self.unlock();
     }
 }
 
@@ -144,7 +151,7 @@ enum Admission {
     Shared {
         _lock: OwnerLock,
     },
-    Owned(Arc<Owner>),
+    Owned(owners::OwnerRef),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -167,15 +174,10 @@ impl LocalCoreStateStore {
     /// Owns the namespace exclusively until this store and all its clones drop.
     pub fn open_owned(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
         let root = root.into();
-        let lock = OwnerLock::acquire(&root, LockMode::Exclusive)?;
+        let owner = owners::exclusive(&root)?;
         Ok(Self {
             root: Arc::new(root),
-            ownership: Ownership::Owned(Arc::new(Owner {
-                _lock: lock,
-                residents: Arc::default(),
-                log: Mutex::default(),
-                cache_limit: None,
-            })),
+            ownership: Ownership::Owned(owner),
             deferral: None,
             journal_work: None,
         })
@@ -226,7 +228,7 @@ impl LocalCoreStateStore {
                 let owner_lock = acquired
                     .as_ref()
                     .is_ok()
-                    .then(|| OwnerLock(lock, Some(cleanup)));
+                    .then(|| OwnerLock(Some(lock), Some(cleanup)));
                 work.spent(read)?;
                 match acquired {
                     Ok(()) => Admission::Shared {
@@ -245,7 +247,7 @@ impl LocalCoreStateStore {
             (Ownership::Shared, None) => Admission::Shared {
                 _lock: OwnerLock::acquire(&root, LockMode::Shared)?,
             },
-            (Ownership::Owned(owner), _) => Admission::Owned(Arc::clone(owner)),
+            (Ownership::Owned(owner), _) => Admission::Owned(owner.clone()),
         };
         let deferred = matches!(admission, Admission::Owned(_))
             && self

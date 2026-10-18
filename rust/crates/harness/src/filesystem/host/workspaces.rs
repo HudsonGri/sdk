@@ -197,145 +197,158 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
         let workspace = self.open(workspace, None).await?;
         let key = filesystem_key(idempotency_key);
-        let mut transaction = match expected_generation {
-            Some(reference) => {
-                let generation = self.generation(&workspace, reference, None).await?;
-                workspace
-                    .begin_transaction_at(&generation, key, budget, &cancellation)
+        'stage: loop {
+            let mut transaction = match expected_generation {
+                Some(reference) => {
+                    let generation = self.generation(&workspace, reference, None).await?;
+                    workspace
+                        .begin_transaction_at(&generation, key, budget, &cancellation)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?
+                }
+                None => workspace
+                    .begin_transaction(key, budget, &cancellation)
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(map_error)?
-            }
-            None => workspace
-                .begin_transaction(key, budget, &cancellation)
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-                .map_err(map_error)?,
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let batched = if !invalidate_metadata
-            && mutations
-                .iter()
-                .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
-        {
-            let directories = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let files = mutations
-                .iter()
-                .filter_map(|mutation| match mutation {
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        Some((path.as_str(), bytes.clone()))
+                    .map_err(map_error)?,
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let batched = if !invalidate_metadata
+                && mutations
+                    .iter()
+                    .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
+            {
+                let directories = mutations
+                    .iter()
+                    .filter_map(|mutation| match mutation {
+                        WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let files = mutations
+                    .iter()
+                    .filter_map(|mutation| match mutation {
+                        WorkspaceMutation::PutFile { path, bytes } => {
+                            Some((path.as_str(), bytes.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                transaction
+                    .write_batch(&directories, &files, budget, &cancellation)
+                    .await
+                    .map_err(|failure| map_error(failure.error))?;
+                true
+            } else {
+                false
+            };
+            #[cfg(target_arch = "wasm32")]
+            let batched = false;
+            if !batched {
+                for mutation in mutations {
+                    match mutation {
+                        WorkspaceMutation::CreateDirectory { path } => {
+                            transaction
+                                .create_dir_all(path, budget, &cancellation)
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
+                                .map_err(map_error)?;
+                        }
+                        WorkspaceMutation::PutFile { path, bytes } => {
+                            transaction
+                                .write(path, bytes.clone(), budget, &cancellation)
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
+                                .map_err(map_error)?;
+                        }
+                        WorkspaceMutation::Remove { path } => {
+                            transaction
+                                .remove(path, budget, &cancellation)
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
+                                .map_err(map_error)?;
+                        }
                     }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            transaction
-                .write_batch(&directories, &files, budget, &cancellation)
-                .await
-                .map_err(|failure| map_error(failure.error))?;
-            true
-        } else {
-            false
-        };
-        #[cfg(target_arch = "wasm32")]
-        let batched = false;
-        if !batched {
-            for mutation in mutations {
-                match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => {
-                        transaction
-                            .create_dir_all(path, budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        transaction
-                            .write(path, bytes.clone(), budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                    WorkspaceMutation::Remove { path } => {
-                        transaction
-                            .remove(path, budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                }
-                // Raw mutations do not carry a descriptor or write publication.
-                // Invalidate the old index atomically, including same-byte writes.
-                // The content writer supplies its own metadata in this transaction.
-                if invalidate_metadata
-                    && let WorkspaceMutation::PutFile { path, .. }
-                    | WorkspaceMutation::Remove { path } = mutation
-                {
-                    let metadata =
-                        content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
-                    match transaction.remove(&metadata, budget, &cancellation).await {
-                        Ok(_) => {}
-                        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
-                        Err(failure) => return Err(map_error(failure.error)),
-                    }
-                }
-            }
-        }
-        loop {
-            let committed = transaction
-                .commit(
-                    None,
-                    acyclic_fs::PublicationPermit::Unrestricted,
-                    budget,
-                    &cancellation,
-                    |_| async {
-                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        })
-                    },
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
-            return match committed {
-                TransactionCommit::Committed(generation)
-                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-                TransactionCommit::Conflict { .. } if expected_generation.is_none() => {
-                    // Reuse the original candidate only when the SDK proves its
-                    // exact observations and mutation dependencies still hold.
-                    match transaction
-                        .rebase(1, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| map_error(failure.error))?
+                    // Raw mutations do not carry a descriptor or write publication.
+                    // Invalidate the old index atomically, including same-byte writes.
+                    // The content writer supplies its own metadata in this transaction.
+                    if invalidate_metadata
+                        && let WorkspaceMutation::PutFile { path, .. }
+                        | WorkspaceMutation::Remove { path } = mutation
                     {
-                        acyclic_fs::TransactionRebase::Rebased(_) => continue,
-                        acyclic_fs::TransactionRebase::Conflicted { .. } => {
-                            Err(Error::Conflict("workspace generation changed".into()))
+                        let metadata =
+                            content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                        match transaction.remove(&metadata, budget, &cancellation).await {
+                            Ok(_) => {}
+                            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                            Err(failure) => return Err(map_error(failure.error)),
                         }
                     }
                 }
-                TransactionCommit::Conflict { .. } => {
-                    Err(Error::Conflict("workspace generation changed".into()))
-                }
-                TransactionCommit::Fenced => {
-                    Err(Error::Conflict("workspace writer was fenced".into()))
-                }
-                TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
-                    "filesystem idempotency key belongs to another mutation".into(),
-                )),
-            };
+            }
+            loop {
+                let committed = transaction
+                    .commit(
+                        None,
+                        acyclic_fs::PublicationPermit::Unrestricted,
+                        budget,
+                        &cancellation,
+                        |_| async {
+                            Ok::<_, acyclic_fs::OperationFailure<Error>>(
+                                acyclic_fs::OperationReceipt {
+                                    value: (),
+                                    work: acyclic_fs::WorkCounters::default(),
+                                },
+                            )
+                        },
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?;
+                return match committed {
+                    TransactionCommit::Committed(generation)
+                    | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                    TransactionCommit::Conflict { .. } if expected_generation.is_none() => {
+                        // Reuse the original candidate only when the SDK proves its
+                        // exact observations and mutation dependencies still hold.
+                        match transaction
+                            .rebase(1, budget, &cancellation)
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| map_error(failure.error))?
+                        {
+                            acyclic_fs::TransactionRebase::Rebased(_) => continue,
+                            acyclic_fs::TransactionRebase::Conflicted { .. } => {
+                                #[cfg(all(test, not(target_arch = "wasm32")))]
+                                if publication_cuts::restore_conflict() {
+                                    return Err(Error::Conflict(
+                                        "workspace generation changed".into(),
+                                    ));
+                                }
+                                // An unconditional write owns no stale observations.
+                                // Re-evaluate its mutations at the new cut, rather than
+                                // weakening the transaction's dependency verifier.
+                                continue 'stage;
+                            }
+                        }
+                    }
+                    TransactionCommit::Conflict { .. } => {
+                        Err(Error::Conflict("workspace generation changed".into()))
+                    }
+                    TransactionCommit::Fenced => {
+                        Err(Error::Conflict("workspace writer was fenced".into()))
+                    }
+                    TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
+                        "filesystem idempotency key belongs to another mutation".into(),
+                    )),
+                };
+            }
         }
     }
 
@@ -475,95 +488,111 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 native_before(work).await?;
             }
             let workspace = self.open(reference, Some(io)).await?;
-            let pinned = match expected {
-                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
-            };
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            let mut transaction = io.sdk(
-                workspace
-                    .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
-                    .await,
-            )?;
-            crate::conversation::BoundedContentFuture::new(Some(io), || async {
-                for mutation in mutations {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = io.original_native_work() {
-                        native_before(work).await?;
-                    }
-                    match mutation {
-                        WorkspaceMutation::CreateDirectory { path } => io.sdk(
-                            transaction
-                                .create_dir_all(path, io, io.cancellation())
-                                .await,
-                        )?,
-                        WorkspaceMutation::PutFile { path, bytes } => io.sdk(
-                            transaction
-                                .write(path, bytes.clone(), io, io.cancellation())
-                                .await,
-                        )?,
-                        WorkspaceMutation::Remove { .. } => {
-                            return Err(stock_boundary(
-                                Some(io),
-                                crate::wire::ErrorCode::Unsupported,
-                                "bounded publication does not remove content",
-                            ));
+            loop {
+                let pinned = match expected {
+                    Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+                    None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                };
+                let mut transaction = io.sdk(
+                    workspace
+                        .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
+                        .await,
+                )?;
+                crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                    for mutation in mutations {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(work) = io.original_native_work() {
+                            native_before(work).await?;
+                        }
+                        match mutation {
+                            WorkspaceMutation::CreateDirectory { path } => io.sdk(
+                                transaction
+                                    .create_dir_all(path, io, io.cancellation())
+                                    .await,
+                            )?,
+                            WorkspaceMutation::PutFile { path, bytes } => io.sdk(
+                                transaction
+                                    .write(path, bytes.clone(), io, io.cancellation())
+                                    .await,
+                            )?,
+                            WorkspaceMutation::Remove { .. } => {
+                                return Err(stock_boundary(
+                                    Some(io),
+                                    crate::wire::ErrorCode::Unsupported,
+                                    "bounded publication does not remove content",
+                                ));
+                            }
                         }
                     }
-                }
-                Ok(())
-            })?
-            .await?;
-            let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
-                let commit = 'commit: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = io.original_native_work() {
-                        break 'commit transaction
-                            .commit_with_native_work(
-                                None,
-                                acyclic_fs::PublicationPermit::Unrestricted,
-                                work,
-                                io.cancellation(),
-                                &mut native_before,
-                            )
-                            .await?;
+                    Ok(())
+                })?
+                .await?;
+                let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                    let commit = 'commit: {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(work) = io.original_native_work() {
+                            break 'commit transaction
+                                .commit_with_native_work(
+                                    None,
+                                    acyclic_fs::PublicationPermit::Unrestricted,
+                                    work,
+                                    io.cancellation(),
+                                    &mut native_before,
+                                )
+                                .await?;
+                        }
+                        break 'commit io.receive(
+                            transaction
+                                .commit(
+                                    None,
+                                    acyclic_fs::PublicationPermit::Unrestricted,
+                                    io.remaining()?,
+                                    io.cancellation(),
+                                    &mut |_| async move {
+                                        if let Some(task) = preparation {
+                                            task.verify(false, Some(io))
+                                                .map_err(acyclic_fs::OperationFailure::before_work)?
+                                                .await
+                                                .map_err(
+                                                    acyclic_fs::OperationFailure::before_work,
+                                                )?;
+                                        }
+                                        Ok(acyclic_fs::OperationReceipt {
+                                            value: (),
+                                            work: acyclic_fs::WorkCounters::default(),
+                                        })
+                                    },
+                                )
+                                .await,
+                        )?;
+                    };
+                    Ok(commit)
+                })?
+                .await?;
+                return match commit {
+                    TransactionCommit::Committed(generation)
+                    | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                    TransactionCommit::Conflict { .. } if expected.is_none() => {
+                        #[cfg(all(test, not(target_arch = "wasm32")))]
+                        if publication_cuts::restore_conflict() {
+                            return Err(stock_boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Conflict,
+                                "workspace publication conflicted or was fenced",
+                            ));
+                        }
+                        // Re-evaluate at the new cut on the original work ledger.
+                        continue;
                     }
-                    break 'commit io.receive(
-                        transaction
-                            .commit(
-                                None,
-                                acyclic_fs::PublicationPermit::Unrestricted,
-                                io.remaining()?,
-                                io.cancellation(),
-                                &mut |_| async move {
-                                    if let Some(task) = preparation {
-                                        task.verify(false, Some(io))
-                                            .map_err(acyclic_fs::OperationFailure::before_work)?
-                                            .await
-                                            .map_err(acyclic_fs::OperationFailure::before_work)?;
-                                    }
-                                    Ok(acyclic_fs::OperationReceipt {
-                                        value: (),
-                                        work: acyclic_fs::WorkCounters::default(),
-                                    })
-                                },
-                            )
-                            .await,
-                    )?;
+                    TransactionCommit::Conflict { .. }
+                    | TransactionCommit::Fenced
+                    | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Conflict,
+                        "workspace publication conflicted or was fenced",
+                    )),
                 };
-                Ok(commit)
-            })?
-            .await?;
-            match commit {
-                TransactionCommit::Committed(generation)
-                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-                TransactionCommit::Conflict { .. }
-                | TransactionCommit::Fenced
-                | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Conflict,
-                    "workspace publication conflicted or was fenced",
-                )),
             }
         })
     }
@@ -592,3 +621,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod bytes_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod publication_cuts;
