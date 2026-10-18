@@ -18,7 +18,7 @@ const COMMANDS: usize = 3;
 const BYTES: u64 = 12;
 
 fn actions() -> impl Strategy<Value = Vec<Action>> {
-    proptest::collection::vec(proptest::option::of((0_u8..5, 0_u8..9)), 0..24)
+    proptest::collection::vec(proptest::option::of((0_u8..6, 0_u8..9)), 0..24)
 }
 
 fn config(name: &'static str) -> Config {
@@ -69,6 +69,8 @@ fn mandatory_histories_cover_boundaries_and_identity_reuse() {
     for actions in [
         vec![],
         vec![None],
+        // Same request basename in distinct task namespaces is not a conflict.
+        vec![Some((0, 1)), Some((1, 1)), None, None],
         vec![Some((0, 0)), Some((1, 0)), Some((2, 0)), Some((3, 0))],
         vec![Some((0, 4)), Some((1, 4)), Some((2, 4)), Some((0, 1))],
         vec![Some((0, 8)), Some((1, 4)), Some((2, 1))],
@@ -124,4 +126,21 @@ fn negative_control_leaking_retired_bytes_fails_and_shrinks() {
     );
     assert!(minimal.len() <= 6, "did not shrink: {minimal:?}");
     eprintln!("LEAK_REFUND_SHRUNK {minimal:?}");
+    // Proptest can classify a panic as Fail. The final witness must also
+    // satisfy the shared runner's named-detection and deletion discipline;
+    // an infrastructure panic can never establish successful shrinking.
+    controls::builder()
+        .control(
+            "ownership",
+            Input {
+                actions: minimal.clone(),
+                probe: None,
+            },
+            Fault::LeakRefund,
+        )
+        .build()
+        .check(&Input {
+            actions: minimal,
+            probe: None,
+        });
 }

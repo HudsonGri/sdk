@@ -3,7 +3,10 @@ use super::{
     BYTES, COMMANDS,
     observation::{Entry, Outcome, State},
 };
-use crate::{OperationId, task_volume::Cursor};
+use crate::{
+    OperationId, TaskId,
+    task_volume::{Channel, Cursor},
+};
 use std::collections::VecDeque;
 
 #[derive(Default)]
@@ -12,7 +15,7 @@ pub(super) struct Model(VecDeque<(u8, Entry)>);
 pub(super) fn entry(id: u8, size: u8, step: u64) -> Entry {
     let position = step + 1;
     Entry {
-        key: format!(".tasks/task/requests/op{id}.json"),
+        key: format!(".tasks/task{}/requests/op{}.json", id % 2, id / 2),
         bytes: (0..size)
             .map(|index| index.wrapping_mul(13) ^ id ^ step as u8)
             .collect(),
@@ -27,8 +30,12 @@ pub(super) fn entry(id: u8, size: u8, step: u64) -> Entry {
             commit: [position as u8; 32],
         },
         publication: (size % 2 == 1).then(|| OperationId::from_bytes([position as u8; 16])),
-        channel: None,
-        requester: None,
+        channel: match id % 3 {
+            0 => Some(Channel::Text),
+            1 => Some(Channel::Reasoning),
+            _ => None,
+        },
+        requester: (step % 2 == 0).then(|| TaskId::from_bytes([id; 16])),
     }
 }
 
@@ -66,6 +73,8 @@ impl Model {
             len: entries.len(),
             front: entries.first().cloned(),
             bytes: self.used() as u64,
+            commands: COMMANDS,
+            limit: BYTES,
             entries,
             keys,
         }

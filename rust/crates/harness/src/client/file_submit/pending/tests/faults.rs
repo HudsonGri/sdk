@@ -14,6 +14,10 @@ pub(super) enum Fault {
     WrongPayload,
     WrongCursor,
     DropPublication,
+    DropChannel,
+    DropRequester,
+    WrongCommands,
+    WrongByteLimit,
     FalseRejection,
     WrongQuotaLimit,
     WrongConflict,
@@ -56,6 +60,8 @@ pub(in super::super) fn admitted(owner: &mut PendingRequests, result: Result<()>
         Some(Fault::MutationOnRejection) if result.is_err() => {
             owner.retire_front();
         }
+        Some(Fault::WrongCommands) => owner.commands += 1,
+        Some(Fault::WrongByteLimit) => owner.limit += 1,
         Some(Fault::FalseRejection) if result.is_ok() => {
             return Err(Error::Conflict("spurious rejection after admission".into()).into());
         }
@@ -88,7 +94,10 @@ pub(in super::super) fn retired(owner: &mut PendingRequests, mut done: Pending) 
         Some(Fault::StaleIdentity) => {
             owner.keys.insert(done.write.key.clone());
         }
-        Some(Fault::WrongKey) => done.write.key = FileKey::Goal,
+        Some(Fault::WrongKey) => {
+            let path = done.write.key.path().replace("task0/", "other/");
+            done.write.key = FileKey::parse(&path).unwrap();
+        }
         Some(Fault::WrongPayload) if !done.write.bytes.is_empty() => {
             let mut bytes = done.write.bytes.to_vec();
             bytes[0] ^= 255;
@@ -96,6 +105,8 @@ pub(in super::super) fn retired(owner: &mut PendingRequests, mut done: Pending) 
         }
         Some(Fault::WrongCursor) => done.cursor.volume[0] ^= 255,
         Some(Fault::DropPublication) => done.write.publication = None,
+        Some(Fault::DropChannel) => done.write.channel = None,
+        Some(Fault::DropRequester) => done.write.requester = None,
         _ => (),
     }
     done

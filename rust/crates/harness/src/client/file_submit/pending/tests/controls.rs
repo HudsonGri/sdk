@@ -3,9 +3,13 @@ use super::{
     fixture::{self, Input},
     observation::{self, Event},
 };
-use acyclic_test_support::differential::oracle::Oracle;
+use acyclic_test_support::differential::oracle::{Builder, Controlled, Oracle};
 
 pub(super) fn oracle() -> Oracle<Input, Fault, Event> {
+    builder().build()
+}
+
+pub(super) fn builder() -> Builder<Input, Fault, Event, Controlled> {
     let history = |actions| Input {
         actions,
         probe: None,
@@ -64,6 +68,26 @@ pub(super) fn oracle() -> Oracle<Input, Fault, Event> {
         Fault::DropPublication,
     )
     .control(
+        "retired-entry",
+        history(vec![Some((0, 1)), None]),
+        Fault::DropChannel,
+    )
+    .control(
+        "retired-entry",
+        history(vec![Some((0, 1)), None]),
+        Fault::DropRequester,
+    )
+    .control(
+        "ownership",
+        history(vec![Some((0, 1))]),
+        Fault::WrongCommands,
+    )
+    .control(
+        "ownership",
+        history(vec![Some((0, 1))]),
+        Fault::WrongByteLimit,
+    )
+    .control(
         "admission-results",
         history(vec![Some((0, 1))]),
         Fault::FalseRejection,
@@ -96,5 +120,4 @@ pub(super) fn oracle() -> Oracle<Input, Fault, Event> {
         history(vec![Some((0, 1))]),
         Fault::RefusePreflight,
     )
-    .build()
 }

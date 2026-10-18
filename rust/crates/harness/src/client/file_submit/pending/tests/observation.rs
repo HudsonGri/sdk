@@ -24,6 +24,8 @@ pub(super) struct State {
     pub(super) entries: Vec<Entry>,
     pub(super) keys: Vec<String>,
     pub(super) bytes: u64,
+    pub(super) commands: usize,
+    pub(super) limit: u64,
     pub(super) len: usize,
     pub(super) front: Option<Entry>,
 }

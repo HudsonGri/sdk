@@ -74,23 +74,40 @@ fn outcome(result: Result<(), FileClientError>) -> Outcome {
 }
 
 fn observe(pending: &Pending) -> Entry {
+    let Pending { cursor, write } = pending;
+    let Write {
+        key,
+        channel,
+        requester,
+        publication,
+        bytes,
+    } = write;
     Entry {
-        key: pending.write.key.path(),
-        bytes: pending.write.bytes.to_vec(),
-        cursor: pending.cursor.clone(),
-        publication: pending.write.publication,
-        channel: pending.write.channel,
-        requester: pending.write.requester,
+        key: key.path(),
+        bytes: bytes.to_vec(),
+        cursor: cursor.clone(),
+        publication: *publication,
+        channel: *channel,
+        requester: *requester,
     }
 }
 
 fn state(owner: &PendingRequests) -> State {
-    let mut keys: Vec<_> = owner.keys.iter().map(FileKey::path).collect();
+    let PendingRequests {
+        entries,
+        keys,
+        bytes,
+        commands,
+        limit,
+    } = owner;
+    let mut keys: Vec<_> = keys.iter().map(FileKey::path).collect();
     keys.sort();
     State {
-        entries: owner.entries.iter().map(observe).collect(),
+        entries: entries.iter().map(observe).collect(),
         keys,
-        bytes: owner.bytes,
+        bytes: *bytes,
+        commands: *commands,
+        limit: *limit,
         len: owner.len(),
         front: owner.front().map(observe),
     }
