@@ -119,15 +119,21 @@ impl LocalHarness {
                 super::routing::route(parent, false, selected, settled, existing)
             },
             async |route| match route {
+                // Each admission path is deep; it runs from its own allocation.
                 super::routing::Route::Continue { history } => {
-                    self.continue_conversation(operation, task, parent, history, prompt)
-                        .await
+                    acyclic_fs::in_heap(|| {
+                        self.continue_conversation(operation, task, parent, history, prompt)
+                    })
+                    .await
                 }
                 super::routing::Route::Child => {
-                    self.prepare_inheritance(task, Some(parent)).await?;
-                    let (receive, model) = self.stage_question(operation, task, prompt).await?;
-                    self.admit_turn(operation, Some(parent), receive, model)
-                        .await
+                    acyclic_fs::in_heap(|| self.prepare_inheritance(task, Some(parent))).await?;
+                    acyclic_fs::in_heap(|| async {
+                        let (receive, model) = self.stage_question(operation, task, prompt).await?;
+                        self.admit_turn(operation, Some(parent), receive, model)
+                            .await
+                    })
+                    .await
                 }
             },
         )
@@ -244,7 +250,7 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &'a str,
     ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
-        Box::pin(async move {
+        acyclic_fs::in_heap(|| async move {
             if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
                 return Err(Error::Invalid(
                     "local prompt is empty or exceeds the file limit".into(),
@@ -541,25 +547,35 @@ impl LocalHarness {
             available: Default::default(),
             labels: Default::default(),
         };
-        let mut attempt =
-            match Box::pin(self.runtime.task_host().recover_work(task, &mut None)).await? {
-                crate::distributed::WorkPull::Claimed(lease) => Some(
+        let mut attempt = match acyclic_fs::in_heap(|| async {
+            self.runtime.task_host().recover_work(task, &mut None).await
+        })
+        .await?
+        {
+            crate::distributed::WorkPull::Claimed(lease) => Some(
+                acyclic_fs::in_heap(|| {
                     self.runtime
                         .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                        .await,
-                ),
-                crate::distributed::WorkPull::Unresolved { error, .. } => {
-                    if self.runtime.task_host().outcome(task).await?.is_none() {
-                        return Err(error);
-                    }
-                    None
+                })
+                .await,
+            ),
+            crate::distributed::WorkPull::Unresolved { error, .. } => {
+                if acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
+                    .await?
+                    .is_none()
+                {
+                    return Err(error);
                 }
-                crate::distributed::WorkPull::Idle => {
+                None
+            }
+            crate::distributed::WorkPull::Idle => {
+                acyclic_fs::in_heap(|| {
                     self.runtime
                         .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?
-                }
-            };
+                })
+                .await?
+            }
+        };
         loop {
             match attempt {
                 Some(crate::filesystem::TaskWorkerAttempt::Unresolved { error, .. }) => {
@@ -569,42 +585,50 @@ impl LocalHarness {
                     crate::filesystem::TaskWorkerOutcome::Yielded { lease },
                 )) => {
                     attempt = Some(
-                        self.runtime
-                            .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                            .await,
+                        acyclic_fs::in_heap(|| {
+                            self.runtime
+                                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                        })
+                        .await,
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
-                    if !continue_work().await? {
+                    if !acyclic_fs::in_heap(&continue_work).await? {
                         break;
                     }
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
-                    attempt = self
-                        .runtime
-                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?;
+                    attempt = acyclic_fs::in_heap(|| {
+                        self.runtime.run_operation(
+                            &worker,
+                            task,
+                            commands,
+                            TRANSITIONS_PER_SLICE,
+                            None,
+                        )
+                    })
+                    .await?;
                 }
                 _ => break,
             }
         }
-        self.refresh_command_task(task).await?;
+        acyclic_fs::in_heap(|| self.refresh_command_task(task)).await?;
         Ok(())
     }
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
     pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
-        Box::pin(async move {
-            let root = self.loop_root(task).await?;
+        acyclic_fs::in_heap(move || async move {
+            let root = acyclic_fs::in_heap(|| self.loop_root(task)).await?;
             let mut current = task;
             loop {
-                let output = self.resume_turn(current).await;
+                let output = acyclic_fs::in_heap(|| self.resume_turn(current)).await;
                 if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
                     return output;
                 }
-                match self.continue_goal(current, root).await? {
+                match acyclic_fs::in_heap(|| self.continue_goal(current, root)).await? {
                     Some(next) => current = next,
                     None => return output,
                 }
@@ -617,13 +641,16 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let handle = match self.runtime.harness().attach(task, &definition).await {
-            Ok(handle) => handle,
-            Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
-            Err(error) => return Err(error),
-        };
+        let handle =
+            match acyclic_fs::in_heap(|| self.runtime.harness().attach(task, &definition)).await {
+                Ok(handle) => handle,
+                Err(Error::NotFound(_)) => {
+                    acyclic_fs::in_heap(|| self.recover_unadmitted_turn(task)).await?
+                }
+                Err(error) => return Err(error),
+            };
         let terminal = matches!(
-            self.runtime.task_host().outcome(task).await?,
+            acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task)).await?,
             Some(
                 crate::Outcome::Succeeded(_)
                     | crate::Outcome::Failed { .. }
@@ -633,22 +660,34 @@ impl LocalHarness {
         if !terminal {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
-            self.advance_with_children(task, &commands, self.task_files.clone(), None)
-                .await?;
+            acyclic_fs::in_heap(|| {
+                self.advance_with_children(task, &commands, self.task_files.clone(), None)
+            })
+            .await?;
             #[cfg(not(feature = "native-execution"))]
-            Box::pin(self.advance(task, &commands)).await?;
-            if self.runtime.task_host().outcome(task).await?.is_none() {
-                let admission = self.runtime.task_host().observe_admission(task).await?;
+            acyclic_fs::in_heap(|| self.advance(task, &commands)).await?;
+            if acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
+                .await?
+                .is_none()
+            {
+                let admission =
+                    acyclic_fs::in_heap(|| self.runtime.task_host().observe_admission(task))
+                        .await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
         } else {
             #[cfg(feature = "native-execution")]
-            self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
+            {
+                let commands = self.commands()?;
+                acyclic_fs::in_heap(|| {
+                    self.advance_with_children(task, &commands, self.task_files.clone(), None)
+                })
                 .await?;
+            }
             // Advance already refreshes projections; terminal recovery must repair them.
-            self.refresh_command_task(task).await?;
+            acyclic_fs::in_heap(|| self.refresh_command_task(task)).await?;
         }
-        match handle.result().await? {
+        match acyclic_fs::in_heap(|| handle.result()).await? {
             crate::Outcome::Succeeded(output) => Ok(output),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
             crate::Outcome::Cancelled => Err(Error::InteractionRejected(

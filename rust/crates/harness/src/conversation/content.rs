@@ -63,7 +63,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
                     )?
                 };
                 return Ok(Self {
-                    future: Box::pin(build()),
+                    future: acyclic_fs::in_heap(build),
                     _hold: None,
                     _native: Some(native),
                 });
@@ -92,7 +92,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             });
         }
         Ok(Self {
-            future: Box::pin(build()),
+            future: acyclic_fs::in_heap(build),
             #[cfg(feature = "filesystem")]
             _hold: hold,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

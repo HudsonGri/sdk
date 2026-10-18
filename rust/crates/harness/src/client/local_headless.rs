@@ -112,11 +112,9 @@ impl LocalFileClient {
         )
         .await?;
         Ok(Self {
-            host: Box::pin(super::commands::run_local_command_files(
-                local.clone(),
-                operation,
-                true,
-            )),
+            host: acyclic_fs::in_heap(|| {
+                super::commands::run_local_command_files(local.clone(), operation, true)
+            }),
             local,
             operation,
             query,
@@ -338,8 +336,8 @@ impl HeadlessClient for LocalFileClient {
         }
         validate(&command, operation)?;
         self.initial(output)?;
-        self.submit(&command).await?;
-        Box::pin(self.run(operation, futures::stream::empty(), false, output)).await
+        acyclic_fs::in_heap(|| self.submit(&command)).await?;
+        acyclic_fs::in_heap(|| self.run(operation, futures::stream::empty(), false, output)).await
     }
     async fn input<W: Write>(
         &mut self,
@@ -347,7 +345,7 @@ impl HeadlessClient for LocalFileClient {
         input: impl Stream<Item = Result<String>> + Unpin,
         output: &mut W,
     ) -> Result<HeadlessOutcome> {
-        Box::pin(self.run(operation, input, true, output)).await
+        acyclic_fs::in_heap(|| self.run(operation, input, true, output)).await
     }
 }
 

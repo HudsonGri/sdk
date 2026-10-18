@@ -58,55 +58,43 @@ pub(crate) use obs_span;
 pub(crate) struct OperationSpan;
 
 /// Boxes a trait method's future inside `span` and records its outcome there.
-pub(crate) fn traced<'a, T: 'a>(
+///
+/// `create` builds the future inside the heap allocation's own short frame,
+/// so neither this function nor the caller's poll frame ever holds it.
+#[inline(never)]
+pub(crate) fn traced<'a, T: 'a, F>(
     span: OperationSpan,
-    future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
-) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>> {
+    create: impl FnOnce() -> F,
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<T>>
+where
+    F: Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+{
     #[cfg(not(target_arch = "wasm32"))]
     {
         let context = span.clone();
-        Box::pin(context.scope(async move {
-            let result = future.await;
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
-        }))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let OperationSpan = span;
-        Box::pin(future)
-    }
-}
-
-// The unmetered caller supplies the one required trait-erasure box. Keep the
-// existing boxed path above intact for admitted future layouts and charges.
-#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
-#[inline(always)]
-pub(crate) fn traced_future<'a, T: 'a>(
-    span: OperationSpan,
-    future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
-) -> impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let context = span.clone();
-        context.scope(async move {
-            let result = future.await;
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
+        acyclic_fs::in_heap(move || {
+            let future = create();
+            context.scope(async move {
+                let result = future.await;
+                span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+                if let Err(error) = &result {
+                    span.record("error.kind", error.kind());
+                }
+                result
+            })
         })
     }
     #[cfg(target_arch = "wasm32")]
     {
         let OperationSpan = span;
-        future
+        acyclic_fs::in_heap(create)
     }
 }
+
+#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
+mod typed;
+#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
+pub(crate) use typed::traced_future;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
@@ -119,9 +107,9 @@ fn filtered_operation_cannot_record_failure_on_its_parent() {
             let future =
                 std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into())));
             let result = if boxed {
-                futures::executor::block_on(traced(span, future))
+                futures::executor::block_on(traced(span, || future))
             } else {
-                futures::executor::block_on(traced_future(span, future))
+                futures::executor::block_on(traced_future(|| span, || future))
             };
             assert!(result.is_err());
         }

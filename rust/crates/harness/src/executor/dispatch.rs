@@ -15,7 +15,9 @@ impl StockExecution<'_> {
     ) -> Result<Vec<ModelEvent>> {
         let cancellation = journal.model_cancellation();
         let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
-            Box::pin(self.dispatch_model_step(journal, input, step, prior_messages, purpose));
+            acyclic_fs::in_heap(|| {
+                self.dispatch_model_step(journal, input, step, prior_messages, purpose)
+            });
         match futures::future::select(cancellation, execution).await {
             Either::Left((result, _)) => {
                 result?;

@@ -86,15 +86,20 @@ where
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| Error::from(cause))?;
-    let journal = acyclic_fs::load_native_materialization_journal(
-        store,
-        operation_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
+    // Boxed, and the journal with it: neither stays in this frame, which is
+    // live under the whole publication below.
+    let journal = acyclic_fs::in_heap(|| async {
+        acyclic_fs::load_native_materialization_journal(
+            store,
+            operation_id,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map(|loaded| loaded.value.map(Box::new))
+    })
     .await
-    .map_err(|(cause, _)| Error::from(cause))?
-    .value;
+    .map_err(|(cause, _)| Error::from(cause))?;
     if work.root_identity(root).map_err(Error::from)? != source_root_identity {
         return Err(Error::Unauthorized(
             "checkout root changed before publication".into(),
@@ -112,12 +117,13 @@ where
             } = journal.plan.intent
             && target == to
         {
-            from = from
-                .workspace()
-                .generation(original, WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map_err(|failure| Error::from(failure.error))?
-                .value;
+            let workspace = from.workspace();
+            from = acyclic_fs::in_heap(|| {
+                workspace.generation(original, WorkBudget::UNBOUNDED, &cancellation)
+            })
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
         }
         if completed(journal, source_root_identity, from.id(), to)? {
             // The durable journal is also the completion marker. A retry must
@@ -149,31 +155,35 @@ where
         maximum_extent_spans: 65_536,
         transfer_bytes: 8 * 1024 * 1024,
     };
-    acyclic_fs::publish_native_generation_transition(
-        &from,
-        &to_generation,
-        store,
-        acyclic_fs::NativeWorkspacePublication {
-            root,
-            source_root_identity,
-            operation_directory: &operation_directory,
-            operation_id,
-            from: from.id(),
-            to,
-            excluded_names: &[".git", ".system", ".volumes"],
-            options: &options,
-            budget: WorkBudget::UNBOUNDED,
-            cancellation: &cancellation,
-        },
-        work,
-        || async {
-            before_effect().await.map_err(|error| {
-                acyclic_fs::NativeWorkspacePublicationError::Native(
-                    acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::other(error)),
-                )
-            })
-        },
-    )
+    acyclic_fs::in_heap(|| {
+        acyclic_fs::publish_native_generation_transition(
+            &from,
+            &to_generation,
+            store,
+            acyclic_fs::NativeWorkspacePublication {
+                root,
+                source_root_identity,
+                operation_directory: &operation_directory,
+                operation_id,
+                from: from.id(),
+                to,
+                excluded_names: &[".git", ".system", ".volumes"],
+                options: &options,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &cancellation,
+            },
+            work,
+            || async {
+                before_effect().await.map_err(|error| {
+                    acyclic_fs::NativeWorkspacePublicationError::Native(
+                        acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::other(
+                            error,
+                        )),
+                    )
+                })
+            },
+        )
+    })
     .await
     .map_err(|(cause, _)| Error::from(cause))?;
     cleanup(root, &operation_directory)

@@ -12,8 +12,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
         proof: &'a ResourceCreationProofRef,
     ) -> BoxFuture<'a, Result<CreatedResourceReceipt>> {
         Box::pin(async move {
-            let io = PreparationIo::new(request, &CancellationToken::new())?;
-            self.receipt(request, proof, &io).await
+            let io = boxed_io(request)?;
+            // Boxed: the receipt's frame is not reserved in this one.
+            acyclic_fs::in_heap(|| self.receipt(request, proof, &io)).await
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -26,12 +27,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let receipt = self.receipt(request, proof, &io).await?;
+            let receipt = acyclic_fs::in_heap(|| self.receipt(request, proof, &io)).await?;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((receipt, custody))
         })
     }
+}
+
+#[inline(never)]
+fn boxed_io(request: &ResourcePreparationRequest) -> Result<Box<PreparationIo>> {
+    PreparationIo::new(request, &CancellationToken::new()).map(Box::new)
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
@@ -44,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io: &PreparationIo,
     ) -> Result<CreatedResourceReceipt> {
         let allocation =
-            authenticate(&self.host, self.issuer.audience(), request, proof, Some(io)).await?;
+            authenticate(&self.host, self.issuer.audience(), request, proof, Some(io))?.await?;
         // Verify immutable input bodies once when issuing the reader. Rechecking
         // its protected allocation identity must not reload those bodies on each read.
         if allocation.authority.is_some() {
