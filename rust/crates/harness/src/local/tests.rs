@@ -17,6 +17,9 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+#[cfg(target_os = "macos")]
+#[path = "tests/cold_source.rs"]
+pub(super) mod cold_source;
 mod compact;
 mod compaction;
 mod context;
