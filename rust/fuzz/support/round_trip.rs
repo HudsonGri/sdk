@@ -247,21 +247,23 @@ impl<T> std::ops::Deref for ParsedInput<T> {
 /// Decode an arbitrary raw protobuf input before checking its round trip.
 #[macro_export]
 macro_rules! protobuf_input {
-    ($input:expr, $type:ty) => {
-        $input
+    ($input:expr, $type:ty) => {{
+        let input: $crate::FuzzInput<'_> = $input;
+        input
             .parse(<$type as ::prost::Message>::decode)
-            .map(|value| $input.__acyclic_parsed_input(value))
-    };
+            .map(|value| input.__acyclic_parsed_input(value))
+    }};
 }
 
 /// Decode an arbitrary raw JSON input before checking its round trip.
 #[macro_export]
 macro_rules! json_input {
-    ($input:expr, $type:ty) => {
-        $input
+    ($input:expr, $type:ty) => {{
+        let input: $crate::FuzzInput<'_> = $input;
+        input
             .parse(::serde_json::from_slice::<$type>)
-            .map(|value| $input.__acyclic_parsed_input(value))
-    };
+            .map(|value| input.__acyclic_parsed_input(value))
+    }};
 }
 
 #[cfg(feature = "test-input")]
@@ -285,8 +287,9 @@ pub fn input_result<T, U, E>(
 /// Decode two arbitrary length-delimited protobuf input messages.
 #[macro_export]
 macro_rules! protobuf_inputs {
-    ($input:expr, $first:ty, $second:ty $(,)?) => {
-        $input.parse(
+    ($input:expr, $first:ty, $second:ty $(,)?) => {{
+        let input: $crate::FuzzInput<'_> = $input;
+        input.parse(
             |mut bytes| -> Result<($first, $second), ::prost::DecodeError> {
                 Ok((
                     <$first as ::prost::Message>::decode_length_delimited(&mut bytes)?,
@@ -294,7 +297,7 @@ macro_rules! protobuf_inputs {
                 ))
             },
         )
-    };
+    }};
 }
 
 /// Apply the same strict round-trip contract to codecs returning `Option`.
@@ -330,7 +333,8 @@ pub fn index(value: u64) -> Option<usize> {
 #[macro_export]
 macro_rules! stream_round_trip {
     ($input:expr, $decoder:ident, $pending:ident, $before_chunk:expr) => {{
-        for (index, chunk) in $input.bytes().chunks(17).enumerate() {
+        let input: $crate::FuzzInput<'_> = $input;
+        for (index, chunk) in input.bytes().chunks(17).enumerate() {
             ($before_chunk)(index);
             $pending.extend_from_slice(chunk);
             loop {
