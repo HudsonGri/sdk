@@ -156,7 +156,7 @@ pub(super) struct ProjectionCore {
     pub(super) handler_error: Mutex<FuseHandlerReports>,
     pub(super) callback_guard: Option<Arc<dyn NativeMountCallbackGuard>>,
     source_original_work: Option<Work>,
-    allocation_custody: Arc<crate::demand::NativeMountAllocationCustody>,
+    allocation_custody: crate::demand::NativeMountAllocationCustody,
     _allocation: NativeAllocation,
 }
 
@@ -428,7 +428,7 @@ impl ProjectionCore {
 }
 
 impl ViewObserver for ProjectionCore {
-    fn allocation_custody(&self) -> Option<Arc<crate::demand::NativeMountAllocationCustody>> {
+    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
         Some(self.allocation_custody.clone())
     }
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
