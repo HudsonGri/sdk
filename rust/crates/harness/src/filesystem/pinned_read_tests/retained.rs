@@ -49,8 +49,23 @@ fn grant(file: &FileRef) -> Result<ContentGrant> {
     )
 }
 
+struct Clock;
+impl acyclic_stream::UnixMillisClock for Clock {
+    fn now_unix_millis(&self) -> u64 {
+        7
+    }
+}
+
 async fn initialize(prefix: usize, bytes: &[u8]) -> Result<(Arc<Host>, FileRef, ContentGrant)> {
-    let (host, file) = fixture(b"seed").await?;
+    // Authority timestamps are part of the independently initialized read
+    // history. A wall clock changes its encoded work between the two runs.
+    let stream = Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+        acyclic_stream::MemoryLimits::default(),
+        Arc::new(Clock),
+    ));
+    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let filesystem = Fs::from_memory_providers(stream, Arc::new(objects), bucket);
+    let (host, file) = fixture_with_filesystem(b"seed", filesystem).await?;
     let grant = grant(&file)?;
     let workspace = workspace_ref(
         host.provider.clone(),
@@ -361,4 +376,47 @@ proptest! {
             prop_assert_eq!(before, after, "mode {:?}", mode);
         }
     }
+}
+
+#[test]
+fn retained_native_bytes_keep_original_funding_until_the_last_owner_drops() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, file) = runtime.block_on(fixture(b"original funding"))?;
+    let workspace = workspace_ref(
+        host.provider.clone(),
+        &file.volume().storage_name(&mut None)?,
+    )?;
+    let opened = runtime.block_on(host.open(&workspace, None))?;
+    let generation =
+        runtime.block_on(host.generation(&opened, &host.file_generation(&file, None)?, None))?;
+    for old in [true, false] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024),
+            &cancellation,
+        )
+        .map_err(|(error, _)| Error::Invalid(error.to_string()))?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let bytes = with_reopen(old, || {
+            runtime.block_on(host.read_retained_file(&generation, &file, 4096, Some(&io)))
+        })?;
+        assert_eq!(bytes.as_ref(), b"original funding");
+        drop(io);
+        let funded = |bytes: &acyclic_stream::OwnedBytes| {
+            work.live_allocation_bytes() >= bytes.retained_capacity().unwrap() as u64
+                && work.live_allocation_bytes() != 0
+        };
+        assert!(funded(&bytes), "returned bytes lost their original ledger");
+        let unfunded: acyclic_stream::OwnedBytes = bytes.as_ref().to_vec().into();
+        drop(bytes);
+        assert_eq!(work.live_allocation_bytes(), 0, "returned custody leaked");
+        assert!(
+            !funded(&unfunded),
+            "an unfunded copy must fail the same predicate"
+        );
+    }
+    Ok(())
 }
