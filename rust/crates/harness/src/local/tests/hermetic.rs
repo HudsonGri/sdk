@@ -155,6 +155,28 @@ mod state_lifetime_properties {
     }
 
     #[tokio::test]
+    async fn all_store_drop_orders_detect_a_missing_owner() -> Result<()> {
+        let mut covered = 0;
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        let order = vec![a, b, c, d];
+                        if (0..4).any(|index| !order.contains(&index)) {
+                            continue;
+                        }
+                        assert!(retained_store_lifetime(order.clone(), true).await?);
+                        assert!(!retained_store_lifetime(order, false).await?);
+                        covered += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(covered, 24);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn harness_only_owner_fails_the_same_lifetime_oracle() -> Result<()> {
         assert!(!retained_store_lifetime(vec![0, 1, 2, 3], false).await?);
         assert!(retained_store_lifetime(vec![0, 1, 2, 3], true).await?);
@@ -231,5 +253,62 @@ async fn an_existing_volume_keeps_its_callers_store_ownership() -> Result<()> {
             .unwrap()
             .is_released()
     );
+    Ok(())
+}
+
+#[cfg(feature = "native-execution")]
+async fn checkout_binding_lifetime(retain: bool) -> Result<bool> {
+    let checkout = tempfile::tempdir().map_err(super::super::storage)?;
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?
+            .without_default_tools(),
+    )
+    .await?;
+    let original = harness.task_stream();
+    let storage = harness.workspace.as_ref().unwrap().filesystem.clone();
+    let volume = harness.task_files().volume().clone();
+    let verifier = harness.verifier.clone();
+    let signed = harness.signed.clone();
+    let LocalHarness { runtime, files, .. } = harness;
+    let runtime = Arc::try_unwrap(runtime)
+        .map_err(|_| Error::Conflict("fixture runtime is still shared".into()))?;
+    let mut config =
+        crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?
+            .volume(volume)
+            .without_default_tools();
+    let root = config.resolved_state_directory()?;
+    let released = config.test_state.as_ref().unwrap().release_barrier();
+    // Omit the actual store owner, reproducing the former harness-only lifetime.
+    let premature = if retain {
+        None
+    } else {
+        config.test_state.take()
+    };
+    let bound = LocalHarness::bind(
+        config,
+        runtime,
+        files,
+        (storage, original),
+        (&verifier, &signed),
+        Some(checkout.path()),
+    )
+    .await?;
+    let store = bound.workspace.as_ref().unwrap().store.clone();
+    bound.close().await?;
+    drop(premature);
+    let retained = root.is_dir();
+    drop(store);
+    acyclic_native_runtime::run_blocking_io(move || released.wait(), None)
+        .map_err(super::super::storage)?
+        .await
+        .map_err(super::super::storage)?;
+    Ok(retained && !root.exists())
+}
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn binding_a_checkout_retains_its_state_until_the_shared_store_is_dropped() -> Result<()> {
+    assert!(checkout_binding_lifetime(true).await?);
+    assert!(!checkout_binding_lifetime(false).await?);
     Ok(())
 }
