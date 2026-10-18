@@ -107,6 +107,19 @@ struct Fixture {
 }
 
 impl Fixture {
+    // Shared immutable blocks prove this prefix is byte/style identical to
+    // the preceding independent oracle, without rendering/comparing it again.
+    fn shared_prefix(&self, previous: &Self) -> usize {
+        self.blocks
+            .iter()
+            .zip(&previous.blocks)
+            .take_while(|(current, old)| Arc::ptr_eq(current, old))
+            .map(|(block, _)| block.len())
+            .sum::<usize>()
+            .min(self.length)
+            .min(previous.length)
+    }
+
     fn lines(&self) -> impl Iterator<Item = &Line> {
         self.blocks
             .iter()
@@ -302,11 +315,20 @@ fn measure_with(
         peak = peak.max(bytes);
         source.push_str(delta);
         // Empty chunks have the same one-shot oracle as the preceding push.
+        let previous = expected.clone();
         if !delta.is_empty() {
             expected = oracle(delta, &source);
         }
+        // Rows below changed are the immutable consumer handles already
+        // checked on the preceding push. Only skip those when the independent
+        // oracle also proves its corresponding block handles are unchanged.
+        let checked = changed.min(expected.shared_prefix(&previous));
         assert!(
-            consumer.iter().eq(expected.lines()),
+            consumer.len() == expected.length
+                && consumer
+                    .iter()
+                    .skip(checked)
+                    .eq(expected.lines().skip(checked)),
             "consumer differs after {delta:?}, source {:?}",
             source.chars().take(256).collect::<String>()
         );
@@ -536,10 +558,14 @@ proptest! {
     ) {
         let mut source = String::new();
         let mut rendered = Vec::new();
+        let mut previous = Arc::new(Fixture::default());
         for part in parts {
             source.push_str(part);
             let cached = oracle(&source, &mut rendered);
             prop_assert!(cached.lines().eq(full_parse(&source).iter()));
+            let prefix = cached.shared_prefix(&previous);
+            prop_assert!(cached.lines().take(prefix).eq(previous.lines().take(prefix)));
+            previous = cached;
         }
     }
 
