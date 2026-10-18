@@ -1,4 +1,5 @@
 use super::*;
+use super::Arc as SessionArc;
 use crate::grpc;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use std::{

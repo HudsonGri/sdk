@@ -11,18 +11,18 @@ fn ended_sibling(channel: TransportChannel) -> (Pool, Cursor, Cursor) {
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
         commands: mpsc::channel(2).0,
-        removed: Arc::clone(&pool.removed),
-        next_id: Arc::new(AtomicU64::new(5)),
-        active: Arc::clone(&pool.active),
-        admissions: Arc::clone(&pool.admissions),
-        attempt_epoch: Arc::clone(&pool.attempt_epoch),
-        abandoned: Arc::clone(&pool.abandoned),
+        removed: pool.removed.clone(),
+        next_id: SessionArc::new(AtomicU64::new(5)),
+        active: pool.active.clone(),
+        admissions: pool.admissions.clone(),
+        attempt_epoch: pool.attempt_epoch.clone(),
+        abandoned: pool.abandoned.clone(),
     };
     let a = client
-        .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver_a)
+        .cursor(1, pool.routes[&1].progress.clone(), receiver_a)
         .unwrap();
     let b = client
-        .cursor(3, Arc::clone(&pool.routes[&3].progress), receiver_b)
+        .cursor(3, pool.routes[&3].progress.clone(), receiver_b)
         .unwrap();
     // Their Open commands have already been dispatched into the fixture routes.
     pool.admissions.remove(1).unwrap();

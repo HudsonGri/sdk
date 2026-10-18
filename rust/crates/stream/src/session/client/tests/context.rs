@@ -287,7 +287,7 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         let a_origin = origin(&a_dispatch, true);
         let b_origin = origin(&b_dispatch, false);
         let (sender, receiver) = mpsc::channel(2);
-        let a_progress = Arc::clone(&pool.routes[&1].progress);
+        let a_progress = pool.routes[&1].progress.clone();
         let a = pool.routes.get_mut(&1).unwrap();
         a.records = sender;
         a.node = "good".into();
@@ -299,15 +299,15 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
             connections: super::super::super::Connections::new(),
             executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands: mpsc::channel(2).0,
-            removed: Arc::clone(&pool.removed),
-            next_id: Arc::new(AtomicU64::new(5)),
-            active: Arc::clone(&pool.active),
-            admissions: Arc::clone(&pool.admissions),
-            attempt_epoch: Arc::clone(&pool.attempt_epoch),
-            abandoned: Arc::clone(&pool.abandoned),
+            removed: pool.removed.clone(),
+            next_id: SessionArc::new(AtomicU64::new(5)),
+            active: pool.active.clone(),
+            admissions: pool.admissions.clone(),
+            attempt_epoch: pool.attempt_epoch.clone(),
+            abandoned: pool.abandoned.clone(),
         };
         let a = client.cursor(1, a_progress, receiver)?;
-        let _b = client.cursor(3, Arc::clone(&pool.routes[&3].progress), healthy)?;
+        let _b = client.cursor(3, pool.routes[&3].progress.clone(), healthy)?;
         drop(a);
         // Deliberately assign the stale origin to the successor to test the
         // subscriber oracle independently of span-retirement assertions.
