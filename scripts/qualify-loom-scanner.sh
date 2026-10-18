@@ -29,6 +29,8 @@ RUSTFLAGS="-Lnative=$sysroot/lib" cargo "+$toolchain" test --locked \
   --manifest-path rust/verification/loom-types/Cargo.toml \
   --target-dir "$target/loom-types" --test spellings
 python3 scripts/test-loom-type-contexts.py
+RUSTFLAGS='--cfg acyclic_loom --cfg acyclic_fs_loom' \
+  cargo test --locked -p acyclic-fs-fuzz --test model
 cargo test --locked --manifest-path rust/verification/loom-locks/Cargo.toml \
   --target-dir "$target/loom-locks" --lib
 node --test scripts/loom-scan-records.test.mjs scripts/loom-type-contexts.test.mjs \

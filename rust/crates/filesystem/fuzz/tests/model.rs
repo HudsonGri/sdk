@@ -70,7 +70,10 @@ fn split_admission_reproduces_a_lost_result() {
     admission_model(insert_split);
 }
 
-fn admission_model(insert: fn(&cache::FoldedDirectoryCache<bool>, ObjectId, bool)) {
+fn admission_model<F>(insert: F)
+where
+    F: Fn(&cache::FoldedDirectoryCache<bool>, ObjectId, bool) + Copy + Send + Sync + 'static,
+{
     loom::model(move || {
         let cache = loom::sync::Arc::new(cache::FoldedDirectoryCache::<bool>::new());
         let writer = loom::sync::Arc::clone(&cache);
@@ -112,7 +115,10 @@ fn split_eviction_reproduces_a_lost_result() {
     eviction_model(insert_split);
 }
 
-fn eviction_model(insert: fn(&cache::FoldedDirectoryCache<bool>, ObjectId, bool)) {
+fn eviction_model<F>(insert: F)
+where
+    F: Fn(&cache::FoldedDirectoryCache<bool>, ObjectId, bool) + Copy + Send + Sync + 'static,
+{
     loom::model(move || {
         let cache = loom::sync::Arc::new(cache::FoldedDirectoryCache::<bool>::new());
         for index in 0..64 {
@@ -204,9 +210,14 @@ fn locked_retirement_is_detected() {
     retirement_model(cache::FoldedDirectoryCache::insert_dropping_locked);
 }
 
-fn retirement_model(
-    insert: fn(&cache::FoldedDirectoryCache<Retired>, ObjectId, cache::DirectoryNames<Retired>),
-) {
+fn retirement_model<F>(insert: F)
+where
+    F: Fn(&cache::FoldedDirectoryCache<Retired>, ObjectId, cache::DirectoryNames<Retired>)
+        + Copy
+        + Send
+        + Sync
+        + 'static,
+{
     loom::model(move || {
         let cache = loom::sync::Arc::new(cache::FoldedDirectoryCache::new());
         let owner = loom::sync::Arc::clone(&cache);

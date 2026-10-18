@@ -137,6 +137,7 @@ def analyze(name, selection, flags, models, environment, rustc_flags=()):
         if event.get("reason") == "compiler-artifact" and event.get("profile", {}).get("test"):
             files = [event["executable"]] if event.get("executable") else event.get("filenames", [])
             executables.extend(files)
+    process.stdout.close()
     if process.wait():
         raise ValueError("model compilation failed: " + name)
     if not list(reports.glob("*.tsv")):
@@ -186,6 +187,8 @@ def main():
             for model in selected:
                 if result[model].startswith("!"):
                     print(model + ": " + result[model], file=sys.stderr, flush=True)
+            if any(result[model].startswith("!") for model in selected):
+                raise ValueError("model analysis unresolved: " + name)
     for model in models:
         result.setdefault(model, "!indeterminate: no compilation context for " + model)
     print(json.dumps(list(result.items())))
