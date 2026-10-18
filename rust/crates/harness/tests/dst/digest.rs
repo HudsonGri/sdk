@@ -9,7 +9,7 @@ pub(super) fn startup_value() -> &'static uuid::Uuid {
     VALUE.get_or_init(uuid::Uuid::new_v4)
 }
 
-fn digest(trace: &Trace, startup: Option<&uuid::Uuid>) -> blake3::Hash {
+fn digest(trace: &Trace) -> blake3::Hash {
     let mut hash = blake3::Hasher::new();
     let mut bytes = |value: &[u8]| {
         hash.update(&(value.len() as u64).to_le_bytes());
@@ -28,9 +28,6 @@ fn digest(trace: &Trace, startup: Option<&uuid::Uuid>) -> blake3::Hash {
         durable,
     } = trace;
     bytes(b"dst-trace-v1");
-    if let Some(startup) = startup {
-        bytes(startup.as_bytes());
-    }
     bytes(&(polls.len() as u64).to_le_bytes());
     for (id, kind) in polls {
         bytes(&id.to_le_bytes());
@@ -69,11 +66,16 @@ fn digest(trace: &Trace, startup: Option<&uuid::Uuid>) -> blake3::Hash {
 }
 
 pub(super) fn pair(trace: &Trace) -> [blake3::Hash; 2] {
-    [digest(trace, None), digest(trace, Some(startup_value()))]
+    let seeded = digest(trace);
+    // Commit to the complete trace once; the mutant adds process-global input
+    // to that commitment instead of hashing all held durable bytes again.
+    let mut mutant = blake3::Hasher::new_derive_key("acyclic.dst.startup-mutant.v1");
+    mutant.update(seeded.as_bytes());
+    mutant.update(startup_value().as_bytes());
+    [seeded, mutant.finalize()]
 }
 
-pub(super) fn emit(trace: &Trace) {
-    let [seeded, mutant] = pair(trace);
+pub(super) fn emit([seeded, mutant]: [blake3::Hash; 2]) {
     println!("\nDST_REPLAY_DIGEST={seeded}");
     println!("DST_STARTUP_MUTANT_DIGEST={mutant}");
 }
@@ -87,7 +89,7 @@ fn cross_process_seeded_replay_digest() -> Result<()> {
         .map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        emit(&replay(71, false).await?);
+        emit(pair(&replay(71, false).await?));
         Ok(())
     })
 }
