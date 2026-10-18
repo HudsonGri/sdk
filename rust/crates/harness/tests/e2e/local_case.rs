@@ -8,6 +8,10 @@ use std::collections::BTreeMap;
 pub(super) struct LocalCase {
     #[serde(default)]
     pub seed: BTreeMap<String, String>,
+    #[serde(default)]
+    pub settings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub replay: bool,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
     pub expect: Expectations,
@@ -25,6 +29,10 @@ pub(super) struct Expectations {
     pub files: BTreeMap<String, Option<String>>,
     pub diffs: Option<BTreeMap<String, Value>>,
     pub results: Option<BTreeMap<String, Value>>,
+    #[serde(default)]
+    pub request_text: Vec<String>,
+    #[serde(default)]
+    pub settings_files: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
