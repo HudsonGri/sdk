@@ -267,10 +267,7 @@ fn prompt<'a>(
     })
 }
 
-fn scenario<'a>(
-    directory: &'a Path,
-    headless: bool,
-) -> EntryFuture<'a, Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>> {
+fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)>> {
     entry(async move {
         // The independently initialized stores and settings never discover HOME.
         let reference =
@@ -307,7 +304,7 @@ fn scenario<'a>(
             .state_directory(directory.join("state")))
         };
         let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
-        let mut jsonl = prompt(&harness, "finish this turn", "done", headless).await?;
+        prompt(&harness, "finish this turn", "done", false).await?;
         let files = harness
             .task_files()
             .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
@@ -327,7 +324,7 @@ fn scenario<'a>(
             .ok_or_else(|| Error::Invalid("missing reopened snapshot".into()))?
             .files;
         assert_eq!(files, restored, "cold reopen lost acknowledged files");
-        jsonl.extend(prompt(&reopened, "submit after reopening", "reopened", headless).await?);
+        let jsonl = prompt(&reopened, "submit after reopening", "reopened", true).await?;
         let files = reopened
             .task_files()
             .observe(acyclic_harness::task_volume::Query::Root, None, 4096)
@@ -345,7 +342,7 @@ fn scenario<'a>(
     })
 }
 
-fn replay(seed: u64, erase_source: bool, headless: bool) -> EntryFuture<'static, Result<Trace>> {
+fn replay(seed: u64, erase_source: bool) -> EntryFuture<'static, Result<Trace>> {
     entry(async move {
         // Negative control erases entropy without changing polling or time.
         let mut driver = if erase_source {
@@ -354,7 +351,7 @@ fn replay(seed: u64, erase_source: bool, headless: bool) -> EntryFuture<'static,
             driver::Driver::new(seed, None)
         };
         let directory = tempfile::tempdir().map_err(storage)?;
-        let result = driver.run(scenario(directory.path(), headless)).await;
+        let result = driver.run(scenario(directory.path())).await;
         let driver::Outcome::Completed(result) = result else {
             panic!("uncut replay crashed");
         };
@@ -373,16 +370,20 @@ fn replay(seed: u64, erase_source: bool, headless: bool) -> EntryFuture<'static,
 }
 
 #[test]
-fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
+fn seeded_production_turn_and_live_f17_replay_exact_bytes() -> Result<()> {
+    let started = std::time::Instant::now();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(storage)?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         tokio::time::pause();
-        let first = replay(71, false, false).await?;
-        let mut second = replay(71, false, false).await?;
+        // Each independent world covers direct submit, cold reopen and the
+        // headless entry. Their oracles share observations, never agent state.
+        let first = replay(71, false).await?;
+        let mut second = replay(71, false).await?;
         same_trace(&first, &second).expect("same seed diverged");
+        live_f17_jsonl_never_emits_byte_arrays(&first)?;
         // Comparing held bytes must still detect even a one-bit disk mutation.
         let (_, bytes) = second
             .durable
@@ -402,12 +403,12 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
             first.writes.iter().any(|write| write.requested > 0),
             "original durable writes were bypassed"
         );
-        let different = replay(72, false, false).await?;
+        let different = replay(72, false).await?;
         assert_ne!(
             first.dispatches, different.dispatches,
             "seed did not reach production identities"
         );
-        let broken = replay(71, true, false).await?;
+        let broken = replay(71, true).await?;
         assert!(
             same_trace(&first, &broken).is_err(),
             "unseeded trace escaped the replay oracle"
@@ -417,30 +418,21 @@ fn seeded_production_turn_replays_exact_bytes() -> Result<()> {
             "unseeded production negative control escaped"
         );
         Ok(())
-    })
+    });
+    eprintln!("direct/headless/F17 replay elapsed: {:?}", started.elapsed());
+    result
 }
 
-#[test]
-fn seeded_live_f17_jsonl_never_emits_byte_arrays() -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
-    runtime.block_on(async {
-        tokio::time::pause();
-        let first = replay(71, false, true).await?;
-        let second = replay(71, false, true).await?;
-        same_trace(&first, &second).expect("headless same seed diverged");
-        assert!(!first.jsonl.is_empty(), "headless output bypassed");
-        // F17's old production route derived serde directly from the stored
-        // snapshot. The independent wire oracle must reject that same route.
-        let text = std::str::from_utf8(&first.jsonl).map_err(storage)?;
-        let snapshot = client::jsonl::parse_snapshot(text.lines().next().expect("initial frame"))?;
-        let mutant = serde_json::to_value(snapshot).map_err(storage)?;
-        assert!(
-            integer_array(&mutant),
-            "F17: bypassing the production wire codec escaped the oracle"
-        );
-        Ok(())
-    })
+fn live_f17_jsonl_never_emits_byte_arrays(trace: &Trace) -> Result<()> {
+    assert!(!trace.jsonl.is_empty(), "headless output bypassed");
+    // F17's old production route derived serde directly from the stored
+    // snapshot. The independent wire oracle must reject that same route.
+    let text = std::str::from_utf8(&trace.jsonl).map_err(storage)?;
+    let snapshot = client::jsonl::parse_snapshot(text.lines().next().expect("initial frame"))?;
+    let mutant = serde_json::to_value(snapshot).map_err(storage)?;
+    assert!(
+        integer_array(&mutant),
+        "F17: bypassing the production wire codec escaped the oracle"
+    );
+    Ok(())
 }
