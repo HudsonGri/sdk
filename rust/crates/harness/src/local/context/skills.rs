@@ -99,10 +99,7 @@ impl LocalHarness {
                     .await
                 {
                     Ok((page, _)) => page,
-                    Err(
-                        acyclic_fs::LazyWorkspaceError::NotFound
-                        | acyclic_fs::LazyWorkspaceError::NotDirectory,
-                    ) => break,
+                    Err(error) if absent(&error) => break,
                     Err(error) => return Err(error.into()),
                 };
                 for entry in &page.entries {
@@ -130,10 +127,10 @@ impl LocalHarness {
                 {
                     Ok(bytes) => bytes,
                     Err(
-                        acyclic_fs::LazyWorkspaceError::NotFound
-                        | acyclic_fs::LazyWorkspaceError::NotRegularFile
+                        acyclic_fs::LazyWorkspaceError::NotRegularFile
                         | acyclic_fs::LazyWorkspaceError::TooLarge,
                     ) => continue,
+                    Err(error) if absent(&error) => continue,
                     Err(error) => return Err(error.into()),
                 };
                 if let Some(skill) = listed(bytes.bytes.as_ref(), path)
@@ -147,9 +144,41 @@ impl LocalHarness {
     }
 }
 
+/// A missing skill root or file is no skill, whether the authored view or the
+/// native source reports the absence.
+fn absent(error: &acyclic_fs::LazyWorkspaceError) -> bool {
+    use acyclic_fs::{FsError, LazyWorkspaceError};
+    matches!(
+        error,
+        LazyWorkspaceError::NotFound
+            | LazyWorkspaceError::NotDirectory
+            | LazyWorkspaceError::Filesystem(FsError::NotFound | FsError::NotDirectory)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_absence_is_skipped() {
+        use acyclic_fs::{FsError, LazyWorkspaceError};
+        for error in [
+            LazyWorkspaceError::NotFound,
+            LazyWorkspaceError::NotDirectory,
+            LazyWorkspaceError::Filesystem(FsError::NotFound),
+            LazyWorkspaceError::Filesystem(FsError::NotDirectory),
+        ] {
+            assert!(absent(&error), "{error}");
+        }
+        // Negative controls: a stale or cancelled view fails the turn.
+        for error in [
+            LazyWorkspaceError::StaleSource,
+            LazyWorkspaceError::Cancelled,
+        ] {
+            assert!(!absent(&error), "{error}");
+        }
+    }
 
     #[test]
     fn frontmatter_lists_valid_skills_on_one_line() {
