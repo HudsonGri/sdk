@@ -17,6 +17,16 @@ fn compile_model(
     model: &str,
     child: &str,
 ) -> Result<BTreeMap<String, String>, String> {
+    compile_tree(&[("model.rs", source), ("child.rs", child)], model, &[])
+}
+
+// Compiles the crate rooted at model.rs from the given repository-relative
+// files; `extra` adds rustc arguments such as `--test`.
+fn compile_tree(
+    files: &[(&str, &str)],
+    model: &str,
+    extra: &[&str],
+) -> Result<BTreeMap<String, String>, String> {
     let directory = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
@@ -32,8 +42,11 @@ fn compile_model(
         std::fs::remove_file(report.map_err(|e| e.to_string())?.path())
             .map_err(|e| e.to_string())?;
     }
-    std::fs::write(directory.join("model.rs"), source).map_err(|e| e.to_string())?;
-    std::fs::write(directory.join("child.rs"), child).map_err(|e| e.to_string())?;
+    for (path, contents) in files {
+        let path = directory.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(path, contents).map_err(|e| e.to_string())?;
+    }
     std::fs::write(directory.join("models"), format!("{model}\n")).map_err(|e| e.to_string())?;
     let sysroot = Command::new("rustc")
         .args(["+nightly-2026-07-01", "--print", "sysroot"])
@@ -58,6 +71,7 @@ fn compile_model(
             sysroot.trim(),
             "-Awarnings",
         ])
+        .args(extra)
         .arg(directory.join("model.rs"))
         .arg("-o")
         .arg(directory.join("model.rmeta"))
@@ -216,15 +230,39 @@ fn metadata_analysis_includes_private_unreachable_callers() {
     assert!(plain.values().all(|verdict| verdict == "0"), "{plain:?}");
 }
 
+const PRODUCTION: &str = "#[path = \"src/production.rs\"] mod production; #[path = \"tests/support.rs\"] mod support; mod child;";
+// Production source with test-only additions: a test-only Default and From for
+// production types and a type in a test module.
+const COMPONENTS: &str = "#[derive(Default)] pub struct Component(pub std::sync::Mutex<()>);
+pub struct Fixed(pub std::sync::Mutex<()>);
+#[cfg(test)] impl Default for Fixed { fn default() -> Self { Self(std::sync::Mutex::new(())) } }
+pub struct Converted(pub std::sync::Mutex<()>);
+#[cfg(any(test, feature = \"test-support\"))] impl From<()> for Converted { fn from(_: ()) -> Self { Self(std::sync::Mutex::new(())) } }
+#[cfg(test)] pub mod fixtures { #[derive(Default)] pub struct Fake(pub std::sync::Mutex<()>); }
+pub struct Plain(pub std::sync::Mutex<()>);
+impl Plain { pub fn new() -> Self { Self(std::sync::Mutex::new(())) } }";
+const SUPPORT: &str =
+    "#[derive(Default)] pub struct Helper(pub std::sync::Arc<std::sync::Mutex<()>>);";
+
+fn compile_production(scenario: &str) -> BTreeMap<String, String> {
+    compile_tree(
+        &[
+            ("model.rs", PRODUCTION),
+            ("src/production.rs", COMPONENTS),
+            ("tests/support.rs", SUPPORT),
+            ("child.rs", scenario),
+        ],
+        "child.rs",
+        &["--test"],
+    )
+    .unwrap()
+}
+
 #[test]
 fn production_defaults_are_not_model_owned_but_model_defaults_are() {
-    let source = "mod production { #[derive(Default)] pub struct Component(pub std::sync::Mutex<()>); } mod child;";
-    let healthy = compile_model(
-        source,
-        "child.rs",
+    let healthy = compile_production(
         "pub fn scenario() { let _ = crate::production::Component::default(); }",
-    )
-    .unwrap();
+    );
     assert!(!healthy.is_empty());
     assert!(
         healthy.values().all(|verdict| verdict == "0"),
@@ -233,8 +271,14 @@ fn production_defaults_are_not_model_owned_but_model_defaults_are() {
     for body in [
         "pub fn scenario() { let _ = std::sync::Mutex::<()>::default(); }",
         "#[derive(Default)] struct Model(std::sync::Arc<std::sync::Mutex<()>>); pub fn scenario() { let _ = Model::default(); }",
+        // Test-only code is model state even when it is outside the model file.
+        "pub fn scenario() { let _ = crate::production::Fixed::default(); }",
+        "pub fn scenario() { let _ = crate::production::Converted::from(()); }",
+        "pub fn scenario() { let _ = crate::production::fixtures::Fake::default(); }",
+        "pub fn scenario() { let _ = crate::support::Helper::default(); }",
+        "impl Default for crate::production::Plain { fn default() -> Self { crate::production::Plain::new() } } pub fn scenario() { let _ = crate::production::Plain::default(); }",
     ] {
-        let broken = compile_model(source, "child.rs", body).unwrap();
+        let broken = compile_production(body);
         assert!(
             broken
                 .iter()

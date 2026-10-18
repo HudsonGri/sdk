@@ -1,6 +1,10 @@
+use rustc_hir::attrs::{AttributeKind, CfgEntry};
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::ty::{self, Ty, TyCtxt, TypingEnv};
 use rustc_span::sym;
+use std::path::Path;
+
+type Roots = std::collections::HashMap<LocalDefId, String>;
 
 pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
     let symbol = tcx.item_name(method);
@@ -19,10 +23,79 @@ pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
     )
 }
 
+// A cfg that holds only in test builds (`test`, or a feature named for tests)
+// removes its item from the production build.
+fn test_cfg(entry: &CfgEntry, positive: bool) -> bool {
+    match entry {
+        CfgEntry::All(entries, _) | CfgEntry::Any(entries, _) => {
+            entries.iter().any(|entry| test_cfg(entry, positive))
+        }
+        CfgEntry::Not(entry, _) => test_cfg(entry, !positive),
+        CfgEntry::NameValue { name, value, .. } => {
+            positive
+                && (*name == sym::test
+                    || (*name == sym::feature
+                        && value.is_some_and(|v| v.as_str().contains("test"))))
+        }
+        CfgEntry::Bool(..) | CfgEntry::Version(..) => false,
+    }
+}
+
+// Model or test code: a model file, a local file outside a `src` directory
+// (integration tests and model crates), a test-support crate, or any item
+// enclosed by a test-only cfg. Only definitions outside all of these belong to
+// the production build.
+fn test_code(tcx: TyCtxt<'_>, root: &Path, roots: &Roots, id: DefId) -> bool {
+    if let Some(local) = id.as_local() {
+        if crate::ownership::model(tcx, roots, local).is_some()
+            || !crate::source(tcx, root, tcx.def_span(id))
+                .is_some_and(|file| file.split('/').any(|part| part == "src"))
+        {
+            return true;
+        }
+    }
+    if tcx.crate_name(id.krate).as_str().contains("test_support") {
+        return true;
+    }
+    let mut item = Some(id);
+    while let Some(id) = item {
+        for attribute in rustc_hir::attrs::HasAttrs::get_attrs(id, &tcx) {
+            if let rustc_hir::Attribute::Parsed(AttributeKind::CfgTrace(entries)) = attribute
+                && entries.iter().any(|(entry, _)| test_cfg(entry, true))
+            {
+                return true;
+            }
+        }
+        item = tcx.opt_parent(id);
+    }
+    false
+}
+
+// A production component's own Default/From construction is the production
+// constructor. A constructing impl written in model or test code is not.
+fn production<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    root: &Path,
+    roots: &Roots,
+    id: DefId,
+    ty: Ty<'tcx>,
+) -> bool {
+    !test_code(tcx, root, roots, id)
+        && [sym::Default, sym::From, sym::TryFrom]
+            .into_iter()
+            .all(|name| {
+                tcx.get_diagnostic_item(name).is_none_or(|constructor| {
+                    tcx.non_blanket_impls_for_ty(constructor, ty)
+                        .all(|implementation| !test_code(tcx, root, roots, implementation))
+                })
+            })
+}
+
 pub(super) fn lock<'tcx>(
     tcx: TyCtxt<'tcx>,
     owner: LocalDefId,
-    roots: &std::collections::HashMap<LocalDefId, String>,
+    roots: &Roots,
+    root: &Path,
     ty: ty::Unnormalized<'tcx, Ty<'tcx>>,
     default: bool,
     depth: usize,
@@ -62,29 +135,36 @@ pub(super) fn lock<'tcx>(
                     tcx,
                     owner,
                     roots,
+                    root,
                     ty::Unnormalized::new_wip(pointee),
                     true,
                     depth + 1,
                 );
             }
-            // Only model-owned aggregates introduce model state. Initializing a
-            // production component through its public Default implementation
+            // Only model or test aggregates introduce model state. Initializing
+            // a production component through its production Default implementation
             // does not turn its private locks into a substitute model lock.
-            if !id
-                .as_local()
-                .is_some_and(|id| crate::ownership::model(tcx, roots, id).is_some())
-            {
+            if production(tcx, root, roots, id, ty) {
                 return Some(false);
             }
-            any(definition
-                .all_fields()
-                .map(|field| lock(tcx, owner, roots, field.ty(tcx, arguments), true, depth + 1)))
+            any(definition.all_fields().map(|field| {
+                lock(
+                    tcx,
+                    owner,
+                    roots,
+                    root,
+                    field.ty(tcx, arguments),
+                    true,
+                    depth + 1,
+                )
+            }))
         }
         ty::Tuple(elements) if default => any(elements.iter().map(|ty| {
             lock(
                 tcx,
                 owner,
                 roots,
+                root,
                 ty::Unnormalized::new_wip(ty),
                 true,
                 depth + 1,
@@ -96,6 +176,7 @@ pub(super) fn lock<'tcx>(
                 tcx,
                 owner,
                 roots,
+                root,
                 ty::Unnormalized::new_wip(*element),
                 true,
                 depth + 1,
@@ -106,6 +187,7 @@ pub(super) fn lock<'tcx>(
             tcx,
             owner,
             roots,
+            root,
             ty::Unnormalized::new_wip(*element),
             true,
             depth + 1,
