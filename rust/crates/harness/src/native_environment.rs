@@ -30,6 +30,7 @@ fn user_location(name: &str) -> bool {
     .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
+/// Resolves one process variable through the native environment seam.
 pub fn variable(name: &str) -> Option<OsString> {
     resolve(Read::Variable(name))
 }
@@ -45,10 +46,12 @@ pub fn fixture_variable(name: &str) -> Option<OsString> {
 }
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+/// Resolves the native home directory when fixture isolation permits discovery.
 pub fn home() -> Option<PathBuf> {
     resolve(Read::Home).map(PathBuf::from)
 }
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+/// Preserves an injected root and rejects ambient fixture state discovery.
 pub fn state(injected: Option<&Path>) -> Option<PathBuf> {
     resolve(Read::State(injected)).map(PathBuf::from)
 }
