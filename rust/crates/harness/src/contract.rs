@@ -167,7 +167,7 @@ macro_rules! uuid_id {
             /// Creates a fresh identity.
             #[must_use]
             pub fn new() -> Self {
-                Self(Uuid::new_v4())
+                Self(crate::identity::fresh_uuid())
             }
 
             /// Creates a deterministic identity from bytes.

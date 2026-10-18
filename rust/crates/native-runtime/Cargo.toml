@@ -12,10 +12,11 @@ keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
 [features]
-test-support = ["dep:tokio"]
+test-support = ["dep:tokio", "dep:blake3"]
 
 [dependencies]
 bytes.workspace = true
+blake3 = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
