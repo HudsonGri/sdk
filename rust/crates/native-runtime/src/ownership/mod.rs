@@ -27,7 +27,22 @@ impl Drop for OwnershipReleaseBarrier {
     }
 }
 
+// Field drop order is the synchronization boundary: cleanup completes before
+// the sole reopen fence is released. No other locks may be acquired by cleanup.
+struct FencedOwner<Owner, Fence> {
+    _owner: Owner,
+    _fence: Fence,
+}
+
 impl OwnershipAnchor {
+    /// Retains an owner and releases its fence only after owner cleanup completes.
+    pub fn fenced(owner: impl Send + Sync + 'static, fence: impl Send + Sync + 'static) -> Self {
+        Self::new(FencedOwner {
+            _owner: owner,
+            _fence: fence,
+        })
+    }
+
     /// Erases and retains one ownership value behind a cloneable lifetime token.
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
         let owner: Arc<dyn Send + Sync> = Arc::new(owner);
@@ -76,3 +91,6 @@ impl OwnershipReleaseBarrier {
         }
     }
 }
+
+#[cfg(all(test, acyclic_native_runtime_loom))]
+mod model;

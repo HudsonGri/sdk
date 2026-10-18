@@ -5,8 +5,8 @@ use proptest::prelude::*;
 
 #[test]
 fn checked_in_fuzz_corpus() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/plan_markdown");
+    let directory = std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
+        .join("fuzz/corpus/plan_markdown");
     for (name, count) in [
         ("lifecycle", Some(3)),
         ("malformed", None),

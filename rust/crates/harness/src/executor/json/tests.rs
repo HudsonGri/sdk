@@ -599,7 +599,7 @@ mod object_work {
     mod oracle {
         use crate as acyclic_harness;
         include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
+            crate::build_metadata::MANIFEST_DIR,
             "/tests/support/bounded_json.rs"
         ));
     }

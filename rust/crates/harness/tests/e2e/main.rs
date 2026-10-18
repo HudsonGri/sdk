@@ -25,10 +25,10 @@ mod provider_case;
 mod provider_http;
 mod provider_tests;
 mod providers;
-mod remote_swarm;
-mod resume;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
+mod remote_swarm;
+mod resume;
 mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
@@ -122,7 +122,7 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
 
 #[tokio::test]
 async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("summary/exact-capacity.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["mode", "text", "result", "context", "budget"] {
@@ -155,7 +155,7 @@ async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() 
 
 #[tokio::test]
 async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accounting() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("compaction/threshold.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["context", "capacity", "policy", "accounting", "output"] {
@@ -180,7 +180,7 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
 
 #[tokio::test]
 async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("compaction/recover-summary.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for files in [
@@ -203,7 +203,7 @@ async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult
 
 #[tokio::test]
 async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("recovery/midstream.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["prefix", "continuation", "count", "resume", "unused"] {
@@ -289,11 +289,12 @@ where
 }
 
 async fn run_scenarios(started: Instant) -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-    let local_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/local-scenarios");
+    let local_root =
+        Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/local-scenarios");
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     discover(&local_root, &mut paths)?;
     paths.sort();
@@ -329,7 +330,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path
-            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))?
+            .strip_prefix(Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests"))?
             .display();
         match result {
             Ok(()) => println!("PASS {name}"),

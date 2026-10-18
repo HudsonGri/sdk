@@ -98,22 +98,22 @@ impl LocalHarnessConfig {
         }
         self
     }
-    /// Gives the composition a fresh test-owned state directory retained by its stores.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn with_test_state(mut self) -> Result<Self> {
-        let state = tempfile::tempdir().map_err(storage)?;
-        self.state_directory = Some(state.path().to_path_buf());
-        self.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
-        Ok(self)
-    }
     /// Apply fixture defaults only when opening a store; embedded bindings without
     /// a checkout must not allocate or resolve an unused state directory.
     pub(super) fn prepare_state(self) -> Result<Self> {
         #[cfg(any(test, feature = "test-support"))]
-        if self.state_directory.is_none() {
-            return self.with_test_state();
+        let mut config = self;
+        #[cfg(not(any(test, feature = "test-support")))]
+        let config = self;
+        #[cfg(any(test, feature = "test-support"))]
+        if config.state_directory.is_none() {
+            #[cfg(test)]
+            TEMPORARY_STATES.with(|count| count.set(count.get() + 1));
+            let state = tempfile::tempdir().map_err(storage)?;
+            config.state_directory = Some(state.path().to_path_buf());
+            config.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
         }
-        Ok(self)
+        Ok(config)
     }
     /// The one resolution of this composition's durable state directory: the injected directory, else the
     /// project's default under the per-user root.
@@ -208,4 +208,9 @@ impl LocalHarnessConfig {
         self.clock = clock;
         self
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static TEMPORARY_STATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

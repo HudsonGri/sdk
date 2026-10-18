@@ -55,7 +55,20 @@ pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<
     Ok(directory)
 }
 
-pub(super) fn directory(path: &Path) -> Result<PathBuf> {
+pub(super) fn separated_directory(path: &Path, checkout: Option<&Path>) -> Result<PathBuf> {
+    let directory = directory(path)?;
+    if let Some(checkout) = checkout {
+        let checkout = fs::canonicalize(checkout).map_err(storage)?;
+        if checkout.starts_with(&directory) || directory.starts_with(&checkout) {
+            return Err(Error::Invalid(
+                "local state directory must be separate from the checkout".into(),
+            ));
+        }
+    }
+    Ok(directory)
+}
+
+fn directory(path: &Path) -> Result<PathBuf> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -73,13 +86,6 @@ impl Owner {
             LocalProject::Workspace(path) => Some(fs::canonicalize(path).map_err(storage)?),
             LocalProject::Volume { .. } => None,
         };
-        if workspace.as_ref().is_some_and(|workspace| {
-            workspace.starts_with(directory) || directory.starts_with(workspace)
-        }) {
-            return Err(Error::Invalid(
-                "local state directory must not contain the checkout".into(),
-            ));
-        }
         let path = directory.join("owner.json");
         let workspace_identity = workspace
             .as_ref()

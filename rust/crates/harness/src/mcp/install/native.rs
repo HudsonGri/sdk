@@ -65,7 +65,7 @@ pub(super) async fn connect(
             let request = transport.initialization_request(
                 operation,
                 "acyclic-harness",
-                env!("CARGO_PKG_VERSION"),
+                crate::build_metadata::PACKAGE_VERSION,
             )?;
             let response = provider.exchange(operation, request).await?;
             let (transport, _, initialized) =

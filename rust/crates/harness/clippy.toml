@@ -43,3 +43,9 @@ disallowed-methods = [
 
     { path = "std::env::set_current_dir", reason = "process-wide; use Command::current_dir for a child" },
 ]
+
+# Resolve macro aliases through the compiler, just like environment methods.
+disallowed-macros = [
+    { path = "std::env", reason = "compile-time environment discovery belongs in the Cargo metadata seam" },
+    { path = "std::option_env", reason = "compile-time environment discovery belongs in the Cargo metadata seam" },
+]

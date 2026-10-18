@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 mod fixture {
     use acyclic_stream;
     include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
+        acyclic_harness::build_metadata::MANIFEST_DIR,
         "/../stream/tests/support/session.rs"
     ));
 }

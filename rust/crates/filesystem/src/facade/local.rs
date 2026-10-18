@@ -183,7 +183,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let open_options = options.clone();
             let fs = run_local_initialization(ownership, move |ownership| async move {
                 let ownership = match external_owner {
-                    Some(owner) => OwnershipAnchor::new((ownership, owner)),
+                    Some(owner) => OwnershipAnchor::fenced(owner, ownership),
                     None => OwnershipAnchor::new(ownership),
                 };
                 Self::open_local_unshared(open_options, Some(ownership)).await

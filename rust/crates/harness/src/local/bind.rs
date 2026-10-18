@@ -30,6 +30,12 @@ impl LocalHarness {
         let state_owner = config.test_state.clone();
         #[cfg(all(feature = "native-execution", not(any(test, feature = "test-support"))))]
         let state_owner = None;
+        #[cfg(feature = "native-execution")]
+        let checkout_state = checkout
+            .map(|checkout| {
+                owner::separated_directory(&config.resolved_state_directory()?, Some(checkout))
+            })
+            .transpose()?;
         let (verifier, signed) = authority;
         let LocalProject::Volume { volume, .. } = &config.project else {
             return Err(Error::Invalid(
@@ -72,9 +78,7 @@ impl LocalHarness {
         let mut runtime = runtime.with_task_files(erased_files.clone())?;
         runtime.bind_task_files(Some(task_files.clone()));
         #[cfg(feature = "native-execution")]
-        let workspace = if let Some(checkout) = checkout {
-            let state_directory = config.resolved_state_directory()?;
-            let directory = owner::directory(&state_directory)?;
+        let workspace = if let Some((checkout, directory)) = checkout.zip(checkout_state) {
             let identity = acyclic_fs::capture_root_identity(checkout).map_err(storage_error)?;
             let digest = blake3::derive_key(
                 "acyclic.local.bound-checkout/v1",

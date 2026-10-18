@@ -34,8 +34,8 @@ pub fn local_harness_config(
     let workspace = workspace.into();
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
-    // Each composition owns a fresh state directory; a test that reopens one passes its own `state_directory`.
-    let config = crate::LocalHarnessConfig::new(workspace, model).with_test_state()?;
+    // Store opening supplies temporary state only when no explicit root was selected.
+    let config = crate::LocalHarnessConfig::new(workspace, model);
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(settings);
     Ok(config)

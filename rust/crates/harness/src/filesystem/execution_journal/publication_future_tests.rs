@@ -580,7 +580,7 @@ proptest! {
     #[test]
     fn journal_wrapper_removes_exactly_one_allocation(digest in any::<[u8;32]>()) {
         let expected: Vec<u64> = serde_json::from_str(&std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            std::path::Path::new(crate::build_metadata::MANIFEST_DIR)
                 .join("src/filesystem/execution_journal/publication_future_expected.json"),
         ).unwrap()).unwrap();
         prop_assert_eq!(expected.len(), 5);

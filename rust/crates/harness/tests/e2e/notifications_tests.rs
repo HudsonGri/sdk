@@ -84,7 +84,7 @@ fn fuzz_history_continues_after_stale_fixture_expectations() -> TestResult {
 
 #[test]
 fn notification_oracles_reject_wrong_output_counts_removal_and_view() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = crate::scenario::load_value(
         &root,
         &root.join("notifications/osc777/on/task_failed.json"),
@@ -123,7 +123,7 @@ fn notification_oracles_reject_wrong_output_counts_removal_and_view() -> TestRes
 
 #[test]
 fn notification_parser_rejects_ignored_fields_and_vacuous_expectations() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let mut baseline = crate::scenario::load_value(
         &root,
         &root.join("notifications/osc777/on/task_failed.json"),

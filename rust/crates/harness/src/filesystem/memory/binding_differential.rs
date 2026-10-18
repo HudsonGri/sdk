@@ -188,7 +188,7 @@ fn exact(unbound: bool) -> TestCaseResult {
     let [(old, _), (new, trace)] = pair(&bytes, false, unbound);
     let expected: Value = serde_json::from_str(
         &std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            std::path::Path::new(crate::build_metadata::MANIFEST_DIR)
                 .join("src/filesystem/memory/binding_expected.json"),
         )
         .unwrap(),

@@ -42,7 +42,10 @@ struct Endpoints {
 /// binary run by the fixture, away from its build tree, is given it the same way.
 fn root() -> PathBuf {
     acyclic_harness::test_support::environment("CARGO_MANIFEST_DIR")
-        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+        .map_or_else(
+            || PathBuf::from(acyclic_harness::build_metadata::MANIFEST_DIR),
+            PathBuf::from,
+        )
         .join("tests/scenarios")
 }
 
