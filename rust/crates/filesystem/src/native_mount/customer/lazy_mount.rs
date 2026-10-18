@@ -282,7 +282,7 @@ where
 
     /// Advances a clean checkout and settles its native visibility.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
-        let advanced = self.source.advance_to_head_async().await;
+        let advanced = crate::in_heap(|| self.source.advance_to_head_async()).await;
         self.revalidate()?;
         advanced.map_err(Into::into)
     }
