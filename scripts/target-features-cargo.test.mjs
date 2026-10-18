@@ -99,3 +99,75 @@ test('seeded target/feature property agrees with Cargo across shadowing and cfg_
     compare(workspace, selected.source, declared, declared || !selected.gated);
   }
 });
+
+function planFor(workspace) {
+  const meta = cargo(workspace.root, ['metadata', '--offline', '--locked', '--no-deps', '--format-version', '1']);
+  assert.equal(meta.status, 0, meta.stderr);
+  const metadata = JSON.parse(meta.stdout);
+  return {metadata, plan: checks(metadata)};
+}
+
+test('dev features cannot hide a broken production binary or library', t => {
+  const workspace = fixture(t);
+  workspace.write('tests/target.rs', '#[test] fn ready() {}');
+  const manifest = required => workspace.manifest([]) + `
+[dev-dependencies]
+fixture={path=".",features=["grpc"]}
+[[bin]]
+name="probe"
+path="src/main.rs"
+required-features=${JSON.stringify(required)}
+`;
+  workspace.write('Cargo.toml', manifest([]));
+  workspace.write('src/lib.rs', '#[cfg(feature="grpc")] pub fn connect() {}');
+  workspace.write('src/main.rs', 'fn main() { fixture::connect(); }');
+  assert.equal(cargo(workspace.root, ['generate-lockfile', '--offline']).status, 0);
+  const contaminated = cargo(workspace.root, ['check', '--locked', '-p', 'fixture', '--lib', '--tests', '--bin', 'probe']);
+  assert.equal(contaminated.status, 0, contaminated.stderr);
+  const direct = cargo(workspace.root, ['check', '--locked', '-p', 'fixture', '--bin', 'probe']);
+  assert.notEqual(direct.status, 0);
+  assert.match(direct.stderr, /E0425/);
+  const broken = planFor(workspace).plan.filter(command => command.package === 'fixture');
+  assert.ok(broken.some(command => command.stage === 'production' && command.args.includes('--bin')));
+  assert.ok(broken.filter(command => command.stage === 'production')
+    .some(command => cargo(workspace.root, command.args).status !== 0));
+  workspace.write('Cargo.toml', manifest(['grpc']));
+  assert.ok(planFor(workspace).plan.every(command => cargo(workspace.root, command.args).status === 0));
+  // The same distinction is required for a library even when no binary uses it.
+  workspace.write('src/lib.rs', '#[cfg(feature="grpc")] pub fn connect() {} pub fn call() { connect(); }');
+  const library = planFor(workspace).plan.find(command => command.package === 'fixture'
+    && command.stage === 'production' && command.features.length === 0);
+  const devLibrary = cargo(workspace.root, ['check', '--locked', '-p', 'fixture', '--lib', '--tests']);
+  assert.equal(devLibrary.status, 0, devLibrary.stderr);
+  const directLibrary = cargo(workspace.root, ['check', '--locked', '-p', 'fixture', '--lib']);
+  assert.notEqual(directLibrary.status, 0);
+  assert.match(directLibrary.stderr, /E0425/);
+  const result = cargo(workspace.root, library.args);
+  assert.equal(result.status, directLibrary.status);
+  assert.match(result.stderr, /E0425/);
+});
+
+test('an invalid nonstandard library cannot disappear in a mixed workspace', t => {
+  const workspace = fixture(t);
+  workspace.write('Cargo.toml', workspace.manifest([]).replace('members=["helper","bridge"]', 'members=["helper","bridge","dynamic"]'));
+  workspace.write('tests/target.rs', '#[test] fn ready() {}');
+  workspace.write('dynamic/src/lib.rs', 'pub fn broken() { missing_symbol(); }');
+  for (const kind of ['cdylib', 'staticlib', 'dylib']) {
+    workspace.write('dynamic/Cargo.toml', `[package]\nname="dynamic"\nversion="0.0.0"\nedition="2024"\n[lib]\ncrate-type=["${kind}"]\n`);
+    assert.equal(cargo(workspace.root, ['generate-lockfile', '--offline']).status, 0);
+    const {metadata, plan} = planFor(workspace);
+    assert.ok(metadata.packages.find(pkg => pkg.name === 'dynamic').targets.some(target => target.kind.includes(kind)));
+    assert.deepEqual(new Set(plan.map(command => command.package)), new Set(metadata.packages.map(pkg => pkg.name)));
+    const selected = plan.find(command => command.package === 'dynamic' && command.stage === 'production');
+    assert.ok(selected, kind);
+    const result = cargo(workspace.root, selected.args);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /E0425/);
+    if (kind === 'cdylib') {
+      for (const command of plan.filter(command => command.package !== 'dynamic')) {
+        const healthy = cargo(workspace.root, command.args);
+        assert.equal(healthy.status, 0, healthy.stderr);
+      }
+    }
+  }
+});
