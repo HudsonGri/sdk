@@ -127,9 +127,10 @@ mod tests {
         }
         std::fs::write(nested.join("tracked"), "x").unwrap();
         let text = std::fs::read_to_string(&exclude).unwrap();
-        assert!(text.starts_with("user-pattern\n"));
-        assert_eq!(text.matches("/.volumes/scratch\n").count(), 1);
-        assert_eq!(text.matches("/sub\\ dir/.volumes/scratch\n").count(), 1);
+        assert_eq!(
+            text,
+            "user-pattern\n/.volumes/scratch\n/sub\\ dir/.volumes/scratch\n"
+        );
         assert!(!repository.join(".gitignore").exists());
         let status = git(
             &repository,
