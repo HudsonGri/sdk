@@ -117,7 +117,10 @@ async fn stage(
         .await
 }
 
-async fn initialize_bounded(maximum: u32) -> (MemoryWorkspace, MemoryTransaction) {
+async fn initialize_bounded(
+    maximum: u32,
+    existing: &[&str],
+) -> (MemoryWorkspace, MemoryTransaction) {
     let cancellation = CancellationToken::new();
     let budget = WorkBudget::UNBOUNDED;
     let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
@@ -137,6 +140,9 @@ async fn initialize_bounded(maximum: u32) -> (MemoryWorkspace, MemoryTransaction
     ))
     .unwrap();
     value!(setup.create_dir_all("/out", budget, &cancellation)).unwrap();
+    for directory in existing {
+        value!(setup.create_dir_all(directory, budget, &cancellation)).unwrap();
+    }
     setup.write_text("/out/existing", "original").await.unwrap();
     setup.write_text("/keep", "untouched").await.unwrap();
     commit(&mut setup).await.unwrap();
@@ -186,7 +192,7 @@ type Outcome = (bool, BTreeMap<&'static str, Result<Vec<u8>, String>>);
 async fn outcome(stage_as: Stage, case: &Case) -> Outcome {
     let cancellation = CancellationToken::new();
     let budget = WorkBudget::UNBOUNDED;
-    let (workspace, mut transaction) = initialize_bounded(case.maximum).await;
+    let (workspace, mut transaction) = initialize_bounded(case.maximum, &[]).await;
     let mut accounting = KernelAccounting::standalone(budget, &cancellation);
     let staged = stage(
         &mut transaction,
@@ -284,4 +290,100 @@ fn recording_the_prefix_file_record_fails_the_rebase_property() {
     check(Stage::Batched, &case).unwrap();
     let error = check(Stage::BatchedWithPrefixRecord, &case).unwrap_err();
     assert!(error.to_string().contains("diverges from serial"));
+}
+
+/// Every path batch a batched staging observes, in walk order, over a base
+/// that already holds `existing` directories.
+fn reservations(case: &Case, existing: &[&str]) -> Vec<crate::kernel::DependencySlots> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    crate::kernel::DEPENDENCY_SLOTS.set(Some(Vec::new()));
+    runtime.block_on(async {
+        let cancellation = CancellationToken::new();
+        let (_workspace, mut transaction) = initialize_bounded(case.maximum, existing).await;
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        stage(
+            &mut transaction,
+            Stage::Batched,
+            case,
+            &mut accounting,
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    });
+    crate::kernel::DEPENDENCY_SLOTS.take().unwrap_or_default()
+}
+
+/// Each walk reserves what `reserve` names, never fills past it, and fills
+/// every slot when all its queries resolve: a walk that stops at a missing
+/// name records fewer bindings, never more.
+fn exact(
+    slots: &[crate::kernel::DependencySlots],
+    reserve: impl Fn(&crate::kernel::DependencySlots) -> Option<usize>,
+) -> TestCaseResult {
+    prop_assert!(!slots.is_empty(), "staging observed no path batch");
+    for slot in slots {
+        prop_assert_eq!(slot.capacity, slot.reserved, "reallocated {:?}", slot);
+        prop_assert!(slot.filled <= slot.reserved, "overfilled {:?}", slot);
+        if slot.resolved {
+            prop_assert_eq!(slot.filled, slot.reserved, "unfilled slots in {:?}", slot);
+        }
+        prop_assert_eq!(
+            Some(slot.reserved),
+            reserve(slot),
+            "reservation differs for {:?}",
+            slot
+        );
+    }
+    Ok(())
+}
+
+fn reserved_by_batch(slot: &crate::kernel::DependencySlots) -> Option<usize> {
+    crate::kernel::PathObservation::Paths {
+        records_from: slot.records_from,
+    }
+    .dependency_slots(slot.components, slot.count)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn batched_staging_reserves_exactly_the_dependencies_it_records(
+        case in cases(),
+        existing in prop::sample::subsequence(DIRECTORIES.to_vec(), 0..=DIRECTORIES.len()),
+    ) {
+        exact(&reservations(&case, &existing), reserved_by_batch)?;
+    }
+}
+
+/// Negative control: the former reservation, a record slot for every query,
+/// leaves one slot per resolved directory prefix unfilled.
+#[test]
+fn reserving_a_record_slot_per_prefix_fails_the_exact_property() {
+    let case = Case {
+        maximum: 1024,
+        directories: vec![0, 1],
+        files: vec![(0, b"exact".to_vec())],
+        siblings: vec![0],
+    };
+    let slots = reservations(&case, &DIRECTORIES);
+    assert!(
+        slots
+            .iter()
+            .any(|slot| slot.resolved && slot.records_from > 0),
+        "the control needs a resolved walk with prefixes: {slots:?}"
+    );
+    exact(&slots, reserved_by_batch).unwrap();
+    let former: Vec<_> = slots
+        .iter()
+        .map(|slot| crate::kernel::DependencySlots {
+            reserved: slot.components + slot.count,
+            capacity: slot.components + slot.count,
+            ..*slot
+        })
+        .collect();
+    let error = exact(&former, |slot| slot.components.checked_add(slot.count)).unwrap_err();
+    assert!(error.to_string().contains("unfilled slots"));
 }

@@ -187,6 +187,8 @@ pub use metadata::{
 };
 pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{NamespacePath, NamespacePathError};
+#[cfg(test)]
+pub(crate) use path_access::{DEPENDENCY_SLOTS, DependencySlots};
 pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup,
     PathLookupError, PathLookupFailure, lookup_path, lookup_path_refs, lookup_paths,

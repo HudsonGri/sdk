@@ -142,6 +142,19 @@ impl PathObservation {
     pub(super) const fn record(self, index: usize) -> bool {
         matches!(self, Self::Paths { records_from } if index >= records_from)
     }
+
+    /// The dependencies a successful walk of `count` queries with
+    /// `components` total components records: one name binding per component
+    /// and one terminal record per recorded query. The batch reserves exactly
+    /// this many, so prefix queries reserve no record slot.
+    pub(crate) const fn dependency_slots(self, components: usize, count: usize) -> Option<usize> {
+        match self {
+            Self::None => Some(0),
+            Self::Paths { records_from } => {
+                components.checked_add(count.saturating_sub(records_from))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

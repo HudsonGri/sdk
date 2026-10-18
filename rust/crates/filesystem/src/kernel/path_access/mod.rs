@@ -135,6 +135,8 @@ mod provider;
 mod single;
 use single::*;
 mod batch;
+#[cfg(test)]
+pub(crate) use batch::{DEPENDENCY_SLOTS, DependencySlots};
 pub(crate) use batch::{PathQueries, path_queries_with_accounting};
 mod api;
 pub(crate) use api::{PathBatchMode, PathObservation};

@@ -4,6 +4,30 @@
 )]
 use super::*;
 
+/// One observed walk's dependency reservation, retained for exactness tests.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DependencySlots {
+    pub(crate) components: usize,
+    pub(crate) count: usize,
+    pub(crate) records_from: usize,
+    pub(crate) reserved: usize,
+    /// The vector's capacity at the end: growth past `reserved` would be an
+    /// unaccounted reallocation.
+    pub(crate) capacity: usize,
+    pub(crate) filled: usize,
+    /// Every query resolved to a file; a walk stops at a missing name.
+    pub(crate) resolved: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Recording is off (`None`) unless a test enables it, so exact physical
+    /// allocation guards never count the recorder.
+    pub(crate) static DEPENDENCY_SLOTS: std::cell::RefCell<Option<Vec<DependencySlots>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub(super) fn active_order(
     left: &ActivePath,
     right: &ActivePath,
@@ -136,17 +160,11 @@ pub(crate) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     OperationReadCache::new(store, cache_entries, accounting, data_custody)?;
                 let count = paths.len();
                 let limits = DecodeLimits::for_volume(config);
-                let mut dependencies = reserve_slots::<Dependency>(
-                    if observation.bindings() {
-                        total_components
-                            .checked_add(count)
-                            .ok_or(WorkError::Overflow)?
-                    } else {
-                        0
-                    },
-                    accounting,
-                    data_custody,
-                )?;
+                let reserved = observation
+                    .dependency_slots(total_components, count)
+                    .ok_or(WorkError::Overflow)?;
+                let mut dependencies =
+                    reserve_slots::<Dependency>(reserved, accounting, data_custody)?;
                 let mut entries = reserve_slots::<PathBatchEntry>(count, accounting, data_custody)?;
                 let mut current =
                     reserve_slots::<Option<FileRecord>>(count, accounting, data_custody)?;
@@ -423,6 +441,22 @@ pub(crate) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                 drop_slots(active, accounting)?;
                 drop_slots(done, accounting)?;
                 drop_slots(current, accounting)?;
+                #[cfg(test)]
+                if let PathObservation::Paths { records_from } = observation {
+                    DEPENDENCY_SLOTS.with_borrow_mut(|slots| {
+                        if let Some(slots) = slots {
+                            slots.push(DependencySlots {
+                                components: total_components,
+                                count,
+                                records_from,
+                                reserved,
+                                capacity: dependencies.value.capacity(),
+                                filled: dependencies.value.len(),
+                                resolved: entries.value.iter().all(|entry| entry.record.is_some()),
+                            });
+                        }
+                    });
+                }
                 let ReadOwned {
                     value: dependencies,
                     custody: mut allocation,
