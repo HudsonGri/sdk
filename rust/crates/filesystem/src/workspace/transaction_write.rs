@@ -115,7 +115,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let (paths, directory_count) =
             self.batch_paths(directories, files, accounting, cancellation)?;
         let mut kinds = self
-            .batch_kinds(&paths.value, directory_count, accounting, cancellation)
+            .batch_kinds(&paths.value, accounting, cancellation)
             .await?;
         classify_batch_paths(&paths.value, directory_count, &mut kinds.value, accounting)?;
         let capacity = directory_count
@@ -265,13 +265,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Ok((paths, directory_count))
     }
 
-    /// Directory prefixes come first and record only their name bindings, as
-    /// the serial path does, so siblings may still add entries under them.
     #[cfg(not(target_arch = "wasm32"))]
     async fn batch_kinds(
         &mut self,
         paths: &[NamespacePath],
-        directory_count: usize,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::Owned<Vec<Option<FileKind>>>, WorkspaceError> {
@@ -280,17 +277,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let maximum = usize::try_from(config.limits.maximum_paths_per_batch)
             .unwrap_or(usize::MAX)
             .max(1);
-        for (index, chunk) in paths.chunks(maximum).enumerate() {
-            let records_from = directory_count.saturating_sub(index.saturating_mul(maximum));
+        for chunk in paths.chunks(maximum) {
             let (lookup, allocation) = self
                 .checkout
-                .lookup_batch_no_follow_with_accounting(
-                    chunk,
-                    records_from,
-                    false,
-                    accounting,
-                    cancellation,
-                )
+                .lookup_batch_no_follow_with_accounting(chunk, false, accounting, cancellation)
                 .await
                 .map_err(|error| match error {
                     FsError::Path(crate::kernel::PathLookupError::NotDirectory) => {

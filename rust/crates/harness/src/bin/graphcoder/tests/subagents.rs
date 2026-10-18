@@ -1,9 +1,7 @@
-//! F24: `graphcoder -p` spawns a child that runs its own model turn while the
-//! parent publishes beside it, and the parent's wait receives the child's
-//! answer. Parent and child publications overlap on every run: the child's
-//! admission and turn commit while the parent's spawn and wait calls stage
-//! their own files, so a candidate that recorded its staging prefixes as file
-//! records fails its rebase and the turn settles indeterminate.
+//! F24 shipping-path regression: `graphcoder -p` spawns a child that runs its
+//! own model turn, and the parent's wait receives the child's answer. This
+//! exercises task-scoped content reads and parent/child publications together;
+//! the filesystem's dependency proof belongs with its production fix.
 use acyclic_harness::{
     OperationId,
     client::jsonl,

@@ -135,17 +135,16 @@ mod provider;
 mod single;
 use single::*;
 mod batch;
-#[cfg(test)]
-pub(crate) use batch::{DEPENDENCY_SLOTS, DependencySlots};
-pub(crate) use batch::{PathQueries, path_queries_with_accounting};
+pub(crate) use batch::PathQueries;
+use batch::*;
 mod api;
-pub(crate) use api::{PathBatchMode, PathObservation};
+pub(crate) use api::PathBatchMode;
 pub use api::{
     lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async,
 };
 pub(crate) use api::{
     lookup_path_async_with_accounting, lookup_paths_with_accounting,
-    observe_path_async_with_accounting,
+    observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
 
 #[cfg(all(test, feature = "memory"))]
