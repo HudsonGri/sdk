@@ -32,11 +32,11 @@ impl Text {
         let Some(first) = chunks.next() else {
             return Cow::Borrowed("");
         };
-        if chunks.next().is_none() {
+        let Some(second) = chunks.next() else {
             return Cow::Borrowed(first);
-        }
+        };
         let mut bytes = vec![0; self.len()];
-        self.copy_to(&mut bytes);
+        copy_chunks([first, second].into_iter().chain(chunks), &mut bytes);
         Cow::Owned(match String::from_utf8(bytes) {
             Ok(text) => text,
             Err(_) => unreachable!("text chunks are UTF-8"),
@@ -47,18 +47,7 @@ impl Text {
     // any intermediate Text or collecting a directory of borrowed pieces.
     pub(crate) fn copy_to(&self, destination: &mut [u8]) {
         assert_eq!(destination.len(), self.len());
-        let mut end = destination.len();
-        for chunk in self.reverse_chunks() {
-            let start = end - chunk.len();
-            destination
-                .get_mut(start..end)
-                .unwrap_or_default()
-                .copy_from_slice(chunk.as_bytes());
-            end = start;
-        }
-        debug_assert_eq!(end, 0);
-        #[cfg(test)]
-        crate::work::copy(destination.len());
+        copy_chunks(self.reverse_chunks(), destination);
     }
 
     /// Append a string without changing existing snapshots.
@@ -262,6 +251,21 @@ impl Text {
     pub(crate) fn allocation(&self) -> Option<*const u8> {
         self.reverse_chunks().next().map(str::as_ptr)
     }
+}
+
+fn copy_chunks<'a>(chunks: impl Iterator<Item = &'a str>, destination: &mut [u8]) {
+    let mut end = destination.len();
+    for chunk in chunks {
+        let start = end - chunk.len();
+        destination
+            .get_mut(start..end)
+            .unwrap_or_default()
+            .copy_from_slice(chunk.as_bytes());
+        end = start;
+    }
+    debug_assert_eq!(end, 0);
+    #[cfg(test)]
+    crate::work::copy(destination.len());
 }
 
 #[cfg(test)]

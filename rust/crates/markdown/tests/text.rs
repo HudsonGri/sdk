@@ -167,3 +167,32 @@ fn fragmented_canonical_run_flattens_into_one_exact_buffer() {
     assert_eq!((old_cost.count_total, old_cost.bytes_total), (3, 38));
     assert!(std::panic::catch_unwind(|| exact_flatten_cost(old_cost)).is_err());
 }
+
+#[test]
+fn concatenated_text_reuses_its_chunk_walk_when_flattening() {
+    let baseline: Text = [Text::from("ab"), Text::from("cd")].into_iter().collect();
+    let candidate: Text = [Text::from("ab"), Text::from("cd")].into_iter().collect();
+    let mut before = Default::default();
+    let mut after = Default::default();
+    acyclic_test_support::differential(
+        || {
+            let mut value = Cow::Borrowed("");
+            before = acyclic_test_support::measure(|| value = previous_flatten(&baseline));
+            value.into_owned()
+        },
+        || {
+            let mut value = Cow::Borrowed("");
+            let copied = crate::work::parts()[1];
+            after = acyclic_test_support::measure(|| value = candidate.as_str());
+            assert_eq!(crate::work::parts()[1] - copied, 4);
+            value.into_owned()
+        },
+    );
+    let stack = 4 * std::mem::size_of::<(&Node, std::ops::Range<usize>)>() as u64;
+    assert_eq!((before.count_total, before.bytes_total), (3, stack + 36));
+    let exact = |cost: acyclic_test_support::AllocationInfo| {
+        assert_eq!((cost.count_total, cost.bytes_total), (2, stack + 4));
+    };
+    exact(after);
+    assert!(std::panic::catch_unwind(|| exact(before)).is_err());
+}
