@@ -179,11 +179,21 @@ fn measured_upgrade(count: u8, old_clone: bool) -> (AllocationInfo, WorkCounters
     (allocation, work)
 }
 
-fn assert_upgrade_pin(value: (AllocationInfo, WorkCounters)) {
+fn staged_delta_retirement(count: u8) -> AllocationInfo {
+    // Independently prepare the same one-key input. Commit consumes this delta,
+    // so its already allocated map node and name must retire inside the scope.
+    let proof = initial(count);
+    let extension = proof
+        .prepare_mutations(vec![dependency(count - 1)], 128)
+        .expect("existing key");
+    measure(|| drop(extension))
+}
+
+fn assert_upgrade_pin(count: u8, value: (AllocationInfo, WorkCounters)) {
     assert_eq!(
         value.0,
-        AllocationInfo::default(),
-        "existing keys are never copied"
+        staged_delta_retirement(count),
+        "only the independently prepared input delta retires; existing keys are never copied"
     );
     assert_eq!(
         value.1,
@@ -196,12 +206,17 @@ fn assert_upgrade_pin(value: (AllocationInfo, WorkCounters)) {
 
 #[test]
 fn existing_dependency_upgrade_has_exact_constant_work_and_no_allocations() {
+    let mut first = None;
     for count in [8, 24] {
         let current = measured_upgrade(count, false);
-        assert_upgrade_pin(current);
+        assert_upgrade_pin(count, current);
+        if let Some(first) = first {
+            assert_eq!(current, first, "retained history cannot affect delta work");
+        }
+        first = Some(current);
         let old = measured_upgrade(count, true);
         assert!(
-            std::panic::catch_unwind(|| assert_upgrade_pin(old)).is_err(),
+            std::panic::catch_unwind(|| assert_upgrade_pin(count, old)).is_err(),
             "the old snapshot must fail the same pin"
         );
         eprintln!("DEPENDENCY_DELTA count={count} current={current:?} old={old:?}");
@@ -250,6 +265,7 @@ fn original_owner(
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_native_upgrade_has_no_copy_or_allocation_and_rejects_snapshot_control() {
+    let mut first = None;
     for count in [8, 24] {
         for old_clone in [false, true] {
             let cancel = CancellationToken::new();
@@ -283,11 +299,18 @@ fn original_native_upgrade_has_no_copy_or_allocation_and_rejects_snapshot_contro
                 })
                 .expect("bounded work");
             if old_clone {
-                assert_ne!(allocation, AllocationInfo::default());
+                assert_ne!(allocation, staged_delta_retirement(count));
                 assert_ne!(original.receipt(), expected);
             } else {
-                assert_eq!(allocation, AllocationInfo::default());
+                assert_eq!(allocation, staged_delta_retirement(count));
                 assert_eq!(original.receipt(), expected);
+                if let Some(first) = first {
+                    assert_eq!(
+                        allocation, first,
+                        "retained history cannot affect delta work"
+                    );
+                }
+                first = Some(allocation);
             }
             assert_eq!(semantics(&proof), reference(count, &[count - 1]));
             eprintln!(
