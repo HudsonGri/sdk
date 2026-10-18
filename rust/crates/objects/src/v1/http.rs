@@ -50,7 +50,7 @@ impl HttpObjects {
             .post(
                 "objects/put-batch",
                 "application/x-ndjson",
-                Body::wrap_stream(frames.map(|frame| line("PutObjectsRequest", &frame))),
+                Body::wrap_stream(frames.map(|frame| batch_line(&frame))),
             )
             .await?;
         self.decode("PutObjectsResponse", reply).await
@@ -491,9 +491,31 @@ fn media_type(response: &Response, expected: &str) -> Result<(), Error> {
     Ok(())
 }
 fn line(name: &str, frame: &impl Message) -> Result<Bytes, Error> {
+    line_limit(name, frame, JSON_FRAME_BYTES)
+}
+fn batch_line(frame: &wire::PutObjectsRequest) -> Result<Bytes, Error> {
+    use wire::put_objects_request::Frame;
+    let limit = match &frame.frame {
+        Some(Frame::Header(header)) => {
+            request::put_batch(header)?;
+            // JSON escaping expands one UTF-8 byte to at most six bytes.
+            6 * REQUEST_BYTES
+        }
+        Some(Frame::Chunk(chunk)) => {
+            if matches!(&chunk.frame, Some(wire::put_objects_chunk::Frame::Body(body)) if body.len() > 65536)
+            {
+                return Err(wire::ErrorCode::QuotaExceeded.into());
+            }
+            4 * 65536_usize.div_ceil(3) + 128
+        }
+        _ => 128,
+    };
+    line_limit("PutObjectsRequest", frame, limit)
+}
+fn line_limit(name: &str, frame: &impl Message, limit: usize) -> Result<Bytes, Error> {
     let mut bytes = json::encode(name, frame)?;
     bytes.push(b'\n');
-    if bytes.len() > JSON_FRAME_BYTES {
+    if bytes.len() > limit {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
     Ok(bytes.into())
@@ -683,5 +705,56 @@ impl ObjectsProvider for HttpObjects {
         request::abort_multipart_digest(&query)?;
         self.call("multipart/abort", query, |_, result| Ok(result))
             .await
+    }
+}
+
+#[cfg(test)]
+mod batch_bounds {
+    use super::*;
+    #[test]
+    fn batch_http_frame_bounds_follow_the_canonical_frame_type() {
+        let object = wire::PutObjectHeader {
+            bucket: Some(wire::BucketRef {
+                name: "batch".into(),
+            }),
+            object_key: "key".into(),
+            metadata: Some(wire::ObjectMetadata {
+                content_type: "x".repeat(8192),
+                ..Default::default()
+            }),
+            preconditions: Some(wire::Preconditions {
+                condition: Some(wire::preconditions::Condition::IfMatch("x".repeat(8192))),
+            }),
+            ..Default::default()
+        };
+        let mut frame = wire::PutObjectsRequest {
+            frame: Some(wire::put_objects_request::Frame::Header(
+                wire::PutObjectsHeader {
+                    objects: vec![object; 1000],
+                },
+            )),
+        };
+        assert!(frame.encoded_len() < REQUEST_BYTES);
+        let encoded = batch_line(&frame).unwrap();
+        assert!(encoded.len() > JSON_FRAME_BYTES);
+        assert!(line("PutObjectsRequest", &frame).is_err());
+        if let Some(wire::put_objects_request::Frame::Header(header)) = &mut frame.frame {
+            for object in &mut header.objects {
+                object.object_key = "x".repeat(1024);
+            }
+        }
+        assert!(frame.encoded_len() > REQUEST_BYTES);
+        assert!(batch_line(&frame).is_err());
+        for length in [65536, 65537] {
+            let frame = wire::PutObjectsRequest {
+                frame: Some(wire::put_objects_request::Frame::Chunk(
+                    wire::PutObjectsChunk {
+                        index: 999,
+                        frame: Some(wire::put_objects_chunk::Frame::Body(vec![0; length])),
+                    },
+                )),
+            };
+            assert_eq!(batch_line(&frame).is_ok(), length == 65536);
+        }
     }
 }

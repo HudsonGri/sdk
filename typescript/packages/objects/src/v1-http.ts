@@ -40,9 +40,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   /** Sends canonical upload frames through one authenticated HTTP request. */
   async putBatch(frames: readonly wire.PutObjectsRequest[]): Promise<wire.PutObjectsResponse> {
     await ensureObjectsWasm();
-    const encoded = frames.map(frame => toBinary(wire.PutObjectsRequestSchema, frame));
     const replies = await observed(this.observer, "objects", "objects/put-batch", sizes =>
-      this.send("objects/put-batch", new Uint8Array(0), new Uint8Array(0), 0n, sizes, encoded));
+      this.send("objects/put-batch", new Uint8Array(0), new Uint8Array(0), 0n, sizes, frames));
     if (replies.length !== 1 || replies[0] === undefined) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
     return fromBinary(wire.PutObjectsResponseSchema, replies[0]);
   }
@@ -52,7 +51,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     const replies = await this.invoke("objects/get-batch", toBinary(wire.GetObjectsRequestSchema, query), new Uint8Array(0), 0n);
     return replies.map(reply => fromBinary(wire.GetObjectsResponseSchema, reply));
   }
-  private async send(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, sizes?: OperationSizes, requestFrames?: readonly Uint8Array[]): Promise<readonly Uint8Array[]> {
+  private async send(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, sizes?: OperationSizes, requestFrames?: readonly wire.PutObjectsRequest[]): Promise<readonly Uint8Array[]> {
     const requestType = objects_v1_http_type(route, false);
     const responseType = objects_v1_http_type(route, true);
     const decodeResponse = (data: Uint8Array, maximum: number) => {
@@ -70,7 +69,16 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       if (streaming) payloads.push(new Uint8Array([10]));
     };
     if (requestFrames !== undefined) {
-      for (const frame of requestFrames) add(encode_objects_v1_json(requestType, frame, 12 * 1024 * 1024));
+      for (const frame of requestFrames) {
+        if (requestSize >= this.maximumRequest) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        const header = frame.frame.case === "header";
+        if (frame.frame.case === "chunk" && frame.frame.value.frame.case === "body" && frame.frame.value.frame.value.byteLength > 65536) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        const binaryLimit = header ? 16 * 1024 * 1024 : 65536 + 16;
+        const jsonLimit = header ? 6 * binaryLimit : 4 * Math.ceil(65536 / 3) + 128;
+        const encoded = encode_objects_v1_json(requestType, toBinary(wire.PutObjectsRequestSchema, frame), binaryLimit);
+        if (encoded.byteLength > jsonLimit) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        add(encoded);
+      }
     } else if (streaming) {
       const put = route === "objects/put";
       const header = put

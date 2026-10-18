@@ -61,3 +61,31 @@ test("batch HTTP refuses oversized requests before dispatch", async () => {
   await assert.rejects(client.putBatch(upload), error => error.code === wire.ErrorCode.QUOTA_EXCEEDED);
   assert.equal(calls, 0);
 });
+
+test("batch HTTP admits canonical 1000-object headers and stops before later body serialization", async () => {
+  const object = { bucket: { name: "batch" }, objectKey: "key", metadata: { contentType: "x".repeat(8192) }, preconditions: { condition: { case: "ifMatch", value: "x".repeat(8192) } } };
+  const header = make("PutObjectsRequest", { frame: { case: "header", value: { objects: Array.from({ length: 1000 }, () => object) } } });
+  let calls = 0;
+  const client = new HttpObjectsV1({ endpoint: "http://127.0.0.1", token: "token", fetch: async (_url, init) => {
+    calls++;
+    assert.ok(init.body.byteLength > 12 * 1024 * 1024);
+    return new Response("{}", { headers: { "content-type": "application/json" } });
+  } });
+  await client.putBatch([header]);
+  assert.equal(calls, 1);
+  const oversized = make("PutObjectsRequest", { frame: { case: "header", value: { objects: Array.from({ length: 1000 }, () => ({ ...object, objectKey: "x".repeat(1024) })) } } });
+  await assert.rejects(client.putBatch([oversized]));
+  assert.equal(calls, 1);
+  let examined = 0;
+  const bodies = Array.from({ length: 1000 }, () => {
+    const frame = make("PutObjectsRequest", { frame: { case: "chunk", value: { frame: { case: "body", value: new Uint8Array(65536) } } } });
+    Object.defineProperty(frame, "frame", { get() { examined++; throw new Error("later frame processed"); } });
+    return frame;
+  });
+  const bounded = new HttpObjectsV1({ endpoint: "http://127.0.0.1", token: "token", maximumRequestBytes: 1, fetch: async () => { throw new Error("dispatch"); } });
+  await assert.rejects(bounded.putBatch([upload[0], ...bodies]), error => error.code === wire.ErrorCode.QUOTA_EXCEEDED);
+  assert.equal(examined, 0);
+  // Eager serialization is caught even when a later frame's data would be discarded.
+  assert.throws(() => bodies.map(frame => frame.frame), /later frame processed/);
+  assert.ok(examined > 0);
+});

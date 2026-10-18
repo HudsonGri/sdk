@@ -31,7 +31,7 @@ impl tonic::codec::Encoder for PutEncoder {
         {
             self.received
                 .value
-                .keep_metadata(header, meter)
+                .keep_metadata(header, Some(meter))
                 .map_err(|_| tonic::Status::resource_exhausted("batch metadata custody"))?;
         }
         Ok(())
@@ -796,3 +796,6 @@ mod model {
         assert!(std::panic::catch_unwind(|| loom::model(|| history(true))).is_err());
     }
 }
+
+#[cfg(feature = "test-support")]
+pub use reply::fuzz_reply;

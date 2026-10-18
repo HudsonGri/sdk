@@ -605,3 +605,7 @@ abort_multipart(AbortMultipartRequest) -> AbortMultipartResponse, multipart.abor
     }
 }
 }
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use batch::fuzz_reply as fuzz_batch_reply;

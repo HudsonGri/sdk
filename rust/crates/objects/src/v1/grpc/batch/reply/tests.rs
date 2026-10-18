@@ -17,7 +17,7 @@ fn metered_decoder(expected: usize, meter: Option<std::sync::Arc<dyn NativeReadM
                 &mut wire::PutObjectsHeader {
                     objects: vec![wire::PutObjectHeader::default(); expected],
                 },
-                meter,
+                Some(meter),
             )
             .unwrap();
     }
@@ -76,7 +76,7 @@ fn transfer_metadata(decoder: &mut Decoder, response: &wire::PutObjectsResponse)
     decoder
         .received
         .value
-        .keep_metadata(&mut header, decoder.meter.as_ref().unwrap())
+        .keep_metadata(&mut header, decoder.meter.as_ref())
         .unwrap();
 }
 
@@ -240,7 +240,7 @@ fn batch_reply_accounts_before_cancellation_can_drop_the_exchange() {
             &mut wire::PutObjectsHeader {
                 objects: vec![wire::PutObjectHeader::default(); 2],
             },
-            &meter,
+            Some(&meter),
         )
         .unwrap();
     let response = wire::PutObjectsResponse {
@@ -339,15 +339,25 @@ fn batch_reply_preserves_peers_after_a_malformed_or_changed_map() {
 
 #[test]
 fn batch_reply_checked_in_seed_corpus() {
-    for seed in include_str!("../../../../../fuzz/corpus/batch_reply/seed-corpus.hex").lines() {
-        let bytes = hex::decode(seed).unwrap();
+    for bytes in [
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-0.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-1.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-2.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-3.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-4.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-5.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-6.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-7.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-8.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-9.pb").as_slice(),
+    ] {
         for expected in 0..3 {
             let reply = decoder(expected).bytes(&bytes).unwrap();
             assert!(reply.response.value.results.len() <= expected);
             if reply.failure.is_none() {
                 assert_eq!(
                     reply.response.value,
-                    wire::PutObjectsResponse::decode(bytes.as_slice()).unwrap()
+                    wire::PutObjectsResponse::decode(bytes).unwrap()
                 );
             }
         }
@@ -435,5 +445,114 @@ proptest! {
             drop(decoder);
         }
         prop_assert_eq!(counts.retained(), 0);
+    }
+}
+
+#[cfg(feature = "local")]
+#[test]
+fn batch_reply_completion_survives_a_genuinely_cancelled_meter() {
+    use std::sync::atomic::Ordering;
+    let counts = std::sync::Arc::new(crate::physical::read_tests::CountingMeter::default());
+    let mut decoder = metered_decoder(1, Some(counts.clone()));
+    std::sync::Arc::get_mut(&mut decoder.received)
+        .unwrap()
+        .value
+        .sizes
+        .value[0] = 7;
+    decoder.received.value.completed.sent();
+    let bytes = wire::PutObjectsResponse {
+        results: vec![object(7)],
+    }
+    .encode_to_vec();
+    counts.cancelled.store(true, Ordering::SeqCst);
+    assert!(counts.check().is_err());
+    // The former post-dispatch preflight rejects every acknowledgement here.
+    assert!(counts.admit_codec(bytes.len() as u64, 0, 0).is_err());
+    assert!(
+        ReadAllocation::new(&(counts.clone() as std::sync::Arc<dyn NativeReadMeter>), 7).is_err()
+    );
+    let reply = decoder.bytes(&bytes).unwrap();
+    decoder.accept(reply);
+    let reply = decoder.received.value.reply.lock().unwrap().take().unwrap();
+    assert!(reply.failure.is_none());
+    assert_eq!(counts.written.load(Ordering::SeqCst), 7);
+    assert!(reply.response.value.results[0].result.is_some());
+    drop(reply);
+    drop(decoder);
+    assert_eq!(counts.retained(), 0);
+}
+
+#[cfg(feature = "local")]
+#[test]
+fn batch_reply_rejected_item_retires_capacity_before_the_next_item() {
+    use std::sync::atomic::Ordering;
+    for control in [false, true] {
+        let counts = std::sync::Arc::new(crate::physical::read_tests::CountingMeter::default());
+        let mut decoder = metered_decoder(2, Some(counts.clone()));
+        std::sync::Arc::get_mut(&mut decoder.received)
+            .unwrap()
+            .value
+            .sizes
+            .value
+            .fill(7);
+        decoder.received.value.completed.sent();
+        let base = counts.retained();
+        counts
+            .byte_limit
+            .store(base + TEXT_BYTES as u64, Ordering::SeqCst);
+        // The wire is valid, so the borrowed pass succeeds before the etag allocation.
+        let mut malformed = object(7);
+        if let Some(wire::put_object_result::Result::Object(object)) = &mut malformed.result {
+            object.last_modified.as_mut().unwrap().nanos = 1_000_000_000;
+        }
+        let bytes = wire::PutObjectsResponse {
+            results: vec![malformed, object(7)],
+        }
+        .encode_to_vec();
+        // Mutant: keep the freed first item's charge on the shared reply owner.
+        let retained = control.then(|| {
+            ReadAllocation::adopt(
+                &(counts.clone() as std::sync::Arc<dyn NativeReadMeter>),
+                TEXT_BYTES,
+            )
+            .unwrap()
+        });
+        let reply = decoder.bytes(&bytes).unwrap();
+        decoder.accept(reply);
+        let reply = decoder.received.value.reply.lock().unwrap().take().unwrap();
+        assert!(reply.failure.is_some());
+        assert!(reply.response.value.results[0].result.is_none());
+        assert_eq!(reply.response.value.results[1].result.is_some(), !control);
+        assert_eq!(
+            counts.written.load(Ordering::SeqCst),
+            if control { 0 } else { 7 }
+        );
+        drop(retained);
+        drop(reply);
+        drop(decoder);
+        assert_eq!(counts.retained(), 0);
+    }
+}
+#[cfg(feature = "test-support")]
+#[test]
+fn batch_reply_fuzz_probe_checks_cancellation_and_custody_on_shared_seeds() {
+    for bytes in [
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-1.pb").as_slice(),
+        include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-2.pb").as_slice(),
+    ] {
+        for expected in 0..=3 {
+            for cancel in [false, true] {
+                assert!(
+                    fuzz_reply(
+                        bytes,
+                        expected,
+                        std::sync::Arc::new(crate::test_meter::CountingMeter::default()),
+                        cancel,
+                        None,
+                    )
+                    .is_ok()
+                );
+            }
+        }
     }
 }
