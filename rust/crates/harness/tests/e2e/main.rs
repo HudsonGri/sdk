@@ -17,6 +17,9 @@ mod local_tool_files_check;
 mod local_tool_files_tests;
 mod local_workspace;
 mod matchers;
+mod mcp_case;
+#[cfg(feature = "mcp-http")]
+mod mcp_http;
 mod notification_history;
 mod notifications;
 mod plan_query;

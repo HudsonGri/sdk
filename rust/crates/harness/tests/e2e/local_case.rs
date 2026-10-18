@@ -10,6 +10,7 @@ pub(super) struct LocalCase {
     pub seed: BTreeMap<String, String>,
     pub prompt: String,
     pub turns: Vec<ScriptedTurn>,
+    pub mcp: Option<super::mcp_case::McpFixture>,
     pub expect: Expectations,
 }
 
@@ -25,6 +26,9 @@ pub(super) struct Expectations {
     pub files: BTreeMap<String, Option<String>>,
     pub diffs: Option<BTreeMap<String, Value>>,
     pub results: Option<BTreeMap<String, Value>>,
+    pub requests: Option<Vec<Value>>,
+    #[serde(default)]
+    pub not_requests: Vec<Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -51,6 +55,7 @@ impl LocalCase {
                 .iter()
                 .any(|frame| frame.as_object().is_none_or(|value| value.is_empty()))
             || (self.expect.text.is_some() != (self.expect.outcome == ExpectedOutcome::Succeeded))
+            || self.expect.requests.as_ref().is_some_and(Vec::is_empty)
             || (self.expect.diffs.is_none()
                 && self.expect.results.is_none()
                 && self.expect.outcome == ExpectedOutcome::Succeeded)

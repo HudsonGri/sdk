@@ -21,7 +21,7 @@ use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
 
-pub(super) async fn run(case: LocalCase) -> TestResult {
+pub(super) async fn run(mut case: LocalCase) -> TestResult {
     case.validate()?;
     let steps = case.turns.len();
     let temporary = local_workspace::temporary()?;
@@ -72,11 +72,25 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let turns = super::local_case::bind_seed_files(case.turns, &references)?;
     let scripted_calls = super::local_tool_files::calls(&turns);
     let provider = Arc::new(ScriptedModelProvider::new(turns));
-    let config = local_harness_config(&directory, (model, provider.clone()))?
+    let mut config = local_harness_config(&directory, (model, provider.clone()))?
         .state_directory(&state)
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None);
+    #[cfg(feature = "mcp-http")]
+    let mcp_server = if let Some(fixture) = case.mcp.take() {
+        let (server, settings) = super::mcp_http::Server::open(
+            &directory, fixture, host.clone(), workspace.clone(),
+        ).await?;
+        config = config.settings(settings);
+        Some(server)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "mcp-http"))]
+    if case.mcp.is_some() {
+        return Err("MCP scenarios require mcp-http".into());
+    }
     let harness = LocalHarness::open(config).await?;
     if !state.join("owner.json").is_file() {
         return Err("harness did not use the fixture-owned state directory".into());
@@ -103,6 +117,17 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let requests = provider.requests();
     if requests.len() != steps {
         return Err("local scenario did not consume exactly its scripted model turns".into());
+    }
+    if case.expect.requests.is_some() || !case.expect.not_requests.is_empty() {
+        let values = requests.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>()?;
+        if let Some(expected) = &case.expect.requests {
+            matchers::ordered(expected, &values, "local model requests")?;
+        }
+        for forbidden in &case.expect.not_requests {
+            if values.iter().any(|request| matchers::subset(forbidden, request)) {
+                return Err("local model received forbidden context".into());
+            }
+        }
     }
     if let Some(expected) = &case.expect.results {
         let actual = model_results(requests.last().ok_or("missing model request")?)?;
@@ -300,6 +325,10 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                 "{error}"
             );
         }
+    }
+    #[cfg(feature = "mcp-http")]
+    if let Some(server) = mcp_server {
+        server.close().await?;
     }
     // Fs::local reuses live roots. Release every holder before a cold reopen.
     drop(frames);
