@@ -80,10 +80,12 @@ impl Host {
     pub(super) async fn drive<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
         let mut future = std::pin::pin!(future);
         let io_waker = Waker::from(Arc::new(IoWake(self.clone())));
-        let mut io_cx = PollContext::from_waker(&io_waker);
         std::future::poll_fn(|cx| {
             'poll_io: loop {
-                if let Poll::Ready(output) = future.as_mut().poll(&mut io_cx) {
+                if let Poll::Ready(output) = future
+                    .as_mut()
+                    .poll(&mut PollContext::from_waker(&io_waker))
+                {
                     return Poll::Ready(output);
                 }
                 let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
