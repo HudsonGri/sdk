@@ -69,26 +69,6 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb()
     {
-        let images: std::collections::BTreeMap<_, _> = registry
-            .catalog()
-            .iter()
-            .flat_map(|(provider, spec)| {
-                spec.images
-                    .iter()
-                    .map(move |(model, policy)| (format!("{provider}/{model}"), policy))
-            })
-            .collect();
-        let mut files =
-            client::local_ui(&local, &operation.to_string(), &local.client_owner()).await?;
-        files
-            .write_state(
-                client::CommandFileRoot::Config,
-                "image-input.json",
-                &serde_json::json!({"default":args.model,"models":images,
-                "fallback":acyclic_harness::model::ImageInput::default()}),
-            )
-            .await?;
-        drop(files);
         let result = client::with_local_commands(
             local.clone(),
             operation,

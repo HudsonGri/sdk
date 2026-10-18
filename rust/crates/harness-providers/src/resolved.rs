@@ -90,6 +90,11 @@ impl ResolvedModel {
 }
 
 impl ModelProvider for ResolvedModel {
+    fn image_input(&self, model: &Model) -> Result<Option<acyclic_harness::model::ImageInput>> {
+        self.validate(model)?;
+        Ok(self.config.images.get(&model.name).cloned())
+    }
+
     fn bind_content(
         &self,
         reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,

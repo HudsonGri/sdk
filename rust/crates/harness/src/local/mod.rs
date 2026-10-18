@@ -28,6 +28,7 @@ mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
 mod children;
+mod client_files;
 mod command_machine;
 mod command_views;
 mod commands;

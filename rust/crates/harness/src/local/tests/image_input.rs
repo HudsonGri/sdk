@@ -7,9 +7,53 @@ use crate::{
 };
 
 #[tokio::test]
+async fn wrapper_only_image_initialization_is_detected_negative_control() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = Arc::new(
+        ScriptedModelProvider::new([])
+            .with_context_capacity(capacity())
+            .with_image_input(Default::default()),
+    );
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::new(directory.path(), (model()?, provider))
+            .without_default_tools()
+            .compaction(crate::context::CompactionPolicy::Disabled),
+    )
+    .await?;
+    super::super::client_files::OMIT_IMAGE_POLICY.with(|flag| flag.set(true));
+    let opened = crate::client::local_ui(
+        &harness,
+        &OperationId::new().to_string(),
+        &harness.client_owner(),
+    )
+    .await;
+    super::super::client_files::OMIT_IMAGE_POLICY.with(|flag| flag.set(false));
+    let commands = opened?;
+    let policy = commands.state(CommandFileRoot::Config, "image-input.json")?;
+    drop(commands);
+    harness.close().await?;
+    let failed = std::panic::catch_unwind(|| {
+        assert!(policy.is_some(), "shared binding omitted image admission");
+    });
+    assert!(
+        failed.is_err(),
+        "wrapper-only initialization escaped the oracle"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
-    let provider = text();
+    let policy = crate::model::ImageInput {
+        maximum_tokens: 20_000,
+        ..Default::default()
+    };
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
+            .with_context_capacity(capacity())
+            .with_image_input(policy.clone()),
+    );
     let harness = LocalHarness::open(
         LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
             .without_default_tools()
@@ -19,7 +63,13 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
     let owner = harness.client_owner();
     let session = OperationId::new();
     let mut commands = crate::client::local_ui(&harness, &session.to_string(), &owner).await?;
-    install_image_policy(&mut commands, 4 * 1024 * 1024).await?;
+    assert_eq!(
+        commands
+            .state(CommandFileRoot::Config, "image-input.json")?
+            .unwrap()["models"]["scripted/test"],
+        serde_json::to_value(&policy).unwrap(),
+        "shared client binding did not install the selected image policy"
+    );
     let reader = harness.client_reader()?;
     let publisher = harness.client_publisher()?;
     let prepared = crate::tui::prepare_image(2, 1, vec![255; 8]).unwrap();
@@ -104,8 +154,11 @@ async fn host_image_files_reach_model_and_reopen_with_exact_pins() -> Result<()>
         .filter_map(|p| match p {
             ModelContentPart::File {
                 file,
-                policy: FileProjectionPolicy::Native(_),
-            } => Some(file),
+                policy: FileProjectionPolicy::Native(actual),
+            } => {
+                assert_eq!(actual.maximum_work, u64::from(policy.maximum_tokens));
+                Some(file)
+            }
             _ => None,
         })
         .collect();
