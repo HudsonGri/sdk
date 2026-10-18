@@ -220,6 +220,10 @@ fn held_file_reads_do_exact_uninitialized_work() -> Result<(), Box<dyn Error>> {
                 extra.peak_allocation_bytes,
                 expected.peak_allocation_bytes + 17
             );
+            eprintln!(
+                "exact read work: native={native}, offset={offset}, requested={length}, served={served}, root={}; candidate={spent:?}; added-allocation={extra:?}; trace={trace:?}",
+                directory.path().display()
+            );
             if served > 0 {
                 let (_, _, broken) = demand_read_work::restoring_old_work(|| {
                     read_mode(file.as_ref(), offset, length, native)
