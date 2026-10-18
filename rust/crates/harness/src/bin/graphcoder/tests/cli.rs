@@ -1,5 +1,6 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
 mod instruction_review;
+mod subagents;
 use acyclic_harness::{
     OperationId,
     client::{jsonl, prepare_local_prompt},
