@@ -37,13 +37,13 @@ fn batch_count(count: usize, bytes: usize) -> Result<(), Error> {
     Ok(())
 }
 
+/// The single-object route and canonical request bytes each batch item authorizes as.
+pub type BatchRequests = (&'static str, Vec<Vec<u8>>);
+
 /// Projects validated batch selections to their canonical per-object permissions.
 /// This performs no admission or work: callers verify one credential, check every
 /// selection, then admit the entire batch before executing any item.
-pub fn batch_requests(
-    route: &str,
-    bytes: &[u8],
-) -> Result<Option<(&'static str, Vec<Vec<u8>>)>, Error> {
+pub fn batch_requests(route: &str, bytes: &[u8]) -> Result<Option<BatchRequests>, Error> {
     let invalid = || Error::from(InvalidArgument);
     match route {
         "objects/put-batch" => {
@@ -84,6 +84,10 @@ pub struct BatchUploadFraming {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "Tests index fixtures whose shape they construct."
+)]
 mod batch_tests {
     use super::*;
 
@@ -785,7 +789,7 @@ pub fn metadata(value: &Option<wire::ObjectMetadata>) -> Result<(), Error> {
     if bytes > wire::ObjectsLimit::MaxUserMetadataBytes as usize {
         return Err(InvalidArgument.into());
     }
-    let names = &mut names[..value.user.len()];
+    let names = names.get_mut(..value.user.len()).ok_or(InvalidArgument)?;
     names.sort_unstable_by(|left, right| {
         left.bytes()
             .map(|byte| byte.to_ascii_lowercase())
@@ -793,7 +797,7 @@ pub fn metadata(value: &Option<wire::ObjectMetadata>) -> Result<(), Error> {
     });
     if names
         .windows(2)
-        .any(|pair| pair[0].eq_ignore_ascii_case(pair[1]))
+        .any(|pair| matches!(pair, [left, right] if left.eq_ignore_ascii_case(right)))
     {
         return Err(InvalidArgument.into());
     }

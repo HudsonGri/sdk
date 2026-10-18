@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "Fixture helpers build small known batches and fail loudly on fixture errors."
+)]
 use super::*;
 use std::sync::{Arc, Mutex};
 
@@ -131,7 +137,7 @@ pub(super) async fn get(
             frames.push(Ok(wire::GetObjectsResponse {
                 index,
                 frame: Some(frame),
-            }))
+            }));
         };
         match result {
             Ok(object) => {
@@ -157,7 +163,7 @@ pub(super) async fn get(
                 .first_mut()
                 .and_then(|frame| frame.as_mut().ok())
                 .ok_or_else(|| Status::internal("fixture frame"))?
-                .index = 1
+                .index = 1;
         }
         "missing-item" => {
             frames.pop();
@@ -175,7 +181,7 @@ pub(super) async fn get(
                 .ok_or_else(|| Status::internal("fixture frame"))?
                 .frame = Some(wire::get_objects_response::Frame::Error(
                 wire::ErrorDetail::default(),
-            ))
+            ));
         }
         _ => {}
     }

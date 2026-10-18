@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "Fixture helpers build small known batches and fail loudly on fixture errors."
+)]
 use super::*;
 use futures::TryStreamExt;
 

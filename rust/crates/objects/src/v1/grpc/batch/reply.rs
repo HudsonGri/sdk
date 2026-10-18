@@ -145,10 +145,12 @@ impl Reply {
             .results
             .iter()
             .filter_map(|result| match &result.result {
-                Some(wire::put_object_result::Result::Object(object)) => Some(object.size as usize),
+                Some(wire::put_object_result::Result::Object(object)) => {
+                    Some(usize::try_from(object.size).unwrap_or(usize::MAX))
+                }
                 _ => None,
             })
-            .sum();
+            .fold(0_usize, usize::saturating_add);
         let recorded = meter.record_write(completed);
         if self.failure.is_none() {
             self.failure = recorded.err().map(Into::into);
@@ -273,14 +275,18 @@ fn verify_user_map(
                 }
                 _ => unknown(tag, kind, input),
             })?;
-            let index = keys[..count].binary_search(&key).map_err(|_| invalid())?;
-            matched[index] = expected
+            let index = keys
+                .get(..count)
+                .ok_or_else(invalid)?
+                .binary_search(&key)
+                .map_err(|_| invalid())?;
+            *matched.get_mut(index).ok_or_else(invalid)? = expected
                 .and_then(|metadata| metadata.user.get(key))
                 .is_some_and(|expected| expected == value);
             Ok(())
         })
     })?;
-    if present && matched[..count].iter().any(|matched| !matched) {
+    if present && matched.iter().take(count).any(|matched| !matched) {
         return Err(invalid());
     }
     Ok(present)
@@ -303,10 +309,10 @@ impl Decode<'_> {
     ) -> Result<(), NativeObjectsError> {
         let bytes = message(kind, input)?;
         let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
-        if let Some(codec) = self.codec.as_mut() {
-            if text.len() > TEXT_BYTES || text.len() as u64 > codec.copied {
-                return Err(invalid());
-            }
+        if let Some(codec) = self.codec.as_mut()
+            && (text.len() > TEXT_BYTES || text.len() as u64 > codec.copied)
+        {
+            return Err(invalid());
         }
         if target.capacity() < text.len() {
             let previous = target.capacity();
@@ -473,6 +479,10 @@ impl Decoder {
             .unwrap_or_else(|error| error.into_inner()) = Some(reply);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One pass keeps reply parsing, metering and validation in a single audited order."
+    )]
     pub(super) fn bytes(&mut self, bytes: &[u8]) -> Result<Reply, tonic::Status> {
         let mut reply = self
             .prepared
@@ -727,6 +737,11 @@ mod model {
 }
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    reason = "The fuzz entry point keeps its owned-meter signature and checks every invariant in one place."
+)]
 pub fn fuzz_reply(
     bytes: &[u8],
     expected: usize,

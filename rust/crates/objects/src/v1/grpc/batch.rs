@@ -151,13 +151,11 @@ fn put_frames(
                         (body.slice(..size), Some(body.slice(size..)))
                     };
                     let body = if let Some(meter) = meter.as_ref() {
-                        match upload::native_body_bytes(chunk, meter) {
-                            Ok(body) => body,
-                            Err(_) => {
-                                source.failed.store(true, Ordering::Release);
-                                return None;
-                            }
-                        }
+                        let Ok(body) = upload::native_body_bytes(chunk, meter) else {
+                            source.failed.store(true, Ordering::Release);
+                            return None;
+                        };
+                        body
                     } else {
                         Guarded {
                             value: upload::body_bytes(chunk),
@@ -328,6 +326,10 @@ impl GrpcObjects {
             Err(outcome.err().unwrap_or_else(protocol))
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Native admission, custody and per-item result draining stay in one ordered path."
+    )]
     pub(super) fn put_objects_native(
         &self,
         mut input: super::super::ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
@@ -385,7 +387,7 @@ impl GrpcObjects {
                 .await
             {
                 Err(error) => {
-                    results.extend((0..count).map(|_| Err(NativeObjectsError::from(error))))
+                    results.extend((0..count).map(|_| Err(NativeObjectsError::from(error))));
                 }
                 Ok(mut reply) => {
                     failure_slot.value = reply.failure.take();
@@ -614,6 +616,10 @@ fn info_capacity(info: &wire::ObjectInfo) -> Result<usize, std::io::Error> {
 }
 
 #[cfg(all(test, not(objects_loom)))]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "Tests index fixtures whose shape they construct."
+)]
 mod tests {
     use super::*;
     use proptest::prelude::*;

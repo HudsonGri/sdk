@@ -1,3 +1,8 @@
+#![allow(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "Test helpers index known fixtures and fail loudly on fixture errors."
+)]
 use super::*;
 use proptest::prelude::*;
 
@@ -352,7 +357,7 @@ fn batch_reply_checked_in_seed_corpus() {
         include_bytes!("../../../../../fuzz/corpus/batch_reply/seed-9.pb").as_slice(),
     ] {
         for expected in 0..3 {
-            let reply = decoder(expected).bytes(&bytes).unwrap();
+            let reply = decoder(expected).bytes(bytes).unwrap();
             assert!(reply.response.value.results.len() <= expected);
             if reply.failure.is_none() {
                 assert_eq!(
