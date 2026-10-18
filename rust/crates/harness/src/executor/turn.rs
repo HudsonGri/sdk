@@ -17,7 +17,6 @@ impl StockExecution<'_> {
         }
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
-        let mut text = String::new();
         for step in 0..input.max_steps {
             let model_events = self
                 .run_model_step(
@@ -28,13 +27,8 @@ impl StockExecution<'_> {
                     ModelPurpose::Response,
                 )?
                 .await?;
-            let (calls, metadata) = self.collect_turn_events(
-                input,
-                step,
-                model_events,
-                &mut text,
-                &mut prior_messages,
-            )?;
+            let (calls, text, metadata) =
+                self.collect_step_events(input, step, model_events, &mut prior_messages)?;
             if calls.is_empty() {
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
@@ -43,6 +37,15 @@ impl StockExecution<'_> {
                     steps: step + 1,
                 }));
             }
+            #[cfg(feature = "filesystem")]
+            let text_hold = self
+                .io
+                .filter(|_| text.capacity() != 0)
+                .map(|io| io.guard_owned(text.capacity() as u64))
+                .transpose()?;
+            drop(text);
+            #[cfg(feature = "filesystem")]
+            drop(text_hold);
             for (invocation, invocation_index) in calls {
                 match self
                     .resolve_tool_call(
@@ -72,21 +75,21 @@ impl StockExecution<'_> {
         ))
     }
 
-    fn collect_turn_events(
+    fn collect_step_events(
         &self,
         input: &TurnInput,
         step: u32,
         model_events: Vec<ModelEvent>,
-        text: &mut String,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<(Vec<(ToolInvocation, usize)>, Value)> {
+    ) -> Result<(Vec<(ToolInvocation, usize)>, String, Value)> {
         let mut calls = Vec::new();
+        let mut text = String::new();
         let mut completed = Value::Null;
         for event in model_events {
             match event {
                 ModelEvent::Content { delta } => {
                     stock_string_push(
-                        text,
+                        &mut text,
                         &delta,
                         self.stock.limits.file_bytes,
                         "assistant output exceeds file limit",
@@ -127,7 +130,7 @@ impl StockExecution<'_> {
                 ModelEvent::Reasoning { .. } => {}
             }
         }
-        Ok((calls, completed))
+        Ok((calls, text, completed))
     }
 
     pub(super) fn append_assistant_part(
