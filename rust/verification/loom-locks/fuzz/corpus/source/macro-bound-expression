@@ -1,0 +1,1 @@
+fn check() { wrapper! { check_with_bound(None.or(Some(2)), run); builder.preemption_bound.replace(2); } }
