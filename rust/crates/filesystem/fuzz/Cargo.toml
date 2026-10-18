@@ -38,6 +38,7 @@ bench = false
 
 [[bin]]
 name = "fuse_reply"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/fuse_reply.rs"
 test = false
 doc = false
