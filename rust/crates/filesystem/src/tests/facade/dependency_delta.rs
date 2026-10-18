@@ -1,37 +1,48 @@
 use super::*;
 use acyclic_test_support::measure;
 
-#[tokio::test]
-async fn content_mutation_preserves_history_without_copying_it() -> TestResult {
+#[test]
+fn content_mutation_preserves_history_without_copying_it() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let mut measured = Vec::new();
     for history in [8, 24] {
         let cancel = CancellationToken::new();
-        let (_, mut checkout) = fixture(config(), &cancel).await?;
-        let file = create(
-            &mut checkout,
-            "data",
-            OwnedBytes::from_static(b"before"),
-            &cancel,
-        )
-        .await?;
-        commit(&mut checkout, &cancel).await?;
-        for index in 0..history {
-            assert!(
-                checkout
-                    .lookup_no_follow(&path(&format!("absent-{index:02}"))?, B, &cancel)
-                    .await?
-                    .value
-                    .record
-                    .is_none()
-            );
-        }
-        checkout.read_file_record_by_id(file, B, &cancel).await?;
+        let (mut checkout, file) = runtime.block_on(async {
+            let (volume, mut source) = fixture(config(), &cancel).await?;
+            let file = create(
+                &mut source,
+                "data",
+                OwnedBytes::from_static(b"before"),
+                &cancel,
+            )
+            .await?;
+            commit(&mut source, &cancel).await?;
+            let mut checkout = volume
+                .checkout(GenerationSelector::Head, writable_tracking(), B, &cancel)
+                .await?
+                .value;
+            for index in 0..history {
+                assert!(
+                    checkout
+                        .lookup_no_follow(&path(&format!("absent-{index:02}"))?, B, &cancel)
+                        .await?
+                        .value
+                        .record
+                        .is_none()
+                );
+            }
+            checkout.read_file_record_by_id(file, B, &cancel).await?;
+            Ok::<_, Box<dyn std::error::Error>>((checkout, file))
+        })?;
         let previous_count = checkout.dependencies.proof().len();
+        assert!(previous_count >= history);
         // The independently authored output is fixed; history consists solely
         // of read observations and cannot affect content or mutation work.
         let mut outcome = None;
         let allocation = measure(|| {
-            outcome = Some(futures::executor::block_on(checkout.change_content(
+            outcome = Some(runtime.block_on(checkout.change_content(
                 file,
                 ContentChange::Resize { logical_bytes: 3 },
                 ContentTimes::Preserve,
@@ -53,7 +64,9 @@ async fn content_mutation_preserves_history_without_copying_it() -> TestResult {
             );
         }
         assert_eq!(
-            read(&mut checkout, file, 0, 6, &cancel).await?.as_ref(),
+            runtime
+                .block_on(read(&mut checkout, file, 0, 6, &cancel))?
+                .as_ref(),
             b"bef"
         );
         measured.push((
