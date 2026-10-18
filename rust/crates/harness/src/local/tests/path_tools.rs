@@ -3,6 +3,12 @@ use super::*;
 
 #[tokio::test]
 async fn ordinary_read_edit_and_native_overwrite_share_one_file_identity() -> Result<()> {
+    let _diagnostics = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_test_writer()
+            .finish(),
+    );
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::write(
