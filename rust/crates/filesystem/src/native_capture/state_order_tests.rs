@@ -274,7 +274,7 @@ fn complete_capture(
     depth: usize,
     budget: WorkBudget,
     previous: bool,
-) -> (Result<CaptureReceipt, String>, WorkCounters) {
+) -> (Result<CaptureReceipt, String>, WorkCounters, Option<u64>) {
     let source = tempfile::tempdir().unwrap();
     let prefix = vec!["d"; depth].join("/");
     let directory = source.path().join(prefix);
@@ -287,7 +287,10 @@ fn complete_capture(
     let mut checkout = runtime
         .block_on(super::capture_policy_tests::native_checkout(&setup))
         .unwrap();
-    let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
+    // The checkout and capture must share their original ledger. The resource
+    // allowance measures only capture, after constructing the checkout.
+    let work = setup.native_volume_work(budget).unwrap();
+    let available = work.remaining().unwrap().allocation_operations;
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path()).unwrap(),
@@ -308,7 +311,11 @@ fn complete_capture(
         ))
         .map(|receipt| receipt.value)
         .map_err(|failure| format!("{:?}", failure.error));
-    (result, work.receipt())
+    let used = work
+        .remaining()
+        .ok()
+        .map(|left| available - left.allocation_operations);
+    (result, work.receipt(), used)
 }
 
 #[test]
@@ -320,17 +327,28 @@ fn complete_captures_preserve_the_previous_exact_allocation_operation_limit() {
         .build()
         .unwrap();
     for (count, depth) in [(129, 1), (4, 16)] {
-        let (expected, receipt) =
-            complete_capture(&runtime, count, depth, WorkBudget::UNBOUNDED, true);
-        assert!(expected.is_ok());
-        let exact = receipt.allocation_operations;
+        let (expected, _, used) = complete_capture(
+            &runtime,
+            count,
+            depth,
+            WorkBudget {
+                allocation_operations: 1_000_000,
+                ..WorkBudget::UNBOUNDED
+            },
+            true,
+        );
+        assert!(
+            expected.is_ok(),
+            "count={count} depth={depth}: {expected:?}"
+        );
+        let exact = used.unwrap();
         for limit in [exact - 1, exact, exact + 1] {
             let budget = WorkBudget {
                 allocation_operations: limit,
                 ..WorkBudget::UNBOUNDED
             };
-            let (old, old_work) = complete_capture(&runtime, count, depth, budget, true);
-            let (new, work) = complete_capture(&runtime, count, depth, budget, false);
+            let (old, old_work, _) = complete_capture(&runtime, count, depth, budget, true);
+            let (new, work, _) = complete_capture(&runtime, count, depth, budget, false);
             assert_eq!(new, old, "count={count} depth={depth} limit={limit}");
             assert_eq!(new.is_ok(), limit >= exact);
             assert_eq!(work.allocation_operations, old_work.allocation_operations);
@@ -339,7 +357,7 @@ fn complete_captures_preserve_the_previous_exact_allocation_operation_limit() {
         // Scratch can be admitted at sorting time but consumes an operation
         // needed by a later mandatory capture allocation.
         FORCE_COUNTING.set(true);
-        let (broken, _) = complete_capture(
+        let (broken, _, _) = complete_capture(
             &runtime,
             count,
             depth,
@@ -360,23 +378,29 @@ proptest! {
     fn finite_parent_limits_remain_allocation_free_under_unbounded_child_views(
         count in 4usize..150, depth in 1usize..25, finite_root in any::<bool>(),
     ) {
+        let _subscriber = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
         let kinds = kinds();
         let prefix = vec!["d"; depth].join("/");
         let entries: Vec<_> = (0..count).map(|index| (format!("/{prefix}/{index:03}"), (index % 4) as u8)).collect();
         let (expected, items, _) = charged(&kinds, states(&kinds, &entries), comparison_sort);
         let finite = WorkBudget { allocation_operations: 10_000, ..WorkBudget::UNBOUNDED };
-        let root = NativeMaterializationWork::new(if finite_root { finite } else { WorkBudget::UNBOUNDED }, &CancellationToken::new()).unwrap();
-        let parent = root.native_volume_work(if finite_root { WorkBudget::UNBOUNDED } else { finite }).unwrap();
-        let child = parent.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
-        let before = child.receipt();
-        let mut input = states(&kinds, &entries);
-        PATH_COMPARISONS.set(0);
-        let heap = acyclic_test_support::measure(|| sort_capture_states(&mut input, &child).unwrap());
-        prop_assert_eq!(order(&input), expected);
-        prop_assert_eq!(heap.count_total, 0);
-        prop_assert_eq!(child.receipt().allocation_operations, before.allocation_operations);
-        prop_assert_eq!(child.receipt().items_examined - before.items_examined, items);
-        prop_assert_eq!(PATH_COMPARISONS.get(), 0);
+        // Both strategies get independently constructed, identical ancestor
+        // chains, with tracing disabled before measuring the production call.
+        for previous in [true, false] {
+            let root = NativeMaterializationWork::new(if finite_root { finite } else { WorkBudget::UNBOUNDED }, &CancellationToken::new()).unwrap();
+            let parent = root.native_volume_work(if finite_root { WorkBudget::UNBOUNDED } else { finite }).unwrap();
+            let child = parent.native_volume_work(WorkBudget::UNBOUNDED).unwrap();
+            let before = child.receipt();
+            let mut input = states(&kinds, &entries);
+            PATH_COMPARISONS.set(0);
+            let _sort = previous_sort(previous);
+            let heap = acyclic_test_support::measure(|| sort_capture_states(&mut input, &child).unwrap());
+            prop_assert_eq!(order(&input), expected.clone());
+            prop_assert_eq!(heap.count_total, 0, "previous={}", previous);
+            prop_assert_eq!(child.receipt().allocation_operations, before.allocation_operations);
+            prop_assert_eq!(child.receipt().items_examined - before.items_examined, items);
+            prop_assert_eq!(PATH_COMPARISONS.get(), 0);
+        }
     }
 }
 
