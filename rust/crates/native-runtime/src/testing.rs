@@ -228,17 +228,20 @@ where
     F::Output: Send + 'static,
 {
     let Some(context) = Context::current() else {
-        return tokio::spawn(future);
+        return tokio::spawn(crate::deadline::simulation::inherit_future(future));
     };
     let active = context.accept("task");
     let owned = active.0.clone();
-    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
-        let _active = active;
-        owned.pause("task:submitted").await;
-        let result = future.await;
-        owned.pause("task:completed").await;
-        result
-    }))
+    tokio::spawn(crate::deadline::simulation::inherit_future(CURRENT.scope(
+        Some(owned.clone()),
+        async move {
+            let _active = active;
+            owned.pause("task:submitted").await;
+            let result = future.await;
+            owned.pause("task:completed").await;
+            result
+        },
+    )))
 }
 
 /// Executes the real blocking closure, retaining ownership after caller drop.
@@ -250,9 +253,8 @@ where
     let owner = if let Some(context) = Context::current() {
         let active = context.accept("blocking");
         let owned = active.0.clone();
-        BlockingOwner::Shared(tokio::spawn(CURRENT.scope(
-            Some(owned.clone()),
-            async move {
+        BlockingOwner::Shared(tokio::spawn(crate::deadline::simulation::inherit_future(
+            CURRENT.scope(Some(owned.clone()), async move {
                 let _active = active;
                 owned.pause("blocking:submitted").await;
                 let result = blocking_on_service(move || {
@@ -262,13 +264,15 @@ where
                 .await;
                 owned.pause("blocking:completed").await;
                 result
-            },
+            }),
         )))
-    } else if crate::inline_blocking_allowed() {
+    } else if crate::inline_blocking_allowed() || crate::deadline::simulation::is_active() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        BlockingOwner::Shared(tokio::spawn(blocking_on_service(work)))
+        BlockingOwner::Shared(tokio::spawn(crate::deadline::simulation::inherit_future(
+            blocking_on_service(work),
+        )))
     } else {
         BlockingOwner::Worker(tokio::task::spawn_blocking(work))
     };
@@ -313,22 +317,25 @@ pub(crate) fn submit(
         | crate::NativeJob::Task { completion, .. } => completion.clone(),
     };
     let (done, waiting) = oneshot::channel();
-    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
-        let _active = active;
-        owned.pause("native:submitted").await;
-        let result = match crate::workers(pool, job.meter().is_some()) {
-            Ok(workers) => queued(job, workers).await,
-            Err(error) => Err(error),
-        };
-        if result.is_err()
-            && let Some(completion) = completion
-        {
-            // The caller may already be gone; failure must retire its fence too.
-            completion.complete();
-        }
-        owned.pause("native:completed").await;
-        let _ = done.send(result);
-    }));
+    tokio::spawn(crate::deadline::simulation::inherit_future(CURRENT.scope(
+        Some(owned.clone()),
+        async move {
+            let _active = active;
+            owned.pause("native:submitted").await;
+            let result = match crate::workers(pool, job.meter().is_some()) {
+                Ok(workers) => queued(job, workers).await,
+                Err(error) => Err(error),
+            };
+            if result.is_err()
+                && let Some(completion) = completion
+            {
+                // The caller may already be gone; failure must retire its fence too.
+                completion.complete();
+            }
+            owned.pause("native:completed").await;
+            let _ = done.send(result);
+        },
+    )));
     waiting
 }
 

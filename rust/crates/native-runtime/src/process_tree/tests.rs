@@ -920,7 +920,10 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
     assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
     drop(clock);
-    assert_eq!(checks, 2, "the deadline expired only once the clock reached it");
+    assert_eq!(
+        checks, 2,
+        "the deadline expired only once the clock reached it"
+    );
     assert!(failure.cleanup_completed);
     assert!(tree.is_reaped());
 }
@@ -1113,4 +1116,31 @@ fn exit_observation_retains_group_leader_until_cleanup() {
         Some(libc::SIGKILL)
     );
     tree.terminate(None).expect("reap signal exit");
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "current_thread")]
+async fn owned_process_wait_expires_on_virtual_time_and_retains_cleanup_custody() -> io::Result<()>
+{
+    use crate::deadline::simulation::Clock;
+    let origin = Instant::now();
+    let mut traces = Vec::new();
+    for skew in [Duration::ZERO, Duration::from_secs(1_000_000)] {
+        let temporary = tempfile::tempdir()?;
+        let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))?;
+        let clock = Clock::at(origin + skew);
+        let outcome = clock
+            .scope(async { tree.wait(Duration::from_millis(100)) })
+            .await;
+        // Deadline expiry is a typed observation, not a loss of the owned child.
+        assert_eq!(outcome.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(tree.child.is_some());
+        traces.push(clock.advances());
+        // Real OS cleanup stays on the production clock, outside virtual scope.
+        tree.terminate(None)?;
+        assert!(tree.is_reaped());
+    }
+    let expected: Vec<_> = (1..=100).map(Duration::from_millis).collect();
+    assert_eq!(traces, [expected.clone(), expected]);
+    Ok(())
 }

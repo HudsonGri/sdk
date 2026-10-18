@@ -463,3 +463,44 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
         );
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn held_record_lock_expires_on_virtual_time_through_the_original_store() {
+    use acyclic_native_runtime::deadline::simulation::Clock;
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let id = OperationId::from_bytes([0x7b; 16]);
+    let namespace = store.namespace().unwrap();
+    let paths = namespace
+        .record(MATERIALIZATION_FAMILY, &id.into_bytes())
+        .unwrap();
+    std::fs::create_dir_all(paths.directory()).unwrap();
+    let held = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&paths.lock)
+        .unwrap();
+    held.lock_exclusive().unwrap();
+    let clock = Clock::new();
+    let result = clock
+        .scope(MaterializationJournalStore::load(&store, id))
+        .await;
+    assert!(
+        matches!(result, Err(LocalCoreStateStoreError::LockTimeout(path)) if path == paths.lock)
+    );
+    assert_eq!(clock.advances().last(), Some(&RECORD_LOCK_DEADLINE));
+    assert_eq!(
+        clock.advances().len(),
+        (RECORD_LOCK_DEADLINE.as_millis() / RECORD_LOCK_RETRY.as_millis()) as usize
+    );
+    FileExt::unlock(&held).unwrap();
+    assert!(
+        store
+            .load_materialization_with_retry(id, |_| panic!("released record lock still blocked"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

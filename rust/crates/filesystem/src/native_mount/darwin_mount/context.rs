@@ -20,6 +20,8 @@ pub(super) struct CacheEpochs {
 }
 
 pub(super) struct DarwinMountContext {
+    #[cfg(feature = "test-support")]
+    wait_clock: Option<acyclic_native_runtime::deadline::simulation::Clock>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
     pub(super) handler_budget: crate::WorkBudget,
@@ -77,6 +79,10 @@ impl ViewObserver for DarwinMountContext {
 
 pub(super) fn uptime(work: &Work) -> Result<Duration, NativeMountError> {
     work.charge(READ_WORK)?;
+    #[cfg(feature = "test-support")]
+    if let Some(clock) = acyclic_native_runtime::deadline::simulation::Clock::capture() {
+        return Ok(clock.elapsed());
+    }
     let mut now = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -123,6 +129,8 @@ impl DarwinMountContext {
             (meter.budget, meter.cancellation().clone())
         };
         Ok(Self {
+            #[cfg(feature = "test-support")]
+            wait_clock: acyclic_native_runtime::deadline::simulation::Clock::capture(),
             source,
             writable,
             mount_uid: metadata.st_uid,
@@ -220,6 +228,14 @@ impl DarwinMountContext {
     }
 
     pub(super) fn revalidate(&self, work: &Work) -> Result<bool, NativeMountError> {
+        #[cfg(feature = "test-support")]
+        if let Some(clock) = &self.wait_clock {
+            return clock.enter(|| self.revalidate_inner(work));
+        }
+        self.revalidate_inner(work)
+    }
+
+    fn revalidate_inner(&self, work: &Work) -> Result<bool, NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
         let unconfirmed = self.unconfirmed.load(Ordering::Acquire);
         if self.verified.load(Ordering::Acquire) < unconfirmed && !self.verify_labels(work)? {
@@ -244,7 +260,7 @@ impl DarwinMountContext {
                 break;
             }
             work.charge(READ_WORK)?;
-            std::thread::sleep((expired - now).min(Duration::from_millis(10)));
+            acyclic_native_runtime::deadline::sleep((expired - now).min(Duration::from_millis(10)));
         }
         self.around_settled.fetch_max(made, Ordering::AcqRel);
         Ok(true)

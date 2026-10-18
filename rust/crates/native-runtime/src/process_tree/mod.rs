@@ -14,7 +14,7 @@ mod capture;
 /// ordered by the capture loop's own checks instead of scheduler latency.
 #[cfg(not(test))]
 fn capture_now() -> Instant {
-    Instant::now()
+    crate::deadline::now()
 }
 
 #[cfg(test)]
@@ -24,7 +24,9 @@ thread_local! {
 
 #[cfg(test)]
 fn capture_now() -> Instant {
-    CAPTURE_CLOCK.with(std::cell::Cell::get).unwrap_or_else(Instant::now)
+    CAPTURE_CLOCK
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(crate::deadline::now)
 }
 
 /// Freezes this thread's capture clock at `now`, or restores wall time.
@@ -366,7 +368,7 @@ impl ProcessTree {
         );
         operation.in_scope(|| {
             operation.finish((|| {
-                let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+                let deadline = crate::deadline::now().checked_add(timeout).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
                 })?;
                 if self.is_reaped() {
@@ -383,13 +385,13 @@ impl ProcessTree {
                     if let Some(status) = self.try_wait(None)? {
                         return Ok(status);
                     }
-                    if Instant::now() >= deadline {
+                    if crate::deadline::now() >= deadline {
                         return Err(io::Error::new(
                             io::ErrorKind::TimedOut,
                             "process exit deadline exceeded; termination may be unresolved",
                         ));
                     }
-                    std::thread::sleep(Duration::from_millis(1));
+                    crate::deadline::sleep(Duration::from_millis(1));
                 }
             })())
         })
@@ -524,7 +526,7 @@ impl ProcessTree {
                         ));
                     }
                     if !progressed {
-                        std::thread::sleep(Duration::from_millis(1));
+                        crate::deadline::sleep(Duration::from_millis(1));
                     }
                 }
             }));
@@ -587,13 +589,13 @@ impl ProcessTree {
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
-                let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
+                let deadline = crate::deadline::now() + Self::TERMINATION_TIMEOUT;
                 while self.try_wait(meter)?.is_none() {
-                    if Instant::now() >= deadline {
+                    if crate::deadline::now() >= deadline {
                         return Err(io::ErrorKind::TimedOut.into());
                     }
                     process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
+                        crate::deadline::sleep(Self::TERMINATION_POLL_INTERVAL);
                         Ok(())
                     })?;
                 }
@@ -631,13 +633,13 @@ impl ProcessTree {
         self.guard.terminate_with_meter(meter)?;
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
-            let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
+            let deadline = crate::deadline::now() + Self::TERMINATION_TIMEOUT;
             while platform::observe_exit_id(self.owned_child_id()?, meter)?.is_none() {
-                if Instant::now() >= deadline {
+                if crate::deadline::now() >= deadline {
                     return Err(io::ErrorKind::TimedOut.into());
                 }
                 process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                    std::thread::sleep(Self::TERMINATION_POLL_INTERVAL);
+                    crate::deadline::sleep(Self::TERMINATION_POLL_INTERVAL);
                     Ok(())
                 })?;
             }
