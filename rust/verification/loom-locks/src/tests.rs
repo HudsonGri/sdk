@@ -325,3 +325,16 @@ fn unseen_item_bodies_are_indeterminate_at_every_nesting_level() {
         Some(true)
     );
 }
+#[test]
+fn lexical_values_and_local_containers_do_not_inherit_library_bindings() {
+    for source in [
+        "fn consume(_: u8) {} fn p(consume: fn(std::sync::Mutex<()>)) { consume(Default::default()); }",
+        "fn helper(_: u8) {} use helper as consume; fn p(consume: fn(std::sync::Mutex<()>)) { consume(Default::default()); }",
+        "#[derive(Default)] struct Vec(std::sync::Arc<std::sync::Mutex<()>>); fn p() { Vec::default(); }",
+        "#[derive(Default)] struct Option(std::sync::Arc<std::sync::Mutex<()>>); fn p() { Option::default(); }",
+        "mod std { pub mod vec { pub struct Vec; } } fn p() { std::vec::Vec::default(); }",
+    ] {
+        assert!(matches!(scan(source), Ok(true) | Err(_)), "{source}");
+    }
+    assert!(!scan("#[derive(Default)] struct Vec(u8); fn p() { Vec::default(); }").unwrap());
+}

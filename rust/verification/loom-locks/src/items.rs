@@ -1,7 +1,7 @@
 use crate::finder::type_name;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use syn::{
-    Signature,
+    Expr, Pat, Signature, Type,
     visit::{self, Visit},
 };
 
@@ -11,6 +11,7 @@ use syn::{
 pub(super) struct Items<'ast> {
     pub(super) functions: BTreeMap<String, Option<&'ast Signature>>,
     pub(super) structs: BTreeMap<String, Option<&'ast syn::ItemStruct>>,
+    pub(super) values: BTreeSet<String>,
     owner: Vec<Option<String>>,
 }
 
@@ -24,6 +25,11 @@ impl<'ast> Items<'ast> {
 }
 
 impl<'ast> Visit<'ast> for Items<'ast> {
+    fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+        self.values.insert(crate::name(&pattern.ident));
+        visit::visit_pat_ident(self, pattern);
+    }
+
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
         self.function(crate::name(&item.sig.ident), &item.sig);
         visit::visit_item_fn(self, item);
@@ -49,4 +55,19 @@ impl<'ast> Visit<'ast> for Items<'ast> {
             .or_insert(Some(item));
         visit::visit_item_struct(self, item);
     }
+}
+
+/// `const _: fn(A) -> B = |lock| lock;`, which asserts at compile time that
+/// `A` is `B` and constructs nothing; its types are not written values.
+pub(super) fn identity(item: &syn::ItemConst) -> bool {
+    let Expr::Closure(closure) = &*item.expr else {
+        return false;
+    };
+    let parameter = match closure.inputs.iter().collect::<Vec<_>>().as_slice() {
+        [Pat::Ident(parameter)] => crate::name(&parameter.ident),
+        _ => return false,
+    };
+    item.ident == "_"
+        && matches!(*item.ty, Type::BareFn(_))
+        && matches!(&*closure.body, Expr::Path(body) if body.path.is_ident(&parameter))
 }

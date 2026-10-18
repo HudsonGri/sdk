@@ -114,6 +114,57 @@ struct Names<'ast> {
 }
 
 impl<'ast> Names<'ast> {
+    fn standard(&self, spelling: &str) -> bool {
+        if !spelling.contains("::") {
+            return !self.declarations.contains(spelling);
+        }
+        let parts: Vec<_> = spelling.split("::").collect();
+        let [root, module, ty] = parts.as_slice() else {
+            return false;
+        };
+        if self.declarations.contains(*root) {
+            return false;
+        }
+        if !matches!(*root, "std" | "core" | "alloc") {
+            return false;
+        }
+        matches!(
+            (*module, *ty),
+            ("vec", "Vec")
+                | ("option", "Option")
+                | ("string", "String")
+                | ("boxed", "Box")
+                | ("cell", "Cell")
+                | ("rc", "Rc" | "Weak")
+                | ("sync", "Arc" | "Weak")
+                | ("marker", "PhantomData")
+                | (
+                    "collections",
+                    "VecDeque" | "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
+                )
+                | (
+                    "primitive",
+                    "bool"
+                        | "char"
+                        | "str"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "u128"
+                        | "usize"
+                        | "i8"
+                        | "i16"
+                        | "i32"
+                        | "i64"
+                        | "i128"
+                        | "isize"
+                        | "f32"
+                        | "f64"
+                )
+        )
+    }
+
     fn declare(&mut self, name: &str) {
         if !self.declarations.insert(name.to_string()) {
             self.error.get_or_insert_with(|| {
@@ -249,6 +300,11 @@ impl<'ast> Names<'ast> {
 }
 
 impl<'ast> Visit<'ast> for Names<'ast> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        self.declare(&crate::name(&item.ident));
+        visit::visit_item_mod(self, item);
+    }
+
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         self.walk(&item.tree, &mut Vec::new());
     }

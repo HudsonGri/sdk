@@ -145,10 +145,7 @@ impl<'ast> Finder<'_, 'ast> {
                         .join("::");
                     let name = self.names.resolve(&path)?;
                     let terminal = name.rsplit("::").next()?;
-                    let builtin = !name.contains("::")
-                        || name.starts_with("std::")
-                        || name.starts_with("core::")
-                        || name.starts_with("alloc::");
+                    let builtin = self.names.standard(&name);
                     if let Some(expanded) = self.names.instantiated(ty) {
                         self.is_lock_at(&expanded, depth + 1)
                     } else if crate::LOCKS.contains(&terminal) {
@@ -211,14 +208,14 @@ impl<'ast> Finder<'_, 'ast> {
                     .join("::");
                 let segment = resolved.segments.last()?;
                 let name = crate::name(&segment.ident);
-                if EMPTY.contains(&name.as_str()) {
-                    return Some(false);
-                }
                 if let Some(Some(item)) = self.items.structs.get(&spelling) {
                     let types: Vec<_> = item.fields.iter().map(|field| &field.ty).collect();
                     let target: Type = syn::parse_quote!((#(#types,)*));
                     let expanded = crate::substitute(&item.generics, &segment.arguments, &target);
                     return self.holds(&expanded, depth + 1);
+                }
+                if self.names.standard(&spelling) && EMPTY.contains(&name.as_str()) {
+                    return Some(false);
                 }
                 match &segment.arguments {
                     syn::PathArguments::AngleBracketed(angle) => {
@@ -422,6 +419,13 @@ impl<'ast> Finder<'_, 'ast> {
 
     fn signature(&self, func: &Expr) -> Option<&'ast Signature> {
         let Expr::Path(path) = func else { return None };
+        if self
+            .items
+            .values
+            .contains(&crate::name(&path.path.segments.first()?.ident))
+        {
+            return None;
+        }
         let resolved = self.names.path(&path.path)?;
         let segments: Vec<String> = resolved
             .segments
@@ -455,21 +459,6 @@ impl<'ast> Finder<'_, 'ast> {
             .map(|field| (field.ident.as_ref().map(ToString::to_string), &field.ty))
             .collect()
     }
-}
-
-/// `const _: fn(A) -> B = |lock| lock;`, which asserts at compile time that
-/// `A` is `B` and constructs nothing; its types are not written values.
-fn identity(item: &syn::ItemConst) -> bool {
-    let Expr::Closure(closure) = &*item.expr else {
-        return false;
-    };
-    let parameter = match closure.inputs.iter().collect::<Vec<_>>().as_slice() {
-        [Pat::Ident(parameter)] => crate::name(&parameter.ident),
-        _ => return false,
-    };
-    item.ident == "_"
-        && matches!(*item.ty, Type::BareFn(_))
-        && matches!(&*closure.body, Expr::Path(body) if body.path.is_ident(&parameter))
 }
 
 fn any(verdicts: impl Iterator<Item = Option<bool>>) -> Option<bool> {
@@ -718,7 +707,7 @@ impl<'ast> Visit<'ast> for Finder<'_, 'ast> {
     }
 
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-        if identity(item) {
+        if crate::items::identity(item) {
             return;
         }
         self.found |= self.is_lock(&item.ty) == Some(true);

@@ -225,7 +225,7 @@ proptest! {
     #[test]
     fn constructor_spellings_never_become_a_lock_free_verdict(
         raw_type in any::<bool>(), raw_method in any::<bool>(),
-        aliases in 0usize..5, wrapper in 0usize..8,
+        aliases in 0usize..5, wrapper in 0usize..11,
     ) {
         let lock = if raw_type { "r#Mutex" } else { "Mutex" };
         let method = if raw_method { "r#default" } else { "default" };
@@ -244,7 +244,11 @@ proptest! {
             5 => format!("mod a {{ use std::cell::Cell as Value; }} mod b {{ type Value = {ty}; fn p() {{ Value::{method}(); }} }}"),
             6 => format!("use std::mem::take as T0; {} fn make(slot: &mut {ty}) -> {ty} {{ T{aliases}(slot) }}",
                 (0..aliases).map(|index| format!("use T{index} as T{};", index + 1)).collect::<String>()),
-            _ => format!("mod visible {{ #[path = \"hidden{aliases}.rs\"] mod r#hidden; }} fn p() {{}}"),
+            7 => format!("mod visible {{ #[path = \"hidden{aliases}.rs\"] mod r#hidden; }} fn p() {{}}"),
+            8 => format!("fn consume(_: u8) {{}} fn p(consume: fn({ty})) {{ consume({constructor}); }} {prefix}"),
+            9 => format!("fn consume(_: u8) {{}} fn p(f: fn({ty})) {{ let consume = f; consume({constructor}); }} {prefix}"),
+            _ => format!("#[derive(Default)] struct {}(std::sync::Arc<{ty}>); fn p() {{ {}::{method}(); }}",
+                if raw_type { "r#Option" } else { "Vec" }, if raw_type { "r#Option" } else { "Vec" }),
         };
         match scan(&source) {
             Ok(true) => {},
