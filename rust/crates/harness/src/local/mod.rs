@@ -163,12 +163,17 @@ impl LocalHarness {
                     return Err(Error::Invalid("local workspace is not a directory".into()));
                 }
             }
+            // One held-root capture serves state selection and owner validation.
+            let checkout = match &config.project {
+                LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
+                LocalProject::Volume { .. } => None,
+            };
             let directory = match config.state_directory {
                 Some(path) => path,
-                None => owner::state_directory(&config.project)?,
+                None => owner::state_directory(&config.project, checkout.as_ref())?,
             };
             let directory = owner::directory(&directory)?;
-            let owner = owner::Owner::open(&directory, &config.project)?;
+            let owner = owner::Owner::open(&directory, &config.project, checkout.as_ref())?;
             let filesystem =
                 acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
                     LocalProject::Workspace(_) => directory.join("filesystem"),

@@ -31,7 +31,7 @@ impl Bootstrap {
         // per-user default that open bypasses when an override is configured.
         assert_ne!(
             state,
-            super::super::super::owner::state_directory(&config.project)?
+            super::super::super::owner::state_directory(&config.project, None)?
         );
         let source = Root { directory, state };
         let harness = LocalHarness::open(config).await?;
