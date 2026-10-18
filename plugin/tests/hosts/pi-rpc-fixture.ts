@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
 import { nodeExecutable, pinnedPiCli } from "./pi-fixture.ts";
 import type { installedNativeFixture } from "./pi-native-fixture.ts";
 
 // Use the pinned CLI's own LF framing, including its Unicode-separator rules.
-const { attachJsonlLineReader, serializeJsonLine } = await import(fileURLToPath(new URL(
+const { attachJsonlLineReader, serializeJsonLine } = await import(new URL(
   "node_modules/@earendil-works/pi-coding-agent/dist/modes/rpc/jsonl.js", import.meta.url,
-))) as {
+).href) as {
   attachJsonlLineReader(stream: Readable, accept: (line: string) => void): () => void;
   serializeJsonLine(value: unknown): string;
 };
