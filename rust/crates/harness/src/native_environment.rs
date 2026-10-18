@@ -35,16 +35,6 @@ pub fn variable(name: &str) -> Option<OsString> {
     resolve(Read::Variable(name))
 }
 
-/// Fixture readers never expose ambient home/configuration paths, including integration consumers.
-#[cfg(feature = "test-support")]
-pub fn fixture_variable(name: &str) -> Option<OsString> {
-    if user_location(name) {
-        None
-    } else {
-        variable(name)
-    }
-}
-
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 /// Resolves the native home directory when fixture isolation permits discovery.
 pub fn home() -> Option<PathBuf> {
@@ -95,7 +85,7 @@ mod tests {
                 }).collect();
                 prop_assert!(variable(&cased).is_none());
                 #[cfg(feature = "test-support")]
-                prop_assert!(fixture_variable(&cased).is_none());
+                prop_assert!(crate::test_support::environment(&cased).is_none());
             }
         }
     }
