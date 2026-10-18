@@ -138,6 +138,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         }
         let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
         let (mut unique, unique_custody) = vector::<Option<&T>>(writes.len(), work)?;
+        let mut index = super::index::Index::new(writes.len(), work)?;
         let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
         let mut total = 0u64;
         for write in writes {
@@ -149,11 +150,13 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             } else {
                 self.validate_write(id, body, work)?;
             }
-            if let Some(previous) = unique
-                .iter()
-                .flatten()
-                .find(|previous| parts(previous).0 == id)
-            {
+            #[cfg(all(test, feature = "memory"))]
+            super::tests::replay_duplicate_scan(&unique, id, parts, work)?;
+            if let Some(previous) = index.insert(id, write, work)? {
+                work.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
                 if parts(previous).1 != body {
                     return Err(ObjectStoreError::DigestMismatch.into());
                 }
@@ -188,6 +191,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 .checked_add(body.len() as u64)
                 .ok_or(WorkError::Overflow)?;
         }
+        index.release(work)?;
         work.admit(WorkCounters {
             object_bytes_written: total,
             ..WorkCounters::UNCHARGED
