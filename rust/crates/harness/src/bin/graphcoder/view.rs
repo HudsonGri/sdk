@@ -2,7 +2,7 @@ use acyclic_harness::{
     OperationId, client,
     local::LocalHarness,
     tui::{
-        self, PromptBox, PromptInput, Viewport, crossterm,
+        self, PromptInput, Viewport, crossterm,
         ratatui::layout::Size,
         term::{Environment, FrameTerminal, ScreenMode, Tty},
     },
@@ -64,7 +64,7 @@ pub async fn run(
         input.refresh_completions();
         let mut areas = tui::ScreenAreas::default();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let back = client::tui_scroll(&commands)?;
+        let back = client::tui_modal_scroll(&commands)?;
         let mut maximum_scroll = 0;
         renderer.configure(client.views(), &authority, &commands)?;
         input.busy = renderer.is_busy();
@@ -91,12 +91,9 @@ pub async fn run(
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let effects = input.event(
-            event,
-            PromptBox::input_area(areas.prompt),
-            &mut viewport,
-            now,
-        );
+        let effects = areas.event(&mut input, event, &mut viewport, now, |byte| {
+            renderer.anchor_at(byte)
+        });
         for effect in effects {
             client::file_tui_input(
                 &mut commands,
@@ -104,6 +101,7 @@ pub async fn run(
                 effect,
                 usize::from(areas.transcript.height),
                 maximum_scroll,
+                |from, rows| renderer.move_view(from, rows),
             )
             .await?;
         }

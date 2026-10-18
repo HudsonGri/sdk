@@ -177,7 +177,7 @@ pub use prompt_files::PromptFiles;
 #[cfg(feature = "tui")]
 mod scroll_files;
 #[cfg(feature = "tui")]
-pub use scroll_files::{scroll_tui, tui_scroll};
+pub use scroll_files::{scroll_tui, tui_anchor, tui_modal_scroll};
 
 #[cfg(all(
     feature = "terminal",

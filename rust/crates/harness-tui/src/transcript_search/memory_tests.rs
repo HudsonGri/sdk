@@ -9,6 +9,7 @@ fn projection(size: usize, matches: usize) -> WrappedLines {
     let text = format!("{}{}", "needle ".repeat(matches), "x".repeat(size));
     let mut projection = WrappedLines::default();
     projection.update(&[Line::from(Span::raw(text))], 0, 80);
+    projection.wrap_all();
     projection
 }
 

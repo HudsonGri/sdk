@@ -42,6 +42,8 @@ mod prompt_input;
 #[cfg(feature = "tui")]
 mod screen;
 #[cfg(feature = "tui")]
+mod scrollbar;
+#[cfg(feature = "tui")]
 mod transcript_search;
 #[cfg(feature = "tui")]
 pub use transcript_search::{TranscriptSearch, transcript_matches};
@@ -92,9 +94,16 @@ pub use ratatui;
 #[cfg(feature = "tui")]
 pub use widget::{PromptWidget, Viewport};
 #[cfg(feature = "tui")]
-pub use wrapped_lines::WrappedLines;
+pub use wrapped_lines::{RowPosition, RowWindow, Top, WrappedLines};
+
+#[cfg(feature = "tui")]
+mod transcript_view;
+#[cfg(feature = "tui")]
+pub use transcript_view::{TranscriptAnchor, TranscriptPart, move_transcript, view_transcript};
 
 #[cfg(feature = "tui")]
 pub use screen::{Screen, ScreenAreas};
+#[cfg(feature = "tui")]
+pub use scrollbar::TranscriptScrollbar;
 #[cfg(feature = "tui")]
 pub mod term;

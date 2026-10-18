@@ -34,7 +34,13 @@ pub struct TranscriptSearch {
     refine: bool,
     complete: bool,
     generation: u64,
-    viewport: Option<(u64, (u64, Option<u64>), usize, usize)>,
+    viewport: Option<(
+        u64,
+        (u64, Option<u64>),
+        (crate::RowWindow, Option<crate::RowWindow>),
+        usize,
+        usize,
+    )>,
     nearest: Option<Range<usize>>,
     probe: Option<Range<usize>>,
     index: i64,
@@ -135,7 +141,13 @@ impl TranscriptSearch {
         height: usize,
     ) {
         let projection = projection.into();
-        let cut = (self.generation, projection.revision(), first, height);
+        let cut = (
+            self.generation,
+            projection.revision(),
+            projection.windows(),
+            first,
+            height,
+        );
         if self.viewport == Some(cut) {
             return;
         }
@@ -379,7 +391,11 @@ impl TranscriptSearch {
     }
 
     /// Project the stable source-byte match identity to its current row.
-    pub fn selected_row<'a>(&self, projection: impl Into<TranscriptRows<'a>>, index: i64) -> usize {
+    pub fn selected_anchor<'a>(
+        &self,
+        projection: impl Into<TranscriptRows<'a>>,
+        index: i64,
+    ) -> Option<crate::TranscriptAnchor> {
         let projection = projection.into();
         let selected = if index == self.index {
             self.selected.as_ref()
@@ -388,9 +404,7 @@ impl TranscriptSearch {
                 .checked_sub(1)
                 .and_then(|rank| self.active().get(rank))
         };
-        selected
-            .and_then(|range| projection.source_row(range.start))
-            .unwrap_or(0)
+        selected.and_then(|range| projection.source_anchor(range.start))
     }
 }
 

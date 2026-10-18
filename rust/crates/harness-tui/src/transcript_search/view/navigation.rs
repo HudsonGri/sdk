@@ -41,10 +41,9 @@ impl TranscriptSearch {
         let backwards = self.steps < 0;
         let len = projection.folded_len();
         let probe = self.navigation.get_or_insert_with(|| {
-            let row = projection
-                .source_row(anchor.start)
-                .expect("match source row");
-            let folded = projection.folded_row(row).expect("match folded row");
+            let folded = projection
+                .folded_at_source(anchor.start)
+                .expect("match folded row");
             Probe {
                 range: if backwards {
                     0..folded.end

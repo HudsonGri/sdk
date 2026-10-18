@@ -221,7 +221,14 @@ pub async fn file_tui_input<P: StreamProvider + ?Sized>(
     effect: InputEffect,
     page_rows: usize,
     maximum_scroll: usize,
+    move_view: impl FnMut(
+        Option<crate::tui::TranscriptAnchor>,
+        isize,
+    ) -> Option<crate::tui::TranscriptAnchor>,
 ) -> Result<()> {
+    if let InputEffect::ScrollTo { anchor } = effect {
+        return super::scroll_files::seek_tui(files, anchor).await;
+    }
     if let InputEffect::Host(
         action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
     ) = effect
@@ -231,6 +238,7 @@ pub async fn file_tui_input<P: StreamProvider + ?Sized>(
             action == crate::tui::Action::TranscriptUp,
             page_rows,
             maximum_scroll,
+            move_view,
         )
         .await;
     }
