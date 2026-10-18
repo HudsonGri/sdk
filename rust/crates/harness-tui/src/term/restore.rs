@@ -156,8 +156,15 @@ impl<W: Write> RestoreGuard<W> {
         if let Some(previous) = displaced {
             self.modes.insert(previous, ModeState::Reset);
         }
-        if !self.desired.contains(&mode) {
-            self.desired.push(mode);
+        // Reapplication replays `desired` in order, so it holds one entry per
+        // exclusive selection: the latest, in the slot of the first.
+        match self
+            .desired
+            .iter_mut()
+            .find(|desired| **desired == mode || group.is_some_and(|g| g.contains(*desired)))
+        {
+            Some(slot) => *slot = mode,
+            None => self.desired.push(mode),
         }
         self.modes.insert(mode, ModeState::Set);
         if let Err(error) = self.writer.write_all(format!("\x1b[?{mode}h").as_bytes()) {
@@ -360,6 +367,33 @@ impl<W: Write> super::Present for RestoreGuard<W> {
 
 /// Made only by `RestoreGuard::alternate_screen` on a confirmed alternate screen.
 struct OnAlternateScreen(());
+
+#[cfg(all(test, unix, not(acyclic_harness_tui_loom)))]
+#[test]
+fn resume_reapplies_the_latest_exclusive_selection() {
+    let mut caps = Capabilities::default();
+    for mode in [1049]
+        .into_iter()
+        .chain(MOUSE_PROTOCOLS)
+        .chain(MOUSE_ENCODINGS)
+    {
+        caps.modes.insert(mode, ModeState::Reset);
+    }
+    let mut bytes = Vec::new();
+    let mut guard = RestoreGuard::new(&mut bytes, &caps);
+    guard.setup(ScreenMode::Alternate).unwrap();
+    for mode in [1003, 1016, 1002, 1006] {
+        guard.enable_mode(mode).unwrap();
+    }
+    guard.restore().unwrap();
+    guard.writer().clear();
+    guard.reapply().unwrap();
+    // Encoding before protocol, each the selection active before suspension.
+    assert_eq!(
+        guard.writer().as_slice(),
+        b"\x1b[?1049h\x1b[?1006h\x1b[?1002h"
+    );
+}
 
 impl<W: Write> Drop for RestoreGuard<W> {
     fn drop(&mut self) {
