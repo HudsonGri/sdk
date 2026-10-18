@@ -2,7 +2,8 @@ use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::ty::{self, Ty, TyCtxt, TypingEnv};
 
 pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
-    let name = tcx.item_name(method).as_str();
+    let symbol = tcx.item_name(method);
+    let name = symbol.as_str();
     matches!(
         name,
         "default"
@@ -27,11 +28,15 @@ pub(super) fn lock<'tcx>(
         return None;
     }
     let ty = tcx
-        .try_normalize_erasing_regions(TypingEnv::post_analysis(tcx, owner), ty)
+        .try_normalize_erasing_regions(
+            TypingEnv::post_analysis(tcx, owner),
+            ty::Unnormalized::new_wip(ty),
+        )
         .ok()?;
     match ty.kind() {
         ty::Adt(definition, arguments) => {
-            let name = tcx.item_name(definition.did()).as_str();
+            let symbol = tcx.item_name(definition.did());
+            let name = symbol.as_str();
             if matches!(
                 name,
                 "Mutex" | "RwLock" | "Condvar" | "SyncMutex" | "AsyncMutex"

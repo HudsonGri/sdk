@@ -132,7 +132,7 @@ impl<'tcx> Visitor<'tcx> for Body<'_, 'tcx> {
     }
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let mut args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|arg| {
         Path::new(arg)
@@ -154,7 +154,5 @@ fn main() {
             PathBuf::from(std::env::var("LOOM_MODEL_REPORTS").expect("report directory"));
         check.report = Some(directory.join(format!("{}.tsv", std::process::id())));
     }
-    std::process::exit(rustc_driver::catch_with_exit_code(|| {
-        rustc_driver::run_compiler(&args, &mut check)
-    }));
+    rustc_driver::catch_with_exit_code(|| rustc_driver::run_compiler(&args, &mut check))
 }
