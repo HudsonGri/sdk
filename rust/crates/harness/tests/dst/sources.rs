@@ -20,7 +20,7 @@ const CRATES: [&str; 6] = [
 /// source passed as a function (`unwrap_or_else(SystemTime::now)`) still counts;
 /// identity constructors match through any type path or alias, and renaming a
 /// clock or identity type is itself a source.
-const SOURCES: [&str; 23] = [
+const SOURCES: [&str; 24] = [
     "::new_v4",
     "::now_v7",
     "::new_v7",
@@ -44,10 +44,11 @@ const SOURCES: [&str; 23] = [
     "OffsetDateTime::now",
     "Utc as ",
     "OffsetDateTime as ",
+    "RandomState",
 ];
 
 /// Exact remaining direct sources: (file, source, count).
-const ALLOWED: [(&str, &str, usize); 11] = [
+const ALLOWED: [(&str, &str, usize); 12] = [
     // Seam fallbacks, reached only when no seeded scope is active.
     ("harness/src/identity.rs", "::new_v4", 1),
     ("harness/src/local/owner.rs", "getrandom::fill", 1),
@@ -66,6 +67,9 @@ const ALLOWED: [(&str, &str, usize); 11] = [
     ("stream/src/wasm/remote.rs", "::new_v4", 1),
     // The sole mount clock fallback is unreachable through a captured seeded clock.
     ("filesystem/src/native_mount/clock.rs", "SystemTime::now", 1),
+    // Unseeded per-process hash keys. They vary only staged-batch probe
+    // charges, never replay traces; seeding them is an open finding.
+    ("filesystem/src/logical_objects/index.rs", "RandomState", 6),
 ];
 
 // In-crate unit-test modules by repository naming convention.
@@ -217,6 +221,10 @@ fn planted_unseeded_sources_fail_the_scan() {
             "::new_v4",
         ),
         ("let fill = getrandom::fill;", "getrandom::fill"),
+        (
+            "let keys = std::collections::hash_map::RandomState::new();",
+            "RandomState",
+        ),
     ] {
         let found = scan(Some(("harness/src/store/admission.rs", plant)));
         assert!(
