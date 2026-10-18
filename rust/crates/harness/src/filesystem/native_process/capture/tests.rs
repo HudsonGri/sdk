@@ -28,7 +28,7 @@ mod simulation {
         stdout: Vec<u8>,
     }
 
-    fn capture_probe(entropy: bool) -> Result<Observed> {
+    fn capture_probe(entropy: bool, simulated_process: bool) -> Result<Observed> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -40,6 +40,30 @@ mod simulation {
             } else {
                 Schedule::without_entropy(71)
             };
+            if simulated_process {
+                schedule.set_process_provider(|request, check, observe| {
+                    use std::os::unix::process::ExitStatusExt;
+                    assert!(unix_millis().is_some(), "provider escaped its clock scope");
+                    assert_eq!(request.command.get_program(), "/bin/sh");
+                    assert_eq!(request.command.get_args().collect::<Vec<_>>(), ["-c", "printf dst"]);
+                    assert_eq!(request.timeout, Duration::from_millis(1000));
+                    assert_eq!(request.maximum, 3);
+                    assert!(request.input.is_none());
+                    check().expect("script ownership check");
+                    for chunk in [b"s".as_slice(), b"im".as_slice()] {
+                        let action = observe(acyclic_native_runtime::ProcessOutput::Stdout(chunk))
+                            .expect("script observer");
+                        assert!(action.bytes.is_empty());
+                        assert!(!action.complete);
+                    }
+                    check().expect("script terminal ownership check");
+                    Ok(std::process::Output {
+                        status: std::process::ExitStatus::from_raw(0),
+                        stdout: b"sim".to_vec(),
+                        stderr: Vec::new(),
+                    })
+                });
+            }
             let source = Arc::new(OnceLock::new());
             let worker_source = Arc::clone(&source);
             let invocation = Invocation {
@@ -94,7 +118,7 @@ mod simulation {
             assert!(output.success, "{:?}", output.stop);
             assert_eq!(output.exit_code, Some(0));
             assert!(output.stderr.is_empty());
-            assert_eq!(output.stdout, b"dst");
+            assert_eq!(output.stdout, if simulated_process { b"sim" } else { b"dst" });
             assert_eq!(custody, output.stdout, "observer lost worker custody");
             Ok(Observed {
                 source: *source.get().expect("ownership was never checked"),
@@ -116,16 +140,35 @@ mod simulation {
 
     #[test]
     fn capture_retains_seeded_worker_sources_and_custody() -> Result<()> {
-        let first = capture_probe(true)?;
-        let second = capture_probe(true)?;
+        let first = capture_probe(true, false)?;
+        let second = capture_probe(true, false)?;
         assert!(retained_sources(&first));
         assert_eq!(first, second, "real process handoff did not replay");
         // Erase only the worker's entropy source. Keep its seeded executor,
         // clock and physical terminal, including the same Pending control check.
         assert!(
-            !retained_sources(&capture_probe(false)?),
+            !retained_sources(&capture_probe(false, false)?),
             "source-erased process handoff escaped the same oracle"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_process_provider_replays_at_the_original_worker_boundary() -> Result<()> {
+        let first = capture_probe(true, true)?;
+        assert_eq!(first, capture_probe(true, true)?);
+        let accepted = |observed: &Observed| {
+            observed.stdout == b"sim"
+                && observed
+                    .trace
+                    .iter()
+                    .any(|event| event.starts_with("process:"))
+                && retained_sources(observed)
+        };
+        assert!(accepted(&first));
+        // Removing the provider restores the original OS path. The same
+        // output/custody/dispatch oracle must reject that boundary mutation.
+        assert!(!accepted(&capture_probe(true, false)?));
         Ok(())
     }
 }

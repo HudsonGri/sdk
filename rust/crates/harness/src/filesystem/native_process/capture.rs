@@ -109,7 +109,6 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             check()?;
-            let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
             let mut next_check = std::time::Instant::now();
             let poll = || {
                 if std::time::Instant::now() >= next_check {
@@ -146,33 +145,41 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
                         .as_deref()
                         .map(acyclic_native_runtime::CaptureInput::Literal)
                 });
-            let output = process.wait_with_output(
-                timeout,
-                maximum_output,
-                input,
-                poll,
-                |chunk| {
-                    observer(custody, chunk)?;
-                    let acyclic_native_runtime::ProcessOutput::Stdout(chunk) = chunk else {
-                        return Ok(Default::default());
-                    };
-                    let Some(exchange) = exchange.as_mut() else {
-                        return Ok(Default::default());
-                    };
-                    if exchange.is_complete() {
-                        return Ok(Default::default());
-                    }
-                    let (bytes, _hold) = exchange.push(chunk, None).map_err(|error| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                    })?;
-                    Ok(acyclic_native_runtime::ProcessInput {
-                        bytes,
-                        complete: exchange.is_complete(),
-                    })
+            let mut observe = |chunk: acyclic_native_runtime::ProcessOutput<'_>| {
+                observer(custody, chunk)?;
+                let acyclic_native_runtime::ProcessOutput::Stdout(chunk) = chunk else {
+                    return Ok(Default::default());
+                };
+                let Some(exchange) = exchange.as_mut() else {
+                    return Ok(Default::default());
+                };
+                if exchange.is_complete() {
+                    return Ok(Default::default());
+                }
+                let (bytes, _hold) = exchange.push(chunk, None).map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                Ok(acyclic_native_runtime::ProcessInput {
+                    bytes,
+                    complete: exchange.is_complete(),
+                })
+            };
+            #[cfg(feature = "test-support")]
+            if let Some(output) = acyclic_native_runtime::testing::capture_process(
+                acyclic_native_runtime::testing::ProcessCapture {
+                    command: &command,
+                    timeout,
+                    maximum: maximum_output,
+                    input,
                 },
-                None,
-                None,
-            );
+                &mut || check(),
+                &mut observe,
+            ) {
+                return Ok(output);
+            }
+            let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
+            let output =
+                process.wait_with_output(timeout, maximum_output, input, poll, observe, None, None);
             Ok::<_, std::io::Error>(output)
         })
     })
