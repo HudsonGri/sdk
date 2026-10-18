@@ -4,10 +4,138 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 loom::thread_local! {
     static BROKEN_RELEASE: Cell<bool> = Cell::new(false);
+    static SKIP_WORKER_WAIT: Cell<bool> = Cell::new(false);
+    static CLOSE_WITHOUT_LEAF: Cell<bool> = Cell::new(false);
 }
 
 pub(super) fn broken_release() -> bool {
     BROKEN_RELEASE.with(Cell::get)
+}
+
+pub(super) fn skip_worker_wait() -> bool {
+    SKIP_WORKER_WAIT.with(Cell::get)
+}
+
+pub(super) fn close_without_leaf() -> bool {
+    CLOSE_WITHOUT_LEAF.with(Cell::get)
+}
+
+#[test]
+fn capture_close_joins_in_flight_transient_accounting_before_draining() {
+    crate::initialize_test_native_io();
+    let exercise = |broken| {
+        loom::model(move || {
+            let work = crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .unwrap();
+            let capture = CaptureTransientCustody::new_native(&work).unwrap();
+            let bound = work.with_capture_custody(&capture).unwrap();
+            let task = loom::thread::spawn(move || {
+                let _ = bound.with_original_leaf(|state| {
+                    state.claim_allocation(1, 1, WorkCounters::UNCHARGED)
+                });
+            });
+            CLOSE_WITHOUT_LEAF.with(|flag| flag.set(broken));
+            capture.close().unwrap();
+            task.join().unwrap();
+            drop(capture);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                crate::NativeMaterializationWork::accounting_state_bytes(),
+                "transient capture allocation retirement"
+            );
+        });
+    };
+    exercise(false);
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
+        .expect_err("closing outside the leaf must lose transient custody");
+    let message = error.downcast_ref::<String>().expect("assertion message");
+    assert!(
+        message.contains("transient capture allocation retirement"),
+        "{message}"
+    );
+}
+
+#[test]
+fn capture_close_waits_for_accepted_payloads_but_not_accounting_handles() {
+    crate::initialize_test_native_io();
+    let exercise = |broken| {
+        loom::model(move || {
+            let work = crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .unwrap();
+            let capture = CaptureTransientCustody::new_native(&work).unwrap();
+            let stale = work.with_capture_custody(&capture).unwrap();
+            let worker = CaptureTransientCustody::worker(&capture).unwrap();
+            let done = Arc::new(AtomicBool::new(false));
+            let other_done = done.clone();
+            let task = loom::thread::spawn(move || {
+                other_done.store(true, Ordering::Release);
+                drop(worker);
+            });
+            SKIP_WORKER_WAIT.with(|flag| flag.set(broken));
+            capture.close().unwrap();
+            let retired_at_close = done.load(Ordering::Acquire);
+            task.join().unwrap();
+            assert!(
+                retired_at_close,
+                "accepted capture payload retired: {retired_at_close}"
+            );
+            assert!(CaptureTransientCustody::worker(&capture).is_err());
+            assert!(stale.with_original_leaf(|state| state.check()).is_err());
+            drop(capture);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                crate::NativeMaterializationWork::accounting_state_bytes()
+                    + CaptureTransientCustody::ALLOCATION_BYTES
+            );
+            drop(stale);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                crate::NativeMaterializationWork::accounting_state_bytes()
+            );
+        });
+    };
+    exercise(false);
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
+        .expect_err("closing without worker retirement must fail");
+    let message = error.downcast_ref::<String>().expect("assertion message");
+    assert!(
+        message.contains("accepted capture payload retired"),
+        "{message}"
+    );
+}
+
+#[test]
+fn capture_worker_registration_racing_close_never_returns_an_active_closed_lease() {
+    crate::initialize_test_native_io();
+    loom::model(|| {
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .unwrap();
+        let capture = CaptureTransientCustody::new_native(&work).unwrap();
+        let other = capture.clone();
+        let task = loom::thread::spawn(move || {
+            if let Ok(worker) = CaptureTransientCustody::worker(&other) {
+                assert!(other.is_open(), "registered worker remains open");
+                drop(worker);
+            }
+        });
+        capture.close().unwrap();
+        task.join().unwrap();
+        assert!(!capture.is_open());
+        drop(capture);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            crate::NativeMaterializationWork::accounting_state_bytes()
+        );
+    });
 }
 
 #[test]
@@ -22,7 +150,7 @@ fn concurrent_capture_retirement_and_transfer_conserve_every_byte() {
             .unwrap();
             let capture = CaptureTransientCustody::new_native(&work).unwrap();
             capture.claim(5);
-            let other = Arc::clone(&capture);
+            let other = capture.clone();
             let worker = loom::thread::spawn(move || {
                 BROKEN_RELEASE.with(|fault| fault.set(broken));
                 other.claim(3);

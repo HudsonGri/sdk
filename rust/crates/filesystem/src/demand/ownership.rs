@@ -261,7 +261,7 @@ impl NativeMountAllocationCustody {
             .original
             .as_ref()
             .and_then(|work| work.capture_origin.as_ref())
-            .and_then(std::sync::Weak::upgrade)
+            .filter(|capture| capture.is_open())
         {
             capture.transfer_retained_bytes(bytes)?;
         }
