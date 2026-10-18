@@ -7,8 +7,6 @@ use crate::kernel::FileMetadata;
 use crate::kernel::MetadataField;
 use crate::{FileId, MountId, VolumeId};
 use bytes::Bytes;
-#[cfg(unix)]
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

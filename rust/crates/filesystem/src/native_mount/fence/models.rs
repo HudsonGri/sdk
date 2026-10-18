@@ -28,7 +28,7 @@ fn cleanup_after_contended_registry(
     MountDestinationGuard::acquire_with_work(destination, false, &work, &mut guard, false).unwrap();
     let mut guard = guard.unwrap();
     let (fence, registry) = MountDestinationGuard::paths_for_canonical(destination).unwrap();
-    let registry: MountLockFile = OpenOptions::new()
+    let registry: MountLockFile = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(registry)
