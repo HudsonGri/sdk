@@ -71,16 +71,19 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         let result =
             TaskFiles::open_with_native_work(provider, &volume, &verifier, &scope, 65_536, &work)
                 .await;
-        if let Ok(files) = result {
-            let record = Record {
-                sequence: 1,
-                value: bytes.to_vec().into(),
-                commit_id: acyclic_stream::CommitId::from_bytes([0; 32]),
-                committed_at_micros: 0,
-            };
-            let expected = FileValue::from_record(&record).unwrap().unwrap();
-            let snapshot = files.snapshot(&Query::Root, 4).await.unwrap();
-            assert_eq!(snapshot.files, [expected]);
+        match result {
+            Ok(files) => {
+                let record = Record {
+                    sequence: 1,
+                    value: bytes.to_vec().into(),
+                    commit_id: acyclic_stream::CommitId::from_bytes([0; 32]),
+                    committed_at_micros: 0,
+                };
+                let expected = FileValue::from_record(&record).unwrap().unwrap();
+                let snapshot = files.snapshot(&Query::Root, 4).await.unwrap();
+                assert_eq!(snapshot.files, [expected]);
+            }
+            Err(error) => drop(error),
         }
         assert_eq!(work.live_allocation_bytes(), baseline);
     });
