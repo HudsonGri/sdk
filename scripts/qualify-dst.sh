@@ -7,7 +7,7 @@ cargo test --locked -p acyclic-native-runtime --features test-support --lib --no
 RUSTFLAGS="--cfg acyclic_native_runtime_loom" cargo test --locked -p acyclic-native-runtime --features test-support --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py testing::model:: testing::entropy::models:: testing::executor::models:: testing::queue_model:: testing::durability::models:: testing::host::models::
 cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,grpc,test-support --test dst --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py seeded_ driver:: recovery::
+  python3 scripts/qualify-graphcoder-artifact.py seeded_ driver:: recovery:: manifest::
 
 # Keep transitive native features identical across the touched packages' tests.
 cargo check --locked -p acyclic-harness -p acyclic-native-runtime -p acyclic-stream -p acyclic-objects -p acyclic-fs --lib --tests \

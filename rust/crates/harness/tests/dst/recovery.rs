@@ -111,7 +111,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
         let mut recovery = Driver::new(72, None);
         let schedule = recovery.schedule.clone();
         let marker = Cell::new(None);
-        match recovery
+        let result = match recovery
             .run(local_turn(
                 directory.path(),
                 &schedule,
@@ -122,6 +122,14 @@ fn crash_reopen(point: Cut) -> Result<()> {
         {
             Outcome::Completed(result) => result,
             Outcome::Crashed(cause) => panic!("uncut recovery crashed: {cause}"),
+        };
+        assert!(
+            marker.get().is_some(),
+            "workspace did not reopen before the new prompt"
+        );
+        match point {
+            Cut::FirstTurnWrite => result,
+            Cut::DispatchIntent => manifest::check("F3", result),
         }
     })
 }
@@ -132,6 +140,6 @@ fn checkout_reopens_after_first_turn_write() -> Result<()> {
 }
 
 #[test]
-fn checkout_reopens_after_last_dispatch_intent_write() -> Result<()> {
+fn live_f3_killed_head_accepts_a_new_prompt() -> Result<()> {
     crash_reopen(Cut::DispatchIntent)
 }

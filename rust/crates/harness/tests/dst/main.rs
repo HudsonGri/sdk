@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
 mod driver;
+mod manifest;
 mod recovery;
 
 // Keep each simulator layer independent of the production future's layout.
