@@ -191,7 +191,7 @@ fn streaming(tools: usize, updates: usize, broken: bool) {
                 ..Default::default()
             };
             renderer.update(&views, &owner());
-            renderer.wrap_tools(80);
+            renderer.wrapped_tools.reflow(80);
             let tail = renderer.screen().tools.as_ptr().addr();
             let wrapped_tail = renderer.wrapped_tools.rows().as_ptr().addr();
             let copies = renderer.task.tool_copies();
@@ -201,7 +201,7 @@ fn streaming(tools: usize, updates: usize, broken: bool) {
                 renderer.update(&views, &owner());
                 let mut extra = 0;
                 let allocation = acyclic_test_support::measure(|| {
-                    renderer.wrap_tools(80);
+                    renderer.wrapped_tools.reflow(80);
                     if broken {
                         // Former TaskRows flatten followed by the outer copy.
                         let task = renderer.task.tools().to_vec();
