@@ -168,7 +168,7 @@ where
             ..WorkCounters::UNCHARGED
         })?;
         for object_id in pages {
-            let key = DecodedCacheKey::new::<Page<F>>(object_id, limits);
+            let key = DecodedCacheKey::new::<SharedPage<F>>(object_id, limits);
             accounting.check()?;
             if let Some(value) = store.decoded_cache_get(key).map_err(read_store_error)? {
                 plan.sources.push(BatchSource::Cached(value));
@@ -270,13 +270,12 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
                         page: PageLease::Shared {
                             page: value
                                 .value
-                                .downcast::<Page<F>>()
+                                .downcast::<SharedPage<F>>()
                                 .map_err(|_| read_store_error(ObjectStoreError::Corrupt))?,
-                            logical_bytes: value.logical_bytes,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            _native_custody: value.native_custody,
                         },
                         logical_bytes: 0,
-                        #[cfg(not(target_arch = "wasm32"))]
-                        native_custody: value.native_custody,
                     };
                     let allocation = accounting.claim_owned(0, 0)?;
                     return Ok((page, allocation));
@@ -300,7 +299,7 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
             }
             admit_decoded_with_accounting(
                 self.store,
-                DecodedCacheKey::new::<Page<F>>(object_id, limits),
+                DecodedCacheKey::new::<SharedPage<F>>(object_id, limits),
                 decoded?,
                 accounting,
                 self.data_custody,
