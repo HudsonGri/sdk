@@ -98,6 +98,7 @@ async fn execute(
 }
 
 async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
+    let started = Instant::now();
     #[cfg(target_os = "linux")]
     let temporary = tempfile::tempdir_in("/dev/shm")?;
     #[cfg(not(target_os = "linux"))]
@@ -127,7 +128,6 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
         }}))?,
     )?;
     let operation = OperationId::new();
-    let started = Instant::now();
     let prompt = case["prompt"]
         .as_str()
         .ok_or("binary scenario needs a prompt")?;
@@ -142,7 +142,6 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;
-    let elapsed = started.elapsed();
     let recording = provider.finish().await?;
     if let Err(error) = output {
         return Err(format!(
@@ -150,9 +149,6 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
             recording.attempts, recording.remaining
         )
         .into());
-    }
-    if elapsed >= Duration::from_secs(1) {
-        return Err("binary scenario exceeded 1 s".into());
     }
     assertions::recording(&case, protocol, &recording)?;
     assertions::files(&case, &workspace)?;
@@ -168,6 +164,10 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
         {
             return Err(format!("settings file differs: {path}").into());
         }
+    }
+    let elapsed = started.elapsed();
+    if elapsed >= Duration::from_secs(1) {
+        return Err("binary scenario exceeded 1 s".into());
     }
     Ok(elapsed)
 }
