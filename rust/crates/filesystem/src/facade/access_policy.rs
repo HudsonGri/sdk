@@ -177,6 +177,67 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
+// Keep each owner's natural borrow in its existing async factory. Both
+// entry points expand the same accounted protocol, with no owner copy or
+// additional future layer.
+macro_rules! policy_revision {
+    ($volume:expr, $accounting:ident, $cancellation:ident) => {{
+        let before = readonly_standalone_live($accounting);
+        let result = async {
+            let volume = $volume;
+            let (generation, observed) = volume
+                .resolve_head_generation($accounting, $cancellation)
+                .await?;
+            let metadata = {
+                let (root, _root_allocation) = read_generation_root_with_accounting(
+                    &volume.fs.inner.objects,
+                    generation,
+                    volume.config,
+                    $accounting,
+                    $cancellation,
+                )
+                .await?;
+                if root.volume_id != volume.id {
+                    return Err(FsError::VolumeMismatch);
+                }
+                let (record, _record_allocation) = lookup_file_record_async_with_accounting(
+                    &volume.fs.inner.objects,
+                    root.file_table,
+                    root.root_file_id,
+                    DecodeLimits::for_volume(volume.config),
+                    $accounting,
+                    $cancellation,
+                    None,
+                )
+                .await?;
+                read_record_metadata_to_file_root_with_accounting(
+                    volume,
+                    record.ok_or(FsError::NotFound)?,
+                    $accounting,
+                    $cancellation,
+                )
+                .await?
+            };
+            let mut authority = authority_work($accounting, $cancellation)?;
+            let current = volume
+                .fs
+                .inner
+                .authority
+                .head(volume_authority_id(volume.id), &mut authority)
+                .await;
+            record_authority_work($accounting, &authority)?;
+            Ok(
+                crate::facade::policy_head_is_current(observed, current?).then_some((
+                    GenerationId::new(generation.digest),
+                    metadata.named_attributes,
+                )),
+            )
+        }
+        .await;
+        readonly_cleanup_standalone($accounting, before, 0).and(result)
+    }};
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
     /// Reads the current policy revision without constructing a checkout.
     /// Returns None if publication overtakes the metadata read.
@@ -192,15 +253,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> crate::Workspace<A, O> {
         work.finish(result, &accounting)
     }
 
-    pub(crate) fn current_access_policy_revision_accounted(
+    pub(crate) async fn current_access_policy_revision_accounted(
         &self,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> impl std::future::Future<
-        Output = Result<Option<(GenerationId, MetadataField<ObjectId>)>, FsError>,
-    > {
-        self.volume
-            .current_access_policy_revision_accounted(accounting, cancellation)
+    ) -> Result<Option<(GenerationId, MetadataField<ObjectId>)>, FsError> {
+        policy_revision!(&self.volume, accounting, cancellation)
     }
 }
 
@@ -210,59 +268,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<(GenerationId, MetadataField<ObjectId>)>, FsError> {
-        let before = readonly_standalone_live(accounting);
-        let result = async {
-            let volume = self;
-            let (generation, observed) = volume
-                .resolve_head_generation(accounting, cancellation)
-                .await?;
-            let metadata = {
-                let (root, _root_allocation) = read_generation_root_with_accounting(
-                    &volume.fs.inner.objects,
-                    generation,
-                    volume.config,
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-                if root.volume_id != volume.id {
-                    return Err(FsError::VolumeMismatch);
-                }
-                let (record, _record_allocation) = lookup_file_record_async_with_accounting(
-                    &volume.fs.inner.objects,
-                    root.file_table,
-                    root.root_file_id,
-                    DecodeLimits::for_volume(volume.config),
-                    accounting,
-                    cancellation,
-                    None,
-                )
-                .await?;
-                read_record_metadata_to_file_root_with_accounting(
-                    volume,
-                    record.ok_or(FsError::NotFound)?,
-                    accounting,
-                    cancellation,
-                )
-                .await?
-            };
-            let mut authority = authority_work(accounting, cancellation)?;
-            let current = volume
-                .fs
-                .inner
-                .authority
-                .head(volume_authority_id(volume.id), &mut authority)
-                .await;
-            record_authority_work(accounting, &authority)?;
-            Ok(
-                crate::facade::policy_head_is_current(observed, current?).then_some((
-                    GenerationId::new(generation.digest),
-                    metadata.named_attributes,
-                )),
-            )
-        }
-        .await;
-        readonly_cleanup_standalone(accounting, before, 0).and(result)
+        policy_revision!(self, accounting, cancellation)
     }
 }
 
