@@ -572,6 +572,55 @@ fn metadata_oracle_rejects_wrong_atime_extra_heap_and_query_controls() {
     }
 }
 
+fn exact_changed(
+    index: usize,
+    heap: AllocationInfo,
+    work: &serde_json::Value,
+) -> Result<(), String> {
+    let large = index == 2;
+    let (requests, expected) = if cfg!(windows) {
+        (
+            687,
+            if large {
+                [70_135, 70_698, 215_497, 2_329, 29_829, 22, 664]
+            } else {
+                [70_132, 794, 75_689, 2_329, 29_818, 22, 664]
+            },
+        )
+    } else {
+        let (requests, copied) = if cfg!(target_os = "macos") {
+            (714, 31_401)
+        } else {
+            (699, 30_625)
+        };
+        (
+            requests,
+            if large {
+                [70_135, 70_714, 215_673, 2_242, copied + 11, 22, 676]
+            } else {
+                [70_132, 810, 75_865, 2_242, copied, 22, 676]
+            },
+        )
+    };
+    let actual = [
+        "sourceBytesRead",
+        "objectBytesWritten",
+        "bytesHashed",
+        "bytesEncoded",
+        "bytesCopied",
+        "objectProbes",
+        "allocationOperations",
+    ]
+    .map(|name| work[name].as_u64().unwrap());
+    if (heap.count_total, actual) == (requests, expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "changed capture heap={heap:?}, work={actual:?}; expected heap={requests}, work={expected:?}"
+        ))
+    }
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(8))]
     #[test]
@@ -603,15 +652,17 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(old_trace, trace);
                 proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(exact));
                 proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), Some(exact));
+                exact_changed(index, heap, &work).unwrap();
                 if budget == u64::MAX {
                     eprintln!("CHANGED_REUSE index={index} heap={heap:?} old_heap={old_heap:?} work={work} old_work={old_work}");
                 }
             }
             let mut broken = fixture(&runtime);
             std::fs::write(broken.source.path().join(FILES[index].0.trim_start_matches('/')), body(FILES[index].1, seed)).unwrap();
-            let (output, work, _, _) = rescan(&runtime, &mut broken, Reuse::ReadTwice, false);
+            let (output, work, heap, _) = rescan(&runtime, &mut broken, Reuse::ReadTwice, false);
             proptest::prop_assert!(output.result.is_ok());
             proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(exact + 70_096));
+            proptest::prop_assert!(exact_changed(index, heap, &work).is_err());
             broken.budget.source_bytes_read = exact;
             let (output, _, _, _) = rescan(&runtime, &mut broken, Reuse::ReadTwice, false);
             proptest::prop_assert!(output.result.is_err());
