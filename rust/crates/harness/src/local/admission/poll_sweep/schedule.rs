@@ -1,6 +1,8 @@
 //! Push barriers around the real native submissions; no timer or poll-index cuts.
 use acyclic_native_runtime::testing::{Boundary, Schedule as IoSchedule};
 use std::{
+    cell::Cell,
+    collections::BTreeMap,
     future::Future,
     sync::{Arc, Mutex},
 };
@@ -107,7 +109,7 @@ pub(super) enum Exit<T> {
 /// The boundaries at which durable state can change: submissions and external
 /// effects. Completion and blocking-pool boundaries of independent owners may
 /// interleave differently between replays (#949) without changing durable state.
-const DURABLE: [&str; 6] = [
+pub(super) const DURABLE: [&str; 6] = [
     "model:accepted",
     "model:dispatch",
     "native:submitted",
@@ -124,41 +126,104 @@ pub(super) fn durable_count(points: &[&'static str]) -> usize {
     points.iter().filter(|point| durable(point)).count()
 }
 
-/// A replay cut at the `cut`-th durable boundary must reproduce the baseline's
-/// durable prefix; independent non-durable boundaries may reorder.
+/// A cancellation at the `occurrence`-th boundary named `name`. Every boundary
+/// name occurs the same number of times in every replay, so the cut always
+/// fires, at the same operation, however independent owners interleave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Cut {
+    pub name: &'static str,
+    pub occurrence: usize,
+    /// Durable boundaries through this one in the baseline; exact for durable cuts.
+    pub durable: usize,
+}
+
+/// Where a submitted operation ends or blocks: cancelling there leaves its
+/// result observable while the caller has not acted on it.
+pub(super) const OPERATION: [&str; 4] = [
+    "native:completed",
+    "task:completed",
+    "stream:read:blocked",
+    "stream:read:completed",
+];
+
+/// Operation-aware cuts: every durable boundary and every operation boundary,
+/// by name and occurrence. Planned names occur equally often in every replay,
+/// so the plan is the same for every baseline interleaving.
+pub(super) fn plan(baseline: &[&'static str]) -> Vec<Cut> {
+    let mut seen = BTreeMap::<&str, usize>::new();
+    let mut ordinal = 0;
+    let mut cuts = Vec::new();
+    for &name in baseline {
+        let occurrence = seen.entry(name).or_default();
+        *occurrence += 1;
+        ordinal += usize::from(durable(name));
+        if durable(name) || OPERATION.contains(&name) {
+            cuts.push(Cut {
+                name,
+                occurrence: *occurrence,
+                durable: ordinal,
+            });
+        }
+    }
+    cuts
+}
+
+/// A replay cancelled after `ordinal` durable boundaries must reproduce exactly
+/// that durable prefix of the baseline; independent boundaries may reorder.
 pub(super) fn check_replay(
     points: &[&'static str],
     baseline: &[&'static str],
-    cut: usize,
+    ordinal: usize,
 ) -> Result<(), String> {
-    let prefix = |points: &[&'static str]| -> Vec<&'static str> {
-        points
-            .iter()
-            .copied()
-            .filter(|point| durable(point))
-            .collect()
-    };
-    let (replayed, expected) = (prefix(points), prefix(baseline));
-    if replayed.len() == cut && expected.get(..cut) == Some(&replayed[..]) {
+    let replayed = points.iter().filter(|point| durable(point));
+    let expected = baseline.iter().filter(|point| durable(point));
+    if replayed.clone().count() == ordinal && replayed.eq(expected.take(ordinal)) {
         Ok(())
     } else {
         Err(format!(
-            "replay diverged before cancellation: {replayed:?} is not the first {cut} of {expected:?}"
+            "replay diverged before cancellation: {:?} is not the first {ordinal} of {:?}",
+            points
+                .iter()
+                .filter(|point| durable(point))
+                .collect::<Vec<_>>(),
+            baseline
+                .iter()
+                .filter(|point| durable(point))
+                .collect::<Vec<_>>(),
         ))
     }
 }
 
-/// Drives `future`, cancelling at the `cut`-th durable boundary. Returns the
-/// exit and the number of boundaries and durable boundaries hit.
+thread_local! {
+    // Negative control only: keep polling the cancelled caller.
+    static RETAIN_CALLER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `body` with a driver that does not release the caller at the cut.
+pub(super) fn retaining_caller<T>(body: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            RETAIN_CALLER.set(false);
+        }
+    }
+    RETAIN_CALLER.set(true);
+    let _reset = Reset;
+    body()
+}
+
+/// Drives `future`, cancelling at `cut`. Returns the exit and the number of
+/// boundaries and durable boundaries hit.
 pub(super) async fn drive<F: Future>(
     future: F,
-    cut: Option<usize>,
+    cut: Option<Cut>,
     schedule: &Schedule,
     events: &mut UnboundedReceiver<Boundary>,
 ) -> (Exit<F::Output>, usize, usize) {
     let mut future = Box::pin(schedule.io.scope(tokio::task::unconstrained(future)));
     let mut hit = 0;
     let mut ordinal = 0;
+    let mut seen = BTreeMap::<&str, usize>::new();
     loop {
         tokio::select! {
             output = &mut future => {
@@ -169,8 +234,9 @@ pub(super) async fn drive<F: Future>(
             event = events.recv() => {
                 let event = event.expect("provider lost its push driver");
                 hit += 1;
-                let counts = durable(event.name);
-                ordinal += usize::from(counts);
+                ordinal += usize::from(durable(event.name));
+                let occurrence = seen.entry(event.name).or_default();
+                *occurrence += 1;
                 {
                     let mut state = schedule.state.lock().unwrap();
                     if event.name == "task:submitted"
@@ -183,13 +249,25 @@ pub(super) async fn drive<F: Future>(
                     state.points.push(event.name);
                     state.publication = event.detail.clone();
                 }
-                if counts && cut == Some(ordinal) {
+                if cut.is_some_and(|cut| cut.name == event.name && cut.occurrence == *occurrence) {
                     {
                         let mut state = schedule.state.lock().unwrap();
                         state.cancelled = true;
                         state.cancelled_at = Some(format!("{}: {}", event.name, event.detail));
                     }
                     schedule.io.cancel();
+                    if RETAIN_CALLER.get() {
+                        event.release();
+                        loop {
+                            tokio::select! {
+                                _ = &mut future => break,
+                                event = events.recv() => event.unwrap().release(),
+                            }
+                        }
+                        drop(future);
+                        drain(schedule, events).await;
+                        return (Exit::Cancelled, hit, ordinal);
+                    }
                     // A JoinHandle's drop detaches its already submitted work.
                     // Cancel the caller first, then release and drain those owners.
                     drop(future);
@@ -212,8 +290,8 @@ async fn drain(schedule: &Schedule, events: &mut UnboundedReceiver<Boundary>) {
     }
 }
 
-pub(super) fn check_cut<T>(exit: &Exit<T>, cut: usize, ordinal: usize) -> Result<(), &'static str> {
-    if matches!(exit, Exit::Cancelled) && cut == ordinal {
+pub(super) fn check_cut<T>(exit: &Exit<T>, cut: Cut, ordinal: usize) -> Result<(), &'static str> {
+    if matches!(exit, Exit::Cancelled) && (!durable(cut.name) || cut.durable == ordinal) {
         Ok(())
     } else {
         Err("cancellation point was skipped")
@@ -237,24 +315,12 @@ mod tests {
         "task:completed",
     ];
 
-    // The `cut`-th durable boundary of a replay and everything before it.
-    fn through(points: &[&'static str], cut: usize) -> usize {
-        points
-            .iter()
-            .enumerate()
-            .filter(|(_, point)| durable(point))
-            .nth(cut - 1)
-            .unwrap()
-            .0
-            + 1
-    }
-
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-        // Any interleaving of independent boundaries keeps every durable cut
-        // replayable.
+        // Any interleaving of independent boundaries fires every planned cut at
+        // its operation with a replayable durable prefix.
         #[test]
-        fn independent_reordering_keeps_every_durable_cut(
+        fn independent_reordering_keeps_every_operation_cut(
             swaps in proptest::collection::vec(0usize..256, 1..32),
         ) {
             let baseline = TURN.repeat(4);
@@ -265,11 +331,61 @@ mod tests {
                     replay.swap(index, index + 1);
                 }
             }
-            for cut in 1..=durable_count(&baseline) {
-                let replayed = &replay[..through(&replay, cut)];
-                proptest::prop_assert_eq!(check_replay(replayed, &baseline, cut), Ok(()));
+            for cut in plan(&baseline) {
+                let at = replay
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, point)| **point == cut.name)
+                    .nth(cut.occurrence - 1)
+                    .unwrap()
+                    .0;
+                let ordinal = durable_count(&replay[..=at]);
+                proptest::prop_assert_eq!(check_replay(&replay[..=at], &baseline, ordinal), Ok(()));
+                if durable(cut.name) {
+                    proptest::prop_assert_eq!(ordinal, cut.durable);
+                }
             }
         }
+    }
+
+    #[test]
+    fn plan_cuts_every_durable_and_operation_boundary() {
+        let cut = |name, occurrence, durable| Cut {
+            name,
+            occurrence,
+            durable,
+        };
+        let baseline = [
+            "task:submitted",
+            "task:completed",
+            "blocking:submitted",
+            "task:completed",
+            "blocking:completed",
+            "native:submitted",
+            "native:completed",
+        ];
+        assert_eq!(
+            plan(&baseline),
+            [
+                cut("task:submitted", 1, 1),
+                cut("task:completed", 1, 1),
+                cut("task:completed", 2, 1),
+                cut("native:submitted", 1, 2),
+                cut("native:completed", 1, 2),
+            ]
+        );
+        // The same operations are cut however independent boundaries interleave.
+        let mut replay = TURN.to_vec();
+        replay.swap(2, 3);
+        let names = |cuts: Vec<Cut>| {
+            let mut cuts: Vec<_> = cuts
+                .into_iter()
+                .map(|cut| (cut.name, cut.occurrence))
+                .collect();
+            cuts.sort_unstable();
+            cuts
+        };
+        assert_eq!(names(plan(&replay)), names(plan(&TURN)));
     }
 
     #[test]

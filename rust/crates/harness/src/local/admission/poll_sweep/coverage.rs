@@ -94,14 +94,31 @@ pub(super) fn check_boundaries(
 
 pub(super) fn check_cuts(
     scenario: Scenario,
-    recorded: usize,
-    cuts: impl IntoIterator<Item = usize>,
+    plan: &[Cut],
+    cuts: impl IntoIterator<Item = Cut>,
 ) -> Result<()> {
-    let total = durable_total(scenario)?;
+    // Every occurrence of every durable and operation boundary in the reviewed
+    // manifest is exactly one planned cut.
+    let mut required = BTreeSet::new();
+    for (name, count) in expected(scenario)? {
+        if let Some(name) = schedule::DURABLE
+            .into_iter()
+            .chain(schedule::OPERATION)
+            .find(|planned| *planned == name)
+        {
+            required.extend((1..=count).map(|occurrence| (name, occurrence)));
+        }
+    }
     let cuts: Vec<_> = cuts.into_iter().collect();
-    if recorded != total
-        || cuts.len() != total
-        || cuts.into_iter().collect::<BTreeSet<_>>() != (1..=total).collect()
+    let planned: BTreeSet<_> = plan.iter().copied().collect();
+    if plan
+        .iter()
+        .map(|cut| (cut.name, cut.occurrence))
+        .collect::<BTreeSet<_>>()
+        != required
+        || planned.len() != plan.len()
+        || cuts.len() != plan.len()
+        || cuts.into_iter().collect::<BTreeSet<_>>() != planned
     {
         return Err(Error::Storage(
             "the real sweep omitted or duplicated a required cut".into(),
@@ -115,10 +132,23 @@ proptest::proptest! {
     #[test]
     fn broken_real_sweep_cannot_drop_a_cut(which in 0u8..3, omitted in 0usize..4096) {
         let scenario = match which { 0 => Scenario::Text, 1 => Scenario::EffectAndContinuation, _ => Scenario::Compaction };
-        let total = durable_total(scenario).unwrap();
-        let omitted = 1 + omitted % total;
-        // This is the actual replay planner, deliberately missing a real cut.
-        proptest::prop_assert!(check_cuts(scenario, total, (1..=total).filter(|cut| *cut != omitted)).is_err());
+        let counts = expected(scenario).unwrap();
+        let plan: Vec<_> = schedule::DURABLE
+            .into_iter()
+            .chain(schedule::OPERATION)
+            .flat_map(|name| {
+                (1..=counts.get(name).copied().unwrap_or(0))
+                    .map(move |occurrence| Cut { name, occurrence, durable: 0 })
+            })
+            .collect();
+        check_cuts(scenario, &plan, plan.iter().copied()).unwrap();
+        let omitted = omitted % plan.len();
+        // This is the actual replay check, deliberately missing a real cut.
+        proptest::prop_assert!(check_cuts(scenario, &plan, plan.iter().copied().filter(|cut| *cut != plan[omitted])).is_err());
+        // A planner that drops a boundary fails even if the sweep follows it.
+        let mut short = plan.clone();
+        short.remove(omitted);
+        proptest::prop_assert!(check_cuts(scenario, &short, short.iter().copied()).is_err());
     }
 
     #[test]
@@ -149,17 +179,21 @@ fn omitted_actual_hook_and_cut_are_rejected() -> Result<()> {
         .unwrap();
     let mut broken = actual.clone();
     broken.remove(omitted);
-    let omitted = durable_count(&actual[..omitted]);
-    let total = durable_count(&actual);
+    let plan = plan(&actual);
+    let omitted = plan
+        .iter()
+        .position(|cut| cut.name == "task:submitted")
+        .unwrap();
     assert!(
         check_boundaries(Scenario::Text, &broken, observed.ready_reads).is_err(),
         "missing real hook went undetected"
     );
+    check_cuts(Scenario::Text, &plan, plan.iter().copied())?;
     assert!(
         check_cuts(
             Scenario::Text,
-            total,
-            (1..=total).filter(|cut| *cut != omitted + 1)
+            &plan,
+            plan.iter().copied().filter(|cut| *cut != plan[omitted])
         )
         .is_err(),
         "missing real replay went undetected"

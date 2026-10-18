@@ -14,7 +14,7 @@ use std::sync::Arc;
 mod model;
 mod schedule;
 use model::{Effect, ModelEffects};
-use schedule::{Exit, Schedule, check_cut, check_replay, drive, durable, durable_count};
+use schedule::{Cut, Exit, Schedule, check_cut, check_replay, drive, durable, durable_count, plan};
 mod coverage;
 mod invariants;
 mod read_contention;
@@ -339,7 +339,7 @@ struct Coverage {
 
 async fn case(
     scenario: Scenario,
-    cut: Option<usize>,
+    cut: Option<Cut>,
     baseline: &[&'static str],
     seed: Option<&Seed>,
 ) -> Result<Coverage> {
@@ -371,7 +371,7 @@ async fn case(
         assert_eq!(points.len(), hit, "uncontrolled I/O changed the schedule");
         if let Some(cut) = cut {
             check_cut(&exit, cut, ordinal).expect("every cancellation must fire");
-            check_replay(&points, baseline, cut).map_err(Error::Storage)?;
+            check_replay(&points, baseline, ordinal).map_err(Error::Storage)?;
         } else {
             let Exit::Completed(output) = exit else {
                 panic!("baseline cancelled")
@@ -535,27 +535,30 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         let baseline = observed.points;
         coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
         assert!(!baseline.is_empty());
+        let plan = plan(&baseline);
         eprintln!(
-            "{scenario:?}: {} durable cancellation points of {}",
+            "{scenario:?}: {} operation cuts over {} durable steps of {} boundaries",
+            plan.len(),
             durable_count(&baseline),
             baseline.len()
         );
-        schedules.push((scenario, baseline, seed));
+        schedules.push((scenario, baseline, seed, plan));
     }
     // Replays own independent filesystems. Each bounded worker polls its driver
     // and owned completions together, without cross-thread barrier handoffs.
     let mut cuts: Vec<_> = schedules
         .iter()
-        .flat_map(|(scenario, baseline, seed)| {
-            (1..=durable_count(baseline)).map(move |cut| (*scenario, baseline, seed, cut))
+        .flat_map(|(scenario, baseline, seed, plan)| {
+            plan.iter()
+                .map(move |cut| (*scenario, baseline, seed, *cut))
         })
         .collect();
     coverage::permute(&mut cuts, 711);
     coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _)| *scenario))?;
-    for (scenario, baseline, _) in &schedules {
+    for (scenario, _, _, plan) in &schedules {
         coverage::check_cuts(
             *scenario,
-            durable_count(baseline),
+            plan,
             cuts.iter()
                 .filter(|(candidate, _, _, _)| candidate == scenario)
                 .map(|(_, _, _, cut)| *cut),
@@ -600,7 +603,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                             .block_on(Box::pin(case(scenario, Some(cut), baseline, Some(&seed))))
                             .map_err(|error| {
                                 let error = Error::Storage(format!(
-                                    "{scenario:?} cut {cut}/{}: {error:?}",
+                                    "{scenario:?} cut {cut:?} of {} durable steps: {error:?}",
                                     durable_count(baseline)
                                 ));
                                 eprintln!("{error:?}");
@@ -658,7 +661,12 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         Some(cut),
         "named admission submission moved"
     );
-    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
+    let planned = plan(&baseline)
+        .into_iter()
+        .find(|planned| durable(planned.name) && planned.durable == cut)
+        .unwrap();
+    let recovered =
+        runtime.block_on(case(Scenario::Text, Some(planned), &baseline, Some(&seed)))?;
     assert_eq!(durable_count(&recovered.points), cut);
     assert_eq!(
         recovered.points.last(),
@@ -669,6 +677,44 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         recovered.admission_committed,
         "submitted admission did not commit while draining"
     );
+    Ok(())
+}
+
+#[test]
+fn retained_caller_at_a_completion_cut_is_rejected() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(storage)?;
+    let seed = runtime.block_on(Seed::new(Scenario::Text))?;
+    let baseline = runtime
+        .block_on(case(Scenario::Text, None, &[], Some(&seed)))?
+        .points;
+    // A completion cut the former durable-only plan never cancelled at, with
+    // durable work still ahead of it.
+    let cut = plan(&baseline)
+        .into_iter()
+        .find(|cut| cut.name == "task:completed" && cut.durable < durable_count(&baseline))
+        .unwrap();
+    runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
+    // Mutant: the driver cancels but keeps owning and polling the caller.
+    let mutant = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        schedule::retaining_caller(|| {
+            runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))
+        })
+    }));
+    let message = match &mutant {
+        Ok(result) => panic!(
+            "retained caller went undetected: {:?}",
+            result.as_ref().err()
+        ),
+        Err(panic) => panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|text| (*text).to_owned()))
+            .unwrap_or_default(),
+    };
+    assert!(message.contains("after cancel"), "{message}");
     Ok(())
 }
 
