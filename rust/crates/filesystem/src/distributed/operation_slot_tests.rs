@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{IdempotencyKey, MemoryStream, StreamProvider};
+use acyclic_stream::{self as stream, IdempotencyKey, MemoryStream, StreamProvider};
 use proptest::prelude::*;
 
 proptest! {
@@ -67,4 +67,227 @@ proptest! {
             Ok(())
         })?;
     }
+}
+
+const RACED: AuthorityId = AuthorityId::from_bytes([93; 16]);
+
+#[derive(Clone, Copy, Debug)]
+enum Race {
+    Reject,
+    RejectAfterFence,
+    CommitDivergent,
+    FailInspect,
+}
+
+/// Lands a rival write in the operation's slot between the authority's slot
+/// lookup and its own proposal: the cut a retained Streams retry key exposes.
+struct Racer {
+    inner: Arc<MemoryStream>,
+    race: Race,
+    fired: std::sync::atomic::AtomicBool,
+    cancellation: CancellationToken,
+}
+
+fn operation_identity(key: &IdempotencyKey) -> bool {
+    key.as_bytes().starts_with(b"operation")
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl StreamProvider for Racer {
+    async fn inspect_idempotency(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<Option<stream::IdempotencyObservation>, stream::StreamError> {
+        if matches!(self.race, Race::FailInspect) && operation_identity(&key) {
+            self.cancellation.cancel();
+            return Err(stream::StreamError::Unavailable);
+        }
+        self.inner.inspect_idempotency(key).await
+    }
+    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, stream::StreamError> {
+        if operation_identity(&request.idempotency_key)
+            && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let mut rival = request.clone();
+            if matches!(self.race, Race::CommitDivergent) {
+                // Same operation and record bytes, different request bytes.
+                let before = rival.conditions.len();
+                rival
+                    .conditions
+                    .retain(|condition| !matches!(condition, CommitCondition::Absent { .. }));
+                assert!(rival.conditions.len() < before);
+                let outcome = self.inner.commit(rival).await?;
+                assert!(matches!(outcome, CommitOutcome::Committed(_)));
+            } else {
+                if matches!(self.race, Race::RejectAfterFence) {
+                    let store = StreamAuthorityStore::new(self.inner.clone());
+                    let token = CancellationToken::new();
+                    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+                    let head = store.head(RACED, &mut work).await.unwrap();
+                    store.fence(RACED, head, &mut work).await.unwrap();
+                }
+                // Require an existing path to be absent: a retained rejection.
+                let condition = rival
+                    .conditions
+                    .iter_mut()
+                    .find(|condition| !matches!(condition, CommitCondition::Absent { .. }))
+                    .unwrap();
+                let (CommitCondition::Tail { path, .. } | CommitCondition::Head { path, .. }) =
+                    condition.clone()
+                else {
+                    unreachable!()
+                };
+                *condition = CommitCondition::Absent { path };
+                let outcome = self.inner.commit(rival).await?;
+                assert!(matches!(outcome, CommitOutcome::Conflict(_)));
+            }
+        }
+        self.inner.commit(request).await
+    }
+    async fn tail(&self, path: stream::StreamPath) -> Result<u64, stream::StreamError> {
+        self.inner.tail(path).await
+    }
+    async fn read(
+        &self,
+        request: stream::ReadRequest,
+    ) -> Result<stream::RecordStream, stream::StreamError> {
+        self.inner.read(request).await
+    }
+    async fn bounds(
+        &self,
+        path: stream::StreamPath,
+    ) -> Result<stream::StreamBounds, stream::StreamError> {
+        self.inner.bounds(path).await
+    }
+    async fn append(
+        &self,
+        request: stream::AppendRequest,
+    ) -> Result<stream::AppendOutcome, stream::StreamError> {
+        self.inner.append(request).await
+    }
+    async fn fork(
+        &self,
+        request: stream::ForkRequest,
+    ) -> Result<stream::ForkReceipt, stream::StreamError> {
+        self.inner.fork(request).await
+    }
+    async fn follow(
+        &self,
+        path: stream::StreamPath,
+        from: u64,
+    ) -> Result<stream::RecordStream, stream::StreamError> {
+        self.inner.follow(path, from).await
+    }
+    async fn children(
+        &self,
+        request: stream::ChildrenRequest,
+    ) -> Result<stream::ChildStream, stream::StreamError> {
+        self.inner.children(request).await
+    }
+    async fn read_commit(
+        &self,
+        id: stream::CommitId,
+    ) -> Result<stream::CommittedEnvelope, stream::StreamError> {
+        self.inner.read_commit(id).await
+    }
+}
+
+fn raced(race: Race) -> (StreamAuthorityStore<Racer>, CancellationToken) {
+    let cancellation = CancellationToken::new();
+    let racer = Racer {
+        inner: Arc::new(MemoryStream::default()),
+        race,
+        fired: Default::default(),
+        cancellation: cancellation.clone(),
+    };
+    (StreamAuthorityStore::new(Arc::new(racer)), cancellation)
+}
+
+// Every idempotency-mismatch outcome follows the authority contract: a
+// committed operation replays by fingerprint, an uncommitted one is ordinary
+// contention classified by epoch, and neither is reported as corruption.
+fn rival_in_the_operation_slot(race: Race) {
+    futures::executor::block_on(async {
+        let (store, cancellation) = raced(race);
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        store
+            .create_authority(RACED, Epoch::GENESIS, &mut work, None::<&mut ()>)
+            .await
+            .unwrap();
+        let head = store.head(RACED, &mut work).await.unwrap();
+        let proposal = crate::GuardedAppend {
+            authority_id: RACED,
+            epoch: head.epoch,
+            expected: head,
+            commit: ProposedCommit {
+                operation_id: OperationId::from_bytes([94; 16]),
+                fingerprint: Digest::from_bytes([95; 32]),
+                payload: Bytes::from_static(b"raced"),
+            },
+            permit: PublicationPermit::Unrestricted,
+        };
+        let first = store
+            .compare_and_append(proposal.clone(), &mut work, None::<&mut ()>)
+            .await;
+        match race {
+            Race::Reject => {
+                assert_eq!(first.unwrap(), FsAppendOutcome::Conflict { actual: head });
+                let retried = store
+                    .compare_and_append(proposal, &mut work, None::<&mut ()>)
+                    .await
+                    .unwrap();
+                let FsAppendOutcome::Committed(committed) = retried else {
+                    panic!("the successor slot must publish: {retried:?}");
+                };
+                assert_eq!(committed.payload.as_ref(), b"raced");
+            }
+            Race::RejectAfterFence => assert!(
+                matches!(first, Ok(FsAppendOutcome::Fenced { actual_epoch }) if actual_epoch != head.epoch),
+                "{race:?}: {first:?}"
+            ),
+            Race::CommitDivergent => assert!(
+                matches!(&first, Ok(FsAppendOutcome::AlreadyCommitted(found)) if found.payload.as_ref() == b"raced"),
+                "{race:?}: {first:?}"
+            ),
+            Race::FailInspect => unreachable!(),
+        }
+    });
+}
+
+#[test]
+fn a_rejected_rival_is_contention_and_its_successor_slot_publishes() {
+    rival_in_the_operation_slot(Race::Reject);
+}
+
+#[test]
+fn a_rejected_rival_after_a_fence_reports_the_fence() {
+    rival_in_the_operation_slot(Race::RejectAfterFence);
+}
+
+#[test]
+fn a_committed_divergent_rival_replays_by_fingerprint() {
+    rival_in_the_operation_slot(Race::CommitDivergent);
+}
+
+// Ordinary custody reports the cancellation that interrupted a failed lookup.
+#[test]
+fn cancellation_outranks_a_failed_operation_lookup() {
+    futures::executor::block_on(async {
+        let (store, cancellation) = raced(Race::FailInspect);
+        let token = CancellationToken::new();
+        let mut setup = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+        store
+            .create_authority(RACED, Epoch::GENESIS, &mut setup, None::<&mut ()>)
+            .await
+            .unwrap();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let found = store
+            .find_operation(RACED, OperationId::from_bytes([94; 16]), &mut work)
+            .await;
+        assert!(
+            matches!(found, Err(AuthorityStoreError::Cancelled)),
+            "{found:?}"
+        );
+    });
 }
