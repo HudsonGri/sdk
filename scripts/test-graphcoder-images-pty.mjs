@@ -36,7 +36,14 @@ try {
     if(failure)throw failure;
     assert.equal(code,0,output);assert.equal(stage,4,screenText(screen));
     assert.equal(host.imageRequests.length,1);
-    for(const request of [...host.imageCounts,...host.imageRequests]) {
+    const probes=[], counts=[];
+    for(const request of host.imageCounts) {
+        if(request.input.length===1 && request.input[0].role==="user" && request.input[0].content.length===1 && request.input[0].content[0].type==="input_text" && request.input[0].content[0].text==="token accounting") probes.push(request);
+        else counts.push(request);
+    }
+    assert.equal(probes.length,1,"one fixed-tool accounting probe precedes user input");
+    assert.ok(counts.length>=1,"the user image input must receive verified counting");
+    for(const request of [...counts,...host.imageRequests]) {
         const images=request.input.flatMap(message=>Array.isArray(message.content)?message.content:[]).filter(part=>part.type==="input_image");
         assert.equal(images.length,2,JSON.stringify(request));
         assert.equal(images[0].image_url,`data:image/png;base64,${png.toString("base64")}`);
@@ -44,6 +51,5 @@ try {
         const jpeg=Buffer.from(images[1].image_url.split(",")[1],"base64");
         assert.equal(jpeg[0],255);assert.equal(jpeg[1],216);
     }
-    assert.ok(host.imageCounts.length>=1);
     console.log(`image PTY: attach + physical clipboard paste + pinned private refs + provider parts passed`);
 }finally{clearTimeout(timeout);child.kill();clipboard.kill();screen.dispose();await host.close();}
