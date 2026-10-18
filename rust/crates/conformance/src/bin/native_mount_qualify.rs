@@ -197,7 +197,6 @@ fn run_on_qualification_thread(
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("native-mount-qualify".into())
-            .stack_size(32 * 1024 * 1024)
             .spawn_scoped(scope, action)
             .map_err(Failure::from)?
             .join()

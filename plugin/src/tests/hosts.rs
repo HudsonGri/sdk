@@ -15,7 +15,7 @@ async fn host_state(service: &ConcurrentServiceControl) -> AdapterState {
 
 #[test]
 fn native_hosts_route_children_and_reject_forged_identity() {
-    run_large_stack("host-routing", || async {
+    run_async_test("host-routing", || async {
         for (host, spawn_tool) in [
             ("codex", "collaborationspawn_agent"),
             ("claude-code", "Agent"),
