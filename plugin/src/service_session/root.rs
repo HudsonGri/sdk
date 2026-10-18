@@ -205,12 +205,7 @@ impl PiSession {
                 &mut accounting,
             )
             .await?;
-            acyclic_harness::workspace::reconcile_reserved_names(
-                &resumed,
-                &root.path,
-                physical.source.root_identity(),
-            )
-            .await?;
+            acyclic_harness::workspace::reconcile_reserved_names(&resumed).await?;
             let (key, handle) = pi_root_provider::PiRootHandle::from_observed_with_native_work(
                 resumed,
                 physical,

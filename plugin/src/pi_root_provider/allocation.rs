@@ -255,12 +255,7 @@ impl PiRootProvider {
                         )
                         .await
                         .map_err(crate::pi_fork_host::native_lazy_error)?;
-                        acyclic_harness::workspace::reconcile_reserved_names(
-                            &view,
-                            std::path::Path::new(path),
-                            physical.source.root_identity(),
-                        )
-                        .await?;
+                        acyclic_harness::workspace::reconcile_reserved_names(&view).await?;
                         view
                     } else {
                         let operation =

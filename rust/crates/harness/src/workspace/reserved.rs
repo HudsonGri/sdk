@@ -67,8 +67,7 @@ pub const RESERVED_NAMES: [&str; RESERVED.len()] = names();
 
 /// Whether the SDK owns `relative` in a checkout head: it lies within, or is
 /// an ancestor of, an owned subtree of a reserved name. Containers must be
-/// directories. The policy marker is validated separately, never treated as
-/// an owned subtree. A name without owned subtrees holds no SDK state.
+/// directories. A name without owned subtrees holds no SDK state.
 #[cfg(feature = "native-execution")]
 pub(crate) fn sdk_owned(relative: &str, kind: acyclic_fs::kernel::FileKind) -> bool {
     let directory = kind == acyclic_fs::kernel::FileKind::Directory;
@@ -83,22 +82,6 @@ pub(crate) fn sdk_owned(relative: &str, kind: acyclic_fs::kernel::FileKind) -> b
                     .strip_prefix(owned)
                     .is_some_and(|tail| tail.starts_with('/'))
         })
-}
-
-/// Canonical text of the whole policy. A head records the policy it was
-/// reconciled under; any change to the table yields different text and
-/// reconciles every head again on its next open.
-#[cfg(feature = "native-execution")]
-pub(super) fn fingerprint() -> String {
-    let mut text = String::from("acyclic-checkout-reserved-names-v2\n");
-    for reserved in &RESERVED {
-        text.push_str(&format!(
-            "{} owned={}\n",
-            reserved.name,
-            reserved.owned.join(",")
-        ));
-    }
-    text
 }
 
 #[cfg(all(test, feature = "native-execution"))]

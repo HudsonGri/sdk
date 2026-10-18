@@ -116,7 +116,6 @@ impl ControlPlane {
             binding.created()?.native_root_identity,
             &binding.path,
         )?;
-        let identity = source.root_identity();
         let view = LazyWorkspace::open(
             workspace,
             source,
@@ -130,7 +129,7 @@ impl ControlPlane {
         )
         .await
         .map_err(display)?;
-        acyclic_harness::workspace::reconcile_reserved_names(&view, &binding.path, identity)
+        acyclic_harness::workspace::reconcile_reserved_names(&view)
             .await
             .map_err(display)?;
         Ok(view)

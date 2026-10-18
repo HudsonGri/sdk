@@ -287,7 +287,6 @@ pub(super) async fn open(
             "local checkout root was replaced during open".into(),
         ));
     }
-    let source_identity = source.root_identity();
     // Capture and publication never carry reserved names; demand must not
     // either, or a head would retain host bytes that capture cannot refresh.
     // This also covers every projection and its control files under .volumes.
@@ -326,7 +325,7 @@ pub(super) async fn open(
         .map_err(storage)?;
     // An existing head may hold host bytes an earlier policy imported under
     // an SDK namespace.
-    crate::workspace::reconcile_reserved_names(&view, &path, source_identity).await?;
+    crate::workspace::reconcile_reserved_names(&view).await?;
     let mut mounts = mounts::owner(
         &path,
         volume,

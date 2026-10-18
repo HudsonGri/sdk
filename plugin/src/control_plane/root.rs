@@ -196,13 +196,9 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-            acyclic_harness::workspace::reconcile_reserved_names(
-                &view,
-                &root.path,
-                source.root_identity(),
-            )
-            .await
-            .map_err(display)?;
+            acyclic_harness::workspace::reconcile_reserved_names(&view)
+                .await
+                .map_err(display)?;
             self.roots.insert(key.clone(), view);
             self.physical_roots.insert(key, physical);
         }

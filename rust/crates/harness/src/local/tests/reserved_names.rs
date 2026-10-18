@@ -5,7 +5,6 @@
 //! touches that name, and the policy itself must name exactly this set.
 use super::checked_commands::call;
 use super::*;
-use acyclic_fs::demand::DemandSource as _;
 use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{
     CancellationToken, OperationReceipt, PublicationPermit, WorkBudget, WorkCounters,
@@ -86,13 +85,9 @@ async fn read(head: &Head, path: &str) -> Result<Option<Vec<u8>>> {
     }
 }
 
-/// Commits `writes` (`None` removes) and optional preserved identities into
-/// the authored head, returning the new head.
-async fn commit(
-    harness: &LocalHarness,
-    writes: &[(String, Option<&[u8]>)],
-    identities: &[(String, acyclic_fs::FileId)],
-) -> Result<Head> {
+/// Commits `writes` (`None` removes) into the authored head, returning the
+/// new head.
+async fn commit(harness: &LocalHarness, writes: &[(String, Option<&[u8]>)]) -> Result<Head> {
     let stop = CancellationToken::new();
     let workspace = harness.workspace().unwrap().view.workspace();
     let mut transaction = workspace
@@ -132,12 +127,6 @@ async fn commit(
                     .map_err(super::super::storage)?;
             }
         }
-    }
-    for (path, identity) in identities {
-        transaction
-            .preserve_file_identity(&format!("/{path}"), *identity, WorkBudget::UNBOUNDED, &stop)
-            .await
-            .map_err(super::super::storage)?;
     }
     transaction
         .commit::<acyclic_fs::WorkspaceError, _, _>(
@@ -305,7 +294,7 @@ async fn every_publication_preserves_host_reserved_names() -> Result<()> {
             writes.push((format!("{name}/new"), Some(b"head")));
         }
         writes.push(("docs/control".into(), Some(b"head")));
-        let written = commit(&harness, &writes, &[]).await?;
+        let written = commit(&harness, &writes).await?;
         publish(&harness, publication, base, written.clone()).await?;
         assert_eq!(
             host(root, "docs/control").as_deref(),
@@ -329,7 +318,7 @@ async fn every_publication_preserves_host_reserved_names() -> Result<()> {
             .iter()
             .map(|(path, _)| (path.clone(), None))
             .collect();
-        let removed = commit(&harness, &removals, &[]).await?;
+        let removed = commit(&harness, &removals).await?;
         publish(&harness, publication, written, removed).await?;
         assert_eq!(host(root, "docs/control"), None, "{publication:?}");
         for name in REQUIRED {
@@ -344,123 +333,84 @@ async fn every_publication_preserves_host_reserved_names() -> Result<()> {
     Ok(())
 }
 
+/// The text the policy record carried when heads recorded one. A head may
+/// hold these exact bytes; they must buy nothing.
+const RECORD: &[u8] = b"acyclic-checkout-reserved-names-v2\n\
+.acyclic-sdk owned=\n\
+.git owned=\n\
+.system owned=execution,harness-file-metadata,harness-uploads,inherited-conversation,interactions,workflows\n\
+.volumes owned=\n";
+
 #[tokio::test]
-async fn reopen_removes_imported_reserved_entries_and_keeps_sdk_state() -> Result<()> {
+async fn reopen_removes_forbidden_entries_whatever_the_head_records() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let root = directory.path();
     let owned = ".system/execution/sdk.json";
-    let promoted = ".system/execution/promoted.json";
-    write(root, promoted, b"host")?;
     for name in REQUIRED {
         write(root, &format!("{name}/imported"), b"host")?;
     }
     let harness = open(root, state.path(), 0).await?;
-    // Simulate a head saved under an earlier policy: host bytes under every
-    // reserved name, one promoted by demand into an SDK-owned subtree
-    // with the host node's identity, beside SDK state of its own.
-    let view = &harness.workspace().unwrap().view;
-    let stop = CancellationToken::new();
-    let mut accounting = WorkBudget::UNBOUNDED.accounting(&stop);
-    let reference = view
-        .state(&mut accounting)
-        .await
-        .map_err(super::super::storage)?
-        .source;
-    let config = view.workspace().volume_config();
-    let source = acyclic_fs::demand::native::NativeDemandSource::open(
-        std::borrow::Cow::Borrowed(harness.workspace().unwrap().path.as_path()),
-        config.profile,
-        config.limits,
-        Some(reference),
-        None,
-        WorkBudget::UNBOUNDED,
-        &stop,
-    )
-    .await
-    .map_err(super::super::storage)?
-    .value;
-    let path = acyclic_fs::path::PortablePath::parse(&format!("/{promoted}"), config.limits)
-        .map_err(super::super::storage)?;
-    let path = acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
-        &path,
-        config.profile,
-        config.limits,
-    )
-    .map_err(super::super::storage)?;
-    let node = source
-        .lookup(source.reference(), &path, WorkBudget::UNBOUNDED, &stop)
-        .await
-        .map_err(super::super::storage)?
-        .value
-        .unwrap();
-    let promoted_id = view
-        .source_file_id(&node.file_identity, &mut accounting)
-        .map_err(super::super::storage)?;
+    // A head holding bytes under every reserved name, beside SDK state of its
+    // own and a matching policy record planted where heads once kept one.
     let mut writes: Vec<(String, Option<&[u8]>)> = vec![
         (owned.into(), Some(b"sdk")),
-        (promoted.into(), Some(b"host")),
+        (".system/reserved-names".into(), Some(RECORD)),
     ];
     for name in REQUIRED {
         writes.push((format!("{name}/imported"), Some(b"host")));
     }
-    commit(&harness, &writes, &[(promoted.into(), promoted_id)]).await?;
+    commit(&harness, &writes).await?;
     harness.close().await?;
+    let mut reconciled = None;
     for _ in 0..2 {
         let harness = open(root, state.path(), 0).await?;
         let current = head(&harness).await?;
-        for name in REQUIRED {
-            let path = format!("{name}/imported");
+        for path in REQUIRED
+            .iter()
+            .map(|name| format!("{name}/imported"))
+            .chain([".system/reserved-names".to_owned()])
+        {
             assert_eq!(read(&current, &path).await?, None, "{path} survived reopen");
         }
-        assert_eq!(
-            read(&current, promoted).await?,
-            None,
-            "demand-promoted entry survived"
-        );
         assert_eq!(read(&current, owned).await?.as_deref(), Some(&b"sdk"[..]));
-        assert!(read(&current, ".system/reserved-names").await?.is_some());
         for name in REQUIRED {
             assert_eq!(
                 host(root, &format!("{name}/imported")).as_deref(),
                 Some(&b"host"[..])
             );
         }
+        // A reconciled head reopens without another generation.
+        let id = current.id();
+        assert!(reconciled.is_none_or(|reconciled| reconciled == id));
+        reconciled = Some(id);
         harness.close().await?;
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn reopen_reconciles_legacy_marker_and_container_shapes() -> Result<()> {
-    // The host used to supply arbitrary types and sizes at these paths.
-    // Every incompatible shape must be replaced with the canonical marker;
-    // valid sibling SDK state and the host bytes must survive.
-    for (path, bytes) in [
-        (".system/reserved-names", vec![b'x'; 4096]),
-        (".system/reserved-names", Vec::new()),
-        (".system/reserved-names", b"old policy".to_vec()),
-        (".system/reserved-names/child", b"host".to_vec()),
-        (".system", b"host file at container".to_vec()),
-        (".system/execution", b"host file at subtree".to_vec()),
+async fn reopen_replaces_every_non_directory_sdk_container() -> Result<()> {
+    for path in [
+        ".system",
+        ".system/execution",
+        ".system/reserved-names/child",
     ] {
         let directory = tempfile::tempdir().map_err(super::super::storage)?;
         let state = tempfile::tempdir().map_err(super::super::storage)?;
         let root = directory.path();
-        write(root, path, &bytes)?;
+        write(root, path, b"host")?;
         let harness = open(root, state.path(), 0).await?;
-        let mut writes = vec![(path.to_owned(), Some(bytes.as_slice()))];
+        let mut writes = vec![(path.to_owned(), Some(&b"host"[..]))];
         if path != ".system" {
             writes.push((".system/workflows/sdk".into(), Some(b"sdk")));
         }
-        commit(&harness, &writes, &[]).await?;
+        commit(&harness, &writes).await?;
         harness.close().await?;
 
         let harness = open(root, state.path(), 0).await?;
         let current = head(&harness).await?;
-        let marker = read(&current, ".system/reserved-names").await?.unwrap();
-        assert!(marker.starts_with(b"acyclic-checkout-reserved-names-"));
-        assert_ne!(marker, bytes, "{path}");
+        assert_eq!(read(&current, path).await?, None, "{path}");
         if path != ".system" {
             assert_eq!(
                 read(&current, ".system/workflows/sdk").await?.as_deref(),
@@ -468,12 +418,7 @@ async fn reopen_reconciles_legacy_marker_and_container_shapes() -> Result<()> {
                 "{path}"
             );
         }
-        assert_eq!(host(root, path).as_deref(), Some(bytes.as_slice()));
-        let reconciled = current.id();
-        harness.close().await?;
-
-        let harness = open(root, state.path(), 0).await?;
-        assert_eq!(head(&harness).await?.id(), reconciled, "{path}");
+        assert_eq!(host(root, path).as_deref(), Some(&b"host"[..]));
         harness.close().await?;
     }
     Ok(())

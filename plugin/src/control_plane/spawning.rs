@@ -88,7 +88,6 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
-                let identity = source.root_identity();
                 let parent_lazy = LazyWorkspace::open(
                     parent_workspace,
                     source,
@@ -103,13 +102,9 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
                 // The child forks this head, so it inherits the reconciliation.
-                acyclic_harness::workspace::reconcile_reserved_names(
-                    &parent_lazy,
-                    &source_binding.path,
-                    identity,
-                )
-                .await
-                .map_err(display)?;
+                acyclic_harness::workspace::reconcile_reserved_names(&parent_lazy)
+                    .await
+                    .map_err(display)?;
                 let root_name = route_name(*root_id);
                 let child_name = format!("{}-{root_name}", pending.workspace_name);
                 let fork_generation = parent_lazy
@@ -204,7 +199,6 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-            let identity = source.root_identity();
             let view = LazyWorkspace::open(
                 workspace,
                 source,
@@ -218,7 +212,7 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-            acyclic_harness::workspace::reconcile_reserved_names(&view, &binding.path, identity)
+            acyclic_harness::workspace::reconcile_reserved_names(&view)
                 .await
                 .map_err(display)?;
             roots.push((root.mount_name(), view));
