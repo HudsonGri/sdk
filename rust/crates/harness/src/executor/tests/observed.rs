@@ -9,8 +9,8 @@ impl crate::tool::ToolExecutor for Observer {
         true
     }
 
-    fn observed_file(&self, result: &ToolResult) -> Option<FileRef> {
-        serde_json::from_value(result.value.get("file")?.clone()).ok()
+    fn uses_observed_files(&self) -> bool {
+        true
     }
 
     fn execute<'a>(
@@ -147,5 +147,68 @@ async fn observed_versions_survive_restart_and_ignore_failed_calls() -> Result<(
         .observed_files(&Journal::default(), operation)
         .await?;
     assert!(observed.is_empty());
+    Ok(())
+}
+
+async fn turn_loads(edits: usize) -> Result<usize> {
+    let a = version("plans/a.md", b"v1")?;
+    let ids: Vec<String> = (0..=edits).map(|index| format!("call-{index}")).collect();
+    let calls: Vec<(&str, &FileRef, bool)> =
+        ids.iter().map(|id| (id.as_str(), &a, false)).collect();
+    let (_, journal, _) = run(&calls).await?;
+    Ok(journal.4.load(Ordering::SeqCst))
+}
+
+// Every call that checks observed versions derives them, yet a turn's journal
+// payload loads grow linearly with its calls: each invocation and result is
+// loaded once, not once per later call.
+#[tokio::test]
+async fn deriving_observations_is_linear_in_the_turn() -> Result<()> {
+    let (none, fifty, hundred) = (
+        turn_loads(0).await?,
+        turn_loads(50).await?,
+        turn_loads(100).await?,
+    );
+    assert!(fifty > none);
+    assert_eq!(
+        hundred - fifty,
+        fifty - none,
+        "loads {none} {fifty} {hundred}"
+    );
+    Ok(())
+}
+
+// A session continues its fold after the records it already folded; a new
+// session (a restart) folds the journal once from its start.
+#[tokio::test]
+async fn a_session_folds_each_record_once() -> Result<()> {
+    let (a1, b1) = (version("plans/a.md", b"v1")?, version("plans/b.md", b"v1")?);
+    let (executor, journal, operation) =
+        run(&[("read-a", &a1, false), ("read-b", &b1, false)]).await?;
+    let journal = reopen(&journal);
+    let session = StockExecution::ordinary(&executor);
+    let before = journal.4.load(Ordering::SeqCst);
+    assert_eq!(
+        session.observed_files(&journal, operation).await?,
+        [a1.clone(), b1.clone()]
+    );
+    // One invocation and one result per completed call.
+    let folded = journal.4.load(Ordering::SeqCst);
+    assert_eq!(folded - before, 4);
+    for _ in 0..10 {
+        assert_eq!(
+            session.observed_files(&journal, operation).await?,
+            [a1.clone(), b1.clone()]
+        );
+    }
+    assert_eq!(journal.4.load(Ordering::SeqCst), folded);
+    // Negative control: a fresh session per derivation reloads everything,
+    // which is exactly the quadratic cost the fold removes.
+    for _ in 0..10 {
+        StockExecution::ordinary(&executor)
+            .observed_files(&journal, operation)
+            .await?;
+    }
+    assert_eq!(journal.4.load(Ordering::SeqCst), folded + 40);
     Ok(())
 }

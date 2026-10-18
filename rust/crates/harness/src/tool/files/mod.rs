@@ -52,6 +52,7 @@ pub use inputs::{
 mod executor;
 mod lines;
 pub(crate) use executor::FileTool;
+pub(crate) use lines::unnumbered;
 mod assembly;
 mod authorization;
 mod projection;

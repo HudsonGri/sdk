@@ -42,6 +42,21 @@ pub(super) fn rendered_len(text: &str, offset: u64) -> usize {
         - 1
 }
 
+/// The lines a `cat -n` rendering numbered from line 1 shows, without their
+/// terminators, or `None` when `rendered` is not exactly such a rendering.
+pub(crate) fn unnumbered(rendered: &str) -> Option<impl Iterator<Item = &str> + Clone> {
+    let lines = rendered.split('\n').map(|line| line.split_once('\t'));
+    let exact = (1_u64..).zip(lines.clone()).all(|(expected, line)| {
+        line.is_some_and(|(number, _)| {
+            let digits = number.trim_start_matches(' ');
+            number.len() == self::digits(expected).max(NUMBER_WIDTH)
+                && digits.bytes().all(|byte| byte.is_ascii_digit())
+                && digits.parse() == Ok(expected)
+        })
+    });
+    exact.then(|| lines.map(|line| line.map_or("", |(_, text)| text)))
+}
+
 fn lines(text: &str) -> std::str::Split<'_, char> {
     text.strip_suffix('\n').unwrap_or(text).split('\n')
 }
@@ -72,6 +87,12 @@ mod tests {
         fn numbering_round_trips(source in "[ab\\n\\ré🦀]{1,24}", offset in 1_u64..2_000_000) {
             let rendered = numbered(&source, offset, &mut None).unwrap();
             prop_assert_eq!(rendered.len(), rendered_len(&source, offset));
+            let shown = |rendered: &str| unnumbered(rendered).map(|lines| lines.collect::<Vec<_>>().join("\n"));
+            let whole = numbered(&source, 1, &mut None).unwrap();
+            let restored_whole = shown(&whole);
+            prop_assert_eq!(restored_whole.as_deref(), Some(source.strip_suffix('\n').unwrap_or(&source)));
+            // Negative control: a rendering from any other line is not a whole file.
+            prop_assert_eq!(shown(&rendered).is_some(), offset == 1);
             let mut restored = Vec::new();
             for (expected, line) in (offset..).zip(rendered.split('\n')) {
                 let (number, text) = line.split_once('\t').unwrap();
@@ -84,6 +105,28 @@ mod tests {
                 joined.push('\n');
             }
             prop_assert_eq!(joined, source);
+        }
+    }
+
+    #[test]
+    fn only_exact_renderings_from_line_one_are_unnumbered() {
+        let shown = |rendered: &str| {
+            unnumbered(rendered).map(|lines| lines.map(str::to_owned).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            shown("     1\ta\t b\n     2\t"),
+            Some(vec!["a\t b".to_owned(), String::new()])
+        );
+        for rendered in [
+            "     2\ta",
+            "1\ta",
+            "      1\ta",
+            "    +1\ta",
+            "     1\ta\n     3\tb",
+            "     1 a",
+            EMPTY_FILE,
+        ] {
+            assert_eq!(shown(rendered), None, "{rendered:?}");
         }
     }
 

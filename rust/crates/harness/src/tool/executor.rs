@@ -41,15 +41,9 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
-    /// The file version a successful durable result of this tool showed the
-    /// model, if it names one. Later calls derive what the model has seen
-    /// from these results alone.
-    fn observed_file(&self, _result: &ToolResult) -> Option<crate::conversation::FileRef> {
-        None
-    }
-
-    /// Whether results of this tool can name an observed file; when false,
-    /// deriving observations never loads its results.
+    /// Whether a successful result of this tool names, under `file`, the
+    /// version it showed the model. Later calls derive what the model has seen
+    /// from these results alone; results of other tools are never loaded.
     fn reports_observed_files(&self) -> bool {
         false
     }

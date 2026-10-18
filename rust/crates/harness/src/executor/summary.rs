@@ -87,6 +87,7 @@ impl StockExecution<'_> {
                 ContextPipeline::summary_source(source, revision, self.io)?,
                 summary_output,
             )),
+            observed: std::sync::Mutex::default(),
         };
         let input = TurnInput {
             operation_id,

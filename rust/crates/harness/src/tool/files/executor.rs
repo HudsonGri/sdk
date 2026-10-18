@@ -308,15 +308,8 @@ impl FileTool {
 }
 
 impl ToolExecutor for FileTool {
-    fn observed_file(&self, result: &ToolResult) -> Option<FileRef> {
-        // Every file tool except search returns the exact version it read or
-        // published under `file`.
-        if matches!(self, Self::Search { .. }) {
-            return None;
-        }
-        serde_json::from_value(result.value.get("file")?.clone()).ok()
-    }
-
+    // Every file tool except search returns the exact version it read or
+    // published under `file`.
     fn reports_observed_files(&self) -> bool {
         !matches!(self, Self::Search { .. })
     }
