@@ -448,11 +448,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    /// Reads and hashes content exactly as staging does, writing no object.
-    pub(crate) async fn content_root_with_accounting<R: AsyncBlobSource>(
+    /// Reads content once and retains every object absent from the store.
+    pub(crate) async fn reuse_content_with_accounting<R: AsyncBlobSource>(
         &self,
         source: &mut R,
         maximum_source_bytes: u64,
+        prior_root: ObjectId,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<StagedContent, FsError> {
@@ -460,7 +461,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &self.volume,
             source,
             maximum_source_bytes,
-            false,
+            Some(prior_root),
             accounting,
             cancellation,
         )
@@ -483,7 +484,7 @@ pub(crate) async fn stage_content_for_volume_with_accounting<
         volume,
         source,
         maximum_source_bytes,
-        true,
+        None,
         accounting,
         cancellation,
     )
@@ -494,7 +495,7 @@ async fn content_for_volume<A: AsyncAuthorityStore, O: AsyncObjectStore, R: Asyn
     volume: &Volume<A, O>,
     source: &mut R,
     maximum_source_bytes: u64,
-    persist: bool,
+    prior_root: Option<ObjectId>,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<StagedContent, FsError> {
@@ -518,7 +519,17 @@ async fn content_for_volume<A: AsyncAuthorityStore, O: AsyncObjectStore, R: Asyn
         maximum_blob_bytes: maximum_source_bytes,
     };
     let objects = &volume.fs.inner.objects;
-    let blob = if persist {
+    let blob = if let Some(prior_root) = prior_root {
+        crate::kernel::reuse_blob_with_accounting(
+            objects,
+            source,
+            options,
+            (prior_root, DecodeLimits::for_volume(volume.config)),
+            accounting,
+            cancellation,
+        )
+        .await?
+    } else {
         crate::kernel::build_blob_with_accounting(
             objects,
             source,
@@ -527,9 +538,6 @@ async fn content_for_volume<A: AsyncAuthorityStore, O: AsyncObjectStore, R: Asyn
             cancellation,
         )
         .await?
-    } else {
-        crate::kernel::blob_root_with_accounting(objects, source, options, accounting, cancellation)
-            .await?
     };
     Ok(StagedContent {
         root: blob.root,

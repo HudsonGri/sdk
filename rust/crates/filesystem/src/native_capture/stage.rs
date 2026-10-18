@@ -19,25 +19,24 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         source_root,
         host_path,
         snapshot,
-        (maximum_extent_spans, &mut persist),
+        (maximum_extent_spans, &mut persist, None),
         meter,
         staged_file_bytes,
     )
     .await
+    .map(|(staged, _)| staged)
 }
 
-/// Reads every byte of the observed node; `persist` false authenticates its
-/// content roots without writing objects, for comparison with a prior record.
-/// Sparse layouts set `persist` true before reading, reporting persisted roots.
+/// Reads every byte once; reuse retains existing objects and writes differences.
 pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &Checkout<A, O>,
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     snapshot: &HostStat,
-    (maximum_extent_spans, persist): (u32, &mut bool),
+    (maximum_extent_spans, persist, prior): (u32, &mut bool, Option<FileRecord>),
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
-) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
+) -> Result<(Vec<(HostDataRange, StagedContent)>, Option<crate::ObjectId>), CaptureError> {
     meter.cancellation().check()?;
     #[cfg(unix)]
     let file = source_root
@@ -82,7 +81,7 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
         drop(ranges);
         drop(file);
         meter.clone().release(bytes).map_err(capture_demand_error)?;
-        return Ok(staged);
+        return Ok((staged, None));
     }
     let native = native_positional_file(file, meter)?;
     #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
@@ -104,8 +103,17 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
     // persist their objects on this pass rather than read them twice.
     let dense = data_ranges == full;
     #[cfg(test)]
-    let dense = dense || super::verified_reuse_tests::force_sparse_verification();
-    *persist |= !dense;
+    let repeat = !*persist && super::verified_reuse_tests::repeat_read(!dense);
+    let prior_root = if !*persist && dense {
+        if let Some(record) = prior {
+            prior_regular_root(stager, record, metadata.len(), maximum_extent_spans, meter).await?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    *persist = true;
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
         let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
@@ -114,18 +122,19 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
             range.length,
         );
         let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
-        let content = if *persist {
+        let content = if let Some(prior_root) = prior_root {
             stager
-                .stage_content_with_accounting(
+                .reuse_content_with_accounting(
                     &mut bounded,
                     range.length,
+                    prior_root,
                     &mut accounting,
                     meter.cancellation(),
                 )
                 .await
         } else {
             stager
-                .content_root_with_accounting(
+                .stage_content_with_accounting(
                     &mut bounded,
                     range.length,
                     &mut accounting,
@@ -149,7 +158,69 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
     drop(ranges);
     drop(native);
     meter.clone().release(bytes).map_err(capture_demand_error)?;
-    Ok(staged)
+    #[cfg(test)]
+    if repeat {
+        let bytes = vector_bytes(&staged);
+        drop(staged);
+        meter.clone().release(bytes).map_err(capture_demand_error)?;
+        return Box::pin(stage_regular_body(
+            stager,
+            source_root,
+            host_path,
+            snapshot,
+            maximum_extent_spans,
+            meter,
+            staged_file_bytes,
+        ))
+        .await
+        .map(|staged| (staged, prior_root));
+    }
+    Ok((staged, prior_root))
+}
+
+async fn prior_regular_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &Checkout<A, O>,
+    record: FileRecord,
+    length: u64,
+    maximum_spans: u32,
+    meter: &NativeMaterializationWork,
+) -> Result<Option<crate::ObjectId>, CaptureError> {
+    let cancellation = meter.cancellation();
+    let mut accounting = crate::kernel::KernelAccounting::native(meter, cancellation);
+    let planned = checkout
+        .plan_record_extents(
+            record,
+            crate::ByteRange { offset: 0, length },
+            maximum_spans,
+            &mut accounting,
+            cancellation,
+        )
+        .await;
+    let planned = match planned {
+        Ok(value) => value,
+        Err(crate::FsError::FileRead(crate::kernel::FileRangeReadError::Extent(
+            crate::kernel::ExtentReadError::TooManySpans,
+        ))) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(planned
+        .0
+        .as_ref()
+        .and_then(|plan| match plan.spans.as_slice() {
+            [
+                crate::kernel::ExtentSlice {
+                    offset: 0,
+                    length: observed,
+                    source_end,
+                    kind:
+                        crate::kernel::ExtentKind::Content {
+                            object,
+                            object_offset: 0,
+                        },
+                },
+            ] if *observed == length && *source_end == length => Some(*object),
+            _ => None,
+        }))
 }
 
 pub(super) fn finish_regular_capture(

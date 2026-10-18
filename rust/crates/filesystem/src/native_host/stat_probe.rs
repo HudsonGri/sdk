@@ -58,7 +58,7 @@ pub(crate) fn uses_fallback(file: &File) -> bool {
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn fstat_query() {
     event("fstat");
     if EVENTS.with_borrow(Option::is_none) {

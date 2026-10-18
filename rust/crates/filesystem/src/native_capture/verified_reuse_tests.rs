@@ -18,6 +18,12 @@ pub(super) enum Reuse {
     RedundantLargeStat,
     /// Omits the large-file held-handle and final-path validation.
     OmitLargeValidation,
+    /// Restores speculative verification followed by a second staging read.
+    ReadTwice,
+    /// Corrupts an observed metadata field despite preserving the body.
+    WrongAccessed,
+    /// Restores one unnecessary owner allocation on the regular-file path.
+    ExtraAllocation,
 }
 
 thread_local! {
@@ -28,8 +34,8 @@ pub(super) fn mode() -> Reuse {
     MODE.with(Cell::get)
 }
 
-pub(super) fn force_sparse_verification() -> bool {
-    mode() == Reuse::VerifySparse
+pub(super) fn repeat_read(sparse: bool) -> bool {
+    mode() == Reuse::ReadTwice || (sparse && mode() == Reuse::VerifySparse)
 }
 
 struct Mode;
@@ -62,6 +68,7 @@ struct Fixture {
     options: CaptureOptions,
     paths: Vec<NamespacePath>,
     lengths: [u64; 3],
+    budget: WorkBudget,
 }
 
 fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
@@ -139,6 +146,7 @@ fn fixture_with_sparse(
         options,
         paths,
         lengths,
+        budget: WorkBudget::UNBOUNDED,
     }
 }
 
@@ -146,6 +154,7 @@ fn fixture_with_sparse(
 struct Output {
     result: Result<CaptureReceipt, String>,
     bytes: Vec<Vec<u8>>,
+    metadata: Vec<FileMetadata>,
     unchanged_root: bool,
     live_before: u64,
     live_after: u64,
@@ -179,7 +188,7 @@ fn rescan_with_baseline(
 ) {
     let (work, cancellation) = fixture
         .setup
-        .native_volume_work(WorkBudget::UNBOUNDED)
+        .native_volume_work(fixture.budget)
         .unwrap()
         .invocation_view()
         .unwrap();
@@ -230,17 +239,62 @@ fn rescan_with_baseline(
         })
         .collect();
     let root = fixture.checkout.root().clone();
+    let metadata = read_final_metadata(runtime, fixture);
     let output = Output {
         result: result
             .unwrap()
             .map(|receipt| receipt.value)
             .map_err(|failure| format!("{:?}", failure.error)),
         bytes,
+        metadata,
         unchanged_root: root == prior,
         live_before,
         live_after,
     };
     (output, receipt, heap, root)
+}
+
+fn read_final_metadata(runtime: &tokio::runtime::Runtime, fixture: &Fixture) -> Vec<FileMetadata> {
+    fixture
+        .paths
+        .iter()
+        .map(|path| {
+            let (lookup, _custody) = runtime
+                .block_on(fixture.checkout.lookup_batch_no_follow(
+                    std::slice::from_ref(path),
+                    &fixture.setup,
+                    fixture.setup.cancellation(),
+                ))
+                .unwrap();
+            runtime
+                .block_on(fixture.checkout.read_metadata(
+                    lookup.entries[0].record.unwrap().file_id,
+                    &fixture.setup,
+                    fixture.setup.cancellation(),
+                ))
+                .unwrap()
+        })
+        .collect()
+}
+
+fn expected_metadata(runtime: &tokio::runtime::Runtime, fixture: &Fixture) -> Vec<FileMetadata> {
+    let prior = read_final_metadata(runtime, fixture);
+    let host = HostRoot::open(
+        fixture.source.path(),
+        &mut crate::native_host::ordinary_work(),
+    )
+    .unwrap();
+    FILES
+        .into_iter()
+        .zip(prior)
+        .map(|((name, _), prior)| {
+            let stat = test_host_stat(&host, Path::new(name.trim_start_matches('/'))).unwrap();
+            let mut metadata = preserve_unobserved_metadata(capture_metadata(&stat), prior);
+            NativeViewBaseline::new(fixture.options.expected_root_identity, false)
+                .restore_canonical_stamps(host.identity(), prior, &mut metadata);
+            metadata
+        })
+        .collect()
 }
 
 /// Replaces a record's bytes with same-length content and restores its prior
@@ -376,19 +430,20 @@ proptest::proptest! {
         let _inline = acyclic_native_runtime::InlineBlocking::enter();
         let runtime = setup();
         for cancelled in [false, true] {
-        let [((old, old_work, old_heap, _), old_trace), ((new, work, heap, _), trace)] =
+        let [(((old, old_work, old_heap, _), old_expected), old_trace), (((new, work, heap, _), expected), trace)] =
             differential::pair::<_, _, &'static str>(|| {
                 let mut state = fixture(&runtime);
                 set_prior_access_time(&runtime, &mut state, accessed);
-                state
-            }, |mut state, old| {
-                #[cfg(any(target_os = "linux", windows))]
+                let expected = expected_metadata(&runtime, &state);
+                (state, expected)
+            }, |(mut state, expected), old| {
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 let probe = crate::native_host::stat_probe::Probe::rescan(false);
                 let observed = rescan_with_baseline(&runtime, &mut state,
                     if old { Reuse::PersistFirst } else { Reuse::Verified }, cancelled, false);
-                #[cfg(any(target_os = "linux", windows))]
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                 probe.publish();
-                observed
+                (observed, expected)
             });
         proptest::prop_assert_eq!((&old.result, &old.bytes), (&new.result, &new.bytes));
         proptest::prop_assert_eq!(new.result.is_ok(), !cancelled);
@@ -399,11 +454,129 @@ proptest::proptest! {
         proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64().unwrap(),
             work["sourceBytesRead"].as_u64().unwrap() + if cancelled { 0 } else { 18 });
         if !cancelled {
+            proptest::prop_assert_eq!(&old.metadata, &old_expected);
+            proptest::prop_assert_eq!(&new.metadata, &expected);
+            exact_metadata(heap, &work).unwrap();
             proptest::prop_assert!(!new.unchanged_root && !old.unchanged_root);
             proptest::prop_assert_eq!(new.bytes, FILES.map(|(_, length)| body(length, 7)).to_vec());
             proptest::prop_assert!(work["objectBytesWritten"].as_u64() < old_work["objectBytesWritten"].as_u64());
             eprintln!("METADATA_REUSE heap={} old_heap={} work={work} old_work={old_work}", heap.count_total, old_heap.count_total);
         }
+        }
+    }
+}
+
+fn exact_metadata(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), String> {
+    let expected = if cfg!(windows) {
+        479
+    } else if cfg!(target_os = "macos") {
+        504
+    } else {
+        491
+    };
+    let observed = (
+        heap.count_total,
+        work["sourceBytesRead"].as_u64(),
+        work["objectBytesWritten"].as_u64(),
+    );
+    if observed == (expected, Some(70_117), Some(516)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "metadata capture {observed:?}, expected heap={expected}, source=70117, written=516"
+        ))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn metadata_oracle_rejects_wrong_atime_extra_heap_and_query_controls() {
+    let _subscriber =
+        tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = setup();
+    for reuse in [
+        Reuse::Verified,
+        Reuse::WrongAccessed,
+        Reuse::ExtraAllocation,
+        Reuse::RedundantLargeStat,
+        Reuse::OmitLargeValidation,
+    ] {
+        let [
+            (((baseline, _, _, _), _), baseline_trace),
+            (((output, work, heap, _), expected), trace),
+        ] = differential::pair::<_, _, &'static str>(
+            || {
+                let mut state = fixture(&runtime);
+                set_prior_access_time(&runtime, &mut state, 1);
+                let expected = expected_metadata(&runtime, &state);
+                (state, expected)
+            },
+            |(mut state, expected), old| {
+                let probe = crate::native_host::stat_probe::Probe::rescan(false);
+                let result = rescan_with_baseline(
+                    &runtime,
+                    &mut state,
+                    if old { Reuse::PersistFirst } else { reuse },
+                    false,
+                    false,
+                );
+                probe.publish();
+                (result, expected)
+            },
+        );
+        assert_eq!(
+            (&baseline.result, &baseline.bytes),
+            (&output.result, &output.bytes)
+        );
+        let valid = output.metadata == expected
+            && exact_metadata(heap, &work).is_ok()
+            && trace == baseline_trace;
+        assert_eq!(
+            valid,
+            reuse == Reuse::Verified,
+            "{reuse:?}: heap={heap:?} work={work}"
+        );
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    #[test]
+    fn ordinary_same_length_edits_read_once_at_the_old_exact_byte_budget(seed in 8u8..99) {
+        let _subscriber = tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        let runtime = setup();
+        for index in [1, 2] {
+            for budget in [70_135, u64::MAX] {
+                let [((old, old_work, _, _), old_trace), ((new, work, _, _), trace)] = differential::pair::<_, _, &'static str>(|| {
+                    let mut state = fixture(&runtime);
+                    std::fs::write(state.source.path().join(FILES[index].0.trim_start_matches('/')), body(FILES[index].1, seed)).unwrap();
+                    state.budget.source_bytes_read = budget;
+                    state
+                }, |mut state, old| {
+                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                    let probe = crate::native_host::stat_probe::Probe::rescan(false);
+                    let result = rescan(&runtime, &mut state, if old { Reuse::PersistFirst } else { Reuse::Verified }, false);
+                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                    probe.publish();
+                    result
+                });
+                proptest::prop_assert!(new.result.is_ok());
+                proptest::prop_assert_eq!((&old.result, &old.bytes), (&new.result, &new.bytes));
+                proptest::prop_assert_eq!(&new.bytes[index], &body(FILES[index].1, seed));
+                proptest::prop_assert_eq!(old_trace, trace);
+                proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(70_135));
+                proptest::prop_assert_eq!(old_work["sourceBytesRead"].as_u64(), Some(70_135));
+            }
+            let mut broken = fixture(&runtime);
+            std::fs::write(broken.source.path().join(FILES[index].0.trim_start_matches('/')), body(FILES[index].1, seed)).unwrap();
+            let (output, work, _, _) = rescan(&runtime, &mut broken, Reuse::ReadTwice, false);
+            proptest::prop_assert!(output.result.is_ok());
+            proptest::prop_assert_eq!(work["sourceBytesRead"].as_u64(), Some(140_231));
+            broken.budget.source_bytes_read = 70_135;
+            let (output, _, _, _) = rescan(&runtime, &mut broken, Reuse::ReadTwice, false);
+            proptest::prop_assert!(output.result.is_err());
         }
     }
 }
@@ -468,6 +641,18 @@ const RESCAN: (u64, [(&str, u64); 6]) = (
         ("allocationOperations", 406),
     ],
 );
+#[cfg(target_os = "macos")]
+const RESCAN: (u64, [(&str, u64); 6]) = (
+    437,
+    [
+        ("objectBytesWritten", 0),
+        ("bytesHashed", 71_731),
+        ("bytesEncoded", 512),
+        ("bytesCopied", 18_676),
+        ("objectProbes", 14),
+        ("allocationOperations", 408),
+    ],
+);
 #[cfg(windows)]
 const RESCAN: (u64, [(&str, u64); 6]) = (
     412,
@@ -481,7 +666,7 @@ const RESCAN: (u64, [(&str, u64); 6]) = (
     ],
 );
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn exact_rescan(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), String> {
     let observed = (
         heap.count_total,
@@ -494,7 +679,7 @@ fn exact_rescan(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), St
         .ok_or_else(|| format!("observed {observed:?}, expected {RESCAN:?}"))
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn exact_capture(
     heap: AllocationInfo,
     work: &serde_json::Value,
@@ -511,7 +696,7 @@ fn exact_capture(
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[test]
 fn unchanged_rescan_authenticates_bytes_without_writing_objects() {
     let _subscriber =

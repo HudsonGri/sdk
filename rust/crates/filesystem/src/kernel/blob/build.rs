@@ -59,19 +59,18 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
     .await
 }
 
-/// Computes the authenticated root a build would publish, retaining no object.
-///
-/// Every source byte is still read and hashed; only the store writes are omitted.
-pub(crate) async fn blob_root_with_accounting<S: AsyncObjectStore, R: AsyncBlobSource>(
+/// Hashes each source chunk once and persists only missing immutable objects.
+pub(crate) async fn reuse_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlobSource>(
     store: &S,
     source: &mut R,
     options: BlobBuildOptions,
+    prior: (ObjectId, DecodeLimits),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<BlobBuild, FsError> {
     accounting.check()?;
     let chunk_capacity = validate_blob_options(options)?;
-    let batching = BlobBatchStore::verifying(store);
+    let batching = BlobBatchStore::reusing(store, (prior.0, prior.1, options.maximum_blob_bytes));
     build_blob_through(
         batching,
         chunk_capacity,
@@ -355,7 +354,13 @@ pub(super) async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
         };
     let chunk_id = object.object_id();
     batching
-        .put(object, retained, accounting, cancellation)
+        .put(
+            object,
+            retained,
+            (logical_bytes, end),
+            accounting,
+            cancellation,
+        )
         .await?;
     index
         .push_chunk(
@@ -379,8 +384,7 @@ pub(super) struct BlobBatchStore<'a, S> {
     inner: &'a S,
     writes: ReadOwned<Vec<HashedObject>>,
     bytes: u64,
-    /// False when only the root is wanted: objects are hashed, then dropped.
-    persist: bool,
+    prior: Option<(ObjectId, DecodeLimits, u64)>,
 }
 
 impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
@@ -397,16 +401,16 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             inner,
             writes,
             bytes: 0,
-            persist: true,
+            prior: None,
         })
     }
 
-    pub(super) fn verifying(inner: &'a S) -> Self {
+    pub(super) fn reusing(inner: &'a S, prior: (ObjectId, DecodeLimits, u64)) -> Self {
         Self {
             inner,
             writes: empty_blob_vec(),
             bytes: 0,
-            persist: false,
+            prior: Some(prior),
         }
     }
 
@@ -474,12 +478,39 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         &mut self,
         object: HashedObject,
         retained: u64,
+        range: (u64, u64),
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        if !self.persist {
-            drop(object);
-            return release_blob_bytes(retained, accounting);
+        if let Some(prior) = self.prior {
+            let present = super::reuse::matches_prior(
+                self.inner,
+                prior,
+                object.object_id(),
+                range,
+                accounting,
+                cancellation,
+            )
+            .await;
+            match present {
+                Ok(true) => {
+                    drop(object);
+                    return release_blob_bytes(retained, accounting);
+                }
+                Err(error) => {
+                    drop(object);
+                    let _ = release_blob_bytes(retained, accounting);
+                    return Err(error);
+                }
+                Ok(false) => (),
+            }
+        }
+        if self.writes.value.capacity() == 0 {
+            if let Err(error) = reserve_blob_vec(&mut self.writes, BLOB_BATCH_OBJECTS, accounting) {
+                drop(object);
+                let _ = release_blob_bytes(retained, accounting);
+                return Err(error);
+            }
         }
         self.bytes = self
             .bytes
