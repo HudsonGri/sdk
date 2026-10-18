@@ -29,7 +29,7 @@ fn local_turn<'a>(
 }
 
 #[test]
-fn live_f3_killed_turn_reopens_for_new_prompt() -> Result<()> {
+fn checkout_reopens_after_first_turn_write() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -38,7 +38,7 @@ fn live_f3_killed_turn_reopens_for_new_prompt() -> Result<()> {
         tokio::time::pause();
         let baseline_directory = tempfile::tempdir().map_err(storage)?;
         std::fs::create_dir(baseline_directory.path().join("checkout")).map_err(storage)?;
-        let mut baseline = Driver::new(Some(71), None);
+        let mut baseline = Driver::new(71, None);
         let marker = Cell::new(None);
         let schedule = baseline.schedule.clone();
         match baseline
@@ -57,7 +57,7 @@ fn live_f3_killed_turn_reopens_for_new_prompt() -> Result<()> {
         drop(schedule);
         let directory = tempfile::tempdir().map_err(storage)?;
         std::fs::create_dir(directory.path().join("checkout")).map_err(storage)?;
-        let mut crash = Driver::new(Some(71), Some((cut, DurableFault::After)));
+        let mut crash = Driver::new(71, Some((cut, DurableFault::After)));
         let schedule = crash.schedule.clone();
         let marker = Cell::new(None);
         let Outcome::Crashed(cause) = crash
@@ -73,7 +73,7 @@ fn live_f3_killed_turn_reopens_for_new_prompt() -> Result<()> {
         drop(crash);
         // This epoch derives from the same seed. Its providers, stores, clocks,
         // identity source and executor are constructed independently.
-        let mut recovery = Driver::new(Some(72), None);
+        let mut recovery = Driver::new(72, None);
         let schedule = recovery.schedule.clone();
         let marker = Cell::new(None);
         match recovery

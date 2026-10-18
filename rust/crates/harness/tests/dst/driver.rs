@@ -16,8 +16,18 @@ pub(super) struct Driver {
 }
 
 impl Driver {
-    pub fn new(seed: Option<u64>, cut: Option<(usize, DurableFault)>) -> Self {
-        let (schedule, events) = seed.map_or_else(Schedule::new, Schedule::seeded);
+    pub fn new(seed: u64, cut: Option<(usize, DurableFault)>) -> Self {
+        Self::from_scope(Schedule::seeded(seed), cut)
+    }
+
+    pub fn without_entropy(seed: u64) -> Self {
+        Self::from_scope(Schedule::without_entropy(seed), None)
+    }
+
+    fn from_scope(
+        (schedule, events): (Schedule, mpsc::UnboundedReceiver<Boundary>),
+        cut: Option<(usize, DurableFault)>,
+    ) -> Self {
         if let Some((ordinal, fault)) = cut {
             schedule.cut_at(ordinal, fault);
         }
@@ -66,7 +76,10 @@ impl Driver {
                             None => Outcome::Completed(result),
                         };
                     },
-                    () = &mut deadline => panic!("turn exceeded the simulated deadline"),
+                    () = &mut deadline => panic!(
+                        "turn exceeded the simulated deadline; last boundary: {:?}",
+                        self.boundaries.last()
+                    ),
                 }
             };
             loop {
@@ -109,7 +122,7 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
                 .await?
             })
         };
-        let mut baseline = Driver::new(Some(71), None);
+        let mut baseline = Driver::new(71, None);
         match baseline.run(write(path.clone())).await {
             Outcome::Completed(result) => result.map_err(storage)?,
             Outcome::Crashed(cause) => panic!("uncut run crashed: {cause}"),
@@ -124,7 +137,7 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
                 DurableFault::Failed,
                 DurableFault::DiskFull,
             ] {
-                let mut driver = Driver::new(Some(71), Some((cut, fault)));
+                let mut driver = Driver::new(71, Some((cut, fault)));
                 let Outcome::Crashed(cause) = driver.run(write(path.clone())).await else {
                     panic!("cut {cut} {fault:?} did not kill the original turn");
                 };
