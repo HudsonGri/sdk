@@ -282,3 +282,63 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
     assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn bounded_ordinary_path(body: &[u8]) -> Result<()> {
+    let (host, file) = ordinary(body).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = PreparationIo::from_budget(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )?;
+    let (current, bytes) = host
+        .current_path(
+            file.volume(),
+            &grant(file.volume(), VolumeOperation::Write)?,
+            file.path(),
+            body.len() as u64,
+            None,
+            Some(&io),
+        )
+        .await?;
+    assert_eq!(bytes.as_ref(), body);
+    assert_eq!(current.descriptor(), file.descriptor());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Optional metadata is absent in either error representation; an ordinary
+    // file's authenticated contents must not depend on the caller's ledger.
+    #[test]
+    fn bounded_ordinary_paths_resolve_without_upload_metadata(
+        body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256),
+    ) {
+        futures::executor::block_on(bounded_ordinary_path(&body)).unwrap();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn negative_control_detects_native_absence_rejection() {
+    crate::filesystem::fork_preparer::LEGACY_ABSENCE_ONLY.with(|flag| flag.set(true));
+    let detected = std::panic::catch_unwind(|| {
+        futures::executor::block_on(bounded_ordinary_path(b"ordinary")).unwrap();
+    });
+    crate::filesystem::fork_preparer::LEGACY_ABSENCE_ONLY.with(|flag| flag.set(false));
+    let panic =
+        detected.expect_err("restoring legacy-only absence must fail the bounded read oracle");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("NativeWorkspace") && message.contains("NotFound"),
+        "{message}"
+    );
+}

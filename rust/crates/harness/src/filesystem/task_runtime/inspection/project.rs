@@ -336,7 +336,7 @@ where
         let display_name = path.rsplit('/').next().unwrap_or(path);
         let staged = match metadata {
             Ok(metadata) => Some(self.io.decode_json::<FileRef>(&metadata)?),
-            Err(Error::NotFound(_)) => None,
+            Err(error) if crate::filesystem::fork_preparer::path_absent(&error) => None,
             Err(error) => return Err(error),
         };
         self.io.charge(WorkCounters {

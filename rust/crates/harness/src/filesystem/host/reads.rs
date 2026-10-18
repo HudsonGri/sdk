@@ -366,7 +366,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await;
         let staged: Option<FileRef> = match metadata {
             Ok(metadata) => Some(io.decode_json(&metadata)?),
-            Err(Error::NotFound(_)) => None,
+            Err(error) if crate::filesystem::fork_preparer::path_absent(&error) => None,
             Err(error) => return Err(error),
         };
         let _staged_hold = staged

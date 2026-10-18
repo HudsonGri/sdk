@@ -31,8 +31,9 @@ fn denied_before_growth(length: usize, copy_short: bool) -> Result<()> {
     let allowance = budget(peak, copied);
     let io = ledger(allowance)?;
     let mut retained = Retained::default();
-    assert!(retained.append(&line, 0, &io).is_err());
+    let result = retained.append(&line, 0, &io);
     assert_eq!(retained.bytes.capacity(), 0, "allocation before admission");
+    assert!(result.is_err());
     assert_eq!(io.owned_bytes()?, 0);
     let left = io.remaining()?;
     assert_eq!(left.allocation_operations, allowance.allocation_operations);
