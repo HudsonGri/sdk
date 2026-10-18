@@ -67,7 +67,7 @@ pub(in crate::local) async fn enter<T>(
     Ok(Entered(StateArc::clone(users)))
 }
 
-pub(super) async fn leave<T>(
+pub(in crate::local) async fn leave<T>(
     slot: &StateArc<AsyncMutex<Option<T>>>,
     users: &SyncMutex<usize>,
     entered: Entered,
