@@ -363,7 +363,7 @@ mod tests {
             let rows = vec![Line::default(); 9];
             let buffer: Buffer = rows.clone().into_iter().collect();
             let view = buffer.view(3..8).unwrap();
-            let expected = &rows[3..8];
+            let expected = rows.get(3..8).unwrap();
             prop_assert_eq!(view.slice(first..end).map(Lines::to_vec), expected.get(first..end).map(<[Line]>::to_vec));
             prop_assert_eq!(view.slice(first..).map(Lines::to_vec), expected.get(first..).map(<[Line]>::to_vec));
             prop_assert_eq!(view.slice(..=end).map(Lines::to_vec), expected.get(..=end).map(<[Line]>::to_vec));

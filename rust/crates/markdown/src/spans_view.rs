@@ -34,10 +34,13 @@ impl<'a> TextRef<'a> {
                 let mut start = 0;
                 for part in parts {
                     let end = start + part.len();
-                    part.copy_to(&mut bytes[start..end]);
+                    part.copy_to(bytes.get_mut(start..end).unwrap_or_default());
                     start = end;
                 }
-                Cow::Owned(String::from_utf8(bytes).expect("text chunks are UTF-8"))
+                Cow::Owned(match String::from_utf8(bytes) {
+                    Ok(text) => text,
+                    Err(_) => unreachable!("text chunks are UTF-8"),
+                })
             }
         }
     }

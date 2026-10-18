@@ -37,7 +37,10 @@ impl Text {
         }
         let mut bytes = vec![0; self.len()];
         self.copy_to(&mut bytes);
-        Cow::Owned(String::from_utf8(bytes).expect("text chunks are UTF-8"))
+        Cow::Owned(match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => unreachable!("text chunks are UTF-8"),
+        })
     }
 
     // Write chunks backwards into their final positions, without flattening
@@ -47,7 +50,10 @@ impl Text {
         let mut end = destination.len();
         for chunk in self.reverse_chunks() {
             let start = end - chunk.len();
-            destination[start..end].copy_from_slice(chunk.as_bytes());
+            destination
+                .get_mut(start..end)
+                .unwrap_or_default()
+                .copy_from_slice(chunk.as_bytes());
             end = start;
         }
         debug_assert_eq!(end, 0);
