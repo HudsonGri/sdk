@@ -1,8 +1,9 @@
+import { qualifyCoreOwnersLoom } from "./qualify-mcp-loom.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyCoreOwnersLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
