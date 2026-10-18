@@ -398,7 +398,7 @@ fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8], toml: bool) -> Result<T> 
 /// test can reach a real Codex directory or its credentials.
 #[cfg(not(test))]
 fn configured_codex_home() -> Option<std::ffi::OsString> {
-    std::env::var_os("CODEX_HOME")
+    crate::native_environment::variable("CODEX_HOME")
 }
 
 #[cfg(test)]

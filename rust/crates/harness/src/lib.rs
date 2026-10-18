@@ -17,6 +17,21 @@
 )]
 #![doc = include_str!("../README.md")]
 
+#[cfg(any(
+    test,
+    feature = "test-support",
+    all(
+        not(target_arch = "wasm32"),
+        any(
+            feature = "filesystem-local",
+            feature = "hooks",
+            feature = "mcp-stdio",
+            feature = "mcp-http",
+            feature = "search-http"
+        )
+    )
+))]
+mod native_environment;
 mod sync;
 #[cfg(all(
     test,

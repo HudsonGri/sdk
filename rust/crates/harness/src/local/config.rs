@@ -110,7 +110,9 @@ impl LocalHarnessConfig {
     /// project's default under the per-user root.
     pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
         match &self.state_directory {
-            Some(directory) => Ok(directory.clone()),
+            Some(directory) => crate::native_environment::state(Some(directory)).ok_or_else(|| {
+                Error::Unsupported("injected state directory is unavailable".into())
+            }),
             None => owner::state_directory_in(&owner::user_state_root()?, &self.project),
         }
     }

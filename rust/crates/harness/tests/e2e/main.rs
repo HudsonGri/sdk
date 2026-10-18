@@ -232,7 +232,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 
 #[test]
 fn scenarios() -> TestResult {
-    if std::env::var_os("E2E_TRACE").is_some() {
+    if acyclic_harness::test_support::environment("E2E_TRACE").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(
                 "warn,acyclic_harness::filesystem::task_runtime::dispatch=trace",
@@ -294,7 +294,9 @@ async fn run_scenarios(started: Instant) -> TestResult {
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     discover(&local_root, &mut paths)?;
     paths.sort();
-    if let Ok(filter) = std::env::var("E2E_FILTER") {
+    if let Some(filter) = acyclic_harness::test_support::environment("E2E_FILTER")
+        .and_then(|value| value.into_string().ok())
+    {
         paths.retain(|path| path.to_string_lossy().contains(&filter));
     }
     if paths.is_empty() {

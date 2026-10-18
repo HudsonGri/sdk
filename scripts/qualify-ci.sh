@@ -178,6 +178,7 @@ pinned_pi() {
 
 case "$lane" in
   gate)
+    node scripts/check-hermetic-clippy.mjs
     node scripts/qualify-mcp-loom.mjs --all-features
     node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
     node scripts/qualify-mcp-loom.mjs --summary-checkpoints --all-features

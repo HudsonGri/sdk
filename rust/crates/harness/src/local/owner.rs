@@ -11,7 +11,7 @@ use std::{
 /// test and lane on the machine.
 #[cfg(not(test))]
 pub(super) fn user_state_root() -> Result<PathBuf> {
-    dirs::data_local_dir()
+    crate::native_environment::state(None)
         .map(|root| root.join("acyclic/harness"))
         .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))
 }

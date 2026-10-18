@@ -18,7 +18,7 @@ pub(super) fn configuration(
 /// machine's real settings and credentials.
 #[cfg(not(test))]
 fn user_home() -> Result<PathBuf> {
-    dirs::home_dir()
+    crate::native_environment::home()
         .ok_or_else(|| Error::Unsupported("user settings directory is unavailable".into()))
 }
 
