@@ -228,19 +228,24 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         std::fs::read(directory.path().join("copied")).map_err(super::super::storage)?,
         b"from tool"
     );
-    let entries: Vec<_> = std::fs::read_dir(directory.path().join(".volumes"))
-        .map_err(super::super::storage)?
-        .filter_map(|entry| match entry {
-            Ok(entry) => match entry.file_type() {
-                Ok(kind) if kind.is_dir() => Some(Ok(entry.file_name())),
-                Ok(_) => None,
+    let entries: std::collections::BTreeSet<_> =
+        std::fs::read_dir(directory.path().join(".volumes"))
+            .map_err(super::super::storage)?
+            .filter_map(|entry| match entry {
+                Ok(entry) => match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => Some(Ok(entry.file_name())),
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                },
                 Err(error) => Some(Err(error)),
-            },
-            Err(error) => Some(Err(error)),
-        })
-        .collect::<std::io::Result<_>>()
-        .map_err(super::super::storage)?;
-    assert_eq!(entries, [std::ffi::OsString::from("scratch")]);
+            })
+            .collect::<std::io::Result<_>>()
+            .map_err(super::super::storage)?;
+    // The checkout's incarnation token is the harness's only other entry.
+    assert_eq!(
+        entries,
+        std::collections::BTreeSet::from([".incarnation".into(), "scratch".into()])
+    );
     let workspace = harness.workspace().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;
