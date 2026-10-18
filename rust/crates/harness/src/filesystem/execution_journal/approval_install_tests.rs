@@ -64,7 +64,7 @@ proptest! {
                             let id = if pending {
                                 let id = InteractionId::from_bytes([87;16]);
                                 journal.open_interaction(id, &Interaction::approval(
-                                    "Pending".into(), operation, [5;32],
+                                    "Pending".into(), operation, [5;32], crate::interaction::ApprovalSubject::Opaque {},
                                 ).unwrap(), None).unwrap().await.unwrap();
                                 id
                             } else { approved };
