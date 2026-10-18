@@ -427,3 +427,24 @@ fn canonical_separation_rejects_both_overlap_directions() -> Result<()> {
     }
     Ok(())
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn unresolved_suffixes_cannot_create_directories_before_rejection(depth in 1usize..5) {
+        let checkout = tempfile::tempdir().unwrap();
+        let mut state = checkout.path().to_path_buf();
+        for _ in 0..depth {
+            state.push("missing");
+            state.push("..");
+        }
+        state.push("state");
+        proptest::prop_assert!(super::super::owner::separated_directory(&state, Some(checkout.path())).is_err());
+        proptest::prop_assert_eq!(std::fs::read_dir(checkout.path()).unwrap().count(), 0);
+        // Accepted canonical paths round-trip through the same production boundary.
+        let storage = tempfile::tempdir().unwrap();
+        let accepted = super::super::owner::separated_directory(&storage.path().join("state"), Some(checkout.path())).unwrap();
+        let reopened = super::super::owner::separated_directory(&accepted, Some(checkout.path())).unwrap();
+        proptest::prop_assert_eq!(accepted, reopened);
+    }
+}

@@ -336,6 +336,7 @@ dependencies = [
  "jsonschema",
  "keyring",
  "loom",
+ "proc-macro2",
  "proptest",
  "prost",
  "prost-build",
