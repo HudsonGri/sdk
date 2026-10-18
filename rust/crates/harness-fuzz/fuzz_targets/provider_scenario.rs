@@ -1,4 +1,6 @@
 #![no_main]
+#[path = "../../harness/src/bin/graphcoder/tests/scenarios/faults.rs"]
+mod faults;
 #[path = "../../harness/src/bin/graphcoder/tests/scenarios/history.rs"]
 mod history;
 #[path = "../../harness/tests/support/json_matchers.rs"]
@@ -19,6 +21,12 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok((value, binary)) = scenario_data::split_tiers(value) else {
         return;
     };
+    if let Ok(fault) = serde_json::from_value::<faults::Fault>(value.clone()) {
+        let bytes = serde_json::to_vec(&fault).unwrap();
+        let decoded: faults::Fault = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.validate(), fault.validate());
+        assert_eq!(decoded, fault);
+    }
     if let Ok(action) = serde_json::from_value::<scenario_actions::Action>(value.clone()) {
         let encoded = serde_json::to_vec(&action).unwrap();
         assert_eq!(

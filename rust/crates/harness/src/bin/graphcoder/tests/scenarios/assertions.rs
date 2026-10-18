@@ -23,8 +23,9 @@ pub fn output(
 ) -> TestResult<Vec<Value>> {
     let indeterminate =
         case["expect"]["outcome"] == "indeterminate" || case["expect"]["indeterminate"] == true;
-    let expected_code = if indeterminate { 4 } else { 0 };
-    if output.status.code() != Some(expected_code) {
+    let expected_code = case["expect"]["exit"].as_i64()
+        .unwrap_or(if indeterminate { 4 } else { 0 });
+    if output.status.code().map(i64::from) != Some(expected_code) {
         return Err(format!(
             "exit {:?}, expected {expected_code}\nstdout: {}\nstderr: {}",
             output.status.code(),
@@ -79,7 +80,9 @@ pub fn output(
     if results.len() != 1 {
         return Err(format!("expected exactly one JSONL execution result, got {results:?}").into());
     }
-    let expected = if indeterminate {
+    let expected = if let Some(result) = case["expect"].get("result") {
+        result.clone()
+    } else if indeterminate {
         json!({"completion":"indeterminate"})
     } else {
         json!({"completion":"completed","ok":{"text":case["expect"]["text"]}})
@@ -132,6 +135,10 @@ fn observe(
 }
 
 pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestResult {
+    let faults = case.get("faults").cloned().unwrap_or_else(|| json!([]));
+    if recording.remaining_faults != 0 || serde_json::to_value(&recording.injected)? != faults {
+        return Err("scripted HTTP faults were skipped or delivered out of order".into());
+    }
     let actions = case["actions"].as_array().map_or(0, Vec::len);
     if recording.actions_applied != actions || !recording.actions_remaining.is_empty() {
         return Err(format!(

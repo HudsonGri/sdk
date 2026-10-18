@@ -1,4 +1,4 @@
-use super::{TestResult, wire};
+use super::{TestResult, faults::Fault, wire};
 use axum::{Json, Router, body::Body, extract::OriginalUri, http::Response, routing::post};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -11,7 +11,12 @@ use tokio::{
 struct Request {
     body: Value,
     endpoint: String,
-    reply: oneshot::Sender<TestResult<(Vec<String>, bool)>>,
+    reply: oneshot::Sender<TestResult<Reply>>,
+}
+
+enum Reply {
+    Model(Vec<String>, bool),
+    Fault(Fault),
 }
 
 pub struct Recording {
@@ -22,6 +27,8 @@ pub struct Recording {
     pub attempts: BTreeMap<String, usize>,
     pub actions_applied: usize,
     pub actions_remaining: Vec<(String, usize)>,
+    pub injected: Vec<Fault>,
+    pub remaining_faults: usize,
 }
 
 pub struct Provider {
@@ -196,6 +203,12 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
     let routes = case["routes"].as_object().cloned().unwrap_or_default();
     let protocol = protocol.to_owned();
     let raw = case.get("responses").is_some();
+    let mut faults: VecDeque<Fault> = serde_json::from_value(
+        case.get("faults").cloned().unwrap_or_else(|| json!([])),
+    )?;
+    for fault in &faults {
+        fault.validate()?;
+    }
     let mut scripts = BTreeMap::new();
     if let Some(models) = case["models"].as_object() {
         for (name, turns) in models {
@@ -239,6 +252,7 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
     let actor = tokio::spawn(async move {
         let mut errors = Vec::new();
         let mut actions_applied = 0;
+        let mut injected = Vec::new();
         loop {
             tokio::select! {
                 _ = &mut stopped => break,
@@ -248,6 +262,12 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
                     let reply = (|| {
                         let script = scripts.get_mut(route).ok_or_else(|| format!("unknown scripted route: {route}"))?;
                         script.endpoints.push(request.endpoint);
+                        if let Some(fault) = faults.pop_front() {
+                            script.attempts += 1;
+                            script.requests.push(request.body);
+                            injected.push(fault.clone());
+                            return Ok(Reply::Fault(fault));
+                        }
                         if (script.pins.is_empty() || script.prepared)
                             && let Some(action) = actions.remove(&(route.to_owned(), script.requests.len() + 1))
                         {
@@ -255,6 +275,7 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
                             actions_applied += 1;
                         }
                         script.reply(request.body, &seed, &protocol, raw)
+                            .map(|(parts, pending)| Reply::Model(parts, pending))
                     })();
                     if let Err(error) = &reply {
                         errors.push(format!("{route}: {error}"));
@@ -294,6 +315,8 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
             audits,
             actions_applied,
             actions_remaining: actions.into_keys().collect(),
+            injected,
+            remaining_faults: faults.len(),
         })
     });
     let width = case["chunk_bytes"].as_u64().unwrap_or(13) as usize;
@@ -404,7 +427,8 @@ async fn serve(
     })
     .unwrap();
     match result.await.unwrap() {
-        Ok((parts, pending)) => {
+        Ok(Reply::Fault(fault)) => fault_response(fault, width),
+        Ok(Reply::Model(parts, pending)) => {
             let chunks: Vec<_> = parts
                 .iter()
                 .flat_map(|part| part.as_bytes().chunks(width))
@@ -431,6 +455,37 @@ async fn serve(
     }
 }
 
+fn fault_response(fault: Fault, width: usize) -> Response<Body> {
+    match fault {
+        Fault::Status { code, retry_after } => {
+            let mut response = Response::builder().status(code);
+            if let Some(seconds) = retry_after {
+                response = response.header("retry-after", seconds);
+            }
+            response.body(Body::from("SCRIPTED_HTTP_ERROR_BODY")).unwrap()
+        }
+        Fault::Malformed { body } => Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from(body))
+            .unwrap(),
+        Fault::Reset { prefix } => {
+            // A body error terminates the actual HTTP response stream. It is
+            // deliberately distinct from a complete response with invalid SSE.
+            let chunks: Vec<_> = prefix.iter()
+                .flat_map(|part| part.as_bytes().chunks(width))
+                .map(|chunk| Ok::<_, std::io::Error>(chunk.to_vec()))
+                .chain(std::iter::once(Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset, "scripted HTTP body reset",
+                ))))
+                .collect();
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(futures::stream::iter(chunks)))
+                .unwrap()
+        }
+    }
+}
+
 impl Provider {
     pub async fn finish(mut self) -> TestResult<Recording> {
         self.server.abort();
@@ -447,6 +502,10 @@ impl Drop for Provider {
         self.actor.abort();
     }
 }
+
+#[cfg(test)]
+#[path = "provider_fault_tests.rs"]
+mod fault_tests;
 
 #[cfg(test)]
 mod tests {
