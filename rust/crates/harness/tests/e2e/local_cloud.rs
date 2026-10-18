@@ -2,7 +2,7 @@
 //! service. `scripts/local-cloud.mjs` starts the cloud and names its endpoints
 //! in `ACYCLIC_LOCAL_CLOUD`; the default suite runs only the local controls,
 //! including the subagent family over a loopback Session. On the cloud, the
-//! executor families are compared and the subagent family's refusals pinned.
+//! executor and subagent families must match, with no unsupported contracts.
 #[path = "cloud5322.rs"]
 mod cloud5322;
 use super::{
@@ -183,7 +183,7 @@ fn case(cases: &[(PathBuf, Case)], name: &str) -> TestResult<Case> {
 }
 
 /// In-process Streams that refuse, with the given cause, what a cloud's
-/// Streams refuse today (cloud-local finding 15): commits fenced on a head,
+/// Streams refused before Cloud #5322 (cloud-local finding 15): commits fenced on a head,
 /// checked follows and live children.
 struct Refusing(MemoryStream, StreamError);
 
@@ -245,10 +245,8 @@ impl StreamProvider for Refusing {
     }
 }
 
-/// What a cloud's Streams refuse today, each as an unsupported capability
-/// (cloud-local finding 15). Pinned, so the live test fails once the cloud
-/// serves any of them, or refuses one for another reason.
-fn cloud_refusals() -> Vec<Refusal> {
+/// Historical refusals retained only as negative controls for the capability probe.
+fn historical_refusals() -> Vec<Refusal> {
     subagents::KINDS
         .into_iter()
         .chain([subagents::LATEST])
@@ -332,9 +330,9 @@ async fn subagent_follows_match_over_a_loopback_session_and_detect_divergence() 
     if !probe.is_empty() {
         return Err(format!("the loopback Session refused {probe:?}").into());
     }
-    // A provider refusing as the cloud does matches the pin, and one refusing
+    // A provider refusing as the old cloud did matches the historical control, and one refusing
     // the same kinds for an unrelated cause does not.
-    let pinned = cloud_refusals();
+    let pinned = historical_refusals();
     for (cause, matches) in [
         (StreamError::Unsupported, true),
         (StreamError::AccessDenied, false),
@@ -432,7 +430,7 @@ loopback: {right}"
     if resplit.is_ok() {
         return Err("a re-split reply passed".into());
     }
-    // A Session refusing discovery as the cloud does matches the pin; one
+    // A Session refusing discovery as the old cloud did matches the historical control; one
     // refusing it for an unrelated cause does not.
     for (cause, matches) in [
         (StreamError::Unsupported, true),
