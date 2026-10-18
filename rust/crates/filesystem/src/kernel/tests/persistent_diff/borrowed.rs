@@ -155,7 +155,7 @@ type Output<F> = Result<
     ),
     String,
 >;
-fn run<F: Format>(
+fn run<F: Format, const EARLY_EQUAL: bool>(
     runtime: &tokio::runtime::Runtime,
     fixture: (Store, [ObjectId; 2]),
     baseline: bool,
@@ -176,14 +176,16 @@ fn run<F: Format>(
     let mut result = None;
     let started = std::time::Instant::now();
     let allocations = acyclic_test_support::measure(|| {
-        result = Some(runtime.block_on(diff_tree_entries_or_records::<F>(
-            &store,
-            before,
-            after,
-            maximum,
-            &mut accounting,
-            &token,
-        )));
+        result = Some(
+            runtime.block_on(diff_tree_entries_or_records::<F, EARLY_EQUAL>(
+                &store,
+                before,
+                after,
+                maximum,
+                &mut accounting,
+                &token,
+            )),
+        );
     });
     let elapsed = started.elapsed();
     let work = accounting.spent();
@@ -210,7 +212,7 @@ fn run<F: Format>(
     (output, allocations, work)
 }
 
-async fn diff_tree_entries_or_records<F: Format>(
+async fn diff_tree_entries_or_records<F: Format, const EARLY_EQUAL: bool>(
     store: &Store,
     before: ObjectId,
     after: ObjectId,
@@ -218,7 +220,7 @@ async fn diff_tree_entries_or_records<F: Format>(
     work: &mut KernelAccounting<'_>,
     token: &CancellationToken,
 ) -> Result<(Diff<F::Key, F::Value>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<_, F, true, true>(
+    diff_with_accounting::<_, F, true, true, EARLY_EQUAL>(
         store,
         Some(before),
         Some(after),
@@ -230,8 +232,12 @@ async fn diff_tree_entries_or_records<F: Format>(
     .await
 }
 
-fn compare<F: Format>(before: &[F::Value], after: &[F::Value], maximum: u32, widths: (usize, usize))
-where
+fn compare<F: Format, const EARLY_EQUAL: bool>(
+    before: &[F::Value],
+    after: &[F::Value],
+    maximum: u32,
+    widths: (usize, usize),
+) where
     F::Key: std::fmt::Debug,
     F::Value: std::fmt::Debug,
 {
@@ -242,7 +248,7 @@ where
     for native in [false, true] {
         let [((old, _, _), old_trace), ((new, _, _), new_trace)] = differential::pair::<_, _, Event>(
             || runtime.block_on(initialize_layout::<F>(before, after, widths)),
-            |fixture, baseline| run::<F>(&runtime, fixture, baseline, maximum, native),
+            |fixture, baseline| run::<F, EARLY_EQUAL>(&runtime, fixture, baseline, maximum, native),
         );
         assert_eq!(new, old);
         assert_eq!(new_trace, old_trace);
@@ -260,9 +266,13 @@ proptest! {
     ) {
         let trees = |values: &std::collections::BTreeMap<u8,u8>| values.iter().map(|(&key, &value)| entry(&format!("key-{key:02}"), value).unwrap()).collect::<Vec<_>>();
         for widths in [(usize::MAX, usize::MAX), (left_width, right_width)] {
-        compare::<TreeFormat>(&trees(&before), &trees(&after), maximum, widths);
+        compare::<TreeFormat, false>(&trees(&before), &trees(&after), maximum, widths);
         let records = |values: &std::collections::BTreeMap<u8,u8>| values.iter().map(|(&key, &value)| { let mut record=file_record(key).unwrap(); record.link_count=u64::from(value); record }).collect::<Vec<_>>();
-        compare::<FileTableFormat>(&records(&before), &records(&after), maximum, widths);
+        compare::<FileTableFormat, false>(&records(&before), &records(&after), maximum, widths);
+        // A separately initialized old collector sees the same complete diff,
+        // canonical bytes, errors and observer trace across several frontiers.
+        compare::<TreeFormat, true>(&trees(&before), &trees(&after), 128, widths);
+        compare::<FileTableFormat, true>(&records(&before), &records(&after), 128, widths);
         }
     }
 }
@@ -282,7 +292,7 @@ fn allocation_pin(baseline: bool) {
             after[3].file_id = FileId::from_bytes([99; 16]);
             let fixture = runtime.block_on(initialize::<TreeFormat>(&before, &after));
             let (output, allocations, _) =
-                run::<TreeFormat>(&runtime, fixture, baseline, 128, native);
+                run::<TreeFormat, false>(&runtime, fixture, baseline, 128, native);
             let (changes, truncated, _) = output.unwrap();
             assert_eq!(changes.len(), 1);
             assert_eq!(changes[0].before.as_ref(), Some(&before[3]));
@@ -304,6 +314,59 @@ fn only_changed_shared_values_are_allocated_at_both_history_sizes() {
 #[should_panic(expected = "shared leaf diff cloned unchanged entries")]
 fn restored_collector_fails_the_same_allocation_pin() {
     allocation_pin(true);
+}
+
+fn proof_allocation_pin(baseline: bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    for native in [false, true] {
+        let mut counts = Vec::new();
+        for count in [8_u8, 24] {
+            let before = (0..count)
+                .map(|key| file_record(key).unwrap())
+                .collect::<Vec<_>>();
+            let mut after = before.clone();
+            after[0].link_count = 2;
+            after[usize::from(count) - 1].link_count = 2;
+            let width = usize::from(count) / 2;
+            let fixture = runtime.block_on(initialize_layout::<FileTableFormat>(
+                &before,
+                &after,
+                (width, width),
+            ));
+            let (output, allocations, work) =
+                run::<FileTableFormat, true>(&runtime, fixture, baseline, 128, native);
+            let (changes, truncated, _) = output.unwrap();
+            assert!(!truncated);
+            assert_eq!(changes.len(), 2);
+            for (change, index) in changes.iter().zip([0, usize::from(count) - 1]) {
+                assert_eq!(change.key, before[index].file_id);
+                assert_eq!(change.before, Some(before[index]));
+                assert_eq!(change.after, Some(after[index]));
+            }
+            eprintln!(
+                "PROOF_DIFF count={count} native={native} baseline={baseline}: {allocations:?}, {work:?}"
+            );
+            counts.push((allocations, work.bytes_copied));
+        }
+        assert_eq!(
+            counts[0], counts[1],
+            "proof diff retained unchanged records across leaf frontiers"
+        );
+    }
+}
+
+#[test]
+fn proof_diff_retains_only_changed_records_across_leaf_frontiers() {
+    proof_allocation_pin(false);
+}
+
+#[test]
+#[should_panic(expected = "proof diff retained unchanged records across leaf frontiers")]
+fn restored_union_collector_fails_the_same_proof_allocation_pin() {
+    proof_allocation_pin(true);
 }
 
 #[test]
@@ -350,7 +413,7 @@ fn rejected_roots_and_missing_or_malformed_pages_preserve_exact_errors_and_trace
                         })
                     },
                     |fixture, baseline| {
-                        run::<TreeFormat>(
+                        run::<TreeFormat, true>(
                             &runtime,
                             fixture,
                             baseline,

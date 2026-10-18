@@ -44,6 +44,7 @@ async fn diff_with_accounting<
     F: Format,
     const PREFIX: bool,
     const RESET: bool,
+    const EARLY_EQUAL: bool,
 >(
     store: &S,
     before: Option<ObjectId>,
@@ -137,11 +138,15 @@ async fn diff_with_accounting<
                         right.retire(accounting)?;
                         return Err(error);
                     }
-                    // Cancellation of equal payloads must not change the old
-                    // collector's intermediate limit on any later frontier.
-                    if tasks.value.is_empty()
-                        && values.value.is_empty()
-                        && leaf_pair::can_compare(&left.value, &right.value, maximum)
+                    // Public bounded diffs preserve the historical intermediate
+                    // union limit. Closure proof consumes only actual changes;
+                    // any truncated result still falls back to the full proof.
+                    if (EARLY_EQUAL || (tasks.value.is_empty() && values.value.is_empty()))
+                        && leaf_pair::can_compare::<F, EARLY_EQUAL>(
+                            &left.value,
+                            &right.value,
+                            maximum,
+                        )
                     {
                         let compared = leaf_pair::compare::<F, PREFIX, RESET>(
                             &left.value,
@@ -574,7 +579,10 @@ fn allocation_error(error: FsError) -> FsError {
     }
 }
 
-pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
+pub(crate) async fn diff_file_records_with_accounting<
+    S: AsyncObjectStore,
+    const EARLY_EQUAL: bool,
+>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
@@ -583,7 +591,7 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<crate::FileId, FileRecord>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, FileTableFormat, true, true>(
+    diff_with_accounting::<S, FileTableFormat, true, true, EARLY_EQUAL>(
         store,
         before,
         after,
@@ -595,7 +603,10 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     .await
 }
 
-pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
+pub(crate) async fn diff_tree_entries_with_accounting<
+    S: AsyncObjectStore,
+    const EARLY_EQUAL: bool,
+>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
@@ -604,7 +615,7 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, TreeFormat, true, true>(
+    diff_with_accounting::<S, TreeFormat, true, true, EARLY_EQUAL>(
         store,
         before,
         after,

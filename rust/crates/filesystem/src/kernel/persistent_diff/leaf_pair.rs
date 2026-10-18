@@ -10,7 +10,7 @@ fn shared_leaf<F: Format>(page: &OwnedPage<F>) -> Option<Entries<'_, F::Value>> 
     }
 }
 
-pub(super) fn can_compare<F: Format>(
+pub(super) fn can_compare<F: Format, const EARLY_EQUAL: bool>(
     left: &OwnedPage<F>,
     right: &OwnedPage<F>,
     maximum: usize,
@@ -27,12 +27,13 @@ pub(super) fn can_compare<F: Format>(
     let (Some(left), Some(right)) = (shared_leaf(left), shared_leaf(right)) else {
         return false;
     };
-    // The historical collector stops before cancellation of equal values if
-    // its intermediate union exceeds the limit. Retain that exact truncation
-    // behavior unless both complete leaves fit even without cancellation.
-    left.len()
-        .checked_add(right.len())
-        .is_some_and(|total| total <= maximum)
+    // Closure may cancel equal pairs on every frontier. Public bounded diffs
+    // retain the old intermediate union bound even before equal values cancel.
+    EARLY_EQUAL
+        || left
+            .len()
+            .checked_add(right.len())
+            .is_some_and(|total| total <= maximum)
 }
 
 pub(super) fn compare<F: Format, const PREFIX: bool, const RESET: bool>(

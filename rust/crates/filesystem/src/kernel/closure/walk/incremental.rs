@@ -15,7 +15,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             } => {
                 let mut accounting =
                     crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-                let (diff, allocation) = crate::facade::diff_generation_file_tables(
+                let (diff, allocation) = crate::facade::diff_generation_file_tables::<_, true>(
                     self.store,
                     before,
                     after,
@@ -40,7 +40,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                     remaining,
                     cancellation,
                 );
-                let result = crate::facade::diff_generation_file_tables(
+                let result = crate::facade::diff_generation_file_tables::<_, true>(
                     self.store,
                     before,
                     after,

@@ -861,7 +861,7 @@ async fn native_diff_denies_frontier_allocation_before_backend_work()
         .allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))
         .map(|(value, _allocation)| value)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let result = diff_tree_entries_with_accounting(
+    let result = diff_tree_entries_with_accounting::<_, false>(
         &store,
         None,
         Some(root),
@@ -901,7 +901,7 @@ async fn diff_accounted<S: AsyncObjectStore, F: Format>(
     cancellation: &CancellationToken,
 ) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = diff_with_accounting::<S, F, true, true>(
+    let result = diff_with_accounting::<S, F, true, true, false>(
         store,
         before,
         after,

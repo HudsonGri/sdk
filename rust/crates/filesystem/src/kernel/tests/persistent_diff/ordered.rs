@@ -75,7 +75,7 @@ async fn run<const PREFIX: bool, const RESET: bool>(
         },
         &cancellation,
     );
-    let result = diff_with_accounting::<_, FileTableFormat, PREFIX, RESET>(
+    let result = diff_with_accounting::<_, FileTableFormat, PREFIX, RESET, false>(
         store,
         Some(roots.0),
         Some(roots.1),
