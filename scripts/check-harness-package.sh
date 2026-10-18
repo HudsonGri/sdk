@@ -145,10 +145,6 @@ for name in "${dependency_names[@]}"; do
   printf '%s = { path = "%s" }\n' "$name" "$patch_path" >>"$work/crates/.cargo/config.toml"
 done
 cd "$work/crates"
-# libtest uses small per-case thread stacks; the normal nextest gate runs
-# each case on a process main thread. Keep large live-future fixtures and the
-# Tokio worker running the native consumer within the same stack capacity.
-export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 "$cargo_bin" test --manifest-path "acyclic-harness-$harness_version/Cargo.toml" --all-features --offline \
   --target-dir "$cargo_package_target" \
   -- --test-threads="${RUST_TEST_THREADS:-1}" 2>&1 | tee "$work/rust-package-test.log"

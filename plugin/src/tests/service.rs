@@ -3,7 +3,7 @@ use super::*;
 #[cfg(any(unix, windows))]
 #[test]
 fn binary_handoff_drains_live_sessions_before_reopen() {
-    run_large_stack("service-handoff", || async {
+    run_async_test("service-handoff", || async {
         let fixture = Fixture::new();
         let data = fixture.data.clone();
         let service = tokio::spawn(async move {
@@ -40,7 +40,7 @@ fn binary_handoff_drains_live_sessions_before_reopen() {
 #[cfg(any(unix, windows))]
 #[test]
 fn durable_drain_is_identity_bound_and_answers_concurrent_requesters() {
-    run_large_stack("durable-drain", || async {
+    run_async_test("durable-drain", || async {
         let fixture = Fixture::new();
         let data = fixture.data.clone();
         let service = tokio::spawn(async move { run_service(data).await });
@@ -77,7 +77,7 @@ fn durable_drain_is_identity_bound_and_answers_concurrent_requesters() {
 #[cfg(any(unix, windows))]
 #[test]
 fn failed_startup_releases_the_service_and_root() {
-    run_large_stack("failed-service-startup", || async {
+    run_async_test("failed-service-startup", || async {
         let fixture = Fixture::new();
         fs::create_dir(fixture.data.join("service.identity")).unwrap();
         assert!(
@@ -94,7 +94,7 @@ fn failed_startup_releases_the_service_and_root() {
 
 #[test]
 fn sessions_are_independent_and_old_handles_are_fenced() {
-    run_large_stack("session-isolation", || async {
+    run_async_test("session-isolation", || async {
         let fixture = Fixture::new();
         let other = fixture.directory("other");
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
@@ -147,7 +147,7 @@ fn sessions_are_independent_and_old_handles_are_fenced() {
 
 #[test]
 fn accepted_operation_survives_waiter_cancellation() {
-    run_large_stack("waiter-cancellation", || async {
+    run_async_test("waiter-cancellation", || async {
         let fixture = Fixture::new();
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let service = Arc::new(service);
@@ -194,7 +194,7 @@ fn accepted_operation_survives_waiter_cancellation() {
 
 #[test]
 fn close_is_fifo_idempotent_and_durable() {
-    run_large_stack("session-close", || async {
+    run_async_test("session-close", || async {
         let fixture = Fixture::new();
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let service = Arc::new(service);
@@ -261,7 +261,7 @@ fn close_is_fifo_idempotent_and_durable() {
 
 #[test]
 fn saturated_data_queue_still_accepts_close() {
-    run_large_stack("saturated-close", || async {
+    run_async_test("saturated-close", || async {
         let fixture = Fixture::new();
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let service = Arc::new(service);
@@ -311,7 +311,7 @@ fn saturated_data_queue_still_accepts_close() {
 
 #[test]
 fn drain_waits_for_busy_sessions_and_saves_terminal_state() {
-    run_large_stack("service-drain", || async {
+    run_async_test("service-drain", || async {
         let fixture = Fixture::new();
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         service
