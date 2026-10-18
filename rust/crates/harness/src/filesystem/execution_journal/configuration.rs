@@ -36,14 +36,35 @@ where
             })
     }
 
-    pub(crate) fn with_task_files(
-        mut self,
+    pub(crate) fn with_optional_task_files(
+        self,
         files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
-    ) -> Self {
-        if files.is_some() {
-            self.task_files = files;
+    ) -> Result<Self> {
+        match files {
+            Some(files) => self.with_task_files(files),
+            None => Ok(self),
         }
-        self
+    }
+
+    /// Attaches the authorized file projection of this journal's private volume.
+    pub fn with_task_files(mut self, files: Arc<crate::task_volume::TaskFiles<P>>) -> Result<Self> {
+        if files.volume() != &self.volume
+            || !files.inner.shares_provider(&self.stream)
+            || files.maximum_bytes() < self.maximum_payload_bytes
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self._native_metadata.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "task files differ from the journal's provider, volume or byte bound",
+                });
+            }
+            return Err(Error::Unauthorized(
+                "task files differ from the journal's provider, volume or byte bound".into(),
+            ));
+        }
+        self.task_files = Some(files);
+        Ok(self)
     }
 
     /// Binds the execution to the task's exact lease and coordinator provider.

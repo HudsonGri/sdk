@@ -281,7 +281,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self.path
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(feature = "filesystem")]
     pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
     }

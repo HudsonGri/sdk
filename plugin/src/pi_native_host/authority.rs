@@ -215,6 +215,7 @@ impl PiNativeCommandHost {
                 io: Some(&io),
             },
         )?
+        .with_task_files(self.runtime.task_files.clone())?
         .with_interaction_owner(
             &interaction_verifier.0,
             &SchemaRegistry::new(),

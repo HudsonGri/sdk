@@ -369,7 +369,7 @@ fn journal_unmetered_task_files_match_main() {
                     65_536,
                 )
                 .await?;
-                Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
+                Ok::<_, Error>((journal.with_task_files(Arc::new(files))?, fixture.host))
             })
             .unwrap()
     };
