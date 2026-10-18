@@ -18,7 +18,6 @@ mod digest;
 mod driver;
 mod features;
 mod manifest;
-mod process;
 mod recovery;
 mod sources;
 
