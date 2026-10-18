@@ -529,6 +529,9 @@ fn very_large_frames_reach_the_real_console() -> io::Result<()> {
 #[derive(Clone)]
 struct Shared(Rc<RefCell<RestoreGuard<Device>>>, bool);
 impl Present for Shared {
+    fn supports_scroll_regions(&self) -> bool {
+        self.0.borrow().supports_scroll_regions()
+    }
     fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
         self.0.borrow_mut().present(frame, effects)
     }

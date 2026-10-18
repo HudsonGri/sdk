@@ -1,12 +1,13 @@
 use super::*;
 use acyclic_harness_tui::term::ScreenMode;
 
-fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool) {
+fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool, supported: bool) {
     let scene: Scene = (vec!["Z".into()], Some((3, 2)));
     let expected = per_command(&[scene.clone()]).unwrap().concat().concat();
     let device = Device::default();
     let mut profile = caps(true);
     profile.modes.insert(1049, ModeState::Reset);
+    profile.scroll_regions = supported;
     let guard = Rc::new(RefCell::new(RestoreGuard::new(device.clone(), &profile)));
     if alternate {
         guard.borrow_mut().setup(ScreenMode::Alternate).unwrap();
@@ -36,6 +37,12 @@ fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool) 
         })
         .unwrap();
     let mut recovered = device.take().concat();
+    if !supported {
+        assert!(
+            !recovered.windows(3).any(|bytes| bytes == b"\x1b[r"),
+            "unsupported profiles do not encode margin recovery"
+        );
+    }
     if !KEEP_CELLS {
         // Preserve real outside writes, checked presentation, attributes and
         // cursor recovery; omit only the retained cell's recovery paint.
@@ -59,7 +66,9 @@ fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool) 
 fn outside_writes_and_alternate_reentry_repaint_retained_cells() {
     for during_render in [false, true] {
         for alternate in [false, true] {
-            check_contents::<true>(during_render, alternate);
+            for supported in [false, true] {
+                check_contents::<true>(during_render, alternate, supported);
+            }
         }
     }
 }
@@ -67,5 +76,5 @@ fn outside_writes_and_alternate_reentry_repaint_retained_cells() {
 #[test]
 #[should_panic(expected = "outside output must not invalidate retained screen contents")]
 fn negative_control_omitting_retained_cell_recovery_is_detected() {
-    check_contents::<false>(true, true);
+    check_contents::<false>(true, true, true);
 }

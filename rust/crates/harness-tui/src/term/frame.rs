@@ -402,11 +402,15 @@ impl<D: Present> FrameTerminal<D> {
         bytes.clear();
         // Restate every device assumption before repainting: attributes,
         // margins, cells, then the requested cursor at the checked boundary.
-        bytes.extend_from_slice(b"\x1b[0m\x1b[r\x1b[2J");
+        bytes.extend_from_slice(b"\x1b[0m");
+        if self.scroll_regions {
+            bytes.extend_from_slice(b"\x1b[r");
+        }
+        bytes.extend_from_slice(b"\x1b[2J");
         let encoded = encode_diff(self.terminal.current_buffer_mut(), &self.shown, &mut bytes);
         let backend = self.terminal.backend_mut();
         backend.output.frame = bytes;
-        backend.output.effects.margins = true;
+        backend.output.effects.margins = self.scroll_regions;
         backend.shown = Shown {
             attributes: true,
             ..Shown::default()
