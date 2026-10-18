@@ -173,6 +173,11 @@ impl LocalHarness {
                 None => owner::state_directory(&config.project, checkout.as_ref())?,
             };
             let directory = owner::directory(&directory)?;
+            #[cfg(test)]
+            let checkout = match (&config.project, owner::RECAPTURE.get()) {
+                (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
+                _ => checkout,
+            };
             let owner = owner::Owner::open(&directory, &config.project, checkout.as_ref())?;
             let filesystem =
                 acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
@@ -216,14 +221,15 @@ impl LocalHarness {
                     .map_err(storage)?;
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
-                LocalProject::Workspace(path) => Some(
+                LocalProject::Workspace(_) => Some(
                     workspace::open(
                         &filesystem,
                         &owner.project,
                         &scratch,
-                        path,
+                        checkout
+                            .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
+                            .root,
                         &directory,
-                        owner.workspace_identity,
                         workspace::attach_operation(owner.task),
                         false,
                         native_mounts,
