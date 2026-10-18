@@ -142,6 +142,21 @@ async fn seeded(count: u8) -> Result<(Arc<MemoryStream>, DistributedCoordinator<
     Ok((client, coordinator))
 }
 
+fn canonical_intent(
+    intent: Option<([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId)>,
+) -> Result<Option<([u8; 32], Vec<u8>, u64, acyclic_stream::CommitId)>> {
+    intent
+        .map(|(digest, event, revision, commit)| {
+            Ok((
+                digest,
+                crate::contract::canonical_json_bytes(&event)?,
+                revision,
+                commit,
+            ))
+        })
+        .transpose()
+}
+
 #[test]
 fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -162,11 +177,13 @@ fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Resu
                             Some(coordinator.revision),
                             &mut None,
                         ))
+                        .and_then(canonical_intent)
                         .map_err(|error| format!("{error:?}"))
                 },
                 || {
                     runtime
                         .block_on(coordinator.read_indexed_intent(key, &mut None))
+                        .and_then(canonical_intent)
                         .map_err(|error| format!("{error:?}"))
                 },
             );
@@ -174,7 +191,8 @@ fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Resu
                 "retry pair K={count} key={key}: old={:?} new={:?}",
                 costs[0], costs[1]
             );
-            let restored = runtime.block_on(reopened.read_indexed_intent(key, &mut None))?;
+            let restored =
+                canonical_intent(runtime.block_on(reopened.read_indexed_intent(key, &mut None))?)?;
             assert_eq!(restored, after.map_err(Error::Storage)?);
         }
     }
