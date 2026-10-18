@@ -15,6 +15,8 @@ proptest! {
                 "image".into(), &mut None).unwrap();
             let (mut provider, _) = provider(Adapter::Responses, 200);
             enable(&mut provider);
+            provider.codex_login = Some(Arc::new(crate::CodexLogin::from_path(
+                std::path::PathBuf::from("unused-for-image-counting.json"))));
             let bound = Arc::make_mut(&mut provider.config).images.get_mut(&provider.model.name).unwrap();
             bound.maximum_tokens = allowance;
             bound.maximum_images = 8;
@@ -26,15 +28,17 @@ proptest! {
                 part
             }).collect());
             let (first, _) = prepare(&provider, vec![make(prior)]).unwrap();
-            let counter = crate::codex_count::Counter::default();
+            let counter = &provider.codex_count;
+            let count = |request: &PreparedModelRequest| futures::executor::block_on(
+                crate::counting::count(&provider, request, None)).unwrap().0.input_tokens;
             let image_tokens = |m: &ModelMessage| crate::images::tokens(&provider, m);
             counter.observe(&first, &json!({"usage":{"input_tokens":usage}}), image_tokens).unwrap();
-            assert_eq!(counter.count(&first, image_tokens).unwrap(), usage);
+            assert_eq!(count(&first), usage);
             let mut messages = first.request().messages.clone();
             if added != 0 { messages.push(make(added)); }
             if changed { messages[0] = user(vec![text("unrelated prefix")]); }
             let (next, _) = prepare(&provider, messages).unwrap();
-            let actual = counter.count(&next, image_tokens).unwrap();
+            let actual = count(&next);
             if !changed {
                 if added == 0 { assert_eq!(actual, usage); }
                 else {
