@@ -29,30 +29,32 @@ proptest! {
     }
 }
 
-#[tokio::test]
-async fn corrupted_real_http_reply_fails_unchanged_model_and_file_expectations() -> TestResult {
-    let baseline: LocalCase = serde_json::from_slice(CASE)?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::local_execution::run(baseline),
-    )
-    .await??;
-    let mut broken: LocalCase = serde_json::from_slice(CASE)?;
-    broken
-        .mcp
-        .as_mut()
-        .ok_or("missing native MCP fixture")?
-        .replies[0]
-        .result["content"][0]["text"] = "CORRUPTED".into();
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::local_execution::run(broken),
-    )
-    .await?
-    .expect_err("corrupted HTTP response passed unchanged expectations");
-    assert!(
-        error.to_string().contains("local model requests"),
-        "{error}"
-    );
-    Ok(())
+#[test]
+fn corrupted_real_http_reply_fails_unchanged_model_and_file_expectations() -> TestResult {
+    crate::scenario_runtime()?.block_on(async {
+        let baseline: LocalCase = serde_json::from_slice(CASE)?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::local_execution::run(baseline),
+        )
+        .await??;
+        let mut broken: LocalCase = serde_json::from_slice(CASE)?;
+        broken
+            .mcp
+            .as_mut()
+            .ok_or("missing native MCP fixture")?
+            .replies[0]
+            .result["content"][0]["text"] = "CORRUPTED".into();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::local_execution::run(broken),
+        )
+        .await?
+        .expect_err("corrupted HTTP response passed unchanged expectations");
+        assert!(
+            error.to_string().contains("local model requests"),
+            "{error}"
+        );
+        Ok(())
+    })
 }
