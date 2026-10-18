@@ -45,7 +45,7 @@ async fn execute(
         Vec::new()
     };
     input.write_all(&request).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
+    let mut command = Command::new(build_metadata::EXECUTABLE);
     command
         .env("CODEX_HOME", settings)
         .env("LOCALAPPDATA", settings)
@@ -300,4 +300,12 @@ async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
 #[tokio::test]
 async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
+}
+
+mod build_metadata {
+    #[expect(
+        clippy::disallowed_macros,
+        reason = "Cargo-provided executable metadata for this integration crate"
+    )]
+    pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
 }
