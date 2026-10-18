@@ -5,10 +5,17 @@ use std::sync::Arc;
 /// Published compiled access for one authenticated mount binding.
 /// The trusted policy owner installs revisions; new operations load the latest
 /// view, while open handles retain their original immutable view.
+///
+/// ```compile_fail
+/// let _ = acyclic_fs::access::PathTrie::valid_at;
+/// ```
+/// ```compile_fail
+/// let _ = acyclic_fs::access::AccessView::confirms_disclosure;
+/// ```
 pub struct AccessView {
     // Terminal lock: callers never receive a guard. Compilation, allocation,
     // destruction and backend operations run outside it; it acquires no locks.
-    current: RwLock<Arc<PathTrie>>,
+    pub(super) current: RwLock<Arc<PathTrie>>,
     #[cfg(all(not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
     _custody: Option<crate::NativeAllocation>,
 }
@@ -60,26 +67,6 @@ impl AccessView {
             .read()
             .map(|view| Arc::clone(&view))
             .map_err(|_| InvalidPolicy("access view publication failed"))
-    }
-
-    pub(crate) fn confirms_disclosure(
-        &self,
-        selected: &PathTrie,
-        observed: Option<(
-            crate::GenerationId,
-            crate::kernel::MetadataField<crate::ObjectId>,
-        )>,
-        now: u64,
-    ) -> Result<bool, InvalidPolicy> {
-        let current = self
-            .current
-            .read()
-            .map_err(|_| InvalidPolicy("access view publication failed"))?;
-        Ok(std::ptr::eq(current.as_ref(), selected)
-            && observed.is_some_and(|(generation, revision)| {
-                selected.matches_policy_revision(generation, revision)
-            })
-            && selected.valid_at(now))
     }
 
     // Negative control: checking before the publication lock lets a stale

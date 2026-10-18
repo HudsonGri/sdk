@@ -8,6 +8,7 @@
 mod capability;
 mod compilation;
 mod decision;
+mod disclosure;
 #[cfg(test)]
 pub(crate) mod fixtures;
 mod glob;
