@@ -277,6 +277,17 @@ pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestRes
                 return Err(format!("child {path}: expected {expected}, got {actual}").into());
             }
         }
+        if let Some(expected_active) = case["expect"].get("active") {
+            let mut expected_active: Vec<String> = serde_json::from_value(expected_active.clone())?;
+            expected_active.sort();
+            let active = active_children(expected, &outputs)?;
+            if active != expected_active {
+                return Err(format!(
+                    "active children: expected {expected_active:?}, got {active:?}"
+                )
+                .into());
+            }
+        }
     }
     for (name, attempts) in &recording.attempts {
         let turns = case["models"].get(name).or_else(|| case.get("turns"));
@@ -302,6 +313,106 @@ pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestRes
         }
     }
     Ok(())
+}
+
+fn active_children(
+    expected_files: &serde_json::Map<String, Value>,
+    outputs: &BTreeMap<String, Value>,
+) -> TestResult<Vec<String>> {
+    use acyclic_harness::task_volume::{ChildFile, ChildState, ChildStatus};
+    use std::collections::BTreeSet;
+    let listed = outputs
+        .get("binary_active_list")
+        .ok_or("missing shipped child listing")?;
+    if listed["success"] != true {
+        return Err("shipped child listing failed".into());
+    }
+    let mut statuses = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    for line in listed["stdout"]
+        .as_str()
+        .ok_or("child listing omitted stdout")?
+        .lines()
+    {
+        let path = line
+            .strip_prefix(".volumes/")
+            .ok_or("child listing escaped its volume")?;
+        let key = FileKey::parse(path)?;
+        if !paths.insert(path.to_owned()) {
+            return Err("child listing repeated a file".into());
+        }
+        match key {
+            FileKey::Child {
+                file: ChildFile::Status,
+                ..
+            } => {
+                statuses.insert(path.to_owned());
+            }
+            FileKey::Child { .. } => {}
+            _ => return Err("child listing contained another namespace".into()),
+        }
+    }
+    let known: BTreeSet<_> = expected_files
+        .keys()
+        .filter(|path| path.ends_with("/status.json"))
+        .cloned()
+        .collect();
+    if known != statuses {
+        return Err(format!(
+            "child status membership differs: expected {known:?}, got {statuses:?}"
+        )
+        .into());
+    }
+    let mut active = Vec::new();
+    for (index, path) in expected_files.keys().enumerate() {
+        if !statuses.contains(path) {
+            continue;
+        }
+        let result = outputs
+            .get(&format!("binary_audit_{index}"))
+            .ok_or("missing child status read")?;
+        let status = ChildStatus::parse(
+            result["stdout"]
+                .as_str()
+                .ok_or("child status omitted stdout")?
+                .as_bytes(),
+        )?;
+        if !status.settled || !matches!(status.state, ChildState::Cancelled | ChildState::Archived)
+        {
+            let FileKey::Child { reference, .. } = FileKey::parse(path)? else {
+                return Err("invalid child status path".into());
+            };
+            active.push(reference.as_str().to_owned());
+        }
+    }
+    active.sort();
+    Ok(active)
+}
+
+#[cfg(test)]
+mod active_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn active_child_oracle_checks_lifecycle_and_complete_membership(name in "[a-z]{1,12}", state in 0usize..5) {
+            let state_name = ["Running", "Paused", "Interrupted", "Cancelled", "Archived"][state];
+            let path = format!("agents/{name}/status.json");
+            let expected = serde_json::Map::from_iter([(path.clone(), json!({"state":state_name}))]);
+            let status = json!({"task":acyclic_harness::TaskId::new(),"state":state_name,"settled":true,"inputs":1});
+            let mut outputs = BTreeMap::from([
+                ("binary_active_list".into(), json!({"success":true,"stdout":format!(".volumes/{path}\n")})),
+                ("binary_audit_0".into(), json!({"success":true,"stdout":serde_json::to_string(&status)?})),
+            ]);
+            let actual = active_children(&expected, &outputs).map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(actual, if state < 3 { vec![name.clone()] } else { Vec::new() });
+            outputs.get_mut("binary_active_list").unwrap()["stdout"] = "".into();
+            prop_assert!(active_children(&expected, &outputs).is_err(), "lost child membership passed");
+            outputs.get_mut("binary_active_list").unwrap()["stdout"] = format!(".volumes/{path}\n.volumes/agents/extra/status.json\n").into();
+            prop_assert!(active_children(&expected, &outputs).is_err(), "extra child membership passed");
+        }
+    }
 }
 
 pub fn files(case: &Value, workspace: &Path) -> TestResult {

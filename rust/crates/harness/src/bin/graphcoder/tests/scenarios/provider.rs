@@ -33,6 +33,7 @@ struct Script {
     prepared: bool,
     audit: Value,
     audit_sent: bool,
+    list_active: bool,
     audit_requests: Vec<Value>,
     attempts: usize,
 }
@@ -60,6 +61,7 @@ impl Script {
             prepared: false,
             audit: Value::Null,
             audit_sent: false,
+            list_active: false,
             audit_requests: Vec::new(),
             attempts: 0,
         }
@@ -86,10 +88,11 @@ impl Script {
         }
         if self.turns.len() == 1
             && self.turns[0].is_string()
-            && self
-                .audit
-                .as_object()
-                .is_some_and(|files| !files.is_empty())
+            && (self.list_active
+                || self
+                    .audit
+                    .as_object()
+                    .is_some_and(|files| !files.is_empty()))
         {
             if !self.audit_sent {
                 self.audit_sent = true;
@@ -97,6 +100,12 @@ impl Script {
                 let mut events: Vec<_> = self.audit.as_object().ok_or("audit files missing")?.keys().enumerate()
                     .map(|(index, path)| json!({"type":"event","kind":"tool_call","call_id":format!("binary_audit_{index}"),
                         "name":"fs","arguments":{"command":format!("cat .volumes/{path}")}})).collect();
+                if self.list_active {
+                    events.push(
+                        json!({"type":"event","kind":"tool_call","call_id":"binary_active_list",
+                        "name":"fs","arguments":{"command":"ls .volumes/agents"}}),
+                    );
+                }
                 events.push(json!({"type":"event","kind":"completed","metadata":null}));
                 return wire::encode(&json!(events), protocol);
             }
@@ -197,7 +206,11 @@ pub async fn start(case: &Value, protocol: &str) -> TestResult<Provider> {
         scripts.insert("parent".into(), Script::new(turns.clone()));
     }
     if let Some(script) = scripts.get_mut("parent") {
-        script.audit = case["expect"]["task_files"].clone();
+        script.audit = case["expect"]
+            .get("task_files")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        script.list_active = case["expect"].get("active").is_some();
     }
     let actor = tokio::spawn(async move {
         let mut errors = Vec::new();
