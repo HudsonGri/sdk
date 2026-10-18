@@ -167,6 +167,7 @@ fn run<F: Format>(
     let _restore = Restore;
     let token = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token).unwrap();
+    let retained_before = original.live_allocation_bytes();
     let mut accounting = if native {
         KernelAccounting::native(&original, &token)
     } else {
@@ -205,13 +206,7 @@ fn run<F: Format>(
     eprintln!(
         "borrowed leaf diff baseline={baseline} native={native}: {allocations:?}, {elapsed:?}"
     );
-    assert_eq!(
-        original
-            .allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))
-            .unwrap()
-            .0,
-        0
-    );
+    assert_eq!(original.live_allocation_bytes(), retained_before);
     (output, allocations, work)
 }
 
