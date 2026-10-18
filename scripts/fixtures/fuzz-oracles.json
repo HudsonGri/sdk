@@ -76,5 +76,6 @@
   "bad_path_oracle_module.rs": "#[path = \"replacement.rs\"] mod fuzz_support; fuzz_support::round_trip(&input, read(&wire));",
   "bad_generated_buffer_context.rs": "let wire = encode(&input); if let Some(value) = fuzz_input.parse_with((&wire,), |_, (wire,)| Model::decode(wire)) { assert_eq!(value, input); }",
   "bad_implicit_raw_parser.rs": "let fuzz_input = Facade::input(&wire); if let Some(value) = fuzz_input.parse(facade::read) { assert_eq!(value, input); }",
-  "bad_implicit_optional_parser.rs": "let fuzz_input = Facade::input(&wire); if let Some(value) = fuzz_input.optional(facade::read) { assert_eq!(value, input); }"
+  "bad_implicit_optional_parser.rs": "let fuzz_input = Facade::input(&wire); if let Some(value) = fuzz_input.optional(facade::read) { assert_eq!(value, input); }",
+  "bad_macro_pattern_parameter.rs": "macro_rules! guarded { ($pattern:pat, $result:expr) => { if let $pattern = $result { assert_eq!(value, input); } }; } guarded!(Ok(value), facade::read(&wire));"
 }

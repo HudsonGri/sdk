@@ -111,11 +111,24 @@ export function fuzzOracleViolations(file, source) {
   const tokens = rustTokens(source), errors = [];
   const report = (token, reason) => errors.push(
     file + ':' + token.line + ': fuzz round-trip oracle: ' + reason);
-  const hasResult = (start, end) => tokens.slice(start, end).some(t => t.text === 'Ok' || t.text === 'Err');
+  const hasResult = (start, end) => tokens.slice(start, end)
+    .some(t => t.text === 'Ok' || t.text === 'Err' || t.text === '$');
   const helpers = [];
   const localMacros = new Set();
+  const macroRules = new Set();
   for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].text === 'macro_rules' && tokens[i + 1]?.text === '!') localMacros.add(tokens[i + 2]?.text);
+    if (tokens[i].text === 'macro_rules' && tokens[i + 1]?.text === '!') {
+      localMacros.add(tokens[i + 2]?.text);
+      const end = tokens[i + 3]?.end;
+      for (let rule = i + 4; rule < end;) {
+        if ([';', ','].includes(tokens[rule].text)) { rule++; continue; }
+        const arrow = tokens[rule]?.end + 1;
+        if (tokens[arrow]?.text !== '=>' || tokens[arrow + 1]?.end === undefined)
+          throw new Error('unsupported macro rule');
+        macroRules.add(arrow);
+        rule = tokens[arrow + 1].end + 1;
+      }
+    }
   }
   const macros = new Set(['assert', 'assert_eq', 'assert_ne', 'debug_assert', 'debug_assert_eq', 'debug_assert_ne',
     'panic', 'unreachable', 'unimplemented', 'todo', 'vec', 'format', 'format_args', 'write', 'writeln',
@@ -220,7 +233,7 @@ export function fuzzOracleViolations(file, source) {
       if (hasResult(i + 1, end) && !nonCodecGuard(tokens, end + 1))
         report(token, 'Result patterns must stay in fuzz_support');
     }
-    if (token.text === '=>') {
+    if (token.text === '=>' && !macroRules.has(i)) {
       let start = i - 1;
       while (start >= 0 && ![',', '{', '}', '=>'].includes(tokens[start].text)) {
         if (tokens[start].begin !== undefined) start = tokens[start].begin;
