@@ -112,16 +112,22 @@ impl Drop for Active {
 impl Schedule {
     /// Creates the push receiver used by a deterministic test driver.
     pub fn new() -> (Self, mpsc::UnboundedReceiver<Boundary>) {
-        Self::with_seed(None)
+        Self::with_seed(None, true)
     }
 
     /// Creates a simulation scope with reproducible entropy and owned-task polling.
     /// Neither changes ordinary execution outside the scope and its descendants.
     pub fn seeded(seed: u64) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
-        Self::with_seed(Some(seed))
+        Self::with_seed(Some(seed), true)
     }
 
-    fn with_seed(seed: Option<u64>) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
+    /// Negative control: erase scoped entropy while preserving the exact same
+    /// executor, clock, owned work and physical I/O completion boundaries.
+    pub fn without_entropy(seed: u64) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
+        Self::with_seed(Some(seed), false)
+    }
+
+    fn with_seed(seed: Option<u64>, entropy: bool) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
         let (events, receiver) = mpsc::unbounded_channel();
         (
             Self(Arc::new(Inner {
@@ -130,7 +136,9 @@ impl Schedule {
                     wall: seed.map(|_| clock::Wall::new()),
                     ..State::default()
                 }),
-                entropy: seed.map(|seed| Arc::new(entropy::Source::new(seed))),
+                entropy: seed
+                    .filter(|_| entropy)
+                    .map(|seed| Arc::new(entropy::Source::new(seed))),
                 executor: seed.map(executor::Executor::new),
             })),
             receiver,

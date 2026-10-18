@@ -272,8 +272,12 @@ fn scenario<'a>(
 
 fn replay(seed: u64, erase_source: bool, headless: bool) -> EntryFuture<'static, Result<Trace>> {
     entry(async move {
-        // Negative control removes seeded execution, preserving real barriers.
-        let mut driver = driver::Driver::new((!erase_source).then_some(seed), None);
+        // Negative control erases entropy without changing polling or time.
+        let mut driver = if erase_source {
+            driver::Driver::without_entropy(seed)
+        } else {
+            driver::Driver::new(seed, None)
+        };
         let directory = tempfile::tempdir().map_err(storage)?;
         let result = driver.run(scenario(directory.path(), headless)).await;
         let driver::Outcome::Completed(result) = result else {

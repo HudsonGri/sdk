@@ -62,6 +62,28 @@ mod tests {
         assert_eq!(bytes, [7; 32]);
     }
 
+    #[test]
+    fn entropy_mutant_preserves_seeded_polling_and_time() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            tokio::time::pause();
+            let (schedule, _) = Schedule::without_entropy(71);
+            assert!(schedule.0.executor.is_some());
+            schedule
+                .scope(async {
+                    let mut bytes = [7; 32];
+                    assert!(!fill_seeded(&mut bytes));
+                    assert_eq!(bytes, [7; 32]);
+                    assert_eq!(unix_millis(), Some(1_700_000_000_000));
+                })
+                .await;
+            assert!(!schedule.polls().is_empty());
+        });
+    }
+
     fn scoped_sources(forget_host: bool) -> std::io::Result<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
