@@ -105,14 +105,26 @@ fn paired(k: usize) -> [(u64, AllocationInfo); 2] {
     [before.0, after.0]
 }
 
+fn assert_same_cost(actual: (u64, AllocationInfo), expected: (u64, AllocationInfo)) {
+    assert_eq!(actual.0, expected.0, "work differs");
+    assert_eq!(actual.1.count_total, expected.1.count_total);
+    assert_eq!(actual.1.bytes_total, expected.1.bytes_total);
+}
+
+#[test]
+#[should_panic(expected = "work differs")]
+fn negative_control_replaying_the_prefix_fails_the_flat_cost_assertion() {
+    let [old8, _] = paired(8);
+    let [old24, _] = paired(24);
+    assert_same_cost(old24, old8);
+}
+
 #[test]
 fn reopening_observers_has_exact_flat_suffix_cost() {
     let [old8, new8] = paired(8);
     for k in [16, 24] {
         let [old, new] = paired(k);
-        assert_eq!(new.0, new8.0);
-        assert_eq!(new.1.count_total, new8.1.count_total);
-        assert_eq!(new.1.bytes_total, new8.1.bytes_total);
+        assert_same_cost(new, new8);
         // Adding the old replay back must fail those same equality assertions.
         assert_ne!(old.0, old8.0);
         assert_ne!(old.1.count_total, old8.1.count_total);
