@@ -7,8 +7,39 @@ use crate::{
     runtime::TaskStateProvider,
 };
 
+#[cfg(feature = "test-support")]
+use acyclic_native_runtime::testing::spawn;
+#[cfg(not(feature = "test-support"))]
+use tokio::spawn;
+
 use crate::goal::request_head as record;
 use record::Turn;
+
+/// Where this thread's latest head publication stands: before its request
+/// write, inside it (where the head becomes durable at an await the caller
+/// cannot see), written but not yet admitted, or admitted. Cancellation
+/// sweeps classify awaits by it.
+#[cfg(test)]
+pub(super) mod publication_phase {
+    use std::cell::Cell;
+
+    pub(in crate::local) const BEFORE: u8 = 0;
+    pub(in crate::local) const WRITING: u8 = 1;
+    pub(in crate::local) const WRITTEN: u8 = 2;
+    pub(in crate::local) const ADMITTED: u8 = 3;
+
+    thread_local! {
+        static PHASE: Cell<u8> = const { Cell::new(BEFORE) };
+    }
+
+    pub(in crate::local) fn set(phase: u8) {
+        PHASE.set(phase);
+    }
+
+    pub(in crate::local) fn get() -> u8 {
+        PHASE.get()
+    }
+}
 mod goal;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;
@@ -50,6 +81,8 @@ impl LocalHarness {
     }
 
     async fn current_turn(&self) -> Result<(Option<Turn>, GenerationRef)> {
+        // A cancelled publisher's HEAD write is settled before HEAD is read.
+        drop(lock_owned(StateArc::clone(&self.publication)).await);
         let generation = self
             .files
             .resolve(
@@ -146,25 +179,20 @@ impl LocalHarness {
         }
         // Request publication precedes admission. Cancellation/lost acknowledgements
         // retain the exact input so resume can finish admission without re-reading GOAL.md.
+        #[cfg(test)]
+        publication_phase::set(publication_phase::WRITING);
         self.write_turn(
             &turn,
             &generation,
             &crate::IdempotencyKey::new(format!("local-turn:{}", turn.operation))?,
         )
         .await?;
-        self.owned(turn.operation, admit(&turn)).await
-    }
-
-    /// Admits under a submission claim that a cancelled or refused admission releases.
-    async fn owned(
-        &self,
-        operation: OperationId,
-        admit: impl Future<Output = Result<Admission<RuntimeTask<crate::executor::TurnOutput>>>>,
-    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        let submission = self.drivers.submit(operation);
-        let admission = admit.await?;
+        #[cfg(test)]
+        publication_phase::set(publication_phase::WRITTEN);
+        let admission = admit(&turn).await?;
+        #[cfg(test)]
         if matches!(admission, Admission::Accepted(_)) {
-            submission.accepted();
+            publication_phase::set(publication_phase::ADMITTED);
         }
         Ok(admission)
     }
@@ -184,21 +212,37 @@ impl LocalHarness {
             u64::MAX,
             &mut None,
         )?;
-        self.files
-            .put_content(
-                &self.journal,
-                &grant,
-                HEAD,
-                &bytes,
-                "application/json",
-                "current.json",
-                self.limits.file_bytes,
-                key,
-                Some(generation),
-                None,
-            )
-            .await?;
-        Ok(())
+        let (files, journal, limit) = (
+            Arc::clone(&self.files),
+            self.journal.clone(),
+            self.limits.file_bytes,
+        );
+        let (key, generation) = (key.clone(), generation.clone());
+        // The write is owned apart from its publisher, holding `publication`
+        // until it lands or fails. A publisher cancelled mid-write releases
+        // the admission gate, and the next holder's HEAD read waits here
+        // instead of racing the write it abandoned.
+        let held = lock_owned(StateArc::clone(&self.publication)).await;
+        spawn(async move {
+            let _held = held;
+            files
+                .put_content(
+                    &journal,
+                    &grant,
+                    HEAD,
+                    &bytes,
+                    "application/json",
+                    "current.json",
+                    limit,
+                    &key,
+                    Some(&generation),
+                    None,
+                )
+                .await
+                .map(drop)
+        })
+        .await
+        .map_err(storage)?
     }
 
     pub(super) async fn recover_unadmitted_turn(
@@ -232,194 +276,217 @@ impl LocalHarness {
         &self,
         operation: OperationId,
         prompt: &str,
-    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+    ) -> Result<(
+        Admission<RuntimeTask<crate::executor::TurnOutput>>,
+        Option<super::orphans::Driving<'_>>,
+    )> {
         serialized(&self.admission, async || {
-            if let Some((task, _)) = self
-                .runtime
-                .harness()
-                .reconcile_admission(operation)
-                .await?
-            {
-                // Ordinary retries retain the same immutable request bytes too.
-                self.stage_turn(operation, prompt).await?;
-                let definition = self
-                    .runtime
-                    .harness()
-                    .task::<serde_json::Value, crate::executor::TurnOutput>(
-                        "acyclic.stock_turn@1",
-                    )?;
-                return Ok(Admission::Accepted(
-                    self.runtime.harness().attach(task, &definition).await?,
-                ));
-            }
-            let (current, _) = self.current_turn().await?;
-            if let Some(turn) = &current
-                && turn.operation == operation
-            {
-                return self.owned(operation, self.admit_retained(turn)).await;
-            }
-            let mut terminal = self.head_is_terminal(current.as_ref()).await?;
-            // A head no caller in this process drives cannot settle on its own.
-            if let Some(turn) = &current
-                && !terminal
-                && self.drivers.orphaned(turn.operation)
-            {
-                self.supersede(turn.operation).await?;
-                terminal = self.head_is_terminal(current.as_ref()).await?;
-            }
-            if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
-                return Ok(Admission::Rejected {
-                    reason: "local agent already has an admitted turn".into(),
-                });
-            }
-            let (receive, model) = self.stage_turn(operation, prompt).await?;
-            self.publish_turn(
-                Turn {
-                    operation,
-                    root: operation,
-                    automatic_turns: 0,
-                    goal_revision: None,
-                    receive,
-                    model,
-                },
-                current.as_ref().map(|turn| turn.operation),
-            )
-            .await
+            // Every accepted admission of this operation, retries included,
+            // hands this claim to its caller; refusal or cancellation drops it.
+            let claim = self.drivers.drive(operation);
+            let admission = self.admit_head(operation, prompt).await?;
+            let accepted = matches!(admission, Admission::Accepted(_));
+            Ok((admission, accepted.then_some(claim)))
         })
         .await
     }
 
+    // The caller holds the admission gate and a claim on `operation`.
+    async fn admit_head(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        if let Some((task, _)) = self
+            .runtime
+            .harness()
+            .reconcile_admission(operation)
+            .await?
+        {
+            // Ordinary retries retain the same immutable request bytes too.
+            self.stage_turn(operation, prompt).await?;
+            let definition = self
+                .runtime
+                .harness()
+                .task::<serde_json::Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
+            return Ok(Admission::Accepted(
+                self.runtime.harness().attach(task, &definition).await?,
+            ));
+        }
+        let (current, _) = self.current_turn().await?;
+        if let Some(turn) = &current
+            && turn.operation == operation
+        {
+            return self.admit_retained(turn).await;
+        }
+        let mut terminal = self.head_is_terminal(current.as_ref()).await?;
+        // A head no caller in this process drives cannot settle on its own.
+        if let Some(turn) = &current
+            && !terminal
+            && self.drivers.orphaned(turn.operation)
+        {
+            self.supersede(turn.operation).await?;
+            terminal = self.head_is_terminal(current.as_ref()).await?;
+        }
+        if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
+            return Ok(Admission::Rejected {
+                reason: "local agent already has an admitted turn".into(),
+            });
+        }
+        let (receive, model) = self.stage_turn(operation, prompt).await?;
+        self.publish_turn(
+            Turn {
+                operation,
+                root: operation,
+                automatic_turns: 0,
+                goal_revision: None,
+                receive,
+                model,
+            },
+            current.as_ref().map(|turn| turn.operation),
+        )
+        .await
+    }
+
+    /// Publishes and admits the goal turn that follows a settled one, handing
+    /// its caller a claim taken in the same hold of the admission gate.
     pub(super) async fn continue_goal(
         &self,
         task: TaskId,
         root: OperationId,
-    ) -> Result<Option<TaskId>> {
+    ) -> Result<Option<(TaskId, super::orphans::Driving<'_>)>> {
         serialized(&self.admission, async || {
-            let (current, generation) = self.current_turn().await?;
-            let Some(current) = current else {
-                return Ok(None);
-            };
-            let settled = OperationId::from_bytes(task.into_bytes());
-            if current.operation != settled {
-                // Replaying an older settle follows its already-published ordinary
-                // request instead of consuming another continuation allowance.
-                if current.root == root {
-                    return admitted_task(self.admit_retained(&current).await?).map(Some);
-                }
-                return Ok(None);
-            }
-            let Some(policy) = self.goal_continuations else {
-                return Ok(None);
-            };
-            if !can_admit(
-                Some(current.operation),
-                Some(settled),
-                self.head_is_terminal(Some(&current)).await?,
-            ) {
-                return Ok(None);
-            }
-            let operation = crate::goal::continuation_operation(
-                crate::runtime::task_id_for_admission(current.root),
-                settled,
-            );
-            // A staged model input is already an immutable choice. Recover it
-            // before reading a possibly edited, completed or removed GOAL.md.
-            if let Some(inputs) = self.recover_turn_inputs(operation).await? {
-                let count = current
-                    .automatic_turns
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
-                return admitted_task(
-                    self.publish_turn(
-                        Turn {
-                            operation,
-                            root: current.root,
-                            automatic_turns: count,
-                            goal_revision: None,
-                            receive: inputs.0,
-                            model: inputs.1,
-                        },
-                        Some(current.operation),
-                    )
-                    .await?,
+            let next = self.next_goal_turn(task, root).await?;
+            Ok(next.map(|next| {
+                (
+                    next,
+                    self.drivers
+                        .drive(OperationId::from_bytes(next.into_bytes())),
                 )
-                .map(Some);
+            }))
+        })
+        .await
+    }
+
+    // The caller holds the admission gate.
+    async fn next_goal_turn(&self, task: TaskId, root: OperationId) -> Result<Option<TaskId>> {
+        let (current, generation) = self.current_turn().await?;
+        let Some(current) = current else {
+            return Ok(None);
+        };
+        let settled = OperationId::from_bytes(task.into_bytes());
+        if current.operation != settled {
+            // Replaying an older settle follows its already-published ordinary
+            // request instead of consuming another continuation allowance.
+            if current.root == root {
+                return admitted_task(self.admit_retained(&current).await?).map(Some);
             }
-            let (source, bytes, publication) = match self
-                .files
-                .read_private_path_indexed(
-                    &self.scratch,
-                    &self.read_grant(&self.scratch)?,
-                    "GOAL.md",
-                    None,
-                    self.limits.file_bytes,
-                    None,
+            return Ok(None);
+        }
+        let Some(policy) = self.goal_continuations else {
+            return Ok(None);
+        };
+        if !can_admit(
+            Some(current.operation),
+            Some(settled),
+            self.head_is_terminal(Some(&current)).await?,
+        ) {
+            return Ok(None);
+        }
+        let operation = crate::goal::continuation_operation(
+            crate::runtime::task_id_for_admission(current.root),
+            settled,
+        );
+        // A staged model input is already an immutable choice. Recover it
+        // before reading a possibly edited, completed or removed GOAL.md.
+        if let Some(inputs) = self.recover_turn_inputs(operation).await? {
+            let count = current
+                .automatic_turns
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
+            return admitted_task(
+                self.publish_turn(
+                    Turn {
+                        operation,
+                        root: current.root,
+                        automatic_turns: count,
+                        goal_revision: None,
+                        receive: inputs.0,
+                        model: inputs.1,
+                    },
+                    Some(current.operation),
                 )
-                .await
-            {
-                Ok(file) => file,
-                Err(Error::NotFound(_)) => return Ok(None),
-                Err(error) => return Err(error),
-            };
-            let goal = GoalView::from_file(source, &bytes, self.limits.file_bytes)?;
-            if goal.status == GoalStatus::Blocked {
-                self.record_goal_revision(&current, &generation, &goal.source, publication)
-                    .await?;
-            }
-            let unreachable = GoalBlockedReason::TaskViewUnreachable;
-            if goal.status == GoalStatus::Blocked
-                && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
-            {
-                return Err(Error::GoalBlocked(unreachable));
-            }
-            match policy.on_settle(
-                &goal,
-                crate::runtime::task_id_for_admission(current.root),
-                settled,
-                current.automatic_turns,
-            ) {
-                None => Ok(None),
-                Some(GoalContinuation::Continue(operation)) => {
-                    let Some(path) = self.goal_task_path() else {
-                        let contents = goal
-                            .status_contents(GoalStatus::Blocked, Some(&unreachable.to_string()))?;
-                        let blocked = self.block_goal(&goal, settled, &contents).await?;
-                        self.record_goal_revision(
-                            &current,
-                            &generation,
-                            &blocked.0,
-                            Some(blocked.1),
-                        )
-                        .await?;
-                        return Err(Error::GoalBlocked(unreachable));
-                    };
-                    let prompt =
-                        format!("Continue the active goal in {path}.\n\n{}", goal.markdown);
-                    let (receive, model) = self.stage_turn(operation, &prompt).await?;
-                    let admission = self
-                        .publish_turn(
-                            Turn {
-                                operation,
-                                root: current.root,
-                                automatic_turns: current.automatic_turns + 1,
-                                goal_revision: publication,
-                                receive,
-                                model,
-                            },
-                            Some(current.operation),
-                        )
-                        .await?;
-                    admitted_task(admission).map(Some)
-                }
-                Some(GoalContinuation::Block(contents)) => {
+                .await?,
+            )
+            .map(Some);
+        }
+        let (source, bytes, publication) = match self
+            .files
+            .read_private_path_indexed(
+                &self.scratch,
+                &self.read_grant(&self.scratch)?,
+                "GOAL.md",
+                None,
+                self.limits.file_bytes,
+                None,
+            )
+            .await
+        {
+            Ok(file) => file,
+            Err(Error::NotFound(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let goal = GoalView::from_file(source, &bytes, self.limits.file_bytes)?;
+        if goal.status == GoalStatus::Blocked {
+            self.record_goal_revision(&current, &generation, &goal.source, publication)
+                .await?;
+        }
+        let unreachable = GoalBlockedReason::TaskViewUnreachable;
+        if goal.status == GoalStatus::Blocked
+            && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
+        {
+            return Err(Error::GoalBlocked(unreachable));
+        }
+        match policy.on_settle(
+            &goal,
+            crate::runtime::task_id_for_admission(current.root),
+            settled,
+            current.automatic_turns,
+        ) {
+            None => Ok(None),
+            Some(GoalContinuation::Continue(operation)) => {
+                let Some(path) = self.goal_task_path() else {
+                    let contents =
+                        goal.status_contents(GoalStatus::Blocked, Some(&unreachable.to_string()))?;
                     let blocked = self.block_goal(&goal, settled, &contents).await?;
                     self.record_goal_revision(&current, &generation, &blocked.0, Some(blocked.1))
                         .await?;
-                    Ok(None)
-                }
+                    return Err(Error::GoalBlocked(unreachable));
+                };
+                let prompt = format!("Continue the active goal in {path}.\n\n{}", goal.markdown);
+                let (receive, model) = self.stage_turn(operation, &prompt).await?;
+                let admission = self
+                    .publish_turn(
+                        Turn {
+                            operation,
+                            root: current.root,
+                            automatic_turns: current.automatic_turns + 1,
+                            goal_revision: publication,
+                            receive,
+                            model,
+                        },
+                        Some(current.operation),
+                    )
+                    .await?;
+                admitted_task(admission).map(Some)
             }
-        })
-        .await
+            Some(GoalContinuation::Block(contents)) => {
+                let blocked = self.block_goal(&goal, settled, &contents).await?;
+                self.record_goal_revision(&current, &generation, &blocked.0, Some(blocked.1))
+                    .await?;
+                Ok(None)
+            }
+        }
     }
 
     pub(super) async fn loop_root(&self, task: TaskId) -> Result<OperationId> {

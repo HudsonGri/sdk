@@ -87,6 +87,9 @@ pub struct LocalHarness {
     // Outermost lock: admission -> filesystem/provider locks. Never held during
     // model/tool execution, and provider callbacks never acquire admission.
     admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
+    // Leaf lock owned by the one HEAD write in flight. That write outlives a
+    // cancelled publisher, so every HEAD read waits for it first.
+    publication: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     // Leaf lock; claims and supersession hold `admission` first.
     drivers: orphans::Drivers,
     #[cfg(feature = "native-execution")]
@@ -328,6 +331,7 @@ impl LocalHarness {
                 mcp_diagnostics: installation.diagnostics,
                 goal_continuations: config.goal_continuations,
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
+                publication: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 drivers: orphans::Drivers::new(),
                 #[cfg(feature = "native-execution")]
                 workspace,

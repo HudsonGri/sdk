@@ -269,6 +269,7 @@ impl Fixture {
                 },
             ),
             admission: StateArc::new(Mutex::new(())),
+            publication: StateArc::new(Mutex::new(())),
             drivers: super::super::orphans::Drivers::new(),
             #[cfg(feature = "native-execution")]
             workspace: None,
@@ -774,6 +775,49 @@ fn new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch() 
 #[test]
 fn new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver() -> Result<()> {
     sweep(&[Scenario::EffectAndContinuation], Recovery::SameHost)
+}
+
+/// The supersession sweep's kill, recovered without orphan supersession,
+/// bricks admission. The kill is at the turn's tool dispatch, a durable cut
+/// that leaves the head interrupted mid-effect; the same cut recovers in the
+/// positive sweep (`new_prompt_after_every_cut_...`).
+#[test]
+fn negative_control_a_head_never_orphaned_bricks_the_next_prompt() -> Result<()> {
+    let scenario = Scenario::EffectAndContinuation;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(storage)?;
+    let seed = runtime.block_on(Seed::new(scenario))?;
+    let baseline = runtime
+        .block_on(Box::pin(case(scenario, None, &[], Some(&seed))))?
+        .points;
+    let cut = 1 + baseline
+        .iter()
+        .position(|point| *point == "tool:dispatch")
+        .expect("the scenario dispatches a tool");
+    let replay = || {
+        runtime.block_on(Box::pin(case_with(
+            scenario,
+            Some(cut),
+            &baseline,
+            Some(&seed),
+            Recovery::Supersede,
+        )))
+    };
+    assert!(
+        replay()?.interrupted,
+        "the tool dispatch cut left no interrupted head"
+    );
+    let _broken = super::super::orphans::NeverOrphaned::enter();
+    let Err(failure) = replay() else {
+        panic!("an unsettled head did not brick admission");
+    };
+    assert!(
+        format!("{failure:?}").contains("replacement prompt was not admitted"),
+        "{failure:?}"
+    );
+    Ok(())
 }
 
 #[test]

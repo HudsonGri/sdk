@@ -13,11 +13,11 @@ use std::collections::BTreeMap;
 const RECONCILE_WAIT_MILLIS: u32 = 30_000;
 const RECONCILE_COMMANDS: u32 = 32;
 
+// Every claim is a live `Driving` value: ownership exists only while a value
+// that its drop releases holds it.
 #[derive(Default)]
 struct State {
     active: BTreeMap<OperationId, usize>,
-    // A freshly published head belongs to its submitter until it drives it.
-    submitted: Option<OperationId>,
 }
 
 /// In-process ownership of admitted turns.
@@ -34,23 +34,11 @@ impl Drivers {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Claims a head for its submitter. The caller holds the admission gate.
-    pub(super) fn submit(&self, operation: OperationId) -> Submission<'_> {
-        self.state().submitted = Some(operation);
-        Submission {
-            drivers: self,
-            operation,
-            accepted: false,
-        }
-    }
-
-    /// Callers claim under the admission gate, which also serializes supersession.
+    /// Claims a head. Callers claim under the admission gate, which also
+    /// serializes supersession, and carry the claim from admission to driving.
     pub(super) fn drive(&self, operation: OperationId) -> Driving<'_> {
         let mut state = self.state();
         *state.active.entry(operation).or_default() += 1;
-        if state.submitted == Some(operation) {
-            state.submitted = None;
-        }
         Driving {
             drivers: self,
             operation,
@@ -58,15 +46,50 @@ impl Drivers {
     }
 
     pub(super) fn orphaned(&self, operation: OperationId) -> bool {
-        let state = self.state();
-        !state.active.contains_key(&operation) && state.submitted != Some(operation)
+        #[cfg(test)]
+        if NEVER_ORPHANED.with(std::cell::Cell::get) {
+            return false;
+        }
+        !self.state().active.contains_key(&operation)
     }
 }
 
-/// Releases one driver claim, including when its future is dropped mid-turn.
+#[cfg(test)]
+thread_local! {
+    static NEVER_ORPHANED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Negative control: while entered, no head on this thread is ever orphaned,
+/// as before unsettled heads were superseded.
+#[cfg(test)]
+pub(super) struct NeverOrphaned(());
+
+#[cfg(test)]
+impl NeverOrphaned {
+    pub(super) fn enter() -> Self {
+        NEVER_ORPHANED.with(|flag| flag.set(true));
+        Self(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for NeverOrphaned {
+    fn drop(&mut self) {
+        NEVER_ORPHANED.with(|flag| flag.set(false));
+    }
+}
+
+/// One claim on a head, released when dropped, including when its future is
+/// cancelled at any await between admission and the end of driving.
 pub(super) struct Driving<'a> {
     drivers: &'a Drivers,
     operation: OperationId,
+}
+
+impl Driving<'_> {
+    pub(super) fn operation(&self) -> OperationId {
+        self.operation
+    }
 }
 
 impl Drop for Driving<'_> {
@@ -77,30 +100,6 @@ impl Drop for Driving<'_> {
             if *count == 0 {
                 state.active.remove(&self.operation);
             }
-        }
-    }
-}
-
-/// A submitter's claim on its head. Unless admission is accepted, dropping it,
-/// including by cancelling the submission mid-await, leaves the head orphaned
-/// for the next prompt. An accepted claim lasts until a driver takes the head.
-pub(super) struct Submission<'a> {
-    drivers: &'a Drivers,
-    operation: OperationId,
-    accepted: bool,
-}
-
-impl Submission<'_> {
-    pub(super) fn accepted(mut self) {
-        self.accepted = true;
-    }
-}
-
-impl Drop for Submission<'_> {
-    fn drop(&mut self) {
-        let mut state = self.drivers.state();
-        if !self.accepted && state.submitted == Some(self.operation) {
-            state.submitted = None;
         }
     }
 }
@@ -215,21 +214,24 @@ mod model {
         assert_eq!(outcome.1, 1, "driven turn was superseded");
     }
 
-    // The submitter's admission await is cancelled after the head is published.
-    fn cancelled_submission(mark_outlives_cancellation: bool) {
+    // A submitter's claim, taken where admission commits, is carried across
+    // the awaits before driving; the future is cancelled at one of them.
+    fn cancelled_handoff(claim_outlives_cancellation: bool) {
         let gate = StateArc::new(Mutex::new(()));
         let drivers = StateArc::new(Drivers::new());
         let operation = OperationId::from_bytes([1; 16]);
         let submitter = {
             let (gate, drivers) = (gate.clone(), drivers.clone());
             thread::spawn(move || {
-                complete(super::super::admission::serialized(&gate, async || {
-                    let submission = drivers.submit(operation);
-                    thread::yield_now();
-                    if mark_outlives_cancellation {
-                        submission.accepted();
-                    }
-                }))
+                let claim = complete(super::super::admission::serialized(&gate, async || {
+                    drivers.drive(operation)
+                }));
+                thread::yield_now();
+                // The defect: ownership that is not released by the drop
+                // that cancellation performs.
+                if claim_outlives_cancellation {
+                    std::mem::forget(claim);
+                }
             })
         };
         submitter.join().unwrap();
@@ -239,32 +241,70 @@ mod model {
         assert!(after, "cancelled submission kept its head");
     }
 
-    #[test]
-    fn a_cancelled_submission_leaves_its_head_to_the_next_prompt() {
-        loom::model(|| cancelled_submission(false));
-        let failure = std::panic::catch_unwind(|| loom::model(|| cancelled_submission(true)))
-            .expect_err("surviving submission mark negative control did not fail");
+    // A retried admission of the unsettled head hands its claim to driving
+    // while another prompt checks the head for orphans.
+    fn retried_handoff(claim_at_admission: bool) {
+        let gate = StateArc::new(Mutex::new(()));
+        let drivers = StateArc::new(Drivers::new());
+        let operation = OperationId::from_bytes([1; 16]);
+        // (accepted, superseded)
+        let head = StateArc::new(DataMutex::new((false, false)));
+        let retry = {
+            let (gate, drivers, head) = (gate.clone(), drivers.clone(), head.clone());
+            thread::spawn(move || {
+                let claim = complete(super::super::admission::serialized(&gate, async || {
+                    head.lock().unwrap().0 = true;
+                    claim_at_admission.then(|| drivers.drive(operation))
+                }));
+                thread::yield_now();
+                let _driving = match claim {
+                    Some(claim) => claim,
+                    None => complete(super::super::admission::serialized(&gate, async || {
+                        drivers.drive(operation)
+                    })),
+                };
+                thread::yield_now();
+            })
+        };
+        complete(super::super::admission::serialized(&gate, async || {
+            if drivers.orphaned(operation) {
+                let mut head = head.lock().unwrap();
+                head.1 = head.0;
+            }
+        }));
+        retry.join().unwrap();
+        assert!(!head.lock().unwrap().1, "accepted retry was superseded");
+    }
+
+    fn fails_with(model: impl Fn() + Sync + Send + 'static, expected: &str) {
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loom::model(model)))
+            .expect_err("negative control did not fail");
         let message = failure
             .downcast_ref::<String>()
             .map(String::as_str)
             .or_else(|| failure.downcast_ref::<&str>().copied())
             .unwrap_or("");
-        assert!(
-            message.contains("cancelled submission kept its head"),
-            "{message}"
+        assert!(message.contains(expected), "{message}");
+    }
+
+    #[test]
+    fn a_cancelled_submission_leaves_its_head_to_the_next_prompt() {
+        loom::model(|| cancelled_handoff(false));
+        fails_with(
+            || cancelled_handoff(true),
+            "cancelled submission kept its head",
         );
+    }
+
+    #[test]
+    fn a_retried_admission_keeps_its_head_until_driven() {
+        loom::model(|| retried_handoff(true));
+        fails_with(|| retried_handoff(false), "accepted retry was superseded");
     }
 
     #[test]
     fn new_prompt_never_supersedes_a_driven_turn() {
         loom::model(|| race(false));
-        let failure = std::panic::catch_unwind(|| loom::model(|| race(true)))
-            .expect_err("ungated claim negative control did not fail");
-        let message = failure
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| failure.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(message.contains("driven turn was superseded"), "{message}");
+        fails_with(|| race(true), "driven turn was superseded");
     }
 }
