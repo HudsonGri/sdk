@@ -24,15 +24,7 @@ impl Source {
 /// no source is installed. Callers then use their ordinary host entropy.
 /// Task scopes and owned blocking callbacks retain the same source.
 pub fn fill_seeded(bytes: &mut [u8]) -> bool {
-    let source = CURRENT
-        .try_with(|context| {
-            context
-                .as_ref()
-                .and_then(|context| context.schedule.0.entropy.clone())
-        })
-        .ok()
-        .flatten()
-        .or_else(|| BLOCKING_ENTROPY.try_with(Clone::clone).ok().flatten());
+    let source = Context::simulation().and_then(|context| context.schedule.0.entropy.clone());
     if let Some(source) = source {
         source.fill(bytes);
         true

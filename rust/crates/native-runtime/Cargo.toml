@@ -17,7 +17,7 @@ test-support = ["dep:tokio", "dep:blake3"]
 [dependencies]
 bytes.workspace = true
 blake3 = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
+tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros", "time", "test-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
