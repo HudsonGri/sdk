@@ -17,7 +17,11 @@ fn joined<T>(worker: thread::JoinHandle<T>) -> T {
 
 fn checked(scenario: fn(bool), diagnostic: &str) {
     loom::model(move || scenario(false));
-    let failure = std::panic::catch_unwind(|| loom::model(move || scenario(true)))
+    controlled(|| loom::model(move || scenario(true)), diagnostic);
+}
+
+fn controlled(control: impl FnOnce() + std::panic::UnwindSafe, diagnostic: &str) {
+    let failure = std::panic::catch_unwind(control)
         .expect_err("projection negative control escaped the model");
     let message = failure
         .downcast_ref::<String>()
@@ -259,46 +263,54 @@ fn checkout_then_projection_order_cannot_deadlock() {
     assert!(diagnostic.contains("deadlock; threads ="), "{diagnostic}");
 }
 
+fn scope(slot: &StateArc<AsyncMutex<Option<u8>>>, users: &SyncMutex<usize>, broken: bool) {
+    let entered = complete(enter(slot, users, async || Ok(7))).unwrap();
+    assert!(
+        complete(lock_owned(slot.clone())).is_some(),
+        "projection retired under a running command"
+    );
+    if broken {
+        // The faulty exit retires without consulting other scopes.
+        drop(entered);
+        *complete(lock_owned(slot.clone())) = None;
+    } else {
+        complete(leave(slot, users, entered, async |slot| {
+            *slot = None;
+            Ok(())
+        }))
+        .unwrap();
+    }
+}
+
+// Two concurrent scopes: a spawned one and the model's own thread. Every lock
+// is a condition-variable admission, so preemptions are bounded as in the
+// search model; the faulty interleaving needs only one.
 fn scoped_retirement(broken: bool) {
     let slot = StateArc::new(AsyncMutex::new(None));
     let users = StateArc::new(SyncMutex::new(0));
-    let workers: Vec<_> = (0..2)
-        .map(|_| {
-            let (slot, users) = (slot.clone(), users.clone());
-            thread::spawn(move || {
-                let entered = complete(enter(&slot, &users, async || Ok(7))).unwrap();
-                thread::yield_now();
-                assert!(
-                    complete(lock_owned(slot.clone())).is_some(),
-                    "projection retired under a running command"
-                );
-                if broken {
-                    // The faulty exit retires without consulting other scopes.
-                    drop(entered);
-                    *complete(lock_owned(slot)) = None;
-                } else {
-                    complete(leave(&slot, &users, entered, async |slot| {
-                        *slot = None;
-                        Ok(())
-                    }))
-                    .unwrap();
-                }
-            })
-        })
-        .collect();
-    for worker in workers {
-        joined(worker);
-    }
+    let worker = {
+        let (slot, users) = (slot.clone(), users.clone());
+        thread::spawn(move || scope(&slot, &users, broken))
+    };
+    scope(&slot, &users, broken);
+    joined(worker);
     assert!(
         complete(lock_owned(slot)).is_none(),
         "projection outlived its last scope"
     );
 }
 
+fn bounded(scenario: fn(bool), broken: bool) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(move || scenario(broken));
+}
+
 #[test]
 fn the_last_execution_scope_alone_retires_the_projection() {
-    checked(
-        scoped_retirement,
+    bounded(scoped_retirement, false);
+    controlled(
+        || bounded(scoped_retirement, true),
         "projection retired under a running command",
     );
 }
