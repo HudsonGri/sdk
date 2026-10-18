@@ -31,10 +31,14 @@ macro_rules! accounted {
             let $cancel = cancellation($ctx);
             #[cfg(not(target_arch = "wasm32"))]
             if let Some($work) = $ctx.native_work() {
-                return $call.await.map_err(LazyWorkspaceError::from);
+                return crate::in_heap(|| async { $call.await })
+                    .await
+                    .map_err(LazyWorkspaceError::from);
             }
             let $work = $ctx.remaining()?;
-            accept_receipt($call.await, $ctx)
+            // Each expansion awaits the call twice; boxed, neither reserves
+            // its future in the enclosing poll frame.
+            accept_receipt(crate::in_heap(|| async { $call.await }).await, $ctx)
         })
         .await
     }};

@@ -98,15 +98,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (proof, allocation) = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
-                let (proof, mut allocation) = crate::kernel::closure::ProofContext::new(
-                    &self.inner.objects,
-                    limits,
-                    crate::kernel::closure::ProofMeter::Native {
-                        original,
-                        cancellation,
-                    },
-                )
-                .prove(generation_root)
+                let (proof, mut allocation) = crate::in_heap(|| async {
+                    crate::kernel::closure::ProofContext::new(
+                        &self.inner.objects,
+                        limits,
+                        crate::kernel::closure::ProofMeter::Native {
+                            original,
+                            cancellation,
+                        },
+                    )
+                    .prove(generation_root)
+                    .await
+                })
                 .await?;
                 (
                     proof,
@@ -114,13 +117,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 )
             }
             _ => {
-                let result = prove_generation_closure(
-                    &self.inner.objects,
-                    generation_root,
-                    limits,
-                    accounting.remaining()?,
-                    cancellation,
-                )
+                let remaining = accounting.remaining()?;
+                let result = crate::in_heap(|| {
+                    prove_generation_closure(
+                        &self.inner.objects,
+                        generation_root,
+                        limits,
+                        remaining,
+                        cancellation,
+                    )
+                })
                 .await;
                 let work = match &result {
                     Ok(proof) => proof.work,

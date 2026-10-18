@@ -13,24 +13,48 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 /// Builds `create`'s future directly in a heap allocation.
 ///
 /// The future is built in this function's own frame, which returns before the
 /// future is first polled, so no poll frame ever holds it.
 #[inline(never)]
-pub(crate) fn in_heap<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<F>> {
-    Box::pin(create())
+pub fn in_heap<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<HeapFuture<F>>> {
+    Box::pin(HeapFuture { future: create() })
+}
+
+pin_project_lite::pin_project! {
+    /// A future whose poll boundary survives boxing and trait erasure.
+    // Transparent layout preserves the admitted future's exact allocation size.
+    #[repr(transparent)]
+    pub struct HeapFuture<F> {
+        #[pin]
+        future: F,
+    }
+}
+
+impl<F: Future> Future for HeapFuture<F> {
+    type Output = F::Output;
+
+    #[inline(never)]
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<F::Output> {
+        self.project().future.poll(context)
+    }
 }
 
 /// Admits a box into an existing ownership ledger before constructing its future.
 /// The caller keeps that ledger in `state` and releases `bytes` after dropping
 /// the completed box; this does not create or reset an operation receipt.
+// Never inlined: the future's size is then computed for this function alone,
+// not inside the optimization of every async caller that encloses it, where
+// nested admitted futures would chain their layout queries without bound.
+#[inline(never)]
 pub(crate) fn in_heap_admitted<C, F: Future, E>(
     mut state: C,
     admit: impl FnOnce(&mut C, u64) -> Result<(), E>,
     create: impl FnOnce(C) -> F,
-) -> Result<(Pin<Box<F>>, u64), E> {
+) -> Result<(Pin<Box<HeapFuture<F>>>, u64), E> {
     let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
     admit(&mut state, bytes)?;
     Ok((in_heap(move || create(state)), bytes))

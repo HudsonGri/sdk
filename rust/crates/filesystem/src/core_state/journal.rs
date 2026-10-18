@@ -40,72 +40,76 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         {
             return Err(NativeTreeMaterializationError::InvalidLayout.into());
         }
-        self.materialization(work)
-            .transaction(move |namespace| {
-                let original = namespace
-                    ._allocation
-                    .as_ref()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)?
-                    .work()
-                    .clone();
-                let work = &original;
-                let mut paths = namespace.record(
-                    MATERIALIZATION_FAMILY,
-                    &journal.plan.operation_id.into_bytes(),
-                )?;
-                let record_lock = acquire_lock(&mut paths, LockMode::Exclusive)?;
-                let current = read_recoverable::<MaterializationJournal>(&paths)?
-                    .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-                if current.0 != journal {
-                    return Err(NativeTreeMaterializationError::InvalidLayout.into());
-                }
-                drop(current);
-                let body_custody = work.claim(
-                    std::mem::size_of::<LocalMaterializationActionCompletion>() as u64,
-                    0,
-                    crate::WorkCounters::UNCHARGED,
-                )?;
-                journal.revision = journal
-                    .revision
-                    .checked_add(1)
-                    .ok_or(crate::WorkError::Overflow)
-                    .map_err(NativeTreeMaterializationError::from)?;
-                let (encoding, encoding_credit, encoding_allocation) =
-                    prepare_materialization_encoding(&mut journal, work)?;
-                // Keep the prior image durable before accepting the action.
-                paths.copy(&paths.current, &paths.previous)?;
-                paths.sync()?;
-                let host = crate::native_host::PreparedMaterializationRecord::prepare(
-                    paths.directory(),
-                    Path::new(
-                        paths
-                            .current
-                            .file_name()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                    ),
-                    Path::new(
-                        paths
-                            .temporary
-                            .file_name()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                    ),
-                    work,
-                    encoding.len(),
-                )?;
-                drop(paths);
-                let Namespace { admission, .. } = namespace;
-                Ok(LocalMaterializationActionCompletion {
-                    journal: Some(journal),
-                    encoding,
-                    encoding_credit,
-                    host: Some(host),
-                    record_lock,
-                    _admission: admission,
-                    _body_custody: body_custody,
-                    _encoding_allocation: encoding_allocation,
+        // Boxed: the transaction's poll frame is not reserved in this one.
+        crate::in_heap(|| async move {
+            self.materialization(work)
+                .transaction(move |namespace| {
+                    let original = namespace
+                        ._allocation
+                        .as_ref()
+                        .ok_or(NativeTreeMaterializationError::MissingCustody)?
+                        .work()
+                        .clone();
+                    let work = &original;
+                    let mut paths = namespace.record(
+                        MATERIALIZATION_FAMILY,
+                        &journal.plan.operation_id.into_bytes(),
+                    )?;
+                    let record_lock = acquire_lock(&mut paths, LockMode::Exclusive)?;
+                    let current = read_recoverable::<MaterializationJournal>(&paths)?
+                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+                    if current.0 != journal {
+                        return Err(NativeTreeMaterializationError::InvalidLayout.into());
+                    }
+                    drop(current);
+                    let body_custody = work.claim(
+                        std::mem::size_of::<LocalMaterializationActionCompletion>() as u64,
+                        0,
+                        crate::WorkCounters::UNCHARGED,
+                    )?;
+                    journal.revision = journal
+                        .revision
+                        .checked_add(1)
+                        .ok_or(crate::WorkError::Overflow)
+                        .map_err(NativeTreeMaterializationError::from)?;
+                    let (encoding, encoding_credit, encoding_allocation) =
+                        prepare_materialization_encoding(&mut journal, work)?;
+                    // Keep the prior image durable before accepting the action.
+                    paths.copy(&paths.current, &paths.previous)?;
+                    paths.sync()?;
+                    let host = crate::native_host::PreparedMaterializationRecord::prepare(
+                        paths.directory(),
+                        Path::new(
+                            paths
+                                .current
+                                .file_name()
+                                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+                        ),
+                        Path::new(
+                            paths
+                                .temporary
+                                .file_name()
+                                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+                        ),
+                        work,
+                        encoding.len(),
+                    )?;
+                    drop(paths);
+                    let Namespace { admission, .. } = namespace;
+                    Ok(LocalMaterializationActionCompletion {
+                        journal: Some(journal),
+                        encoding,
+                        encoding_credit,
+                        host: Some(host),
+                        record_lock,
+                        _admission: admission,
+                        _body_custody: body_custody,
+                        _encoding_allocation: encoding_allocation,
+                    })
                 })
-            })
-            .await
+                .await
+        })
+        .await
     }
 
     async fn load(
