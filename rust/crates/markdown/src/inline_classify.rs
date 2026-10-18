@@ -117,7 +117,7 @@ pub(super) struct Rows {
     leading_pipe: bool,
     trailing_pipe: bool,
     row_content: bool,
-    foreign_row: bool,
+    foreign_breaks: bool,
     escaped: bool,
     columns: usize,
     table: Table,
@@ -141,7 +141,7 @@ impl Rows {
             leading_pipe: false,
             trailing_pipe: false,
             row_content: false,
-            foreign_row: false,
+            foreign_breaks: false,
             escaped: false,
             columns: 0,
             table: Table::default(),
@@ -151,6 +151,12 @@ impl Rows {
     }
     pub(super) fn permanent(&self) -> bool {
         matches!(self.definition, Definition::Invalid)
+    }
+
+    // Preserve first-pass row-ending rules once non-ASCII/control bytes have
+    // participated in this paragraph. Ordinary ASCII rows stay native.
+    pub(super) fn foreign_breaks(&self) -> bool {
+        self.foreign_breaks
     }
 
     pub(super) fn closed(&self) -> bool {
@@ -203,11 +209,6 @@ impl Rows {
                 probe = Some(self.origin);
             }
             if c == '\n' {
-                // Control whitespace affects the parser's first-pass break
-                // rules, even when the row cannot start a block.
-                if self.foreign_row {
-                    probe = Some(probe.map_or(self.row, |p: usize| p.min(self.row)));
-                }
                 if self.after_break && !self.row_content {
                     self.closed = true;
                     probe = Some(probe.map_or(self.previous, |p: usize| p.min(self.previous)));
@@ -226,13 +227,12 @@ impl Rows {
                 self.leading_pipe = false;
                 self.trailing_pipe = false;
                 self.row_content = false;
-                self.foreign_row = false;
                 self.escaped = false;
                 self.table = Table::default();
                 self.table_accepted = false;
                 continue;
             }
-            self.foreign_row |= c.is_control() && c != '\t';
+            self.foreign_breaks |= !c.is_ascii() || c.is_control() && c != '\t';
             if self.after_break {
                 self.table.push(c);
                 let accepted = self.table.accepts(self.columns);
