@@ -15,6 +15,9 @@ use crate::{OperationFailure, WorkBudget};
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
+#[cfg(all(not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "persistent_diff/borrowed.rs"]
+pub(super) mod borrowed;
 #[path = "persistent_diff/ordered.rs"]
 pub(super) mod ordered;
 

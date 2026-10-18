@@ -13,6 +13,8 @@ use crate::cancellation::CancellationToken;
 use crate::performance::{WorkCounters, WorkError};
 use crate::storage::ObjectId;
 
+mod leaf_pair;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ValueChange<K, V> {
     pub(crate) key: K,
@@ -135,7 +137,26 @@ async fn diff_with_accounting<
                         right.retire(accounting)?;
                         return Err(error);
                     }
-                    if let (Some(left_children), Some(right_children)) = (
+                    // Cancellation of equal payloads must not change the old
+                    // collector's intermediate limit on any later frontier.
+                    if tasks.value.is_empty()
+                        && values.value.is_empty()
+                        && leaf_pair::can_compare(&left.value, &right.value, maximum)
+                    {
+                        let compared = leaf_pair::compare::<F, PREFIX, RESET>(
+                            &left.value,
+                            &right.value,
+                            &mut values,
+                            maximum,
+                            limits,
+                            accounting,
+                        );
+                        let retired_left = left.retire(accounting);
+                        let retired_right = right.retire(accounting);
+                        retired_left?;
+                        retired_right?;
+                        compared?;
+                    } else if let (Some(left_children), Some(right_children)) = (
                         internal_children(&left.value),
                         internal_children(&right.value),
                     ) {
