@@ -304,6 +304,9 @@ pub enum ToolFailureKind {
     ProjectionRejected,
     /// A result artifact could not be published under the pinned limits.
     PublicationRejected,
+    /// The executing process ended before the outcome was recorded, and the
+    /// executor cannot reconcile it. The effect may have run, partly or fully.
+    Interrupted,
 }
 
 impl ToolFailureKind {
@@ -315,6 +318,9 @@ impl ToolFailureKind {
             Self::InvalidOutput => "tool output violated its pinned schema",
             Self::ProjectionRejected => "tool result projection was rejected",
             Self::PublicationRejected => "tool result artifact could not be published",
+            Self::Interrupted => {
+                "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
+            }
         }
     }
 }
@@ -372,7 +378,12 @@ pub enum ExecutionProgress<T> {
     Pending(OperationId),
     /// The original approval operation was rejected.
     Rejected(crate::InteractionRejection),
+    /// A recorded tool failure ended the turn.
+    Failed(ToolFailureKind),
 }
+
+/// A tool call's terminal value, or the failure recorded in its place.
+pub(super) type Settled<T> = std::result::Result<T, ToolFailureKind>;
 
 impl ExecutionProgress<TurnOutput> {
     pub(crate) fn into_output(self) -> Result<TurnOutput> {
@@ -380,6 +391,7 @@ impl ExecutionProgress<TurnOutput> {
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
             Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),
+            Self::Failed(reason) => Err(Error::Invalid(reason.message().into())),
         }
     }
 }

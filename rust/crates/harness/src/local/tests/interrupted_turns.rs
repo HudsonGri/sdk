@@ -240,3 +240,79 @@ async fn an_indeterminate_resume_releases_its_reservation_to_the_next_prompt() -
     assert_eq!(provider.requests().len(), 2, "model reissued");
     Ok(())
 }
+
+#[tokio::test]
+async fn resume_settles_a_killed_tool_as_interrupted_without_running_it_again() -> Result<()> {
+    let killed = killed_mid_tool().await?;
+    let reopened = killed.reopen().await?;
+    // Negative control: the reopened turn is unsettled.
+    assert_eq!(outcome(&reopened, killed.task).await, None);
+    // The executor cannot reconcile the effect, so the resumed driver records
+    // it as interrupted with its typed cause instead of rerunning it.
+    let error = reopened
+        .resume(killed.task)
+        .await
+        .expect_err("an interrupted effect is not a result");
+    let cause = crate::executor::ToolFailureKind::Interrupted.message();
+    assert!(error.to_string().contains(cause), "{error}");
+    assert!(matches!(
+        outcome(&reopened, killed.task).await,
+        Some(crate::Outcome::Failed { message }) if message.contains(cause)
+    ));
+    assert_eq!(killed.executed.load(Ordering::SeqCst), 1, "tool ran again");
+    // The settled head admits the next prompt without superseding anything.
+    let next = admitted(reopened.submit(OperationId::new(), "next").await?);
+    assert_eq!(reopened.resume(next).await?.text, "after");
+    assert_eq!(killed.provider.requests().len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_reissues_a_model_call_that_observed_nothing() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let (started, boundary) = tokio::sync::oneshot::channel();
+    let started = Mutex::new(Some(started));
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![ScriptedEvent::Pending {}]),
+            ScriptedTurn::Text("reissued".into()),
+        ])
+        // Like a real provider, it cannot recover an unrecorded response.
+        .with_reconciliations([crate::test_support::ScriptedReconciliation {
+            orphan: false,
+            observed: Vec::new(),
+            continuation: None,
+        }])
+        .with_context_capacity(capacity())
+        .with_dispatch_observer(move |_| {
+            if let Some(started) = started.lock().unwrap().take() {
+                started.send(()).unwrap();
+            }
+        }),
+    );
+    let harness = LocalHarness::open(volume_config(
+        directory.path(),
+        project.clone(),
+        provider.clone(),
+    )?)
+    .await?;
+    let task = admitted(harness.submit(OperationId::new(), "start").await?);
+    match futures::future::select(harness.resume(task), boundary).await {
+        futures::future::Either::Right((Ok(()), execution)) => drop(execution),
+        _ => panic!("no model boundary"),
+    }
+    drop(harness);
+    let reopened =
+        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
+    // Negative control: the dispatched call left the turn unsettled.
+    assert_eq!(outcome(&reopened, task).await, None);
+    // Nothing was observed, so the call had no effect and generates again
+    // under its claimed attempt.
+    assert_eq!(reopened.resume(task).await?.text, "reissued");
+    let dispatches = provider.dispatches();
+    assert_eq!(dispatches.len(), 2);
+    assert_eq!(dispatches[0], dispatches[1], "reissue changed the attempt");
+    assert_eq!(provider.reconciliations(), [dispatches[0]]);
+    Ok(())
+}

@@ -72,7 +72,7 @@ impl StockExecution<'_> {
             } if *recorded == step && call_id == &invocation.call_id => Some(*reason),
             _ => None,
         }) {
-            return Err(stock_boundary(self.io, Invalid, reason.message()));
+            return Ok(ExecutionProgress::Failed(reason));
         }
         let completed = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolCompleted {
@@ -103,18 +103,23 @@ impl StockExecution<'_> {
             {
                 return Ok(progress);
             }
-            self.execute_tool_invocation(
-                journal,
-                (operation_id, step),
-                crate::tool::RecordedInvocation {
-                    invocation: &invocation,
-                    metadata,
-                },
-                tool,
-                &mut context,
-                started.is_some(),
-            )
-            .await?
+            match self
+                .execute_tool_invocation(
+                    journal,
+                    (operation_id, step),
+                    crate::tool::RecordedInvocation {
+                        invocation: &invocation,
+                        metadata,
+                    },
+                    tool,
+                    &mut context,
+                    started.is_some(),
+                )
+                .await?
+            {
+                Ok(content) => content,
+                Err(reason) => return Ok(ExecutionProgress::Failed(reason)),
+            }
         };
         let message = ModelMessage {
             role: ModelRole::Tool,
@@ -248,7 +253,7 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
-    ) -> Result<crate::model::ToolResultContent> {
+    ) -> Result<Settled<crate::model::ToolResultContent>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let claimed = self
@@ -294,6 +299,22 @@ impl StockExecution<'_> {
                 tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
                 return Err(Error::Indeterminate(operation_id));
             }
+            // A resumed driver settles an unreconcilable effect as a typed
+            // failure instead of running it again; reconciliation records nothing.
+            Ok(None) | Err(Error::Indeterminate(_))
+                if !claimed && !self.stock.reconciliation_only =>
+            {
+                return self
+                    .reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::Interrupted,
+                        Error::Indeterminate(operation_id),
+                    )
+                    .await;
+            }
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
@@ -310,18 +331,23 @@ impl StockExecution<'_> {
                     .await;
             }
         };
-        let (projection, content) = self
+        let (projection, content) = match self
             .project_tool_output(journal, (operation_id, step), invocation, tool, &result)
-            .await?;
-        self.publish_tool_completion(
-            journal,
-            (operation_id, step),
-            &invocation.call_id,
-            &result,
-            &projection,
-        )
-        .await?;
-        Ok(content)
+            .await?
+        {
+            Ok(projected) => projected,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        Ok(self
+            .publish_tool_completion(
+                journal,
+                (operation_id, step),
+                &invocation.call_id,
+                &result,
+                &projection,
+            )
+            .await?
+            .map(|()| content))
     }
 
     async fn claim_tool_invocation(
@@ -407,7 +433,7 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
         result: &ToolResult,
-    ) -> Result<(Value, crate::model::ToolResultContent)> {
+    ) -> Result<Settled<(Value, crate::model::ToolResultContent)>> {
         let (operation_id, step) = identity;
         if let Err(error) = with_history_io(self.io, |work| {
             validate_json_schema_value(
@@ -444,7 +470,7 @@ impl StockExecution<'_> {
                         .await;
                 }
             };
-        Ok((projection, content))
+        Ok(Ok((projection, content)))
     }
 
     async fn publish_tool_completion(
@@ -454,12 +480,16 @@ impl StockExecution<'_> {
         call_id: &str,
         result: &ToolResult,
         projection: &Value,
-    ) -> Result<()> {
+    ) -> Result<Settled<()>> {
         let (operation_id, step) = identity;
-        let result = self
+        let result = match self
             .publish_tool_payload(journal, operation_id, step, call_id, "result", result)
-            .await?;
-        let projection = self
+            .await?
+        {
+            Ok(result) => result,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        let projection = match self
             .publish_tool_payload(
                 journal,
                 operation_id,
@@ -468,7 +498,11 @@ impl StockExecution<'_> {
                 "projection",
                 projection,
             )
-            .await?;
+            .await?
+        {
+            Ok(projection) => projection,
+            Err(reason) => return Ok(Err(reason)),
+        };
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
@@ -502,7 +536,7 @@ impl StockExecution<'_> {
                 return Err(Error::Indeterminate(operation_id));
             }
         }
-        Ok(())
+        Ok(Ok(()))
     }
 
     async fn replay_tool_output(

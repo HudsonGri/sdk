@@ -58,6 +58,7 @@ impl StockExecution<'_> {
         }
     }
 
+    /// Records `reason` as the call's terminal failure.
     pub(super) async fn reject_tool_call<T>(
         &self,
         journal: &dyn ExecutionJournal,
@@ -66,7 +67,7 @@ impl StockExecution<'_> {
         call_id: &str,
         reason: ToolFailureKind,
         error: Error,
-    ) -> Result<T> {
+    ) -> Result<Settled<T>> {
         if error.is_native_failure() {
             return Err(error);
         }
@@ -96,11 +97,7 @@ impl StockExecution<'_> {
             .append_if_tail(operation_id, tail, &key, &event, self.io)?
             .await
         {
-            Ok(true) => Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                reason.message(),
-            )),
+            Ok(true) => Ok(Err(reason)),
             Err(error) if !error.leaves_effect_uncertain() => Err(error),
             Ok(false) | Err(_) => Err(Error::Indeterminate(operation_id)),
         }
@@ -114,12 +111,12 @@ impl StockExecution<'_> {
         call: &str,
         kind: &str,
         value: &T,
-    ) -> Result<FileRef> {
+    ) -> Result<Settled<FileRef>> {
         let key = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:{step}:{call}:{kind}"), work)
         })?;
         match stage_json(journal, operation, &key, value, self.io).await {
-            Ok(reference) => Ok(reference),
+            Ok(reference) => Ok(Ok(reference)),
             Err(error) if error.is_native_failure() => Err(error),
             Err(error) if error.leaves_effect_uncertain() => Err(Error::Indeterminate(operation)),
             Err(error) => {

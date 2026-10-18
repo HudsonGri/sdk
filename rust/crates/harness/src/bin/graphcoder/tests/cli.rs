@@ -271,7 +271,7 @@ fn graphcoder(
     catalog: &Path,
     settings: &Path,
     operation: OperationId,
-    prompt: &str,
+    prompt: Option<&str>,
 ) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
@@ -284,7 +284,7 @@ fn graphcoder(
         .arg(settings)
         .args(["--model", "graphcoder-qual/tiny", "--operation"])
         .arg(operation.to_string())
-        .args(["-p", prompt])
+        .args(prompt.map_or(["--input-format", "jsonl"], |prompt| ["-p", prompt]))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -327,6 +327,42 @@ async fn run(
     .unwrap()
 }
 
+/// The settled execution results a headless run printed, from its initial
+/// snapshot and the changes that followed.
+fn results(stdout: &[u8]) -> Vec<Value> {
+    let mut lines = std::str::from_utf8(stdout).unwrap().lines();
+    let (_, initial) = jsonl::parse_snapshot(lines.next().unwrap()).unwrap();
+    let retained = initial.files.into_iter().map(|file| {
+        let bytes = file
+            .segments
+            .iter()
+            .flat_map(|segment| segment.to_vec())
+            .collect();
+        (file.key, bytes)
+    });
+    let changed = lines.flat_map(|line| {
+        let change: Change = jsonl::parse_change(line).unwrap();
+        change
+            .file
+            .into_iter()
+            .chain(change.files)
+            .map(|file| (file.key, file.bytes.to_vec()))
+    });
+    retained
+        .chain(changed)
+        .filter(|(key, _): &(FileKey, Vec<u8>)| {
+            matches!(
+                key,
+                FileKey::Session {
+                    file: TaskFile::ExecutionResult(_),
+                    ..
+                }
+            )
+        })
+        .map(|(_, bytes)| serde_json::from_slice(&bytes).unwrap())
+        .collect()
+}
+
 #[tokio::test]
 async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -367,8 +403,9 @@ async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() 
     let catalog = catalog(directory.path(), address);
     let effect = workspace.join(EFFECT);
     let release = directory.path().join("release");
+    let start = OperationId::new();
     let first = tokio::spawn(run(
-        graphcoder(&workspace, &catalog, &settings, OperationId::new(), "start"),
+        graphcoder(&workspace, &catalog, &settings, start, Some("start")),
         Some(release.clone()),
     ));
     while !effect.exists() {
@@ -380,7 +417,13 @@ async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() 
     // A second process never treats the first one's live turn as orphaned:
     // the workspace stream admits one owning process at a time.
     let contender = run(
-        graphcoder(&workspace, &catalog, &settings, OperationId::new(), "contend"),
+        graphcoder(
+            &workspace,
+            &catalog,
+            &settings,
+            OperationId::new(),
+            Some("contend"),
+        ),
         None,
     )
     .await
@@ -398,9 +441,39 @@ async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() 
         .unwrap()
         .expect_err("the first process must be killed during its tool effect");
     assert!(killed.starts_with("killed"), "{killed}");
+    // Rerunning the same prompt resumes the killed turn. Its unreconcilable
+    // effect settles as interrupted instead of running again, and replaying
+    // the operation reports that same settled result.
+    for prompt in [Some("start"), None] {
+        let output = run(
+            graphcoder(&workspace, &catalog, &settings, start, prompt),
+            None,
+        )
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(1), "{stdout}");
+        let settled = results(&output.stdout);
+        assert_eq!(settled.len(), 1, "{stdout}");
+        assert_eq!(settled[0]["completion"], "failed", "{stdout}");
+        assert!(
+            settled[0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("tool was interrupted"),
+            "{stdout}"
+        );
+    }
+    assert_eq!(generated.load(Ordering::SeqCst), 1);
     // The next prompt settles the killed turn instead of rejecting admission.
     let output = run(
-        graphcoder(&workspace, &catalog, &settings, OperationId::new(), "next"),
+        graphcoder(
+            &workspace,
+            &catalog,
+            &settings,
+            OperationId::new(),
+            Some("next"),
+        ),
         None,
     )
     .await
@@ -412,25 +485,7 @@ async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() 
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let answers: Vec<Value> = std::str::from_utf8(&output.stdout)
-        .unwrap()
-        .lines()
-        .skip(1)
-        .flat_map(|line| {
-            let change: Change = jsonl::parse_change(line).unwrap();
-            change.file.into_iter().chain(change.files)
-        })
-        .filter(|file| {
-            matches!(
-                file.key,
-                FileKey::Session {
-                    file: TaskFile::ExecutionResult(_),
-                    ..
-                }
-            )
-        })
-        .map(|file| serde_json::from_slice(&file.bytes).unwrap())
-        .collect();
+    let answers = results(&output.stdout);
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0]["ok"]["text"], "fixture answer");
     // The killed effect ran once and its model call was never reissued.
