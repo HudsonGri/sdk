@@ -2,6 +2,40 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// The gate and its offline preflight consume this same ordered step list.
+export const gateQualifications = [
+  { args: ["--all-features"] },
+  { args: ["--coordinator-origins", "--all-features"] },
+  { args: ["--summary-checkpoints", "--all-features"] },
+  { args: ["--hook-lifecycle", "--all-features"] },
+  { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
+  { args: ["--timer"] }, { args: ["--guest"] },
+  { args: ["--fs-binding", "--all-features"] },
+  { args: ["--memory-accounting"], rustflags: "-Dwarnings" },
+];
+const planOnly = Symbol("qualification plan");
+
+export function qualificationPlan(args) {
+  return dispatch(args, planOnly);
+}
+
+export function qualificationGatePlans() {
+  return qualifyGate(planOnly);
+}
+
+function qualifyGate(run) {
+  return gateQualifications.map(step => {
+    const previous = process.env.RUSTFLAGS;
+    try {
+      if (step.rustflags) process.env.RUSTFLAGS = `${previous ?? ""} ${step.rustflags}`;
+      return dispatch(step.args, run);
+    } finally {
+      if (previous === undefined) delete process.env.RUSTFLAGS;
+      else process.env.RUSTFLAGS = previous;
+    }
+  });
+}
+
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "mcp-loom", [...features, "--features", "model-checking"], run, {
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
@@ -93,11 +127,19 @@ export function qualifyMemoryAccountingLoom(run = spawnSync) {
 }
 
 function qualifyLoom(crate, target, features, run, options = {}) {
-  const build = run("cargo", [
+  const args = [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
     ...(options.kind === "--lib" ? ["--lib", "--no-run"] : ["--test", target]),
     ...features, ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
-  ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
+  ];
+  const tests = (options.filters ?? [options.filter]).map(filter => ({
+    args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
+    passed: options.exact === false ? 4 : filter ? 1 : null,
+  }));
+  const env = options.env ?? process.env;
+  const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "" };
+  if (run === planOnly) return plan;
+  const build = run("cargo", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
   if (build.error) throw build.error;
   if (build.status !== 0) {
     const diagnostics = build.stdout.split(/\r?\n/).filter(Boolean).flatMap(line => {
@@ -114,33 +156,36 @@ function qualifyLoom(crate, target, features, run, options = {}) {
       && record.profile.test && record.executable) binaries.push(record.executable);
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
-  for (const filter of options.filters ?? [options.filter]) {
-    const result = run(binaries[0], filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
+  for (const test of tests) {
+    const result = run(binaries[0], test.args, { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
     if (result.error) throw result.error;
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
-    const complete = options.exact === false
-      ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
-      : filter
-      ? /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
-      : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
+    const complete = test.passed === null
+      ? /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m
+      : new RegExp(`^test result: ok\\. ${test.passed} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;`, "m");
     if (!complete.test(result.stdout)) {
       throw new Error("MCP Loom qualification requires a nonzero, complete test suite");
     }
   }
 }
 
+function dispatch(features, run) {
+  if (features.length === 1 && features[0] === "--native-progress") return qualifyNativeProgressLoom(run);
+  if (features[0] === "--e2e-progress") return qualifyE2eProgressLoom(features.length > 1 ? features.slice(1) : undefined, run);
+  if (features[0] === "--hook-lifecycle") return qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined, run);
+  if (features[0] === "--coordinator-origins") return qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined, run);
+  if (features[0] === "--summary-checkpoints") return qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined, run);
+  if (features.length === 1 && features[0] === "--timer") return qualifyTimerLoom(run);
+  if (features.length === 1 && features[0] === "--guest") return qualifyGuestLoom(run);
+  if (features.length === 1 && features[0] === "--memory-accounting") return qualifyMemoryAccountingLoom(run);
+  if (features[0] === "--fs-binding") return qualifyFsBindingLoom(features.slice(1), run);
+  return qualifyMcpLoom(features.length ? features : undefined, run);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const features = process.argv.slice(2);
-  if (features.length === 1 && features[0] === "--native-progress") qualifyNativeProgressLoom();
-  else if (features[0] === "--e2e-progress") qualifyE2eProgressLoom(features.length > 1 ? features.slice(1) : undefined);
-  else if (features[0] === "--hook-lifecycle") qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined);
-  else if (features[0] === "--coordinator-origins") qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined);
-  else if (features[0] === "--summary-checkpoints") qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined);
-  else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
-  else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
-  else if (features.length === 1 && features[0] === "--memory-accounting") qualifyMemoryAccountingLoom();
-  else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
-  else qualifyMcpLoom(features.length ? features : undefined);
+  if (process.argv[2] === "--gate") {
+    qualifyGate(spawnSync);
+  } else dispatch(process.argv.slice(2), spawnSync);
 }
