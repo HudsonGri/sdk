@@ -150,6 +150,7 @@ impl<P: StreamProvider> Replay<P> {
     }
 }
 
+/// Every fresh Stream identity crosses this seam; replays draw seeded bytes.
 fn new_idempotency_key() -> IdempotencyKey {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     {

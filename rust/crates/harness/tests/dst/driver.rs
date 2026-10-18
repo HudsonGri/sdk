@@ -1,6 +1,9 @@
 //! The controller outlives the killed turn and all of its accepted operations.
 use super::*;
-use acyclic_native_runtime::testing::{Boundary, DurableFault, InjectedStorageFault, Schedule};
+use acyclic_native_runtime::{
+    ProcessCaptureFailure, ProcessInput, ProcessOutput,
+    testing::{Boundary, DurableFault, InjectedStorageFault, ProcessCapture, Schedule},
+};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -13,15 +16,35 @@ pub(super) struct Driver {
     pub schedule: Schedule,
     events: mpsc::UnboundedReceiver<Boundary>,
     pub boundaries: Vec<(String, String)>,
+    refuses_processes: bool,
 }
+
+const UNSIMULATED_PROCESS: &str = "unsimulated process reached a seeded replay";
 
 impl Driver {
     pub fn new(seed: u64, cut: Option<(usize, DurableFault)>) -> Self {
-        Self::from_scope(Schedule::seeded(seed), cut)
+        Self::from_scope(Schedule::seeded(seed), cut).refuse_processes()
     }
 
     pub fn without_entropy(seed: u64) -> Self {
-        Self::from_scope(Schedule::without_entropy(seed), None)
+        Self::from_scope(Schedule::without_entropy(seed), None).refuse_processes()
+    }
+
+    /// The only way a replay runs a process: through this scripted provider.
+    pub fn with_process(
+        seed: u64,
+        provider: impl Fn(
+            ProcessCapture<'_>,
+            &mut dyn FnMut() -> std::io::Result<()>,
+            &mut dyn FnMut(ProcessOutput<'_>) -> std::io::Result<ProcessInput>,
+        ) -> std::result::Result<std::process::Output, ProcessCaptureFailure>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        let driver = Self::from_scope(Schedule::seeded(seed), None);
+        driver.schedule.set_process_provider(provider);
+        driver
     }
 
     fn from_scope(
@@ -35,7 +58,24 @@ impl Driver {
             schedule,
             events,
             boundaries: Vec::new(),
+            refuses_processes: false,
         }
+    }
+
+    // Without a scripted provider the original capture would spawn a real OS
+    // process inside the replay. Refuse it, and fail the run that reached it.
+    fn refuse_processes(mut self) -> Self {
+        self.schedule.set_process_provider(|_, _, _| {
+            Err(ProcessCaptureFailure {
+                error: std::io::Error::other(UNSIMULATED_PROCESS),
+                status: None,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                cleanup_completed: true,
+            })
+        });
+        self.refuses_processes = true;
+        self
     }
 
     pub fn run<'a, T: 'a>(&'a mut self, future: EntryFuture<'a, T>) -> EntryFuture<'a, Outcome<T>> {
@@ -94,6 +134,11 @@ impl Driver {
                     () = &mut deadline => panic!("accepted work exceeded the simulated deadline"),
                 }
             }
+            if self.refuses_processes {
+                let spawned = schedule.trace();
+                let spawned = spawned.iter().find(|event| event.starts_with("process:"));
+                assert!(spawned.is_none(), "{UNSIMULATED_PROCESS}: {spawned:?}");
+            }
             outcome
         })
     }
@@ -130,13 +175,17 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
         let writes = baseline.schedule.durable_writes();
         assert_eq!(writes.len(), 2, "original writes escaped enumeration");
         for cut in 0..writes.len() {
-            for fault in [
+            // Every fault, including a tear at each prefix of the offered bytes.
+            let offered_len = writes[cut].requested;
+            let faults = [
                 DurableFault::Before,
                 DurableFault::After,
-                DurableFault::Torn(2),
                 DurableFault::Failed,
                 DurableFault::DiskFull,
-            ] {
+            ]
+            .into_iter()
+            .chain((0..offered_len).map(DurableFault::Torn));
+            for fault in faults {
                 let mut driver = Driver::new(71, Some((cut, fault)));
                 let Outcome::Crashed(cause) = driver.run(write(path.clone())).await else {
                     panic!("cut {cut} {fault:?} did not kill the original turn");
@@ -165,4 +214,36 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[test]
+#[should_panic(expected = "unsimulated process reached a seeded replay")]
+fn a_replay_without_a_scripted_process_refuses_the_os() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::time::pause();
+        let mut driver = Driver::new(71, None);
+        let capture = entry(async {
+            let command = std::process::Command::new("must-not-spawn");
+            acyclic_native_runtime::testing::capture_process(
+                ProcessCapture {
+                    command: &command,
+                    timeout: Duration::from_secs(1),
+                    maximum: 1,
+                    input: None,
+                },
+                &mut || Ok(()),
+                &mut |_| Ok(ProcessInput::default()),
+            )
+            .expect("the original OS path ran inside the replay")
+            .expect_err("refusal must reach the original caller")
+        });
+        let Outcome::Completed(failure) = driver.run(capture).await else {
+            panic!("process refusal crashed the scope");
+        };
+        assert_eq!(failure.error.to_string(), UNSIMULATED_PROCESS);
+    });
 }

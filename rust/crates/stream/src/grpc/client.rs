@@ -319,7 +319,7 @@ impl Client {
 /// A fixed retry identity keeps transport retries of one append or fork exactly-once.
 fn retry_identity(key: Option<IdempotencyKey>) -> Bytes {
     key.map_or_else(
-        || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
+        || Bytes::copy_from_slice(crate::new_idempotency_key().as_bytes()),
         |key| Bytes::copy_from_slice(key.as_bytes()),
     )
 }
