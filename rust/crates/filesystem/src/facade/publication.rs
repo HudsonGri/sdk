@@ -50,8 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .check()
             .map_err(|error| OperationFailure::before_work(E::from(FsError::from(error))))?;
         self.publication_closure = None;
-        let checkpoint = self
-            .checkpoint_root(budget, cancellation)
+        let checkpoint = crate::in_heap(|| self.checkpoint_root(budget, cancellation))
             .await
             .map_err(|failure| failure.map_error(E::from))?;
         let checkpoint_root = checkpoint.value;
@@ -114,25 +113,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     work: prepared.work,
                 })
             };
-            crate::kernel::publish_generation_async_guarded(
-                &self.volume.fs.inner.objects,
-                &self.volume.fs.inner.authority,
-                request,
-                PublicationIntent {
-                    operation_context,
-                    original_evidence: operation_evidence.clone(),
-                    fingerprint_permit: original_fingerprint_permit,
-                    permit,
-                },
-                closure_limits(self.volume.config),
-                Some(&self.volume.fs.inner.publication_proof),
-                publication_budget,
-                cancellation,
-                before_publication,
-                resolved,
-                Some(&mut prepare_roots),
-            )
-            .await
+            let fs = &self.volume.fs.inner;
+            // Erased: the publication's own poll frame stays out of this one,
+            // and its type stays out of every caller's auto-trait proof.
+            let publication: acyclic_stream::BoxProviderFuture<'_, _> = crate::in_heap(|| {
+                crate::kernel::publish_generation_async_guarded(
+                    &fs.objects,
+                    &fs.authority,
+                    request,
+                    PublicationIntent {
+                        operation_context,
+                        original_evidence: operation_evidence.clone(),
+                        fingerprint_permit: original_fingerprint_permit,
+                        permit,
+                    },
+                    closure_limits(self.volume.config),
+                    Some(&fs.publication_proof),
+                    publication_budget,
+                    cancellation,
+                    before_publication,
+                    resolved,
+                    Some(&mut prepare_roots),
+                )
+            });
+            publication.await
         }
         .map_err(|mut failure| {
             *failure.work = work

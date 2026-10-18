@@ -1,4 +1,5 @@
 use super::*;
+use crate::heap_future::in_heap;
 
 fn inspected_join(pending: &GitPendingTransition) -> bool {
     matches!(
@@ -25,9 +26,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .map_err(GitCompatRunError::Executor)?;
         match &command {
             GitCommand::MergeContinue => {
-                return self.continue_join(workspace_tree, executor).await;
+                return in_heap(|| self.continue_join(workspace_tree, executor)).await;
             }
-            GitCommand::MergeAbort => return self.abort_join(executor).await,
+            GitCommand::MergeAbort => return in_heap(|| self.abort_join(executor)).await,
             GitCommand::Add { .. } => {
                 if let Some(pending) = self.pending_transition().await? {
                     if matches!(pending.mutation, GitPendingMutation::Join { .. }) {
@@ -38,14 +39,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             }
             _ => {}
         }
-        let output = self.execute_validated(command, workspace_tree).await?;
+        // The command, the executor's effect, and its completion each run in
+        // a heap future: this frame holds pointers, never their state.
+        let output = in_heap(|| self.execute_validated(command, workspace_tree)).await?;
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
         match output {
             GitCommandOutput::Prepared { transition, action } => {
-                self.finish(transition, &action, executor).await
+                in_heap(|| self.finish(transition, &action, executor)).await
             }
             output => Ok(output),
         }
@@ -101,8 +104,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         action: &GitFilesystemAction,
         executor: &E,
     ) -> Result<GitFilesystemResult, GitCompatRunError<S::Error, E::Error>> {
-        let result = executor
-            .execute(operation, action)
+        let result = in_heap(|| executor.execute(operation, action))
             .await
             .map_err(GitCompatRunError::Executor)?;
         executor

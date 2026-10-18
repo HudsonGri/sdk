@@ -88,11 +88,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
-        let lookup = self.inspect(path, ctx).await?;
+        let lookup = crate::in_heap(|| self.inspect(path, ctx)).await?;
         if let LazyLookup::Source { source, node } = lookup.0 {
             let change = LazyOverlayChange::Observe { source, node };
             let recorded = async {
-                let state = self.state(ctx).await?;
+                let state = crate::in_heap(|| self.state(ctx)).await?;
                 if self.overlay_fact(state.overlay, path, ctx).await? != Some(change.clone()) {
                     self.append_overlay(path, change, ctx).await?;
                 }
@@ -113,18 +113,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
-        let mut checkout = self
-            .checkout(crate::model::GenerationSelector::Head, ctx)
-            .await?;
-        let result = self
-            .inspect_unauthored(
+        let mut checkout =
+            crate::in_heap(|| self.checkout(crate::model::GenerationSelector::Head, ctx)).await?;
+        let result = crate::in_heap(|| {
+            self.inspect_unauthored(
                 &mut checkout.value,
                 path,
                 None,
                 InspectBasis::default(),
                 ctx,
             )
-            .await;
+        })
+        .await;
         checkout.retire(ctx)?;
         let (lookup, _, guard) = result?;
         Ok((lookup.ok_or(LazyWorkspaceError::NotFound)?, guard))
@@ -168,7 +168,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyStat, LazyWorkspaceError> {
-        let lookup = self.lookup(path, ctx).await?;
+        let lookup = crate::in_heap(|| self.lookup(path, ctx)).await?;
         let stat = lookup.0.stat();
         self.retire_lookup(lookup, ctx)?;
         Ok(stat)
@@ -211,16 +211,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let state = if let Some(state) = basis.state {
             state
         } else {
-            loaded = self.state(ctx).await?;
+            loaded = crate::in_heap(|| self.state(ctx)).await?;
             &loaded
         };
-        if self.tombstoned(state.overlay, path, ctx).await? {
+        if crate::in_heap(|| self.tombstoned(state.overlay, path, ctx)).await? {
             return Ok((None, false, ctx.claim_owned(0, 0)?));
         }
         let fact = if basis.unobserved {
             None
         } else {
-            self.overlay_fact(state.overlay, path, ctx).await?
+            crate::in_heap(|| self.overlay_fact(state.overlay, path, ctx)).await?
         };
         let (source, node, used) = match fact {
             Some(LazyOverlayChange::Observe { source, node })
@@ -237,7 +237,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     }
                     (
                         state.source,
-                        self.source_lookup(state.source, path, ctx).await?,
+                        crate::in_heap(|| self.source_lookup(state.source, path, ctx)).await?,
                         true,
                     )
                 }
@@ -319,7 +319,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             LazyLookup::Shadow { record, .. } => Ok(record.file_id),
             LazyLookup::Authored { record, .. } => {
                 if record.kind == FileKind::Directory {
-                    let state = self.state(ctx).await?;
+                    let state = crate::in_heap(|| self.state(ctx)).await?;
                     if let Some(LazyOverlayChange::Observe { node, .. }) =
                         self.overlay_fact(state.overlay, path, ctx).await?
                         && node.kind == SourceNodeKind::Directory

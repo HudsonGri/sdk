@@ -16,7 +16,8 @@ where
     Fut: Future<Output = Result<(), E>>,
 {
     if let Some(control) = control {
-        control(phase).await?;
+        // Boxed: the callback's poll frame is not reserved in this one.
+        crate::in_heap(|| control(phase)).await?;
     }
     Ok(())
 }
