@@ -9,12 +9,13 @@ const provider = `
 import { readFileSync, appendFileSync } from "node:fs";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 export default function(pi) {
+  const trace=record=>appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({at:Date.now(),...record})+"\\n");
   const native=Boolean(process.env.ACYCLIC_HARNESS_BINDING);
   const task=native ? JSON.parse(readFileSync(process.env.ACYCLIC_HARNESS_BINDING,"utf8")).task : null;
   let session, descendant=false;
   pi.on("session_start",(_event,ctx)=>{
     session=ctx.sessionManager.getSessionId();
-    if(native) appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({phase:"start",session,task,entries:ctx.sessionManager.getBranch()})+"\\n");
+    if(native) trace({phase:"start",session,task,entries:ctx.sessionManager.getBranch()});
   });
   pi.on("before_agent_start",event=>{descendant=event.prompt==="GRANDCHILD_ONLY_NATIVE_INSTRUCTION";});
   const faux=fauxProvider({provider:"acyclic-native-qualification",models:[{id:"probe"}]});
@@ -29,8 +30,8 @@ export default function(pi) {
   const nativeResponse=context=>{
     const prefix=descendant ? "grandchild" : "child";
     const results=context.messages.filter(message=>message.role==="toolResult");
-    appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({phase:"model",session,prefix,
-      results:results.map(result=>({id:result.toolCallId,error:result.isError,...(result.isError?{content:result.content}:{})}))})+"\\n");
+    trace({phase:"model",session,prefix,
+      results:results.map(result=>({id:result.toolCallId,error:result.isError,...(result.isError?{content:result.content}:{})}))});
     const done=id=>results.some(message=>message.toolCallId===prefix+"-"+id);
     if(first) {
       first=false;
@@ -58,19 +59,20 @@ export default function(pi) {
     if(done("wait") && result(context).success!==true) throw new Error("native descendant did not settle");
     {
       if(inspected.task!==task || !inspected.admission.parent) throw new Error("native child lost its admitted identity");
-      appendFileSync(process.env.ACYCLIC_NATIVE_ORACLE,JSON.stringify({phase:"complete",session,task,parent:inspected.admission.parent,results})+"\\n");
+      trace({phase:"complete",session,task,parent:inspected.admission.parent,results});
       return fauxAssistantMessage("automatic-child-complete");
     }
   };
   faux.setResponses(native ? Array.from({length:8},()=>nativeResponse) : [
-    ()=>call("acyclic_spawn",{id:"automatic-child",prompt:"CHILD_ONLY_NATIVE_INSTRUCTION",...(process.env.ACYCLIC_NATIVE_CUT ? {context:"native_cut"} : {})},"native-spawn"),
-    context=>{child=result(context);return call("acyclic_wait",{child},"native-wait");},
+    ()=>{trace({phase:"root",step:"spawn"});return call("acyclic_spawn",{id:"automatic-child",prompt:"CHILD_ONLY_NATIVE_INSTRUCTION",...(process.env.ACYCLIC_NATIVE_CUT ? {context:"native_cut"} : {})},"native-spawn");},
+    context=>{trace({phase:"root",step:"wait"});child=result(context);return call("acyclic_wait",{child},"native-wait");},
     context=>{
+      trace({phase:"root",step:"diff"});
       const outcome=result(context);
       if(outcome.success!==true) throw new Error("owned native execution did not complete: "+JSON.stringify(outcome));
       return call("fs",{command:"diff agents/"+child},"native-diff");
     },
-    context=>{result(context);return fauxAssistantMessage(JSON.stringify({marker:"automatic-native-launch",child}));},
+    context=>{trace({phase:"root",step:"complete"});result(context);return fauxAssistantMessage(JSON.stringify({marker:"automatic-native-launch",child}));},
   ]);
   pi.registerProvider(faux.provider);
 }
@@ -78,12 +80,12 @@ export default function(pi) {
 
 // Each case keeps its own checkout, SDK session and LocalHarness. Establish
 // authenticated owner readiness once, before the unchanged operation deadlines.
-const fixtures=new Map<boolean,{directory:string,oracle:string,fixture?:Awaited<ReturnType<typeof installedNativeFixture>>}>();
+const fixtures=new Map<boolean,{directory:string,oracle:string,passed:boolean,fixture?:Awaited<ReturnType<typeof installedNativeFixture>>}>();
 beforeAll(async()=>{
   const results=await Promise.allSettled([false,true].map(async selected=>{
     const directory=mkdtempSync(fileURLToPath(new URL(".pi-native-launch-",import.meta.url)));
     const oracle=join(directory,"native-oracle.jsonl");
-    const state={directory,oracle,fixture:undefined as Awaited<ReturnType<typeof installedNativeFixture>>|undefined};
+    const state={directory,oracle,passed:false,fixture:undefined as Awaited<ReturnType<typeof installedNativeFixture>>|undefined};
     fixtures.set(selected,state);
     state.fixture=await installedNativeFixture(directory,provider,{ACYCLIC_NATIVE_ORACLE:oracle,...(selected?{ACYCLIC_NATIVE_CUT:"1"}:{})});
     await state.fixture.start();
@@ -92,7 +94,10 @@ beforeAll(async()=>{
   if(errors.length) throw new AggregateError(errors,"native owner fixture readiness failed");
 });
 afterAll(async()=>{
-  const results=await Promise.allSettled([...fixtures.values()].map(async ({fixture,directory})=>{
+  const results=await Promise.allSettled([...fixtures.values()].map(async ({fixture,directory,oracle,passed})=>{
+    // Bun's test deadline does not throw through the pending test promise.
+    // Read the oracle before shutdown/removal so a timeout keeps its actual cut.
+    if(!passed) reportTrace(oracle);
     await fixture?.close();
     rmSync(directory,{recursive:true});
   }));
@@ -146,12 +151,18 @@ for(const selected of [false,true]) test.concurrent(`the installed Pi spawn tool
     }
     await fixture.close();
     assert.deepEqual(fixture.resources(),{mounts:[],processes:[]});
+    fixtures.get(selected)!.passed=true;
   } catch(error) {
-    if(existsSync(oracle)) for(const line of readFileSync(oracle,"utf8").trim().split("\n")) {
-      const record=JSON.parse(line);
-      console.error(JSON.stringify({phase:record.phase,session:record.session,prefix:record.prefix,
-        results:record.phase==="model"?record.results:record.results?.map(result=>({id:result.toolCallId,error:result.isError,...(result.isError?{content:result.content}:{})}))}));
-    }
+    reportTrace(oracle);
     throw error;
   }
 },8000);
+
+function reportTrace(oracle:string) {
+  if(!existsSync(oracle)) return;
+  for(const line of readFileSync(oracle,"utf8").trim().split("\n").filter(Boolean)) {
+    const record=JSON.parse(line);
+    console.error(JSON.stringify({at:record.at,phase:record.phase,step:record.step,session:record.session,prefix:record.prefix,
+      results:record.phase==="model"?record.results:record.results?.map(result=>({id:result.toolCallId,error:result.isError,...(result.isError?{content:result.content}:{})}))}));
+  }
+}

@@ -1,9 +1,6 @@
 //! An accepted cancellation covers native preparation as well as ordinary tools.
 use super::*;
-use crate::{
-    external_executor::{ExternalHost, request},
-    runtime::TaskStateProvider as _,
-};
+use crate::external_executor::{ExternalHost, request};
 use serde_json::json;
 
 #[tokio::test]
