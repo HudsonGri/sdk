@@ -217,7 +217,7 @@ impl<'a> Lines<'a> {
             Bound::Excluded(n) => *n,
             Bound::Unbounded => self.len(),
         };
-        (start <= end && end <= self.len()).then_some(Self {
+        (start <= end && end <= self.len()).then(|| Self {
             buffer: self.buffer,
             start: self.start + start,
             end: self.start + end,
@@ -354,6 +354,35 @@ thread_local! { pub(crate) static COPY_HISTORY: std::cell::Cell<bool> = const { 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn nested_slices_match_slice_bounds(first in any::<usize>(), end in any::<usize>()) {
+            let rows = vec![Line::default(); 9];
+            let buffer: Buffer = rows.clone().into_iter().collect();
+            let view = buffer.view(3..8).unwrap();
+            let expected = &rows[3..8];
+            prop_assert_eq!(view.slice(first..end).map(Lines::to_vec), expected.get(first..end).map(<[Line]>::to_vec));
+            prop_assert_eq!(view.slice(first..).map(Lines::to_vec), expected.get(first..).map(<[Line]>::to_vec));
+            prop_assert_eq!(view.slice(..=end).map(Lines::to_vec), expected.get(..=end).map(<[Line]>::to_vec));
+        }
+    }
+
+    #[test]
+    fn invalid_nested_slice_never_constructs_absolute_offsets() {
+        let buffer: Buffer = vec![Line::default(); 2].into_iter().collect();
+        let view = buffer.view(1..).unwrap();
+        assert!(view.slice(usize::MAX..).is_none());
+        let eager = std::panic::catch_unwind(|| {
+            std::hint::black_box(
+                false.then_some(view.start.checked_add(usize::MAX).expect("eager overflow")),
+            );
+        });
+        assert!(eager.is_err());
+    }
+
     #[test]
     fn appended_rows_keep_every_existing_address_and_snapshot() {
         let mut buffer = Buffer::default();
