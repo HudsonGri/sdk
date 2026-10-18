@@ -409,9 +409,12 @@ fn publication_cost(count: u8, restore: bool) -> acyclic_test_support::Allocatio
     };
     RESTORE.set(restore);
     let _reset = Reset;
-    let measured = measure(|| {
-        core.put_locked(&mut state, &query, OwnedBytes::from_static(b"new"))
-            .unwrap();
+    // Compare identical timestamp encodings as well as identical payloads.
+    let (measured, _) = work::measure(work::Scan::None, || {
+        measure(|| {
+            core.put_locked(&mut state, &query, OwnedBytes::from_static(b"new"))
+                .unwrap();
+        })
     });
     recount(&state);
     let expected = snapshot(&state);
