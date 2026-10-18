@@ -17,6 +17,10 @@ mod sources;
 #[cfg(acyclic_stream_loom)]
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
 mod children;
+mod publications;
+pub use publications::{
+    PublicationProvider, PublicationRevalidation, PublicationStream, PublicationSubscription,
+};
 mod client;
 mod connection;
 mod local;
@@ -81,7 +85,8 @@ impl Default for Limits {
 struct Channel {
     generation: u64,
     latest: bool,
-    children: bool,
+    opaque_cursor: bool,
+    revalidate: Option<PublicationRevalidation>,
     pending: VecDeque<Pending>,
     indexed: Option<usize>,
     credit: wire::SessionWindow,
@@ -97,12 +102,14 @@ enum Event {
     Opened(Option<crate::CommitId>),
     Record(crate::Record),
     Child(crate::Child, wire::SessionCursor),
+    Publication(wire::SessionData),
 }
 type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
 type Source = crate::BoxProviderStream<'static, SourceItem>;
 
 struct Session<P: ?Sized> {
     provider: Arc<P>,
+    publications: Option<Arc<dyn PublicationProvider>>,
     executor: Arc<dyn runtime::Executor>,
     limits: Limits,
     node: String,
@@ -111,6 +118,7 @@ struct Session<P: ?Sized> {
     revision: u64,
     channels: BTreeMap<u64, Channel>,
     sources: sources::Sources,
+    terminals: sources::Sources,
     incoming: transport::Responses,
     credit: wire::SessionWindow,
     controls: VecDeque<wire::SessionFrame>,
@@ -130,8 +138,20 @@ pub fn serve<P: StreamProvider + ?Sized>(
     limits: Limits,
     incoming: transport::Responses,
 ) -> Result<transport::Responses, StreamError> {
-    serve_on(
+    serve_with_publications(provider, None, node, limits, incoming)
+}
+
+/// Opens a session with a filesystem publication provider.
+pub fn serve_with_publications<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    publications: Option<Arc<dyn PublicationProvider>>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+) -> Result<transport::Responses, StreamError> {
+    serve_on_with_publications(
         provider,
+        publications,
         node,
         limits,
         incoming,
@@ -140,6 +160,17 @@ pub fn serve<P: StreamProvider + ?Sized>(
 }
 fn serve_on<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+    executor: Arc<dyn runtime::Executor>,
+) -> Result<transport::Responses, StreamError> {
+    serve_on_with_publications(provider, None, node, limits, incoming, executor)
+}
+
+fn serve_on_with_publications<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    publications: Option<Arc<dyn PublicationProvider>>,
     node: String,
     limits: Limits,
     incoming: transport::Responses,
@@ -154,6 +185,7 @@ fn serve_on<P: StreamProvider + ?Sized>(
     }
     let session = Session {
         provider,
+        publications,
         executor,
         node,
         limits,
@@ -162,6 +194,7 @@ fn serve_on<P: StreamProvider + ?Sized>(
         revision: 0,
         channels: BTreeMap::new(),
         sources: sources::Sources::new(),
+        terminals: sources::Sources::new(),
         incoming,
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),
@@ -182,7 +215,7 @@ fn serve_on<P: StreamProvider + ?Sized>(
                 if let Some(frame) = session.ready()? {
                     return Ok(Some((frame, session)));
                 }
-                if session.sources.is_empty() {
+                if session.sources.is_empty() && session.terminals.is_empty() {
                     let Some(frame) = session.incoming.next().await else {
                         return Ok(None);
                     };
@@ -200,7 +233,9 @@ fn serve_on<P: StreamProvider + ?Sized>(
                     DATA_FRAME_BYTES,
                     session.credit.frames > 0 && session.credit.bytes > 0,
                 );
-                let source = session.sources.next(room);
+                let source = session
+                    .sources
+                    .next_with_control(&mut session.terminals, room);
                 let event = if session.prefer_control {
                     match future::select(input, source).await {
                         future::Either::Left((input, _)) => future::Either::Left(input),
@@ -304,7 +339,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             Body::Ack(ack) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
                 let applied = ack.applied.ok_or(StreamError::InvalidArgument)?;
-                if (!channel.children && !applied.opaque.is_empty())
+                if (!channel.opaque_cursor && !applied.opaque.is_empty())
                     || (applied.next == channel.sent.next && applied.opaque != channel.sent.opaque)
                     || applied.next < channel.applied.next
                     || applied.next > channel.sent.next
