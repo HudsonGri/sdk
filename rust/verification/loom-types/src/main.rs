@@ -200,6 +200,10 @@ fn main() -> std::process::ExitCode {
                 .lines()
                 .map(str::to_owned)
                 .collect();
+        // Metadata-only compilation deliberately has no exported codegen roots.
+        // Ask rustc's eager collector to include private bodies too: this analysis
+        // inspects every model body, rather than only linker-reachable functions.
+        args.push("-Clink-dead-code=yes".to_string());
         let directory =
             PathBuf::from(std::env::var("LOOM_MODEL_REPORTS").expect("report directory"));
         check.report = Some(directory.join(format!("{}.tsv", std::process::id())));

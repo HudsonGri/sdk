@@ -190,3 +190,20 @@ fn inlined_generic_instances_keep_their_enclosing_substitutions() {
         );
     }
 }
+
+#[test]
+fn metadata_analysis_includes_private_unreachable_callers() {
+    let helpers = "fn make<T: Default>() -> T { T::default() }";
+    let found = compile(&format!(
+        "{helpers} fn unused() {{ let _: std::sync::Mutex<()> = make(); }}"
+    ))
+    .unwrap();
+    assert!(
+        found
+            .iter()
+            .any(|(body, verdict)| body.rsplit("::").next() == Some("make") && verdict == "1"),
+        "{found:?}"
+    );
+    let plain = compile(&format!("{helpers} fn unused() {{ let _: u8 = make(); }}")).unwrap();
+    assert!(plain.values().all(|verdict| verdict == "0"), "{plain:?}");
+}
