@@ -337,6 +337,7 @@ dependencies = [
  "jsonschema",
  "keyring",
  "loom",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-build",

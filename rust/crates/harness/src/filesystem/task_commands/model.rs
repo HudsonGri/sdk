@@ -249,9 +249,8 @@ where
             .await;
         }
         BoundedContentFuture::new(io, || async {
-            let execution = self
-                .runtime
-                .stock_execution_with_context(
+            let execution = acyclic_fs::in_heap(|| {
+                self.runtime.stock_execution_with_context(
                     Arc::clone(&context),
                     fence.clone(),
                     turn,
@@ -261,18 +260,21 @@ where
                     tools,
                     command.selected_output_volume.as_ref(),
                 )
-                .await?
-                .with_compaction_policy(compaction.clone())
-                .with_summary_source(command.summary_source);
-            let execution = match command.max_output_tokens {
-                Some(maximum) => execution.with_max_output_tokens(maximum)?,
-                None => execution,
-            };
+            })
+            .await?;
+            let execution = execution.configure(
+                compaction.clone(),
+                command.summary_source,
+                command.max_output_tokens,
+            )?;
             if reconciliation_only {
-                let result = execution.reconcile_progress(input).await;
+                let result = acyclic_fs::in_heap(|| execution.reconcile_progress(input)).await;
                 return Self::reconcile_model(result.map(drop), require_journal()?, io).await;
             }
-            Self::model_progress(execution.execute_progress(input).await?, io)
+            Self::model_progress(
+                acyclic_fs::in_heap(|| execution.execute_progress(input)).await?,
+                io,
+            )
         })?
         .await
     }

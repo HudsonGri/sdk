@@ -148,7 +148,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         request: &ForkRequest,
         preparation: &Arc<TaskResourcePreparation>,
         io: Option<&PreparationIo>,
-    ) -> Result<ForkReport> {
+    ) -> Result<Box<ForkReport>> {
         let owned = if io.is_none() {
             self.preparation_io(Some(preparation))?
         } else {
@@ -156,11 +156,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         };
         let io = io.or(owned.as_ref());
         let attempt = self.task_attempt(preparation, request, io)?;
-        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-            io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
-        }
-        let request = with_history_io(io, |work| request.copy(work).map(|copy| copy.0))?;
-        attempt.prepare(request).await
+        let request = task_request(request, io)?;
+        // Boxed: the preparation's frame is not reserved in this one, and its
+        // request is moved into the box, not through this frame.
+        acyclic_fs::in_heap(|| attempt.prepare(*request)).await
     }
 
     /// Reconciles captures under their original settlement owner.
@@ -182,6 +181,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         attempt.verify_task_lease(true).await?;
         Ok(report)
     }
+}
+
+// The task's copy of its request is made in a frame of its own.
+#[inline(never)]
+fn task_request(request: &ForkRequest, io: Option<&PreparationIo>) -> Result<Box<ForkRequest>> {
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
+    }
+    with_history_io(io, |work| request.copy(work).map(|copy| Box::new(copy.0)))
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
@@ -359,7 +367,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.task_preparation,
         )
         .await?;
-        if prior != *request {
+        if *prior != *request {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Conflict,
@@ -372,7 +380,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         &self,
         journal: &WorkspaceRef,
         report: &ForkReport,
-    ) -> Result<ForkReport> {
+    ) -> Result<Box<ForkReport>> {
         let key = self.journal_key(report.request.operation_id, "report")?;
         let prior = write_once(
             &self.preparer.host,
@@ -386,7 +394,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.task_preparation,
         )
         .await?;
-        if prior != *report {
+        if *prior != *report {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Conflict,

@@ -118,9 +118,8 @@ pub(in crate::local) async fn project(mounts: &Mounts) -> Result<()> {
             // A Linux task view aliases the original binding; mount at that
             // binding's root, never below another owner-only FUSE mount.
             let root = projection_root(&source.destination, relative)?;
-            source
-                .project(root, relative, mount.mode.read_only())
-                .await?;
+            // Boxed: the native mount start is not reserved in this frame.
+            acyclic_fs::in_heap(|| source.project(root, relative, mount.mode.read_only())).await?;
         }
     }
     Ok(())
