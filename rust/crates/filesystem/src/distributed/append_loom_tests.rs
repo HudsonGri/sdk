@@ -26,11 +26,7 @@ fn proposal(authority: AuthorityId, expected: Head) -> crate::GuardedAppend {
     }
 }
 
-fn competing_proposal(
-    authority: AuthorityId,
-    head: Head,
-    work: &mut AuthorityWork<'_>,
-) -> CommitRequest {
+fn competing_proposal(authority: AuthorityId, head: Head) -> CommitRequest {
     let commit = proposal(authority, head).commit;
     let mut durable = DurableCommit {
         epoch: head.epoch,
@@ -77,58 +73,69 @@ fn competing_proposal(
                     .into(),
             ],
         }],
-        idempotency_key: super::replay::operation_key(authority, durable.operation_id, 0, work)
-            .unwrap(),
+        idempotency_key: acyclic_stream::IdempotencyKey::new(
+            [
+                b"operation\0".as_slice(),
+                &authority.into_bytes(),
+                &durable.operation_id.into_bytes(),
+            ]
+            .concat()
+            .into(),
+        )
+        .unwrap(),
     }
 }
 
 fn model(broken: bool, duplicate: bool) {
-    loom::model(move || {
+    let authority = AuthorityId::from_bytes([71; 16]);
+    let epoch = Epoch::GENESIS.get().to_le_bytes();
+    // Exact initial authority bytes, in one atomic setup publication. This
+    // bounds the model without replaying unrelated creation/codec checks.
+    let mut initial = CommitRequest {
+        conditions: vec![],
+        mutations: vec![],
+        idempotency_key: acyclic_stream::IdempotencyKey::new(
+            acyclic_stream::OwnedBytes::from_static(b"setup"),
+        )
+        .unwrap(),
+    };
+    for (suffix, bytes) in [
+        ("", AUTHORITY_MARKER.to_vec()),
+        ("/records", [GENESIS_DOMAIN, epoch.as_slice()].concat()),
+        ("/epochs", [EPOCH_DOMAIN, epoch.as_slice()].concat()),
+        ("/publication-gate", PUBLICATION_GATE_FREE.to_vec()),
+    ] {
+        let path = stream_path(authority, suffix).unwrap();
+        initial
+            .conditions
+            .push(CommitCondition::Absent { path: path.clone() });
+        initial.mutations.push(CommitMutation::Append {
+            path,
+            records: vec![bytes.into()],
+        });
+    }
+    let head = Head::genesis(Epoch::GENESIS);
+    let competing = duplicate.then(|| competing_proposal(authority, head));
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(2);
+    model.check(move || {
         LEGACY_KEY.with(|fault| fault.set(broken));
         // The actual MemoryStream uses its crate-local acyclic_loom shim. Its
         // provider retains its documented state -> watch lock order; no outer
-        // guard crosses a provider call.
-        // Each actor owns its AuthorityWork/cancellation state independently.
+        // guard crosses a provider call. Only modeled state is constructed here;
+        // request bytes and paths above are immutable across schedules.
         let stream = Arc::new(MemoryStream::default());
         let store = StreamAuthorityStore::new(stream.clone());
-        let authority = AuthorityId::from_bytes([71; 16]);
-        let epoch = Epoch::GENESIS.get().to_le_bytes();
-        // Exact initial authority bytes, in one atomic setup publication. This
-        // bounds the model without replaying unrelated creation/codec checks.
-        let mut initial = CommitRequest {
-            conditions: vec![],
-            mutations: vec![],
-            idempotency_key: acyclic_stream::IdempotencyKey::new(
-                acyclic_stream::OwnedBytes::from_static(b"setup"),
-            )
-            .unwrap(),
-        };
-        for (suffix, bytes) in [
-            ("", AUTHORITY_MARKER.to_vec()),
-            ("/records", [GENESIS_DOMAIN, epoch.as_slice()].concat()),
-            ("/epochs", [EPOCH_DOMAIN, epoch.as_slice()].concat()),
-            ("/publication-gate", PUBLICATION_GATE_FREE.to_vec()),
-        ] {
-            let path = stream_path(authority, suffix).unwrap();
-            initial
-                .conditions
-                .push(CommitCondition::Absent { path: path.clone() });
-            initial.mutations.push(CommitMutation::Append {
-                path,
-                records: vec![bytes.into()],
-            });
-        }
         assert!(matches!(
-            ready(stream.commit(initial)).unwrap(),
+            ready(stream.commit(initial.clone())).unwrap(),
             CommitOutcome::Committed(_)
         ));
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let head = Head::genesis(Epoch::GENESIS);
         // The competing writer's read-only preparation is immutable setup.
         // Race its actual atomic Stream publication against every read and
         // publication in the complete authority append/lookup/retry path.
-        let competing = duplicate.then(|| competing_proposal(authority, head, &mut work));
+        let competing = competing.clone();
         let writer = loom::thread::spawn(move || {
             if let Some(competing) = competing {
                 assert!(matches!(

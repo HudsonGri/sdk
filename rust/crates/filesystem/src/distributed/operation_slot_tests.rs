@@ -42,7 +42,10 @@ proptest! {
                 let key: IdempotencyKey = super::replay::operation_key(authority, operation, attempt, &mut work).unwrap();
                 // Retain an actual Streams conflict; its mutation never applies.
                 let rejected = stream.commit(CommitRequest {
-                    conditions: vec![CommitCondition::Tail { path: stream_path(authority, "/publication-gate").unwrap(), expected: 0 }],
+                    conditions: vec![
+                        CommitCondition::Tail { path: stream_path(authority, "/publication-gate").unwrap(), expected: 0 },
+                        CommitCondition::Tail { path: stream_path(authority, "/records").unwrap(), expected: 1 },
+                    ],
                     mutations: vec![CommitMutation::Append { path: stream_path(authority, "/records").unwrap(), records: vec![acyclic_stream::OwnedBytes::from_static(b"not published")] }],
                     idempotency_key: key,
                 }).await.unwrap();
