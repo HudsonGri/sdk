@@ -79,11 +79,30 @@ impl ExecutionSummary {
                     !self.tools.contains_key(&(*step, key))
                 }
             }
-            ExecutionEvent::ToolCompleted { step, call_id, .. }
-            | ExecutionEvent::ToolFailed { step, call_id, .. } => {
+            ExecutionEvent::ToolCompleted { step, call_id, .. } => {
                 let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                 tool_key = Some(key);
                 self.tools.get(&(*step, key)) == Some(&false)
+            }
+            // The length check short-circuits first, so the scan is bounded.
+            ExecutionEvent::ToolFailed {
+                step,
+                call_id,
+                reason,
+                cause,
+            } => {
+                let key = *blake3::hash(call_id.as_bytes()).as_bytes();
+                tool_key = Some(key);
+                // A refusal settles a call with no start; any other failure follows one.
+                let recorded = self.tools.get(&(*step, key));
+                self.tail > 0
+                    && !call_id.is_empty()
+                    && cause.is_canonical()
+                    && if reason.precedes_dispatch() {
+                        recorded.is_none()
+                    } else {
+                        recorded == Some(&false)
+                    }
             }
         };
         if let Some(io) = io {
@@ -95,7 +114,7 @@ impl ExecutionSummary {
             Err(canonical_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
-                "execution observation lacks its dispatch or reuses a start",
+                "execution observation lacks its dispatch, reuses a start or carries an unbounded cause",
             ))
         }
     }
@@ -175,7 +194,11 @@ impl ExecutionSummary {
                     (u32, crate::executor::ModelPurpose),
                     Option<ModelEventAdmission>,
                 )>(),
-                ExecutionEvent::ToolStarted { .. } => {
+                ExecutionEvent::ToolStarted { step, .. }
+                | ExecutionEvent::ToolCompleted { step, .. }
+                | ExecutionEvent::ToolFailed { step, .. }
+                    if tool_key.is_some_and(|key| !self.tools.contains_key(&(*step, key))) =>
+                {
                     std::mem::size_of::<((u32, [u8; 32]), bool)>()
                 }
                 _ => 0,
@@ -325,6 +348,9 @@ impl PreparationRecord for Observation {
                 "invalid_output",
                 "projection_rejected",
                 "publication_rejected",
+                "unavailable",
+                "invalid_input",
+                "refused",
             ];
             let mut bytes = 0;
             let mut remaining = labels.as_slice();

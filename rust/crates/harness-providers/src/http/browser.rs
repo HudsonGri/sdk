@@ -10,6 +10,8 @@ use web_sys::{
     AbortController, Headers, ReadableStreamDefaultReader, RequestCredentials, RequestInit,
     RequestRedirect, Response,
 };
+#[path = "browser_delay.rs"]
+mod timer;
 
 /// Browser HTTP with an explicitly owned fetch function.
 pub struct BrowserTransport(Function);
@@ -74,20 +76,35 @@ impl HttpTransport for BrowserTransport {
                     init.as_ref(),
                 )
                 .map_err(|_| {
-                    acyclic_harness::Error::Storage("browser model dispatch failed".into())
+                    crate::transport_failure(
+                        false,
+                        acyclic_harness::ModelTransportFailure::Interrupted,
+                        "browser model dispatch failed",
+                    )
                 })?;
             let response = JsFuture::from(Promise::resolve(&response))
                 .await
                 .map_err(|_| {
-                    acyclic_harness::Error::Storage("browser model exchange failed".into())
+                    crate::transport_failure(
+                        false,
+                        acyclic_harness::ModelTransportFailure::Interrupted,
+                        "browser model exchange failed",
+                    )
                 })?
                 .dyn_into::<Response>()
                 .map_err(|_| invalid("fetch did not return a Response"))?;
             let status = response.status();
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .ok()
+                .flatten()
+                .and_then(|value| crate::retry::retry_after(&value));
             let Some(body) = response.body() else {
                 return Ok(HttpResponse {
                     status,
                     body: Box::pin(futures::stream::empty()),
+                    retry_after,
                 });
             };
             let reader = body
@@ -101,7 +118,11 @@ impl HttpTransport for BrowserTransport {
                 },
                 |body| async move {
                     let chunk = JsFuture::from(body.reader.read()).await.map_err(|_| {
-                        acyclic_harness::Error::Storage("browser model body interrupted".into())
+                        crate::transport_failure(
+                            false,
+                            acyclic_harness::ModelTransportFailure::Interrupted,
+                            "browser model body interrupted",
+                        )
                     })?;
                     let done = Reflect::get(&chunk, &JsValue::from_str("done"))
                         .map_err(|_| invalid("invalid browser stream result"))?;
@@ -118,8 +139,17 @@ impl HttpTransport for BrowserTransport {
             Ok(HttpResponse {
                 status,
                 body: Box::pin(body),
+                retry_after,
             })
         })
+    }
+
+    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+        Box::pin(timer::delay(duration))
+    }
+
+    fn now(&self) -> std::time::Duration {
+        timer::now()
     }
 }
 

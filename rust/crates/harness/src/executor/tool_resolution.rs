@@ -58,7 +58,10 @@ impl StockExecution<'_> {
         }
     }
 
-    pub(super) async fn reject_tool_call<T>(
+    /// Settles an admitted call as failed. The model receives `reason` and the bounded, sanitized
+    /// cause as the call's result and the turn continues; only the journal append itself can
+    /// still fail the command.
+    pub(super) async fn reject_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
@@ -66,10 +69,47 @@ impl StockExecution<'_> {
         call_id: &str,
         reason: ToolFailureKind,
         error: Error,
-    ) -> Result<T> {
+    ) -> Result<crate::model::ToolResultContent> {
         if error.is_native_failure() {
             return Err(error);
         }
+        self.settle_tool_failure(journal, operation_id, step, call_id, reason, error)
+            .await
+    }
+
+    /// Records `error` as the call's failure. Callers pass only a definitive cause the model
+    /// can act on: a schema violation split from schema failures, or a non-native error.
+    pub(super) async fn settle_tool_failure(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+        reason: ToolFailureKind,
+        error: Error,
+    ) -> Result<crate::model::ToolResultContent> {
+        tracing::warn!(
+            %operation_id,
+            call_id,
+            ?reason,
+            cause = ?error,
+            "tool call failed; returning the failure to the model"
+        );
+        let cause = with_history_io(self.io, |work| ToolFailureCause::of(&error, work))?;
+        self.settle_tool_cause(journal, operation_id, step, call_id, reason, cause)
+            .await
+    }
+
+    /// Appends the call's failure with its bounded cause, unless the call is already settled.
+    pub(super) async fn settle_tool_cause(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+        reason: ToolFailureKind,
+        cause: ToolFailureCause,
+    ) -> Result<crate::model::ToolResultContent> {
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
@@ -87,20 +127,18 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
+        let content = tool_failure_content(reason, &cause, self.io)?;
         let event = ExecutionEvent::ToolFailed {
             step,
             call_id: stock_string_copy(call_id, self.io)?,
             reason,
+            cause,
         };
         match journal
             .append_if_tail(operation_id, tail, &key, &event, self.io)?
             .await
         {
-            Ok(true) => Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                reason.message(),
-            )),
+            Ok(true) => Ok(content),
             Err(error) if !error.leaves_effect_uncertain() => Err(error),
             Ok(false) | Err(_) => Err(Error::Indeterminate(operation_id)),
         }
@@ -114,16 +152,16 @@ impl StockExecution<'_> {
         call: &str,
         kind: &str,
         value: &T,
-    ) -> Result<FileRef> {
+    ) -> Result<std::result::Result<FileRef, crate::model::ToolResultContent>> {
         let key = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:{step}:{call}:{kind}"), work)
         })?;
         match stage_json(journal, operation, &key, value, self.io).await {
-            Ok(reference) => Ok(reference),
+            Ok(reference) => Ok(Ok(reference)),
             Err(error) if error.is_native_failure() => Err(error),
             Err(error) if error.leaves_effect_uncertain() => Err(Error::Indeterminate(operation)),
-            Err(error) => {
-                self.reject_tool_call(
+            Err(error) => self
+                .reject_tool_call(
                     journal,
                     operation,
                     step,
@@ -132,7 +170,7 @@ impl StockExecution<'_> {
                     error,
                 )
                 .await
-            }
+                .map(Err),
         }
     }
 

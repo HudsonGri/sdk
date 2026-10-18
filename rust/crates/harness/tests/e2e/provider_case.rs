@@ -18,6 +18,15 @@ pub struct ProviderCase {
     pub prompt: String,
     pub seed: BTreeMap<String, String>,
     pub responses: Vec<Vec<String>>,
+    /// HTTP status of each response; omitted statuses are 200.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub statuses: Vec<u16>,
+    /// Leading exchanges, counts included, refused for want of a connection.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unreachable: u8,
+    /// Ascending indices of responses whose body falls silent after its bytes, never ending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stalls: Vec<usize>,
     pub chunk_bytes: NonZeroUsize,
     /// Registered tools beyond the defaults, named like installed MCP tools.
     #[serde(default)]
@@ -35,15 +44,70 @@ pub struct Expectations {
     pub frames: Vec<Value>,
     pub statuses: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
+    #[serde(default, skip_serializing_if = "is_succeeded")]
+    pub outcome: super::local_case::ExpectedOutcome,
+}
+
+fn is_zero(count: &u8) -> bool {
+    *count == 0
+}
+
+fn is_succeeded(outcome: &super::local_case::ExpectedOutcome) -> bool {
+    *outcome == super::local_case::ExpectedOutcome::Succeeded
+}
+
+impl ProviderCase {
+    /// Status of response `index`.
+    pub fn status(&self, index: usize) -> u16 {
+        self.statuses.get(index).copied().unwrap_or(200)
+    }
+    /// Whether response `index` ends: it is accepted and its body does not stall.
+    pub fn completes(&self, index: usize) -> bool {
+        self.status(index) == 200 && !self.stalls.contains(&index)
+    }
+    /// Responses that complete a model step; refused or stalled ones fail or are redelivered.
+    pub fn completed_steps(&self) -> usize {
+        (0..self.responses.len())
+            .filter(|&index| self.completes(index))
+            .count()
+    }
 }
 
 impl ProviderCase {
     pub fn validate(&self) -> Result<(), &'static str> {
+        let succeeded = self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded;
+        // No response is consumed only when every attempt was refused.
+        if self.responses.is_empty() {
+            return if self.prompt.is_empty()
+                || succeeded
+                || self.unreachable == 0
+                || !self.statuses.is_empty()
+                || !self.expect.events.is_empty()
+                || !self.expect.requests.is_empty()
+                || self.expect.frames.is_empty()
+                || self.expect.statuses.len() < 2
+            {
+                Err("invalid bounded provider scenario")
+            } else {
+                Ok(())
+            };
+        }
         if self.prompt.is_empty()
-            || self.responses.is_empty()
             || self.responses.len() > 8
             || self.responses.len() != self.expect.events.len()
             || self.responses.len() != self.expect.requests.len()
+            || self.statuses.len() > self.responses.len()
+            || self
+                .statuses
+                .iter()
+                .any(|status| !(200..600).contains(status))
+            || !self.stalls.is_sorted_by(|before, after| before < after)
+            || self
+                .stalls
+                .last()
+                .is_some_and(|last| *last >= self.responses.len())
+            || (self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded)
+                != self.completes(self.responses.len() - 1)
             || self.responses.iter().any(|response| {
                 response.is_empty() || response.iter().map(String::len).sum::<usize>() > 1_048_576
             })

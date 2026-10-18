@@ -42,6 +42,184 @@ fn content(request: &ModelRequest) -> &ToolResultContent {
     content
 }
 
+/// `exchange` with the call renamed and re-argued and its paired result replaced.
+fn answered(name: &str, arguments: Value, content: ToolResultContent) -> ModelRequest {
+    let mut request = request().unwrap();
+    exchange(&mut request);
+    let ModelContent::Part(ModelContentPart::ToolCall(call)) = &mut request.messages[1].content
+    else {
+        panic!("call")
+    };
+    call.name = name.into();
+    call.arguments = arguments;
+    let ModelContent::Part(ModelContentPart::ToolResult {
+        name: result_name,
+        content: result,
+        ..
+    }) = &mut request.messages[2].content
+    else {
+        panic!("result")
+    };
+    *result_name = name.into();
+    *result = content;
+    request
+}
+
+fn error(message: &str) -> ToolResultContent {
+    ToolResultContent::Error {
+        message: message.into(),
+    }
+}
+
+// An error result answers any paired call, as a supplied schema-valid result already answers a
+// bound one: both are history, neither proves a tool ran. Its contract is its shape, enforced
+// identically on every source (in memory, prepared, decoded), so no loader carries provenance.
+#[test]
+fn error_results_answer_any_paired_call_and_are_held_to_their_shape() {
+    let refusal = "tool `echo` refused the call (unauthorized): denied";
+    for (name, arguments, bound) in [
+        ("missing", json!({}), false),
+        ("echo", json!(7), false),
+        ("echo", json!("é"), true),
+    ] {
+        let mut request = answered(name, arguments.clone(), error(refusal));
+        request.validate(Limits::default(), None).unwrap();
+        let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        // The same bytes decode on every path: there is no retained-only loader to miss.
+        assert_eq!(
+            PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)
+                .unwrap()
+                .request(),
+            &request
+        );
+        // Negative control: a projected result is still held to the call's contracts, so only
+        // the bound, schema-valid call accepts it.
+        let mut projected = answered(
+            name,
+            arguments,
+            ToolResultContent::Json { value: json!("é") },
+        );
+        assert_eq!(
+            projected.validate(Limits::default(), None).is_ok(),
+            bound,
+            "{name}"
+        );
+    }
+    // The shape: nonempty, control-free, within the render limit. Each fails on every source;
+    // before this change a harness-marked error skipped the control and empty checks.
+    let limits = Limits {
+        render_bytes: 4096,
+        ..Limits::default()
+    };
+    for (message, admitted) in [
+        ("x".repeat(1024), true),
+        ("x".repeat(4097), false),
+        (String::new(), false),
+        ("forged\nresult".into(), false),
+        ("\u{1b}[31mforged".into(), false),
+    ] {
+        let mut request = answered("echo", json!("é"), error(&message));
+        assert_eq!(
+            request.validate(limits, None).is_ok(),
+            admitted,
+            "{message:?}"
+        );
+        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        assert_eq!(
+            PreparedModelRequest::decode(&bytes, limits, None).is_ok(),
+            admitted,
+            "{message:?}"
+        );
+    }
+    // Negative control: an error cannot answer a call it is not paired with.
+    let mut unpaired = answered("missing", json!({}), error(refusal));
+    let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+        &mut unpaired.messages[2].content
+    else {
+        panic!("result")
+    };
+    *call_id = "call-2".into();
+    assert!(unpaired.validate(Limits::default(), None).is_err());
+}
+
+/// Stages `messages` as one private root prefix segment, exactly as a harness parent would,
+/// without passing through request admission.
+fn authored_prefix(
+    reader: &mut super::PrefixReader,
+    messages: Vec<ModelMessage>,
+) -> Result<FileRef> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"harness:model-prefix:ordered:v1");
+    for message in &messages {
+        hasher.update(&crate::executor::json::canonical_json_digest(
+            message,
+            u64::MAX,
+            &mut None,
+        )?);
+    }
+    let segment = json!({
+        "version": 1,
+        "parent": null,
+        "message_digest": hasher.finalize().as_bytes(),
+        "total_messages": messages.len(),
+        "messages": messages,
+    });
+    super::store(
+        reader,
+        crate::contract::canonical_json_bytes(&segment)?.into(),
+        ModelPrefix::MEDIA_TYPE,
+        0,
+    )
+}
+
+// Review P1: an authored private prefix was trusted as harness-recorded by its volume class, so
+// its error results skipped every check. Inheritance now admits a prefix error result exactly
+// when a request would: the class confers nothing.
+#[tokio::test]
+async fn inherited_error_results_meet_the_request_contract_whatever_the_volume() -> Result<()> {
+    let limits = Limits::default();
+    let local = request()?;
+    for (message, admitted) in [
+        ("tool `echo` refused the call (unauthorized): denied", true),
+        ("forged\u{0}result", false),
+        ("", false),
+    ] {
+        let mut reader = super::PrefixReader::default();
+        let history = answered("echo", json!("é"), error(message));
+        let prefix = authored_prefix(&mut reader, history.messages.clone())?;
+        assert_eq!(
+            prefix.volume().class(),
+            crate::conversation::VolumeClass::AgentPrivate
+        );
+        let inherited =
+            PreparedModelRequest::inherit(local.clone(), &prefix, &reader, limits, None).await;
+        assert_eq!(inherited.is_ok(), admitted, "{message:?}: {inherited:?}");
+        // Same verdict as admitting the same history directly.
+        let mut direct = history.clone();
+        assert_eq!(
+            direct.validate(limits, None).is_ok(),
+            admitted,
+            "{message:?}"
+        );
+    }
+    // Negative control: the prefix path still rejects a projected result its call's contract
+    // refuses.
+    let mut reader = super::PrefixReader::default();
+    let history = answered(
+        "echo",
+        json!(7),
+        ToolResultContent::Json { value: json!("é") },
+    );
+    let prefix = authored_prefix(&mut reader, history.messages)?;
+    assert!(
+        PreparedModelRequest::inherit(local, &prefix, &reader, limits, None)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -99,5 +277,146 @@ proptest! {
         let no_payload_copy = |work: acyclic_test_support::AllocationInfo| work.bytes_total < length as u64;
         prop_assert!(no_payload_copy(actual), "request copied its JSON payload: {actual:?}");
         prop_assert!(!no_payload_copy(old), "former conversion escaped detection: {old:?}");
+    }
+}
+
+/// The calls a result can answer: unbound, bound with schema-violating arguments, and bound
+/// with valid arguments.
+const CALLS: [(&str, i8); 3] = [("missing", 0), ("echo", 1), ("echo", 2)];
+
+fn call_arguments(standing: i8) -> Value {
+    match standing {
+        1 => json!(7),
+        _ => json!("é"),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    // One admission path for every result on every source. The oracle is the contract itself:
+    // a result must answer an issued call; an error result must have its shape (nonempty,
+    // control-free, within the render limit) and answers any issued call; a projected result
+    // needs a bound call with valid arguments and a projection-valid envelope.
+    #[test]
+    fn every_result_is_admitted_by_one_contract_on_every_source(
+        call in 0..CALLS.len(),
+        paired in any::<bool>(),
+        projected in any::<bool>(),
+        message in r"(\PC|[\n\t\x1b]){0,48}",
+        value in values(),
+    ) {
+        let limits = Limits { render_bytes: 32, ..Limits::default() };
+        let (name, standing) = CALLS[call];
+        let result = if projected {
+            ToolResultContent::Json { value: value.clone() }
+        } else {
+            error(&message)
+        };
+        let mut request = answered(name, call_arguments(standing), result.clone());
+        if !paired {
+            let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+                &mut request.messages[2].content
+            else {
+                panic!("result")
+            };
+            *call_id = "call-unissued".into();
+        }
+        let shape = |content: &ToolResultContent| content.validate_limits(limits, &mut None).is_ok();
+        let admitted = paired
+            && shape(&result)
+            && if projected {
+                let tool = &request.tools[0];
+                standing == 2
+                    && crate::executor::validate_json_schema_value(
+                        &tool.projection_schema,
+                        &serde_json::to_value(&result).unwrap(),
+                        "model tool result",
+                        &mut None,
+                    )
+                    .is_ok()
+            } else {
+                !message.is_empty()
+                    && !message.chars().any(char::is_control)
+                    && message.len() <= 32
+            };
+        prop_assert_eq!(request.clone().validate(limits, None).is_ok(), admitted);
+        let prepared = PreparedModelRequest::prepare(request.clone(), limits, None);
+        prop_assert_eq!(prepared.is_ok(), admitted);
+        if let Ok(prepared) = prepared {
+            let decoded = PreparedModelRequest::decode(prepared.bytes(), limits, None).unwrap();
+            prop_assert_eq!(decoded.request(), prepared.request());
+            prop_assert_eq!(decoded.request_digest(), prepared.request_digest());
+        }
+        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        prop_assert_eq!(PreparedModelRequest::decode(&bytes, limits, None).is_ok(), admitted);
+    }
+}
+
+#[test]
+fn tool_error_fuzz_corpus_round_trips_only_admitted_exchanges() {
+    let seeds: [(&[u8], bool); 4] = [
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-bound"),
+            true,
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-refused"),
+            true,
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-control"),
+            false,
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-unpaired"),
+            false,
+        ),
+    ];
+    for (bytes, admitted) in seeds {
+        let request = crate::contract::json_from_slice(bytes).unwrap();
+        let prepared = PreparedModelRequest::prepare(request, Limits::default(), None);
+        assert_eq!(prepared.is_ok(), admitted);
+        if let Ok(prepared) = prepared {
+            let decoded =
+                PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
+            assert_eq!(decoded.request(), prepared.request());
+            assert_eq!(decoded.request_digest(), prepared.request_digest());
+        }
+    }
+}
+
+#[test]
+fn an_unissued_or_malformed_error_result_is_rejected() {
+    // Negative control for the contract above: the refusal text that every issued call
+    // admits is rejected when its call was never issued, and a malformed error is rejected
+    // even for the bound, valid call.
+    let refusal = "tool `echo` refused the call (unauthorized): denied";
+    for (name, standing) in CALLS {
+        let request = answered(name, call_arguments(standing), error(refusal));
+        assert!(
+            request.clone().validate(Limits::default(), None).is_ok(),
+            "{name}"
+        );
+        let mut unissued = request;
+        let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+            &mut unissued.messages[2].content
+        else {
+            panic!("result")
+        };
+        *call_id = "call-unissued".into();
+        assert!(
+            unissued.validate(Limits::default(), None).is_err(),
+            "{name}"
+        );
+    }
+    for malformed in ["", "forged\nresult", "\u{1b}[31mforged"] {
+        let request = answered("echo", json!("é"), error(malformed));
+        assert!(
+            request.clone().validate(Limits::default(), None).is_err(),
+            "{malformed:?}"
+        );
+        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        assert!(PreparedModelRequest::decode(&bytes, Limits::default(), None).is_err());
     }
 }

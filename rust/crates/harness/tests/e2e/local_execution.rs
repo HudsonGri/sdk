@@ -93,14 +93,14 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     match (case.expect.outcome, output) {
         (ExpectedOutcome::Succeeded, Ok(output))
             if Some(&output.text) == case.expect.text.as_ref() => {}
+        (ExpectedOutcome::Failed, Err(acyclic_harness::Error::TaskFailed { task, .. }))
+            if task == task_id => {}
+        // A local turn is uncertain only through a command, so the caller sees its cause.
         (
             ExpectedOutcome::Indeterminate,
-            Err(
-                acyclic_harness::Error::Indeterminate(id)
-                | acyclic_harness::Error::CommandIndeterminate {
-                    operation_id: id, ..
-                },
-            ),
+            Err(acyclic_harness::Error::CommandIndeterminate {
+                operation_id: id, ..
+            }),
         ) if id == operation => {}
         (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
     }
@@ -398,6 +398,13 @@ pub(crate) fn check_frames(
             ExpectedOutcome::Succeeded,
             acyclic_harness::scheduler::SchedulerEvent::Completed {
                 outcome: acyclic_harness::Outcome::Succeeded(_),
+                ..
+            },
+        ) => {}
+        (
+            ExpectedOutcome::Failed,
+            acyclic_harness::scheduler::SchedulerEvent::Completed {
+                outcome: acyclic_harness::Outcome::Failed { .. },
                 ..
             },
         ) => {}

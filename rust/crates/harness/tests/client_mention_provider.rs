@@ -23,10 +23,17 @@ use std::{
 
 struct Script(mpsc::Sender<HttpRequest>);
 impl HttpTransport for Script {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(futures::future::pending())
+    }
+    fn now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             self.0.send(request).expect("request receiver retained");
             Ok(HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: Box::pin(futures::stream::iter([Ok(bytes::Bytes::from_static(concat!(
                     "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
@@ -127,6 +134,8 @@ async fn scenario(
                 framing_tokens: 0,
             }),
             max_event_bytes: 4096,
+            retry: acyclic_harness_providers::RetrySpec::DEFAULT,
+            timeouts: acyclic_harness_providers::TimeoutSpec::DEFAULT,
         },
     )?;
     let provider = registry.resolve("scripted/model")?;

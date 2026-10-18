@@ -12,6 +12,12 @@ struct Refresh {
 }
 
 impl HttpTransport for Refresh {
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             self.sent
@@ -21,6 +27,7 @@ impl HttpTransport for Refresh {
             tokio::task::yield_now().await;
             let chunk = Bytes::from(self.response.to_string());
             Ok(HttpResponse {
+                retry_after: None,
                 status: self.status,
                 body: Box::pin(futures::stream::once(async { Ok(chunk) })),
             })
@@ -153,6 +160,8 @@ async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
     Ok(())
 }
 
+#[path = "codex_failure_tests.rs"]
+mod failures;
 #[path = "codex_race_tests.rs"]
 mod races;
 

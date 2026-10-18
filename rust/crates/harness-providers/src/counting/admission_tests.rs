@@ -76,9 +76,16 @@ struct CountResponse {
     empty_chunks: usize,
 }
 impl HttpTransport for CountResponse {
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             Ok(HttpResponse {
+                retry_after: None,
                 status: self.status,
                 body: Box::pin(
                     futures::stream::repeat_with(|| Ok(Bytes::new()))
@@ -95,22 +102,29 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     for (status, code) in [
         (401, acyclic_harness::wire::ErrorCode::Unauthorized),
         (403, acyclic_harness::wire::ErrorCode::Unauthorized),
-        (408, acyclic_harness::wire::ErrorCode::Storage),
-        (429, acyclic_harness::wire::ErrorCode::Storage),
-        (503, acyclic_harness::wire::ErrorCode::Storage),
+        (408, acyclic_harness::wire::ErrorCode::Unavailable),
+        (429, acyclic_harness::wire::ErrorCode::Unavailable),
+        (503, acyclic_harness::wire::ErrorCode::Unavailable),
         (400, acyclic_harness::wire::ErrorCode::Invalid),
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
-        provider.transport = Arc::new(CountResponse {
-            status,
-            body: b"fixture-secret",
-            empty_chunks: 0,
-        });
+        provider.transport = crate::deadline::Bounded::new(
+            Arc::new(CountResponse {
+                status,
+                body: b"fixture-secret",
+                empty_chunks: 0,
+            }),
+            crate::TimeoutSpec::DEFAULT,
+        );
         let (request, _) = request(&provider)?;
         let error = provider.count_tokens(&request).await.unwrap_err();
         assert_eq!(error.code(), code);
         assert!(error.to_string().contains(&status.to_string()));
-        assert!(!error.to_string().contains("fixture-secret"));
+        // Only a refusal carries its bounded body excerpt, as on dispatch.
+        assert_eq!(
+            error.to_string().contains("fixture-secret"),
+            code == acyclic_harness::wire::ErrorCode::Unavailable
+        );
     }
     for body in [
         b"{\"input_tokens\":-1}".as_slice(),
@@ -118,29 +132,89 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         b"{\"input_tokens\":9007199254740992}",
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);
-        provider.transport = Arc::new(CountResponse {
-            status: 200,
-            body,
-            empty_chunks: 0,
-        });
+        provider.transport = crate::deadline::Bounded::new(
+            Arc::new(CountResponse {
+                status: 200,
+                body,
+                empty_chunks: 0,
+            }),
+            crate::TimeoutSpec::DEFAULT,
+        );
         let (request, _) = request(&provider)?;
         assert!(provider.count_tokens(&request).await.is_err());
     }
     let (mut provider, _) = provider(Adapter::Responses, 200);
     Arc::make_mut(&mut provider.config).max_event_bytes = 8;
-    provider.transport = Arc::new(CountResponse {
-        status: 200,
-        body: b"{\"input_tokens\":1}",
-        empty_chunks: 0,
-    });
+    provider.transport = crate::deadline::Bounded::new(
+        Arc::new(CountResponse {
+            status: 200,
+            body: b"{\"input_tokens\":1}",
+            empty_chunks: 0,
+        }),
+        crate::TimeoutSpec::DEFAULT,
+    );
     let (request, _) = request(&provider)?;
     assert!(provider.count_tokens(&request).await.is_err());
-    provider.transport = Arc::new(CountResponse {
-        status: 200,
-        body: b"",
-        empty_chunks: 9,
-    });
+    provider.transport = crate::deadline::Bounded::new(
+        Arc::new(CountResponse {
+            status: 200,
+            body: b"",
+            empty_chunks: 9,
+        }),
+        crate::TimeoutSpec::DEFAULT,
+    );
     let error = provider.count_tokens(&request).await.unwrap_err();
     assert!(error.to_string().contains("item limit"));
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn count_body_failures_share_the_exchange_attempt_budget(
+        failures in 0..6usize, budget in 0..5u8, timeout in proptest::prelude::any::<bool>(),
+        partial in proptest::prelude::any::<bool>(), definitive in proptest::prelude::any::<bool>(),
+    ) {
+        struct CountBody {
+            sent: std::sync::atomic::AtomicUsize,
+            failures: usize, timeout: bool, partial: bool, definitive: bool,
+        }
+        impl HttpTransport for CountBody {
+            fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+                crate::fixtures::delay(wait)
+            }
+            fn now(&self) -> std::time::Duration {
+                crate::fixtures::now()
+            }
+            fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+                let attempt = self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    let body: acyclic_stream::BoxProviderStream<'static, Result<Bytes>> = if attempt < self.failures {
+                        let failure = if self.definitive { invalid("malformed count") } else {
+                            crate::transport_failure(false, if self.timeout {
+                                acyclic_harness::ModelTransportFailure::Timeout
+                            } else { acyclic_harness::ModelTransportFailure::Interrupted }, "count body failed")
+                        };
+                        Box::pin(futures::stream::iter(self.partial.then(|| Ok(Bytes::from_static(b"{\"input_tokens\":"))))
+                            .chain(futures::stream::once(async { Err(failure) })))
+                    } else {
+                        Box::pin(futures::stream::iter([Ok(Bytes::from_static(b"{\"input_tokens\":7}"))]))
+                    };
+                    Ok(HttpResponse { status: 200, body, retry_after: None })
+                })
+            }
+        }
+        let (mut provider, _) = provider(Adapter::Responses, 200);
+        Arc::make_mut(&mut provider.config).retry.attempts = budget;
+        let transport = Arc::new(CountBody {
+            sent: std::sync::atomic::AtomicUsize::new(0), failures, timeout, partial, definitive,
+        });
+        provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
+        let (request, _) = request(&provider).unwrap();
+        let result = futures::executor::block_on(provider.count_tokens(&request));
+        let expected = if definitive && failures > 0 { 1 } else { (failures + 1).min(usize::from(budget) + 1) };
+        proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
+        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!definitive && failures <= usize::from(budget)));
+        if let Ok(count) = result { proptest::prop_assert_eq!(count.input_tokens, 7); }
+    }
 }

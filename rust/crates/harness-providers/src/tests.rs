@@ -40,12 +40,17 @@ mod gemini_tests;
 #[path = "input/projection_tests.rs"]
 mod input_projection_tests;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "native_retry_tests.rs"]
+mod native_retry_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 pub(crate) mod native_tests;
 #[path = "input/portable_projection_tests.rs"]
 mod portable_projection_tests;
 #[path = "tool_name_tests.rs"]
 pub(crate) mod tool_name_tests;
+#[path = "transport_tests.rs"]
+mod transport_tests;
 
 #[path = "ordered_parts_tests.rs"]
 mod ordered_parts_tests;
@@ -221,6 +226,12 @@ struct Script {
 }
 
 impl HttpTransport for Script {
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             if let Some(response) = fixture_count(&request) {
@@ -236,6 +247,7 @@ impl HttpTransport for Script {
                 .ok_or_else(|| invalid("missing fixture"))?
                 .1;
             Ok(HttpResponse {
+                retry_after: None,
                 status: self.status,
                 body: chunks(fixture, 1),
             })
@@ -257,6 +269,7 @@ fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
     )
     .unwrap();
     Some(HttpResponse {
+        retry_after: None,
         status: 200,
         body: Box::pin(futures::stream::iter([Ok(body.into())])),
     })
@@ -268,7 +281,16 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         status,
         sent: Mutex::new(Vec::new()),
     });
-    let provider = ResolvedModel {
+    let provider = provider_with(adapter, "http://127.0.0.1:1234/v1", script.clone());
+    (provider, script)
+}
+
+pub(super) fn provider_with(
+    adapter: Adapter,
+    base_url: &str,
+    transport: Arc<dyn HttpTransport>,
+) -> ResolvedModel {
+    ResolvedModel {
         files: crate::files::Files::default(),
         estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(adapter)),
         model: Model {
@@ -280,7 +302,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         config: Arc::new(ProviderSpec {
             adapter,
             authentication: Authentication::ApiKey,
-            base_url: "http://127.0.0.1:1234/v1".into(),
+            base_url: base_url.into(),
             headers: BTreeMap::new(),
             models: BTreeMap::new(),
             token_counter: Some(crate::TokenCounterSpec {
@@ -290,19 +312,20 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
                 framing_tokens: 0,
             }),
             max_event_bytes: 4096,
+            retry: crate::RetrySpec::DEFAULT,
+            timeouts: crate::TimeoutSpec::DEFAULT,
         }),
         capacity: ModelContextCapacity {
             context_tokens: 8192,
             output_tokens: 1024,
         },
         key: Some("scripted-key".into()),
-        transport: script.clone(),
+        transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
         #[cfg(not(target_arch = "wasm32"))]
         codex_count: std::sync::Arc::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
-    };
-    (provider, script)
+    }
 }
 
 pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
@@ -479,6 +502,8 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
             framing_tokens: 0,
         }),
         max_event_bytes: 4096,
+        retry: crate::RetrySpec::DEFAULT,
+        timeouts: crate::TimeoutSpec::DEFAULT,
     };
     for base in [
         "http://example.test",

@@ -19,6 +19,42 @@ pub enum InteractionRejection {
     Denied,
 }
 
+/// How a model provider exchange failed, with its retryability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelTransportFailure {
+    /// The provider answered with this refusal status: 408, 429 or 5xx.
+    Status(u16),
+    /// No connection was established, so the request never left this host.
+    Connect,
+    /// The exchange timed out.
+    Timeout,
+    /// TLS negotiation with the provider failed.
+    Tls,
+    /// The connection failed after the request was sent, or the response body was cut off.
+    Interrupted,
+}
+
+impl ModelTransportFailure {
+    /// Whether redelivery may clear the failure. TLS failures are not retryable: a retry meets
+    /// the same peer and configuration.
+    #[must_use]
+    pub const fn retryable(self) -> bool {
+        !matches!(self, Self::Tls)
+    }
+}
+
+impl std::fmt::Display for ModelTransportFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Status(status) => write!(formatter, "HTTP {status}"),
+            Self::Connect => formatter.write_str("connection failed"),
+            Self::Timeout => formatter.write_str("timed out"),
+            Self::Tls => formatter.write_str("TLS failed"),
+            Self::Interrupted => formatter.write_str("connection interrupted"),
+        }
+    }
+}
+
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -42,6 +78,28 @@ pub enum Error {
     /// Automatic admission stopped with a file-driven blocked goal.
     #[error("goal blocked: {0}")]
     GoalBlocked(crate::goal::GoalBlockedReason),
+    /// The model provider refused or could not take the request, after bounded redelivery of a
+    /// retryable failure or once output had begun. A definitive failure: the provider performed
+    /// no effect for the harness to reconcile.
+    #[error("model provider unavailable ({failure}){}", if excerpt.is_empty() { String::new() } else { format!(": {excerpt}") })]
+    ModelUnavailable {
+        /// How the exchange failed.
+        failure: ModelTransportFailure,
+        /// Bounded, control-free excerpt of the response body or the transport's root cause.
+        excerpt: String,
+    },
+    /// A definitive provider rejection funded by the original ledger, rather than an
+    /// accounting failure. Its diagnostic survives until task settlement.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{message}")]
+    ModelDiagnostic {
+        /// The provider's original semantic classification.
+        code: crate::wire::ErrorCode,
+        /// Original diagnostic, moved without copying.
+        message: String,
+        /// Original custody, released after the diagnostic.
+        custody: acyclic_fs::NativeAllocation,
+    },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -55,8 +113,13 @@ pub enum Error {
     #[error("invalid request: {0}")]
     Invalid(String),
     /// A definitive tool rejection; safe to journal without allocating a diagnostic.
-    #[error("tool rejected: {0}")]
-    ToolRejected(&'static str),
+    #[error("tool rejected: {reason}")]
+    ToolRejected {
+        /// The ordinary tool failure classification.
+        code: crate::wire::ErrorCode,
+        /// Fixed cause; no diagnostic allocation is needed.
+        reason: &'static str,
+    },
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -392,7 +455,7 @@ impl Error {
     #[must_use]
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
-        match self {
+        match self.cause() {
             Self::TaskFiles(error) => match error.as_ref() {
                 #[cfg(feature = "filesystem")]
                 crate::task_volume::Error::FileRead(error) => error.code(),
@@ -412,8 +475,11 @@ impl Error {
             Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
                 ErrorCode::Unsupported
             }
-            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
+            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::ToolRejected { code, .. } => *code,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
+            Self::ModelUnavailable { .. } => ErrorCode::Invalid,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
@@ -433,7 +499,8 @@ impl Error {
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeBoundary { code, .. }
+            Self::ModelDiagnostic { code, .. }
+            | Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
@@ -470,10 +537,23 @@ impl Error {
         self.code().as_str_name()
     }
 
+    /// The error a task-file read wraps, peeled recursively. The wire code and the uncertainty
+    /// classes all read through this one function, so a wrapped cause keeps its class.
+    fn cause(&self) -> &Self {
+        match self {
+            #[cfg(feature = "filesystem")]
+            Self::TaskFiles(error) => match error.as_ref() {
+                crate::task_volume::Error::FileRead(inner) => inner.cause(),
+                _ => self,
+            },
+            _ => self,
+        }
+    }
+
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
-    pub(crate) const fn leaves_effect_uncertain(&self) -> bool {
+    pub(crate) fn leaves_effect_uncertain(&self) -> bool {
         matches!(
-            self,
+            self.cause(),
             Self::Indeterminate(_)
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
@@ -481,30 +561,97 @@ impl Error {
         )
     }
 
-    /// Native failures must propagate before additional provider or deadline work.
-    pub(crate) fn is_native_failure(&self) -> bool {
-        #[cfg(feature = "machines")]
-        if matches!(self, Self::Machines(_)) {
-            return false;
+    /// Whether a failed command's outcome is unknown: every failure whose wire class is storage,
+    /// indeterminate or cancelled. Reading the class, not the variant, keeps the failures that
+    /// carry it only as a code (native ledgers, task-volume storage, deferred search
+    /// publication) uncertain. A failed task is the one storage-coded failure that is settled.
+    pub(crate) fn leaves_outcome_uncertain(&self) -> bool {
+        use crate::wire::ErrorCode;
+        let cause = self.cause();
+        !matches!(cause, Self::TaskFailed { .. })
+            && matches!(
+                cause.code(),
+                ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
+            )
+    }
+
+    /// A definitive malformed tool request, distinct from native accounting failures.
+    pub(crate) fn tool_rejected(reason: &'static str) -> Self {
+        Self::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
         }
-        !matches!(
-            self,
+    }
+
+    /// Native failures must propagate before additional provider or deadline work. The match is
+    /// exhaustive so every new variant is classified on purpose: a semantic failure the task or
+    /// model can settle must never default to an accounting failure that strands the turn.
+    pub(crate) fn is_native_failure(&self) -> bool {
+        match self {
             Self::TaskFiles(_)
-                | Self::NotFound(_)
-                | Self::Conflict(_)
-                | Self::Unsupported(_)
-                | Self::Invalid(_)
-                | Self::ToolRejected(_)
-                | Self::Unauthorized(_)
-                | Self::Cancelled
-                | Self::InteractionRejected(_)
-                | Self::Storage(_)
-                | Self::Indeterminate(_)
-                | Self::CommandIndeterminate { .. }
-                | Self::SearchPublicationDeferred
-                | Self::TaskFailed { .. }
-                | Self::GoalBlocked(_)
-        )
+            | Self::NotFound(_)
+            | Self::Conflict(_)
+            | Self::TaskFailed { .. }
+            | Self::GoalBlocked(_)
+            | Self::ModelUnavailable { .. }
+            | Self::Unsupported(_)
+            | Self::Invalid(_)
+            | Self::ToolRejected { .. }
+            | Self::Unauthorized(_)
+            | Self::Cancelled
+            | Self::InteractionRejected(_)
+            | Self::Storage(_)
+            | Self::Indeterminate(_)
+            | Self::CommandIndeterminate { .. }
+            | Self::SearchPublicationDeferred => false,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::ModelDiagnostic { .. } => false,
+            #[cfg(feature = "machines")]
+            Self::Machines(_) => false,
+            Self::MountUnavailable { .. } | Self::Process(_) | Self::Allocation(_) => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWork { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeConstruction { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeBoundary { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeDiagnostic { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeJsonAdmission { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeJson { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeProstDecode { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSchema { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeStream { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSupervisor { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSource { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWorkspace { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeStageUncertain { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeDrivenJoin { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeReservation { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeFilesystem { .. } => true,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeView { .. } => true,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativePublication { .. } => true,
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeWorkspacePublication { .. } => true,
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeGit { .. } => true,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeTimeout { .. } => true,
+        }
     }
 }
 

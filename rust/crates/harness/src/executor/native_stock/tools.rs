@@ -20,20 +20,6 @@ pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     }
 }
 
-pub(in crate::executor) fn stock_tool_lookup<'a>(
-    registry: &'a ToolRegistry,
-    name: &str,
-    io: Option<&PreparationIo>,
-) -> Result<&'a crate::tool::Tool> {
-    registry.get(name, None, io)?.ok_or_else(|| {
-        stock_boundary(
-            io,
-            crate::wire::ErrorCode::NotFound,
-            "tool is not bound to this stock composition",
-        )
-    })
-}
-
 pub(in crate::executor) fn stock_authorize_tool(
     tool: &crate::tool::Tool,
     context: Option<&crate::runtime::ToolContext>,
@@ -97,7 +83,7 @@ pub(in crate::executor) fn stock_project_tool(
     result: &ToolResult,
     limits: Limits,
     io: Option<&PreparationIo>,
-) -> Result<(Value, crate::model::ToolResultContent)> {
+) -> Result<Result<(Value, crate::model::ToolResultContent)>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let work = io.and_then(PreparationIo::original_native_work);
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -115,9 +101,12 @@ pub(in crate::executor) fn stock_project_tool(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = custody;
-    let content = tool.definition.validate_projection(&value, limits, io)?;
+    let content = match tool.definition.check_projection(&value, limits, io)? {
+        Ok(content) => content,
+        Err(violation) => return Ok(Err(violation)),
+    };
     stock_json_bound(&value, limits.render_bytes, io)?;
-    Ok((value, content))
+    Ok(Ok((value, content)))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -129,7 +118,9 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         definition: &crate::tool::ToolDefinition,
         started: bool,
-    ) -> Result<Option<ExecutionProgress<()>>> {
+    ) -> Result<Option<crate::executor::tool_execution::PolicyStop>> {
+        use crate::executor::tool_execution::PolicyStop;
+        use crate::runtime::PolicyVerdict;
         let Some(work) = self.native_work() else {
             return Ok(None);
         };
@@ -148,8 +139,8 @@ impl StockExecution<'_> {
             .into_iter()
             .chain(context.stock_tool_policy_overrides())
         {
-            let Some(((approval_operation, request), custody)) = context
-                .policy_approval(
+            let ((approval_operation, request), custody) = match context
+                .policy_decision(
                     policy.as_ref(),
                     Some(identity),
                     definition,
@@ -158,8 +149,15 @@ impl StockExecution<'_> {
                     &self.stock.tool_scope,
                 )
                 .await?
-            else {
-                continue;
+            {
+                PolicyVerdict::Allow => continue,
+                // A denial before dispatch is the call's result, as on the portable path; after
+                // a recorded start it is a conflict.
+                PolicyVerdict::Deny(denial) if !started => {
+                    return Ok(Some(PolicyStop::Refused(denial)));
+                }
+                PolicyVerdict::Deny(denial) => return Err(denial),
+                PolicyVerdict::Approval(request) => request,
             };
             io.absorb_native_custody(custody.ok_or(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
@@ -176,7 +174,7 @@ impl StockExecution<'_> {
                 )
                 .await?
             {
-                return Ok(Some(progress));
+                return Ok(Some(PolicyStop::Progress(progress)));
             }
         }
         Ok(None)

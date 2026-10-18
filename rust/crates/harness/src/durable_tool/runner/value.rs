@@ -27,16 +27,19 @@ pub(super) fn tool_validate_projection(
     value: &Value,
     limits: Limits,
     io: Option<&PreparationIo>,
-) -> Result<()> {
-    let content = definition.validate_projection(value, limits, io)?;
+) -> Result<Result<()>> {
+    let content = match definition.check_projection(value, limits, io)? {
+        Ok(content) => content,
+        Err(violation) => return Ok(Err(violation)),
+    };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| native_work(Some(io)).is_some()) {
         let bytes = content.logical_owned_bytes()?;
         drop(content);
-        return io.release(bytes).map_err(Into::into);
+        return io.release(bytes).map(Ok).map_err(Into::into);
     }
     drop(content);
-    Ok(())
+    Ok(Ok(()))
 }
 pub(super) fn tool_text(
     value: std::fmt::Arguments<'_>,
@@ -83,7 +86,7 @@ pub(super) fn tool_success(
 }
 pub(super) fn tool_outcome(
     operation_id: OperationId,
-    failure: Option<ToolFailureKind>,
+    failure: Option<(ToolFailureKind, &crate::executor::ToolFailureCause)>,
     io: Option<&PreparationIo>,
 ) -> Result<(Outcome<Value>, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -98,8 +101,11 @@ pub(super) fn tool_outcome(
         .transpose()?;
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let custody = None;
-    let outcome = if let Some(reason) = failure {
-        let message = tool_text(format_args!("{}", reason.message()), io)?;
+    let outcome = if let Some((reason, cause)) = failure {
+        let message = tool_text(
+            format_args!("{}", crate::executor::ToolFailureText(reason, cause)),
+            io,
+        )?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut message = message;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

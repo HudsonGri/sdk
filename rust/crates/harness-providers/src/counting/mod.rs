@@ -1,6 +1,6 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
 pub(crate) mod wire;
-use crate::{HttpRequest, ResolvedModel, dispatch, projection};
+use crate::{HttpRequest, HttpTransport as _, ResolvedModel, dispatch, projection};
 use acyclic_harness::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
 use futures::StreamExt as _;
 
@@ -190,26 +190,15 @@ pub(crate) async fn send_count(
     count_custody: NativeCustody,
     work: NativeWork<'_>,
 ) -> Result<(ModelTokenCount, NativeCustody)> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut response = match work {
-        Some(work) => {
-            provider
-                .transport
-                .send_with_native_work(exchange, work)?
-                .await?
-        }
-        None => provider.transport.send(exchange).await?,
-    };
-    #[cfg(target_arch = "wasm32")]
-    let mut response = provider.transport.send(exchange).await?;
-    if !(200..300).contains(&response.status) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = work {
-            let mut hold = work.claim(64, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
-            return crate::native::diagnostic(Err(crate::http_error(response.status)), &mut hold);
-        }
-        return Err(crate::http_error(response.status));
-    }
+    count.input_tokens = exchange_count(provider, exchange, work).await?;
+    Ok((count, count_custody))
+}
+
+async fn read_count(
+    provider: &ResolvedModel,
+    mut response: crate::HttpResponse,
+    work: NativeWork<'_>,
+) -> Result<u64> {
     let spec = provider
         .config
         .token_counter
@@ -268,6 +257,103 @@ pub(crate) async fn send_count(
         Some(hold) => crate::native::diagnostic(verified, hold),
         None => verified,
     };
-    count.input_tokens = verified?;
-    Ok((count, count_custody))
+    verified
+}
+
+/// A count has no caller-visible output until its whole body is validated. All retryable
+/// failures, including a cut or stalled successful body, consume this one attempt budget.
+async fn exchange_count(
+    provider: &ResolvedModel,
+    exchange: HttpRequest,
+    work: NativeWork<'_>,
+) -> Result<u64> {
+    let mut redelivery =
+        crate::retry::Redelivery::for_request(provider.config.retry, &exchange.body);
+    // Each attempt sends a copy, so the copy in flight is funded alongside the retained request.
+    #[cfg(not(target_arch = "wasm32"))]
+    let _copy = work
+        .map(|work| {
+            let bytes = exchange.url.capacity()
+                + exchange
+                    .headers
+                    .iter()
+                    .map(|(key, value)| {
+                        std::mem::size_of::<(String, String)>() + key.capacity() + value.capacity()
+                    })
+                    .sum::<usize>();
+            work.claim(bytes as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)
+        })
+        .transpose()?;
+    loop {
+        let attempt = HttpRequest {
+            url: exchange.url.clone(),
+            headers: exchange.headers.clone(),
+            body: exchange.body.clone(),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let sent = match work {
+            Some(work) => {
+                provider
+                    .transport
+                    .send_with_native_work(attempt, work)?
+                    .await
+            }
+            None => provider.transport.send(attempt).await,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let sent = {
+            let _ = work;
+            provider.transport.send(attempt).await
+        };
+        let (failure, retry_after) = match sent {
+            Ok(response) if (200..300).contains(&response.status) => {
+                match read_count(provider, response, work).await {
+                    Ok(count) => return Ok(count),
+                    Err(failure) => (failure, None),
+                }
+            }
+            Ok(response) => {
+                let retry_after = response.retry_after;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = work {
+                    // The bounded prefix, its lossy decoding and the excerpt.
+                    let mut hold = work.claim(
+                        4 * crate::EXCERPT_BYTES as u64 + 64,
+                        4,
+                        acyclic_fs::WorkCounters::UNCHARGED,
+                    )?;
+                    let failure = crate::http_failure(response).await;
+                    match crate::native::diagnostic::<()>(Err(failure), &mut hold) {
+                        Err(failure) => (failure, retry_after),
+                        Ok(()) => return Err(boundary(Some(work), "token count refusal lost")),
+                    }
+                } else {
+                    (crate::http_failure(response).await, retry_after)
+                }
+                #[cfg(target_arch = "wasm32")]
+                (crate::http_failure(response).await, retry_after)
+            }
+            Err(failure) => (failure, None),
+        };
+        let Some(wait) = redelivery.next(&failure, retry_after, false) else {
+            return Err(failure);
+        };
+        drop(failure);
+        let delay = crate::deadline::timer(provider.transport.as_ref(), wait, work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            let cancelled = work.cancellation_wait()?;
+            futures::pin_mut!(cancelled);
+            match futures::future::select(cancelled, delay).await {
+                futures::future::Either::Left(_) => {
+                    return Err(Error::from(
+                        acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    ));
+                }
+                futures::future::Either::Right((result, _)) => result?,
+            }
+            continue;
+        }
+        delay.await?;
+    }
 }

@@ -123,6 +123,13 @@ pub enum ToolResultContent {
         /// Text and file parts.
         parts: Vec<ModelDataPart>,
     },
+    /// The paired call produced no result: the model reads why and may correct its next call.
+    /// Like any supplied result it is history, not evidence that a tool ran; its contract is
+    /// its shape, a nonempty control-free message within the render limit.
+    Error {
+        /// Bounded model-visible cause.
+        message: String,
+    },
 }
 
 impl ModelContent {
@@ -315,6 +322,18 @@ impl ToolResultContent {
             }
             if references > limits.attachments.saturating_add(1) {
                 return Err(invalid(work, "tool result reference count exceeds limit"));
+            }
+        }
+        // `result_bound` charges the message scan.
+        if let Self::Error { message } = self {
+            if message.len() as u64 > limits.render_bytes {
+                return Err(invalid(work, "tool error exceeds render limit"));
+            }
+            if message.is_empty() || message.chars().any(char::is_control) {
+                return Err(invalid(
+                    work,
+                    "tool error must be nonempty control-free text",
+                ));
             }
         }
         preparation::result_bound(self, limits.render_bytes, work)

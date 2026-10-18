@@ -18,10 +18,13 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
             .replace("\"input_tokens\":5", "\"input_tokens\":512")
             .replace("\"prompt_tokens\":5", "\"prompt_tokens\":512")
             .replace("\"promptTokenCount\":5", "\"promptTokenCount\":512");
-        provider.transport = Arc::new(ToolLoop {
-            replies: Mutex::new(VecDeque::from([dense, fixture.into()])),
-            sent: Mutex::new(Vec::new()),
-        });
+        provider.transport = crate::deadline::Bounded::new(
+            Arc::new(ToolLoop {
+                replies: Mutex::new(VecDeque::from([dense, fixture.into()])),
+                sent: Mutex::new(Vec::new()),
+            }),
+            crate::TimeoutSpec::DEFAULT,
+        );
         let (prepared, dispatch) = request(&provider)?;
         let initial = total(&projection::plan(&provider, &prepared, 512)?);
         let bytes = serde_json::to_vec(&projection::body(&provider, prepared.request())?)
@@ -113,10 +116,11 @@ async fn responses_content_filter_and_unknown_incomplete_reasons_are_invalid() {
 }
 
 #[tokio::test]
-async fn http_status_classes_are_distinct_and_never_expose_response_payloads() -> Result<()> {
-    for (adapter, _) in fixtures() {
+async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_excerpt() -> Result<()>
+{
+    for (adapter, body) in fixtures() {
         for status in [401, 403, 408, 429, 500, 502, 503, 400, 404] {
-            let (provider, _) = provider(adapter, status);
+            let (provider, script) = provider(adapter, status);
             let (prepared, dispatch) = request(&provider)?;
             let error = provider
                 .generate(prepared, dispatch)
@@ -125,11 +129,42 @@ async fn http_status_classes_are_distinct_and_never_expose_response_payloads() -
                 .expect_err("HTTP failure");
             assert!(error.to_string().contains(&status.to_string()));
             assert!(!error.to_string().contains("scripted-key"));
-            assert!(!error.to_string().contains("usage"));
+            let sent = script
+                .sent
+                .lock()
+                .map_err(|_| invalid("fixture lock"))?
+                .len();
             match status {
-                401 | 403 => assert!(matches!(error, Error::Unauthorized(_))),
-                408 | 429 | 500..=599 => assert!(matches!(error, Error::Storage(_))),
-                _ => assert!(matches!(error, Error::Invalid(_))),
+                408 | 429 | 500..=599 => {
+                    // Redelivered within the default budget, then a typed refusal.
+                    assert_eq!(sent, 1 + usize::from(crate::RetrySpec::DEFAULT.attempts));
+                    let Error::ModelUnavailable {
+                        failure: acyclic_harness::ModelTransportFailure::Status(found),
+                        excerpt,
+                    } = &error
+                    else {
+                        panic!("{adapter:?}: {error}");
+                    };
+                    assert_eq!(*found, status);
+                    assert!(excerpt.len() <= crate::EXCERPT_BYTES && !excerpt.is_empty());
+                    assert!(!excerpt.chars().any(char::is_control));
+                    let flat: String = body
+                        .chars()
+                        .map(|c| if c.is_control() { ' ' } else { c })
+                        .collect();
+                    assert!(flat.trim().starts_with(excerpt.as_str()));
+                }
+                // Negative controls: other statuses are never redelivered nor excerpted.
+                401 | 403 => {
+                    assert!(matches!(error, Error::Unauthorized(_)));
+                    assert_eq!(sent, 1);
+                    assert!(!error.to_string().contains("usage"));
+                }
+                _ => {
+                    assert!(matches!(error, Error::Invalid(_)));
+                    assert_eq!(sent, 1);
+                    assert!(!error.to_string().contains("usage"));
+                }
             }
         }
     }
@@ -144,7 +179,16 @@ async fn interrupted_bodies_are_transient_and_protocol_violations_are_invalid() 
                 .try_collect::<Vec<_>>()
                 .await
                 .expect_err("unfinished body");
-            assert!(matches!(error, Error::Storage(_)), "{adapter:?}: {error}");
+            assert!(
+                matches!(
+                    error,
+                    Error::ModelUnavailable {
+                        failure: acyclic_harness::ModelTransportFailure::Interrupted,
+                        ..
+                    }
+                ),
+                "{adapter:?}: {error}"
+            );
         }
         let error = stream::events(
             adapter,
@@ -224,6 +268,12 @@ struct ToolLoop {
 }
 
 impl HttpTransport for ToolLoop {
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             self.sent
@@ -237,6 +287,7 @@ impl HttpTransport for ToolLoop {
                 .pop_front()
                 .ok_or_else(|| invalid("unexpected dispatch"))?;
             Ok(HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: chunks(&reply, 1),
             })
@@ -282,7 +333,8 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             sent: Mutex::new(Vec::new()),
         });
         let (mut provider, _) = provider(adapter, 200);
-        provider.transport = script.clone();
+        provider.transport =
+            crate::deadline::Bounded::new(script.clone(), crate::TimeoutSpec::DEFAULT);
         let (initial, dispatch) = request(&provider)?;
         let events = provider
             .generate(initial.clone(), dispatch)

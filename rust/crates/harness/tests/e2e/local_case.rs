@@ -29,9 +29,10 @@ pub(super) struct Expectations {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum ExpectedOutcome {
+pub enum ExpectedOutcome {
     #[default]
     Succeeded,
+    Failed,
     Indeterminate,
 }
 

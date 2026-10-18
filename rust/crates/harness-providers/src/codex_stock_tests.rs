@@ -8,6 +8,19 @@ struct Backend {
     generations: AtomicUsize,
 }
 impl HttpTransport for Backend {
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
+    fn delay_with_native_work(
+        &self,
+        wait: std::time::Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+        crate::fixtures::native_delay(wait, work)
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("stock must use original-ledger native HTTP")
     }
@@ -100,13 +113,20 @@ async fn stock(broken: bool) -> Result<()> {
         policy,
         filesystem,
     )
-    .await;
+    .await?;
     if broken {
-        assert!(result.is_err());
+        // The public counter's refusal is the provider's: the task fails without generating.
+        assert!(
+            matches!(&result, acyclic_harness::Outcome::Failed { .. }),
+            "{result:?}"
+        );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 1);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 0);
     } else {
-        result?;
+        assert!(
+            matches!(&result, acyclic_harness::Outcome::Succeeded(_)),
+            "{result:?}"
+        );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 0);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 1);
     }

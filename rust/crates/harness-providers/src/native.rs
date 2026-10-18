@@ -1,5 +1,5 @@
 //! Original-ledger admission for the shared wire projections and parsers.
-use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
+use crate::{Adapter, HttpTransport as _, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness::{
     Error, NativeFutureBundle, Result,
@@ -97,15 +97,28 @@ fn invalid(reason: &'static str) -> Error {
     }
 }
 
+fn error_has_no_excerpt(error: &Error) -> bool {
+    matches!(error, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
+}
+
 pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
     result.map_err(|error| {
+        let semantic = !matches!(&error, Error::Storage(_));
         let (code, message) = match error {
             Error::Invalid(message) => (ErrorCode::Invalid, message),
             Error::Unauthorized(message) => (ErrorCode::Unauthorized, message),
             Error::Storage(message) => (ErrorCode::Storage, message),
+            // A native transport failure carries no excerpt to fund: it keeps its class.
+            error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
+            error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string()),
             error => return error,
         };
         match allocation.split_off(message.capacity() as u64) {
+            Ok(custody) if semantic => Error::ModelDiagnostic {
+                code,
+                message,
+                custody,
+            },
             Ok(custody) => Error::NativeDiagnostic {
                 code,
                 message,
@@ -218,19 +231,23 @@ pub(crate) fn generate<'a>(
                 (auth.0.as_deref(), auth.1.as_deref()),
                 work,
             )
-            .await?;
+            .await;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
                     let _name_custody = name_custody;
                     let mut response = response;
                     let mut recovery = dispatch::Recovery::default();
+                    let mut redelivery = crate::retry::Redelivery::new(provider.config.retry, dispatch_id);
                     loop {
-                        let failure = if !(200..300).contains(&response.status) {
-                            let status = response.status;
-                            drop(response);
-                            let mut hold = work.claim(64, 1, WorkCounters::UNCHARGED)?;
-                            diagnostic::<()>(Err(crate::http_error(status)), &mut hold).err()
-                        } else {
+                        let (failure, retry_after) = match response {
+                            Err(error) => (Some(error), None),
+                            Ok(response) if !(200..300).contains(&response.status) => {
+                                let retry_after = response.retry_after;
+                                // The bounded prefix, its lossy decoding and the excerpt.
+                                let mut hold = work.claim(4 * crate::EXCERPT_BYTES as u64 + 64, 4, WorkCounters::UNCHARGED)?;
+                                (diagnostic::<()>(Err(crate::http_failure(response).await), &mut hold).err(), retry_after)
+                            }
+                            Ok(response) => {
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                             let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
@@ -243,7 +260,8 @@ pub(crate) fn generate<'a>(
                                     Err(error) => { failure = Some(error); break; }
                                 }
                             }
-                            failure
+                            (failure, None)
+                            }
                         };
                         let Some(error) = failure else { break; };
                         if let Some(login) = &provider.codex_login {
@@ -260,10 +278,26 @@ pub(crate) fn generate<'a>(
                                 futures::pin_mut!(exchange, cancelled);
                                 response = match futures::future::select(cancelled, exchange).await {
                                     futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
-                                    futures::future::Either::Right((result, _)) => result?,
+                                    futures::future::Either::Right((result, _)) => result,
                                 };
                                 continue;
                             }
+                        }
+                        if let Some(wait) = redelivery.next(&error, retry_after, recovery.output) {
+                            drop(error);
+                            let exchange = async {
+                                crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
+                                work.remaining()?;
+                                Ok::<_, Error>(send(provider, body.clone(), dispatch_id,
+                                    (auth.0.as_deref(), auth.1.as_deref()), work).await)
+                            };
+                            let cancelled = work.cancellation_wait()?;
+                            futures::pin_mut!(exchange, cancelled);
+                            response = match futures::future::select(cancelled, exchange).await {
+                                futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
+                                futures::future::Either::Right((result, _)) => result?,
+                            };
+                            continue;
                         }
                         Err(error)?;
                         break;

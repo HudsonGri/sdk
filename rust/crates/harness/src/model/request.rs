@@ -50,7 +50,7 @@ impl ModelRequest {
                 .checked_mul(size_of::<(&str, &crate::tool::ToolDefinition)>() as u64)
                 .and_then(|tools| {
                     calls
-                        .checked_mul(size_of::<(&String, &String)>() as u64)
+                        .checked_mul(size_of::<(&String, PendingCall<'_>)>() as u64)
                         .and_then(|pending| tools.checked_add(pending))
                 })
                 .ok_or_else(|| Error::Invalid("model validation ownership overflow".into()))?;
@@ -153,7 +153,7 @@ impl ModelRequest {
         role: ModelRole,
         part: &'a mut ModelContentPart,
         tools: &BTreeMap<&str, &crate::tool::ToolDefinition>,
-        pending: &mut BTreeMap<&'a String, &'a String>,
+        pending: &mut BTreeMap<&'a String, PendingCall<'a>>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
@@ -170,17 +170,9 @@ impl ModelRequest {
                         "model tool call role or identity is invalid".into(),
                     ));
                 }
-                let tool = Self::bound_tool(name, tools)
-                    .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                crate::executor::with_history_io(io, |work| {
-                    crate::executor::validate_json_schema_value(
-                        &tool.input_schema,
-                        arguments,
-                        "model tool arguments",
-                        work,
-                    )
-                })?;
-                pending.insert(call_id, name);
+                // Binding and arguments are checked when the paired result arrives: a call the
+                // harness refused is history the model must see beside its typed error.
+                pending.insert(call_id, (name, arguments));
             }
             ModelContentPart::ToolResult {
                 call_id,
@@ -189,14 +181,37 @@ impl ModelRequest {
             } => {
                 charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                 crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
-                if role != ModelRole::Tool || pending.remove(&*call_id) != Some(&*name) {
+                let call = pending.remove(&*call_id);
+                let Some((_, arguments)) =
+                    call.filter(|(called, _)| role == ModelRole::Tool && **called == *name)
+                else {
                     return Err(Error::Invalid(
                         "model tool result has no matching call".into(),
                     ));
+                };
+                // One admission path for every result, whatever its source: the paired call's
+                // binding and arguments are always checked, and they decide which results it
+                // admits. A bound call with valid arguments admits a projected result held to the
+                // tool's projection contract, or a typed error. A call the harness must refuse
+                // (unbound, or arguments that violate the schema) admits only a typed error. The
+                // error's own shape was checked with the message (`validate_limits`).
+                let tool = match Self::bound_tool(name, tools) {
+                    Some(tool) => crate::executor::with_history_io(io, |work| {
+                        crate::executor::check_json_schema_value(
+                            &tool.input_schema,
+                            arguments,
+                            "model tool arguments",
+                            work,
+                        )
+                    })?
+                    .map(|()| tool),
+                    None => Err(Error::Invalid("model tool call is unbound".into())),
+                };
+                match (tool, content) {
+                    (_, ToolResultContent::Error { .. }) => {}
+                    (Ok(tool), content) => Self::validate_tool_result(tool, content, io)?,
+                    (Err(refused), _) => return Err(refused),
                 }
-                let tool = Self::bound_tool(name, tools)
-                    .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
-                Self::validate_tool_result(tool, content, io)?;
             }
             _ if role == ModelRole::Tool => {
                 return Err(Error::Invalid("tool role requires a paired result".into()));
@@ -206,6 +221,9 @@ impl ModelRequest {
         Ok(())
     }
 }
+
+/// A call awaiting its paired result: name and the arguments the model emitted.
+type PendingCall<'a> = (&'a String, &'a Value);
 
 /// Admitted values, exact canonical request bytes and their digest.
 #[derive(Clone, Debug)]
@@ -217,7 +235,7 @@ pub struct PreparedModelRequest {
 impl PreparedModelRequest {
     /// Decodes and verifies exact canonical input on the optional ledger.
     pub fn decode(bytes: &[u8], limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
-        let request = match io {
+        let request: ModelRequest = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<ModelRequest>,

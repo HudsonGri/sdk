@@ -52,6 +52,12 @@ struct RacingCli {
 }
 
 impl HttpTransport for RacingCli {
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             let first = {
@@ -79,6 +85,7 @@ impl HttpTransport for RacingCli {
                 .ok_or_else(|| invalid("unexpected refresh"))?;
             let bytes = Bytes::from(value.to_string());
             Ok(HttpResponse {
+                retry_after: None,
                 status,
                 body: Box::pin(futures::stream::once(async { Ok(bytes) })),
             })
@@ -244,7 +251,10 @@ async fn oauth_transient_statuses_keep_the_retryable_classification() -> Result<
             .await
             .expect_err("transient failure");
         assert!(error.to_string().contains(&status.to_string()));
-        assert!(matches!(error, acyclic_harness::Error::Storage(_)));
+        assert!(matches!(
+            error,
+            acyclic_harness::Error::ModelUnavailable { failure: acyclic_harness::ModelTransportFailure::Status(found), .. } if found == status
+        ));
     }
     Ok(())
 }
