@@ -7,6 +7,8 @@ use crate::{
 
 pub(super) mod binding;
 #[cfg(feature = "native-execution")]
+mod budget;
+#[cfg(feature = "native-execution")]
 mod checkout;
 #[cfg(feature = "native-execution")]
 pub(super) mod environment;
@@ -82,18 +84,28 @@ impl LocalHarness {
 
     #[cfg(test)]
     pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, self.input_publisher()?.as_ref())
-            .await
+        self.stage_context_manifest_with(
+            operation,
+            "",
+            self.limits,
+            None,
+            self.input_publisher()?.as_ref(),
+        )
+        .await
     }
 
     pub(super) async fn stage_context_manifest_with(
         &self,
         operation: OperationId,
+        prompt: &str,
+        limits: Limits,
+        task: Option<TaskId>,
         publisher: &dyn ContentPublisher,
     ) -> Result<FileRef> {
         if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
             return Ok(reference);
         }
+        let limits = crate::context::restrict_context_limits(self.limits, limits, None)?;
         let path = manifest_path(operation);
         if path.len() > self.limits.path_bytes {
             return Err(Error::Invalid(
@@ -107,11 +119,11 @@ impl LocalHarness {
         let hook_configuration = if hooks.is_empty() {
             None
         } else {
-            Some(hooks.publish(publisher, self.limits).await?)
+            Some(hooks.publish(publisher, limits).await?)
         };
         let policy = ContextDiscoveryPolicy::default();
-        let limits = ContextDiscoveryLimits::default();
-        let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+        let discovery_limits = ContextDiscoveryLimits::default();
+        let maximum = discovery_limits.instruction_bytes.min(limits.file_bytes);
         let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
@@ -130,20 +142,21 @@ impl LocalHarness {
                     .conventions
                     .push(environment::render(&workspace.path, self.clock.now_unix_millis()).await);
                 let skills = self.checkout_skills(workspace, maximum).await?;
-                // The catalog takes what the rest of the manifest leaves of the
-                // render bound: its JSON string plus the separating comma.
-                let used = crate::executor::json::json_byte_length(
-                    &manifest,
-                    self.limits.render_bytes,
-                    &mut None,
-                )?;
-                let budget = self.limits.render_bytes.saturating_sub(used).saturating_sub(1);
-                manifest
-                    .conventions
-                    .extend(skills::frame(&skills, budget));
+                let model = self.capture_model(task).await?;
+                let output = match &self.compaction {
+                    crate::context::CompactionPolicy::Disabled => None,
+                    crate::context::CompactionPolicy::Threshold(policy) => {
+                        Some(policy.validate(self.provider.context_capacity(&model)?, None)?)
+                    }
+                };
+                let reference =
+                    budget::manifest_reference_bound(publisher.volume(), &path, limits)?;
+                let budget =
+                    budget::catalog_budget(&manifest, &model, prompt, output, &reference, limits)?;
+                manifest.conventions.extend(skills::frame(&skills, budget));
             }
         }
-        let bytes = manifest.encode(self.limits)?;
+        let bytes = manifest.encode(limits)?;
         Ok(publisher
             .stage_once(
                 manifest_operation(operation),

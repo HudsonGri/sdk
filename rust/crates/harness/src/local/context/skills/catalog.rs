@@ -2,6 +2,9 @@
 use super::text::push_value;
 use crate::context::parse_frontmatter;
 
+/// Repository skill roots, in precedence order for duplicate names.
+pub(crate) const ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
+
 #[derive(serde::Deserialize)]
 struct Header {
     name: String,
@@ -57,23 +60,21 @@ pub(crate) fn json_bytes(text: &str) -> u64 {
         .sum()
 }
 
-fn entry(skill: &Listed) -> String {
-    let mut line = String::from("- ");
+fn entry(skill: &Listed, line: &mut String) {
+    line.push_str("- ");
     line.push_str(&skill.name);
     line.push_str(": ");
-    push_value(&mut line, &skill.description);
+    push_value(line, &skill.description);
     line.push_str(" (file: ");
-    push_value(&mut line, &skill.path);
+    push_value(line, &skill.path);
     line.push_str(")\n");
-    line
 }
 
 /// The line standing in for the `omitted` skills that did not fit.
 pub(crate) fn omission(omitted: usize) -> String {
     format!(
         "- {omitted} more skills are omitted to fit the context budget. List `{}` and `{}` with the fs tool to find them.\n",
-        super::ROOTS[0],
-        super::ROOTS[1],
+        ROOTS[0], ROOTS[1],
     )
 }
 
@@ -85,30 +86,30 @@ pub(crate) fn frame(skills: &[Listed], budget: u64) -> Option<String> {
     if skills.is_empty() {
         return None;
     }
-    let entries = skills.iter().map(entry).collect::<Vec<_>>();
     let mut used = 2 + json_bytes(HEADER) + json_bytes(FOOTER);
-    let complete = entries.iter().map(|line| json_bytes(line)).sum::<u64>();
     let mut text = String::from(HEADER);
-    if used.saturating_add(complete) <= budget {
-        text.extend(entries.iter().map(String::as_str));
-        text.push_str(FOOTER);
-        return Some(text);
-    }
-    if used.saturating_add(json_bytes(&omission(entries.len()))) > budget {
-        return None;
-    }
-    for (index, line) in entries.iter().enumerate() {
-        // Some skill is always omitted here, so room for its line stays reserved.
-        let after = used
-            .saturating_add(json_bytes(line))
-            .saturating_add(json_bytes(&omission(entries.len() - index - 1)));
-        if index + 1 == entries.len() || after > budget {
-            text.push_str(&omission(entries.len() - index));
+    let mut prefix = (used.saturating_add(json_bytes(&omission(skills.len()))) <= budget)
+        .then_some((text.len(), 0));
+    for (index, skill) in skills.iter().enumerate() {
+        let start = text.len();
+        entry(skill, &mut text);
+        used = used.saturating_add(json_bytes(&text[start..]));
+        if used > budget {
             break;
         }
-        used += json_bytes(line);
-        text.push_str(line);
+        if index + 1 == skills.len() {
+            text.push_str(FOOTER);
+            return Some(text);
+        }
+        // Remember the longest prefix with room for an exact omission count.
+        // Keep trying: a short remaining tail may fit without an omission line.
+        if used.saturating_add(json_bytes(&omission(skills.len() - index - 1))) <= budget {
+            prefix = Some((text.len(), index + 1));
+        }
     }
+    let (end, kept) = prefix?;
+    text.truncate(end);
+    text.push_str(&omission(skills.len() - kept));
     text.push_str(FOOTER);
     Some(text)
 }
@@ -161,7 +162,11 @@ mod tests {
                 .map(|(name, description, path)| Listed { name, description, path })
                 .collect::<Vec<_>>();
             let encoded = |text: &str| serde_json::to_string(text).unwrap().len() as u64;
-            let entries = skills.iter().map(entry).collect::<Vec<_>>();
+            let entries = skills.iter().map(|skill| {
+                let mut text = String::new();
+                entry(skill, &mut text);
+                text
+            }).collect::<Vec<_>>();
             let complete = format!("{HEADER}{}{FOOTER}", entries.concat());
             let truncated = |kept: usize| {
                 format!("{HEADER}{}{}{FOOTER}", entries[..kept].concat(), omission(skills.len() - kept))

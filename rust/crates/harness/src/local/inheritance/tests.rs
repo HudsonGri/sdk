@@ -141,13 +141,24 @@ async fn inherited_bindings_are_pinned_before_admission_and_survive_reopening() 
     write(&local, root, "context", json!({"summary":"remember first"})).await?;
     let operation = OperationId::new();
     let pending = crate::runtime::task_id_for_admission(operation);
+    assert_eq!(
+        local.capture_model(Some(pending)).await?,
+        local.command_model(None).await?
+    );
+    // Negative control: the admitted-task resolver cannot run before admission.
+    assert!(matches!(
+        local.command_model(Some(pending)).await,
+        Err(Error::NotFound(_))
+    ));
     local.prepare_inheritance(pending, Some(root)).await?;
+    assert_eq!(local.capture_model(Some(pending)).await?.name, "first");
     let next = child(&local, Some(root)).await?;
     write(&local, root, "settings", json!({"model":"later"})).await?;
     write(&local, root, "context", json!({"summary":"later summary"})).await?;
     let later = child(&local, Some(root)).await?;
     drop(local);
     let local = open(directory.path()).await?;
+    assert_eq!(local.capture_model(Some(pending)).await?.name, "first");
     let admitted = local.submit_to(operation, Some(root), "continue").await?;
     assert!(
         matches!(admitted, Admission::Accepted(RuntimeTask::Durable {task_id, ..}) if task_id == pending)
@@ -176,6 +187,10 @@ async fn inherited_bindings_are_pinned_before_admission_and_survive_reopening() 
         assert_eq!(inherited["summary"], summary);
     }
     write(&local, next, "settings", json!({"model":"child override"})).await?;
+    assert_eq!(
+        local.capture_model(Some(next)).await?.name,
+        "child override"
+    );
     let grandchild = child(&local, Some(next)).await?;
     assert_eq!(
         local.resolved_inheritance(grandchild).await?["model"],

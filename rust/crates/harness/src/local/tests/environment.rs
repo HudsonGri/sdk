@@ -188,12 +188,11 @@ async fn skill_discovery_exhausts_pages_and_refreshes_after_reopen() -> Result<(
 
 // A catalog larger than the render bound still starts turns: skills are listed
 // in discovery order until the budget is reached, and one line counts exactly
-// the rest. Negative control: the unbounded catalog fails to encode.
+// the rest. Negative control: sizing only the manifest overflows the request.
 #[tokio::test]
 async fn oversized_skill_catalog_is_counted_not_fatal() -> Result<()> {
     const SKILLS: usize = 300;
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
-    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let root = directory.path();
     let mut catalog = Vec::new();
     for index in 0..SKILLS {
@@ -207,42 +206,91 @@ async fn oversized_skill_catalog_is_counted_not_fatal() -> Result<()> {
     }
     // Negative control: an invalid entry is skipped without ending the scan.
     write(root, ".agents/skills/r-broken/SKILL.md", "no frontmatter")?;
-    let limits = crate::conversation::Limits {
-        render_bytes: 256 * 1024,
-        ..crate::conversation::Limits::default()
-    };
-    let provider = scripted([ScriptedTurn::Text("first".into())]);
-    let config = crate::test_support::local_harness_config(root, (model()?, provider.clone()))?
-        .state_directory(state.path())
-        .clock(Arc::new(Clock))
-        .limits(limits);
-    let harness = LocalHarness::open(config).await?;
-    let operation = OperationId::new();
-    let task = super::context::admitted(harness.submit(operation, "hello").await?)?;
-    assert_eq!(harness.resume(task).await?.text, "first");
-    let (_, mut manifest) = super::context::manifest(&harness, operation).await?;
-    let index = manifest
-        .conventions
-        .iter()
-        .position(|text| text.starts_with("<skills_instructions>"))
-        .expect("skill catalog");
-    let block = &manifest.conventions[index];
-    let listed = block
-        .lines()
-        .filter(|line| line.contains(" (file: "))
-        .count();
-    assert!(listed > 0 && listed < SKILLS, "{listed}");
-    for (line, skill) in block
-        .lines()
-        .filter(|line| line.contains(" (file: "))
-        .zip(&catalog)
-    {
-        assert!(line.starts_with(&format!("- {}: ", skill.name)));
+    // Referenced instruction bodies consume render space only after projection.
+    write(root, "AGENTS.md", &"x".repeat(64_000))?;
+    for limits in [
+        crate::conversation::Limits {
+            render_bytes: 256 * 1024,
+            ..crate::conversation::Limits::default()
+        },
+        crate::conversation::Limits {
+            file_bytes: 128 * 1024,
+            ..crate::conversation::Limits::default()
+        },
+    ] {
+        let state = tempfile::tempdir().map_err(super::super::storage)?;
+        let provider = scripted([ScriptedTurn::Text("first".into())]);
+        // This fixture exercises byte admission. The shared checkout factory
+        // disables token compaction: this provider counts one token per byte
+        // and its 32 KiB token capacity cannot admit even this AGENTS.md alone.
+        let config = checkout_config(root, (model()?, provider.clone()))?
+            .state_directory(state.path())
+            .clock(Arc::new(Clock))
+            .limits(limits);
+        let harness = LocalHarness::open(config).await?;
+        let operation = OperationId::new();
+        let task = super::context::admitted(harness.submit(operation, "hello").await?)?;
+        assert_eq!(harness.resume(task).await?.text, "first");
+        let (_, mut manifest) = super::context::manifest(&harness, operation).await?;
+        let index = manifest
+            .conventions
+            .iter()
+            .position(|text| text.starts_with("<skills_instructions>"))
+            .expect("skill catalog");
+        let block = &manifest.conventions[index];
+        let listed = block
+            .lines()
+            .filter(|line| line.contains(" (file: "))
+            .count();
+        assert!(listed > 0 && listed < SKILLS, "{listed}");
+        for (line, skill) in block
+            .lines()
+            .filter(|line| line.contains(" (file: "))
+            .zip(&catalog)
+        {
+            assert!(line.starts_with(&format!("- {}: ", skill.name)));
+        }
+        assert!(block.contains(&crate::local::context::skills::omission(SKILLS - listed)));
+        let encoded = manifest.encode(limits)?.len() as u64;
+        let bodies = manifest
+            .discovery
+            .instructions
+            .iter()
+            .try_fold(0, |sum, instruction| {
+                instruction.source().framed_bytes().map(|bytes| sum + bytes)
+            })?;
+        assert!(encoded <= limits.file_bytes);
+        let mut request = provider.requests().pop().expect("model request");
+        // Proof that the original fixture's automatic-compaction setting is
+        // incompatible with these byte-bound cases, independent of catalog fit.
+        let prepared = crate::model::PreparedModelRequest::prepare(request.clone(), limits, None)?;
+        let count = provider.count_tokens(&prepared).await?;
+        assert!(count.validate(&prepared, &mut None)? > u64::from(capacity().context_tokens));
+        assert!(
+            serde_json::to_vec(&request)
+                .map_err(super::super::storage)?
+                .len() as u64
+                + bodies
+                <= limits.render_bytes
+        );
+
+        // Negative control: use the original manifest-only budget through the
+        // same renderer, then replace its message in the actual built request.
+        manifest.conventions.remove(index);
+        let used = manifest.encode(limits)?.len() as u64;
+        let old_budget = limits.render_bytes.saturating_sub(used).saturating_sub(1);
+        manifest
+            .conventions
+            .push(crate::local::context::skills::frame(&catalog, old_budget).expect("old catalog"));
+        let encoded = serde_json::to_vec(&manifest)
+            .map_err(super::super::storage)?
+            .len() as u64;
+        request.messages.iter_mut().find(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("<skills_instructions>"))).expect("catalog message").content = ModelContent::Text(manifest.conventions.last().unwrap().clone());
+        let request_bytes = serde_json::to_vec(&request)
+            .map_err(super::super::storage)?
+            .len() as u64;
+        assert!(encoded > limits.file_bytes || request_bytes + bodies > limits.render_bytes);
+        harness.close().await?;
     }
-    assert!(block.contains(&crate::local::context::skills::omission(SKILLS - listed)));
-    manifest.encode(limits)?;
-    manifest.conventions[index] =
-        crate::local::context::skills::frame(&catalog, u64::MAX).expect("catalog");
-    assert!(manifest.encode(limits).is_err());
-    harness.close().await
+    Ok(())
 }
