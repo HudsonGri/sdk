@@ -100,12 +100,12 @@ impl LocalHarness {
     /// Opens durable local state and assembles the stock host before admitting work.
     pub fn open(config: LocalHarnessConfig) -> impl Future<Output = Result<Self>> {
         Box::pin(async move {
-            let config = config.prepare_state()?;
             config.limits.validate(&mut None)?;
             config.session_limits.validate(&mut None)?;
             if config.concurrency == 0 {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
+            let config = config.prepare_state()?;
             let state_directory = config.resolved_state_directory()?;
             let (model, provider) = config.model;
             model.validate()?;
