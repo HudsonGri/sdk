@@ -105,3 +105,63 @@ fn dropping_a_deep_shared_prefix_does_not_recurse() {
     }
     drop(value);
 }
+
+// Freeze the previous flattening algorithm independently of Text::as_str.
+fn previous_flatten(text: &Text) -> Cow<'_, str> {
+    let mut chunks = text.reverse_chunks();
+    let first = chunks.next().unwrap();
+    let Some(second) = chunks.next() else {
+        return Cow::Borrowed(first);
+    };
+    let mut pieces = vec![first, second];
+    pieces.extend(chunks);
+    let mut value = String::with_capacity(text.len());
+    for chunk in pieces.into_iter().rev() {
+        value.push_str(chunk);
+    }
+    Cow::Owned(value)
+}
+
+fn fragmented_pair() -> (Text, Text) {
+    let mut first = Text::from("a");
+    let snapshot = first.clone();
+    first.push_str("b");
+    drop(snapshot);
+    (first, Text::from("cd"))
+}
+
+fn exact_flatten_cost(cost: acyclic_test_support::AllocationInfo) {
+    assert_eq!(cost.count_total, 1);
+    assert_eq!(cost.bytes_total, 4);
+}
+
+#[test]
+fn fragmented_canonical_run_flattens_into_one_exact_buffer() {
+    use acyclic_test_support::{differential, measure};
+    let (old_first, old_second) = fragmented_pair();
+    let (first, second) = fragmented_pair();
+    let mut old_cost = Default::default();
+    let mut cost = Default::default();
+    let (output, _) = differential(
+        || {
+            let mut output = String::new();
+            old_cost = measure(|| {
+                output = String::with_capacity(4);
+                for part in [&old_first, &old_second] {
+                    output.push_str(&previous_flatten(part));
+                }
+            });
+            output
+        },
+        || {
+            let view = crate::TextRef::Many(vec![&first, &second]);
+            let mut output = Cow::Borrowed("");
+            cost = measure(|| output = view.as_str());
+            output.into_owned()
+        },
+    );
+    assert_eq!(output, "abcd");
+    exact_flatten_cost(cost);
+    assert_eq!((old_cost.count_total, old_cost.bytes_total), (3, 38));
+    assert!(std::panic::catch_unwind(|| exact_flatten_cost(old_cost)).is_err());
+}

@@ -32,24 +32,27 @@ impl Text {
         let Some(first) = chunks.next() else {
             return Cow::Borrowed("");
         };
-        let Some(second) = chunks.next() else {
+        if chunks.next().is_none() {
             return Cow::Borrowed(first);
-        };
-        let mut pieces = vec![first, second];
-        for chunk in chunks {
-            #[cfg(test)]
-            if pieces.len() == pieces.capacity() {
-                crate::work::copy(pieces.len() * std::mem::size_of::<&str>());
-            }
-            pieces.push(chunk);
         }
+        let mut bytes = vec![0; self.len()];
+        self.copy_to(&mut bytes);
+        Cow::Owned(String::from_utf8(bytes).expect("text chunks are UTF-8"))
+    }
+
+    // Write chunks backwards into their final positions, without flattening
+    // any intermediate Text or collecting a directory of borrowed pieces.
+    pub(crate) fn copy_to(&self, destination: &mut [u8]) {
+        assert_eq!(destination.len(), self.len());
+        let mut end = destination.len();
+        for chunk in self.reverse_chunks() {
+            let start = end - chunk.len();
+            destination[start..end].copy_from_slice(chunk.as_bytes());
+            end = start;
+        }
+        debug_assert_eq!(end, 0);
         #[cfg(test)]
-        crate::work::copy(self.len() + pieces.len() * std::mem::size_of::<&str>());
-        let mut text = String::with_capacity(self.len());
-        for chunk in pieces.into_iter().rev() {
-            text.push_str(chunk);
-        }
-        Cow::Owned(text)
+        crate::work::copy(destination.len());
     }
 
     /// Append a string without changing existing snapshots.

@@ -100,32 +100,60 @@ fn backslash_checkpoint_context_has_linear_work() {
     assert!(large <= 2 * small + 1024, "work {small} -> {large}");
 }
 
-fn oracle(source: &str, rendered: &mut Vec<(Vec<Event<'static>>, Vec<Line>)>) -> Arc<Vec<Line>> {
-    let source = source.replace("\r\n", "\n").replace('\r', "\n");
-    let mut lines = Vec::new();
+#[derive(Default)]
+struct Fixture {
+    blocks: Vec<Arc<Vec<Line>>>,
+    length: usize,
+}
+
+impl Fixture {
+    fn lines(&self) -> impl Iterator<Item = &Line> {
+        self.blocks
+            .iter()
+            .flat_map(|block| block.iter())
+            .take(self.length)
+    }
+}
+
+fn oracle(source: &str, rendered: &mut Vec<(Vec<Event<'static>>, Arc<Vec<Line>>)>) -> Arc<Fixture> {
+    let source = if source.contains('\r') {
+        std::borrow::Cow::Owned(source.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(source)
+    };
+    let mut fixture = Fixture::default();
     let mut count = 0;
     for (_, events) in blocks(Parser::new_ext(&source, options()).into_offset_iter()) {
         if rendered
             .get(count)
             .is_none_or(|(previous, _)| *previous != events)
         {
-            let lines = render::render_styled(&events, Style::default());
-            let fixture = (events.into_iter().map(Event::into_static).collect(), lines);
+            let mut lines = render::render_styled(&events, Style::default());
+            lines.push(Line::default());
+            let fixture = (
+                events.into_iter().map(Event::into_static).collect(),
+                Arc::new(lines),
+            );
             if let Some(previous) = rendered.get_mut(count) {
                 *previous = fixture;
             } else {
                 rendered.push(fixture);
             }
         }
-        lines.extend_from_slice(&rendered.get(count).expect("oracle block").1);
-        lines.push(Line::default());
+        let block = &rendered.get(count).expect("oracle block").1;
+        fixture.length += block.len();
+        fixture.blocks.push(block.clone());
         count += 1;
     }
     rendered.truncate(count);
-    while lines.last().is_some_and(|line| line.spans.is_empty()) {
-        lines.pop();
-    }
-    Arc::new(lines)
+    fixture.length -= fixture
+        .blocks
+        .iter()
+        .rev()
+        .flat_map(|block| block.iter().rev())
+        .take_while(|line| line.spans.is_empty())
+        .count();
+    Arc::new(fixture)
 }
 
 fn measure(
@@ -216,7 +244,7 @@ fn measure_with(
     padding: usize,
     separators: &[u8],
     copies: usize,
-    oracle: &mut impl FnMut(&str, &str) -> Arc<Vec<Line>>,
+    oracle: &mut impl FnMut(&str, &str) -> Arc<Fixture>,
 ) -> (usize, usize) {
     let mut nodes = HashSet::new();
     let mut texts = HashSet::new();
@@ -225,7 +253,7 @@ fn measure_with(
     let mut total = 0;
     let mut source = String::new();
     let mut consumer = Vec::new();
-    let mut expected = Arc::new(Vec::new());
+    let mut expected = Arc::new(Fixture::default());
     let mut peak = 0;
     let mut growth_total = 0;
     let mut breakdown = [0usize; 11];
@@ -278,7 +306,7 @@ fn measure_with(
             expected = oracle(delta, &source);
         }
         assert!(
-            consumer.as_slice() == expected.as_slice(),
+            consumer.iter().eq(expected.lines()),
             "consumer differs after {delta:?}, source {:?}",
             source.chars().take(256).collect::<String>()
         );
@@ -511,7 +539,7 @@ proptest! {
         for part in parts {
             source.push_str(part);
             let cached = oracle(&source, &mut rendered);
-            prop_assert_eq!(cached.as_ref(), &full_parse(&source));
+            prop_assert!(cached.lines().eq(full_parse(&source).iter()));
         }
     }
 

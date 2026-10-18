@@ -30,13 +30,14 @@ impl<'a> TextRef<'a> {
             Self::One(text) => (*text).as_str(),
             Self::Many(parts) => {
                 let length = self.len();
-                #[cfg(test)]
-                crate::work::copy(length);
-                let mut text = String::with_capacity(length);
+                let mut bytes = vec![0; length];
+                let mut start = 0;
                 for part in parts {
-                    text.push_str(&part.as_str());
+                    let end = start + part.len();
+                    part.copy_to(&mut bytes[start..end]);
+                    start = end;
                 }
-                Cow::Owned(text)
+                Cow::Owned(String::from_utf8(bytes).expect("text chunks are UTF-8"))
             }
         }
     }
