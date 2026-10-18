@@ -54,7 +54,7 @@ impl Source {
             };
             let mut ready = ready?;
             match lifecycle::poll_input(&self.tty.state, cx.waker(), |guard| {
-                guard.writer().read(bytes)
+                guard.read_input(bytes)
             }) {
                 // Suspended: resume or close wakes the registered waker, and
                 // cached readiness is kept for the retry.
