@@ -37,6 +37,34 @@ fn fuzz_round_trip_negative_controls() {
 
 proptest! {
     #[test]
+    fn complete_result_variants_preserve_their_contracts(
+        expected in any::<i16>(),
+        decoded in prop_oneof![any::<i16>().prop_map(Ok), Just(Err(()))],
+        projection in prop_oneof![any::<i16>().prop_map(Ok), Just(Err(()))],
+        accepted in any::<bool>(),
+    ) {
+        let required = std::panic::catch_unwind(|| oracle::must_decode(decoded));
+        prop_assert_eq!(required.is_ok(), decoded.is_ok());
+        if let Ok(value) = required { prop_assert_eq!(Ok(value), decoded); }
+        let rejected = std::panic::catch_unwind(|| oracle::must_reject(decoded));
+        prop_assert_eq!(rejected.is_ok(), decoded.is_err());
+        let acceptance = std::panic::catch_unwind(|| oracle::accepts(accepted, decoded));
+        prop_assert_eq!(acceptance.is_ok(), accepted == decoded.is_ok());
+        if let Ok(value) = acceptance { prop_assert_eq!(value, decoded.ok()); }
+        let exact = std::panic::catch_unwind(|| oracle::same_result(&Ok(expected), decoded));
+        prop_assert_eq!(exact.is_ok(), decoded == Ok(expected));
+        let exact_error = std::panic::catch_unwind(|| oracle::same_result(&Err(()), decoded));
+        prop_assert_eq!(exact_error.is_ok(), decoded.is_err());
+        let optional = std::panic::catch_unwind(|| oracle::round_trip_option(&expected, decoded.ok()));
+        prop_assert_eq!(optional.is_ok(), decoded == Ok(expected));
+        let projected = std::panic::catch_unwind(|| {
+            oracle::round_trip_by(&expected, decoded, |_| projection)
+        });
+        prop_assert_eq!(projected.is_ok(), decoded.is_ok() && projection == Ok(expected));
+        if let Ok(value) = projected { prop_assert_eq!(Ok(value), decoded); }
+    }
+
+    #[test]
     fn raw_input_views_cannot_admit_foreign_buffers(
         bytes in prop::collection::vec(any::<u8>(), 0..65),
         a in any::<usize>(), b in any::<usize>(),
