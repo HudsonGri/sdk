@@ -83,39 +83,49 @@ impl ScreenAreas {
         event: crate::key_event::InputEvent,
         viewport: &mut Viewport,
         now_ms: u64,
-        mut anchor_at: impl FnMut(usize) -> Option<crate::TranscriptAnchor>,
-    ) -> Vec<crate::InputEffect> {
+        anchor_at: &mut dyn FnMut(usize) -> Option<crate::TranscriptAnchor>,
+    ) -> impl Iterator<Item = crate::InputEffect> + use<> {
         use crate::key_event::{InputEvent, MouseButton, MouseEventKind};
-        if self.scrollbar_total == 0 {
-            input.scrollbar_dragging = false;
+        use crate::prompt_input::Drag;
+        if self.scrollbar_total == 0 && input.drag == Some(Drag::Scrollbar) {
+            input.drag = None;
         }
+        let mut seek = None;
+        let mut forward = true;
         if let InputEvent::Mouse(mouse) = &event {
+            let popup = self.completions.contains((mouse.column, mouse.row).into());
+            if popup {
+                input.drag = None;
+            }
             let down = mouse.kind == MouseEventKind::Down(MouseButton::Left)
                 && self.scrollbar.contains((mouse.column, mouse.row).into())
                 && self.scrollbar_total != 0
-                && !self.completions.contains((mouse.column, mouse.row).into());
-            let drag =
-                mouse.kind == MouseEventKind::Drag(MouseButton::Left) && input.scrollbar_dragging;
+                && !popup;
+            let drag = mouse.kind == MouseEventKind::Drag(MouseButton::Left)
+                && input.drag == Some(Drag::Scrollbar);
             if down || drag {
-                input.scrollbar_dragging = true;
+                input.drag = Some(Drag::Scrollbar);
                 let at = crate::TranscriptScrollbar::source_at(
                     self.scrollbar,
                     mouse.row,
                     self.scrollbar_total,
                 );
-                return vec![crate::InputEffect::ScrollTo {
+                seek = Some(crate::InputEffect::ScrollTo {
                     anchor: anchor_at(at),
-                }];
-            }
-            if mouse.kind == MouseEventKind::Up(MouseButton::Left) && input.scrollbar_dragging {
-                input.scrollbar_dragging = false;
-                return Vec::new();
+                });
+                forward = false;
+            } else if mouse.kind == MouseEventKind::Up(MouseButton::Left)
+                && input.drag == Some(Drag::Scrollbar)
+            {
+                input.drag = None;
+                forward = false;
             }
         }
-        if matches!(event, InputEvent::Focus(false)) {
-            input.scrollbar_dragging = false;
-        }
-        input.event(event, PromptBox::input_area(self.prompt), viewport, now_ms)
+        // Route eagerly: returned effects own their data and retain no editor
+        // or resolver borrow. Pointer capture is ephemeral; position is a file.
+        let effects = forward
+            .then(|| input.event(event, PromptBox::input_area(self.prompt), viewport, now_ms));
+        seek.into_iter().chain(effects.into_iter().flatten())
     }
 }
 

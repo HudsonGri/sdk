@@ -255,11 +255,13 @@ impl Rig {
 
     /// view.rs after its wait: prompt input, file effects, then prompt persistence.
     pub fn apply(&mut self, event: InputEvent) {
-        let effects = self
-            .areas
-            .event(&mut self.input, event, &mut self.viewport, 1000, |byte| {
-                self.renderer.anchor_at(byte)
-            });
+        let effects = self.areas.event(
+            &mut self.input,
+            event,
+            &mut self.viewport,
+            1000,
+            &mut |byte| self.renderer.anchor_at(byte),
+        );
         let Self {
             runtime,
             files,

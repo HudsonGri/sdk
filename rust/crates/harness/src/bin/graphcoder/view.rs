@@ -91,7 +91,7 @@ pub async fn run(
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let effects = areas.event(&mut input, event, &mut viewport, now, |byte| {
+        let effects = areas.event(&mut input, event, &mut viewport, now, &mut |byte| {
             renderer.anchor_at(byte)
         });
         for effect in effects {
