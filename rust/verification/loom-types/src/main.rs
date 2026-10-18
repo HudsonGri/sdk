@@ -144,11 +144,6 @@ impl<'tcx> Visitor<'tcx> for Body<'_, 'tcx> {
         }
         intravisit::walk_expr(self, expression);
     }
-
-    fn visit_param(&mut self, parameter: &'tcx rustc_hir::Param<'tcx>) {
-        self.judge(self.types.pat_ty(parameter.pat), false);
-        intravisit::walk_param(self, parameter);
-    }
 }
 
 fn main() -> std::process::ExitCode {

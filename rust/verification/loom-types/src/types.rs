@@ -14,6 +14,7 @@ pub(super) fn default_call(tcx: TyCtxt<'_>, method: DefId) -> bool {
             | "unwrap_or_default"
             | "or_default"
             | "get_or_insert_default"
+            | "take"
     )
 }
 
@@ -46,21 +47,23 @@ pub(super) fn lock<'tcx>(
             let path = tcx.def_path_str(definition.did());
             if matches!(
                 path.as_str(),
-                "alloc::vec::Vec"
-                    | "core::option::Option"
-                    | "alloc::collections::vec_deque::VecDeque"
-                    | "std::collections::hash::map::HashMap"
-                    | "std::collections::hash::set::HashSet"
-                    | "alloc::collections::btree::map::BTreeMap"
-                    | "alloc::collections::btree::set::BTreeSet"
+                "core::option::Option"
                     | "core::marker::PhantomData"
                     | "alloc::sync::Weak"
                     | "alloc::rc::Weak"
             ) {
                 return Some(false);
             }
-            any(arguments
-                .types()
+            // Default initializes physical fields, not arbitrary type arguments.
+            // Owning pointer defaults additionally initialize their pointee.
+            let pointee = matches!(
+                path.as_str(),
+                "alloc::sync::Arc" | "alloc::rc::Rc" | "alloc::boxed::Box"
+            )
+            .then(|| arguments.types().next())
+            .flatten();
+            any(pointee
+                .into_iter()
                 .map(ty::Unnormalized::new_wip)
                 .chain(
                     definition
@@ -83,6 +86,13 @@ pub(super) fn lock<'tcx>(
             ),
             None => None,
         },
+        ty::Ref(_, element, _) if default => lock(
+            tcx,
+            owner,
+            ty::Unnormalized::new_wip(*element),
+            true,
+            depth + 1,
+        ),
         ty::Param(_)
         | ty::Alias(..)
         | ty::Bound(..)
