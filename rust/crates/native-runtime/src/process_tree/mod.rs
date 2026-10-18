@@ -3,6 +3,10 @@
     reason = "process containment and bounded pipes use platform OS calls"
 )]
 
+#[cfg(unix)]
+#[path = "../input_reader.rs"]
+pub mod input_reader;
+
 use crate::obs;
 use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Output};

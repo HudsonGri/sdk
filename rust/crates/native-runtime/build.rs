@@ -1,3 +1,4 @@
+//! Build the native input cancellation boundary.
 fn main() {
     println!("cargo:rerun-if-changed=src/input_reader.c");
     if std::env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("unix") {

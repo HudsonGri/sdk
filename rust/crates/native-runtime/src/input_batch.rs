@@ -1,6 +1,7 @@
 //! Initialized read storage whose valid prefix does not shrink its backing buffer.
 use std::io;
 
+/// Initialized storage and the valid bytes returned by its latest read.
 #[derive(Debug)]
 pub struct InputBatch {
     storage: Vec<u8>,
@@ -58,6 +59,7 @@ impl InputBatch {
         Ok(self)
     }
 
+    /// The valid prefix of the last completed read.
     pub fn bytes(&self) -> &[u8] {
         &self.storage[..self.valid]
     }
