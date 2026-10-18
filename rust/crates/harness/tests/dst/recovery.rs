@@ -2,12 +2,22 @@
 use super::*;
 use acyclic_native_runtime::testing::DurableFault;
 use driver::{Driver, Outcome};
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+#[derive(Clone, Copy)]
+enum Cut {
+    FirstTurnWrite,
+    DispatchIntent,
+}
 
 fn local_turn<'a>(
     directory: &'a Path,
     schedule: &'a acyclic_native_runtime::testing::Schedule,
     first_turn_write: &'a Cell<Option<usize>>,
+    dispatch_write: Arc<AtomicUsize>,
 ) -> EntryFuture<'a, Result<()>> {
     entry(async move {
         let model = Model::new(
@@ -16,9 +26,15 @@ fn local_turn<'a>(
             "1".into(),
             serde_json::Value::Null,
         )?;
-        let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-            "done".into(),
-        )]));
+        let dispatch_schedule = schedule.clone();
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_dispatch_observer(
+                move |_| {
+                    dispatch_write
+                        .store(dispatch_schedule.durable_writes().len(), Ordering::SeqCst);
+                },
+            ),
+        );
         let config = local_harness_config(directory.join("checkout"), (model, provider))?
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
@@ -28,8 +44,7 @@ fn local_turn<'a>(
     })
 }
 
-#[test]
-fn checkout_reopens_after_first_turn_write() -> Result<()> {
+fn crash_reopen(point: Cut) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -41,14 +56,29 @@ fn checkout_reopens_after_first_turn_write() -> Result<()> {
         let mut baseline = Driver::new(71, None);
         let marker = Cell::new(None);
         let schedule = baseline.schedule.clone();
+        let dispatched = Arc::new(AtomicUsize::new(usize::MAX));
         match baseline
-            .run(local_turn(baseline_directory.path(), &schedule, &marker))
+            .run(local_turn(
+                baseline_directory.path(),
+                &schedule,
+                &marker,
+                dispatched.clone(),
+            ))
             .await
         {
             Outcome::Completed(result) => result?,
             Outcome::Crashed(cause) => panic!("uncut local turn crashed: {cause}"),
         }
-        let cut = marker.get().expect("local turn was never admitted");
+        let start = marker.get().expect("local turn was never admitted");
+        let dispatched = dispatched.load(Ordering::SeqCst);
+        assert_ne!(dispatched, usize::MAX, "provider dispatch was bypassed");
+        let cut = match point {
+            Cut::FirstTurnWrite => start,
+            Cut::DispatchIntent => dispatched
+                .checked_sub(1)
+                .expect("missing durable dispatch intent"),
+        };
+        assert!(cut >= start, "cut precedes turn admission");
         assert!(
             baseline.schedule.durable_writes().len() > cut,
             "turn made no durable writes"
@@ -61,14 +91,19 @@ fn checkout_reopens_after_first_turn_write() -> Result<()> {
         let schedule = crash.schedule.clone();
         let marker = Cell::new(None);
         let Outcome::Crashed(cause) = crash
-            .run(local_turn(directory.path(), &schedule, &marker))
+            .run(local_turn(
+                directory.path(),
+                &schedule,
+                &marker,
+                Arc::new(AtomicUsize::new(usize::MAX)),
+            ))
             .await
         else {
             panic!("turn escaped its durable write cut");
         };
         assert_eq!(cause.ordinal, cut);
         assert_eq!(cause.fault, DurableFault::After);
-        assert_eq!(marker.get(), Some(cut), "crashed a different operation");
+        assert_eq!(marker.get(), Some(start), "crashed a different operation");
         drop(schedule);
         drop(crash);
         // This epoch derives from the same seed. Its providers, stores, clocks,
@@ -77,11 +112,26 @@ fn checkout_reopens_after_first_turn_write() -> Result<()> {
         let schedule = recovery.schedule.clone();
         let marker = Cell::new(None);
         match recovery
-            .run(local_turn(directory.path(), &schedule, &marker))
+            .run(local_turn(
+                directory.path(),
+                &schedule,
+                &marker,
+                Arc::new(AtomicUsize::new(usize::MAX)),
+            ))
             .await
         {
             Outcome::Completed(result) => result,
             Outcome::Crashed(cause) => panic!("uncut recovery crashed: {cause}"),
         }
     })
+}
+
+#[test]
+fn checkout_reopens_after_first_turn_write() -> Result<()> {
+    crash_reopen(Cut::FirstTurnWrite)
+}
+
+#[test]
+fn checkout_reopens_after_last_dispatch_intent_write() -> Result<()> {
+    crash_reopen(Cut::DispatchIntent)
 }
