@@ -21,6 +21,8 @@ struct State {
     driver: Option<Waker>,
     #[cfg(test)]
     forget_ready: bool,
+    #[cfg(test)]
+    forget_io: bool,
 }
 
 // Sole handoff lock. Never nested with executor, schedule, channel or provider
@@ -40,6 +42,8 @@ impl Host {
                 driver: None,
                 #[cfg(test)]
                 forget_ready: false,
+                #[cfg(test)]
+                forget_io: false,
             }),
             changed: Condvar::new(),
         })
@@ -128,7 +132,14 @@ impl Wake for IoWake {
         self.wake_by_ref();
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        lock(&self.0.state).io_ready = true;
+        {
+            let mut state = lock(&self.0.state);
+            #[cfg(test)]
+            if state.forget_io {
+                return;
+            }
+            state.io_ready = true;
+        }
         self.0.changed.notify_one();
     }
 }
