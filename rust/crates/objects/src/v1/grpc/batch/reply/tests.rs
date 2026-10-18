@@ -177,6 +177,100 @@ fn append_message(tag: u32, value: &[u8], output: &mut Vec<u8>) {
     output.extend_from_slice(value);
 }
 
+#[test]
+fn batch_reply_merges_repeated_oneof_messages_and_replaces_changed_variants() {
+    use std::sync::atomic::Ordering;
+    let head = wire::ObjectInfo {
+        etag: "receipt".into(),
+        metadata: Some(wire::ObjectMetadata {
+            user: [("first".into(), "one".into())].into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let tail = wire::ObjectInfo {
+        size: 7,
+        last_modified: Some(prost_types::Timestamp::default()),
+        metadata: Some(wire::ObjectMetadata {
+            user: [("second".into(), "two".into())].into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let denied = wire::ErrorDetail {
+        code: wire::ErrorCode::AccessDenied as i32,
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let request = wire::ErrorDetail {
+        request_id: "final".into(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    for parts in [
+        vec![(1, &head), (1, &tail)],
+        vec![(2, &denied), (2, &request)],
+        vec![(1, &head), (1, &tail), (2, &denied), (2, &request)],
+        vec![(2, &denied), (2, &request), (1, &head), (1, &tail)],
+        vec![(1, &tail), (2, &denied), (1, &head), (1, &tail)],
+    ] {
+        let mut result = Vec::new();
+        for (tag, part) in parts {
+            append_message(tag, part, &mut result);
+        }
+        let mut bytes = Vec::new();
+        append_message(1, &result, &mut bytes);
+        let expected = wire::PutObjectsResponse::decode(bytes.as_slice()).unwrap();
+        for native in [false, true] {
+            let counts = std::sync::Arc::new(crate::test_meter::CountingMeter::default());
+            let mut decoder = metered_decoder(
+                1,
+                native.then(|| counts.clone() as std::sync::Arc<dyn NativeReadMeter>),
+            );
+            if native {
+                transfer_metadata(&mut decoder, &expected);
+            }
+            std::sync::Arc::get_mut(&mut decoder.received)
+                .unwrap()
+                .value
+                .sizes
+                .value[0] = 7;
+            decoder.received.value.completed.sent();
+            let mut decoded = None;
+            let physical =
+                acyclic_test_support::measure(|| decoded = Some(decoder.bytes(&bytes).unwrap()));
+            let reply = decoded.unwrap();
+            assert!(reply.failure.is_none());
+            assert_eq!(reply.response.value, expected);
+            let object = matches!(
+                expected.results[0].result,
+                Some(wire::put_object_result::Result::Object(_))
+            );
+            if native {
+                assert_eq!(physical.count_total, 1);
+                assert_eq!(physical.bytes_total, if object { 7 } else { 5 });
+            }
+            decoder.accept(reply);
+            assert_eq!(
+                counts.written.load(Ordering::SeqCst),
+                if native && object { 7 } else { 0 }
+            );
+            drop(decoder);
+            assert_eq!(counts.retained(), 0);
+        }
+    }
+    // A later variant cannot hide malformed earlier message contents.
+    let mut result = Vec::new();
+    append_message(1, &[10, 1, 255], &mut result);
+    append_message(2, &denied, &mut result);
+    let mut bytes = Vec::new();
+    append_message(1, &result, &mut bytes);
+    assert!(wire::PutObjectsResponse::decode(bytes.as_slice()).is_err());
+    assert!(decoder(1).bytes(&bytes).unwrap().failure.is_some());
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]

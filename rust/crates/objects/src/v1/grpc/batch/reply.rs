@@ -249,6 +249,7 @@ fn text<'a>(kind: WireType, input: &mut &'a [u8]) -> Result<&'a str, NativeObjec
 fn verify_user_map(
     expected: Option<&wire::ObjectMetadata>,
     bytes: &[u8],
+    first: usize,
 ) -> Result<bool, NativeObjectsError> {
     const MAX: usize = wire::ObjectsLimit::MaxUserMetadataBytes as usize;
     let mut keys = [""; MAX];
@@ -263,36 +264,47 @@ fn verify_user_map(
     }
     let mut matched = [false; MAX];
     let mut present = false;
+    let mut index = 0;
     fields(bytes, |tag, kind, input| {
-        if tag != 3 {
+        if !matches!(tag, 1 | 2) {
             return unknown(tag, kind, input);
         }
-        present = true;
-        fields(message(kind, input)?, |tag, kind, input| {
-            if tag != 2 {
+        let object = message(kind, input)?;
+        index += 1;
+        if index < first {
+            return Ok(());
+        }
+        fields(object, |tag, kind, input| {
+            if tag != 3 {
                 return unknown(tag, kind, input);
             }
-            let (mut key, mut value) = ("", "");
-            fields(message(kind, input)?, |tag, kind, input| match tag {
-                1 => {
-                    key = text(kind, input)?;
-                    Ok(())
+            present = true;
+            fields(message(kind, input)?, |tag, kind, input| {
+                if tag != 2 {
+                    return unknown(tag, kind, input);
                 }
-                2 => {
-                    value = text(kind, input)?;
-                    Ok(())
-                }
-                _ => unknown(tag, kind, input),
-            })?;
-            let index = keys
-                .get(..count)
-                .ok_or_else(invalid)?
-                .binary_search(&key)
-                .map_err(|_| invalid())?;
-            *matched.get_mut(index).ok_or_else(invalid)? = expected
-                .and_then(|metadata| metadata.user.get(key))
-                .is_some_and(|expected| expected == value);
-            Ok(())
+                let (mut key, mut value) = ("", "");
+                fields(message(kind, input)?, |tag, kind, input| match tag {
+                    1 => {
+                        key = text(kind, input)?;
+                        Ok(())
+                    }
+                    2 => {
+                        value = text(kind, input)?;
+                        Ok(())
+                    }
+                    _ => unknown(tag, kind, input),
+                })?;
+                let index = keys
+                    .get(..count)
+                    .ok_or_else(invalid)?
+                    .binary_search(&key)
+                    .map_err(|_| invalid())?;
+                *matched.get_mut(index).ok_or_else(invalid)? = expected
+                    .and_then(|metadata| metadata.user.get(key))
+                    .is_some_and(|expected| expected == value);
+                Ok(())
+            })
         })
     })?;
     if present && matched.iter().take(count).any(|matched| !matched) {
@@ -370,11 +382,6 @@ impl Decode<'_> {
                 return Ok(());
             }
             if tag == 2 {
-                if self.meter.is_some() {
-                    // The borrowed pass verified these entries against transferred storage.
-                    message(kind, input)?;
-                    return Ok(());
-                }
                 let mut key = "";
                 let mut value = "";
                 fields(message(kind, input)?, |tag, kind, input| match tag {
@@ -388,7 +395,9 @@ impl Decode<'_> {
                     }
                     _ => unknown(tag, kind, input),
                 })?;
-                target.user.insert(key.into(), value.into());
+                if self.meter.is_none() {
+                    target.user.insert(key.into(), value.into());
+                }
                 Ok(())
             } else {
                 target
@@ -398,83 +407,66 @@ impl Decode<'_> {
         })
     }
 
-    fn object(
+    fn object<'a>(
         &mut self,
-        bytes: &[u8],
-        mut metadata: Option<wire::ObjectMetadata>,
-    ) -> Result<wire::ObjectInfo, NativeObjectsError> {
-        if self.meter.is_some() {
-            if !verify_user_map(metadata.as_ref(), bytes)? {
-                metadata = None;
-            }
-            if let Some(metadata) = metadata.as_mut() {
-                metadata.content_type.clear();
-                metadata.content_encoding.clear();
-                metadata.cache_control.clear();
-                metadata.content_disposition.clear();
-                metadata.content_language.clear();
-                metadata.expires_unix_seconds = None;
-            }
-        }
-        let mut object = wire::ObjectInfo {
-            metadata,
-            ..Default::default()
-        };
+        object: &mut wire::ObjectInfo,
+        bytes: &'a [u8],
+        etag: &mut &'a str,
+        texts: &mut [Option<&'a str>; 5],
+    ) -> Result<(), NativeObjectsError> {
         // Protobuf scalar fields use the last value. Borrow through the whole
         // message (including merged metadata) before making one exact copy.
-        let mut etag = "";
-        let mut texts = [None; 5];
         fields(bytes, |tag, kind, input| match tag {
             1 => {
-                etag = text(kind, input)?;
+                *etag = text(kind, input)?;
                 Ok(())
             }
             3 => self.metadata(
                 object.metadata.get_or_insert_default(),
                 message(kind, input)?,
-                &mut texts,
+                texts,
             ),
             _ => object
                 .merge_field(tag, kind, input, DecodeContext::default())
                 .map_err(|_| invalid()),
-        })?;
-        self.text(&mut object.etag, etag)?;
-        if let Some(metadata) = object.metadata.as_mut() {
-            for (target, value) in [
-                &mut metadata.content_type,
-                &mut metadata.content_encoding,
-                &mut metadata.cache_control,
-                &mut metadata.content_disposition,
-                &mut metadata.content_language,
-            ]
-            .into_iter()
-            .zip(texts)
-            {
-                if let Some(value) = value {
-                    self.text(target, value)?;
-                }
-            }
-        }
-        Ok(object)
+        })
     }
 
     fn result(
         &mut self,
         bytes: &[u8],
-        mut metadata: Option<wire::ObjectMetadata>,
+        metadata: Option<wire::ObjectMetadata>,
     ) -> Result<wire::PutObjectResult, NativeObjectsError> {
         let mut result = wire::PutObjectResult::default();
+        let (mut etag, mut request_id) = ("", "");
+        let mut texts = [None; 5];
+        let (mut index, mut first) = (0, 0);
         fields(bytes, |tag, kind, input| {
-            if matches!(tag, 1 | 2) && result.result.is_some() {
-                return Err(invalid());
+            use wire::put_object_result::Result;
+            if !matches!(tag, 1 | 2) {
+                return unknown(tag, kind, input);
             }
-            result.result = Some(match tag {
-                1 => wire::put_object_result::Result::Object(
-                    self.object(message(kind, input)?, metadata.take())?,
-                ),
-                2 => {
-                    let mut error = wire::ErrorDetail::default();
-                    let mut request_id = "";
+            index += 1;
+            let same = matches!(
+                (tag, &result.result),
+                (1, Some(Result::Object(_))) | (2, Some(Result::Error(_)))
+            );
+            if !same {
+                first = index;
+                etag = "";
+                request_id = "";
+                texts = [None; 5];
+                result.result = Some(if tag == 1 {
+                    Result::Object(Default::default())
+                } else {
+                    Result::Error(Default::default())
+                });
+            }
+            match result.result.as_mut().ok_or_else(invalid)? {
+                Result::Object(object) => {
+                    self.object(object, message(kind, input)?, &mut etag, &mut texts)?;
+                }
+                Result::Error(error) => {
                     fields(message(kind, input)?, |tag, kind, input| match tag {
                         2 => {
                             request_id = text(kind, input)?;
@@ -484,13 +476,41 @@ impl Decode<'_> {
                             .merge_field(tag, kind, input, DecodeContext::default())
                             .map_err(|_| invalid()),
                     })?;
-                    self.text(&mut error.request_id, request_id)?;
-                    wire::put_object_result::Result::Error(error)
                 }
-                _ => return unknown(tag, kind, input),
-            });
+            }
             Ok(())
         })?;
+        match result.result.as_mut() {
+            Some(wire::put_object_result::Result::Object(object)) => {
+                if self.meter.is_some() {
+                    verify_user_map(metadata.as_ref(), bytes, first)?;
+                    if let Some(target) = object.metadata.as_mut() {
+                        target.user = metadata.map(|metadata| metadata.user).unwrap_or_default();
+                    }
+                }
+                self.text(&mut object.etag, etag)?;
+                if let Some(metadata) = object.metadata.as_mut() {
+                    for (target, value) in [
+                        &mut metadata.content_type,
+                        &mut metadata.content_encoding,
+                        &mut metadata.cache_control,
+                        &mut metadata.content_disposition,
+                        &mut metadata.content_language,
+                    ]
+                    .into_iter()
+                    .zip(texts)
+                    {
+                        if let Some(value) = value {
+                            self.text(target, value)?;
+                        }
+                    }
+                }
+            }
+            Some(wire::put_object_result::Result::Error(error)) => {
+                self.text(&mut error.request_id, request_id)?;
+            }
+            None => {}
+        }
         Ok(result)
     }
 }
