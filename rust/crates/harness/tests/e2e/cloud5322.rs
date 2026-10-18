@@ -325,6 +325,7 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
         (1, path.as_str(), 1, vec![255; 32]),
         (3, path.as_str(), 2, vec![]),
         (5, "cloud5322-raw/missing", 0, vec![]),
+        (7, path.as_str(), 0, vec![]),
     ]
     .into_iter()
     .map(|(id, path, next, preceding)| wire::SessionSubscription {
@@ -355,11 +356,16 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
         (5, "not_found"),
     ]);
     let mut closed = std::collections::BTreeMap::new();
-    while closed.len() < expected.len() {
+    let mut healthy_opened = false;
+    let mut healthy_delivered = false;
+    while closed.len() < expected.len() || !healthy_delivered {
         let frame = tokio::time::timeout(Duration::from_secs(10), output.message())
             .await??
             .ok_or("raw Session ended before Closed frames")?;
         eprintln!("Cloud5322 raw frame {frame:?}");
+        if frame.channel_id != 0 && frame.generation != 1 {
+            return Err(format!("wrong generation: {frame:?}").into());
+        }
         match &frame.body {
             Some(Body::Closed(value)) => {
                 if closed
@@ -369,7 +375,38 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
                     return Err(format!("duplicate Closed: {frame:?}").into());
                 }
             }
-            Some(Body::InterestApplied(_) | Body::Opened(_)) => {}
+            Some(Body::Opened(_)) if frame.channel_id == 7 => {
+                if healthy_opened {
+                    return Err("healthy sibling opened twice".into());
+                }
+                healthy_opened = true;
+                send.send(wire::SessionFrame {
+                    channel_id: 7,
+                    generation: 1,
+                    body: Some(Body::Window(wire::SessionWindow {
+                        bytes: 1 << 20,
+                        frames: 10,
+                    })),
+                })
+                .await?;
+            }
+            Some(Body::Data(data)) if frame.channel_id == 7 && healthy_opened => {
+                let Some(wire::session_data::Item::Record(record)) = &data.item else {
+                    return Err(format!("healthy sibling omitted Record: {frame:?}").into());
+                };
+                if healthy_delivered
+                    || record.sequence != 0
+                    || record.value.as_ref() != b"anchor"
+                    || data.after.as_ref().map(|cursor| cursor.next) != Some(1)
+                {
+                    return Err(format!("healthy sibling data differs: {frame:?}").into());
+                }
+                healthy_delivered = true;
+            }
+            Some(Body::InterestApplied(_)) => {}
+            Some(Body::Opened(_)) => {
+                return Err(format!("refused sibling opened: {frame:?}").into());
+            }
             _ => {
                 return Err(
                     format!("expected Opened/InterestApplied/Closed, observed {frame:?}").into(),
@@ -384,6 +421,6 @@ async fn raw_session_closed_frames_use_stream_error_codes() -> TestResult {
     {
         return Err(format!("Closed codes expected 1=prefix_not_retained,3=out_of_range,5=not_found; observed {closed:?}").into());
     }
-    eprintln!("Cloud5322 PASS exact raw Closed frames");
+    eprintln!("Cloud5322 PASS exact raw Closed frames and healthy sibling Opened/data");
     Ok(())
 }
