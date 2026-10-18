@@ -351,7 +351,9 @@ where
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        BlockingOwner::Shared(tokio::spawn(blocking_on_service(work)))
+        BlockingOwner::Shared(tokio::spawn(async move {
+            host_work(crate::run_blocking_io(work, None), None).await
+        }))
     } else {
         BlockingOwner::Worker(TaskHandle::native(tokio::task::spawn_blocking(work)))
     };
@@ -362,20 +364,6 @@ where
             BlockingOwner::Worker(worker) => worker.await,
         }
     }
-}
-
-// Both instrumented and ordinary replay closures use the real native service.
-// Submission/terminal gates never make a blocking closure execute on Tokio.
-async fn blocking_on_service<F, T>(work: F) -> std::io::Result<T>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    let mut completion = crate::run_blocking_io(work, None)?;
-    if let Some(job) = completion.pending.take() {
-        queued(job, crate::workers(&crate::BLOCKING_WORKERS, false)?).await?;
-    }
-    completion.await
 }
 
 /// The one task that owns a blocking closure's result.
