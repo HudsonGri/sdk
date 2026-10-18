@@ -107,11 +107,9 @@ impl StockExecution<'_> {
             if tool.executor.uses_observed_files()
                 && let Some(bound) = context.take()
             {
-                context = Some(
-                    bound.with_observed_files(
-                        self.observed_files(journal, operation_id, observed).await?,
-                    ),
-                );
+                context = Some(bound.with_observed_files(
+                    self.observed_files(journal, operation_id, observed).await?,
+                ));
             }
             self.execute_tool_invocation(
                 journal,

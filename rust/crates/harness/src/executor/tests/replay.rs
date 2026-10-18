@@ -460,7 +460,6 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
 
 mod prepared_request_reuse_properties {
     use super::*;
-use crate::executor::observed::ObservedFold;
     use proptest::prelude::*;
     use proptest::test_runner::TestCaseResult;
     #[derive(Clone, Copy)]
