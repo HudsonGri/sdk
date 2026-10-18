@@ -355,7 +355,9 @@ fn markers_after_escaped_breaks_have_linear_work() {
         assert!(used <= 128 * bytes + 4096, "{used} / {bytes}: {parts:?}");
     };
     for count in [64, 128, 256, 512, 1024] {
-        bound(units(&chunks, count));
+        let measured = units(&chunks, count);
+        eprintln!("escaped-break marker {count}: {measured:?}");
+        bound(measured);
     }
     crate::inline::LATE_REJECT_HOLD.set(true);
     let redundant = units(&chunks, 256);
