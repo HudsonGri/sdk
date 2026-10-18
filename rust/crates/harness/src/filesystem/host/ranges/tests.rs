@@ -361,7 +361,7 @@ async fn captured_payload(body: &[u8]) -> Result<()> {
     transaction
         .write(
             "/file.txt",
-            bytes::Bytes::copy_from_slice(body).into(),
+            bytes::Bytes::copy_from_slice(body),
             budget,
             &cancellation,
         )
