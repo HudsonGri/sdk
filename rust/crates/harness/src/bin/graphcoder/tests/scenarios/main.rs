@@ -30,6 +30,7 @@ async fn execute(
     settings: &Path,
     state: &Path,
     operation: OperationId,
+    model: &str,
     prompt: &str,
 ) -> TestResult<Output> {
     let executable = std::env::var_os("CARGO_BIN_EXE_graphcoder")
@@ -45,7 +46,7 @@ async fn execute(
         .arg(settings)
         .args([
             "--model",
-            "binary/parent",
+            model,
             "--operation",
             &operation.to_string(),
             "-p",
@@ -56,7 +57,7 @@ async fn execute(
         .env("HOME", settings)
         .env("USERPROFILE", settings)
         .env("CODEX_HOME", settings.join(".codex"))
-        .env("GRAPHCODER_MODEL", "binary/parent")
+        .env("GRAPHCODER_MODEL", model)
         .env_remove("RUST_MIN_STACK")
         .env_remove("RUST_BACKTRACE")
         .stdin(Stdio::null())
@@ -118,25 +119,36 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
     scenario_data::seed_settings(&settings, &settings_files)?;
     let provider = provider::start(&case, protocol, &workspace).await?;
     let catalog = temporary.path().join("catalog.json");
+    let model = if case["driver"] == "provider" {
+        "model"
+    } else {
+        "parent"
+    };
     std::fs::write(
         &catalog,
         serde_json::to_vec(&json!({"binary":{
             "adapter":protocol,"authentication":"optional","base_url":provider.url,
-            "models":{"parent":{"capacity":{"context_tokens":131072,"output_tokens":4096},
+            "models":{(model):{"capacity":{"context_tokens":131072,"output_tokens":4096},
                 "features":{"tools":true,"images":false}}},"max_event_bytes":4096,
             "token_counter":{"path":"count","adapter":protocol,"response_field":"input_tokens","framing_tokens":0}
         }}))?,
     )?;
     let operation = OperationId::new();
+    let model = format!("binary/{model}");
     let prompt = case["prompt"]
         .as_str()
         .ok_or("binary scenario needs a prompt")?;
     let output = async {
-        let output = execute(&workspace, &catalog, &settings, &state, operation, prompt).await?;
+        let output = execute(
+            &workspace, &catalog, &settings, &state, operation, &model, prompt,
+        )
+        .await?;
         assertions::output(&case, operation, &output, false)?;
         if case["replay"] == true {
-            let replayed =
-                execute(&workspace, &catalog, &settings, &state, operation, prompt).await?;
+            let replayed = execute(
+                &workspace, &catalog, &settings, &state, operation, &model, prompt,
+            )
+            .await?;
             assertions::output(&case, operation, &replayed, true)?;
         }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())

@@ -1,5 +1,5 @@
 use super::{TestResult, wire};
-use axum::{Json, Router, body::Body, http::Response, routing::post};
+use axum::{Json, Router, body::Body, extract::OriginalUri, http::Response, routing::post};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -10,11 +10,13 @@ use tokio::{
 
 struct Request {
     body: Value,
+    endpoint: String,
     reply: oneshot::Sender<TestResult<(Vec<String>, bool)>>,
 }
 
 pub struct Recording {
     pub requests: BTreeMap<String, Vec<Value>>,
+    pub endpoints: BTreeMap<String, Vec<String>>,
     pub remaining: BTreeMap<String, usize>,
     pub audits: BTreeMap<String, Vec<Value>>,
     pub attempts: BTreeMap<String, usize>,
@@ -32,6 +34,7 @@ pub struct Provider {
 struct Script {
     turns: VecDeque<Value>,
     requests: Vec<Value>,
+    endpoints: Vec<String>,
     pins: Vec<String>,
     prepared: bool,
     audit: Value,
@@ -60,6 +63,7 @@ impl Script {
         Self {
             turns: turns.into(),
             requests: Vec::new(),
+            endpoints: Vec::new(),
             pins: pins.into_iter().collect(),
             prepared: false,
             audit: Value::Null,
@@ -120,7 +124,7 @@ impl Script {
             .turns
             .pop_front()
             .ok_or("HTTP provider script exhausted")?;
-        if let Some(events) = turn.as_array_mut() {
+        if !raw && let Some(events) = turn.as_array_mut() {
             let outputs = wire::outputs(&body, protocol)?;
             for event in events {
                 if event["name"]
@@ -243,6 +247,7 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
                     let route = route(&request.body, &protocol, &routes);
                     let reply = (|| {
                         let script = scripts.get_mut(route).ok_or_else(|| format!("unknown scripted route: {route}"))?;
+                        script.endpoints.push(request.endpoint);
                         if (script.pins.is_empty() || script.prepared)
                             && let Some(action) = actions.remove(&(route.to_owned(), script.requests.len() + 1))
                         {
@@ -269,6 +274,10 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
             .iter()
             .map(|(name, script)| (name.clone(), script.attempts))
             .collect();
+        let endpoints = scripts
+            .iter_mut()
+            .map(|(name, script)| (name.clone(), std::mem::take(&mut script.endpoints)))
+            .collect();
         let audits = scripts
             .iter_mut()
             .map(|(name, script)| (name.clone(), std::mem::take(&mut script.audit_requests)))
@@ -279,6 +288,7 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
             .collect();
         Ok(Recording {
             requests,
+            endpoints,
             remaining,
             attempts,
             audits,
@@ -290,22 +300,18 @@ pub async fn start(case: &Value, protocol: &str, workspace: &Path) -> TestResult
     if width == 0 {
         return Err("chunk_bytes must be positive".into());
     }
+    let generate = move |OriginalUri(uri): OriginalUri, Json(body): Json<Value>| {
+        serve(body, uri.to_string(), send.clone(), width)
+    };
     let app = Router::new()
         .route(
             "/count",
             post(|| async { Json(json!({"input_tokens":32})) }),
         )
-        .route(
-            "/responses",
-            post({
-                let send = send.clone();
-                move |Json(body): Json<Value>| serve(body, send.clone(), width)
-            }),
-        )
-        .route(
-            "/messages",
-            post(move |Json(body): Json<Value>| serve(body, send.clone(), width)),
-        );
+        .route("/responses", post(generate.clone()))
+        .route("/messages", post(generate.clone()))
+        .route("/chat/completions", post(generate.clone()))
+        .route("/models/{model}", post(generate));
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
@@ -384,9 +390,19 @@ fn route<'a>(body: &Value, protocol: &str, routes: &'a serde_json::Map<String, V
     selected
 }
 
-async fn serve(body: Value, send: mpsc::UnboundedSender<Request>, width: usize) -> Response<Body> {
+async fn serve(
+    body: Value,
+    endpoint: String,
+    send: mpsc::UnboundedSender<Request>,
+    width: usize,
+) -> Response<Body> {
     let (reply, result) = oneshot::channel();
-    send.send(Request { body, reply }).unwrap();
+    send.send(Request {
+        body,
+        endpoint,
+        reply,
+    })
+    .unwrap();
     match result.await.unwrap() {
         Ok((parts, pending)) => {
             let chunks: Vec<_> = parts

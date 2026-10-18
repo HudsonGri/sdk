@@ -206,10 +206,12 @@ pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestRes
                 }
             }
         }
-        let adapter = if protocol == "anthropic" {
-            acyclic_harness_providers::Adapter::Anthropic
-        } else {
-            acyclic_harness_providers::Adapter::Responses
+        let adapter = match protocol {
+            "anthropic" => acyclic_harness_providers::Adapter::Anthropic,
+            "responses" => acyclic_harness_providers::Adapter::Responses,
+            "chat" => acyclic_harness_providers::Adapter::Chat,
+            "gemini" => acyclic_harness_providers::Adapter::Gemini,
+            _ => return Err(format!("unsupported HTTP protocol: {protocol}").into()),
         };
         for request in requests {
             let violations = acyclic_harness_providers::validate_input(adapter, request);
@@ -218,11 +220,23 @@ pub fn recording(case: &Value, protocol: &str, recording: &Recording) -> TestRes
                     format!("invalid {protocol} HTTP request: {violations:?}: {request}").into(),
                 );
             }
-            if request["stream"] != true {
+            if protocol != "gemini" && request["stream"] != true {
                 return Err("HTTP request did not select streaming".into());
             }
         }
         if case["driver"] == "provider" {
+            let endpoint = case["expect"]["endpoint"]
+                .as_str()
+                .ok_or("provider endpoint expectation missing")?;
+            let endpoints = &recording.endpoints[name];
+            if endpoints.len() != requests.len()
+                || endpoints.iter().any(|actual| actual != endpoint)
+            {
+                return Err(format!(
+                    "HTTP endpoint differs: expected {endpoint}, got {endpoints:?}"
+                )
+                .into());
+            }
             let expected = case["expect"]["requests"]
                 .as_array()
                 .ok_or("provider request expectations missing")?;
