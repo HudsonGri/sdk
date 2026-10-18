@@ -32,7 +32,9 @@ async fn execute(
     operation: OperationId,
     prompt: &str,
 ) -> TestResult<Output> {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
+    let executable = std::env::var_os("CARGO_BIN_EXE_graphcoder")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_graphcoder").into());
+    let mut command = tokio::process::Command::new(executable);
     command
         .current_dir(workspace)
         .arg("--workspace")
@@ -120,7 +122,7 @@ async fn run(case: Value, protocol: &str) -> TestResult<Duration> {
         serde_json::to_vec(&json!({"binary":{
             "adapter":protocol,"authentication":"optional","base_url":provider.url,
             "models":{"parent":{"capacity":{"context_tokens":131072,"output_tokens":4096},
-                "features":{"tools":true,"images":false}}},"max_event_bytes":1048576,
+                "features":{"tools":true,"images":false}}},"max_event_bytes":4096,
             "token_counter":{"path":"count","adapter":protocol,"response_field":"input_tokens","framing_tokens":0}
         }}))?,
     )?;

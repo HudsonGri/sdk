@@ -1,5 +1,3 @@
-use serde_json::Value;
-
 #[cfg(test)]
 #[path = "matchers_properties.rs"]
 mod properties;

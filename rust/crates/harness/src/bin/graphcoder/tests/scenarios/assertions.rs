@@ -29,14 +29,16 @@ pub fn output(
     let mut lines = text.lines();
     let header_line = lines.next().ok_or("no JSONL header")?;
     let header: Value = serde_json::from_str(header_line)?;
-    if header[0]["TaskSession"]["session"] != operation.to_string() {
+    if header[0]["TaskSession"]["session"] != operation.to_string()
+        || header[0]["TaskSession"]["task"] != operation.to_string()
+    {
         return Err(format!("wrong session header: {header}").into());
     }
     let mut results = Vec::new();
     let mut statuses = Vec::new();
     let mut files = Vec::new();
     let (_, snapshot) = jsonl::parse_snapshot(header_line)?;
-    let mut previous = snapshot.cursor.position;
+    let mut previous = snapshot.cursor;
     for file in snapshot.files {
         let bytes: Vec<_> = file
             .segments
@@ -47,10 +49,15 @@ pub fn output(
     }
     for line in lines {
         let change = jsonl::parse_change(line)?;
-        if change.reset || change.cursor.position <= previous {
+        if change.cursor.volume != previous.volume
+            || change.cursor.epoch != previous.epoch
+            || change.cursor.schema != previous.schema
+            || change.cursor.query != previous.query
+            || change.cursor.position <= previous.position
+        {
             return Err("JSONL follow reset or repeated its cursor".into());
         }
-        previous = change.cursor.position;
+        previous = change.cursor;
         for file in change.file.into_iter().chain(change.files) {
             observe(
                 file.key,
