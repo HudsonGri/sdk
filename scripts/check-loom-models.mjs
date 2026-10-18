@@ -2,6 +2,7 @@ import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {encodeRecords, decodeVerdicts} from './loom-scan-records.mjs';
 
 // Every Loom model source is classified here. A real model drives the
 // production component through its crate shim, so any lock it constructs or
@@ -114,16 +115,11 @@ export const models = {
 const entry = /\bloom::model\b|\bcheck_with_bound\(|preemption_bound/;
 // Any bound other than a literal `None` counts, whether a number, a constant
 // or a forwarded parameter: a named bound is still a bound.
-const numericBound = /preemption_bound\s*=\s*(?!None\b)\S|(?<!fn\s+)\bcheck_with_bound\(\s*(?!None\b)[^\s)]|assert_negative_control\(\s*\d+\s*,\s*\d/;
 const exhaustive = /exhaust|every (?:interleaving|schedule)|all (?:interleavings|schedules)/i;
 const grades = new Set(['real', 'abstract', 'external', 'runner']);
 
 // Comments and `const _: fn(Shim) -> loom::sync::Mutex` identity assertions
 // do not state a bound; strip them before looking for one.
-const code = source => source
-  .split('\n')
-  .filter(line => !/^\s*(?:\/\/|const _: fn\()/.test(line))
-  .join('\n');
 
 // Lock ownership is decided on parsed Rust, never on text: the scanner in
 // rust/verification/loom-locks resolves lock aliases and Loom lock imports,
@@ -151,13 +147,12 @@ function scan(sources) {
   const pending = [...new Set(sources)].filter(source => !verdicts.has(source));
   if (!pending.length) return;
   const output = execFileSync(scanner(), [], {
-    input: pending.map((source, index) => `${index}\0${source}\0`).join(''),
+    input: encodeRecords(pending),
     encoding: 'utf8',
     maxBuffer: 1 << 26,
   });
-  for (const line of output.split('\n').filter(Boolean)) {
-    const [index, verdict] = line.split('\t');
-    verdicts.set(pending[Number(index)], verdict);
+  for (const [index, verdict] of decodeVerdicts(output, pending.length)) {
+    verdicts.set(pending[index], verdict);
   }
 }
 
@@ -165,7 +160,12 @@ function scan(sources) {
 // '!reason' when it does not parse, uses generated code, or is indeterminate.
 function ownsLock(source) {
   scan([source]);
-  return verdicts.get(source);
+  return verdicts.get(source).lock;
+}
+
+function boundVerdict(source) {
+  scan([source]);
+  return verdicts.get(source).bound;
 }
 
 export const rules = {
@@ -183,12 +183,14 @@ export const rules = {
     return [];
   },
   bound: (path, source, model) => {
-    const bounded = numericBound.test(code(source));
+    const verdict = boundVerdict(source);
+    if (verdict.startsWith('!')) return [`${path}: bound scan rejected the model: ${verdict.slice(1)}`];
+    const bounded = verdict === '1';
     if (bounded && !model?.bound) return [`${path}: preemption bound without a stated bounded claim`];
     if (!bounded && model?.bound) return [`${path}: stale bound statement; the model has no preemption bound`];
     return [];
   },
-  exhaustive: (path, source) => numericBound.test(code(source))
+  exhaustive: (path, source) => boundVerdict(source) === '1'
     ? source.split('\n').filter(line => exhaustive.test(line) && !/bound/i.test(line))
       .map(line => `${path}: unconditional exhaustive claim in a bounded model: ${line.trim()}`)
     : [],
@@ -199,7 +201,7 @@ export const rules = {
 export function violations(sources, registry = models, active = rules) {
   const found = [];
   const discovered = new Set();
-  if (active.locks) scan([...sources].filter(([path, source]) => entry.test(source) && registry[path]?.grade === 'real').map(([, source]) => source));
+  if (active.locks || active.bound || active.exhaustive) scan([...sources].filter(([, source]) => entry.test(source)).map(([, source]) => source));
   for (const [path, source] of sources) {
     if (!entry.test(source)) continue;
     discovered.add(path);

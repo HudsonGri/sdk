@@ -43,17 +43,20 @@ const mutants = [
   ['locks', {[path]: owning('let state = SyncMutex::<Vec</* > */ u8>>::new(Vec::new());')}, real],
   ['locks', {[path]: owning('let state = <SyncMutex<()>>::new(());')}, real],
   ['locks', {[path]: owning('let state = SyncMutex /* x */ ::<u8>::new(0);')}, real],
+  ['locks', {[path]: '/*\0*/\n' + owning('let state = std::sync::Mutex::new(0);')}, real],
   // A real model that does not parse cannot be judged lock-free.
-  ['locks', {[path]: healthy + '\nfn broken( {'}, real],
+  ['locks', {[path]: healthy + '\nfn broken() { let = 1; }'}, real],
   // A child source without its own model marker is still unseen executable code.
   ['locks', {[path]: 'mod hidden;\n' + healthy}, real],
   ['bound', {[path]: bounded + healthy}, real],
   ['bound', {[path]: healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   // A constant or forwarded bound is still a bound.
   ['bound', {[path]: constant + healthy}, real],
+  ['bound', {[path]: bounded.replace('preemption_bound =', 'preemption_bound /* cap */ =') + healthy}, real],
   ['bound', {[path]: healthy + '\nfn check_with_bound(_: Option<usize>, _: ()) {} fn run(bound: Option<usize>) { check_with_bound(bound, ()); }'}, real],
   ['exhaustive', {[path]: '// Every interleaving of the race.\n' + constant + healthy}, {[path]: {grade: 'real', bound: 'CAP preemptions'}}],
   ['exhaustive', {[path]: '// Exhaustive schedules of the race.\n' + bounded + healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
+  ['exhaustive', {[path]: '// Exhaustive schedules of the race.\n' + bounded.replace('preemption_bound =', 'preemption_bound /* cap */ =') + healthy}, {[path]: {grade: 'real', bound: 'two preemptions'}}],
   ['missing', {}, real],
 ];
 

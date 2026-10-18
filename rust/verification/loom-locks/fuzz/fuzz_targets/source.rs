@@ -8,5 +8,9 @@ fuzz_target!(|source: &str| {
             loom_lock_scan::scan(source).ok(),
             loom_lock_scan::scan(&rendered).ok()
         );
+        assert_eq!(
+            loom_lock_scan::bounds::bounded(source).ok(),
+            loom_lock_scan::bounds::bounded(&rendered).ok()
+        );
     }
 });
