@@ -4,8 +4,8 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, PublicationPermit, W
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     conversation::{
-        ContentGrant, ContentPublisher, ContentResidencyVerifier, Limits, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        ContentGrant, ContentPublisher, ContentResidencyVerifier, Limits, MAX_EXACT_JS_INTEGER,
+        VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, EffectStatus,
@@ -458,6 +458,7 @@ where
         request: request.clone(),
         first: None,
         applied: false,
+        published: false,
     };
     if let Some(path) = restart_path {
         use std::io::Write as _;
@@ -513,6 +514,7 @@ where
     remove_physical_output(directory.path(), applied)?;
     restart.first = status;
     restart.applied = applied;
+    restart.published = applied;
     Ok(Evidence {
         restart,
         directory,
@@ -610,7 +612,7 @@ fn native_request(
                 method: method.into(),
                 params: match method {
                     "tools/call" => {
-                        json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}})
+                        json!({"name":"echo","arguments":{"text":"héllo","sequence":MAX_EXACT_JS_INTEGER}})
                     }
                     "tools/list" => json!({"cursor":"next"}),
                     "resources/list" | "resources/templates/list" | "prompts/list" => json!({}),
@@ -761,21 +763,33 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if cfg!(test) {
         #[cfg(test)]
         task::properties::verify_native_callbacks()?;
-        run(None).await?;
-        run(Some("tools/call")).await?;
-        run(Some("tools/list")).await?;
-        for method in [
-            "resources/list",
-            "resources/templates/list",
-            "resources/read",
-            "prompts/list",
-            "prompts/get",
-        ] {
-            run(Some(method)).await?;
-        }
+        use futures::FutureExt as _;
+        // Every scenario owns its stream, filesystem and native directories,
+        // so the suite overlaps them instead of summing their process waits.
+        let scenarios = [
+            None,
+            Some("tools/call"),
+            Some("tools/list"),
+            Some("resources/list"),
+            Some("resources/templates/list"),
+            Some("resources/read"),
+            Some("prompts/list"),
+            Some("prompts/get"),
+        ]
+        .map(|method| run(method).boxed_local())
+        .into_iter();
         #[cfg(test)]
-        faults::run().await?;
-        Ok(())
+        let scenarios = scenarios.chain(faults::scenarios());
+        // Every scenario runs to its end, so each failing control reports.
+        let failures = futures::future::join_all(scenarios)
+            .await
+            .into_iter()
+            .filter_map(std::result::Result::err)
+            .collect::<Vec<_>>();
+        for failure in &failures {
+            eprintln!("scenario failed: {failure}");
+        }
+        failures.into_iter().next().map_or(Ok(()), Err)
     } else {
         let method = if std::env::args().any(|arg| arg == "--mcp-discovery") {
             Some("tools/list")
