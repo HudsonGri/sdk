@@ -362,7 +362,7 @@ async fn open_rejects_control_state_inside_the_checkout() -> Result<()> {
         matches!(LocalHarness::open(config).await, Err(Error::Invalid(message))
         if message.contains("separate from the checkout"))
     );
-    assert!(!state.join("owner.json").exists());
+    assert!(!state.exists(), "refused root created a directory");
     Ok(())
 }
 
@@ -393,7 +393,7 @@ async fn bind_rejects_control_state_inside_the_checkout() -> Result<()> {
         (&verifier, &signed), Some(checkout.path())).await,
         Err(Error::Invalid(message)) if message.contains("separate from the checkout"))
     );
-    assert!(!state.join("workspace").exists());
+    assert!(!state.exists(), "refused root created a directory");
     Ok(())
 }
 
@@ -409,6 +409,7 @@ fn canonical_separation_rejects_both_overlap_directions() -> Result<()> {
     ] {
         assert!(super::super::owner::separated_directory(&state, Some(&checkout)).is_err());
     }
+    assert!(!checkout.join("state").exists());
     let separate = root.path().join("separate");
     assert!(super::super::owner::separated_directory(&separate, Some(&checkout)).is_ok());
     #[cfg(unix)]
@@ -419,6 +420,7 @@ fn canonical_separation_rejects_both_overlap_directions() -> Result<()> {
             super::super::owner::separated_directory(&alias.join("nested"), Some(&checkout))
                 .is_err()
         );
+        assert!(!checkout.join("nested").exists());
     }
     Ok(())
 }

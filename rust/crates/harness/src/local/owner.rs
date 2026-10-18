@@ -56,16 +56,46 @@ pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<
 }
 
 pub(super) fn separated_directory(path: &Path, checkout: Option<&Path>) -> Result<PathBuf> {
-    let directory = directory(path)?;
-    if let Some(checkout) = checkout {
-        let checkout = fs::canonicalize(checkout).map_err(storage)?;
-        if checkout.starts_with(&directory) || directory.starts_with(&checkout) {
+    let Some(checkout) = checkout else {
+        return directory(path);
+    };
+    let checkout = fs::canonicalize(checkout).map_err(storage)?;
+    let separate = |directory: &Path| {
+        if checkout.starts_with(directory) || directory.starts_with(&checkout) {
             return Err(Error::Invalid(
                 "local state directory must be separate from the checkout".into(),
             ));
         }
+        Ok(())
+    };
+    // Reject before creating anything: a refused root must leave the checkout untouched.
+    if let Some(planned) = planned_directory(path) {
+        separate(&planned)?;
     }
+    let directory = directory(path)?;
+    separate(&directory)?;
     Ok(directory)
+}
+
+/// Canonical form of a not-yet-created directory: its nearest existing ancestor plus plain
+/// components. `None` when the missing suffix is not lexically resolvable.
+fn planned_directory(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        let existing = if ancestor.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            ancestor
+        };
+        let Ok(canonical) = fs::canonicalize(existing) else {
+            continue;
+        };
+        let missing = path.strip_prefix(ancestor).ok()?;
+        return missing
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+            .then(|| canonical.join(missing));
+    }
+    None
 }
 
 fn directory(path: &Path) -> Result<PathBuf> {
