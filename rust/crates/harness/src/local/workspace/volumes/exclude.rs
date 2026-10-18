@@ -129,7 +129,11 @@ mod tests {
         let text = std::fs::read_to_string(&exclude).unwrap();
         assert_eq!(
             text,
-            "user-pattern\n/.volumes/scratch\n/sub\\ dir/.volumes/scratch\n"
+            concat!(
+                "user-pattern\n",
+                "# acyclic harness volume mount point\n/.volumes/scratch\n",
+                "# acyclic harness volume mount point\n/sub\\ dir/.volumes/scratch\n",
+            )
         );
         assert!(!repository.join(".gitignore").exists());
         let status = git(
