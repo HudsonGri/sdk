@@ -42,10 +42,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     accounting.release_owned(&mut allocation, bytes)?;
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(original) = accounting.native_work() {
-                        return self
-                            .volume
-                            .fs
-                            .fork_workspace(
+                        return crate::in_heap(|| {
+                            self.volume.fs.fork_workspace(
                                 name,
                                 &options.generation,
                                 options.idempotency_key,
@@ -55,27 +53,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                                 cancellation,
                                 Some(&mut guard),
                             )
-                            .await;
+                        })
+                        .await;
                     }
                     // The facade takes over the name's payload; this operation retains its Arc control.
                     accounting.release_owned(
                         &mut KernelOwnedAllocation::Standalone,
                         name.retained_bytes(),
                     )?;
-                    let forked = self
-                        .volume
-                        .fs
-                        .fork_workspace(
+                    let remaining = accounting.remaining()?;
+                    let forked = crate::in_heap(|| {
+                        self.volume.fs.fork_workspace(
                             name,
                             &options.generation,
                             options.idempotency_key,
                             options.paths,
                             permit,
-                            accounting.remaining()?,
+                            remaining,
                             cancellation,
                             Some(&mut guard),
                         )
-                        .await;
+                    })
+                    .await;
                     let backend = match &forked {
                         Ok(receipt) => receipt.work,
                         Err(failure) => *failure.work,

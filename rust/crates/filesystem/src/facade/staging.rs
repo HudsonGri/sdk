@@ -132,8 +132,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             if !self.same_deployment(&volume.fs) {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let publication = self
-                .retention_publication_with_accounting(
+            let publication = crate::in_heap(|| {
+                self.retention_publication_with_accounting(
                     volume,
                     ObjectId {
                         kind: ObjectKind::GenerationRoot,
@@ -142,9 +142,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &mut accounting,
                     cancellation,
                 )
-                .await?;
-            let result = self
-                .flush_publication(
+            })
+            .await?;
+            let result = crate::in_heap(|| {
+                self.flush_publication(
                     crate::PublicationScope::Closure {
                         objects: &publication.value.objects,
                         proven_at: publication.value.proven_at,
@@ -152,7 +153,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &mut accounting,
                     cancellation,
                 )
-                .await;
+            })
+            .await;
             publication.retire(&mut accounting)?;
             result.map_err(Into::into)
         }

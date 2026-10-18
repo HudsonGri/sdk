@@ -163,16 +163,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return self
-                .volume
-                .checkout(selector, mode, original, cancellation)
+            return crate::in_heap(|| self.volume.checkout(selector, mode, original, cancellation))
                 .await
                 .map_err(WorkspaceError::from);
         }
-        let opened = self
-            .volume
-            .checkout(selector, mode, accounting.remaining()?, cancellation)
-            .await;
+        let remaining = accounting.remaining()?;
+        let opened = crate::in_heap(|| {
+            self.volume
+                .checkout(selector, mode, remaining, cancellation)
+        })
+        .await;
         let (allocations, work, budget, _) = accounting
             .standalone_parts()
             .ok_or(crate::WorkError::Overflow)?;

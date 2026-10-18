@@ -143,10 +143,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(WorkspaceError::IncompatibleWorkspace.into());
         }
-        let current_target = self
-            .workspace_head_state(target, accounting, cancellation)
-            .await?
-            .0;
+        let current_target =
+            crate::in_heap(|| self.workspace_head_state(target, accounting, cancellation))
+                .await?
+                .0;
         let target_object = ObjectId {
             kind: ObjectKind::GenerationRoot,
             digest: expected_target.digest(),
@@ -159,15 +159,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             kind: ObjectKind::GenerationRoot,
             digest: source.id.digest(),
         };
-        let mut base_root = self
-            .read_join_root_with_accounting(base_object, target.config, accounting, cancellation)
-            .await?;
-        let mut source_root = self
-            .read_join_root_with_accounting(source_object, target.config, accounting, cancellation)
-            .await?;
-        let target_root = self
-            .read_join_root_with_accounting(target_object, target.config, accounting, cancellation)
-            .await?;
+        let mut base_root = crate::in_heap(|| {
+            self.read_join_root_with_accounting(
+                base_object,
+                target.config,
+                accounting,
+                cancellation,
+            )
+        })
+        .await?;
+        let mut source_root = crate::in_heap(|| {
+            self.read_join_root_with_accounting(
+                source_object,
+                target.config,
+                accounting,
+                cancellation,
+            )
+        })
+        .await?;
+        let target_root = crate::in_heap(|| {
+            self.read_join_root_with_accounting(
+                target_object,
+                target.config,
+                accounting,
+                cancellation,
+            )
+        })
+        .await?;
         let result = async {
             if source_root.value.volume_id != source.workspace.volume.id
                 || target_root.value.volume_id != target.id
@@ -189,14 +207,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         allocation_error,
                     )
                 })?;
-            let normalized_base_object = self
-                .put_encoded_with_accounting(
+            let normalized_base_object = crate::in_heap(|| {
+                self.put_encoded_with_accounting(
                     ObjectKind::GenerationRoot,
                     encoded,
                     accounting,
                     cancellation,
                 )
-                .await?;
+            })
+            .await?;
             let encoded =
                 crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
                     crate::kernel::encode_generation_root(
@@ -205,14 +224,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         allocation_error,
                     )
                 })?;
-            let normalized_source_object = self
-                .put_encoded_with_accounting(
+            let normalized_source_object = crate::in_heap(|| {
+                self.put_encoded_with_accounting(
                     ObjectKind::GenerationRoot,
                     encoded,
                     accounting,
                     cancellation,
                 )
-                .await?;
+            })
+            .await?;
             if normalized_source_object == target_object && current_target == expected_target {
                 return workspace_join_scalar(
                     WorkspaceJoinOutcome::NoChanges(current_target),
@@ -233,26 +253,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
             let (merged, allocation) = match &resolutions {
                 WorkspaceJoinResolutions::Map(map) => {
-                    merge_generation_with_borrowed_map_resolutions_with_accounting(
-                        &self.inner.objects,
-                        &merge_request,
-                        map,
-                        DecodeLimits::for_volume(target.config),
-                        accounting,
-                        cancellation,
-                    )
+                    crate::in_heap(|| {
+                        merge_generation_with_borrowed_map_resolutions_with_accounting(
+                            &self.inner.objects,
+                            &merge_request,
+                            map,
+                            DecodeLimits::for_volume(target.config),
+                            accounting,
+                            cancellation,
+                        )
+                    })
                     .await?
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 WorkspaceJoinResolutions::Slice(slice) => {
-                    merge_generation_with_borrowed_resolutions_with_accounting(
-                        &self.inner.objects,
-                        merge_request,
-                        slice,
-                        DecodeLimits::for_volume(target.config),
-                        accounting,
-                        cancellation,
-                    )
+                    crate::in_heap(|| {
+                        merge_generation_with_borrowed_resolutions_with_accounting(
+                            &self.inner.objects,
+                            merge_request,
+                            slice,
+                            DecodeLimits::for_volume(target.config),
+                            accounting,
+                            cancellation,
+                        )
+                    })
                     .await?
                 }
             };
@@ -293,29 +317,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             // This immutable normalized history parent is outside the candidate's
             let _source_hold = if history == crate::workspace::JoinHistory::Merge {
                 Some(
-                    self.flush_join_parent_with_accounting(
-                        normalized_source_object,
-                        accounting,
-                        cancellation,
-                    )
+                    crate::in_heap(|| {
+                        self.flush_join_parent_with_accounting(
+                            normalized_source_object,
+                            accounting,
+                            cancellation,
+                        )
+                    })
                     .await?,
                 )
             } else {
                 None
             };
-            let published = publication(
-                PublishGenerationRequest {
-                    authority_id: volume_authority_id(target.id),
-                    volume_id: target.id,
-                    epoch: expected_head.epoch,
-                    expected: expected_head,
-                    operation_id,
-                    generation_root: candidate,
-                },
-                PublicationIntent::guarded(Some(operation_context), permit),
-                closure_limits(target.config),
-                accounting.remaining()?,
-            )
+            let remaining = accounting.remaining()?;
+            let published = crate::in_heap(|| {
+                publication(
+                    PublishGenerationRequest {
+                        authority_id: volume_authority_id(target.id),
+                        volume_id: target.id,
+                        epoch: expected_head.epoch,
+                        expected: expected_head,
+                        operation_id,
+                        generation_root: candidate,
+                    },
+                    PublicationIntent::guarded(Some(operation_context), permit),
+                    closure_limits(target.config),
+                    remaining,
+                )
+            })
             .await;
             if accounting.standalone_parts().is_some() {
                 let spent = match &published {
