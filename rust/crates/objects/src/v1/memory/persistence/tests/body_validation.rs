@@ -4,6 +4,7 @@ use proptest::prelude::*;
 
 mod differential;
 mod meter;
+mod multipart;
 
 fn batch(
     core: &MemoryObjects,
