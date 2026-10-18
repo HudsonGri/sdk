@@ -11,33 +11,38 @@ impl CaptureTransientCustody {
     pub(crate) fn worker(
         custody: &CaptureCustody,
     ) -> Result<CaptureWorker, crate::NativeTreeMaterializationError> {
-        if custody.closing.load(Ordering::SeqCst) {
-            return Err(crate::NativeTreeMaterializationError::OriginalWorkPoisoned);
-        }
+        // The low bit closes registration; each accepted payload owns two.
+        // Admission and close modify the same atomic, so neither can miss the other.
         custody
             .workers
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |workers| {
-                workers.checked_add(1)
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                #[cfg(all(test, acyclic_fs_loom))]
+                let closed = state & 1 != 0 && !model_checking::allow_closed_worker();
+                #[cfg(not(all(test, acyclic_fs_loom)))]
+                let closed = state & 1 != 0;
+                (!closed).then(|| state.checked_add(2)).flatten()
             })
-            .map_err(|_| crate::WorkError::Overflow)?;
+            .map_err(|state| {
+                if state & 1 != 0 {
+                    crate::NativeTreeMaterializationError::OriginalWorkPoisoned
+                } else {
+                    crate::WorkError::Overflow.into()
+                }
+            })?;
         let worker = CaptureWorker {
             custody: custody.clone(),
         };
-        // Close either observes this registration or this load rejects it.
-        if custody.closing.load(Ordering::SeqCst) {
-            return Err(crate::NativeTreeMaterializationError::OriginalWorkPoisoned);
-        }
         Ok(worker)
     }
 
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn close(&self) -> Result<(), DemandError> {
-        self.closing.store(true, Ordering::SeqCst);
+        self.workers.fetch_or(1, Ordering::AcqRel);
         #[cfg(all(test, acyclic_fs_loom))]
         let wait = !model_checking::skip_worker_wait();
         #[cfg(not(all(test, acyclic_fs_loom)))]
         let wait = true;
-        while wait && self.workers.load(Ordering::SeqCst) != 0 {
+        while wait && self.workers.load(Ordering::Acquire) != 1 {
             #[cfg(acyclic_fs_loom)]
             loom::thread::yield_now();
             #[cfg(not(acyclic_fs_loom))]
@@ -60,7 +65,7 @@ impl CaptureTransientCustody {
 
 impl Drop for CaptureWorker {
     fn drop(&mut self) {
-        let previous = self.custody.workers.fetch_sub(1, Ordering::SeqCst);
-        assert!(previous != 0, "balanced capture worker retirement");
+        let previous = self.custody.workers.fetch_sub(2, Ordering::AcqRel);
+        assert!(previous >= 2, "balanced capture worker retirement");
     }
 }

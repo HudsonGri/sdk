@@ -80,8 +80,6 @@ pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
     #[cfg(any(test, feature = "native-watch"))]
     workers: AtomicU64,
-    #[cfg(any(test, feature = "native-watch"))]
-    closing: AtomicBool,
     closed: AtomicBool,
     #[cfg(any(test, feature = "native-watch"))]
     header: crate::NativeAllocation,
@@ -109,7 +107,6 @@ impl CaptureTransientCustody {
         Ok(CaptureCustody(Arc::new(Self {
             retained: AtomicU64::new(0),
             workers: AtomicU64::new(0),
-            closing: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             header: work.claim(bytes, 1, WorkCounters::UNCHARGED)?,
         })))

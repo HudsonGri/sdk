@@ -5,6 +5,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 loom::thread_local! {
     static BROKEN_RELEASE: Cell<bool> = Cell::new(false);
     static SKIP_WORKER_WAIT: Cell<bool> = Cell::new(false);
+    static ALLOW_CLOSED_WORKER: Cell<bool> = Cell::new(false);
     static CLOSE_WITHOUT_LEAF: Cell<bool> = Cell::new(false);
 }
 
@@ -14,6 +15,10 @@ pub(super) fn broken_release() -> bool {
 
 pub(super) fn skip_worker_wait() -> bool {
     SKIP_WORKER_WAIT.with(Cell::get)
+}
+
+pub(super) fn allow_closed_worker() -> bool {
+    ALLOW_CLOSED_WORKER.with(Cell::get)
 }
 
 pub(super) fn close_without_leaf() -> bool {
@@ -113,29 +118,44 @@ fn capture_close_waits_for_accepted_payloads_but_not_accounting_handles() {
 #[test]
 fn capture_worker_registration_racing_close_never_returns_an_active_closed_lease() {
     crate::initialize_test_native_io();
-    loom::model(|| {
-        let work = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .unwrap();
-        let capture = CaptureTransientCustody::new_native(&work).unwrap();
-        let other = capture.clone();
-        let task = loom::thread::spawn(move || {
-            if let Ok(worker) = CaptureTransientCustody::worker(&other) {
-                assert!(other.is_open(), "registered worker remains open");
-                drop(worker);
-            }
+    let exercise = |broken| {
+        loom::model(move || {
+            let work = crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .unwrap();
+            let capture = CaptureTransientCustody::new_native(&work).unwrap();
+            let other = capture.clone();
+            let task = loom::thread::spawn(move || {
+                ALLOW_CLOSED_WORKER.with(|flag| flag.set(broken));
+                if let Ok(worker) = CaptureTransientCustody::worker(&other) {
+                    let open = other.is_open();
+                    drop(worker);
+                    open
+                } else {
+                    true
+                }
+            });
+            capture.close().unwrap();
+            let registered_open = task.join().unwrap();
+            assert!(registered_open, "registered worker remains open");
+            assert!(!capture.is_open());
+            drop(capture);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                crate::NativeMaterializationWork::accounting_state_bytes()
+            );
         });
-        capture.close().unwrap();
-        task.join().unwrap();
-        assert!(!capture.is_open());
-        drop(capture);
-        assert_eq!(
-            work.live_allocation_bytes(),
-            crate::NativeMaterializationWork::accounting_state_bytes()
-        );
-    });
+    };
+    exercise(false);
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
+        .expect_err("registration after closure must fail the same lifetime bound");
+    let message = error.downcast_ref::<String>().expect("assertion message");
+    assert!(
+        message.contains("registered worker remains open"),
+        "{message}"
+    );
 }
 
 #[test]
