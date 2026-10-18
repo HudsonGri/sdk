@@ -2,21 +2,23 @@ use super::accounting;
 use crate::sync::atomic as custody_atomics;
 use std::cell::Cell;
 
-thread_local! {
-    pub(super) static RETIRE_DIRTY_EARLY: Cell<bool> = const { Cell::new(false) };
-    static CHECK_PUBLISHER: Cell<bool> = const { Cell::new(false) };
-    static PUBLISHER_FUNDED: Cell<bool> = const { Cell::new(true) };
+loom::thread_local! {
+    pub(super) static RETIRE_DIRTY_EARLY: Cell<bool> = Cell::new(false);
+    static CHECK_PUBLISHER: Cell<bool> = Cell::new(false);
+    static PUBLISHER_FUNDED: Cell<bool> = Cell::new(true);
 }
 
 #[cfg(feature = "native-watch")]
 pub(super) fn check_publisher_cut(original: Option<&crate::NativeMaterializationWork>) {
-    if CHECK_PUBLISHER.get() {
+    if CHECK_PUBLISHER.with(Cell::get) {
         let original = original.unwrap();
-        PUBLISHER_FUNDED.set(
-            original.live_allocation_bytes()
-                >= crate::NativeMaterializationWork::accounting_state_bytes()
-                    + super::DIRTY_ALLOCATION_BYTES,
-        );
+        PUBLISHER_FUNDED.with(|flag| {
+            flag.set(
+                original.live_allocation_bytes()
+                    >= crate::NativeMaterializationWork::accounting_state_bytes()
+                        + super::DIRTY_ALLOCATION_BYTES,
+            )
+        });
     }
 }
 
@@ -32,14 +34,14 @@ fn dirty_backing_lifetime(retire_early: bool) {
         let baseline = original.live_allocation_bytes();
         let custody = super::NativeMountAllocationCustody::new(&mut original).unwrap();
         let publisher = loom::thread::spawn(move || {
-            CHECK_PUBLISHER.set(true);
+            CHECK_PUBLISHER.with(|flag| flag.set(true));
             drop(custody);
-            CHECK_PUBLISHER.set(false);
-            PUBLISHER_FUNDED.get()
+            CHECK_PUBLISHER.with(|flag| flag.set(false));
+            PUBLISHER_FUNDED.with(Cell::get)
         });
-        RETIRE_DIRTY_EARLY.set(retire_early);
+        RETIRE_DIRTY_EARLY.with(|flag| flag.set(retire_early));
         original.charge(crate::WorkCounters::UNCHARGED).unwrap();
-        RETIRE_DIRTY_EARLY.set(false);
+        RETIRE_DIRTY_EARLY.with(|flag| flag.set(false));
         let funded = publisher.join().unwrap();
         original.charge(crate::WorkCounters::UNCHARGED).unwrap();
         assert_eq!(original.live_allocation_bytes(), baseline);

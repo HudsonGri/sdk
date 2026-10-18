@@ -7,17 +7,37 @@ thread_local! {
     pub(super) static DIRTY_PAYLOAD_ONLY: Cell<bool> = const { Cell::new(false) };
 }
 
-fn exact_backing() {
-    let mut original = NativeMaterializationWork::new(
+fn exact_backing_mode(mode: u8) {
+    let original = NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
     .unwrap();
+    let mut view = match mode {
+        1 => original
+            .native_volume_work(crate::WorkBudget::UNBOUNDED)
+            .unwrap(),
+        2 => original
+            .native_volume_work(crate::WorkBudget::UNBOUNDED)
+            .unwrap()
+            .native_volume_work(crate::WorkBudget::UNBOUNDED)
+            .unwrap(),
+        3 => original
+            .invocation_view()
+            .unwrap()
+            .0
+            .native_volume_work(crate::WorkBudget::UNBOUNDED)
+            .unwrap()
+            .native_volume_work(crate::WorkBudget::UNBOUNDED)
+            .unwrap()
+            .recheck_admitted(),
+        _ => original.clone(),
+    };
     let baseline = original.live_allocation_bytes();
     let mut expected = original.receipt();
     let mut custody = None;
     let heap = measure(|| {
-        custody = Some(NativeMountAllocationCustody::new(&mut original).unwrap());
+        custody = Some(NativeMountAllocationCustody::new(&mut view).unwrap());
     });
     let registry_bytes =
         original.with_original_leaf(|work| work.roots.native_mount_admissions.1.logical_bytes());
@@ -58,9 +78,15 @@ fn exact_backing() {
     assert_eq!(original.receipt(), spent);
 }
 
+fn exact_backing() {
+    exact_backing_mode(0);
+}
+
 #[test]
 fn mount_backing_is_fully_funded_and_cloning_is_free() {
-    exact_backing();
+    for mode in 0..4 {
+        exact_backing_mode(mode);
+    }
     PAYLOAD_ONLY.set(true);
     let error = std::panic::catch_unwind(exact_backing);
     PAYLOAD_ONLY.set(false);

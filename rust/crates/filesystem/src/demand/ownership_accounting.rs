@@ -10,7 +10,7 @@ pub(crate) fn retained(owners: usize, bytes: &AtomicU64) -> u64 {
 }
 pub(crate) fn final_dirty_owner(owners: usize) -> bool {
     #[cfg(all(test, acyclic_fs_loom))]
-    if super::loom_tests::RETIRE_DIRTY_EARLY.get() {
+    if super::loom_tests::RETIRE_DIRTY_EARLY.with(std::cell::Cell::get) {
         return true;
     }
     if owners != 1 {
