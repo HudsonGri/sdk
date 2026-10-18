@@ -4,6 +4,13 @@ use std::cell::Cell;
 
 thread_local! {
     static REOPEN: Cell<bool> = const { Cell::new(false) };
+    static ITEMS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+}
+
+pub(in crate::filesystem) fn sample_items(finished: bool, io: Option<&PreparationIo>) {
+    let mut items = ITEMS.get();
+    items[usize::from(finished)] = io.map_or(0, |io| io.receipt().items_examined);
+    ITEMS.set(items);
 }
 
 pub(in crate::filesystem) fn reopen() -> bool {
@@ -194,6 +201,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                     },
                     |(host, source, grant), old| {
                         with_reopen(old, || {
+                            ITEMS.set([0; 2]);
                             let mut result = None;
                             let mut receipt = WorkCounters::default();
                             let allocations = acyclic_test_support::measure(|| {
@@ -231,6 +239,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                     }
                                 });
                             });
+                            differential::record(("publication verified", 0_u64));
                             let value = result.unwrap();
                             assert!(value.is_ok(), "{entry:?} {mode:?}: {value:?}");
                             let file = value.unwrap();
@@ -257,7 +266,38 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                     .as_ref(),
                                 b"later head"
                             );
-                            ((file, actual.as_ref().to_vec()), allocations, receipt)
+                            let primitive_items = match mode {
+                                None => 0,
+                                Some(native) => {
+                                    let opened =
+                                        runtime.block_on(host.open(&workspace, None)).unwrap();
+                                    let pinned = runtime
+                                        .block_on(host.generation(&opened, &generation, None))
+                                        .unwrap();
+                                    accounted(native, 64 * 1024 * 1024, false, |io| {
+                                        let bytes = runtime
+                                            .block_on(read_generation(
+                                                &pinned,
+                                                &format!("/{}", file.path()),
+                                                4096,
+                                                Some(io),
+                                            ))
+                                            .unwrap();
+                                        assert_eq!(bytes.as_ref(), b"published bytes");
+                                    })
+                                    .unwrap()
+                                    .1
+                                    .items_examined
+                                }
+                            };
+                            let [start, end] = ITEMS.get();
+                            (
+                                (file, actual.as_ref().to_vec()),
+                                allocations,
+                                receipt,
+                                end.checked_sub(start).unwrap(),
+                                primitive_items,
+                            )
                         })
                     },
                 );
@@ -265,10 +305,17 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                 let opens = |trace: &[(&str, u64)]| {
                     trace
                         .iter()
+                        .take_while(|event| event.0 != "publication verified")
                         .filter(|event| event.0 == "open workspace")
                         .count()
                 };
-                assert_eq!(opens(&before.1), opens(&after.1) + 1, "{entry:?} {mode:?}");
+                let expected_opens = match (entry, mode) {
+                    (Entry::Create, _) => 2,
+                    (Entry::Retry, None) => 3,
+                    _ => 1,
+                };
+                assert_eq!(opens(&after.1), expected_opens, "{entry:?} {mode:?}");
+                assert_eq!(opens(&before.1), expected_opens + 1, "{entry:?} {mode:?}");
                 let observed = |trace: Vec<(&'static str, u64)>| {
                     trace
                         .into_iter()
@@ -286,18 +333,24 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                 };
                 let mut old_trace = observed(before.1);
                 let new_trace = observed(after.1);
-                // Reopening an authenticated generation decodes its document
-                // and index again. Remove only that repeated adjacent pair;
-                // preserve the ordering and payload of every remaining event.
+                // Reopening decodes its document and index again. Remove only
+                // one exact duplicate pair, preserving all remaining events.
                 if old_trace != new_trace {
                     let duplicate = old_trace
-                        .windows(4)
-                        .position(|events| {
+                        .windows(2)
+                        .enumerate()
+                        .position(|(index, events)| {
                             events[0].0 == "decode document"
                                 && events[1].0 == "decode index"
-                                && events[..2] == events[2..]
+                                && old_trace[..index].windows(2).any(|prior| prior == events)
+                                && old_trace[..index]
+                                    .iter()
+                                    .chain(&old_trace[index + 2..])
+                                    .eq(new_trace.iter())
                         })
-                        .expect("unexpected observer difference");
+                        .unwrap_or_else(|| {
+                            panic!("unexpected observer difference: {old_trace:?} vs {new_trace:?}")
+                        });
                     old_trace.drain(duplicate..duplicate + 2);
                 }
                 assert_eq!(old_trace, new_trace);
@@ -315,6 +368,11 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                     before.0.1.count_total - after.0.1.count_total,
                     before.0.1.bytes_total - after.0.1.bytes_total,
                 );
+                let before_allocations = differential::allocation_counts(before.0.1);
+                let after_allocations = differential::allocation_counts(after.0.1);
+                let allocation_saving = std::array::from_fn::<_, 6, _>(|index| {
+                    before_allocations[index] - after_allocations[index]
+                });
                 let work = |r: WorkCounters| {
                     [
                         r.authority_records_read,
@@ -331,13 +389,41 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                         .checked_sub(work(after.0.2)[index])
                         .expect("reuse added work")
                 });
+                // Tree searches charge actual comparisons, which vary with
+                // history. Independently meter the necessary generation read;
+                // the retained wrapper must add only its path formatting.
+                let overhead = u64::from(mode == Some(false)) * 2;
+                assert_eq!(
+                    after.0.3,
+                    after.0.4 + overhead,
+                    "{entry:?} {mode:?}: redundant read work"
+                );
+                if mode.is_some() {
+                    assert!(
+                        before.0.3 > before.0.4 + overhead,
+                        "the real reopen must fail the same work bound"
+                    );
+                }
                 eprintln!(
-                    "retained {entry:?} mode={mode:?} prefix={prefix} saved={saving:?} work={work_saving:?}"
+                    "retained {entry:?} mode={mode:?} prefix={prefix} saved={saving:?} allocations={allocation_saving:?} work={work_saving:?} retained_items={}",
+                    after.0.3 - after.0.4,
+                );
+                let invariant = (
+                    allocation_saving,
+                    [
+                        work_saving[0],
+                        work_saving[1],
+                        work_saving[2],
+                        work_saving[3],
+                        work_saving[5],
+                        work_saving[6],
+                    ],
+                    after.0.3 - after.0.4,
                 );
                 if let Some(expected) = prefix_saving {
-                    assert_eq!((saving, work_saving), expected);
+                    assert_eq!(invariant, expected, "{entry:?} {mode:?}");
                 }
-                prefix_saving = Some((saving, work_saving));
+                prefix_saving = Some(invariant);
             }
         }
     }
