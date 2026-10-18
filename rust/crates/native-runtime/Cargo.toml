@@ -18,6 +18,9 @@ test-support = ["dep:tokio"]
 bytes.workspace = true
 tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
 
+[build-dependencies]
+cc = "1"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
 compio-driver = { version = "=0.12.5", default-features = false, features = ["io-uring"] }

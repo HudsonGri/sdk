@@ -6,13 +6,13 @@ mod console_owner;
 #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
 mod counters;
 mod decoder;
-#[cfg(any(windows, acyclic_harness_tui_loom))]
+mod frame;
+#[cfg(any(windows, test, acyclic_harness_tui_loom))]
 mod handoff;
 #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
 mod input;
 #[cfg(any(windows, acyclic_harness_tui_loom))]
 mod input_fence;
-mod frame;
 #[cfg(any(unix, acyclic_harness_tui_loom))]
 mod lifecycle;
 mod probe;
@@ -28,9 +28,9 @@ pub use capabilities::*;
 #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
 pub use counters::{DeviceIo, device_io};
 pub use decoder::{Decoder, encode_key};
+pub use frame::{FrameTerminal, Present};
 #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
 pub use input::Events;
-pub use frame::{FrameTerminal, Present};
 pub use probe::{PROBE_LIMIT, PROBE_TIMEOUT, Probe, ProbeIo, ProbeReplies, detect};
 pub use restore::{RestoreGuard, ScreenMode};
 #[cfg(all(unix, not(acyclic_harness_tui_loom)))]

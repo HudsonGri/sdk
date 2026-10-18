@@ -623,6 +623,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-test-support",
  "bytes",
+ "cc",
  "compio-buf",
  "compio-driver",
  "futures-core",

@@ -1,6 +1,7 @@
 //! Fixed-capacity batch handoff from a blocking reader thread to an async
 //! stream. Batches and their storage circulate through fixed arrays, so a
 //! warm handoff never allocates.
+use acyclic_native_runtime::input_batch::InputBatch;
 use arrayvec::ArrayVec;
 use std::io;
 use std::task::{Context, Poll, Waker};
@@ -17,11 +18,11 @@ const QUEUED: usize = 2;
 /// storage, so nothing is allocated after construction.
 pub(crate) const BUFFERS: usize = QUEUED + 3;
 
-pub(crate) type Batch = io::Result<Vec<u8>>;
+pub(crate) type Batch = io::Result<InputBatch>;
 
 struct State {
     ready: ArrayVec<Batch, QUEUED>,
-    spare: ArrayVec<Vec<u8>, BUFFERS>,
+    spare: ArrayVec<InputBatch, BUFFERS>,
     waker: Option<Waker>,
     /// The stream is gone: the reader stops at its next send.
     closed: bool,
@@ -33,6 +34,7 @@ struct State {
 pub(crate) struct Handoff {
     state: Mutex<State>,
     space: Condvar,
+    batch: usize,
 }
 
 impl Handoff {
@@ -40,7 +42,7 @@ impl Handoff {
         Self {
             state: Mutex::new(State {
                 ready: ArrayVec::new(),
-                spare: std::iter::repeat_with(|| vec![0; batch])
+                spare: std::iter::repeat_with(|| InputBatch::new(batch))
                     .take(BUFFERS)
                     .collect(),
                 waker: None,
@@ -48,6 +50,7 @@ impl Handoff {
                 finished: false,
             }),
             space: Condvar::new(),
+            batch,
         }
     }
 
@@ -58,12 +61,14 @@ impl Handoff {
     }
 
     /// Reader: circulating storage, or `None` once the stream is gone.
-    pub(crate) fn storage(&self) -> Option<Vec<u8>> {
+    pub(crate) fn storage(&self) -> Option<InputBatch> {
         let mut state = self.lock();
         if state.closed {
             return None;
         }
-        Some(state.spare.pop().unwrap_or_default())
+        let spare = state.spare.pop();
+        drop(state);
+        Some(spare.unwrap_or_else(|| InputBatch::new(self.batch)))
     }
 
     /// Reader: queue a batch, waiting while the queue is full. False once the
@@ -119,8 +124,8 @@ impl Handoff {
     }
 
     /// Stream: return spent storage for the reader to fill again.
-    pub(crate) fn recycle(&self, storage: Vec<u8>) {
-        if storage.capacity() != 0 {
+    pub(crate) fn recycle(&self, mut storage: InputBatch) {
+        if !storage.storage_mut().is_empty() {
             let _ = self.lock().spare.try_push(storage);
         }
     }
@@ -159,6 +164,55 @@ impl Handoff {
     }
 }
 
+#[cfg(all(test, not(acyclic_harness_tui_loom)))]
+mod reuse_tests {
+    use super::*;
+
+    fn reinitialized_after_one_byte(broken: bool) -> usize {
+        const SIZE: usize = 1024;
+        let handoff = Handoff::new(SIZE);
+        let mut storage = handoff.storage().unwrap();
+        storage.storage_mut().fill(0xa5);
+        let mut changed = 0;
+        let allocations = acyclic_test_support::measure(|| {
+            assert!(handoff.send(storage.finish(1)));
+            let mut cx = Context::from_waker(Waker::noop());
+            let Poll::Ready(Some(Ok(storage))) = handoff.poll_recv(&mut cx) else {
+                panic!("published input disappeared");
+            };
+            assert_eq!(storage.bytes(), [0xa5]);
+            handoff.recycle(storage);
+            let mut storage = handoff.storage().unwrap();
+            if broken {
+                storage.storage_mut()[1..].fill(0);
+            }
+            assert_eq!(storage.storage_mut().len(), SIZE);
+            changed = storage
+                .storage_mut()
+                .iter()
+                .filter(|byte| **byte != 0xa5)
+                .count();
+        });
+        assert_eq!(allocations.count_total, 0);
+        handoff.finish();
+        handoff.close();
+        changed
+    }
+
+    #[test]
+    fn recycled_one_byte_reads_initialize_exactly_zero_bytes() {
+        assert_eq!(reinitialized_after_one_byte(false), 0);
+    }
+
+    #[test]
+    fn negative_control_detects_reinitializing_the_recycled_tail() {
+        assert_eq!(reinitialized_after_one_byte(true), 1023);
+        assert!(
+            std::panic::catch_unwind(|| assert_eq!(reinitialized_after_one_byte(true), 0)).is_err()
+        );
+    }
+}
+
 #[cfg(all(test, acyclic_harness_tui_loom))]
 mod tests {
     use super::*;
@@ -191,8 +245,8 @@ mod tests {
             let mut thread = Some(loom::thread::spawn(move || {
                 for key in 0..QUEUED as u8 {
                     let mut batch = reader.storage().unwrap();
-                    batch[0] = key;
-                    assert!(reader.send(Ok(batch)));
+                    batch.storage_mut()[0] = key;
+                    assert!(reader.send(batch.finish(1)));
                 }
                 reader.finish();
             }));
@@ -209,7 +263,7 @@ mod tests {
                 match next {
                     Poll::Ready(Some(batch)) => {
                         let batch = batch.unwrap();
-                        received.push(batch[0]);
+                        received.push(batch.bytes()[0]);
                         handoff.recycle(batch);
                     }
                     Poll::Ready(None) => break,
@@ -244,12 +298,12 @@ mod tests {
             let handoff = Arc::new(Handoff::new(1));
             for _ in 0..QUEUED {
                 let batch = handoff.storage().unwrap();
-                assert!(handoff.send(Ok(batch)));
+                assert!(handoff.send(batch.finish(1)));
             }
             let producer = Arc::clone(&handoff);
             let thread = loom::thread::spawn(move || {
                 if let Some(batch) = producer.storage() {
-                    assert!(!producer.send(Ok(batch)), "sent past a full queue");
+                    assert!(!producer.send(batch.finish(1)), "sent past a full queue");
                 }
             });
             if broken {
@@ -305,8 +359,8 @@ mod tests {
                     let Some(mut batch) = reader.storage() else {
                         break;
                     };
-                    batch[0] = key;
-                    if !reader.send(Ok(batch)) {
+                    batch.storage_mut()[0] = key;
+                    if !reader.send(batch.finish(1)) {
                         break;
                     }
                 }
@@ -317,7 +371,7 @@ mod tests {
             loop {
                 match handoff.poll_recv(&mut cx) {
                     Poll::Ready(Some(batch)) => {
-                        assert_eq!(batch.unwrap()[0], 0);
+                        assert_eq!(batch.unwrap().storage_mut()[0], 0);
                         break;
                     }
                     Poll::Ready(None) => panic!("reader finished early"),
