@@ -175,11 +175,11 @@ impl LocalHarness {
                 }
             }
             let checkout = match &config.project {
-                LocalProject::Workspace(path) => Some(path.as_path()),
+                LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
                 LocalProject::Volume { .. } => None,
             };
-            let directory = owner::separated_directory(&state_directory, checkout)?;
-            let owner = owner::Owner::open(&directory, &config.project)?;
+            let directory = owner::separated_directory(&state_directory, checkout.as_ref().map(|checkout| checkout.path.as_path()))?;
+            let owner = owner::Owner::open(&directory, &config.project, checkout.as_ref())?;
             let options = acyclic_fs::LocalOptions::new(match &config.project {
                 LocalProject::Workspace(_) => directory.join("filesystem"),
                 LocalProject::Volume { directory, .. } => directory.clone(),
