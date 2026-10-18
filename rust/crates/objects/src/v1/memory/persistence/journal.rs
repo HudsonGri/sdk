@@ -93,7 +93,7 @@ impl Journal {
     /// Inline the changed bodies of `next` and the pending object.
     ///
     /// Returns the inline data those bodies now reference.
-    fn inline_changes(
+    pub(super) fn inline_changes(
         &self,
         before: &State,
         next: &mut State,
@@ -115,10 +115,32 @@ impl Journal {
                 object.body = self.prepare_inline(&object.body, &mut inline_data, publication)?;
             }
         }
-        for (id, _) in &next.uploads.clone() {
-            let upload = next.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
-            for (number, _) in &upload.parts.clone() {
-                let (_, body) = upload
+        let uploads = next.uploads.clone();
+        for change in before.uploads.diff(&uploads) {
+            let (id, upload) = match change {
+                imbl::ordmap::DiffItem::Add(id, upload)
+                | imbl::ordmap::DiffItem::Update {
+                    new: (id, upload), ..
+                } => (id, upload),
+                imbl::ordmap::DiffItem::Remove(..) => continue,
+            };
+            let empty = OrdMap::new();
+            let old = before
+                .uploads
+                .get(id)
+                .map_or(&empty, |upload| &upload.parts);
+            for change in old.diff(&upload.parts) {
+                let number = match change {
+                    imbl::ordmap::DiffItem::Add(number, _)
+                    | imbl::ordmap::DiffItem::Update {
+                        new: (number, _), ..
+                    } => number,
+                    imbl::ordmap::DiffItem::Remove(..) => continue,
+                };
+                let (_, body) = next
+                    .uploads
+                    .get_mut(id)
+                    .ok_or(Error::from(Unavailable))?
                     .parts
                     .get_mut(number)
                     .ok_or(Error::from(Unavailable))?;

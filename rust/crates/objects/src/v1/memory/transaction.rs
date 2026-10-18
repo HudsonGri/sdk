@@ -177,9 +177,9 @@ impl MemoryObjects {
                 .checked_sub(old_bytes)
                 .and_then(|n| n.checked_add(new_bytes))
                 .ok_or(Error::from(QuotaExceeded))?;
-            next.state.object_bytes = next
+            next.state.body_bytes = next
                 .state
-                .object_bytes
+                .body_bytes
                 .checked_sub(old_bytes)
                 .and_then(|n| n.checked_add(new_bytes))
                 .ok_or(Error::from(QuotaExceeded))?;

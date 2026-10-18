@@ -6,8 +6,8 @@ pub(in crate::v1) struct State {
     pub(super) uploads: OrdMap<SharedInfo<String>, Upload>,
     pub(super) receipts: OrdMap<SharedInfo<String>, Receipt>,
     pub(super) sequence: u64,
-    /// Body bytes of every stored object, maintained by [`stored_bytes`].
-    pub(super) object_bytes: usize,
+    /// Body bytes of current objects and staged parts, maintained by [`stored_bytes`].
+    pub(super) body_bytes: usize,
 }
 #[derive(Clone)]
 pub(super) struct Bucket {
@@ -19,7 +19,7 @@ pub(super) struct Stored {
     pub(super) info: SharedInfo,
     pub(super) body: StoredBody,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct Upload {
     pub(super) bucket: SharedInfo<String>,
     pub(super) key: SharedInfo<String>,
@@ -66,16 +66,31 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
             removed = removed.checked_add(sum(bucket)?)?;
         }
     }
-    next.object_bytes = before
-        .object_bytes
-        .checked_add(added)?
-        .checked_sub(removed)?;
-    next.uploads
-        .values()
-        .flat_map(|upload| upload.parts.values())
-        .try_fold(next.object_bytes, |total, (_, body)| {
-            total.checked_add(body.len())
-        })
+    for change in before.uploads.diff(&next.uploads) {
+        let empty = OrdMap::new();
+        let (old, new) = match change {
+            imbl::ordmap::DiffItem::Add(_, upload) => (&empty, &upload.parts),
+            imbl::ordmap::DiffItem::Update {
+                old: (_, old),
+                new: (_, new),
+            } => (&old.parts, &new.parts),
+            imbl::ordmap::DiffItem::Remove(_, upload) => (&upload.parts, &empty),
+        };
+        for change in old.diff(new) {
+            let (old, new) = match change {
+                imbl::ordmap::DiffItem::Add(_, (_, body)) => (0, body.len()),
+                imbl::ordmap::DiffItem::Update {
+                    old: (_, (_, old)),
+                    new: (_, (_, new)),
+                } => (old.len(), new.len()),
+                imbl::ordmap::DiffItem::Remove(_, (_, body)) => (body.len(), 0),
+            };
+            added = added.checked_add(new)?;
+            removed = removed.checked_add(old)?;
+        }
+    }
+    next.body_bytes = before.body_bytes.checked_add(added)?.checked_sub(removed)?;
+    Some(next.body_bytes)
 }
 
 #[derive(Clone)]
