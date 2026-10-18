@@ -8,12 +8,14 @@ use acyclic_harness::{
 };
 
 fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
-    if let Some(manifest) = fuzz_input.parse(|bytes| {
-        acyclic_harness::context::ContextManifest::decode(bytes, Limits::default())
-    }) {
+    if let Some(manifest) = fuzz_input
+        .parse(|bytes| acyclic_harness::context::ContextManifest::decode(bytes, Limits::default()))
+    {
         let encoded = manifest.encode(Limits::default()).unwrap();
-        let _ = fuzz_support::round_trip(&manifest,
-            acyclic_harness::context::ContextManifest::decode(&encoded, Limits::default()));
+        let _ = fuzz_support::round_trip(
+            &manifest,
+            acyclic_harness::context::ContextManifest::decode(&encoded, Limits::default()),
+        );
     }
     let Some(request) = fuzz_input.parse(serde_json::from_slice::<ModelRequest>) else {
         return;

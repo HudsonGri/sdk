@@ -75,7 +75,8 @@ fn frame(selector: u8, data: &[u8]) {
                 cursor: cursor.clone(),
             };
             let encoded = jsonl::change(&change).unwrap();
-            let decoded = fuzz_support::must_decode(jsonl::parse_change(&encoded));
+            let decoded =
+                fuzz_support::round_trip_by(&encoded, jsonl::parse_change(&encoded), jsonl::change);
             assert_eq!(decoded.file, change.file);
             assert!(decoded.files.is_empty() && decoded.removed.is_empty());
             assert_eq!(decoded.cursor, cursor);
