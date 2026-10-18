@@ -62,6 +62,24 @@ impl<T: Send + Sync> RetainFence for SharedOwner<T, Box<dyn Send + Sync>> {
 }
 
 impl OwnershipAnchor {
+    /// Holds a provisional fence during initialization and retains it only on success.
+    /// Failed or cancelled work keeps its own fence until its last worker releases it.
+    pub async fn initialize_fenced<T, E, F: Future<Output = Result<T, E>>>(
+        self,
+        fence: impl Send + Sync + 'static,
+        initialize: impl FnOnce(Self) -> F,
+    ) -> Result<T, E> {
+        // Both tuples drop the root before the fence, including on cancellation.
+        // The fence never owns the root: committing cannot introduce an Arc cycle.
+        let pending = (self, Arc::new(fence));
+        let provisional = Self::new((pending.0.clone(), pending.1.clone()));
+        let result = initialize(provisional).await;
+        if result.is_ok() {
+            pending.0._owner.retain_fence(Box::new(pending.1.clone()));
+        }
+        result
+    }
+
     /// Retains a fence through cleanup of every clone, including pre-existing clones.
     pub fn fenced(owner: Self, fence: impl Send + Sync + 'static) -> Self {
         owner._owner.retain_fence(Box::new(fence));

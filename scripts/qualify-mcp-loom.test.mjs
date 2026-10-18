@@ -2,10 +2,36 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyOwnershipLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("ownership qualification requires every dedicated real-lock model and compiler controls in CI", () => {
+  for (const passed of [0, 4, 7, 8, 9]) {
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.deepEqual(args.slice(0, 7), ["test", "--locked", "--message-format=json", "-p", "acyclic-native-runtime", "--lib", "--no-run"]);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_native_runtime_loom(?: |$)/);
+        return {status: 0, stderr: "", stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
+      }
+      assert.deepEqual(args, ["ownership::model::"]);
+      assert.equal(options.timeout, 9500);
+      return {status: 0, stderr: "", stdout: summary(passed, 0, 50)};
+    };
+    if (passed === 8) qualifyOwnershipLoom(run);
+    else assert.throws(() => qualifyOwnershipLoom(run), /requires a nonzero/);
+  }
+  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  const requireProofs = text => {
+    assert.match(text, /^    node scripts\/check-hermetic-clippy\.mjs$/m);
+    assert.match(text, /^    node scripts\/qualify-mcp-loom\.mjs --ownership$/m);
+  };
+  requireProofs(gate);
+  for (const line of ["    node scripts/check-hermetic-clippy.mjs", "    node scripts/qualify-mcp-loom.mjs --ownership"]) {
+    assert.throws(() => requireProofs(gate.replace(line, "")), assert.AssertionError);
+  }
+});
 
 test("hook qualification builds real synchronization once and rejects either missing model", () => {
   for (const missing of [null, 1, 2]) {

@@ -61,6 +61,13 @@ export function qualifyMemoryAccountingLoom(run = spawnSync) {
   });
 }
 
+export function qualifyOwnershipLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
+    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8, timeout: 9500,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_native_runtime_loom` }, targetCfg: [],
+  });
+}
+
 function qualifyLoom(crate, target, features, run, options = {}) {
   const build = run("cargo", [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
@@ -90,7 +97,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     process.stderr.write(result.stderr ?? "");
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
     const complete = options.exact === false
-      ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
+      ? new RegExp(`^test result: ok\\. ${options.passed ?? 4} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;`, "m")
       : filter
       ? /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
       : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
@@ -102,7 +109,8 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
-  if (features[0] === "--hook-lifecycle") qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined);
+  if (features.length === 1 && features[0] === "--ownership") qualifyOwnershipLoom();
+  else if (features[0] === "--hook-lifecycle") qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features[0] === "--coordinator-origins") qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features[0] === "--summary-checkpoints") qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();

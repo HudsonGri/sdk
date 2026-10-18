@@ -182,11 +182,22 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let ownership = lifecycle.lock_owned().await;
             let open_options = options.clone();
             let fs = run_local_initialization(ownership, move |ownership| async move {
-                let ownership = match external_owner {
-                    Some(owner) => OwnershipAnchor::fenced(owner, ownership),
-                    None => OwnershipAnchor::new(ownership),
-                };
-                Self::open_local_unshared(open_options, Some(ownership)).await
+                match external_owner {
+                    Some(owner) => {
+                        owner
+                            .initialize_fenced(ownership, |ownership| {
+                                Self::open_local_unshared(open_options, Some(ownership))
+                            })
+                            .await
+                    }
+                    None => {
+                        Self::open_local_unshared(
+                            open_options,
+                            Some(OwnershipAnchor::new(ownership)),
+                        )
+                        .await
+                    }
+                }
             })
             .await??;
             let mut registrations = registry.lock().await;

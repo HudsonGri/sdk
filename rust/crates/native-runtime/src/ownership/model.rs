@@ -104,3 +104,81 @@ fn concurrent_fence_registration_survives_last_store_release() {
 fn discarded_fence_is_detected() {
     registration(true);
 }
+
+struct ProvisionalFence(Arc<AtomicBool>);
+impl Drop for ProvisionalFence {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn initialization(commit_early: bool, cancel: bool, success: bool) {
+    loom::model(move || {
+        let exists = Arc::new(AtomicBool::new(true));
+        let held = Arc::new(AtomicBool::new(true));
+        let owner = OwnershipAnchor::new(Cleanup(exists.clone()));
+        // Exactly the caller clone that outlives a failed attempt.
+        let retained = owner.clone();
+        let fence = ProvisionalFence(held.clone());
+        let mut worker = None;
+        let mut attempt = Box::pin(async {
+            let mut initialize = |provisional: OwnershipAnchor| {
+                let physical_work = provisional.clone();
+                let held = held.clone();
+                worker = Some(loom::thread::spawn(move || {
+                    assert!(held.load(Ordering::SeqCst), "active worker lost its fence");
+                    drop(physical_work);
+                }));
+                async move {
+                    let _provisional = provisional;
+                    if cancel {
+                        std::future::pending::<()>().await;
+                    }
+                    if success { Ok(_provisional) } else { Err(()) }
+                }
+            };
+            if commit_early {
+                initialize(OwnershipAnchor::fenced(owner, fence)).await
+            } else {
+                owner.initialize_fenced(fence, initialize).await
+            }
+        });
+        let result = attempt
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()));
+        assert_eq!(result.is_pending(), cancel);
+        drop(result);
+        drop(attempt);
+        worker.take().unwrap().join().unwrap();
+        assert_eq!(
+            held.load(Ordering::SeqCst),
+            success && !cancel,
+            "failed initialization retained its reopen fence"
+        );
+        assert!(exists.load(Ordering::SeqCst));
+        drop(retained);
+        assert!(!held.load(Ordering::SeqCst));
+        assert!(!exists.load(Ordering::SeqCst));
+    });
+}
+
+#[test]
+fn failed_initialization_releases_its_fence_after_physical_work() {
+    initialization(false, false, false);
+}
+
+#[test]
+fn cancelled_initialization_releases_its_fence_after_physical_work() {
+    initialization(false, true, false);
+}
+
+#[test]
+fn successful_initialization_retains_its_fence_for_existing_clones() {
+    initialization(false, false, true);
+}
+
+#[test]
+#[should_panic(expected = "failed initialization retained its reopen fence")]
+fn premature_registration_blocks_failure_retry() {
+    initialization(true, false, false);
+}
