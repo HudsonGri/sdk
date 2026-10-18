@@ -129,8 +129,14 @@ impl FileCitations {
     }
 }
 
-/// Parse each streamed slice once, retaining only complete, valid block citations.
-pub(crate) fn blocks(source: &str) -> Vec<Located> {
+#[cfg(test)]
+thread_local! { pub(crate) static INCLUDE_LITERALS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// Recognize the same visible citations for admission, resolution and clients.
+pub(crate) fn visit_blocks<E>(
+    source: &str,
+    mut emit: impl FnMut(Range<usize>, TargetRef<'_>) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
     let mut excluded = pulldown_cmark::Parser::new(source)
         .into_offset_iter()
         .filter_map(|(event, range)| {
@@ -144,37 +150,48 @@ pub(crate) fn blocks(source: &str) -> Vec<Located> {
             .then_some(range)
         })
         .peekable();
-    let mut nodes = Vec::new();
     let mut scanner = Scanner::default();
-    let mut emit = |range: Range<usize>, kind| {
+    let mut accept = |range: Range<usize>, kind| {
         while excluded
             .peek()
             .is_some_and(|excluded| excluded.end <= range.start)
         {
             excluded.next();
         }
+        let literal = excluded
+            .peek()
+            .is_some_and(|excluded| excluded.start < range.end && range.start < excluded.end);
+        #[cfg(test)]
+        let literal = literal && !INCLUDE_LITERALS.get();
         if kind == Kind::Block
-            && source
-                .get(range.clone())
-                .is_some_and(|raw| TargetRef::parse(raw, kind).is_some())
-            && !excluded
-                .peek()
-                .is_some_and(|excluded| excluded.start < range.end && range.start < excluded.end)
+            && !literal
+            && let Some(raw) = source.get(range.clone())
+            && let Some(target) = TargetRef::parse(raw, kind)
         {
-            let raw = source.get(range.clone()).ok_or(())?;
-            nodes.push(Located {
-                range,
-                directive: Directive::parse(raw, kind),
-            });
-            if nodes.len() == MAX_BLOCKS {
-                return Err(());
-            }
+            emit(range, target)?;
         }
         Ok(())
     };
-    if scanner.push(source, &mut emit).is_ok() {
-        let _ = scanner.finish(&mut emit);
-    }
+    scanner.push(source, &mut accept)?;
+    scanner.finish(&mut accept)
+}
+
+/// Retain only complete, valid block citations up to the message allowance.
+pub(crate) fn blocks(source: &str) -> Vec<Located> {
+    let mut nodes = Vec::new();
+    let _ = visit_blocks(source, |range, _| {
+        if let Some(raw) = source.get(range.clone()) {
+            nodes.push(Located {
+                range,
+                directive: Directive::parse(raw, Kind::Block),
+            });
+        }
+        if nodes.len() == MAX_BLOCKS {
+            Err(())
+        } else {
+            Ok(())
+        }
+    });
     nodes
 }
 

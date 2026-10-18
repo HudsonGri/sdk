@@ -248,15 +248,32 @@ async fn file_citations_ignore_literal_code_and_html_before_admission() -> Resul
         assert!(snapshot.error.is_none());
         assert!(crate::file_citations::blocks(source).is_empty());
     }
-    let source = format!("```text\n{}```\n\n::file[file.rs]", "::file[file.rs]\n".repeat(257));
+    let source = format!(
+        "```text\n{}```\n\n::file[file.rs]",
+        "::file[file.rs]\n".repeat(257)
+    );
     let snapshot = resolved(&source, true, b"real excerpt").await?;
     assert!(snapshot.error.is_none(), "{snapshot:?}");
     let [entry] = snapshot.entries.as_slice() else {
         panic!("only the visible citation may be admitted: {snapshot:?}")
     };
     assert_eq!(entry.range, crate::file_citations::blocks(&source)[0].range);
-    assert!(matches!(&entry.resolution, Resolution::Content(excerpt) if excerpt.content == "real excerpt"));
+    assert!(
+        matches!(&entry.resolution, Resolution::Content(excerpt) if excerpt.content == "real excerpt")
+    );
     Ok(())
+}
+
+#[tokio::test]
+#[should_panic(expected = "literal syntax must not cause a citation read")]
+async fn file_citations_recognition_detects_resolving_code_examples() {
+    crate::file_citations::INCLUDE_LITERALS.set(true);
+    let snapshot = resolved("`::file[file.rs]`", true, b"must remain unread").await;
+    crate::file_citations::INCLUDE_LITERALS.set(false);
+    assert!(
+        snapshot.unwrap().entries.is_empty(),
+        "literal syntax must not cause a citation read"
+    );
 }
 
 #[tokio::test]

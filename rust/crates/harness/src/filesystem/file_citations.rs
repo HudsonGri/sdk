@@ -4,11 +4,11 @@ use crate::{
     Error, Result,
     conversation::{ContentResidencyVerifier, VolumeClass, VolumeRef},
     durable_host::TaskVolumeSnapshot,
-    file_citations::{FileCitation, FileCitations, MAX_BLOCKS},
+    file_citations::{FileCitation, FileCitations, MAX_BLOCKS, visit_blocks},
     runtime::TaskContext,
 };
 use acyclic_fs::WorkCounters;
-use acyclic_markdown::directive::{Excerpt, Kind, Resolution, ResolutionError, Scanner, TargetRef};
+use acyclic_markdown::directive::{Excerpt, Kind, Resolution, ResolutionError, TargetRef};
 use std::ops::Range;
 
 #[cfg(test)]
@@ -42,24 +42,6 @@ fn copy(io: &PreparationIo, value: &str) -> Result<String> {
     Ok(value.to_owned())
 }
 
-fn visit<E>(
-    source: &str,
-    mut emit: impl FnMut(Range<usize>, TargetRef<'_>) -> std::result::Result<(), E>,
-) -> std::result::Result<(), E> {
-    let mut scanner = Scanner::default();
-    let mut accept = |range: Range<usize>, kind| {
-        if kind == Kind::Block
-            && let Some(raw) = source.get(range.clone())
-            && let Some(target) = TargetRef::parse(raw, kind)
-        {
-            emit(range, target)?;
-        }
-        Ok(())
-    };
-    scanner.push(source, &mut accept)?;
-    scanner.finish(&mut accept)
-}
-
 /// Resolve at one immutable cut. The caller retains the original owner fence.
 pub(crate) async fn resolve(
     context: &TaskContext,
@@ -75,7 +57,7 @@ pub(crate) async fn resolve(
         ..Default::default()
     })?;
     let mut count = 0;
-    let counted = visit(source, |_, _| {
+    let counted = visit_blocks(source, |_, _| {
         count += 1;
         if count > MAX_BLOCKS { Err(()) } else { Ok(()) }
     });
@@ -104,7 +86,7 @@ pub(crate) async fn resolve(
     allocation(io, count * std::mem::size_of::<Range<usize>>())?;
     let ranges_hold = io.guard_owned((count * std::mem::size_of::<Range<usize>>()) as u64)?;
     let mut ranges = Vec::with_capacity(count);
-    visit(source, |range, _| {
+    visit_blocks(source, |range, _| {
         ranges.push(range);
         Ok::<_, Error>(())
     })?;
