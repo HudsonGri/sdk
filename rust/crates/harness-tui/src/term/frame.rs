@@ -308,10 +308,37 @@ pub struct FrameTerminal<D: Present> {
     terminal: Terminal<FrameBackend<D>>,
     /// One retained screen baseline, exchanged with the render buffer.
     shown: Buffer,
+    staging: Buffer,
     scroll_regions: bool,
     invalid: bool,
     repaired: Vec<usize>,
     cursor: Vec<u8>,
+    #[cfg(test)]
+    work: FrameWork,
+    #[cfg(test)]
+    terminal_previous_cells: usize,
+}
+
+#[cfg(test)]
+#[derive(Default, Debug, PartialEq, Eq)]
+struct FrameWork {
+    diff: usize,
+    reset: usize,
+    terminal_diff: usize,
+    terminal_reset: usize,
+}
+
+// Restore buffer custody even when the caller's render closure unwinds.
+struct RenderBuffer<'a, 'b> {
+    frame: &'a mut Frame<'b>,
+    staging: &'a mut Buffer,
+}
+
+impl Drop for RenderBuffer<'_, '_> {
+    fn drop(&mut self) {
+        self.frame.buffer_mut().reset();
+        std::mem::swap(self.frame.buffer_mut(), self.staging);
+    }
 }
 
 impl<D: Present> FrameTerminal<D> {
@@ -331,10 +358,15 @@ impl<D: Present> FrameTerminal<D> {
                 position_written: false,
             })?,
             shown: Buffer::empty(ratatui::layout::Rect::default()),
+            staging: Buffer::default(),
             scroll_regions,
             invalid: false,
             repaired: Vec::new(),
             cursor: Vec::new(),
+            #[cfg(test)]
+            work: FrameWork::default(),
+            #[cfg(test)]
+            terminal_previous_cells: 0,
         })
     }
 
@@ -411,7 +443,7 @@ impl<D: Present> FrameTerminal<D> {
             bytes.extend_from_slice(b"\x1b[r");
         }
         bytes.extend_from_slice(b"\x1b[2J");
-        let encoded = encode_diff(self.terminal.current_buffer_mut(), &self.shown, &mut bytes);
+        let encoded = encode_diff(&self.staging, &self.shown, &mut bytes);
         let backend = self.terminal.backend_mut();
         backend.output.frame = bytes;
         backend.output.effects.margins = self.scroll_regions;
@@ -427,14 +459,29 @@ impl<D: Present> FrameTerminal<D> {
         scroll: Option<RegionScroll>,
         render: impl FnOnce(&mut Frame<'_>),
     ) -> io::Result<()> {
-        let previous_area = self.terminal.current_buffer_mut().area;
+        let previous_area = self.terminal.get_frame().area();
         self.terminal.autoresize()?;
-        if self.invalid && self.terminal.current_buffer_mut().area == previous_area {
+        let area = self.terminal.get_frame().area();
+        if self.invalid && area == previous_area {
             // We own the retained baseline. Clear through the backend without
             // Terminal::clear's synchronous cursor query on the output path.
             self.terminal.backend_mut().clear()?;
         }
-        let area = self.terminal.current_buffer_mut().area;
+        if self.terminal.current_buffer_mut().area != ratatui::layout::Rect::default() {
+            // Terminal creates two viewport buffers at construction/resize. Take
+            // one for rendering and retire the other. Its ordinary draw lifecycle
+            // thereafter sees two genuinely empty buffers, so it visits no cells.
+            self.staging = std::mem::take(self.terminal.current_buffer_mut());
+            self.terminal.swap_buffers();
+            *self.terminal.current_buffer_mut() = Buffer::default();
+            #[cfg(test)]
+            {
+                self.terminal_previous_cells = 0;
+            }
+        }
+        if self.staging.area != area {
+            self.staging.resize(area);
+        }
         let retained = !self.invalid && self.shown.area == area;
         if !retained {
             self.shown.resize(area);
@@ -457,29 +504,59 @@ impl<D: Present> FrameTerminal<D> {
         let Self {
             terminal,
             shown,
+            staging,
             repaired,
             cursor,
             ..
         } = self;
+        #[cfg(test)]
+        let mut work = FrameWork::default();
+        #[cfg(test)]
+        let previous_cells = self.terminal_previous_cells;
+        #[cfg(test)]
+        let mut returned_cells = 0;
         let mut encoded = Ok(());
         terminal.backend_mut().position_written = false;
         let drawn = terminal
             .draw(|frame| {
-                render(frame);
-                let next = frame.buffer_mut();
+                std::mem::swap(frame.buffer_mut(), staging);
+                let render_buffer = RenderBuffer { frame, staging };
+                render(render_buffer.frame);
+                let next = render_buffer.frame.buffer_mut();
                 repair_wide_trails(shown, next, repaired);
                 // Ratatui's Buffer::diff_iter remains the encoder input. Owning its
                 // baseline lets scrolling rotate cells and retain heap symbols.
                 encoded = encode_diff(shown, next, &mut bytes);
+                #[cfg(test)]
+                {
+                    work.diff = shown.content.len().min(next.content.len());
+                }
                 for &index in repaired.iter() {
                     next.content[index].diff_option = CellDiffOption::None;
                 }
                 std::mem::swap(shown, next);
-                // Terminal retains only empty staging buffers; its cursor/resize
-                // lifecycle still runs, without a second copy of the visible cells.
-                next.reset();
+                #[cfg(test)]
+                {
+                    work.reset = next.content.len();
+                }
+                drop(render_buffer);
+                #[cfg(test)]
+                {
+                    // The pinned ratatui lifecycle zips these buffers for diff
+                    // and resets the previous one. Count its actual input sizes.
+                    returned_cells = frame.buffer_mut().content.len();
+                    work.terminal_diff = previous_cells.min(returned_cells);
+                    work.terminal_reset = previous_cells;
+                }
             })
             .map(drop);
+        #[cfg(test)]
+        {
+            self.work = work;
+            if drawn.is_ok() {
+                self.terminal_previous_cells = returned_cells;
+            }
+        }
         let backend = terminal.backend_mut();
         if !bytes.is_empty() && !backend.position_written {
             let position = backend.shown.position.take();
