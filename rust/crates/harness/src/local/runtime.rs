@@ -142,6 +142,7 @@ pub(super) async fn open(
         config.stream,
         config.files.clone(),
         config.journal,
+        Some(config.scratch),
         config.verifier,
         &signed,
         &scope,
@@ -159,7 +160,6 @@ pub(super) async fn open(
     )
     .await?
     .with_output_volume(config.project, None)?
-    .with_private_volume(config.scratch, None)?
     .with_task_files(task_files.clone())?;
     runtime.bind_task_files(Some(projection_files.clone()));
     #[cfg(feature = "native-execution")]
