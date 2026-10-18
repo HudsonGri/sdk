@@ -76,11 +76,17 @@ async fn publish<P: StreamProvider + ?Sized>(
     let policy = image_policy(files)?;
     policy.parse(bytes, Some(mime))?;
     let mut images = draft_images(files)?;
-    let total: u64 = images.iter().map(|f| f.descriptor().byte_length()).sum();
+    let total = images.iter().try_fold(0u64, |total, file| {
+        total
+            .checked_add(file.descriptor().byte_length())
+            .ok_or_else(|| Error::Invalid("image size overflow".into()))
+    })?;
     if publisher.volume().class() != VolumeClass::AgentPrivate
         || bytes.is_empty()
         || bytes.len() as u64 > policy.maximum_bytes
-        || total + bytes.len() as u64 > policy.maximum_total_bytes
+        || total
+            .checked_add(bytes.len() as u64)
+            .is_none_or(|total| total > policy.maximum_total_bytes)
         || images.len() >= policy.maximum_images as usize
     {
         return Err(Error::Invalid("image exceeds draft allowance".into()));

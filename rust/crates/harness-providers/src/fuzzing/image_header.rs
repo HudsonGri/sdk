@@ -44,10 +44,14 @@ mod tests {
 
     #[test]
     fn image_header_checked_corpus_and_every_truncated_prefix() {
+        let header = policy().parse(PNG, Some("image/png")).unwrap();
+        assert_eq!((header.width, header.height), (1, 1));
         for seed in [
             PNG,
             include_bytes!("../../fuzz/corpus/image_header/truncated-jpeg").as_slice(),
             include_bytes!("../../fuzz/corpus/image_header/truncated-webp").as_slice(),
+            include_bytes!("../../fuzz/corpus/image_header/truncated-gif").as_slice(),
+            include_bytes!("../../fuzz/corpus/image_header/truncated-heif").as_slice(),
             include_bytes!("../../fuzz/corpus/image_header/zero-dimensions").as_slice(),
             include_bytes!("../../fuzz/corpus/image_header/malformed").as_slice(),
         ] {
