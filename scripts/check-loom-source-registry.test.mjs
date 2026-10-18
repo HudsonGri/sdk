@@ -12,4 +12,3 @@ test('repository model registration and source policies are clean', () => {
   assert.ok(Object.keys(models).length > 0);
   for (const model of Object.values(models)) assert.notEqual(model.grade, 'substitute');
 });
-

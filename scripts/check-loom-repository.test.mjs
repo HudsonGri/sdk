@@ -11,4 +11,3 @@ test('every repository Loom model is classified and clean', () => {
   assert.ok(Object.keys(models).length > 0);
   for (const model of Object.values(models)) assert.notEqual(model.grade, 'substitute');
 });
-
