@@ -6,12 +6,51 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 pub use rmcp::transport::auth::{
-    AuthError, AuthorizationManager, AuthorizationRequest, CredentialRefreshGuard, CredentialStore,
-    OAuthClientConfig, OAuthHttpClient, StateStore, StoredAuthorizationState, StoredCredentials,
-    default_oauth_http_client,
+    AuthError, AuthorizationRequest, CredentialRefreshGuard, CredentialStore, OAuthClientConfig,
+    OAuthHttpClient, StateStore, StoredAuthorizationState, StoredCredentials,
 };
-use rmcp::transport::auth::{AuthorizationCallback, AuthorizationSession};
+use rmcp::transport::auth::{AuthorizationCallback, AuthorizationManager, AuthorizationSession};
 use std::sync::Arc;
+
+/// An authorized MCP OAuth session. Only [`authorize`] and [`recover`] create
+/// one, over an explicit [`OAuthHttpClient`]. The rmcp manager stays private
+/// and only its token operation is exposed, so rmcp's provider-unaware
+/// `AuthorizationManager::new` is not reachable through this type:
+///
+/// ```
+/// use acyclic_harness::mcp::oauth::McpAuthorization;
+/// async fn token(session: &McpAuthorization) -> Option<String> {
+///     session.get_access_token().await.ok()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use acyclic_harness::mcp::oauth::McpAuthorization;
+/// type Manager = <McpAuthorization as std::ops::Deref>::Target;
+/// async fn bypass() {
+///     drop(Manager::new("http://127.0.0.1:9/").await);
+/// }
+/// ```
+pub struct McpAuthorization(AuthorizationManager);
+
+impl McpAuthorization {
+    /// Returns the current access token, refreshing it through the session's
+    /// own OAuth HTTP client when it has expired.
+    pub async fn get_access_token(&self) -> std::result::Result<String, AuthError> {
+        self.0.get_access_token().await
+    }
+}
+
+/// The OAuth HTTP client over the build's one rustls provider, ring. rmcp's
+/// reqwest carries no provider of its own, so a second (aws-lc-rs) provider
+/// never enters the graph and provider-less rustls builders stay unambiguous.
+pub fn default_oauth_http_client() -> std::result::Result<impl OAuthHttpClient, AuthError> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        // A concurrent first install of the same provider is equivalent.
+        drop(rustls::crypto::ring::default_provider().install_default());
+    }
+    rmcp::transport::auth::default_oauth_http_client()
+}
 
 /// Private browser/callback capability.
 pub trait McpOAuthInteraction: Send + Sync {
@@ -31,7 +70,7 @@ pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
     states: T,
     request: AuthorizationRequest,
     interaction: &dyn McpOAuthInteraction,
-) -> Result<AuthorizationManager> {
+) -> Result<McpAuthorization> {
     let (context, operation) = owner;
     let mut manager = AuthorizationManager::new_with_oauth_http_client(endpoint, http)
         .await
@@ -43,7 +82,7 @@ pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
         .await
         .map_err(|error| auth_error(&error))?
     {
-        return Ok(manager);
+        return Ok(McpAuthorization(manager));
     }
     let metadata = manager
         .resolve_metadata_from_challenge(request.challenge.as_deref())
@@ -67,6 +106,7 @@ pub async fn authorize<S: CredentialStore + 'static, T: StateStore + 'static>(
         .map_err(|error| auth_error(&error))?;
     state
         .into_authorization_manager()
+        .map(McpAuthorization)
         .ok_or_else(|| Error::Invalid("MCP authorization manager unavailable".into()))
 }
 /// Recovers the approved PKCE callback without starting another authorization.
@@ -78,7 +118,7 @@ pub async fn recover<S: CredentialStore + 'static, T: StateStore + 'static>(
     states: T,
     client: OAuthClientConfig,
     callback: (&str, &str),
-) -> Result<AuthorizationManager> {
+) -> Result<McpAuthorization> {
     let (context, operation) = owner;
     let (callback, authorization_url) = callback;
     approve((context, operation), endpoint, authorization_url).await?;
@@ -92,7 +132,7 @@ pub async fn recover<S: CredentialStore + 'static, T: StateStore + 'static>(
         .await
         .map_err(|error| auth_error(&error))?
     {
-        return Ok(manager);
+        return Ok(McpAuthorization(manager));
     }
     let metadata = manager
         .resolve_metadata()
@@ -112,7 +152,7 @@ pub async fn recover<S: CredentialStore + 'static, T: StateStore + 'static>(
         )
         .await
         .map_err(|error| token_error(operation, &error))?;
-    Ok(manager)
+    Ok(McpAuthorization(manager))
 }
 async fn approve(owner: (&TaskContext, OperationId), endpoint: &str, url: &str) -> Result<()> {
     let (context, operation) = owner;
