@@ -173,7 +173,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
 }
 
 /// Serializes the tests that install [`JOURNAL_PERSIST_BLOCKER`], which is
-static PERSIST_BLOCKER_TESTS: Mutex<()> = Mutex::new(());
+static PERSIST_BLOCKER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A cancelled mutation stays invisible until its frame is durable: a
 #[test]

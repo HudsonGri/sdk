@@ -193,7 +193,7 @@ def main():
                     print(model + ": " + result[model], file=sys.stderr, flush=True)
     for model in models:
         result.setdefault(model, "!indeterminate: no compilation context for " + model)
-    print(json.dumps(result))
+    print(json.dumps(list(result.items())))
 
 
 if __name__ == "__main__":

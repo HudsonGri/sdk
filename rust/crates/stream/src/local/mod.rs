@@ -64,8 +64,9 @@ pub(crate) mod query_model;
 pub(crate) mod replay_model;
 
 #[cfg(test)]
-static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
-    Mutex::new(None);
+static JOURNAL_OPEN_SUBMITTED: std::sync::Mutex<
+    Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>,
+> = std::sync::Mutex::new(None);
 #[cfg(test)]
 type JournalPersistBlocker = (
     usize,
@@ -73,10 +74,12 @@ type JournalPersistBlocker = (
     std::sync::mpsc::Receiver<()>,
 );
 #[cfg(test)]
-static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
+static JOURNAL_PERSIST_BLOCKER: std::sync::Mutex<Option<JournalPersistBlocker>> =
+    std::sync::Mutex::new(None);
 // Lock order: journal -> test hook; release the hook before a device-gate wait.
 #[cfg(test)]
-static JOURNAL_COMPACT_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
+static JOURNAL_COMPACT_BLOCKER: std::sync::Mutex<Option<JournalPersistBlocker>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(test)]
 mod tests;

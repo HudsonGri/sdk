@@ -2,6 +2,7 @@ use super::*;
 use crate::grpc;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use std::{
+    sync::Arc,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };

@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {encodeRecords, decodeVerdicts} from './loom-scan-records.mjs';
+import {typedVerdicts} from './loom-type-contexts.mjs';
 
 // Every Loom model source is classified here. A real model drives the
 // production component through its crate shim, so any lock it constructs or
@@ -81,11 +82,11 @@ export const models = {
   "rust/crates/stream/models/cancellation.rs": { grade: "real" },
   "rust/crates/stream/models/checked.rs": { grade: "real" },
   "rust/crates/stream/models/credit.rs": { grade: "real", constructs: "test-environment receiver storage, never locked while dropping a delivery or taking the production signal/cursor lock" },
-  "rust/crates/stream/models/gate.rs": { grade: "real" },
+  "rust/crates/stream/models/gate.rs": { grade: "real", constructs: "includes the production admission Gate constructor and its synchronization shim" },
   "rust/crates/stream/models/native_registration.rs": { grade: "real" },
-  "rust/crates/stream/models/outbound.rs": { grade: "real" },
-  "rust/crates/stream/models/session_model.rs": { grade: "real" },
-  "rust/crates/stream/models/signal.rs": { grade: "real" },
+  "rust/crates/stream/models/outbound.rs": { grade: "real", constructs: "includes the production Outbound queue constructor and its synchronization shim" },
+  "rust/crates/stream/models/session_model.rs": { grade: "real", constructs: "includes the production Progress cursor constructor and the session synchronization shim" },
+  "rust/crates/stream/models/signal.rs": { grade: "real", constructs: "includes the production Signal constructor and its synchronization shim" },
   "rust/crates/stream/publication-models/change.rs": { grade: "real" },
   "rust/crates/stream/publication-models/cursor.rs": { grade: "real" },
   "rust/crates/stream/publication-models/interest.rs": { grade: "real" },
@@ -118,12 +119,9 @@ const entry = /\bloom::model\b|\bcheck_with_bound\(|preemption_bound/;
 const exhaustive = /exhaust|every (?:interleaving|schedule)|all (?:interleavings|schedules)/i;
 const grades = new Set(['real', 'abstract', 'external', 'runner']);
 
-// Lock ownership is decided on parsed Rust, never on text: the scanner in
-// rust/verification/loom-locks resolves lock aliases and Loom lock imports,
-// finds every constructor spelling, and decides context-typed constructors
-// (`Default::default()`, `.into()`, ...) on their expected type. Generated
-// code is excluded: a real model may use only allow-listed macros and
-// attributes, and never macro_rules!.
+// Repository ownership is decided on compiler-resolved Rust in its Cargo
+// context. Isolated fixtures use the conservative parsed-source scanner;
+// constructions requiring missing crate context remain indeterminate.
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));
 const verdicts = new Map();
 let scannerPath;
@@ -170,9 +168,9 @@ export const rules = {
   grade: (path, source, model) => !model || grades.has(model.grade) ? [] : [`${path}: grade ${model.grade} is not real, abstract, external or runner`],
   scope: (path, source, model) => ['abstract', 'external'].includes(model?.grade) && !(model.scope?.trim().length >= 20)
     ? [`${path}: ${model.grade} model does not state the boundary it substitutes`] : [],
-  locks: (path, source, model) => {
+  locks: (path, source, model, typed) => {
     if (model?.grade !== 'real') return [];
-    const verdict = ownsLock(source);
+    const verdict = typed ?? ownsLock(source);
     if (verdict?.startsWith('!')) return [`${path}: lock scan rejected the model: ${verdict.slice(1)}`];
     const owned = verdict === '1';
     if (owned && !model.constructs) return [`${path}: real model defines its own lock without naming the production lock it is`];
@@ -198,12 +196,15 @@ export const rules = {
 export function violations(sources, registry = models, active = rules) {
   const found = [];
   const discovered = new Set();
+  const typed = registry === models && active.locks
+    ? typedVerdicts(sources, Object.keys(models).filter(path => models[path].grade === 'real' && sources.has(path)))
+    : new Map();
   if (active.locks || active.bound || active.exhaustive) scan([...sources].filter(([, source]) => entry.test(source)).map(([, source]) => source));
   for (const [path, source] of sources) {
     if (!entry.test(source)) continue;
     discovered.add(path);
     for (const [name, rule] of Object.entries(active)) {
-      if (name !== 'missing') found.push(...rule(path, source, registry[path]));
+      if (name !== 'missing') found.push(...rule(path, source, registry[path], typed.get(path)));
     }
   }
   for (const path of Object.keys(registry)) {

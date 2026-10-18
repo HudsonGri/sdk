@@ -50,6 +50,9 @@ mod memory;
     any(feature = "grpc", feature = "http", feature = "local")
 ))]
 mod obs;
+#[cfg(all(test, acyclic_stream_loom))]
+#[path = "../publication-models/probe.rs"]
+mod probe;
 #[doc(hidden)]
 pub mod query_sync;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
