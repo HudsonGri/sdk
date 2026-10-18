@@ -115,7 +115,7 @@ pub(crate) struct PiTaskRuntime {
         FilesystemTaskRuntime<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     pub(crate) definition: Arc<TaskDefinition<PiTaskInput, FileRef>>,
     pub(crate) authority: PiRuntimeAuthority,
-    pub(crate) task_files: Arc<acyclic_harness::task_volume::TaskFiles<LocalStream>>,
+    task_files: Arc<acyclic_harness::task_volume::TaskFiles<LocalStream>>,
 }
 
 impl PiTaskRuntime {

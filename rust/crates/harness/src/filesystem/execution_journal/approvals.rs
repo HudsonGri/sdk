@@ -167,20 +167,24 @@ where
     ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
         let aggregate = host.aggregate(io).await?;
-        self.published_decision_from(id, binding, &aggregate.0, io)
+        self.published_decision_from(id, binding, aggregate, io)
             .await
     }
 
-    pub(super) async fn published_decision_from(
+    pub(super) async fn published_decision_from<'io>(
         &self,
         id: InteractionId,
         binding: Option<(OperationId, [u8; 32])>,
-        aggregate: &StreamAggregate<P>,
-        io: Option<&PreparationIo>,
+        aggregate: (
+            StreamAggregate<P>,
+            Option<super::super::DecodeReservation<'io>>,
+        ),
+        io: Option<&'io PreparationIo>,
     ) -> Result<PublishedDecision> {
         let host = self.interactions()?;
         let _read;
-        let (read, receipt, hold) = host.read_durable(aggregate, id, binding, io).await?;
+        let (read, receipt, hold) = host.read_durable(&aggregate.0, id, binding, io).await?;
+        drop(aggregate);
         _read = hold;
         let (ticket, resolution) = admitted(read, io)?;
         let (Some(resolution), InteractionKind::Approval) = (&resolution, ticket.kind) else {

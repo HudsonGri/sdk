@@ -164,11 +164,14 @@ where
         let outcome = match host.read_outcome(&aggregate.0, id, io)? {
             // A verdict reaches execution only as a published decision.
             Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {}) => Some(
-                self.published_decision_from(id, None, &aggregate.0, io)
+                self.published_decision_from(id, None, aggregate, io)
                     .await?
                     .outcome(),
             ),
-            outcome => outcome,
+            outcome => {
+                drop(aggregate);
+                outcome
+            }
         };
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
