@@ -33,7 +33,7 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     snapshot: &HostStat,
-    (maximum_extent_spans, persist, prior): (u32, &mut bool, Option<FileRecord>),
+    (maximum_extent_spans, persist, prior): (u32, &mut bool, Option<crate::ObjectId>),
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<(Vec<(HostDataRange, StagedContent)>, Option<crate::ObjectId>), CaptureError> {
@@ -104,15 +104,7 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
     let dense = data_ranges == full;
     #[cfg(test)]
     let repeat = !*persist && super::verified_reuse_tests::repeat_read(!dense);
-    let prior_root = if !*persist && dense {
-        if let Some(record) = prior {
-            prior_regular_root(stager, record, metadata.len(), maximum_extent_spans, meter).await?
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let prior_root = prior.filter(|_| !*persist && dense);
     *persist = true;
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
@@ -178,8 +170,8 @@ pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStor
     Ok((staged, prior_root))
 }
 
-async fn prior_regular_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &Checkout<A, O>,
+pub(super) async fn prior_regular_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
     record: FileRecord,
     length: u64,
     maximum_spans: u32,

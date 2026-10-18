@@ -254,7 +254,10 @@ fn rescan_with_baseline(
     (output, receipt, heap, root)
 }
 
-fn read_final_metadata(runtime: &tokio::runtime::Runtime, fixture: &Fixture) -> Vec<FileMetadata> {
+fn read_final_metadata(
+    runtime: &tokio::runtime::Runtime,
+    fixture: &mut Fixture,
+) -> Vec<FileMetadata> {
     fixture
         .paths
         .iter()
@@ -277,7 +280,10 @@ fn read_final_metadata(runtime: &tokio::runtime::Runtime, fixture: &Fixture) -> 
         .collect()
 }
 
-fn expected_metadata(runtime: &tokio::runtime::Runtime, fixture: &Fixture) -> Vec<FileMetadata> {
+fn expected_metadata(
+    runtime: &tokio::runtime::Runtime,
+    fixture: &mut Fixture,
+) -> Vec<FileMetadata> {
     let prior = read_final_metadata(runtime, fixture);
     let host = HostRoot::open(
         fixture.source.path(),
@@ -434,7 +440,7 @@ proptest::proptest! {
             differential::pair::<_, _, &'static str>(|| {
                 let mut state = fixture(&runtime);
                 set_prior_access_time(&runtime, &mut state, accessed);
-                let expected = expected_metadata(&runtime, &state);
+                let expected = expected_metadata(&runtime, &mut state);
                 (state, expected)
             }, |(mut state, expected), old| {
                 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -509,7 +515,7 @@ fn metadata_oracle_rejects_wrong_atime_extra_heap_and_query_controls() {
             || {
                 let mut state = fixture(&runtime);
                 set_prior_access_time(&runtime, &mut state, 1);
-                let expected = expected_metadata(&runtime, &state);
+                let expected = expected_metadata(&runtime, &mut state);
                 (state, expected)
             },
             |(mut state, expected), old| {

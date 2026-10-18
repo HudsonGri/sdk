@@ -38,7 +38,7 @@ pub(super) async fn matches_prior<S: AsyncObjectStore>(
             let decoded = ReadOwned::decoded(decoded?);
             crate::kernel::file_read::cache_decoded_read(store, key, decoded, accounting)?
         };
-        let decision = (|| {
+        let decision: Result<Option<(ObjectId, (u64, u64))>, FsError> = (|| {
             let page = cached
                 .value
                 .downcast_ref::<BlobPage>()

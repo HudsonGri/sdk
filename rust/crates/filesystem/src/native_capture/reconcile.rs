@@ -452,17 +452,25 @@ impl CaptureBatch<'_> {
         };
         let mut verified_bytes = 0;
         let mut persist = !verify;
+        let prior_root = if verify {
+            prior_regular_root(
+                checkout,
+                existing.0.ok_or(WorkError::Overflow)?,
+                logical_bytes,
+                self.maximum_extent_spans,
+                self.meter,
+            )
+            .await?
+        } else {
+            None
+        };
         // Staging opens the file once and proves it is still the observed node before reading a byte.
         let (staged, prior_root) = read_regular_body(
             checkout,
             self.source_root,
             &host_path,
             metadata,
-            (
-                self.maximum_extent_spans,
-                &mut persist,
-                if verify { existing.0 } else { None },
-            ),
+            (self.maximum_extent_spans, &mut persist, prior_root),
             self.meter,
             &mut verified_bytes,
         )
