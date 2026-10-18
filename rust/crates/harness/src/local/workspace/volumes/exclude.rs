@@ -291,5 +291,13 @@ mod tests {
                 std::fs::write(&exclude, "user-pattern\n").unwrap();
             }
         }
+        use std::os::unix::ffi::OsStrExt as _;
+        let root = directory
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"non-\xff"));
+        std::fs::create_dir(&root).unwrap();
+        let error = exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "user-pattern\n");
     }
 }
