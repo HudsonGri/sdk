@@ -22,6 +22,7 @@ struct State {
     next: u64,
     live: BTreeSet<u64>,
     ready: BTreeSet<u64>,
+    served: BTreeSet<u64>,
     cancelled: BTreeSet<u64>,
     tasks: BTreeMap<u64, Work>,
     driver: Option<Waker>,
@@ -29,6 +30,8 @@ struct State {
     trace: Vec<(u64, &'static str)>,
     #[cfg(test)]
     forget_wake: bool,
+    #[cfg(test)]
+    forget_round: bool,
 }
 
 /// No future is polled or dropped, and no waker is called, under this lock.
@@ -43,6 +46,7 @@ impl Executor {
             next: 0,
             live: BTreeSet::new(),
             ready: BTreeSet::new(),
+            served: BTreeSet::new(),
             cancelled: BTreeSet::new(),
             tasks: BTreeMap::new(),
             driver: None,
@@ -50,6 +54,8 @@ impl Executor {
             trace: Vec::new(),
             #[cfg(test)]
             forget_wake: false,
+            #[cfg(test)]
+            forget_round: false,
         })))
     }
 
@@ -100,6 +106,7 @@ impl Executor {
             let mut state = lock(&self.0);
             state.live.remove(&id);
             state.ready.remove(&id);
+            state.served.remove(&id);
             state.cancelled.remove(&id);
             state.tasks.remove(&id)
         };
@@ -127,15 +134,26 @@ impl Executor {
         if state.ready.is_empty() {
             return None;
         }
+        // A self-waking task cannot consume another ready task's entire turn.
+        // The seed chooses the order within a round, never whether a task runs.
+        #[cfg(test)]
+        if state.forget_round {
+            state.served.clear();
+        }
+        if state.ready.difference(&state.served).next().is_none() {
+            state.served.clear();
+        }
+        let count = state.ready.difference(&state.served).count();
         let mut draw = [0; 8];
         state.random.fill(&mut draw);
-        let index = u64::from_le_bytes(draw) % state.ready.len() as u64;
+        let index = u64::from_le_bytes(draw) % count as u64;
         let id = *state
             .ready
-            .iter()
+            .difference(&state.served)
             .nth(index as usize)
             .expect("nonempty ready set");
         state.ready.remove(&id);
+        state.served.insert(id);
         let cancelled = state.cancelled.contains(&id);
         let task = state.tasks.remove(&id);
         Some((id, task, cancelled))
@@ -148,6 +166,7 @@ impl Executor {
             let discard = if state.cancelled.contains(&id) {
                 state.live.remove(&id);
                 state.ready.remove(&id);
+                state.served.remove(&id);
                 state.cancelled.remove(&id);
                 pending
             } else {
