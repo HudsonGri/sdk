@@ -42,7 +42,15 @@ proptest! {
         );
         prop_assert_eq!(&before.0, &after.0);
         prop_assert_eq!(old_trace, new_trace);
-        prop_assert_eq!(before.1, AllocationInfo::default());
+        // imbl's pinned 16-entry leaves need one cursor frame at this bound.
+        // The removed scan allocates that frame; the candidate has no cursor.
+        let frames = u64::from(prefix.len() > 16);
+        let bytes = frames * std::mem::size_of::<(usize, usize)>() as u64;
+        prop_assert_eq!(before.1, AllocationInfo {
+            count_total: frames, count_max: frames,
+            bytes_total: bytes, bytes_max: bytes,
+            ..AllocationInfo::default()
+        });
         prop_assert_eq!(after.1, AllocationInfo::default());
         prop_assert_eq!(after.2, 1);
         prop_assert_eq!(before.2, prefix.len() + 1);
