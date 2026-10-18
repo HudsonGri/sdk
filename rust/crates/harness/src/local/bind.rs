@@ -108,7 +108,7 @@ impl LocalHarness {
                 checkout_tools::CheckoutTools::new(
                     Arc::clone(workspace),
                     volume,
-                    config.clock,
+                    config.clock.clone(),
                     Arc::clone(&task_files),
                 )
                 .await?,
@@ -143,6 +143,8 @@ impl LocalHarness {
             workspace,
             #[cfg(feature = "native-execution")]
             checkout_context: checkout.is_some(),
+            #[cfg(feature = "native-execution")]
+            clock: config.clock,
         };
         if let Some(provider) = local
             .provider
