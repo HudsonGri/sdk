@@ -187,31 +187,6 @@ async fn skill_discovery_exhausts_pages_and_refreshes_after_reopen() -> Result<(
     reopened.close().await
 }
 
-/// The recorded causes of failed task commands.
-fn causes(trace: &str) -> String {
-    trace
-        .lines()
-        .filter(|line| {
-            let line = line.to_ascii_lowercase();
-            line.contains("cause") || line.contains("error") || line.contains("fail")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Collects formatted diagnostics so a test can read a failed command's cause.
-#[derive(Clone, Default)]
-struct Diagnostics(Arc<Mutex<Vec<u8>>>);
-impl std::io::Write for Diagnostics {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("diagnostics").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 // The shipping configuration (automatic compaction) starts a turn in a
 // checkout with 300 skills whose catalog exceeds the model's whole capacity. The manifest pins every skill as data; the request
 // lists the longest prefix within 5% of the model's usable input and one line
@@ -240,17 +215,6 @@ async fn oversized_skill_catalog_fits_the_model_allowance() -> Result<()> {
         skills,
         unlisted: 0,
     };
-    // A failed command's cause is visible only in its trace.
-    let diagnostics = Diagnostics::default();
-    let writer = diagnostics.clone();
-    let _diagnostics = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish(),
-    );
-    let traced = || String::from_utf8_lossy(&diagnostics.0.lock().expect("diagnostics")).into_owned();
     // A large model: its 5% allowance lists a few entries, while the whole
     // catalog still exceeds its capacity.
     let capacity = ModelContextCapacity {
@@ -280,9 +244,7 @@ async fn oversized_skill_catalog_fits_the_model_allowance() -> Result<()> {
     );
     let operation = OperationId::new();
     let task = super::context::admitted(harness.submit(operation, "hello").await?)?;
-    let first = harness.resume(task).await;
-    assert!(first.is_ok(), "{:?}\n{}", first.as_ref().err(), causes(&traced()));
-    assert_eq!(first?.text, "first");
+    assert_eq!(harness.resume(task).await?.text, "first");
     let (_, manifest) = super::context::manifest(&harness, operation).await?;
     assert_eq!(manifest.skill_catalog, catalog);
     let request = provider.requests().pop().expect("model request");
@@ -345,19 +307,20 @@ async fn oversized_skill_catalog_fits_the_model_allowance() -> Result<()> {
         .await?;
     harness.close().await?;
     let reopened = LocalHarness::open(config()?.context_manifest(reference)).await?;
-    diagnostics.0.lock().expect("diagnostics").clear();
     let task = super::context::admitted(reopened.submit(OperationId::new(), "hello").await?)?;
-    let rejected = reopened.resume(task).await;
-    assert!(rejected.is_err(), "the byte-only catalog was admitted");
+    let Err(rejected) = reopened.resume(task).await else {
+        panic!("the byte-only catalog was admitted");
+    };
     assert_eq!(provider.requests().len(), 1, "nothing was dispatched");
     // Each turn starts its own context, so only the mandatory system
     // content and prompt remain and compaction has nothing to drop.
-    let diagnostics = causes(&traced());
     assert!(
-        diagnostics.contains("mandatory content leaves no compaction source"),
-        "{:?}\n{diagnostics}",
-        rejected.err()
+        rejected
+            .to_string()
+            .contains("mandatory content leaves no compaction source"),
+        "{rejected}"
     );
-    // The indeterminate turn stays unfinished, so the harness is dropped.
+    // The rejected turn settles indeterminate until co-st-outcomes settles
+    // pre-dispatch failures as Failed, so the harness is dropped unclosed.
     Ok(())
 }
