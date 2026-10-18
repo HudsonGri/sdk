@@ -530,7 +530,7 @@ impl<'a> Names<'a> {
         self.bindings.iter().filter_map(|binding| {
             let definition = binding.definition?;
             #[cfg(all(test, not(target_arch = "wasm32")))]
-            if pinned_tests::DROP_PINNED.with(std::cell::Cell::get)
+            if crate::tests::tool_names_pinned_tests::DROP_PINNED.with(std::cell::Cell::get)
                 && binding.canonical.as_ref() != definition.name
             {
                 return None;
@@ -625,7 +625,3 @@ fn sort_wire<'a>(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tool_names_budget_tests.rs"]
 mod tests;
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-#[path = "tool_names_pinned_tests.rs"]
-mod pinned_tests;

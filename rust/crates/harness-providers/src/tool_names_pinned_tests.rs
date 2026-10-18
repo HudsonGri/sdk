@@ -1,10 +1,10 @@
 use super::*;
-use crate::tests::{fixtures, provider, tool_name_tests::request_with};
+use crate::{tests::tool_name_tests::request_with, tool_names::Names};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
 
 thread_local! {
-    pub(super) static DROP_PINNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static DROP_PINNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn declarations(request: &ModelRequest) -> Result<()> {
