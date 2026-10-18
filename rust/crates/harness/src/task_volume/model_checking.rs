@@ -15,6 +15,8 @@ pub enum Fault {
     ResampleFollow,
     /// Replace the caller's original generation fence with a fresh tail sample.
     ResamplePublicationFence,
+    /// Commit without the originally captured task-volume generation fence.
+    OmitPublicationFence,
     /// Keep an index from the replaced history.
     RetainObsoleteIndex,
     /// Apply an old acknowledgement over a rebuilt index.

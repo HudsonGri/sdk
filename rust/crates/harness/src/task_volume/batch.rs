@@ -48,17 +48,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             idempotency_key: IdempotencyKey::new(Uuid::new_v4().as_bytes().to_vec())?,
         };
         drop(index);
-        match self.provider.commit(request).await? {
-            CommitOutcome::Committed(envelope) => Ok(Generation {
-                position: next,
-                commit: *envelope.commit_id.as_bytes(),
-                ..expected
-            }),
-            CommitOutcome::Conflict(_) => {
-                self.refresh().await?;
-                let index = self.index.lock().await;
-                Err(Error::Conflict(self.generation(&index)))
-            }
-        }
+        self.commit_append(expected, request, writes.iter().cloned(), next, None)
+            .await
     }
 }
