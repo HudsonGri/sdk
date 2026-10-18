@@ -10,7 +10,7 @@ use futures::StreamExt as _;
 use std::sync::Arc;
 
 #[tokio::test]
-async fn direct_test_support_compositions_default_to_private_state() -> Result<()> {
+async fn explicitly_hermetic_compositions_default_to_private_state() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = Model::new(
         "scripted".into(),
@@ -22,6 +22,7 @@ async fn direct_test_support_compositions_default_to_private_state() -> Result<(
         directory.path(),
         (model, Arc::new(ScriptedModelProvider::new([]))),
     )
+    .hermetic()
     .without_default_tools();
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(
@@ -29,7 +30,7 @@ async fn direct_test_support_compositions_default_to_private_state() -> Result<(
             .codex_home(directory.path().join(".codex")),
     );
     let first = LocalHarness::open(config).await?;
-    // A second direct config must not reopen the first composition's per-project
+    // A second explicit fixture config must not reopen the first composition's per-project
     // user store: its private volume identities must be distinct.
     let model = Model::new(
         "scripted".into(),
@@ -41,6 +42,7 @@ async fn direct_test_support_compositions_default_to_private_state() -> Result<(
         directory.path(),
         (model, Arc::new(ScriptedModelProvider::new([]))),
     )
+    .hermetic()
     .without_default_tools();
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(
@@ -67,12 +69,13 @@ async fn integration_compositions_cannot_discover_the_real_settings_home() -> Re
         directory.path(),
         (model, Arc::new(ScriptedModelProvider::new([]))),
     )
+    .hermetic()
     .without_default_tools();
     // This compiles Harness as a dependency, without cfg(test). Bypassing the
-    // fixture helper must still fail before reading the real user's settings.
+    // settings helper while explicitly hermetic must fail before reading the real user's settings.
     assert!(matches!(
         LocalHarness::open(config).await,
-        Err(Error::Unsupported(message)) if message == "user settings directory is unavailable"
+        Err(Error::Unsupported(message)) if message == "hermetic compositions must inject settings"
     ));
     Ok(())
 }
