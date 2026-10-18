@@ -1,6 +1,8 @@
 use super::*;
 use std::{collections::HashSet, sync::Arc};
 
+thread_local! { static TRACE_STORAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
 fn retained(
     markdown: &Markdown,
     nodes: &mut HashSet<usize>,
@@ -76,6 +78,17 @@ fn retained(
             .sum::<usize>()
         + (markdown.references.committed.capacity() + markdown.references.pending.capacity())
             * std::mem::size_of::<(Key, (Arc<str>, Arc<str>, usize))>();
+    if TRACE_STORAGE.get() {
+        eprintln!(
+            "storage parts source={} state={state_bytes}/{state_metadata} textmeta={text_metadata} rows={}/{} cached={} dependencies={} table={table_payload}/{table_metadata} inline={inline_payload}/{inline_metadata} total={}",
+            markdown.source.capacity(),
+            markdown.lines.retained(),
+            markdown.spare.lines.retained(),
+            markdown.cached.capacity(),
+            markdown.dependencies.capacity(),
+            bytes + metadata
+        );
+    }
     (bytes, bytes + metadata)
 }
 
@@ -817,6 +830,7 @@ fn hard_break_emphasis_autolink_storage_stays_linear() {
 
 #[test]
 fn reference_and_table_capacity_boundary_storage_is_linear() {
+    TRACE_STORAGE.set(true);
     for (actions, count, length, padding, separators) in [
         (vec![0], 1, 837, 2, vec![4]),
         (vec![3], 1, 828, 4, vec![0]),
