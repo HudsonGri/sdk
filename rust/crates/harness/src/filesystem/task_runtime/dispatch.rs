@@ -1,5 +1,11 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    // One-shot production mutation, confined to the current-thread test runtime.
+    pub(super) static ERASE_CAUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
     P: StreamProvider + 'static,
@@ -156,34 +162,37 @@ where
                         return Err(error);
                     }
                     Err(error) => {
-                        tracing::trace!(
-                            %task,
-                            operation = %command.operation_id,
-                            command = %command.kind,
-                            cause = ?error,
-                            "task command failed; recording indeterminate outcome"
-                        );
-                        return Ok(CommandDispatch::Indeterminate);
+                        let reason = crate::executor::with_history_io(io, |work| -> Result<_> {
+                            Ok(crate::CommandIndeterminacyReason::Failed {
+                                code: crate::executor::preparation_format(
+                                    format_args!("{}", error.kind()),
+                                    work,
+                                )?,
+                                error: crate::executor::preparation_format(
+                                    format_args!("{error}"),
+                                    work,
+                                )?,
+                            })
+                        })?;
+                        return command_indeterminate(task, command, reason, io);
                     }
                     Ok(TaskCommandProgress::Indeterminate) => {
-                        tracing::trace!(
-                            %task,
-                            operation = %command.operation_id,
-                            command = %command.kind,
-                            "task command reported indeterminate progress"
+                        return command_indeterminate(
+                            task,
+                            command,
+                            crate::CommandIndeterminacyReason::Unsettled,
+                            io,
                         );
-                        return Ok(CommandDispatch::Indeterminate);
                     }
                     Ok(progress) => {
                         results.push_result(command.operation_id, progress)?;
                         if !results.input_within_limit(context.context().scope().limits().file_bytes)? {
-                            tracing::trace!(
-                                %task,
-                                operation = %command.operation_id,
-                                command = %command.kind,
-                                "task command result exceeds input limit; recording indeterminate outcome"
+                            return command_indeterminate(
+                                task,
+                                command,
+                                crate::CommandIndeterminacyReason::InputLimit,
+                                io,
                             );
-                            return Ok(CommandDispatch::Indeterminate);
                         }
                     }
                 }
@@ -193,4 +202,36 @@ where
         })?
         .await
     }
+}
+
+/// Records why a command left its task uncertain, so the cause reaches the
+/// task's outcome, the caller's error and the logs instead of being erased.
+fn command_indeterminate(
+    task: TaskId,
+    command: &WorkflowCommand,
+    reason: crate::CommandIndeterminacyReason,
+    io: Option<&super::super::PreparationIo>,
+) -> Result<CommandDispatch> {
+    let cause = crate::CommandIndeterminacy {
+        command: crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{}", command.kind), work)
+        })?,
+        reason,
+    };
+    #[cfg(test)]
+    let cause = if ERASE_CAUSE.with(|erase| erase.replace(false)) {
+        crate::CommandIndeterminacy {
+            command: String::new(),
+            reason: crate::CommandIndeterminacyReason::Unsettled,
+        }
+    } else {
+        cause
+    };
+    tracing::warn!(
+        %task,
+        operation = %command.operation_id,
+        %cause,
+        "task command left its task indeterminate"
+    );
+    Ok(CommandDispatch::Indeterminate(cause))
 }

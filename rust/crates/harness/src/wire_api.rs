@@ -167,11 +167,21 @@ pub fn operation_status(state: &OperationState) -> wire::OperationStatus {
             }),
         ),
         Some(Outcome::Cancelled) => (wire::CompletionState::Cancelled, None),
-        Some(Outcome::Indeterminate { operation_id }) => (
+        Some(Outcome::Indeterminate {
+            operation_id,
+            cause,
+        }) => (
             wire::CompletionState::Indeterminate,
             Some(wire::Error {
                 code: wire::ErrorCode::Indeterminate as i32,
-                message: "operation completion is indeterminate".into(),
+                message: crate::contract::indeterminate_display(
+                    *operation_id,
+                    match cause {
+                        crate::IndeterminateCause::Unobserved => None,
+                        crate::IndeterminateCause::Command(cause) => Some(cause),
+                    },
+                )
+                .to_string(),
                 operation_id: operation_id.to_string(),
             }),
         ),

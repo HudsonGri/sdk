@@ -637,9 +637,10 @@ impl LocalHarness {
             crate::Outcome::Cancelled => Err(Error::InteractionRejected(
                 crate::InteractionRejection::Cancelled,
             )),
-            crate::Outcome::Indeterminate { operation_id } => {
-                Err(Error::Indeterminate(operation_id))
-            }
+            crate::Outcome::Indeterminate {
+                operation_id,
+                cause,
+            } => Err(cause.into_error(operation_id)),
         }
     }
 }

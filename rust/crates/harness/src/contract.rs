@@ -283,8 +283,13 @@ pub enum Outcome<T> {
         /// Operation whose completion must be reconciled.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation_id: OperationId,
+        /// Why completion is uncertain.
+        cause: IndeterminateCause,
     },
 }
+
+mod indeterminate;
+pub use indeterminate::{CommandIndeterminacy, CommandIndeterminacyReason, IndeterminateCause};
 
 /// Stable wire identity used during compatibility handshakes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -468,6 +473,7 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
 
 #[path = "contract_errors.rs"]
 mod errors;
+pub(crate) use errors::indeterminate_display;
 pub use errors::{Error, InteractionRejection, Result};
 
 #[cfg(test)]

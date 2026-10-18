@@ -76,8 +76,17 @@ pub enum Error {
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
     /// Durable admission may have committed and must be reconciled.
-    #[error("operation outcome is indeterminate: {0}")]
+    #[error("{}", indeterminate_display(*.0, None))]
     Indeterminate(OperationId),
+    /// A task command left its task's completion uncertain, keeping its cause.
+    #[error("{}", indeterminate_display(*operation_id, Some(cause)))]
+    CommandIndeterminate {
+        /// Operation whose completion must be reconciled.
+        operation_id: OperationId,
+        /// The command and its source error.
+        #[source]
+        cause: crate::contract::CommandIndeterminacy,
+    },
     /// Search publication is retryable; its completed response remains in ready.json.
     #[error("search publication deferred; resume from ready.json")]
     SearchPublicationDeferred,
@@ -418,7 +427,9 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process(_) => ErrorCode::Invalid,
-            Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
+            Self::Indeterminate(_)
+            | Self::CommandIndeterminate { .. }
+            | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -463,7 +474,10 @@ impl Error {
     pub(crate) const fn leaves_effect_uncertain(&self) -> bool {
         matches!(
             self,
-            Self::Indeterminate(_) | Self::Storage(_) | Self::Cancelled
+            Self::Indeterminate(_)
+                | Self::CommandIndeterminate { .. }
+                | Self::Storage(_)
+                | Self::Cancelled
         )
     }
 
@@ -486,11 +500,30 @@ impl Error {
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::CommandIndeterminate { .. }
                 | Self::SearchPublicationDeferred
                 | Self::TaskFailed { .. }
                 | Self::GoalBlocked(_)
         )
     }
+}
+
+// Share formatting with wire status without cloning the retained diagnostic.
+pub(crate) fn indeterminate_display(
+    operation: OperationId,
+    cause: Option<&crate::CommandIndeterminacy>,
+) -> impl std::fmt::Display + '_ {
+    struct Diagnostic<'a>(OperationId, Option<&'a crate::CommandIndeterminacy>);
+    impl std::fmt::Display for Diagnostic<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "operation outcome is indeterminate: {}", self.0)?;
+            if let Some(cause) = self.1 {
+                write!(f, ": {cause}")?;
+            }
+            Ok(())
+        }
+    }
+    Diagnostic(operation, cause)
 }
 
 /// The only conversion of a fired cancellation token into a harness error.
