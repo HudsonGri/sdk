@@ -96,10 +96,13 @@ beforeAll(async()=>{
 afterAll(async()=>{
   const results=await Promise.allSettled([...fixtures.values()].map(async ({fixture,directory,oracle,passed})=>{
     // Bun's test deadline does not throw through the pending test promise.
-    // Read the oracle before shutdown/removal so a timeout keeps its actual cut.
-    if(!passed) reportTrace(oracle);
+    // Stop writers first, and keep diagnostics from bypassing owned cleanup.
     await fixture?.close();
-    rmSync(directory,{recursive:true});
+    try {
+      if(!passed) reportTrace(oracle);
+    } finally {
+      rmSync(directory,{recursive:true});
+    }
   }));
   const errors=results.filter(result=>result.status==="rejected").map(result=>result.reason);
   if(errors.length) throw new AggregateError(errors,"native owner fixture shutdown failed");
