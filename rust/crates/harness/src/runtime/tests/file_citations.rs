@@ -233,6 +233,33 @@ async fn file_citations_project_reader_is_utf8_safe_and_range_proportional() -> 
 }
 
 #[tokio::test]
+async fn file_citations_ignore_literal_code_and_html_before_admission() -> Result<()> {
+    let literal = [
+        "`::file[file.rs]`",
+        "```text\n::file[file.rs]\n```",
+        "    ::file[file.rs]",
+        "<!-- ::file[file.rs] -->",
+        "<span data-cite=\"::file[file.rs]\">literal</span>",
+    ];
+    for source in literal {
+        let snapshot = resolved(source, true, b"must remain unread").await?;
+        assert!(snapshot.entries.is_empty(), "{source}: {snapshot:?}");
+        assert!(snapshot.view.is_none());
+        assert!(snapshot.error.is_none());
+        assert!(crate::file_citations::blocks(source).is_empty());
+    }
+    let source = format!("```text\n{}```\n\n::file[file.rs]", "::file[file.rs]\n".repeat(257));
+    let snapshot = resolved(&source, true, b"real excerpt").await?;
+    assert!(snapshot.error.is_none(), "{snapshot:?}");
+    let [entry] = snapshot.entries.as_slice() else {
+        panic!("only the visible citation may be admitted: {snapshot:?}")
+    };
+    assert_eq!(entry.range, crate::file_citations::blocks(&source)[0].range);
+    assert!(matches!(&entry.resolution, Resolution::Content(excerpt) if excerpt.content == "real excerpt"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn file_citations_denial_containment_and_range_errors_are_typed() -> Result<()> {
     for (source, grants, expected) in [
         ("::file[file.rs]", false, ResolutionError::Denied),
