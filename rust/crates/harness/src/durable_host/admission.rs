@@ -320,6 +320,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if indexed.is_some() {
             return Ok(indexed);
         }
+        coordinator.refresh(quota.work()).await?;
         match coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
