@@ -2897,9 +2897,9 @@ version = "0.2.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-harness-providers",
- "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
+ "alacritty_terminal",
  "axum",
  "clap",
  "futures",
