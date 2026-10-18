@@ -238,6 +238,33 @@ mod tests {
             prop_assert_eq!(serde_json::from_slice::<Directive>(&bytes).unwrap(), directive);
         }
         #[test]
+        fn file_citations_literal_contexts_preserve_visible_ranges(
+            literals in prop::collection::vec((0u8..5, "[a-z]{1,12}"), 0..32),
+            path in "[a-z]{1,12}",
+        ) {
+            let mut source = String::new();
+            for (context, name) in literals {
+                let raw = format!("::file[{name}]");
+                source.push_str(&match context {
+                    0 => format!("`{raw}`"),
+                    1 => format!("```text\n{raw}\n```"),
+                    2 => format!("    {raw}"),
+                    3 => format!("<!-- {raw} -->"),
+                    _ => format!("<span title=\"{raw}\">literal</span>"),
+                });
+                source.push_str("\n\n");
+            }
+            let start = source.len();
+            let raw = format!("::file[{path}]");
+            source.push_str(&raw);
+            let nodes = blocks(&source);
+            prop_assert_eq!(nodes.len(), 1);
+            prop_assert_eq!(&nodes[0].range, &(start..source.len()));
+            prop_assert_eq!(nodes[0].directive.raw(), raw.as_str());
+            let encoded = serde_json::to_vec(&nodes[0].directive).unwrap();
+            prop_assert_eq!(serde_json::from_slice::<Directive>(&encoded).unwrap(), nodes[0].directive.clone());
+        }
+        #[test]
         fn file_citations_json_round_trip_and_source_binding(paths in prop::collection::vec("[a-z]{1,12}", 0..32)) {
             let mut source = String::new();
             let mut snapshot = FileCitations::default();
