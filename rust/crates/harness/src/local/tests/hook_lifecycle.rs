@@ -525,15 +525,27 @@ async fn hook_and_bash_turns_leave_a_clean_checkout() -> Result<()> {
             .map_err(super::super::storage)?;
         assert_eq!(
             exclude
-                .matches(
-                    "
-/.volumes/
-"
-                )
+                .lines()
+                .filter(|line| *line == "/.volumes/scratch")
                 .count(),
             1,
-            "{name}"
+            "{name}: {exclude}"
         );
+        assert!(
+            !exclude
+                .lines()
+                .any(|line| matches!(line, "/.volumes" | "/.volumes/"))
+        );
+        let authored = workspace.join(".volumes/user-owned");
+        std::fs::write(&authored, "keep").map_err(super::super::storage)?;
+        let ignored = std::process::Command::new("git")
+            .args(["check-ignore", "--no-index", "-q", "--"])
+            .arg(&authored)
+            .current_dir(&workspace)
+            .status()
+            .map_err(super::super::storage)?;
+        assert_eq!(ignored.code(), Some(1), "{name}: authored sibling hidden");
+        std::fs::remove_file(&authored).map_err(super::super::storage)?;
         assert!(!workspace.join(".gitignore").exists());
         assert_eq!(volume_residue(&workspace)?, Vec::<String>::new(), "{name}");
         harness.disconnect().await?;
