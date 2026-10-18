@@ -118,7 +118,7 @@ impl super::Present for Output {
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
         if frame.is_empty() {
-            return self.owner.empty_if_current(expected);
+            return self.console.owner.empty_if_current(expected);
         }
         let mut observed = expected;
         let mut rejected = false;
@@ -127,32 +127,38 @@ impl super::Present for Output {
             if rejected {
                 return Ok(());
             }
-            let accepted = Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-                let count = super::Present::outside_writes(guard);
-                if observed.is_some() && count != observed {
-                    return if began {
-                        Err(io::ErrorKind::Interrupted.into())
-                    } else {
-                        Ok(None)
-                    };
-                }
-                part.apply(guard, cursor_hidden)?;
-                Ok(count)
-            })?;
+            let accepted = Owner::run(
+                &self.console.owner,
+                Instant::now() + PROBE_TIMEOUT,
+                move |guard| {
+                    let count = super::Present::outside_writes(guard);
+                    if observed.is_some() && count != observed {
+                        return if began {
+                            Err(io::ErrorKind::Interrupted.into())
+                        } else {
+                            Ok(None)
+                        };
+                    }
+                    part.apply(guard, cursor_hidden)?;
+                    Ok(count)
+                },
+            )?;
             rejected = accepted.is_none();
             observed = accepted;
             began = true;
             Ok(())
         });
         if presented.is_err() {
-            let _ = Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-                guard.abort_frame()
-            });
+            let _ = Owner::run(
+                &self.console.owner,
+                Instant::now() + PROBE_TIMEOUT,
+                |guard| guard.abort_frame(),
+            );
         }
         presented.map(|()| if rejected { None } else { observed })
     }
     fn outside_writes(&mut self) -> Option<u64> {
-        self.owner.outside_writes()
+        self.console.owner.outside_writes()
     }
 }
 
