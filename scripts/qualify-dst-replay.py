@@ -12,8 +12,9 @@ started = time.monotonic()
 
 def run_pair():
     commands = [
-        ["--skip", second_test, "--test-threads=1", "--nocapture"],
-        [second_test, "--exact", "--test-threads=1", "--nocapture"],
+        ["--skip", second_test, "--skip", "sources::", "--skip", "manifest::",
+         "--test-threads=1", "--nocapture"],
+        [second_test, "sources::", "manifest::", "--test-threads=1", "--nocapture"],
     ]
     processes = []
     try:
@@ -61,11 +62,13 @@ def digest(output, label):
     return values[0]
 
 
-# The first process runs every test except the one-world replay used by the
-# second. The aggregate still covers every test; there is no duplicate world.
+# The two command filters partition all tests: one has the turn/process/cut
+# scenarios, the other has the replay peer, erasure control and source scans.
+# No test is omitted or repeated, including tests added in future modules.
 first, second = run_pair()
-if b"1 passed; 0 failed" not in second:
-    sys.exit("The second process did not execute its replay")
+for output in (first, second):
+    if not re.search(rb"test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;", output):
+        sys.exit("Each process must execute its selected tests without ignored cases")
 equal(digest(first, b"DST_REPLAY_DIGEST"), digest(second, b"DST_REPLAY_DIGEST"))
 print("Cross-process seeded trace: identical digest bytes", flush=True)
 
