@@ -1,5 +1,5 @@
 use super::*;
-use loom::sync::atomic::{AtomicUsize, Ordering};
+use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn race<const FENCE: bool>() {
     let registry = Arc::new(Owners::new(BTreeMap::new()));
@@ -87,4 +87,55 @@ fn concurrent_reopen_preserves_the_joined_owner() {
         assert!(Arc::ptr_eq(&current, &again));
         assert!(matches!(created.load(Ordering::SeqCst), 1 | 2));
     });
+}
+
+struct NamespaceLock(Arc<AtomicBool>);
+
+impl Drop for NamespaceLock {
+    fn drop(&mut self) {
+        // Arc's strong count is already zero when native teardown starts.
+        loom::thread::yield_now();
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+fn release_race<const FENCE: bool>() {
+    loom::model(|| {
+        let registry = Arc::new(Owners::new(BTreeMap::new()));
+        let locked = Arc::new(AtomicBool::new(false));
+        let create = || {
+            assert!(
+                !locked.swap(true, Ordering::SeqCst),
+                "owner teardown raced reopen"
+            );
+            Ok(Arc::new(NamespaceLock(locked.clone())))
+        };
+        let first = join::<_, true>(&registry, "namespace".into(), [1; 16], create).unwrap();
+        let releasing = {
+            let registry = registry.clone();
+            loom::thread::spawn(move || release::<_, FENCE>(&registry, &mut Some(first)))
+        };
+        let current = join::<_, true>(&registry, "namespace".into(), [1; 16], create).unwrap();
+        releasing.join().unwrap();
+        let again = join::<_, true>(&registry, "namespace".into(), [1; 16], || {
+            panic!("reopen lost its owner")
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&current, &again));
+        release::<_, true>(&registry, &mut Some(current));
+        assert!(locked.load(Ordering::SeqCst));
+        release::<_, true>(&registry, &mut Some(again));
+        assert!(!locked.load(Ordering::SeqCst));
+    });
+}
+
+#[test]
+fn last_release_and_reopen_share_the_registry_fence() {
+    release_race::<true>();
+}
+
+#[test]
+#[should_panic(expected = "owner teardown raced reopen")]
+fn negative_control_detects_last_release_outside_the_registry_fence() {
+    release_race::<false>();
 }

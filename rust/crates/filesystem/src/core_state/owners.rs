@@ -4,6 +4,55 @@ use std::sync::{OnceLock, Weak};
 
 type Owners<T> = OrderedMutex<BTreeMap<PathBuf, ([u8; 16], Weak<T>)>, OPERATION>;
 
+fn registry() -> &'static Owners<Owner> {
+    static OWNERS: OnceLock<Owners<Owner>> = OnceLock::new();
+    OWNERS.get_or_init(|| OrderedMutex::new(BTreeMap::new()))
+}
+
+// Every strong owner, including transaction admissions, releases under the same
+// registry lock as open/join. A dead Weak therefore implies completed teardown.
+#[derive(Clone, Debug)]
+pub(super) struct OwnerRef(Option<Arc<Owner>>);
+
+impl OwnerRef {
+    fn new(owner: Arc<Owner>) -> Self {
+        Self(Some(owner))
+    }
+}
+
+impl std::ops::Deref for OwnerRef {
+    type Target = Owner;
+
+    fn deref(&self) -> &Owner {
+        self.0.as_deref().expect("live owner")
+    }
+}
+
+impl Drop for OwnerRef {
+    fn drop(&mut self) {
+        release::<_, true>(registry(), &mut self.0);
+    }
+}
+
+fn release<T, const FENCE: bool>(owners: &Owners<T>, owner: &mut Option<Arc<T>>) {
+    let _guard = FENCE.then(|| owners.lock().unwrap_or_else(PoisonError::into_inner));
+    drop(owner.take());
+}
+
+fn create(root: &Path, cache_limit: Option<usize>) -> Result<Arc<Owner>, LocalCoreStateStoreError> {
+    Ok(Arc::new(Owner {
+        _lock: OwnerLock::acquire(root, LockMode::Exclusive)?,
+        residents: Arc::default(),
+        log: Mutex::default(),
+        cache_limit,
+    }))
+}
+
+pub(super) fn exclusive(root: &Path) -> Result<OwnerRef, LocalCoreStateStoreError> {
+    let _guard = registry().lock().unwrap_or_else(PoisonError::into_inner);
+    Ok(OwnerRef::new(create(root, None)?))
+}
+
 // Registry -> OS namespace lock. Neither the record log nor provider/view locks
 // are acquired while holding this registry. The constructor uses try-lock only.
 fn join<T, const FENCE: bool>(
@@ -44,24 +93,12 @@ impl LocalCoreStateStore {
         let held =
             crate::native_host::HostRoot::open(&root, &mut crate::native_host::ordinary_work())
                 .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
-        static OWNERS: OnceLock<Owners<Owner>> = OnceLock::new();
-        let owner = join::<_, true>(
-            OWNERS.get_or_init(|| OrderedMutex::new(BTreeMap::new())),
-            root.clone(),
-            held.identity().to_bytes(),
-            || {
-                let store = Self::open_owned(&root)?;
-                let Ownership::Owned(mut owner) = store.ownership else {
-                    unreachable!()
-                };
-                Arc::get_mut(&mut owner).expect("new owner").cache_limit =
-                    Some(super::contexts::OWNED_CHECKPOINT as usize);
-                Ok(owner)
-            },
-        )?;
+        let owner = join::<_, true>(registry(), root.clone(), held.identity().to_bytes(), || {
+            create(&root, Some(super::contexts::OWNED_CHECKPOINT as usize))
+        })?;
         Ok(Self {
             root: Arc::new(root),
-            ownership: Ownership::Owned(owner),
+            ownership: Ownership::Owned(OwnerRef::new(owner)),
             deferral: None,
             journal_work: None,
         })
@@ -145,13 +182,59 @@ mod tests {
         else {
             panic!("joined store is not owned")
         };
-        assert!(Arc::ptr_eq(a, b));
+        assert!(Arc::ptr_eq(a.0.as_ref().unwrap(), b.0.as_ref().unwrap()));
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
         drop(first);
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
         drop(second);
         LocalCoreStateStore::open_owned(directory.path()).unwrap();
     }
+    #[test]
+    fn final_owner_release_unlocks_inherited_file_descriptions() {
+        for shared in [false, true] {
+            for duplicate_count in 1..=3 {
+                let directory = tempfile::tempdir().unwrap();
+                let store = if shared {
+                    LocalCoreStateStore::open_shared_owner(directory.path())
+                } else {
+                    LocalCoreStateStore::open_owned(directory.path())
+                }
+                .unwrap();
+                // dup and fork share the same flock file description. Hold the
+                // duplicates past the logical owner's release, as a child can
+                // do between fork and exec even with CLOEXEC set.
+                let duplicates: Vec<_> = match &store.ownership {
+                    Ownership::Owned(owner) => (0..duplicate_count)
+                        .map(|_| owner._lock.0.as_ref().unwrap().try_clone().unwrap())
+                        .collect(),
+                    Ownership::Shared => unreachable!(),
+                };
+                let clone = store.clone();
+                drop(store);
+                assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
+                drop(clone);
+                let reopened = LocalCoreStateStore::open_owned(directory.path())
+                    .expect("released owner left an inherited lock");
+                drop((reopened, duplicates));
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_unlock_cannot_release_a_later_admission_on_a_duplicate() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut lock = OwnerLock::acquire(directory.path(), LockMode::Exclusive).unwrap();
+        let duplicate = lock.0.as_ref().unwrap().try_clone().unwrap();
+        lock.unlock().unwrap();
+        duplicate.try_lock_exclusive().unwrap();
+        // Drop must consume no second unlock, which could release a newer lock
+        // sharing the old file description after the explicit release.
+        drop(lock);
+        assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
+        FileExt::unlock(&duplicate).unwrap();
+        LocalCoreStateStore::open_owned(directory.path()).unwrap();
+    }
+
     #[test]
     fn a_live_owner_cannot_be_joined_after_its_directory_is_replaced() {
         let directory = tempfile::tempdir().unwrap();

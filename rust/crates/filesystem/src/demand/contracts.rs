@@ -43,6 +43,9 @@ pub enum DemandError {
     /// An original leaf panicked; no new work may use its poisoned state.
     #[error("original native work state is poisoned")]
     OriginalWorkPoisoned,
+    /// The allocation owner has no admission in the original native ledger.
+    #[error("native mount allocation admission is missing")]
+    NativeMountAdmissionMissing,
     /// Explicit native preparation allowance was exhausted.
     #[error(transparent)]
     Work(#[from] crate::WorkError),
