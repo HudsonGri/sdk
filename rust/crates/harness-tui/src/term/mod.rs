@@ -7,7 +7,7 @@ mod console_owner;
 mod counters;
 mod decoder;
 mod frame;
-#[cfg(any(windows, test, acyclic_harness_tui_loom))]
+#[cfg(any(windows, all(test, unix), acyclic_harness_tui_loom))]
 mod handoff;
 #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
 mod input;

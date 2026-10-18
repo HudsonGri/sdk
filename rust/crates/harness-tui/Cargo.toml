@@ -52,6 +52,9 @@ nix = { version = "0.31", default-features = false, features = ["event"], option
 [target.'cfg(acyclic_harness_tui_loom)'.dependencies]
 loom = "=0.7.2"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { workspace = true, features = ["process"] }
 rustix-openpty = "0.2"
