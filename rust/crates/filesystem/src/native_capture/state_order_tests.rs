@@ -287,6 +287,9 @@ fn complete_capture(
     let mut checkout = runtime
         .block_on(super::capture_policy_tests::native_checkout(&setup))
         .unwrap();
+    // Identical inputs need identical authored IDs as well as separate stores.
+    // Random IDs otherwise change file-table splits and the exhausted call.
+    checkout.bind_authored_operation(crate::OperationId::from_bytes([19; 16]));
     // The checkout and capture must share their original ledger. The resource
     // allowance measures only capture, after constructing the checkout.
     let work = setup.native_volume_work(budget).unwrap();
