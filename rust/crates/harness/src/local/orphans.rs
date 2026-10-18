@@ -17,7 +17,13 @@ const RECONCILE_COMMANDS: u32 = 32;
 // that its drop releases holds it.
 #[derive(Default)]
 struct State {
-    active: BTreeMap<OperationId, usize>,
+    active: BTreeMap<OperationId, DriverState>,
+}
+
+#[derive(Default)]
+struct DriverState {
+    claims: usize,
+    executing: bool,
 }
 
 /// In-process ownership of admitted turns.
@@ -38,7 +44,7 @@ impl Drivers {
     /// serializes supersession, and carry the claim from admission to driving.
     pub(super) fn drive(&self, operation: OperationId) -> Driving<'_> {
         let mut state = self.state();
-        *state.active.entry(operation).or_default() += 1;
+        state.active.entry(operation).or_default().claims += 1;
         Driving {
             drivers: self,
             operation,
@@ -57,6 +63,8 @@ impl Drivers {
 #[cfg(test)]
 thread_local! {
     static NEVER_ORPHANED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(in crate::local) static HEAD_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static OVERLAPPING_DRIVERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Negative control: while entered, no head on this thread is ever orphaned,
@@ -90,14 +98,56 @@ impl Driving<'_> {
     pub(super) fn operation(&self) -> OperationId {
         self.operation
     }
+
+    /// A live ownership claim can have only one executor. The returned guard
+    /// borrows the claim, so its registry entry cannot disappear before release.
+    /// Lock order remains admission -> drivers; this leaf lock is never held
+    /// across execution, provider callbacks or an await.
+    pub(super) fn execute(&self) -> Result<Executing<'_>> {
+        let mut state = self.drivers.state();
+        let entry = state
+            .active
+            .get_mut(&self.operation)
+            .expect("live driver claim");
+        #[cfg(test)]
+        let overlapping = OVERLAPPING_DRIVERS.get();
+        #[cfg(not(test))]
+        let overlapping = false;
+        if entry.executing && !overlapping {
+            return Err(Error::Conflict(
+                "local turn already has an active driver".into(),
+            ));
+        }
+        entry.executing = true;
+        Ok(Executing {
+            drivers: self.drivers,
+            operation: self.operation,
+        })
+    }
+}
+
+pub(super) struct Executing<'a> {
+    drivers: &'a Drivers,
+    operation: OperationId,
+}
+
+impl Drop for Executing<'_> {
+    fn drop(&mut self) {
+        self.drivers
+            .state()
+            .active
+            .get_mut(&self.operation)
+            .expect("execution retains its driver claim")
+            .executing = false;
+    }
 }
 
 impl Drop for Driving<'_> {
     fn drop(&mut self) {
         let mut state = self.drivers.state();
-        if let Some(count) = state.active.get_mut(&self.operation) {
-            *count -= 1;
-            if *count == 0 {
+        if let Some(entry) = state.active.get_mut(&self.operation) {
+            entry.claims -= 1;
+            if entry.claims == 0 {
                 state.active.remove(&self.operation);
             }
         }
@@ -114,15 +164,40 @@ impl LocalHarness {
     pub(super) async fn supersede(&self, operation: OperationId) -> Result<()> {
         let task = crate::runtime::task_id_for_admission(operation);
         let host = self.runtime.task_host();
-        match host.outcome(task).await {
-            Ok(outcome) if settled(outcome.as_ref()) => return Ok(()),
-            Ok(_) => {}
-            // An unadmitted request has nothing to settle.
-            Err(Error::NotFound(_)) => return Ok(()),
-            Err(error) => return Err(error),
-        }
         host.cancel(task).await?;
-        if !settled(host.outcome(task).await?.as_ref()) {
+        // Cancellation closes admission for the entire subtree. Collect it before
+        // settling: every child must release its own retained reservation, even
+        // when cancellation already made the head terminal. A dropped recovery
+        // restarts this same walk; settled ancestors never hide unfinished work.
+        let mut tasks = vec![task];
+        let mut index = 0;
+        while index < tasks.len() {
+            let mut after = None;
+            let mut revision = None;
+            loop {
+                let page = host.children(tasks[index], revision, after, 64).await?;
+                tasks.extend(page.entries.into_iter().map(|child| child.task_id));
+                revision = Some(page.revision);
+                after = page.next_after;
+                if after.is_none() {
+                    break;
+                }
+            }
+            index += 1;
+        }
+        #[cfg(test)]
+        if HEAD_ONLY.get() {
+            tasks.truncate(1);
+        }
+        for task in tasks.into_iter().rev() {
+            self.settle_orphan(task).await?;
+        }
+        self.refresh_command_task(task).await
+    }
+
+    async fn settle_orphan(&self, task: TaskId) -> Result<()> {
+        let host = self.runtime.task_host();
+        if !settled(host.terminal_status(task).await?.as_ref()) {
             let lease = match Box::pin(host.recover_work(task, &mut None)).await? {
                 WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => lease,
                 WorkPull::Idle => {
@@ -145,12 +220,12 @@ impl LocalHarness {
                     None,
                 )
                 .await;
-            if !settled(host.outcome(task).await?.as_ref()) {
+            if !settled(host.terminal_status(task).await?.as_ref()) {
                 host.settle_task(task, &fence, crate::Outcome::Cancelled, &mut None)
                     .await?;
             }
         }
-        self.refresh_command_task(task).await
+        Ok(())
     }
 }
 
@@ -285,6 +360,41 @@ mod model {
             .or_else(|| failure.downcast_ref::<&str>().copied())
             .unwrap_or("");
         assert!(message.contains(expected), "{message}");
+    }
+
+    fn exclusive_drivers(overlapping: bool) {
+        let gate = StateArc::new(Mutex::new(()));
+        let drivers = StateArc::new(Drivers::new());
+        let active = StateArc::new(DataMutex::new(0));
+        let mut threads = Vec::new();
+        for _ in 0..2 {
+            let (gate, drivers, active) = (gate.clone(), drivers.clone(), active.clone());
+            threads.push(thread::spawn(move || {
+                let claim = complete(super::super::admission::serialized(&gate, async || {
+                    drivers.drive(OperationId::from_bytes([1; 16]))
+                }));
+                OVERLAPPING_DRIVERS.set(overlapping);
+                if let Ok(_executing) = claim.execute() {
+                    {
+                        let mut active = active.lock().unwrap();
+                        *active += 1;
+                        assert_eq!(*active, 1, "two drivers entered recovery");
+                    }
+                    thread::yield_now();
+                    *active.lock().unwrap() -= 1;
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(*active.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn only_one_driver_can_execute_or_reconcile_a_turn() {
+        loom::model(|| exclusive_drivers(false));
+        fails_with(|| exclusive_drivers(true), "two drivers entered recovery");
     }
 
     #[test]

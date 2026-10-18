@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct Blocking {
     executed: Arc<AtomicUsize>,
     started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    uncertain: bool,
 }
 
 impl ToolExecutor for Blocking {
@@ -25,16 +26,30 @@ impl ToolExecutor for Blocking {
         _: ToolInvocation,
         _: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Ok(None) })
+        Box::pin(async move {
+            if self.uncertain {
+                Err(Error::Indeterminate(OperationId::new()))
+            } else {
+                Ok(None)
+            }
+        })
     }
 }
 
 fn blocking(executed: &Arc<AtomicUsize>) -> (Tool, tokio::sync::oneshot::Receiver<()>) {
+    blocking_with(executed, false)
+}
+
+fn blocking_with(
+    executed: &Arc<AtomicUsize>,
+    uncertain: bool,
+) -> (Tool, tokio::sync::oneshot::Receiver<()>) {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let mut tool = tool("test.blocking");
     tool.executor = Arc::new(Blocking {
         executed: Arc::clone(executed),
         started: Mutex::new(Some(sender)),
+        uncertain,
     });
     (tool, receiver)
 }
@@ -81,11 +96,12 @@ struct Killed {
     executed: Arc<AtomicUsize>,
     provider: Arc<ScriptedModelProvider>,
     task: TaskId,
+    uncertain: bool,
 }
 
 impl Killed {
     async fn reopen(&self) -> Result<LocalHarness> {
-        let (tool, _) = blocking(&self.executed);
+        let (tool, _) = blocking_with(&self.executed, self.uncertain);
         LocalHarness::open(
             volume_config(
                 self.directory.path(),
@@ -100,11 +116,15 @@ impl Killed {
 
 /// Kills the owning process while the first turn's tool effect is in flight.
 async fn killed_mid_tool() -> Result<Killed> {
+    killed_mid_tool_with(false).await
+}
+
+async fn killed_mid_tool_with(uncertain: bool) -> Result<Killed> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
     let executed = Arc::new(AtomicUsize::new(0));
     let provider = scripted([call(), ScriptedTurn::Text("after".into())]);
-    let (tool, started) = blocking(&executed);
+    let (tool, started) = blocking_with(&executed, uncertain);
     let harness = LocalHarness::open(
         volume_config(directory.path(), project.clone(), provider.clone())?.tools(vec![tool]),
     )
@@ -121,6 +141,7 @@ async fn killed_mid_tool() -> Result<Killed> {
         executed,
         provider,
         task,
+        uncertain,
     })
 }
 
@@ -175,6 +196,9 @@ async fn a_driven_turn_is_never_superseded_until_its_driver_is_gone() -> Result<
     assert!(rejected(
         &harness.submit(OperationId::new(), "while driven").await?
     ));
+    assert!(matches!(harness.resume(task).await,
+        Err(Error::Conflict(message)) if message == "local turn already has an active driver"));
+    assert_eq!(executed.load(Ordering::SeqCst), 1);
     assert_eq!(outcome(&harness, task).await, None);
     // Dropping the driver in-process orphans the turn exactly like a kill.
     drop(driving);
@@ -383,26 +407,36 @@ async fn handoff_cut(
 /// and after each cut asks whether a new prompt is admitted; the negative
 /// control leaks a claim across the same cut. One stepped run classifies the
 /// handoff, so the sweep costs that run plus two cuts per representative,
-/// each on a fresh host. No cut refuses the probe; the negative control is
-/// refused at every cut once the head is admitted (a written but unadmitted
+/// on two reused hosts that settle between cuts. No cut refuses the probe;
+/// the negative control is refused at every cut once the head is admitted (a written but unadmitted
 /// head is a settled request), so each class of suspension past admission is
 /// shown to need the RAII claim.
 async fn every_handoff_cut_leaves_the_head_to_the_next_prompt(entry: Entry) -> Result<()> {
     use super::super::admission::publication_phase::{ADMITTED, BEFORE};
-    // Every run starts from the same state: a fresh host whose one previous
-    // turn has settled.
-    async fn fresh() -> Result<(tempfile::TempDir, LocalHarness)> {
+    // Each cut starts with a settled head and no driver. Reusing a host
+    // preserves that abstract state without repeating bootstrap and checkout.
+    async fn fresh(turns: usize) -> Result<(tempfile::TempDir, LocalHarness)> {
         let directory = tempfile::tempdir().map_err(super::super::storage)?;
         let project = volume(directory.path()).await?;
         let provider =
-            scripted(std::iter::repeat_with(|| ScriptedTurn::Text("done".into())).take(4));
+            scripted(std::iter::repeat_with(|| ScriptedTurn::Text("done".into())).take(turns));
         let harness =
             LocalHarness::open(volume_config(directory.path(), project, provider)?).await?;
         assert_eq!(harness.run("settle").await?.text, "done");
         Ok((directory, harness))
     }
+    async fn reset(harness: &LocalHarness) -> Result<()> {
+        let operation = OperationId::new();
+        assert_eq!(harness.run_as(operation, "after").await?.text, "done");
+        let task = crate::runtime::task_id_for_admission(operation);
+        assert!(super::super::orphans::settled(
+            outcome(harness, task).await.as_ref()
+        ));
+        assert!(harness.drivers.orphaned(operation));
+        Ok(())
+    }
     let trace = {
-        let (_directory, harness) = fresh().await?;
+        let (_directory, harness) = fresh(1).await?;
         step(&harness, entry, OperationId::new(), |current| {
             driven(current.0)
         })
@@ -414,24 +448,25 @@ async fn every_handoff_cut_leaves_the_head_to_the_next_prompt(entry: Entry) -> R
         "no cut before admission"
     );
     let targets = representatives(&trace);
+    let (_positive_directory, positive) = fresh(targets.len() + 1).await?;
+    let (_negative_directory, negative) = fresh(targets.len() + 1).await?;
     let mut covered = std::collections::BTreeSet::new();
     let mut refusals = Vec::new();
     for target in targets {
-        let (_directory, harness) = fresh().await?;
-        let Some(refused) = handoff_cut(&harness, entry, target, false).await? else {
-            continue;
-        };
-        assert!(!refused, "cut {target:?} bricked the host");
-        assert_eq!(harness.run("after").await?.text, "done");
-        let (_directory, harness) = fresh().await?;
-        let Some(refused) = handoff_cut(&harness, entry, target, true).await? else {
-            continue;
-        };
-        if target.0.1 == ADMITTED {
-            assert!(refused, "cut {target:?} escaped the negative control");
+        let accepted = handoff_cut(&positive, entry, target, false).await?;
+        assert!(accepted != Some(true), "cut {target:?} bricked the host");
+        // Also reset cuts whose target disappeared because I/O finished sooner.
+        // No unfinished task or claim can pass into the next trial.
+        reset(&positive).await?;
+        let refused = handoff_cut(&negative, entry, target, true).await?;
+        reset(&negative).await?;
+        if let (Some(_), Some(refused)) = (accepted, refused) {
+            if target.0.1 == ADMITTED {
+                assert!(refused, "cut {target:?} escaped the negative control");
+            }
+            covered.insert(target.0);
+            refusals.push(refused);
         }
-        covered.insert(target.0);
-        refusals.push(refused);
     }
     assert_eq!(
         covered,
@@ -482,8 +517,8 @@ async fn a_retried_admission_of_the_unsettled_head_is_not_superseded() -> Result
 
 /// Resumes a reopened turn killed mid-tool; with `unsettled`, the former
 /// resume that settles nothing it cannot reconcile.
-async fn resume_killed_tool(unsettled: bool) -> Result<()> {
-    let killed = killed_mid_tool().await?;
+async fn resume_killed_tool(unsettled: bool, uncertain: bool) -> Result<()> {
+    let killed = killed_mid_tool_with(uncertain).await?;
     let reopened = killed.reopen().await?;
     assert_eq!(outcome(&reopened, killed.task).await, None);
     // The executor cannot reconcile the effect, so the resumed driver records
@@ -511,12 +546,17 @@ async fn resume_killed_tool(unsettled: bool) -> Result<()> {
 
 #[tokio::test]
 async fn resume_settles_a_killed_tool_as_interrupted_without_running_it_again() -> Result<()> {
-    resume_killed_tool(false).await
+    for uncertain in [false, true] {
+        resume_killed_tool(false, uncertain).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
 async fn negative_control_a_resume_that_settles_nothing_leaves_the_killed_tool_unsettled() {
-    assert!(resume_killed_tool(true).await.is_err());
+    for uncertain in [false, true] {
+        assert!(resume_killed_tool(true, uncertain).await.is_err());
+    }
 }
 
 /// Kills a turn during its model call, reopens, and resumes it; with
@@ -552,7 +592,12 @@ async fn resume_killed_model_call(unsettled: bool) -> Result<()> {
     .await?;
     let task = admitted(harness.submit(OperationId::new(), "start").await?);
     match futures::future::select(harness.resume(task), boundary).await {
-        futures::future::Either::Right((Ok(()), execution)) => drop(execution),
+        futures::future::Either::Right((Ok(()), execution)) => {
+            assert!(matches!(harness.resume(task).await,
+                Err(Error::Conflict(message)) if message == "local turn already has an active driver"));
+            assert_eq!(provider.dispatches().len(), 1, "live model was reissued");
+            drop(execution);
+        }
         _ => panic!("no model boundary"),
     }
     drop(harness);

@@ -657,6 +657,7 @@ impl LocalHarness {
                 .await
             }
         };
+        let _executing = _driving.execute()?;
         let definition = self
             .runtime
             .harness()

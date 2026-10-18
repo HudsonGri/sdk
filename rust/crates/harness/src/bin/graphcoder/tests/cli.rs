@@ -554,3 +554,83 @@ async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() 
     stop.send(()).unwrap();
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn killed_unobserved_model_call_resumes_the_retained_http_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&settings).unwrap();
+    let release = directory.path().join("release");
+    let marker = release.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let catalog = catalog(directory.path(), address);
+    let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let generated = Arc::new(AtomicUsize::new(0));
+    let count = generated.clone();
+    let app = Router::new()
+        .route(
+            "/count",
+            post(|| async { Json(json!({"input_tokens":64})) }),
+        )
+        .route(
+            "/responses",
+            post(move |Json(body): Json<Value>| {
+                requests.send(body).unwrap();
+                let first = count.fetch_add(1, Ordering::SeqCst) == 0;
+                if first {
+                    std::fs::write(&marker, b"").unwrap();
+                }
+                async move {
+                    let body = if first {
+                        axum::body::Body::from_stream(futures::stream::pending::<
+                            Result<axum::body::Bytes, std::io::Error>,
+                        >())
+                    } else {
+                        axum::body::Body::from(ANSWER)
+                    };
+                    ([("content-type", "text/event-stream")], body)
+                }
+            }),
+        );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let operation = OperationId::new();
+    let killed = run(
+        graphcoder(&workspace, &catalog, &settings, operation, Some("start")),
+        Some(release),
+    )
+    .await;
+    assert!(killed.unwrap_err().starts_with("killed"));
+    let original = observed.recv().await.unwrap();
+    for prompt in [None, Some("start")] {
+        let output = run(
+            graphcoder(&workspace, &catalog, &settings, operation, prompt),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let answers = results(&output.stdout);
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0]["ok"]["text"], "fixture answer");
+    }
+    assert_eq!(
+        observed.recv().await.unwrap(),
+        original,
+        "resume changed the retained model request"
+    );
+    assert_eq!(
+        generated.load(Ordering::SeqCst),
+        2,
+        "replay generated again"
+    );
+    server.abort();
+}

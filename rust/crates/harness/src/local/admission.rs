@@ -61,6 +61,21 @@ pub(super) async fn serialized<T>(
     action().await
 }
 
+// Readers hold admission or consume the host during teardown. The detached
+// writer holds only publication, so admission -> publication is the nested order.
+async fn wait_for_publication(publication: &StateArc<Mutex<()>>) {
+    #[cfg(test)]
+    if SKIP_PUBLICATION_WAIT.get() {
+        return;
+    }
+    drop(lock_owned(StateArc::clone(publication)).await);
+}
+
+#[cfg(test)]
+thread_local! {
+    static SKIP_PUBLICATION_WAIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn can_admit(current: Option<OperationId>, expected: Option<OperationId>, terminal: bool) -> bool {
     terminal && expected.is_none_or(|expected| current == Some(expected))
 }
@@ -82,7 +97,7 @@ impl LocalHarness {
 
     async fn current_turn(&self) -> Result<(Option<Turn>, GenerationRef)> {
         // A cancelled publisher's HEAD write is settled before HEAD is read.
-        drop(lock_owned(StateArc::clone(&self.publication)).await);
+        wait_for_publication(&self.publication).await;
         let generation = self
             .files
             .resolve(
@@ -113,11 +128,15 @@ impl LocalHarness {
     }
 
     async fn head_is_terminal(&self, head: Option<&Turn>) -> Result<bool> {
+        self.head_ready(head, false).await
+    }
+
+    async fn head_ready(&self, head: Option<&Turn>, recover: bool) -> Result<bool> {
         let Some(head) = head else { return Ok(true) };
         let outcome = match self
             .runtime
             .task_host()
-            .outcome(crate::runtime::task_id_for_admission(head.operation))
+            .terminal_status(crate::runtime::task_id_for_admission(head.operation))
             .await
         {
             Ok(outcome) => outcome,
@@ -134,7 +153,15 @@ impl LocalHarness {
             }
             Err(error) => return Err(error),
         };
-        Ok(super::orphans::settled(outcome.as_ref()))
+        let terminal = super::orphans::settled(outcome.as_ref());
+        if recover
+            && (!terminal || matches!(outcome, Some(crate::Outcome::Cancelled)))
+            && self.drivers.orphaned(head.operation)
+        {
+            self.supersede(head.operation).await?;
+            return Ok(true);
+        }
+        Ok(terminal)
     }
 
     async fn admit_retained(
@@ -319,15 +346,7 @@ impl LocalHarness {
         {
             return self.admit_retained(turn).await;
         }
-        let mut terminal = self.head_is_terminal(current.as_ref()).await?;
-        // A head no caller in this process drives cannot settle on its own.
-        if let Some(turn) = &current
-            && !terminal
-            && self.drivers.orphaned(turn.operation)
-        {
-            self.supersede(turn.operation).await?;
-            terminal = self.head_is_terminal(current.as_ref()).await?;
-        }
+        let terminal = self.head_ready(current.as_ref(), true).await?;
         if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
             return Ok(Admission::Rejected {
                 reason: "local agent already has an admitted turn".into(),

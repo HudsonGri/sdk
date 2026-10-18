@@ -316,7 +316,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         // stream retry identity bound to that tail, until it publishes or its
         // intent is found published.
         loop {
-            let event = event.clone();
+            let event = &event;
             let idempotency_key = &idempotency_key;
             let this = &mut *self;
             let mut frame = CodecQuota::new(work, 0)?;
@@ -330,13 +330,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                             "coordinator changed after owner verification",
                         ));
                     }
-                    this.validate_parent_owner(&event, parent_fence, work)?;
+                    this.validate_parent_owner(event, parent_fence, work)?;
                     validate_idempotency_key(idempotency_key.as_str(), work)?;
                     let key = idempotency_key.as_str();
                     let operation_id = event.operation_id();
                     let mut custody = CodecQuota::new(work, 0)?;
                     let canonical = crate::store::history::canonical_bytes_with_work(
-                        &event,
+                        event,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         custody.work(),
                     )?;
@@ -348,17 +348,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     }
                     let digest = *blake3::hash(&canonical).as_bytes();
                     if let Some(matches) = this
-                        .intent_matches(key, &event, &digest, custody.work())
+                        .intent_matches(key, event, &digest, custody.work())
                         .await?
                     {
                         return if matches {
                             this.validate_command_wait(
-                                &event,
+                                event,
                                 waiting_command,
                                 true,
                                 custody.work(),
                             )?;
-                            this.validate_replay(&event, custody.work())
+                            this.validate_replay(event, custody.work())
                                 .map(|()| Some(false))
                         } else {
                             Err(guarded_boundary(
@@ -368,12 +368,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                             ))
                         };
                     }
-                    this.validate_command_wait(&event, waiting_command, false, custody.work())?;
-                    if let SchedulerEvent::Declared { spec } = &event {
+                    this.validate_command_wait(event, waiting_command, false, custody.work())?;
+                    if let SchedulerEvent::Declared { spec } = event {
                         this.verify_content(&spec.state, custody.work()).await?;
                     }
-                    this.verify_published_result(&event, custody.work()).await?;
-                    this.scheduler.validate_event(&event, custody.work())?;
+                    this.verify_published_result(event, custody.work()).await?;
+                    this.scheduler.validate_event(event, custody.work())?;
                     let revision = next_revision(this.revision)?;
                     let committed_at_ms = this.next_commit_time(custody.work())?;
                     custody.transfer();
@@ -430,7 +430,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                         )
                     }?;
                     custody.adopt(retained)?;
-                    let origin = origins::event_path(&event, custody.work())?;
+                    let origin = origins::event_path(event, custody.work())?;
                     if let Some(path) = &origin {
                         custody.adopt(path.as_str().len() as u64)?;
                     }
@@ -500,7 +500,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                                 // conflict.
                                 if this.revision != current_revision
                                     && this
-                                        .intent_matches(key, &event, &digest, custody.work())
+                                        .intent_matches(key, event, &digest, custody.work())
                                         .await?
                                         .is_none()
                                 {
@@ -519,7 +519,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     };
                     this.refresh(custody.work()).await?;
                     if this
-                        .intent_matches(key, &event, &digest, custody.work())
+                        .intent_matches(key, event, &digest, custody.work())
                         .await?
                         != Some(true)
                     {
@@ -532,10 +532,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                         });
                     }
                     if applied.is_err() {
-                        this.validate_command_wait(&event, waiting_command, true, custody.work())?;
+                        this.validate_command_wait(event, waiting_command, true, custody.work())?;
                     }
-                    this.validate_replay(&event, custody.work())?;
-                    this.validate_parent_owner(&event, parent_fence, custody.work())?;
+                    this.validate_replay(event, custody.work())?;
+                    this.validate_parent_owner(event, parent_fence, custody.work())?;
                     Ok(Some(applied.unwrap_or(false)))
                 })?;
             if let Some(applied) = future.await? {
