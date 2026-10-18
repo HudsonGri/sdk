@@ -138,21 +138,36 @@ async fn seeded(count: u8) -> Result<(Arc<MemoryStream>, DistributedCoordinator<
     Ok((client, coordinator))
 }
 
-#[tokio::test]
-async fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Result<()> {
+#[test]
+fn indexed_intents_equal_independent_full_replay_and_survive_reopening() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     for count in [8_u8, 24] {
-        let (baseline, _) = seeded(count).await?;
-        let (candidate, coordinator) = seeded(count).await?;
-        let reopened = open(&candidate).await?;
+        let (baseline, _) = runtime.block_on(seeded(count))?;
+        let (candidate, coordinator) = runtime.block_on(seeded(count))?;
+        let reopened = runtime.block_on(open(&candidate))?;
         for key in ["history-00", "history-07", "absent"] {
-            let before = read_intent(&baseline, key, Some(coordinator.revision), &mut None).await?;
-            let after = coordinator.read_indexed_intent(key, &mut None).await?;
-            let restored = reopened.read_indexed_intent(key, &mut None).await?;
-            assert_eq!(before, after);
-            assert_eq!(
-                restored,
-                coordinator.read_indexed_intent(key, &mut None).await?
+            let (after, _) = acyclic_test_support::differential(
+                || {
+                    runtime
+                        .block_on(read_intent(
+                            &baseline,
+                            key,
+                            Some(coordinator.revision),
+                            &mut None,
+                        ))
+                        .map_err(|error| format!("{error:?}"))
+                },
+                || {
+                    runtime
+                        .block_on(coordinator.read_indexed_intent(key, &mut None))
+                        .map_err(|error| format!("{error:?}"))
+                },
             );
+            let restored = runtime.block_on(reopened.read_indexed_intent(key, &mut None))?;
+            assert_eq!(restored, after.map_err(Error::Storage)?);
         }
     }
     Ok(())
