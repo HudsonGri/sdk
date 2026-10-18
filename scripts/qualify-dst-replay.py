@@ -10,23 +10,43 @@ second_test = "digest::cross_process_seeded_replay_digest"
 started = time.monotonic()
 
 
-def run(*arguments):
-    remaining = 9 - (time.monotonic() - started)
-    if remaining <= 0:
-        sys.exit("DST exceeded its shared nine-second bound")
+def run_pair():
+    commands = [
+        ["--skip", second_test, "--test-threads=1", "--nocapture"],
+        [second_test, "--exact", "--test-threads=1", "--nocapture"],
+    ]
+    processes = []
     try:
-        result = subprocess.run([executable, *arguments], capture_output=True,
-                                timeout=remaining)
+        # Independent processes overlap their physical I/O; each replay still
+        # polls its own original tasks on one seeded thread. Neither waits for
+        # the other's tests before starting, and both share the same deadline.
+        for arguments in commands:
+            processes.append(subprocess.Popen([executable, *arguments],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+        outputs = []
+        for process in processes:
+            remaining = max(0, 9 - (time.monotonic() - started))
+            output, error = process.communicate(timeout=remaining)
+            sys.stdout.buffer.write(output)
+            sys.stderr.buffer.write(error)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, process.args)
+            outputs.append(output)
+        return outputs
     except subprocess.TimeoutExpired as error:
         sys.stdout.buffer.write(error.stdout or b"")
         sys.stderr.buffer.write(error.stderr or b"")
         raise
-    sys.stdout.buffer.write(result.stdout)
-    sys.stderr.buffer.write(result.stderr)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    result.check_returncode()
-    return result.stdout
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+        for process in processes:
+            process.wait()
+            process.stdout.close()
+            process.stderr.close()
 
 
 def equal(left, right):
@@ -43,8 +63,7 @@ def digest(output, label):
 
 # The first process runs every test except the one-world replay used by the
 # second. The aggregate still covers every test; there is no duplicate world.
-first = run("--skip", second_test, "--test-threads=1", "--nocapture")
-second = run(second_test, "--exact", "--test-threads=1", "--nocapture")
+first, second = run_pair()
 if b"1 passed; 0 failed" not in second:
     sys.exit("The second process did not execute its replay")
 equal(digest(first, b"DST_REPLAY_DIGEST"), digest(second, b"DST_REPLAY_DIGEST"))

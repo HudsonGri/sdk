@@ -386,8 +386,9 @@ fn seeded_production_turn_and_live_f17_replay_exact_bytes() -> Result<()> {
         let first = replay(71, false).await?;
         let mut second = replay(71, false).await?;
         same_trace(&first, &second).expect("same seed diverged");
-        digest::emit(&first);
-        assert_eq!(digest::pair(&first), digest::pair(&second));
+        let first_digest = digest::pair(&first);
+        digest::emit(first_digest);
+        assert_eq!(first_digest, digest::pair(&second));
         live_f17_jsonl_never_emits_byte_arrays(&first)?;
         // Comparing held bytes must still detect even a one-bit disk mutation.
         let (_, bytes) = second
@@ -400,7 +401,7 @@ fn seeded_production_turn_and_live_f17_replay_exact_bytes() -> Result<()> {
             same_trace(&first, &second).is_err(),
             "one-bit durable mutation escaped the replay oracle"
         );
-        assert_ne!(digest::pair(&first), digest::pair(&second));
+        assert_ne!(first_digest, digest::pair(&second));
         assert!(
             !first.boundaries.is_empty(),
             "production boundaries were bypassed"
