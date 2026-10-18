@@ -660,13 +660,13 @@ fn streamed_rows(height: u16, regions: bool) -> Vec<usize> {
     rig.regions = regions;
     (0..4)
         .map(|_| {
-            let start = rig.device_bytes().len();
+            let start = rig.output.0.borrow().0.len();
             let work = rig.measure(|rig| {
                 rig.stream("A streamed paragraph line.\n\n");
                 rig.frame();
             });
             assert_eq!((work.frames, work.writes), (1, 1));
-            rows_addressed(&rig.device_bytes()[start..]).len()
+            rows_addressed(&rig.output.0.borrow().0[start..]).len()
         })
         .collect()
 }
