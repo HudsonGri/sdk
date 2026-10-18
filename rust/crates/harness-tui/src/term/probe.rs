@@ -15,6 +15,11 @@ const MODES: [u16; 10] = [2026, 2027, 1004, 2004, 1049, 1000, 1002, 1003, 1006, 
 
 /// Polling transport; implementations must honor the supplied absolute deadline.
 pub trait ProbeIo {
+    /// Native initialization established bounded margins and SU/SD support.
+    fn native_scroll_regions(&self) -> bool {
+        false
+    }
+
     /// Write and flush the entire batch.
     fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()>;
     /// Return available bytes, or zero at EOF/deadline. Must not block past it.
@@ -107,6 +112,9 @@ impl ProbeReplies {
         }
         if env.0.contains_key("NO_COLOR") || caps.dumb {
             caps.colour = ColourDepth::Monochrome;
+        }
+        if caps.dumb {
+            caps.scroll_regions = false;
         }
         caps
     }
@@ -485,7 +493,8 @@ pub fn detect(
         total += count;
         decoder.feed(bytes)?;
     }
-    let caps = decoder.replies().capabilities(env);
+    let mut caps = decoder.replies().capabilities(env);
+    caps.scroll_regions |= io.native_scroll_regions();
     io.detected(&caps)?;
     Ok((caps, decoder))
 }
