@@ -1,7 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {posix} from 'node:path';
-import {expandFuzzIncludes, fuzzOracleSymbols, fuzzOracleViolations, rustTokens} from './fuzz-oracle-policy.mjs';
+import {expandFuzzIncludes, fuzzOracleViolations, rustTokens} from './fuzz-oracle-policy.mjs';
 
 const [ref, ...extra] = process.argv.slice(2);
 if (extra.length) throw new Error('usage: check-fuzz-oracles.mjs [git-ref]');
@@ -46,34 +46,71 @@ const resolveInclude = (file, reference, manifest) => {
   if (path.startsWith('../') || !path.endsWith('.rs')) throw new Error('invalid Rust include: ' + path);
   return path;
 };
-const sources = paths.map(path => expandFuzzIncludes(path, load(path), resolveInclude, load));
-const imports = new Set();
-for (const source of sources) {
+const shared = 'rust/fuzz/support/round_trip.rs';
+const nonCodecModules = new Map([
+  ['file', 'rust/crates/harness/src/client/diff/file.rs'],
+  ['local_case', 'rust/crates/harness/tests/e2e/local_case.rs'],
+  ['executable', 'rust/crates/harness/src/mcp/install/executable.rs'],
+]);
+const checkNonCodecModules = (file, source) => {
   const tokens = rustTokens(source);
-  for (let i = 0; i < tokens.length; i++) if (tokens[i].text === 'use') {
-    while (++i < tokens.length && tokens[i].text !== ';') {
-      if (/^[a-z_][a-z_0-9]*$/.test(tokens[i].text)) imports.add(tokens[i].text);
+  for (const [name, expected] of nonCodecModules) {
+    if (!tokens.some((t, i) => t.text === 'crate' && tokens[i + 1]?.text === '::' && tokens[i + 2]?.text === name)) continue;
+    let found = false;
+    for (let i = 0; i < tokens.length; i++) if (tokens[i].text === 'mod' && tokens[i + 1]?.text === name) {
+      let end = i;
+      if (tokens[end - 1]?.text === 'pub') end--;
+      const attr = tokens.slice(end - 6, end);
+      if (tokens[i + 2]?.text !== ';' || attr.map(t => t.text).join(' ') !== '# [ path = <literal> ]'
+        || posix.normalize(posix.join(posix.dirname(file), JSON.parse(attr[4].raw))) !== expected)
+        throw new Error('non-codec module must use its canonical production/fixture path: ' + name);
+      found = true;
     }
+    if (!found) throw new Error('missing canonical non-codec module: ' + name);
   }
-  for (let i = 0; i < tokens.length; i++) if (/^[a-z_][a-z_0-9]*$/.test(tokens[i].text)
-    && (tokens[i + 1]?.text === '(' || tokens[i + 1]?.text === '::' && tokens[i + 2]?.text === '<')) imports.add(tokens[i].text);
-}
-const names = [...imports].join('|');
-let declarations;
-try {
-  declarations = git('grep', '--null', '--name-only', '-E', `fn[[:space:]]+(r#)?(${names})|as[[:space:]]+(${names})`,
-    ...(commit ? [commit] : []), '--', 'rust/crates/*/src/*.rs', 'compatibility/*.rs', 'plugin/src/*.rs');
-} catch (error) {
-  if (error.status !== 1) throw error;
-  declarations = '';
-}
-const symbolPaths = declarations.split('\0').filter(Boolean).map(path => commit ? path.slice(commit.length + 1) : path);
-const inputFunctions = fuzzOracleSymbols([...sources, ...readSources(symbolPaths)]);
+};
+const trustedSupport = (file, seen = new Set()) => {
+  if (seen.has(file)) return false;
+  seen.add(file);
+  const tokens = rustTokens(load(file));
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens.slice(i, i + 5).map(t => t.text).join(' ') === 'use acyclic_fuzz_support as fuzz_support ;') {
+      let directory = posix.dirname(file);
+      while (!tracked.has(posix.join(directory, 'Cargo.toml'))) {
+        const parent = posix.dirname(directory);
+        if (parent === directory) throw new Error('missing helper dependency manifest');
+        directory = parent;
+      }
+      const manifest = load(posix.join(directory, 'Cargo.toml'));
+      const dependency = /^acyclic-fuzz-support\s*=\s*\{\s*path\s*=\s*"([^"]+)"\s*\}/m.exec(manifest);
+      if (!dependency || posix.normalize(posix.join(directory, dependency[1])) !== posix.dirname(shared))
+        throw new Error('fuzz_support must depend on the canonical shared helper crate');
+      return tracked.has(shared);
+    }
+    if (['goal_parser_input', 'recorded_invocation_input'].includes(tokens[i + 1]?.text)
+      && tokens.slice(i, i + 5).map(t => t.text).join(' ') === `use ${tokens[i + 1].text} :: fuzz_support ;`)
+      return trustedSupport(posix.join(posix.dirname(file), tokens[i + 1].text + '.rs'), seen);
+  }
+  return false;
+};
+// Privacy is the admission boundary: other modules must not call its factories.
+let factories = '';
+try { factories = git('grep', '-l', '-E', '__acyclic_(fuzz_entry|parsed_input)',
+  ...(commit ? [commit] : []), '--', '*.rs'); }
+catch (error) { if (error.status !== 1) throw error; }
+const factoryFiles = factories.split('\n').filter(Boolean)
+  .map(path => commit ? path.slice(commit.length + 1) : path);
+for (const path of factoryFiles) if (path !== shared)
+  throw new Error('raw fuzz-input factory outside shared oracle: ' + path);
+const sources = paths.map(path => expandFuzzIncludes(path, load(path), resolveInclude, load));
 const errors = [];
 for (let index = 0; index < paths.length; index++) {
   const path = paths[index];
   try {
-    errors.push(...fuzzOracleViolations(path, sources[index], inputFunctions));
+    checkNonCodecModules(path, load(path));
+    if (rustTokens(sources[index]).some(t => t.text === 'fuzz_support') && !trustedSupport(path))
+      throw new Error('missing canonical shared oracle module');
+    errors.push(...fuzzOracleViolations(path, sources[index]));
   } catch (error) {
     errors.push(`${path}: fuzz round-trip oracle analysis failed closed: ${error.message}`);
   }

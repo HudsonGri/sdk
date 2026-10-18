@@ -27,6 +27,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+
+[[package]]
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
@@ -87,6 +91,7 @@ dependencies = [
 name = "acyclic-stream-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-fuzz-support",
  "acyclic-stream",
  "bytes",
  "futures",

@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import test from 'node:test';
-import {expandFuzzIncludes, fuzzOracleSymbols, fuzzOracleViolations, rustTokens} from './fuzz-oracle-policy.mjs';
+import {expandFuzzIncludes, fuzzOracleViolations, rustTokens} from './fuzz-oracle-policy.mjs';
 
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/fuzz-oracles.json', import.meta.url), 'utf8'));
 for (const [name, source] of Object.entries(fixtures)) {
@@ -48,16 +48,6 @@ test('aliases and guards remain rejected under bounded exhaustive renaming', () 
   }
 });
 
-test('a re-export cannot acquire an input-parser exemption by reusing its name', () => {
-  const symbols = fuzzOracleSymbols([
-    'pub fn parse_input(bytes: &[u8]) -> Result<Model> { parser::read(bytes) }',
-    'pub use serde_json::to_vec as parse_input;',
-  ]);
-  assert.ok(!symbols.inputs.has('parse_input'));
-  const source = 'use facade::parse_input; let wire = parse_input(&input).unwrap(); if let Ok(value) = serde_json::from_slice::<Value>(&wire) { assert_eq!(value, input); }';
-  assert.ok(fuzzOracleViolations('reexport.rs', source, symbols).length);
-});
-
 test('literal includes are analyzed and opaque or cyclic includes fail closed', () => {
   const files = new Map([
     ['entry.rs', 'include!("oracle.rs");'],
@@ -78,17 +68,28 @@ test('the actual CLI rejects working-tree controls while its main baseline passe
   const git = (args, input) => execFileSync('git', args, {cwd: root, env, input, encoding: 'utf8'});
   const runner = fileURLToPath(new URL('./check-fuzz-oracles.mjs', import.meta.url));
   const target = 'rust/demo/fuzz_targets/oracle.rs';
-  const baseline = fixtures['good_final_result.rs'];
+  const header = 'use acyclic_fuzz_support as fuzz_support;\n';
+  const baseline = header + fixtures['good_final_result.rs'];
+  const sharedPath = 'rust/fuzz/support/round_trip.rs';
+  const shared = readFileSync(new URL('../' + sharedPath, import.meta.url), 'utf8');
   try {
     git(['init', '-q', '--initial-branch=main', '--template=']);
-    git(['fast-import', '--quiet'], `commit refs/heads/main\ncommitter Contract <contract@example.invalid> 1700000000 +0000\ndata 8\nbaseline\nM 100644 inline ${target}\ndata ${Buffer.byteLength(baseline)}\n${baseline}\ndone\n`);
+    const files = new Map([
+      [target, baseline], [sharedPath, shared],
+      ['rust/demo/Cargo.toml', '[package]\nname = "demo"\nversion = "0.0.0"\n[dependencies]\nacyclic-fuzz-support = { path = "../fuzz/support" }\n'],
+    ]);
+    let commit = 'commit refs/heads/main\ncommitter Contract <contract@example.invalid> 1700000000 +0000\ndata 8\nbaseline\n';
+    for (const [path, value] of files) commit += `M 100644 inline ${path}\ndata ${Buffer.byteLength(value)}\n${value}\n`;
+    git(['fast-import', '--quiet'], commit + 'done\n');
     git(['read-tree', 'HEAD']);
-    mkdirSync(join(root, 'rust/demo/fuzz_targets'), {recursive: true});
-    writeFileSync(join(root, target), baseline);
+    for (const [path, value] of files) {
+      mkdirSync(dirname(join(root, path)), {recursive: true});
+      writeFileSync(join(root, path), value);
+    }
     const run = args => spawnSync(process.execPath, [runner, ...args], {cwd: root, env, encoding: 'utf8'});
     assert.equal(run([]).status, 0);
     for (const name of ['bad_direct.rs', 'bad_decode_alias.rs', 'bad_macro_guard.rs', 'bad_reexport.rs']) {
-      writeFileSync(join(root, target), fixtures[name]);
+      writeFileSync(join(root, target), header + fixtures[name]);
       const result = run([]);
       assert.equal(result.status, 1, result.stderr);
       assert.match(result.stderr, /fuzz round-trip oracle/);

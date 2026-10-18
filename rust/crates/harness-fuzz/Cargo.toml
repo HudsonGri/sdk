@@ -23,6 +23,7 @@ runtime = ["dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", 
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../fuzz/support" }
 blake3.workspace = true
 acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
 diffy = { workspace = true, optional = true }
