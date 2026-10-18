@@ -301,7 +301,8 @@ impl ClientRenderer {
             );
         }
         self.wrapped = true;
-        self.select_view(files, input, usize::from(areas.transcript.height))?;
+        let height = if width == 0 { 0 } else { usize::from(areas.transcript.height) };
+        self.select_view(files, input, height)?;
         Ok(())
     }
 
