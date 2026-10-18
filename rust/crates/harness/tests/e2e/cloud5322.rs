@@ -50,12 +50,16 @@ pub(super) async fn required_pass() -> TestResult {
                 let relative = path.strip_prefix(root()).unwrap_or(path);
                 let scenario_root =
                     format!("cloud5322-cases/{}", relative.display()).replace('.', "-");
-                let result = compare(
-                    relative,
-                    case,
-                    Arc::new(MemoryStream::default()),
-                    remote,
-                    &scenario_root,
+                let phase = format!("scenario {}", relative.display());
+                let result = timed(
+                    &phase,
+                    compare(
+                        relative,
+                        case,
+                        Arc::new(MemoryStream::default()),
+                        remote,
+                        &scenario_root,
+                    ),
                 )
                 .await;
                 (relative.display().to_string(), result)

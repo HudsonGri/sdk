@@ -187,41 +187,70 @@ async fn run_publishing<P: StreamProvider>(
         .await
         .map_err(at("open the children subscription"))?;
     let mut volumes = Vec::with_capacity(case.agents);
-    let mut follows = Vec::with_capacity(case.agents);
+    // Only creation is ordered: Children must retain the fixture's exact order.
     for id in 0..case.agents {
         let path = StreamPath::new(&format!("{}/{}", root.as_str(), agent(id)))?;
-        let volume = TaskVolume::open(stream.clone(), path)
-            .await
-            .map_err(at(format!("open a{id:05}")))?;
-        let cut = volume
-            .cut(&Query::Root)
-            .await
-            .map_err(at(format!("cut a{id:05}")))?;
-        let follow = volume
-            .follow(Query::Root, cut)
-            .await
-            .map_err(at(format!("follow a{id:05}")))?;
-        follows.push(follow);
-        volumes.push(volume);
-    }
-    // Interleave the agents' publications, as concurrent subagents would.
-    for (sequence, text) in case.chunks.iter().enumerate() {
-        for (id, volume) in volumes.iter().enumerate() {
-            let tagged = format!("{}:{text}", agent(author(id)));
-            let head = volume.head().await.map_err(at("head"))?;
-            volume
-                .append(head, &chunk(sequence + 1, &tagged)?)
+        volumes.push(
+            TaskVolume::open(stream.clone(), path)
                 .await
-                .map_err(at(format!("append chunk {}", sequence + 1)))?;
-        }
+                .map_err(at(format!("open a{id:05}")))?,
+        );
     }
-    for (id, volume) in volumes.iter().enumerate() {
-        let status = serde_json::to_vec(&status_of(&agent(author(id)), &case.status))?;
-        let head = volume.head().await.map_err(at("head"))?;
-        volume
-            .append(head, &Write::new(FileKey::parse(STATUS)?, status))
-            .await
-            .map_err(at("append the status"))?;
+    // Independent volumes have independent fences. Prepare all follows before
+    // publishing, then retain each successful append's fence instead of reading
+    // it back before the next append.
+    let prepared =
+        futures::future::join_all(volumes.iter().enumerate().map(|(id, volume)| async move {
+            let cut = volume
+                .cut(&Query::Root)
+                .await
+                .map_err(at(format!("cut a{id:05}")))?;
+            let follow = volume
+                .follow(Query::Root, cut)
+                .await
+                .map_err(at(format!("follow a{id:05}")))?;
+            let head = volume.head().await.map_err(at("initial head"))?;
+            TestResult::Ok((follow, head))
+        }))
+        .await
+        .into_iter()
+        .collect::<TestResult<Vec<_>>>()?;
+    let (mut follows, mut heads): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+    // Keep chunk order within each agent and interleave complete rounds across
+    // agents, without serializing unrelated remote transactions.
+    for (sequence, text) in case.chunks.iter().enumerate() {
+        let writes = (0..case.agents)
+            .map(|id| chunk(sequence + 1, &format!("{}:{text}", agent(author(id)))))
+            .collect::<TestResult<Vec<_>>>()?;
+        heads = futures::future::join_all(
+            volumes
+                .iter()
+                .zip(&heads)
+                .zip(&writes)
+                .map(|((volume, head), write)| volume.append(*head, write)),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    }
+    let statuses = (0..case.agents)
+        .map(|id| {
+            TestResult::Ok(Write::new(
+                FileKey::parse(STATUS)?,
+                serde_json::to_vec(&status_of(&agent(author(id)), &case.status))?,
+            ))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    for result in futures::future::join_all(
+        volumes
+            .iter()
+            .zip(&heads)
+            .zip(&statuses)
+            .map(|((volume, head), write)| volume.append(*head, write)),
+    )
+    .await
+    {
+        result.map_err(at("append the status"))?;
     }
     let mut discovered = Vec::with_capacity(case.agents);
     for _ in 0..case.agents {
