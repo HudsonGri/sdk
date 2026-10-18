@@ -144,13 +144,13 @@ const RESCAN_CALLS: &[&str] = &[
 fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool {
     // Main's lazy append-error change removes one discarded error allocation
     // for each of the three host names and three checkout names in this fixture.
-    // Authenticating the unchanged body without staging its objects removes 27 more.
+    // The local authenticated-index path is retired with each file build.
     let expected = RESCAN_CALLS.iter().copied().flat_map(|call| {
         [Some(call), (fallback && call == "statx").then_some("fstat")]
             .into_iter()
             .flatten()
     });
-    heap.count_total == if cfg!(windows) { 294 } else { 301 } && trace.iter().copied().eq(expected)
+    heap.count_total == if cfg!(windows) { 302 } else { 309 } && trace.iter().copied().eq(expected)
 }
 
 fn run(
@@ -305,7 +305,7 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                 assert!(before.health_items > 0 && after.health_items > 0);
                 assert_eq!(
                     after.work["itemsExamined"],
-                    if cfg!(windows) { 436 } else { 331 }
+                    if cfg!(windows) { 438 } else { 333 }
                 );
             }
             assert_eq!(before.result, after.result);

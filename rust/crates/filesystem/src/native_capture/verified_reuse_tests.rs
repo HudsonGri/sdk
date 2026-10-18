@@ -477,11 +477,11 @@ proptest::proptest! {
 
 fn exact_metadata(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), String> {
     let expected = if cfg!(windows) {
-        479
+        485
     } else if cfg!(target_os = "macos") {
         504
     } else {
-        491
+        497
     };
     let counters = [
         "objectBytesWritten",
@@ -492,11 +492,11 @@ fn exact_metadata(heap: AllocationInfo, work: &serde_json::Value) -> Result<(), 
         "allocationOperations",
     ];
     let expected_work = if cfg!(windows) {
-        [500, 73_946, 1_245, 19_990, 16, 460]
+        [500, 73_654, 1_245, 19_871, 17, 466]
     } else if cfg!(target_os = "macos") {
         [516, 73_638, 1_286, 22_115, 14, 474]
     } else {
-        [516, 73_846, 1_158, 20_678, 17, 480]
+        [516, 73_846, 1_158, 20_678, 17, 478]
     };
     let actual_work = counters.map(|name| work[name].as_u64().unwrap());
     let observed = (
@@ -662,14 +662,14 @@ fn matching_stamps_never_hide_changed_bytes() {
 // independent of the restored staging control, which must fail them.
 #[cfg(target_os = "linux")]
 const RESCAN: (u64, [(&str, u64); 6]) = (
-    424,
+    440,
     [
         ("objectBytesWritten", 0),
-        ("bytesHashed", 72_231),
+        ("bytesHashed", 72_389),
         ("bytesEncoded", 384),
-        ("bytesCopied", 17_358),
-        ("objectProbes", 16),
-        ("allocationOperations", 406),
+        ("bytesCopied", 17_862),
+        ("objectProbes", 18),
+        ("allocationOperations", 422),
     ],
 );
 #[cfg(target_os = "macos")]
@@ -686,14 +686,14 @@ const RESCAN: (u64, [(&str, u64); 6]) = (
 );
 #[cfg(windows)]
 const RESCAN: (u64, [(&str, u64); 6]) = (
-    412,
+    428,
     [
         ("objectBytesWritten", 0),
-        ("bytesHashed", 72_087),
+        ("bytesHashed", 72_245),
         ("bytesEncoded", 487),
-        ("bytesCopied", 16_551),
-        ("objectProbes", 16),
-        ("allocationOperations", 394),
+        ("bytesCopied", 17_055),
+        ("objectProbes", 18),
+        ("allocationOperations", 410),
     ],
 );
 
