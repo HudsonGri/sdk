@@ -47,13 +47,21 @@ async fn source_fence_oracle(control: bool, outer: bool) {
         (true, true, Vec::<Duration>::new()),
         |clock| async move {
             let directory = tempfile::tempdir().unwrap();
-            let mut watch = NativeWatch::open(
-                directory.path(),
-                NativeWatchOptions::new(VolumeLimits::default()),
-            )
-            .unwrap();
+            let options = NativeWatchOptions::new(VolumeLimits::default());
+            // Linux's recursive default uses notify's cookie adapter. Capture
+            // uses the bounded native reader instead, admitting directories on
+            // demand. Exercise that same source and its own fence deadline.
+            #[cfg(target_os = "linux")]
+            let options = NativeWatchOptions {
+                recursive: false,
+                ..options
+            };
+            let mut watch = NativeWatch::open(directory.path(), options).unwrap();
             watch.begin_rescan().unwrap();
-            watch.finish_rescan().unwrap();
+            assert!(matches!(
+                watch.finish_rescan().unwrap(),
+                WatchBatch::Changes { .. }
+            ));
             let delivered = clock.enter(|| {
                 if outer {
                     watch.fence(Duration::from_secs(1)).unwrap();

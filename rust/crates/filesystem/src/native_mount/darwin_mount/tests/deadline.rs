@@ -1,11 +1,11 @@
 use super::*;
-use crate::deadline_test_support::paused_clock_oracle;
+use crate::deadline_test_support::paused_clock_oracle_sync;
 
-async fn revalidation_oracle(control: bool) {
+fn revalidation_oracle(control: bool) {
     // SAFETY: the bridge reports the fixed kernel attribute-cache timeout.
     let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
     let expected = (true, false, Duration::from_secs(timeout));
-    paused_clock_oracle(control, expected, |clock| async move {
+    paused_clock_oracle_sync(control, expected, |clock| {
         let (_source, context, work) = clock
             .enter(|| checkout_context(MountPublication::Manual))
             .unwrap();
@@ -22,17 +22,16 @@ async fn revalidation_oracle(control: bool) {
             unchanged,
             clock.advances().last().copied().unwrap_or_default(),
         )
-    })
-    .await;
+    });
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn revalidation_expires_on_its_captured_clock_after_scope_exit() {
-    revalidation_oracle(false).await;
+#[test]
+fn revalidation_expires_on_its_captured_clock_after_scope_exit() {
+    revalidation_oracle(false);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[test]
 #[should_panic(expected = "host deadline escaped virtual time")]
-async fn revalidation_restored_host_deadline_negative_control() {
-    revalidation_oracle(true).await;
+fn revalidation_restored_host_deadline_negative_control() {
+    revalidation_oracle(true);
 }
