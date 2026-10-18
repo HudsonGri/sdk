@@ -30,6 +30,7 @@ export function typedVerdicts(sources, paths) {
     if (!unchanged()) return reject('source map differs from the compilation inputs');
     const response = JSON.parse(execFileSync('python3', [fileURLToPath(new URL('./loom-type-contexts.py', import.meta.url))], {
       input: JSON.stringify(paths), encoding: 'utf8', maxBuffer: 1 << 26,
+      stdio: ['pipe', 'pipe', 'inherit'],
     }));
     const verdicts = decodeTypedVerdicts(response, paths);
     if (!unchanged()) return reject('compilation inputs changed during analysis');

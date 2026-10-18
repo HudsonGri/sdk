@@ -16,8 +16,8 @@ FILESYSTEM = QUERY + " --cfg acyclic_fs_loom"
 HARNESS_FLAGS = FILESYSTEM + " --cfg acyclic_harness_loom"
 
 
-def context(name, selection, flags, prefix):
-    return name, selection, flags, prefix
+def context(name, selection, flags, prefix, rustc_flags=()):
+    return name, selection, flags, prefix, rustc_flags
 
 
 CONTEXTS = [
@@ -36,8 +36,10 @@ CONTEXTS = [
             FILESYSTEM, "rust/crates/filesystem/src/"),
     context("filesystem-fuzz", ["-p", "acyclic-fs-fuzz", "--test", "model"],
             FILESYSTEM, "rust/crates/filesystem/fuzz/tests/"),
-    context("actors", ["-p", "acyclic-actors", "--lib"], "--cfg loom", "rust/crates/actors/src/"),
-    context("timer", ["-p", "acyclic-actors", "--test", "timer_loom"], QUERY, "rust/crates/actors/tests/"),
+    context("actors", ["-p", "acyclic-actors", "--test", "guest_loom"], QUERY,
+            "rust/crates/actors/src/", ("--cfg", "loom")),
+    context("timer", ["-p", "acyclic-actors", "--test", "timer_loom", "--features", "acyclic-stream/local"],
+            QUERY, "rust/crates/actors/tests/"),
     context("harness", ["-p", "acyclic-harness", "--no-default-features", "--features", HARNESS, "--lib"],
             HARNESS_FLAGS, "rust/crates/harness/src/"),
     context("query", ["-p", "acyclic-harness", "--no-default-features", "--features", HARNESS, "--test", "query-model"],
@@ -107,7 +109,7 @@ def replay(executable, commands, directory, environment):
     run(arguments, restored, cwd=cwd, stdout=sys.stderr)
 
 
-def analyze(name, selection, flags, models, environment):
+def analyze(name, selection, flags, models, environment, rustc_flags=()):
     directory = TARGET / ("loom-context-" + name)
     reports, commands = directory / "reports", directory / "commands"
     reports.mkdir(parents=True, exist_ok=True)
@@ -118,8 +120,10 @@ def analyze(name, selection, flags, models, environment):
     model_file.write_text("\n".join(models) + "\n")
     environment = dict(environment, LOOM_MODEL_ROOT=str(ROOT), LOOM_MODEL_FILES=str(model_file),
                        LOOM_MODEL_REPORTS=str(reports), LOOM_MODEL_REPLAY=str(commands), RUSTFLAGS=flags)
-    process = subprocess.Popen(["cargo", "+" + TOOLCHAIN, "test", "--no-run", "--locked", *selection,
-                                "--message-format=json"],
+    action = ["rustc"] if rustc_flags else ["test", "--no-run"]
+    trailing = ["--", *rustc_flags] if rustc_flags else []
+    process = subprocess.Popen(["cargo", "+" + TOOLCHAIN, *action, "--locked", *selection,
+                                "--message-format=json", *trailing],
                                cwd=ROOT, env=environment, stdout=subprocess.PIPE, text=True)
     executables = []
     for line in process.stdout:
@@ -170,14 +174,14 @@ def main():
     if len(set(models)) != len(models):
         raise ValueError("duplicate model paths")
     for model in models:
-        if sum(model.startswith(prefix) for _, _, _, prefix in CONTEXTS) > 1:
+        if sum(model.startswith(prefix) for _, _, _, prefix, _ in CONTEXTS) > 1:
             raise ValueError("ambiguous compilation context: " + model)
     environment = compiler()
     result = {}
-    for name, selection, flags, prefix in CONTEXTS:
+    for name, selection, flags, prefix, rustc_flags in CONTEXTS:
         selected = [path for path in models if path.startswith(prefix)]
         if selected:
-            result.update(analyze(name, selection, flags, selected, environment))
+            result.update(analyze(name, selection, flags, selected, environment, rustc_flags))
             print(name + ": " + str(len(selected)) + " model sources analyzed", file=sys.stderr, flush=True)
             for model in selected:
                 if result[model].startswith("!"):
