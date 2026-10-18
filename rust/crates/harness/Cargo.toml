@@ -153,6 +153,10 @@ path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
 
 [[test]]
+name = "e2e-progress-model"
+path = "tests/e2e_progress_model.rs"
+
+[[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
 required-features = ["filesystem-local", "native-execution", "test-support", "grpc"]
@@ -293,7 +297,7 @@ tracing-subscriber.workspace = true
 loom = "0.7.2"
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "process"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rust SDK execution uses the real browser event loop even without exports.

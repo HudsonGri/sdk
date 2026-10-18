@@ -3,6 +3,29 @@ use crate::TestResult;
 use serde_json::json;
 use std::path::Path;
 
+#[tokio::test(start_paused = true)]
+async fn direct_swarm_dispatch_rejects_a_permanently_pending_reopen() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let mut value =
+        crate::scenario::load_value(&root, &root.join("swarm/prefetch-promotion.json"))?;
+    run(value.clone()).await?;
+    value.as_object_mut().ok_or("scenario")?.remove("driver");
+    let case = serde_json::from_value(value)?;
+    let error = run(super::Case::SwarmFault(
+        Box::new(case),
+        crate::swarm_wire::Fault::StalledReopen,
+    ))
+    .await
+    .expect_err("an async driver owner hid a permanent reopen stall");
+    assert!(
+        error
+            .to_string()
+            .contains("stalled: driver at swarm index reopen"),
+        "{error}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
@@ -289,7 +312,7 @@ fn dispatch_retains_only_the_selected_driver_frame() -> TestResult {
     let baseline = serde_json::from_slice::<serde_json::Value>(include_bytes!(
         "../../../harness-fuzz/corpus/client_diff/local-read"
     ))?;
-    let direct = crate::local_execution::run(serde_json::from_value(baseline.clone())?);
+    let direct = super::local_execution::run(serde_json::from_value(baseline.clone())?);
     let dispatched = run(baseline);
     let bytes = std::mem::size_of_val(&dispatched);
     let inline = std::mem::size_of_val(&direct);

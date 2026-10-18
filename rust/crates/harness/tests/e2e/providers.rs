@@ -229,7 +229,9 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     let cut = stream.tail(path).await?;
     let mut wire = Vec::new();
     for sequence in 0..cut {
-        let record = frames.next().await.ok_or("provider task wire ended")??;
+        let record = super::stall::waiting("provider task wire replay", frames.next())
+            .await
+            .ok_or("provider task wire ended")??;
         if record.sequence != sequence {
             return Err("provider task wire has a gap".into());
         }
@@ -237,7 +239,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
             acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
         wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
     }
-    super::local_execution::check_frames(
+    super::drivers::check_frames(
         &case.expect.frames,
         &wire,
         operation,
@@ -250,7 +252,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire.remove(terminal);
-    if super::local_execution::check_frames(
+    if super::drivers::check_frames(
         &case.expect.frames,
         &wire,
         operation,

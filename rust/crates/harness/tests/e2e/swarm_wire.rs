@@ -21,6 +21,7 @@ pub(super) enum Fault {
     ScanRetainedViews,
     LogarithmicProviderWork,
     QuadraticProviderWork,
+    StalledReopen,
 }
 #[derive(Default, serde::Serialize)]
 pub(super) struct Counts {
