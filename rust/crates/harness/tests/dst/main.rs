@@ -29,7 +29,7 @@ fn storage(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Trace {
     polls: Vec<(u64, &'static str)>,
     boundaries: Vec<(String, String)>,
@@ -372,7 +372,7 @@ fn replay(seed: u64, erase_source: bool) -> EntryFuture<'static, Result<Trace>> 
 }
 
 #[test]
-fn seeded_production_turn_and_live_f17_replay_exact_bytes() -> Result<()> {
+fn seeded_production_turn_and_live_f17_trace_controls() -> Result<()> {
     digest::startup_value();
     let started = std::time::Instant::now();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -381,27 +381,27 @@ fn seeded_production_turn_and_live_f17_replay_exact_bytes() -> Result<()> {
         .map_err(storage)?;
     let result = runtime.block_on(async {
         tokio::time::pause();
-        // Each independent world covers direct submit, cold reopen and the
-        // headless entry. Their oracles share observations, never agent state.
+        // The same-seed peer and entropy-erasure world run in the other process
+        // (digest::cross_process_seeded_replay_digest). All four worlds still
+        // cover direct submit, cold reopen and the headless entry.
         let first = replay(71, false).await?;
-        let mut second = replay(71, false).await?;
-        same_trace(&first, &second).expect("same seed diverged");
         let first_digest = digest::pair(&first);
         digest::emit(first_digest);
-        assert_eq!(first_digest, digest::pair(&second));
         live_f17_jsonl_never_emits_byte_arrays(&first)?;
         // Comparing held bytes must still detect even a one-bit disk mutation.
-        let (_, bytes) = second
+        let mut corrupted = first.clone();
+        let (_, bytes) = corrupted
             .durable
             .values_mut()
             .find(|(_, bytes)| !bytes.is_empty())
             .expect("production durable bytes");
         bytes[0] ^= 1;
         assert!(
-            same_trace(&first, &second).is_err(),
+            same_trace(&first, &corrupted).is_err(),
             "one-bit durable mutation escaped the replay oracle"
         );
-        assert_ne!(first_digest, digest::pair(&second));
+        assert_ne!(first_digest, digest::pair(&corrupted));
+        drop(corrupted);
         assert!(
             !first.boundaries.is_empty(),
             "production boundaries were bypassed"
@@ -414,15 +414,6 @@ fn seeded_production_turn_and_live_f17_replay_exact_bytes() -> Result<()> {
         assert_ne!(
             first.dispatches, different.dispatches,
             "seed did not reach production identities"
-        );
-        let broken = replay(71, true).await?;
-        assert!(
-            same_trace(&first, &broken).is_err(),
-            "unseeded trace escaped the replay oracle"
-        );
-        assert_ne!(
-            first.dispatches, broken.dispatches,
-            "unseeded production negative control escaped"
         );
         Ok(())
     });

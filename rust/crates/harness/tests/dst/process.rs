@@ -135,6 +135,7 @@ fn world<'a>(directory: &'a Path) -> EntryFuture<'a, Result<Trace>> {
 
 #[test]
 fn default_bash_uses_the_seeded_process_provider() -> Result<()> {
+    digest::startup_value();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -153,6 +154,9 @@ fn default_bash_uses_the_seeded_process_provider() -> Result<()> {
         }
         let second = world(directory.path()).await?;
         same_trace(&first, &second).expect("seeded bash replay diverged");
+        // Cached process entropy passes independent in-process replays; the
+        // qualification's second process must reject that same digest mutant.
+        assert_eq!(digest::pair(&first), digest::pair(&second));
         Ok(())
     })
 }

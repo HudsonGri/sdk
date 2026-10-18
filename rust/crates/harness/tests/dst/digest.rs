@@ -89,7 +89,19 @@ fn cross_process_seeded_replay_digest() -> Result<()> {
         .map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        emit(pair(&replay(71, false).await?));
+        let first = replay(71, false).await?;
+        emit(pair(&first));
+        // Keep the original erasure oracle beside its independent baseline;
+        // moving it here balances the two processes without removing a world.
+        let broken = replay(71, true).await?;
+        assert!(
+            same_trace(&first, &broken).is_err(),
+            "unseeded trace escaped the replay oracle"
+        );
+        assert_ne!(
+            first.dispatches, broken.dispatches,
+            "unseeded production negative control escaped"
+        );
         Ok(())
     })
 }
