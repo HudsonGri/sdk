@@ -6,6 +6,7 @@ extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_span;
 
+mod instances;
 mod ownership;
 mod replay;
 mod types;
@@ -106,7 +107,8 @@ impl<'tcx> Body<'_, 'tcx> {
             rustc_middle::ty::Unnormalized::new_wip(ty),
             default,
             0,
-        );
+        )
+        .or_else(|| instances::lock(self.tcx, self.owner, ty, default));
         match found {
             Some(true) => {
                 if let Ok(owned) = self.verdict {

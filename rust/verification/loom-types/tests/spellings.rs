@@ -153,3 +153,19 @@ fn marker_type_arguments_do_not_construct_their_argument() {
     assert!(!found.is_empty());
     assert!(found.values().all(|verdict| verdict == "0"), "{found:?}");
 }
+
+#[test]
+fn every_compiled_generic_instance_is_classified() {
+    let found = compile("fn make<T: Default>() -> T { T::default() } pub fn plain() { let _: u8 = make(); } pub fn owning() { let _: std::sync::Mutex<()> = make(); }").unwrap();
+    assert!(
+        found
+            .iter()
+            .any(|(body, verdict)| (body.ends_with("::make") || body == "make") && verdict == "1"),
+        "{found:?}"
+    );
+    let plain = compile(
+        "fn make<T: Default>() -> T { T::default() } pub fn plain() { let _: u8 = make(); }",
+    )
+    .unwrap();
+    assert!(plain.values().all(|verdict| verdict == "0"), "{plain:?}");
+}
