@@ -25,17 +25,33 @@ proptest! {
 #[tokio::test]
 async fn reset_and_malformed_replies_have_distinct_transport_outcomes() -> TestResult {
     let prefix = vec!["data: ".to_owned()];
-    let reset = fault_response(Fault::Reset {prefix}, 2);
+    let reset = fault_response(Fault::Reset { prefix }, 2);
     assert!(axum::body::to_bytes(reset.into_body(), 4096).await.is_err());
     let malformed = "data: {broken JSON}\n\n";
-    let response = fault_response(Fault::Malformed {body:malformed.into()}, 2);
+    let response = fault_response(
+        Fault::Malformed {
+            body: malformed.into(),
+        },
+        2,
+    );
     assert_eq!(
-        axum::body::to_bytes(response.into_body(), 4096).await?.as_ref(),
+        axum::body::to_bytes(response.into_body(), 4096)
+            .await?
+            .as_ref(),
         malformed.as_bytes(),
     );
     // Replacing a reset with a clean EOF is not an equivalent injection.
-    let clean_eof = fault_response(Fault::Malformed {body:"data: ".into()}, 2);
-    assert!(axum::body::to_bytes(clean_eof.into_body(), 4096).await.is_ok());
+    let clean_eof = fault_response(
+        Fault::Malformed {
+            body: "data: ".into(),
+        },
+        2,
+    );
+    assert!(
+        axum::body::to_bytes(clean_eof.into_body(), 4096)
+            .await
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -43,18 +59,37 @@ async fn reset_and_malformed_replies_have_distinct_transport_outcomes() -> TestR
 async fn a_real_http_fault_consumes_an_attempt_but_preserves_the_model_turn() -> TestResult {
     let workspace = tempfile::tempdir()?;
     for protocol in ["responses", "anthropic"] {
-        let fault = Fault::Status {code:429, retry_after:Some(0)};
+        let fault = Fault::Status {
+            code: 429,
+            retry_after: Some(0),
+        };
         let case = json!({"turns":["after retry"],"faults":[fault],
             "expect":{"request_count":2}});
         let provider = start(&case, protocol, workspace.path()).await?;
         let transport = ReqwestTransport::new()?;
+        let request = if protocol == "responses" {
+            json!({"model":"parent","stream":true,"input":"HTTP_FAULT_PROBE"})
+        } else {
+            json!({"model":"parent","stream":true,"max_tokens":64,
+                "messages":[{"role":"user","content":"HTTP_FAULT_PROBE"}]})
+        };
         let mut bodies = Vec::new();
         for status in [429, 200] {
-            let mut response = transport.send(HttpRequest {
-                url:format!("{}/{}", provider.url, if protocol == "responses" {"responses"} else {"messages"}),
-                headers:BTreeMap::new(),
-                body:serde_json::to_vec(&json!({"stream":true,"input":[],"messages":[]}))?.into(),
-            }).await?;
+            let mut response = transport
+                .send(HttpRequest {
+                    url: format!(
+                        "{}/{}",
+                        provider.url,
+                        if protocol == "responses" {
+                            "responses"
+                        } else {
+                            "messages"
+                        }
+                    ),
+                    headers: BTreeMap::new(),
+                    body: serde_json::to_vec(&request)?.into(),
+                })
+                .await?;
             assert_eq!(response.status, status);
             let mut body = Vec::new();
             while let Some(bytes) = response.body.next().await {
