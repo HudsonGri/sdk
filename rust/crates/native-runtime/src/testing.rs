@@ -10,7 +10,7 @@ use crate::sync::Mutex;
 mod entropy;
 pub use entropy::fill_seeded;
 mod clock;
-pub use clock::unix_millis;
+pub use clock::{CapturedClock, unix_millis};
 mod executor;
 pub use executor::{AbortHandle, TaskHandle};
 mod durability;

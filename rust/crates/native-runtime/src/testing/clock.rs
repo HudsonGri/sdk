@@ -2,6 +2,48 @@
 use super::*;
 use std::time::Duration;
 
+/// A provider retains its seed's clock when callbacks move to driver threads.
+/// The runtime handle is essential: Tokio's paused clock belongs to the runtime,
+/// not to whichever thread happens to invoke the callback.
+#[derive(Clone)]
+pub struct CapturedClock {
+    schedule: Schedule,
+    runtime: tokio::runtime::Handle,
+    origin: std::time::Instant,
+}
+
+impl CapturedClock {
+    pub fn capture() -> Option<Self> {
+        let context = Context::simulation()?;
+        context.schedule.0.state().wall.as_ref()?;
+        Some(Self {
+            schedule: context.schedule,
+            runtime: tokio::runtime::Handle::current(),
+            origin: tokio::time::Instant::now().into_std(),
+        })
+    }
+
+    pub fn unix_millis(&self) -> u64 {
+        let _runtime = self.runtime.enter();
+        self.schedule
+            .0
+            .state()
+            .wall
+            .as_mut()
+            .expect("seeded clock")
+            .now()
+    }
+
+    pub fn instant(&self) -> std::time::Instant {
+        let _runtime = self.runtime.enter();
+        tokio::time::Instant::now().into_std()
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.instant().duration_since(self.origin)
+    }
+}
+
 pub(super) struct Wall {
     millis: u64,
     anchor: Option<tokio::time::Instant>,
