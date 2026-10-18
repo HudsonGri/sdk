@@ -188,6 +188,7 @@ fn run(
         probe.restore_birth_time_errors();
     }
     let _owner = (fault == 3).then(super::owner_allocation_tests::restore_owner);
+    let _index = (fault == 5).then(crate::logical_objects::restore_eager_index);
     let mut result = None;
     let roots = [path];
     let policy = CapturePolicy::default();
@@ -350,7 +351,7 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                 trace.iter().collect::<Vec<_>>()
             );
             if limit == u64::MAX && !cancelled {
-                for fault in [1, 2, 3, 4] {
+                for fault in [1, 2, 3, 4, 5] {
                     if fault == 4 && !(forced || without_birth_time) {
                         continue; // The old conversion allocates only for absent birth times.
                     }
@@ -378,6 +379,14 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                     }
                     if fault == 3 {
                         assert_eq!(broken_heap.count_total, after_heap.count_total + 1);
+                    }
+                    if fault == 5 {
+                        assert_eq!(broken_heap.count_total, after_heap.count_total + 1);
+                        assert_eq!(broken_trace, trace);
+                        assert!(
+                            broken.work["itemsExamined"].as_u64().unwrap() - broken.health_items
+                                > after.work["itemsExamined"].as_u64().unwrap()
+                        );
                     }
                     if fault == 4 {
                         assert_eq!(broken_heap.count_total, after_heap.count_total + 48);
