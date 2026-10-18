@@ -114,7 +114,7 @@ where
             .transpose()?;
         // Each publication stage is deep; each runs from its own allocation,
         // so this frame never holds their polls.
-        if let Some(published) = crate::in_heap(|| {
+        if let Some(published) = crate::heap_future::in_heap_claimed(work, || {
             self.recover_publication(
                 permit,
                 accounting,
@@ -124,6 +124,7 @@ where
                 accounting_failure,
             )
         })
+        .map_err(MountSourceError::from)?
         .await?
         {
             return Ok(published);
@@ -131,9 +132,11 @@ where
         let mut input_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut input = adapter::InputBuffers::new(&mut input_carrier)?;
         let (removals, captured_records) = self.removal_inputs(&mut input)?;
-        let dirty = crate::in_heap(|| self.dirty_detached_records(work)).await?;
+        let dirty = crate::heap_future::in_heap_claimed(work, || self.dirty_detached_records(work))
+            .map_err(MountSourceError::from)?
+            .await?;
         if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
-            return crate::in_heap(|| {
+            return crate::heap_future::in_heap_claimed(work, || {
                 self.publish_clean(
                     permit,
                     accounting,
@@ -142,6 +145,7 @@ where
                     accounting_failure,
                 )
             })
+            .map_err(MountSourceError::from)?
             .await;
         }
         let PreparedPublication {
@@ -151,7 +155,7 @@ where
             _effects,
             changes,
             _records,
-        } = crate::in_heap(|| {
+        } = crate::heap_future::in_heap_claimed(work, || {
             self.prepare_publication(
                 removals,
                 &dirty.value,
@@ -161,30 +165,35 @@ where
                 accounting,
             )
         })
+        .map_err(MountSourceError::from)?
         .await?;
-        let context = crate::in_heap(|| {
+        let context = crate::heap_future::in_heap_claimed(work, || {
             self.publication_context(operation, None, selected_proof, accounting)
         })
+        .map_err(MountSourceError::from)?
         .await?;
         let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
-        let (_namespace_allocations, _namespaces, installed, _allocation) = crate::in_heap(|| {
-            self.publication_changes(
-                &candidate,
-                &paths,
-                changes.as_deref(),
-                &mut scratch,
-                accounting,
-                &mut carrier,
-            )
-        })
-        .await?;
+        let (_namespace_allocations, _namespaces, installed, _allocation) =
+            crate::heap_future::in_heap_claimed(work, || {
+                self.publication_changes(
+                    &candidate,
+                    &paths,
+                    changes.as_deref(),
+                    &mut scratch,
+                    accounting,
+                    &mut carrier,
+                )
+            })
+            .map_err(MountSourceError::from)?
+            .await?;
         candidate.operation = Some(operation);
-        crate::in_heap(|| {
+        crate::heap_future::in_heap_claimed(work, || {
             self.install_publication(candidate, &installed, &mut carrier, cancellation)
         })
+        .map_err(MountSourceError::from)?
         .await?;
-        crate::in_heap(|| {
+        crate::heap_future::in_heap_claimed(work, || {
             self.complete_publication(
                 permit,
                 (context, operation, selected_proof),
@@ -194,6 +203,7 @@ where
                 accounting_failure,
             )
         })
+        .map_err(MountSourceError::from)?
         .await
     }
     pub(super) fn clear_mount_removals(&self) -> Result<(), MountSourceError> {

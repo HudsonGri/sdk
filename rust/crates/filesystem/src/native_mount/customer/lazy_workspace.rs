@@ -154,8 +154,10 @@ where
             return Err(MountSourceError::NativeUnsupported.into());
         }
         // The source lookup is deep; it runs from its own allocation.
-        let (authored, volume_id, root_text) =
-            crate::in_heap(|| self.prepare_authored_mount_source(&options, work)).await?;
+        let (authored, volume_id, root_text) = crate::heap_future::in_heap_claimed(work, || {
+            self.prepare_authored_mount_source(&options, work)
+        })?
+        .await?;
         let root_custody = match root_text.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => {

@@ -50,9 +50,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .check()
             .map_err(|error| OperationFailure::before_work(E::from(FsError::from(error))))?;
         self.publication_closure = None;
-        let checkpoint = crate::in_heap(|| self.checkpoint_root(budget, cancellation))
-            .await
-            .map_err(|failure| failure.map_error(E::from))?;
+        let checkpoint = crate::heap_future::in_heap_measured(
+            |budget| self.checkpoint_root(budget, cancellation),
+            budget,
+            cancellation,
+            FsError::Cancelled(crate::CancellationError),
+            None,
+        )
+        .await
+        .map_err(|failure| failure.map_error(E::from))?;
         let checkpoint_root = checkpoint.value;
         let mut work = checkpoint.work;
         let request = PublishGenerationRequest {
@@ -85,6 +91,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         publication_budget.peak_allocation_bytes -= custody_bytes;
         let proven_at = self.volume.fs.inner.objects.collection_sweeps();
         let mut prepared_roots = None;
+        // The custody and the publication's own frame are live together with
+        // everything the publication allocates.
+        let mut live_bytes = custody_bytes;
         let publication = {
             let mut prepare_roots = |root: &GenerationRoot, budget| {
                 let mut accounting = KernelAccounting::standalone(budget, cancellation);
@@ -115,37 +124,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             };
             let fs = &self.volume.fs.inner;
             // Erased: the publication's own poll frame stays out of this one,
-            // and its type stays out of every caller's auto-trait proof.
-            let publication: acyclic_stream::BoxProviderFuture<'_, _> = crate::in_heap(|| {
-                crate::kernel::publish_generation_async_guarded(
-                    &fs.objects,
-                    &fs.authority,
-                    request,
-                    PublicationIntent {
-                        operation_context,
-                        original_evidence: operation_evidence.clone(),
-                        fingerprint_permit: original_fingerprint_permit,
-                        permit,
-                    },
-                    closure_limits(self.volume.config),
-                    Some(&fs.publication_proof),
-                    publication_budget,
-                    cancellation,
-                    before_publication,
-                    resolved,
-                    Some(&mut prepare_roots),
-                )
-            });
+            // and its type stays out of every caller's auto-trait proof. Its
+            // frame is admitted on this operation's work before it is built.
+            let (publication, frame_bytes) = crate::heap_future::in_heap_admitted(
+                (&mut work, &mut publication_budget),
+                |(work, publication_budget), bytes| {
+                    let admitted = add(
+                        **work,
+                        WorkCounters {
+                            allocation_operations: u64::from(bytes != 0),
+                            peak_allocation_bytes: bytes,
+                            ..WorkCounters::default()
+                        },
+                    )
+                    .map_err(|failure| failure.map_error(E::from))?;
+                    remaining(admitted, budget)
+                        .map_err(|failure| OperationFailure::new(E::from(failure.error), **work))?;
+                    **work = admitted;
+                    publication_budget.peak_allocation_bytes -= bytes;
+                    Ok(())
+                },
+                |(_, publication_budget)| {
+                    let publication_budget = *publication_budget;
+                    crate::kernel::publish_generation_async_guarded(
+                        &fs.objects,
+                        &fs.authority,
+                        request,
+                        PublicationIntent {
+                            operation_context,
+                            original_evidence: operation_evidence.clone(),
+                            fingerprint_permit: original_fingerprint_permit,
+                            permit,
+                        },
+                        closure_limits(self.volume.config),
+                        Some(&fs.publication_proof),
+                        publication_budget,
+                        cancellation,
+                        before_publication,
+                        resolved,
+                        Some(&mut prepare_roots),
+                    )
+                },
+            )?;
+            live_bytes += frame_bytes;
+            let publication: acyclic_stream::BoxProviderFuture<'_, _> = publication;
             publication.await
         }
         .map_err(|mut failure| {
-            *failure.work = work
-                .with_backend(*failure.work, custody_bytes)
-                .unwrap_or(work);
+            *failure.work = work.with_backend(*failure.work, live_bytes).unwrap_or(work);
             failure
         })?;
         drop(operation_evidence);
-        work = merge_simultaneous_work(work, publication.work, custody_bytes, budget)
+        work = merge_simultaneous_work(work, publication.work, live_bytes, budget)
             .map_err(|failure| failure.map_error(E::from))?;
         let outcome = self.apply_publication(
             checkpoint_root,

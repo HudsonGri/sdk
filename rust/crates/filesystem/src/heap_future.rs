@@ -19,8 +19,23 @@ use std::task::{Context, Poll};
 ///
 /// The future is built in this function's own frame, which returns before the
 /// future is first polled, so no poll frame ever holds it.
+///
+/// This crate never calls it (`tests::every_frame_is_paid_for` scans the
+/// source): a frame here is paid for on its work ledger first, through
+/// [`in_heap_metered`], [`in_heap_claimed`], [`in_heap_admitted`] or
+/// [`in_heap_measured`], or is [`in_heap_unmetered`] with a stated reason.
 #[inline(never)]
 pub fn in_heap<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<HeapFuture<F>>> {
+    Box::pin(HeapFuture { future: create() })
+}
+
+/// [`in_heap`] for a call that holds no work ledger to pay for its frame.
+///
+/// Every call is preceded by an `// Unmetered:` comment naming why no ledger
+/// exists there, or an `// Admitted above:` comment naming the ledger that
+/// already holds the frame; `tests::every_frame_is_paid_for` enforces it.
+#[inline(never)]
+pub(crate) fn in_heap_unmetered<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<HeapFuture<F>>> {
     Box::pin(HeapFuture { future: create() })
 }
 
@@ -43,6 +58,185 @@ impl<F: Future> Future for HeapFuture<F> {
     }
 }
 
+/// A ledger that pays for a heap frame before the frame is allocated.
+///
+/// Every metered path boxes its futures through [`in_heap_metered`] (or
+/// [`metered!`]) or [`in_heap_claimed`], never through [`in_heap`]: the frame's
+/// exact size is reserved first, so a refused or cancelled operation allocates
+/// nothing, and the reservation is held for as long as the box exists.
+pub(crate) trait FrameLedger {
+    /// What the ledger holds while the frame is live.
+    type Reservation;
+    /// Why the ledger refused the frame.
+    type Error;
+    /// Reserves `bytes` for one allocation, or refuses without allocating.
+    fn reserve_frame(&mut self, bytes: u64) -> Result<Self::Reservation, Self::Error>;
+    /// Returns a frame's reservation once its box has been destroyed.
+    fn release_frame(&mut self, reservation: Self::Reservation) -> Result<(), Self::Error>;
+}
+
+pub(crate) enum KernelFrameReservation {
+    Standalone(crate::kernel::allocation::StandaloneFrameReservation),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(crate::NativeAllocation),
+}
+
+impl FrameLedger for crate::kernel::KernelAccounting<'_> {
+    type Reservation = KernelFrameReservation;
+    type Error = crate::FsError;
+
+    fn reserve_frame(&mut self, bytes: u64) -> Result<Self::Reservation, crate::FsError> {
+        self.check()?;
+        match self {
+            Self::Standalone {
+                allocations,
+                work,
+                budget,
+                ..
+            } => allocations
+                .claim_frame(bytes, work, *budget)
+                .map(KernelFrameReservation::Standalone)
+                .map_err(|error| {
+                    error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
+                }),
+            Self::BorrowedStandalone {
+                allocations,
+                work,
+                budget,
+                ..
+            } => allocations
+                .claim_frame(bytes, work, *budget)
+                .map(KernelFrameReservation::Standalone)
+                .map_err(|error| {
+                    error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
+                }),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { work, .. } => work
+                .claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
+                .map(KernelFrameReservation::Native)
+                .map_err(Into::into),
+        }
+    }
+
+    fn release_frame(&mut self, reservation: Self::Reservation) -> Result<(), crate::FsError> {
+        match reservation {
+            KernelFrameReservation::Standalone(reservation) => drop(reservation),
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelFrameReservation::Native(reservation) => drop(reservation),
+        }
+        Ok(())
+    }
+}
+/// The exact allocation [`in_heap_metered`] and [`in_heap_claimed`] make for `F`.
+fn frame_bytes<F>() -> u64 {
+    crate::foundation::usize_to_u64(std::mem::size_of::<HeapFuture<F>>())
+}
+
+/// Builds `create`'s future in a heap frame `ledger` has already paid for.
+///
+/// The ledger is reborrowed for `create` only after it admitted the frame, so
+/// a refusal returns before `create` runs or anything is allocated. Await the
+/// result, then return its reservation with [`FrameLedger::release_frame`]:
+/// [`metered!`] does both.
+#[inline(never)]
+pub(crate) fn in_heap_metered<'r, L: FrameLedger + ?Sized, F: Future>(
+    ledger: &'r mut L,
+    create: impl FnOnce(&'r mut L) -> F,
+) -> Result<MeteredFrame<F, L::Reservation>, L::Error> {
+    let reservation = ledger.reserve_frame(frame_bytes::<F>())?;
+    Ok(MeteredFrame {
+        frame: Some(Box::pin(HeapFuture {
+            future: create(ledger),
+        })),
+        reservation: Some(reservation),
+    })
+}
+
+/// A paid heap frame. It destroys its box before handing back the reservation.
+#[must_use = "a metered frame does nothing unless awaited"]
+pub(crate) struct MeteredFrame<F, R> {
+    frame: Option<Pin<Box<HeapFuture<F>>>>,
+    reservation: Option<R>,
+}
+
+impl<F: Future, R: Unpin> Future for MeteredFrame<F, R> {
+    type Output = (F::Output, R);
+
+    #[inline(never)]
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let Some(frame) = self.frame.as_mut() else {
+            return Poll::Pending;
+        };
+        let output = std::task::ready!(frame.as_mut().poll(context));
+        self.frame = None;
+        match self.reservation.take() {
+            Some(reservation) => Poll::Ready((output, reservation)),
+            None => Poll::Pending,
+        }
+    }
+}
+
+/// Builds `create`'s future in a heap frame claimed on the native `work`
+/// ledger first. The claim is released when the frame is dropped, after the
+/// box: on completion, on error and on cancellation alike.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(never)]
+pub(crate) fn in_heap_claimed<F: Future>(
+    work: &crate::NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<ClaimedFrame<Pin<Box<HeapFuture<F>>>>, crate::NativeTreeMaterializationError> {
+    let bytes = frame_bytes::<F>();
+    let claim = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+    Ok(ClaimedFrame {
+        frame: Box::pin(HeapFuture { future: create() }),
+        _claim: claim,
+    })
+}
+
+/// A heap frame whose native claim outlives its box.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use = "a claimed frame does nothing unless awaited"]
+pub(crate) struct ClaimedFrame<P> {
+    // Declared first: the box is destroyed before the claim is released.
+    frame: P,
+    _claim: crate::NativeAllocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P> ClaimedFrame<P> {
+    /// Re-types the same box, for instance to erase it; nothing is reallocated.
+    pub(crate) fn map_frame<Q>(self, map: impl FnOnce(P) -> Q) -> ClaimedFrame<Q> {
+        ClaimedFrame {
+            frame: map(self.frame),
+            _claim: self._claim,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: Future + Unpin> Future for ClaimedFrame<P> {
+    type Output = P::Output;
+
+    #[inline(never)]
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<P::Output> {
+        Pin::new(&mut self.frame).poll(context)
+    }
+}
+
+/// Awaits `$call` in a frame `$ledger` paid for, then returns the reservation.
+///
+/// `$ledger` is a `&mut` place implementing [`FrameLedger`]; `$call` receives
+/// it reborrowed as `$name`. Errors from either step convert with `?`.
+macro_rules! metered {
+    ($ledger:expr, |$name:ident| $call:expr) => {{
+        let (output, reservation) =
+            crate::heap_future::in_heap_metered(&mut *$ledger, |$name| $call)?.await;
+        crate::heap_future::FrameLedger::release_frame(&mut *$ledger, reservation)?;
+        output
+    }};
+}
+pub(crate) use metered;
+
 /// Admits a box into an existing ownership ledger before constructing its future.
 /// The caller keeps that ledger in `state` and releases `bytes` after dropping
 /// the completed box; this does not create or reset an operation receipt.
@@ -57,7 +251,12 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
 ) -> Result<(Pin<Box<HeapFuture<F>>>, u64), E> {
     let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
     admit(&mut state, bytes)?;
-    Ok((in_heap(move || create(state)), bytes))
+    Ok((
+        Box::pin(HeapFuture {
+            future: create(state),
+        }),
+        bytes,
+    ))
 }
 
 /// Known logical ownership of the existing boxed future, not proof DATA.
@@ -158,7 +357,8 @@ where
         .peak_allocation_bytes
         .checked_sub(bytes)
         .ok_or_else(|| crate::OperationFailure::new(map_work(crate::WorkError::Overflow), work))?;
-    let mut future = in_heap(move || create(remaining));
+    // Admitted above; built in its own short frame, not this poll frame.
+    let mut future = in_heap_unmetered(move || create(remaining));
     let result = future.as_mut().await;
     drop(future);
     drop(frame);
@@ -185,6 +385,303 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// Every heap frame this crate builds is paid for, or says why not.
+    #[test]
+    fn every_frame_is_paid_for() {
+        fn scan(directory: &std::path::Path, violations: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).expect("source directory") {
+                let path = entry.expect("source entry").path();
+                if path.is_dir() {
+                    scan(&path, violations);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs")
+                    || path.ends_with("heap_future.rs")
+                {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).expect("source file");
+                let lines: Vec<&str> = source.lines().collect();
+                for (index, line) in lines.iter().enumerate() {
+                    let code = line.split("//").next().unwrap_or_default();
+                    let raw = code.match_indices("in_heap(").any(|(at, _)| {
+                        !code[..at].ends_with(|c: char| c == '_' || c.is_alphanumeric())
+                    });
+                    let justified = lines[index.saturating_sub(4)..index].iter().any(|above| {
+                        let above = above.trim_start();
+                        above.starts_with("// Unmetered:")
+                            || above.starts_with("// Admitted above:")
+                    });
+                    if raw || (code.contains("in_heap_unmetered(") && !justified) {
+                        violations.push(format!("{}:{}", path.display(), index + 1));
+                    }
+                }
+            }
+        }
+        let mut violations = Vec::new();
+        scan(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut violations,
+        );
+        assert!(violations.is_empty(), "unpaid heap frames: {violations:?}");
+    }
+
+    struct Refusing;
+
+    impl super::FrameLedger for Refusing {
+        type Reservation = ();
+        type Error = ();
+        fn reserve_frame(&mut self, _bytes: u64) -> Result<(), ()> {
+            Err(())
+        }
+        fn release_frame(&mut self, (): ()) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    /// A refused frame builds nothing: its future is never created.
+    #[test]
+    fn a_refused_frame_is_never_built() {
+        let mut built = false;
+        let refused = super::in_heap_metered(&mut Refusing, |_| {
+            built = true;
+            std::future::ready(())
+        });
+        assert!(refused.is_err());
+        assert!(!built, "the future was built before the ledger admitted it");
+    }
+
+    /// A cancelled kernel ledger refuses the frame before it is built.
+    #[test]
+    fn a_cancelled_operation_builds_no_frame() {
+        let cancellation = crate::CancellationToken::new();
+        cancellation.cancel();
+        let mut accounting = crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut built = false;
+        let refused = super::in_heap_metered(&mut accounting, |_| {
+            built = true;
+            std::future::ready(())
+        });
+        assert!(refused.is_err());
+        assert!(!built);
+    }
+
+    #[tokio::test]
+    async fn standalone_frames_retire_when_a_borrowing_operation_is_dropped() {
+        async fn exercise(accounting: &mut crate::kernel::KernelAccounting<'_>) {
+            let ((), reservation) = super::in_heap_metered(accounting, |_| std::future::ready(()))
+                .expect("first frame and retirement cell admitted")
+                .await;
+            super::FrameLedger::release_frame(accounting, reservation).expect("frame retired");
+            let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
+            let mut frame = super::in_heap_metered(accounting, |_| async {
+                let retained = [0_u8; 128];
+                std::future::pending::<()>().await;
+                std::hint::black_box(retained);
+            })
+            .expect("pending frame admitted");
+            assert!(
+                std::future::Future::poll(
+                    std::pin::Pin::new(&mut frame),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                )
+                .is_pending()
+            );
+            drop(frame);
+            assert_eq!(
+                accounting.standalone_parts().unwrap().0.live_bytes(),
+                baseline,
+                "dropping the operation must retire its standalone frame"
+            );
+            let ((), reservation) = super::in_heap_metered(accounting, |_| std::future::ready(()))
+                .expect("ledger is reusable after cancellation")
+                .await;
+            super::FrameLedger::release_frame(accounting, reservation).expect("frame retired");
+            assert_eq!(
+                accounting.standalone_parts().unwrap().0.live_bytes(),
+                baseline
+            );
+        }
+        let cancellation = crate::CancellationToken::new();
+        exercise(&mut crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .await;
+        let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+        let mut work = crate::WorkCounters::UNCHARGED;
+        exercise(&mut crate::kernel::KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .await;
+    }
+
+    #[test]
+    fn refusal_admits_neither_the_frame_nor_its_retirement_cell() {
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget {
+                allocation_operations: 0,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        let mut built = false;
+        assert!(
+            super::in_heap_metered(&mut accounting, |_| {
+                built = true;
+                std::future::ready(())
+            })
+            .is_err()
+        );
+        assert!(!built);
+        assert_eq!(accounting.spent(), crate::WorkCounters::UNCHARGED);
+        assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
+    }
+
+    #[test]
+    fn cumulative_frame_retirement_cannot_wrap() {
+        let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+        let mut work = crate::WorkCounters::UNCHARGED;
+        drop(
+            ledger
+                .claim_frame(0, &mut work, crate::WorkBudget::UNBOUNDED)
+                .expect("retirement control admitted"),
+        );
+        let baseline = ledger.live_bytes();
+        let frame = ledger
+            .claim_frame(u64::MAX - baseline, &mut work, crate::WorkBudget::UNBOUNDED)
+            .expect("largest logical frame admitted");
+        drop(frame);
+        assert_eq!(ledger.live_bytes(), baseline);
+        let before = work;
+        assert!(
+            ledger
+                .claim_frame(baseline + 1, &mut work, crate::WorkBudget::UNBOUNDED)
+                .is_err()
+        );
+        assert_eq!(work, before, "refused frame changed completed work");
+        assert_eq!(ledger.live_bytes(), baseline);
+    }
+    #[test]
+    fn previews_preserve_retirement_on_commit_and_discard() {
+        for commit in [false, true] {
+            let mut ledger = crate::kernel::allocation::AllocationLedger::default();
+            let mut work = crate::WorkCounters::UNCHARGED;
+            let frame = ledger
+                .claim_frame(64, &mut work, crate::WorkBudget::UNBOUNDED)
+                .expect("frame admitted");
+            let baseline = ledger.live_bytes() - 64;
+            let mut preview = ledger.preview();
+            // Retire an existing frame while the preview holds the ledger;
+            // the preview must preserve that retirement on either outcome.
+            drop(frame);
+            preview
+                .claim_bytes(0, 0, &mut work, crate::WorkBudget::UNBOUNDED)
+                .expect("numeric preview admitted");
+            if commit {
+                preview.commit();
+            } else {
+                drop(preview);
+            }
+            assert_eq!(ledger.live_bytes(), baseline);
+            let later = ledger
+                .claim_frame(128, &mut work, crate::WorkBudget::UNBOUNDED)
+                .expect("later admission is isolated from the completed preview");
+            assert_eq!(ledger.live_bytes(), baseline + 128);
+            drop(later);
+            assert_eq!(ledger.live_bytes(), baseline);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_refused_native_frame_is_never_built() {
+        let cancellation = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                allocation_operations: 1,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .expect("ledger itself is admitted");
+        let mut built = false;
+        let frame = super::in_heap_claimed(&work, || {
+            built = true;
+            std::future::ready(())
+        });
+        assert!(frame.is_err());
+        assert!(
+            !built,
+            "native frame was built before its claim was admitted"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_cancelled_native_operation_builds_no_frame() {
+        let cancellation = crate::CancellationToken::new();
+        let work =
+            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+                .expect("ledger is admitted before cancellation");
+        cancellation.cancel();
+        let mut built = false;
+        let frame = super::in_heap_claimed(&work, || {
+            built = true;
+            std::future::ready(())
+        });
+        assert!(frame.is_err());
+        assert!(!built);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_claim_outlives_the_frame_on_completion_and_cancellation() {
+        struct CheckedDrop<'a> {
+            work: &'a crate::NativeMaterializationWork,
+            baseline: u64,
+        }
+        impl std::future::Future for CheckedDrop<'_> {
+            type Output = ();
+            fn poll(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<()> {
+                std::task::Poll::Ready(())
+            }
+        }
+        impl Drop for CheckedDrop<'_> {
+            fn drop(&mut self) {
+                assert_eq!(
+                    self.work.state(|state| state.live_allocation_bytes()),
+                    self.baseline + super::frame_bytes::<Self>(),
+                    "claim was released before destroying the frame"
+                );
+            }
+        }
+        let cancellation = crate::CancellationToken::new();
+        let work =
+            crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+                .expect("ledger is admitted");
+        let baseline = work.state(|state| state.live_allocation_bytes());
+        let make = || {
+            super::in_heap_claimed(&work, || CheckedDrop {
+                work: &work,
+                baseline,
+            })
+        };
+        make().expect("completed frame admitted").await;
+        assert_eq!(work.state(|state| state.live_allocation_bytes()), baseline);
+        let cancelled_frame = make().expect("cancelled frame admitted");
+        drop(cancelled_frame);
+        assert_eq!(work.state(|state| state.live_allocation_bytes()), baseline);
+    }
     use super::{HeapFutureEvent, in_heap_admitted, in_heap_measured};
     use crate::kernel::allocation::AllocationLedger;
     use crate::{

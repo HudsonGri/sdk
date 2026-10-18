@@ -170,9 +170,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if id == self.workspace.id() {
             return Err(LazyWorkspaceError::Concurrent);
         }
-        crate::in_heap(|| self.validate_snapshot(cut, ctx)).await?;
+        crate::heap_future::metered!(ctx, |ctx| self.validate_snapshot(cut, ctx))?;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            if let Some(state) = crate::in_heap(|| self.store.load_lazy_workspace(id, ctx)).await? {
+            if let Some(state) =
+                crate::heap_future::metered!(ctx, |ctx| self.store.load_lazy_workspace(id, ctx))?
+            {
                 let origin = self.fork_origin(&state, id, operation)?;
                 return if origin.snapshot == cut {
                     Ok(cut)
@@ -200,11 +202,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 }),
                 ..LazyWorkspaceState::new(id, cut.source, cut.overlay, cut.shadows)
             };
-            let swapped = crate::in_heap(|| {
+            let swapped = crate::heap_future::metered!(ctx, |ctx| {
                 self.store
                     .compare_and_swap_lazy_workspace(id, 0, state, ctx)
-            })
-            .await;
+            });
             drop(hold);
             if swapped? {
                 return Ok(cut);
