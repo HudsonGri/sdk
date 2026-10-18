@@ -376,7 +376,9 @@ async fn published_actor(endpoints: &Endpoints) -> TestResult<grpc::Client> {
     let bucket = objects
         .create_bucket(objects::CreateBucketRequest {
             name: "actors-code".into(),
-            mutation: None,
+            mutation: Some(objects::MutationIdentity {
+                idempotency_key: "sdk-actors-code-bucket".into(),
+            }),
         })
         .await?
         .bucket

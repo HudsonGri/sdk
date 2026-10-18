@@ -197,7 +197,9 @@ pub(super) async fn qualify() -> TestResult {
     let bucket = objects
         .create_bucket(objects::CreateBucketRequest {
             name: "actors-code".into(),
-            mutation: None,
+            mutation: Some(objects::MutationIdentity {
+                idempotency_key: "sdk-actors-code-bucket".into(),
+            }),
         })
         .await?
         .bucket
