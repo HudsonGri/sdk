@@ -1,6 +1,8 @@
 use super::*;
 use crate::v1::tests::get;
 
+mod body_validation;
+
 pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "recovery".into(),
