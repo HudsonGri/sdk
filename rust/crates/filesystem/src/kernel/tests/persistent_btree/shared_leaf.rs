@@ -159,7 +159,7 @@ fn candidate(
     let (shared, _) =
         super::super::entries::share_values(values, TreeFormat::value_owned_bytes, &mut accounting)
             .unwrap();
-    let visited = VisitedObjectSet::new_with_accounting(0, &mut accounting).unwrap();
+    let visited = VisitedObjectSet::new_with_accounting(1, &mut accounting).unwrap();
     let mut context = Context::<_, TreeFormat, Observed> {
         store: &store,
         limits: DecodeLimits::default(),
