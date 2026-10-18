@@ -181,3 +181,46 @@ fn invalid_authority_keeps_the_original_error_and_empty_trace() {
     assert_eq!(before, after);
     assert!(after.is_empty());
 }
+
+// The history adapter returns a canonical encoding with exactly its buffer
+// capacity owned, and the caller's release of `capacity()` balances the ledger
+// to zero, whatever slack the growing encoder left. Restoring the former
+// second slack charge in `canonical_bytes_for_bounds_with_work` leaves
+// `capacity + slack` owned and fails the first assertion on any slack case.
+// Returns whether this value left encoder slack.
+fn history_encoding_owns_exactly_its_capacity(value: &str) -> bool {
+    let io =
+        crate::filesystem::PreparationIo::from_budget(BOUNDARY_BUDGET, &CancellationToken::new())
+            .unwrap();
+    let mut observer = &io;
+    let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
+    let bytes = crate::store::history::canonical_bytes_with_work(value, 1 << 20, &mut work).unwrap();
+    let capacity = bytes.capacity() as u64;
+    assert_eq!(io.owned_bytes().unwrap(), capacity, "value={value:?}");
+    let slack = bytes.capacity() > bytes.len();
+    drop(bytes);
+    work.as_deref_mut().unwrap().release_owned(capacity).unwrap();
+    assert_eq!(io.owned_bytes().unwrap(), 0, "value={value:?}");
+    slack
+}
+
+// Every encoded length up to past several growth steps, so every slack residue
+// of the geometric growth is exercised; the sweep must see slack.
+#[test]
+fn history_encoding_owns_exactly_its_capacity_at_every_length() {
+    let mut slack_seen = false;
+    for length in 0..=1100 {
+        slack_seen |= history_encoding_owns_exactly_its_capacity(&"x".repeat(length));
+    }
+    assert!(slack_seen, "no length exercised encoder slack");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // Escapes and multi-byte text change the encoded length independently of
+    // the input length; shrinking reports the smallest unbalanced value.
+    #[test]
+    fn history_encoding_owns_exactly_its_capacity_for_any_text(value in ".{0,600}") {
+        history_encoding_owns_exactly_its_capacity(&value);
+    }
+}
