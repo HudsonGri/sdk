@@ -131,6 +131,17 @@ public static class TerminalSignalConPty {
             Require(fields[0]==(scenario=="close"?"2":"1"),"real OS control event type");
             for(int i=1;i<=4;i++) Require(fields[i]==fields[i+4],"exact original console state field "+i);
             Require(fields[3]=="437"&&fields[4]=="437","non-UTF8 original code pages");
+            string mouseTrace="", outputLog=Path.ChangeExtension(report,"output");
+            do {
+                if(File.Exists(outputLog)) using(var read=new StreamReader(new FileStream(outputLog,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))) mouseTrace=read.ReadToEnd();
+                if(mouseTrace.Contains("\x1b[?1002l")&&mouseTrace.Contains("\x1b[?1006l")) break;
+                Thread.Sleep(1);
+            } while(timer.ElapsedMilliseconds<1500);
+            foreach(int mode in new[]{1002,1006}) {
+                int enabled=mouseTrace.IndexOf("\x1b[?"+mode+"h",StringComparison.Ordinal);
+                int restored=mouseTrace.LastIndexOf("\x1b[?"+mode+"l",StringComparison.Ordinal);
+                Require(enabled>=0&&restored>enabled,"physical mouse mode restored "+mode);
+            }
             Console.WriteLine("ConPTY "+scenario+": original input/output modes and code pages restored");
         } finally {
             draining.Set();
