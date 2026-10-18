@@ -18,8 +18,9 @@ pub struct LocalHarnessConfig {
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
-    /// Test-owned state root, retained by every store opened in it.
+    /// Refuses ambient state and settings discovery; set only by `hermetic()`.
     pub(super) hermetic: bool,
+    /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context_manifest: Option<crate::conversation::FileRef>,

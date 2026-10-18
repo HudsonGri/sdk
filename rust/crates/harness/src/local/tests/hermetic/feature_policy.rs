@@ -45,13 +45,109 @@ fn violations(source: &str) -> usize {
     policy.violations
 }
 
+/// Every definition of the named functions: its violations (attributes, signature and body) and its body.
+struct Functions<'a> {
+    names: &'a [&'a str],
+    found: Vec<(String, usize, syn::Block)>,
+}
+impl Functions<'_> {
+    fn record(
+        &mut self,
+        name: &syn::Ident,
+        item: impl FnOnce(&mut FeaturePolicy),
+        block: &syn::Block,
+    ) {
+        if let Some(name) = self.names.iter().find(|candidate| *name == **candidate) {
+            let mut policy = FeaturePolicy::default();
+            item(&mut policy);
+            self.found
+                .push(((*name).to_owned(), policy.violations, block.clone()));
+        }
+    }
+}
+impl<'ast> Visit<'ast> for Functions<'_> {
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        self.record(
+            &item.sig.ident,
+            |policy| policy.visit_item_fn(item),
+            &item.block,
+        );
+        syn::visit::visit_item_fn(self, item);
+    }
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        self.record(
+            &item.sig.ident,
+            |policy| policy.visit_impl_item_fn(item),
+            &item.block,
+        );
+        syn::visit::visit_impl_item_fn(self, item);
+    }
+}
+fn functions<'a>(source: &str, names: &'a [&'a str]) -> Vec<(String, usize, syn::Block)> {
+    let mut functions = Functions {
+        names,
+        found: Vec::new(),
+    };
+    functions.visit_file(&syn::parse_file(source).expect("valid Rust source"));
+    for name in names {
+        assert!(
+            functions.found.iter().any(|(found, ..)| found == name),
+            "runtime function `{name}` left the policy scope"
+        );
+    }
+    functions.found
+}
+
+/// The state, settings and environment resolution path of `LocalHarness::open` and `bind`. Whole files are scanned;
+/// files that also expose feature-gated test accessors are scanned per runtime function.
+const RUNTIME_FILES: [&str; 5] = [
+    include_str!("../../config.rs"),
+    include_str!("../../owner.rs"),
+    include_str!("../../settings.rs"),
+    include_str!("../../bind.rs"),
+    include_str!("../../../native_environment.rs"),
+];
+const RUNTIME_FUNCTIONS: [(&str, &[&str]); 2] = [
+    (include_str!("../../mod.rs"), &["open"]),
+    (
+        include_str!("../../../native_settings.rs"),
+        &["new", "configured_codex_home", "codex_directory"],
+    ),
+];
+
 #[test]
 fn runtime_configuration_is_independent_of_test_support() {
-    for source in [
-        include_str!("../../config.rs"),
-        include_str!("../../../native_environment.rs"),
-    ] {
+    for source in RUNTIME_FILES {
         assert_eq!(violations(source), 0);
+    }
+    for (source, names) in RUNTIME_FUNCTIONS {
+        for (name, violations, _) in functions(source, names) {
+            assert_eq!(violations, 0, "`{name}` depends on test-support");
+        }
+    }
+}
+
+/// Negative control for the scope: a violation planted in every scanned file and in the body of every scanned
+/// function definition is detected.
+#[test]
+fn planted_violations_in_every_runtime_unit_are_rejected() {
+    for source in RUNTIME_FILES {
+        let planted = format!("{source}\n#[cfg(feature = \"test-support\")]\nfn planted() {{}}\n");
+        assert_eq!(violations(&planted), 1);
+    }
+    let statement: syn::Stmt =
+        syn::parse_str(r#"#[cfg(feature = "test-support")] let _planted = ();"#)
+            .expect("statement");
+    for (source, names) in RUNTIME_FUNCTIONS {
+        for (name, _, mut block) in functions(source, names) {
+            block.stmts.insert(0, statement.clone());
+            let mut policy = FeaturePolicy::default();
+            policy.visit_block(&block);
+            assert_eq!(
+                policy.violations, 1,
+                "planted violation in `{name}` was missed"
+            );
+        }
     }
 }
 

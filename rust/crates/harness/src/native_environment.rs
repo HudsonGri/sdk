@@ -59,10 +59,6 @@ pub fn state(injected: Option<&Path>) -> Option<PathBuf> {
     reason = "the only native state/environment resolver; fixture callers select discovery policy explicitly"
 )]
 fn resolve(read: Read<'_>) -> Option<OsString> {
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    if let Read::State(Some(directory)) = read {
-        return Some(directory.as_os_str().to_owned());
-    }
     match read {
         Read::Variable(name) => std::env::var_os(name),
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
