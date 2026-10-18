@@ -1,4 +1,4 @@
-//! One process-environment seam; fixtures cannot discover native user locations.
+//! One process-environment seam with explicit fixture discovery policy.
 use std::ffi::OsString;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
@@ -11,7 +11,6 @@ enum Read<'a> {
     State(Option<&'a Path>),
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn user_location(name: &str) -> bool {
     [
         "HOME",
@@ -30,35 +29,39 @@ fn user_location(name: &str) -> bool {
     .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
+/// Reads a fixture control without allowing user-directory discovery.
+pub fn variable_with_user_locations(name: &str, discover_user: bool) -> Option<OsString> {
+    if !discover_user && user_location(name) {
+        None
+    } else {
+        resolve(Read::Variable(name))
+    }
+}
+
 /// Resolves one process variable through the native environment seam.
 pub fn variable(name: &str) -> Option<OsString> {
-    resolve(Read::Variable(name))
+    variable_with_user_locations(name, true)
 }
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-/// Resolves the native home directory when fixture isolation permits discovery.
+/// Resolves the native home directory for an ambient composition.
 pub fn home() -> Option<PathBuf> {
     resolve(Read::Home).map(PathBuf::from)
 }
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-/// Preserves an injected root and rejects ambient fixture state discovery.
+/// Resolves an explicitly injected state root or the native data directory.
 pub fn state(injected: Option<&Path>) -> Option<PathBuf> {
     resolve(Read::State(injected)).map(PathBuf::from)
 }
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "the only native state/environment resolver; unit fixtures cannot discover user locations"
+    reason = "the only native state/environment resolver; fixture callers select discovery policy explicitly"
 )]
 fn resolve(read: Read<'_>) -> Option<OsString> {
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     if let Read::State(Some(directory)) = read {
         return Some(directory.as_os_str().to_owned());
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    match &read {
-        Read::Variable(name) if !user_location(name) => {}
-        _ => return None,
     }
     match read {
         Read::Variable(name) => std::env::var_os(name),
@@ -83,8 +86,7 @@ mod tests {
                 let cased: String = name.chars().enumerate().map(|(index, letter)| {
                     if mask & (1 << index) != 0 { letter.to_ascii_lowercase() } else { letter }
                 }).collect();
-                prop_assert!(variable(&cased).is_none());
-                #[cfg(feature = "test-support")]
+                prop_assert!(variable_with_user_locations(&cased, false).is_none());
                 prop_assert!(crate::test_support::environment(&cased).is_none());
             }
         }
@@ -100,12 +102,10 @@ mod tests {
             "home",
             "XDG_CONFIG_HOME",
         ] {
-            assert!(variable(name).is_none());
+            assert!(variable_with_user_locations(name, false).is_none());
         }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         {
-            assert!(home().is_none());
-            assert!(state(None).is_none());
             let directory = tempfile::tempdir().unwrap();
             assert_eq!(
                 state(Some(directory.path())).as_deref(),

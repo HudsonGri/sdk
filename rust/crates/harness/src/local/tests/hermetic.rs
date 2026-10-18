@@ -1,4 +1,5 @@
 //! Test compositions own their roots; Clippy resolves and rejects ambient discovery outside the native seam.
+mod feature_policy;
 use super::*;
 use std::path::PathBuf;
 
@@ -31,12 +32,14 @@ fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
             .resolved_state_directory()?
     );
     let default = unrooted.prepare_state()?;
-    assert!(default.test_state.is_some());
-    assert_ne!(default.resolved_state_directory()?, owned);
+    assert!(default.test_state.is_none());
+    assert!(!default.hermetic);
+    assert!(helper.hermetic);
     assert!(
-        !default
-            .resolved_state_directory()?
-            .starts_with(checkout.path())
+        LocalHarnessConfig::new(checkout.path(), (model()?, text()))
+            .hermetic()
+            .resolved_state_directory()
+            .is_err()
     );
     Ok(())
 }
@@ -44,8 +47,8 @@ fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
 #[tokio::test]
 async fn opening_without_an_injected_root_owns_temporary_state() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
-    let config =
-        LocalHarnessConfig::new(checkout.path(), (model()?, text())).without_default_tools();
+    let config = crate::test_support::local_harness_config(checkout.path(), (model()?, text()))?
+        .without_default_tools();
     // Negative control: bypassing preparation cannot enter the per-user root.
     assert!(config.resolved_state_directory().is_err());
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -63,7 +66,7 @@ fn unit_tests_cannot_resolve_the_user_home_or_codex_home() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
     let project = super::super::LocalProject::Workspace(checkout.path().to_path_buf());
     assert!(
-        matches!(super::super::settings::configuration(&project, None), Err(Error::Unsupported(message))
+        matches!(super::super::settings::configuration(&project, None, false), Err(Error::Unsupported(message))
             if message == super::super::settings::UNIT_TESTS_INJECT_SETTINGS)
     );
     Ok(())

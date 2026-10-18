@@ -194,7 +194,7 @@ terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom", "dep:tempfile"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
@@ -277,6 +277,7 @@ which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
+syn = { version = "=3.0.6", features = ["full", "visit"] }
 proptest.workspace = true
 diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }

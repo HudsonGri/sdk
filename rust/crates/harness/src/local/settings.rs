@@ -4,9 +4,15 @@ use crate::native_settings::SettingsConfig;
 pub(super) fn configuration(
     project: &LocalProject,
     configured: Option<SettingsConfig>,
+    hermetic: bool,
 ) -> Result<Arc<SettingsConfig>> {
     let mut configured = match configured {
         Some(configured) => configured,
+        None if hermetic => {
+            return Err(Error::Unsupported(
+                "hermetic compositions must inject settings".into(),
+            ));
+        }
         None => SettingsConfig::new(project.root(), user_home()?),
     };
     configured.load_mcp = cfg!(any(feature = "mcp-stdio", feature = "mcp-http"));

@@ -26,10 +26,8 @@ impl LocalHarness {
         if checkout.is_some() {
             config = config.prepare_state()?;
         }
-        #[cfg(all(feature = "native-execution", any(test, feature = "test-support")))]
+        #[cfg(feature = "native-execution")]
         let state_owner = config.test_state.clone();
-        #[cfg(all(feature = "native-execution", not(any(test, feature = "test-support"))))]
-        let state_owner = None;
         #[cfg(feature = "native-execution")]
         let checkout_state = checkout
             .map(|checkout| {
@@ -53,7 +51,8 @@ impl LocalHarness {
             )?;
         }
         #[cfg(feature = "hooks")]
-        let settings = settings::configuration(&config.project, config.settings.take())?;
+        let settings =
+            settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
         config.model.0.validate()?;
         let compaction = compaction::select(
             config.compaction.take(),

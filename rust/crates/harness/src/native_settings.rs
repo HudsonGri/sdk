@@ -30,8 +30,12 @@ impl SettingsConfig {
     pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
         let home = home.into();
         let codex_home = codex_directory(&home, configured_codex_home().as_deref());
+        Self::with_roots(workspace.into(), home, codex_home)
+    }
+
+    fn with_roots(workspace: PathBuf, home: PathBuf, codex_home: PathBuf) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace,
             home,
             codex_home,
             trust_project_hooks: false,
@@ -50,7 +54,11 @@ impl SettingsConfig {
     ))]
     pub(crate) fn for_test(workspace: impl Into<PathBuf>) -> Result<Self> {
         let home = tempfile::tempdir().map_err(Error::process_io)?;
-        let mut settings = Self::new(workspace, home.path()).codex_home(home.path().join(".codex"));
+        let mut settings = Self::with_roots(
+            workspace.into(),
+            home.path().to_owned(),
+            home.path().join(".codex"),
+        );
         settings._test_home = Some(home);
         Ok(settings)
     }

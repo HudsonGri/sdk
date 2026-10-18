@@ -123,7 +123,8 @@ impl LocalHarness {
                 tools.register((tool, None), &mut None, None)?;
             }
             #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-            let settings_configuration = settings::configuration(&config.project, config.settings)?;
+            let settings_configuration =
+                settings::configuration(&config.project, config.settings, config.hermetic)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
                 &settings_configuration,
@@ -175,10 +176,7 @@ impl LocalHarness {
                 LocalProject::Workspace(_) => directory.join("filesystem"),
                 LocalProject::Volume { directory, .. } => directory.clone(),
             });
-            #[cfg(any(test, feature = "test-support"))]
             let state_owner = config.test_state;
-            #[cfg(not(any(test, feature = "test-support")))]
-            let state_owner: Option<acyclic_native_runtime::OwnershipAnchor> = None;
             let filesystem = match &state_owner {
                 Some(owner) if matches!(&config.project, LocalProject::Workspace(_)) => {
                     acyclic_fs::Fs::local_with_ownership_anchor(options, owner.clone()).await

@@ -19,7 +19,7 @@ pub struct LocalHarnessConfig {
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
     /// Test-owned state root, retained by every store opened in it.
-    #[cfg(any(test, feature = "test-support"))]
+    pub(super) hermetic: bool,
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
@@ -55,7 +55,7 @@ impl LocalHarnessConfig {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
             state_directory: None,
-            #[cfg(any(test, feature = "test-support"))]
+            hermetic: false,
             test_state: None,
             model,
             context_manifest: None,
@@ -92,28 +92,25 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
         self.state_directory = Some(directory.into());
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.test_state = None;
-        }
+        self.test_state = None;
         self
     }
-    /// Apply fixture defaults only when opening a store; embedded bindings without
-    /// a checkout must not allocate or resolve an unused state directory.
-    pub(super) fn prepare_state(self) -> Result<Self> {
-        #[cfg(any(test, feature = "test-support"))]
-        let mut config = self;
-        #[cfg(not(any(test, feature = "test-support")))]
-        let config = self;
-        #[cfg(any(test, feature = "test-support"))]
-        if config.state_directory.is_none() {
+    /// Refuses ambient state/settings discovery and allocates state lazily unless explicitly rooted.
+    #[must_use]
+    pub fn hermetic(mut self) -> Self {
+        self.hermetic = true;
+        self
+    }
+    /// Embedded bindings without a checkout never allocate an unused state root.
+    pub(super) fn prepare_state(mut self) -> Result<Self> {
+        if self.hermetic && self.state_directory.is_none() {
             #[cfg(test)]
             TEMPORARY_STATES.with(|count| count.set(count.get() + 1));
             let state = tempfile::tempdir().map_err(storage)?;
-            config.state_directory = Some(state.path().to_path_buf());
-            config.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
+            self.state_directory = Some(state.path().to_path_buf());
+            self.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
         }
-        Ok(config)
+        Ok(self)
     }
     /// The one resolution of this composition's durable state directory: the injected directory, else the
     /// project's default under the per-user root.
@@ -122,6 +119,9 @@ impl LocalHarnessConfig {
             Some(directory) => crate::native_environment::state(Some(directory)).ok_or_else(|| {
                 Error::Unsupported("injected state directory is unavailable".into())
             }),
+            None if self.hermetic => Err(Error::Unsupported(
+                "hermetic compositions must prepare or inject state".into(),
+            )),
             None => owner::state_directory_in(&owner::user_state_root()?, &self.project),
         }
     }
