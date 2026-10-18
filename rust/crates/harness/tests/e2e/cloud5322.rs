@@ -117,7 +117,7 @@ async fn head_fenced_task_volume_publication_rejects_a_forged_head() -> TestResu
     let remote = remote().await?;
     let path = StreamPath::new("cloud5322-fence/task")?;
     let volume = TaskVolume::open(remote.clone(), path.clone()).await?;
-    let first = Write::new(FileKey::parse("first.txt")?, b"published".to_vec());
+    let first = Write::new(FileKey::Goal, b"published".to_vec());
     let head = volume.append(volume.head().await?, &first).await?;
     let forged = CommitId::from_bytes([255; 32]);
     let request = CommitRequest {
@@ -147,7 +147,7 @@ async fn head_fenced_task_volume_publication_rejects_a_forged_head() -> TestResu
     if remote.tail(path).await? != head.position {
         return Err("forged Head changed the tail".into());
     }
-    let second = Write::new(FileKey::parse("second.txt")?, b"accepted".to_vec());
+    let second = Write::new(FileKey::Goal, b"accepted".to_vec());
     let next = volume.append(head, &second).await?;
     if next.position != head.position + 1 {
         return Err("valid fenced publication did not advance once".into());
