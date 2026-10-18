@@ -5,6 +5,7 @@ thread_local! {
     static RESTORE_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static COPY_BEFORE_ADMISSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static OMIT_INDEX_LOOKUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static REFRESH_SCHEDULER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 pub(in crate::distributed) fn restore_scan() -> bool {
     RESTORE_SCAN.get()
@@ -14,6 +15,9 @@ pub(in crate::distributed) fn copy_before_admission() -> bool {
 }
 pub(in crate::distributed) fn omit_index_lookup() -> bool {
     OMIT_INDEX_LOOKUP.get()
+}
+pub(in crate::distributed) fn refresh_scheduler() -> bool {
+    REFRESH_SCHEDULER.get()
 }
 #[cfg(all(acyclic_harness_loom, acyclic_loom))]
 pub(super) fn set_omit_index_lookup(value: bool) {
@@ -230,6 +234,88 @@ async fn indexed_declarations_preserve_full_bytes_and_exact_errors() -> Result<(
         }
     }
     Ok(())
+}
+
+async fn assert_declaration_tail_equivalence() -> Result<()> {
+    let (owner, issuer) = owner_issuer();
+    let scope = grant(&issuer, "observe", &["operation:observe"])?;
+    let verifier = issuer.verifier(&mut None)?;
+    for kind in 0..5 {
+        let (baseline, _) = seeded(8).await?;
+        let (client, mut candidate) = seeded(8).await?;
+        let operation = OperationId::from_bytes([99; 16]);
+        let key = if kind == 1 || kind == 3 {
+            "history-07"
+        } else {
+            "new"
+        };
+        let payload = if kind < 2 {
+            b"!".to_vec()
+        } else {
+            crate::contract::canonical_json_bytes(&SchedulerEvent::Declared {
+                spec: Box::new(spec(operation, 0)?),
+            })?
+        };
+        let bytes = if kind == 4 {
+            vec![0xff]
+        } else {
+            encode(
+                9,
+                operation,
+                key,
+                *blake3::hash(&payload).as_bytes(),
+                payload,
+                9,
+                &mut None,
+            )?
+        };
+        for client in [&baseline, &client] {
+            Stream::new(Arc::clone(client), COORDINATOR_PATH)?
+                .append_batch(vec![OwnedBytes::from(bytes.clone())], Some(8), None)
+                .await?;
+        }
+        for (operation, key) in [
+            (OperationId::from_bytes([1; 16]), "history-00"),
+            (OperationId::from_bytes([8; 16]), "history-07"),
+            (operation, "new"),
+        ] {
+            let key = IdempotencyKey::new(key)?;
+            let before = observe_declaration(
+                &baseline, &owner, &scope, &verifier, operation, &key, &mut None,
+            )
+            .await
+            .and_then(|value| crate::contract::canonical_json_bytes(&value))
+            .map_err(|error| format!("{error:?}"));
+            let after = candidate
+                .observe_declaration(&owner, &scope, &verifier, operation, &key, &mut None)
+                .await
+                .and_then(|value| crate::contract::canonical_json_bytes(&value))
+                .map_err(|error| format!("{error:?}"));
+            assert_eq!(before, after, "tail kind {kind}");
+            assert_eq!(candidate.revision, 8);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn declaration_catalog_preserves_observation_of_unapplied_and_anomalous_tails() -> Result<()>
+{
+    assert_declaration_tail_equivalence().await
+}
+
+#[tokio::test]
+#[should_panic(expected = "tail kind 0")]
+async fn full_scheduler_refresh_fails_the_same_observation_equivalence() {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            REFRESH_SCHEDULER.set(false);
+        }
+    }
+    let _restore = Restore;
+    REFRESH_SCHEDULER.set(true);
+    assert_declaration_tail_equivalence().await.unwrap();
 }
 
 #[test]

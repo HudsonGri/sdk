@@ -11,6 +11,7 @@ pub struct DistributedCoordinator<P> {
     pub(super) revision: u64,
     pub(super) last_committed_at_ms: u64,
     pub(super) intents: super::intent_index::IntentIndex,
+    pub(super) intent_tail: super::intent_tail::IntentTail,
     pub(super) content_verifier: Arc<dyn ContentResidencyVerifier>,
     pub(super) payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
 }
@@ -31,6 +32,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             revision: 0,
             last_committed_at_ms: 0,
             intents: super::intent_index::IntentIndex::default(),
+            intent_tail: super::intent_tail::IntentTail::default(),
             content_verifier,
             payload_store,
         };

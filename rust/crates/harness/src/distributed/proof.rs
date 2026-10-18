@@ -11,10 +11,34 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<OperationSpec>> {
         authorize_operation_scope(owner, scope, verifier, capability::OPERATION_OBSERVE, work)?;
-        self.refresh(work).await?;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        if tests::intent_index::refresh_scheduler() {
+            self.refresh(work).await?;
+        }
+        self.refresh_intent_tail(work).await?;
+        if self.intent_tail.fallback {
+            return observe_declaration(
+                &self.client,
+                owner,
+                scope,
+                verifier,
+                operation_id,
+                declaration_key,
+                work,
+            )
+            .await;
+        }
         let mut custody = CodecQuota::new(work, 0)?;
+        let key = declaration_key.as_str();
+        let sequence = self
+            .intents
+            .get(key)
+            .or_else(|| self.intent_tail.index.get(key));
+        let Some(sequence) = sequence else {
+            return Ok(None);
+        };
         let Some((_, event, ..)) = self
-            .read_indexed_intent(declaration_key.as_str(), custody.work())
+            .read_intent_at(key, sequence, self.intent_tail.cursor, custody.work())
             .await?
         else {
             return Ok(None);
@@ -46,7 +70,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 }
 
-#[cfg(test)]
 pub(crate) async fn observe_declaration<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     owner: &Authority,

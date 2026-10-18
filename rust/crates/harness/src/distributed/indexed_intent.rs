@@ -14,6 +14,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let Some(sequence) = self.intents.get(key) else {
             return Ok(None);
         };
+        self.read_intent_at(key, sequence, self.revision, work)
+            .await
+    }
+
+    pub(super) async fn read_intent_at(
+        &self,
+        key: &str,
+        sequence: u64,
+        maximum_revision: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId)>> {
         let mut quota = CodecQuota::new(work, 0)?;
         let mut source =
             read_records(&self.client, &self.stream.0, sequence, 1, quota.work()).await?;
@@ -40,7 +51,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             0
         };
         quota.adopt(key_bytes + event_bytes)?;
-        if source_key != key || revision > self.revision {
+        if source_key != key || revision > maximum_revision {
             return Err(guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Storage,

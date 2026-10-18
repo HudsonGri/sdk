@@ -31,6 +31,7 @@ mod completion;
 mod coordinator;
 mod indexed_intent;
 mod intent_index;
+mod intent_tail;
 mod journal;
 mod observe;
 mod origin_locator;
@@ -64,7 +65,6 @@ pub(crate) use serializer::{digest_key, execution_path};
 
 use authority::authorize_operation_scope;
 use commit::append_if_execution_idle;
-#[cfg(test)]
 use journal::read_intent;
 use journal::{coordinator_stream, next_record, read_records};
 use serializer::{
