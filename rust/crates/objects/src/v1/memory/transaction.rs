@@ -159,21 +159,15 @@ impl MemoryObjects {
             let old_count = usize::from(old.is_some());
             let old_bytes = old.map_or(0, |value| value.body.len());
             let new_bytes = change.value.as_ref().map_or(0, |value| value.body.len());
-            next.state.nested_entries = next
-                .state
-                .nested_entries
-                .checked_sub(old_count)
-                .and_then(|count| count.checked_add(usize::from(change.value.is_some())))
-                .ok_or(Error::from(QuotaExceeded))?;
-            bytes = bytes
-                .checked_sub(old_bytes)
-                .and_then(|n| n.checked_add(new_bytes))
-                .ok_or(Error::from(QuotaExceeded))?;
-            next.state.object_bytes = next
-                .state
-                .object_bytes
-                .checked_sub(old_bytes)
-                .and_then(|n| n.checked_add(new_bytes))
+            next.state.nested_entries = adjusted_total(
+                next.state.nested_entries,
+                old_count,
+                usize::from(change.value.is_some()),
+            )
+            .ok_or(Error::from(QuotaExceeded))?;
+            bytes =
+                adjusted_total(bytes, old_bytes, new_bytes).ok_or(Error::from(QuotaExceeded))?;
+            next.state.object_bytes = adjusted_total(next.state.object_bytes, old_bytes, new_bytes)
                 .ok_or(Error::from(QuotaExceeded))?;
         }
         let count = next

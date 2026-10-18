@@ -4,9 +4,13 @@ use proptest::prelude::*;
 use std::cell::Cell;
 
 thread_local! {
+    static ADD_FIRST: Cell<bool> = const { Cell::new(false) };
     static SCAN: Cell<bool> = const { Cell::new(false) };
     static OMIT: Cell<bool> = const { Cell::new(false) };
     static EXAMINED: Cell<u64> = const { Cell::new(0) };
+}
+pub(super) fn restore_add_first() -> bool {
+    ADD_FIRST.get()
 }
 pub(super) fn restore_scan() -> bool {
     SCAN.get()
@@ -20,6 +24,7 @@ pub(super) fn examined() {
 struct Reset;
 impl Drop for Reset {
     fn drop(&mut self) {
+        ADD_FIRST.set(false);
         SCAN.set(false);
         OMIT.set(false);
     }
@@ -212,4 +217,45 @@ fn put_keeps_exact_work_and_allocations_across_buckets_uploads_and_parts() {
 #[should_panic(expected = "unchanged state was scanned")]
 fn restored_quota_scan_fails_the_same_production_cost_oracle() {
     exact_put_cost(true);
+}
+
+fn assert_adjusted_total(total: usize, removed: usize, added: usize) {
+    let expected = (total as u128)
+        .checked_sub(removed as u128)
+        .and_then(|remaining| remaining.checked_add(added as u128))
+        .and_then(|value| usize::try_from(value).ok());
+    assert_eq!(
+        adjusted_total(total, removed, added),
+        expected,
+        "delta settlement depends on temporary overflow"
+    );
+}
+
+#[test]
+fn replacement_counters_are_settled_without_temporary_overflow() {
+    for total in [0, 1, usize::MAX - 1, usize::MAX] {
+        for removed in [0, 1, usize::MAX - 1, usize::MAX] {
+            for added in [0, 1, usize::MAX - 1, usize::MAX] {
+                assert_adjusted_total(total, removed, added);
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn counter_delta_matches_wider_integer_arithmetic(
+        total in any::<usize>(), removed in any::<usize>(), added in any::<usize>(),
+    ) {
+        assert_adjusted_total(total, removed, added);
+    }
+}
+
+#[test]
+#[should_panic(expected = "delta settlement depends on temporary overflow")]
+fn restored_add_before_remove_fails_the_same_counter_oracle() {
+    ADD_FIRST.set(true);
+    let _reset = Reset;
+    assert_adjusted_total(usize::MAX, 1, 1);
 }

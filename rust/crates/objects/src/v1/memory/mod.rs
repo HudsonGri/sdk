@@ -268,7 +268,7 @@ use read::*;
 pub(super) use state::State;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use state::changed;
-use state::{Bucket, Receipt, SharedInfo, Stored, Upload, stored_bytes};
+use state::{Bucket, Receipt, SharedInfo, Stored, Upload, adjusted_total, stored_bytes};
 use transaction::{PendingObject, Transaction};
 
 #[cfg(test)]
