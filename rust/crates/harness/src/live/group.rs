@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use tracing::instrument::WithSubscriber as _;
 
 struct ActiveGuard {
     id: OperationId,
@@ -141,7 +143,7 @@ impl TaskGroup {
         #[cfg(not(target_arch = "wasm32"))]
         let handle = TaskHandle {
             id,
-            join: tokio::spawn(task),
+            join: tokio::spawn(task.with_current_subscriber()),
         };
         #[cfg(target_arch = "wasm32")]
         let handle = {

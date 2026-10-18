@@ -652,8 +652,23 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
+    crate::obs::capture::run(stock_turn_span_capture).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn concurrent_stock_turn_span_captures_are_isolated() -> Result<()> {
+    let (first, second) = futures::join!(
+        crate::obs::capture::run(stock_turn_span_capture),
+        crate::obs::capture::run(stock_turn_span_capture),
+    );
+    first?;
+    second
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn stock_turn_span_capture(seen: crate::obs::capture::Seen) -> Result<()> {
     use crate::obs::capture;
-    let (seen, _guard) = capture::install();
     let tools = echo_tools(
         Arc::new(FakeTool(AtomicUsize::new(0))),
         json!({"type": "object"}),

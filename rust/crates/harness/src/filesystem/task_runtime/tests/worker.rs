@@ -18,6 +18,10 @@ async fn indeterminate_command_negative_control_detects_erased_production_cause(
 }
 
 async fn command_cause_path() -> Result<()> {
+    crate::obs::capture::run(command_cause_capture).await
+}
+
+async fn command_cause_capture(seen: crate::obs::capture::Seen) -> Result<()> {
     struct UncertainCommand {
         mode: u8,
         kind: std::sync::Mutex<Option<String>>,
@@ -42,7 +46,7 @@ async fn command_cause_path() -> Result<()> {
     }
     for mode in 0..3 {
         let fail = mode == 0;
-        let (seen, _capture) = crate::obs::capture::install();
+        seen.lock().unwrap().clear();
         let mut fixture = Fixture::new().await?;
         fixture.scope = RuntimeScope::new(
             fixture.scope.grants().clone(),
