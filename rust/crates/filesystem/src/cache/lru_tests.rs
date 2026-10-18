@@ -171,7 +171,23 @@ fn hit_counts(historical: bool, count: u8) -> AllocationInfo {
         store.insert(id(value), bytes(value).into()).unwrap();
         store.decoded_admit(key(value), decoded(value, 8)).unwrap();
     }
-    // Every entry is warmed before physical capture. Fixed work at both K:
+    // Warm every hit path, including the first shared-byte clone, before capture.
+    for value in 0..count {
+        assert!(store.cached_contains(id(value)).unwrap());
+        let ReadPlan::Hit(_) = store
+            .read_plan(
+                id(value),
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("warm canonical entry disappeared")
+        };
+        assert!(store.decoded_get(key(value)).unwrap().is_some());
+    }
+    let before = store.stats().unwrap();
+    // Fixed work at both K:
     // 96 contains hits, 96 canonical-read hits and 96 decoded hits.
     let start = std::time::Instant::now();
     let counts = acyclic_test_support::measure(|| {
@@ -198,8 +214,8 @@ fn hit_counts(historical: bool, count: u8) -> AllocationInfo {
         start.elapsed()
     );
     let stats = store.stats().unwrap();
-    assert_eq!(stats.hits, 288);
-    assert_eq!(stats.decoded_hits, 96);
+    assert_eq!(stats.hits - before.hits, 288);
+    assert_eq!(stats.decoded_hits - before.decoded_hits, 96);
     assert_eq!(stats.misses, 0);
     assert_eq!(stats.evictions, 0);
     store.lock_state().unwrap().recency_order();
