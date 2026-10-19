@@ -26,6 +26,8 @@ mod hermetic;
 mod hook_configuration;
 #[cfg(all(feature = "native-execution", unix))]
 mod hook_lifecycle;
+#[cfg(feature = "native-execution")]
+mod input;
 #[cfg(all(feature = "native-execution", unix))]
 mod tool_hooks;
 use std::{

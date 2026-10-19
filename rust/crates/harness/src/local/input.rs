@@ -1,0 +1,494 @@
+//! Native composer input becomes immutable content before admission.
+use super::*;
+use crate::{
+    client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope},
+    context::{ContextDiscoveryLimits, ContextRoot},
+    conversation::ContentResidencyVerifier,
+    task_volume::{FileKey, Query},
+};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PromptInput {
+    text: String,
+    content: ModelContent,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolvedInput {
+    text: String,
+    resolution: CommandResolution,
+}
+
+fn prompt_operation(operation: OperationId) -> OperationId {
+    context::publication_operation(
+        b"acyclic.local.composer-input/v1\0",
+        &operation.into_bytes(),
+    )
+}
+
+impl LocalHarness {
+    pub(super) async fn retain_prompt_input(
+        &self,
+        operation: OperationId,
+        resolution: CommandResolution,
+    ) -> Result<String> {
+        if let CommandResolution::Prompt { text, mentions, .. } = &resolution {
+            if mentions.is_empty() && crate::client::file_mention_paths(text)?.is_empty() {
+                return Ok(text.clone());
+            }
+            if mentions.is_empty() {
+                let (saved, _) = self
+                    .input_publisher()?
+                    .observe_staged_once(prompt_operation(operation), self.limits.file_bytes, None)?
+                    .await?;
+                if let Some(saved) = saved {
+                    let bytes = self
+                        .client_reader()?
+                        .read(&saved, self.limits.file_bytes, None)?
+                        .await?;
+                    let saved: PromptInput = serde_json::from_slice(&bytes).map_err(storage)?;
+                    if saved.text != *text {
+                        return Err(Error::Conflict("operation prompt changed".into()));
+                    }
+                    return Ok(saved.text);
+                }
+            }
+        }
+        let resolution = match resolution {
+            CommandResolution::Prompt {
+                text,
+                source,
+                mentions,
+            } if mentions.is_empty() && !crate::client::file_mention_paths(&text)?.is_empty() => {
+                let mut captured = self.resolve_prompt_mentions(operation, &text).await?;
+                if let CommandResolution::Prompt {
+                    source: captured_source,
+                    ..
+                } = &mut captured
+                {
+                    *captured_source = source;
+                }
+                captured
+            }
+            resolution => resolution,
+        };
+        let text = match &resolution {
+            CommandResolution::Prompt { text, .. } => text.clone(),
+            _ => return Err(Error::Invalid("expected prompt input".into())),
+        };
+        let input = PromptInput {
+            text: text.clone(),
+            content: resolution.into_model_input()?,
+        };
+        let bytes = serde_json::to_vec(&input).map_err(storage)?;
+        self.input_publisher()?
+            .stage_once(
+                prompt_operation(operation),
+                &format!("inputs/{operation}.composer.json"),
+                &bytes,
+                "application/json",
+                "composer input",
+                None,
+            )?
+            .await?;
+        Ok(text)
+    }
+
+    pub(super) async fn turn_input_content(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<ModelContent> {
+        let (retained, _) = publisher
+            .observe_staged_once(prompt_operation(operation), self.limits.file_bytes, None)?
+            .await?;
+        let Some(retained) = retained else {
+            return Ok(ModelContent::Text(prompt.into()));
+        };
+        if retained.path() != format!("inputs/{operation}.composer.json") {
+            return Err(Error::Conflict(
+                "composer input has another identity".into(),
+            ));
+        }
+        let reader = self.client_reader()?;
+        let bytes = reader
+            .read(&retained, self.limits.file_bytes, None)?
+            .await?;
+        let mut input: PromptInput = serde_json::from_slice(&bytes).map_err(storage)?;
+        match &mut input.content {
+            ModelContent::Text(text) => *text = prompt.into(),
+            ModelContent::Parts(parts) => match parts.first_mut() {
+                Some(crate::model::ModelContentPart::Text { text }) if *text == input.text => {
+                    *text = prompt.into()
+                }
+                _ => {
+                    return Err(Error::Invalid(
+                        "composer input lost its leading text".into(),
+                    ));
+                }
+            },
+            _ => return Err(Error::Invalid("composer input is not a user prompt".into())),
+        }
+        Ok(input.content)
+    }
+    /// The same normalization is used by prompt and JSONL headless clients.
+    pub(crate) async fn resolve_input(
+        &self,
+        operation: OperationId,
+        text: &str,
+    ) -> Result<CommandResolution> {
+        if text.is_empty() || text.len() as u64 > self.limits.file_bytes {
+            return Err(Error::Invalid(
+                "local input is empty or exceeds byte bound".into(),
+            ));
+        }
+        if !text.trim_start().starts_with('/')
+            && crate::client::file_mention_paths(text)?.is_empty()
+        {
+            return Ok(CommandResolution::Prompt {
+                text: text.into(),
+                source: None,
+                mentions: Vec::new(),
+            });
+        }
+        let publisher = self.input_publisher()?;
+        let identity = context::publication_operation(
+            b"acyclic.local.resolved-input/v1\0",
+            &operation.into_bytes(),
+        );
+        let path = format!("inputs/{operation}.resolution.json");
+        let reader = self.client_reader()?;
+        let (saved, _) = publisher
+            .observe_staged_once(identity, self.limits.file_bytes, None)?
+            .await?;
+        if let Some(saved) = saved {
+            if saved.path() != path {
+                return Err(Error::Conflict(
+                    "resolved input has another identity".into(),
+                ));
+            }
+            let bytes = reader.read(&saved, self.limits.file_bytes, None)?.await?;
+            let saved: ResolvedInput = serde_json::from_slice(&bytes).map_err(storage)?;
+            if saved.text != text {
+                return Err(Error::Conflict("operation input changed".into()));
+            }
+            return Ok(saved.resolution);
+        }
+        let resolution = self.resolve_fresh_input(operation, text).await?;
+        let bytes = serde_json::to_vec(&ResolvedInput {
+            text: text.into(),
+            resolution: resolution.clone(),
+        })
+        .map_err(storage)?;
+        publisher
+            .stage_once(
+                identity,
+                &path,
+                &bytes,
+                "application/json",
+                "resolved composer input",
+                None,
+            )?
+            .await?;
+        Ok(resolution)
+    }
+
+    async fn resolve_fresh_input(
+        &self,
+        operation: OperationId,
+        text: &str,
+    ) -> Result<CommandResolution> {
+        let saved = self
+            .task_files
+            .inner
+            .snapshot(
+                &Query::File(FileKey::parse(".ui/config/commands.json").map_err(storage)?),
+                1,
+            )
+            .await
+            .map_err(storage)?;
+        let catalog = match saved.files.first() {
+            Some(file) => CommandCatalog::from_bytes(&file.bytes, self.limits.file_bytes)?,
+            None => CommandCatalog::builtins()?,
+        };
+        let reader = self.client_reader()?;
+        #[cfg(feature = "native-execution")]
+        if let Some(workspace) = &self.workspace {
+            return self
+                .resolve_checkout_input(operation, text, catalog, workspace, reader.as_ref(), true)
+                .await;
+        }
+        let _ = operation;
+        catalog
+            .resolve(text, reader.as_ref(), self.limits.file_bytes)
+            .await
+    }
+
+    async fn resolve_prompt_mentions(
+        &self,
+        operation: OperationId,
+        text: &str,
+    ) -> Result<CommandResolution> {
+        let reader = self.client_reader()?;
+        #[cfg(feature = "native-execution")]
+        if let Some(workspace) = &self.workspace {
+            return self
+                .resolve_checkout_input(
+                    operation,
+                    text,
+                    CommandCatalog::builtins()?,
+                    workspace,
+                    reader.as_ref(),
+                    false,
+                )
+                .await;
+        }
+        let _ = operation;
+        let workspace = crate::filesystem::workspace_ref(
+            self.project.provider().clone(),
+            &self.project.storage_name(&mut None)?,
+        )?;
+        let generation = self.files.resolve(&workspace, None).await?.generation;
+        let root = ContextRoot {
+            volume: self.project.clone(),
+            directory: String::new(),
+        };
+        Ok(CommandResolution::Prompt {
+            text: text.into(),
+            source: None,
+            mentions: crate::client::resolve_file_mentions(
+                text,
+                &root,
+                &generation,
+                reader.as_ref(),
+                self.limits.file_bytes,
+            )
+            .await?,
+        })
+    }
+
+    #[cfg(feature = "native-execution")]
+    async fn resolve_checkout_input(
+        &self,
+        operation: OperationId,
+        text: &str,
+        catalog: CommandCatalog,
+        workspace: &LocalWorkspace,
+        reader: &dyn ContentResidencyVerifier,
+        commands: bool,
+    ) -> Result<CommandResolution> {
+        let (selected, pending) = workspace.selected_view().await?;
+        if let Some((operation, _)) = pending {
+            return Err(Error::Indeterminate(OperationId::from_bytes(
+                operation.into_bytes(),
+            )));
+        }
+        let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        let cut = view.snapshot(&mut accounting).await?;
+        let publisher = self.input_publisher()?;
+        let prefix = format!("inputs/composer/{operation}");
+        let anchor = format!("{prefix}/.root");
+        publisher
+            .stage_once(
+                context::publication_operation(
+                    b"acyclic.local.composer-root/v1\0",
+                    anchor.as_bytes(),
+                ),
+                &anchor,
+                b"",
+                "text/plain",
+                "composer root",
+                None,
+            )?
+            .await?;
+        let root = ContextRoot {
+            volume: self.journal.clone(),
+            directory: prefix.clone(),
+        };
+        let limits = ContextDiscoveryLimits::default();
+        let catalog = if commands && text.trim_start().starts_with('/') {
+            let mut pending = vec![".claude/commands".to_owned(), ".codex/prompts".to_owned()];
+            let mut directories = 0_u32;
+            let mut entries = 0_u32;
+            let mut remaining = self.limits.file_bytes;
+            while let Some(path) = pending.pop() {
+                directories += 1;
+                if directories > limits.directories {
+                    return Err(Error::Invalid("command directory bound exceeded".into()));
+                }
+                let mut cursor = None;
+                loop {
+                    let listed = view
+                        .list_directory_at_snapshot(
+                            cut,
+                            &format!("/{path}"),
+                            cursor,
+                            128,
+                            &mut accounting,
+                        )
+                        .await;
+                    let (page, _, allocation) = match listed {
+                        Ok(page) => page,
+                        Err(acyclic_fs::LazyWorkspaceError::NotFound) => break,
+                        Err(error) => return Err(error.into()),
+                    };
+                    for entry in &page.entries {
+                        entries += 1;
+                        if entries > limits.entries {
+                            return Err(Error::Invalid("command entry bound exceeded".into()));
+                        }
+                        let name = entry
+                            .name
+                            .unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                            .map_err(storage)?
+                            .value;
+                        let child = format!("{path}/{name}");
+                        match entry.kind {
+                            acyclic_fs::demand::SourceNodeKind::Directory => pending.push(child),
+                            acyclic_fs::demand::SourceNodeKind::RegularFile
+                                if name.ends_with(".md") =>
+                            {
+                                let used = copy_checkout_file(
+                                    view,
+                                    cut,
+                                    &prefix,
+                                    &child,
+                                    remaining,
+                                    publisher.as_ref(),
+                                    &mut accounting,
+                                )
+                                .await?;
+                                remaining = remaining.checked_sub(used).ok_or_else(|| {
+                                    Error::Invalid("command byte bound exceeded".into())
+                                })?;
+                            }
+                            _ if name.ends_with(".md") => {
+                                return Err(Error::Invalid(
+                                    "command entry is not a regular file".into(),
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                    cursor = page.next;
+                    // The page storage is dead before returning its ownership.
+                    drop(page.entries);
+                    drop(allocation);
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+            }
+            catalog
+                .with_sources(
+                    reader,
+                    &[CommandRoot {
+                        scope: CommandScope::Project,
+                        root: root.clone(),
+                    }],
+                    &[],
+                    limits,
+                )
+                .await?
+        } else {
+            catalog
+        };
+        let mut resolution = if commands {
+            catalog
+                .resolve(text, reader, self.limits.file_bytes)
+                .await?
+        } else {
+            CommandResolution::Prompt {
+                text: text.into(),
+                source: None,
+                mentions: Vec::new(),
+            }
+        };
+        if let CommandResolution::Prompt { text, mentions, .. } = &mut resolution {
+            let mut remaining = self.limits.file_bytes;
+            let mut copied = std::collections::BTreeSet::new();
+            for (_, _, path) in crate::client::file_mention_paths(text)? {
+                if copied.insert(path) {
+                    let used = copy_checkout_file(
+                        view,
+                        cut,
+                        &prefix,
+                        path,
+                        remaining,
+                        publisher.as_ref(),
+                        &mut accounting,
+                    )
+                    .await?;
+                    remaining = remaining
+                        .checked_sub(used)
+                        .ok_or_else(|| Error::Invalid("mention byte bound exceeded".into()))?;
+                }
+            }
+            if !copied.is_empty() {
+                let workspace = crate::filesystem::workspace_ref(
+                    self.journal.provider().clone(),
+                    &self.journal.storage_name(&mut None)?,
+                )?;
+                let generation = self.files.resolve(&workspace, None).await?.generation;
+                *mentions = crate::client::resolve_file_mentions(
+                    text,
+                    &root,
+                    &generation,
+                    reader,
+                    self.limits.file_bytes,
+                )
+                .await?;
+            }
+        }
+        Ok(resolution)
+    }
+}
+
+#[cfg(feature = "native-execution")]
+async fn copy_checkout_file(
+    view: &workspace::View,
+    cut: acyclic_fs::LazySnapshotRef,
+    prefix: &str,
+    path: &str,
+    maximum: u64,
+    publisher: &dyn ContentPublisher,
+    accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+) -> Result<u64> {
+    crate::conversation::validate_content_path(path, &mut None)?;
+    if crate::conversation::is_internal_path(path) {
+        return Err(Error::Invalid(
+            "composer path targets internal content".into(),
+        ));
+    }
+    let (chunk, _) = view
+        .read_at_snapshot(cut, &format!("/{path}"), None, maximum, accounting)
+        .await?;
+    let destination = format!("{prefix}/{path}");
+    publisher
+        .stage_once(
+            context::publication_operation(
+                b"acyclic.local.composer-file/v1\0",
+                destination.as_bytes(),
+            ),
+            &destination,
+            chunk.bytes.as_ref(),
+            "text/plain",
+            path,
+            None,
+        )?
+        .await?;
+    Ok(chunk.bytes.len() as u64)
+}
