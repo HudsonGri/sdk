@@ -261,6 +261,7 @@ def qualify(build_log):
                                 ("acyclic_harness", "context::discovery::frontmatter::tests::"),
                                 ("acyclic_harness", "context::skill_catalog::"),
                                 ("acyclic_harness", "context::manifest::catalog::"),
+                                ("acyclic_harness", "executor::tests::replay::inherited_skill_catalog_respects_final_message_and_byte_limits"),
                                 ("acyclic_harness", "local::tests::environment::"), ("cli", "")]:
         run([artifacts[target], test_filter], timeout=9.5, tests=True)
     run(["cargo", "check", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
