@@ -33,23 +33,28 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         index,
         journal,
     } = *admitted;
-    if !acyclic_fs::in_heap(|| read_claim(host, &journal, &fork, maximum, Some(io))).await? {
+    if !crate::conversation::BoundedOperationFuture::new(Some(io), || {
+        read_claim(host, &journal, &fork, maximum, Some(io))
+    })?
+    .await?
+    {
         return Err(Error::Unauthorized(
             "fork preparation request is not retained".into(),
         ));
     }
-    let report =
-        acyclic_fs::in_heap(|| read_report_boxed(host, &journal, &fork, maximum, Some(io)))
-            .await?
-            .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
+    let report = crate::conversation::BoundedOperationFuture::new(Some(io), || {
+        read_report_boxed(host, &journal, &fork, maximum, Some(io))
+    })?
+    .await?
+    .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
     let (seed, canonical_digest, binding) = report_binding(request, report, maximum, io)?;
     let seed = *seed;
     let mut selected: Option<AuthenticatedAllocation> = None;
     let mut original_origin = None;
     for (number, volume) in creation_volumes(&fork).enumerate() {
-        let (mut claim, held) = acyclic_fs::in_heap(|| {
+        let (mut claim, held) = crate::conversation::BoundedOperationFuture::new(Some(io), || {
             host.read_fork_allocation(&seed, volume, binding, maximum, Some(io))
-        })
+        })?
         .await?;
         let origin = claim.task_origin.as_ref().ok_or_else(|| {
             Error::Unauthorized(
@@ -93,10 +98,14 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 })?
         };
         let reference = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
-        let workspace = acyclic_fs::in_heap(|| host.open(&reference, Some(io))).await?;
-        let prepared =
-            acyclic_fs::in_heap(|| host.generation(&workspace, prepared_generation, Some(io)))
-                .await?;
+        let workspace = crate::conversation::BoundedOperationFuture::new(Some(io), || {
+            host.open(&reference, Some(io))
+        })?
+        .await?;
+        let prepared = crate::conversation::BoundedOperationFuture::new(Some(io), || {
+            host.generation(&workspace, prepared_generation, Some(io))
+        })?
+        .await?;
         let suffix = if volume == &fork.preparation.child_private_volume {
             "scratch"
         } else if Some(volume) == fork.preparation.child_result_volume.as_ref() {
@@ -118,8 +127,10 @@ async fn authenticate_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         io.remaining()?;
         let initial = io
             .sdk(
-                acyclic_fs::in_heap(|| workspace.operation_generation(key, io, io.cancellation()))
-                    .await,
+                crate::conversation::BoundedOperationFuture::new(Some(io), || {
+                    workspace.operation_generation(key, io, io.cancellation())
+                })?
+                .await,
             )?
             .ok_or_else(|| {
                 Error::Unauthorized("original fork allocation operation is missing".into())

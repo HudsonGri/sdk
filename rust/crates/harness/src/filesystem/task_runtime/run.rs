@@ -113,7 +113,7 @@ where
                 let mut history = Some(crate::store::HistoryWork::new(
                     crate::executor::PreparationIo::from_native_work(work)?,
                 ));
-                acyclic_fs::in_heap(|| async {
+                crate::conversation::BoundedOperationFuture::new(Some(io), || async {
                     self.host
                         .start_task(
                             lease,
@@ -122,18 +122,25 @@ where
                                 .map(|work| work as &mut dyn crate::store::HistoryIo),
                         )
                         .await
-                })
+                })?
                 .await?;
                 drop(history);
                 WorkerContext::Native(
-                    acyclic_fs::in_heap(|| self.task_context_with_native_work(task, fence, work))
-                        .await?,
+                    crate::conversation::BoundedOperationFuture::new(Some(io), || {
+                        self.task_context_with_native_work(task, fence, work)
+                    })?
+                    .await?,
                 )
             } else {
-                acyclic_fs::in_heap(|| async { self.host.start_task(lease, &mut None).await })
-                    .await?;
+                crate::conversation::BoundedOperationFuture::new(io, || async {
+                    self.host.start_task(lease, &mut None).await
+                })?
+                .await?;
                 WorkerContext::Ordinary(Arc::new(
-                    acyclic_fs::in_heap(|| self.task_context(task, fence.clone())).await?,
+                    crate::conversation::BoundedOperationFuture::new(io, || {
+                        self.task_context(task, fence.clone())
+                    })?
+                    .await?,
                 ))
             };
             #[cfg(target_arch = "wasm32")]
@@ -149,23 +156,23 @@ where
                             code: crate::wire::ErrorCode::Unsupported,
                             reason: "native worker lost its original observer",
                         })?;
-                acyclic_fs::in_heap(|| {
+                crate::conversation::BoundedOperationFuture::new(io, || {
                     self.open_task_with_native_work(task, fence, Arc::clone(context), work)
-                })
+                })?
                 .await?
             } else {
                 let WorkerContext::Ordinary(context) = &context else {
                     unreachable!()
                 };
                 let journal = self.workflow_journal_with_context(context)?;
-                acyclic_fs::in_heap(|| {
+                crate::conversation::BoundedOperationFuture::new(io, || {
                     self.harness.open_registered_task(
                         task,
                         fence,
                         journal,
                         Some(Arc::clone(context)),
                     )
-                })
+                })?
                 .await?
             };
             #[cfg(target_arch = "wasm32")]
@@ -179,20 +186,27 @@ where
                     reason: "native wake input requires original observer",
                 })?;
                 let local = crate::executor::PreparationIo::from_native_work(work)?;
-                let wake =
-                    acyclic_fs::in_heap(|| self.host.workflow_input(task, fence, Some(&local)))
-                        .await?;
+                let wake = crate::conversation::BoundedOperationFuture::new(Some(io), || {
+                    self.host.workflow_input(task, fence, Some(&local))
+                })?
+                .await?;
                 let custody = local.take_native_custody(local.owned_bytes()?)?;
                 wake_custody = Some(custody);
                 wake
             } else {
                 wake_custody = None;
-                acyclic_fs::in_heap(|| self.host.workflow_input(task, fence, None)).await?
+                crate::conversation::BoundedOperationFuture::new(io, || {
+                    self.host.workflow_input(task, fence, None)
+                })?
+                .await?
             };
             #[cfg(target_arch = "wasm32")]
             let mut wake = self.host.workflow_input(task, fence, None).await?;
             #[cfg(not(target_arch = "wasm32"))]
-            let mut next_transition = acyclic_fs::in_heap(|| session.latest_transition(io)).await?;
+            let mut next_transition = crate::conversation::BoundedOperationFuture::new(io, || {
+                session.latest_transition(io)
+            })?
+            .await?;
             #[cfg(target_arch = "wasm32")]
             let mut next_transition = session.latest_transition(None).await?;
             let mut advanced = 0;
@@ -210,7 +224,7 @@ where
                 let mut command_input = None;
                 if let Some(transition) = &mut transition {
                     if !transition.commands.is_empty() {
-                        match acyclic_fs::in_heap(|| {
+                        match crate::conversation::BoundedOperationFuture::new(io, || {
                             self.dispatch_commands(
                                 task,
                                 &context,
@@ -219,7 +233,7 @@ where
                                 commands,
                                 io,
                             )
-                        })
+                        })?
                         .await?
                         {
                             ready @ CommandDispatch::Ready { .. } => command_input = Some(ready),
@@ -227,7 +241,7 @@ where
                                 command,
                                 guard_execution,
                             } => {
-                                acyclic_fs::in_heap(|| {
+                                crate::conversation::BoundedOperationFuture::new(io, || {
                                     self.suspend_command(
                                         task,
                                         fence,
@@ -236,13 +250,13 @@ where
                                         guard_execution,
                                         io,
                                     )
-                                })
+                                })?
                                 .await?;
                                 return Ok(WorkerTurn::Suspended { task, revision });
                             }
                             CommandDispatch::Indeterminate(cause) => {
                                 let mut history = observed::history(io)?;
-                                acyclic_fs::in_heap(|| async {
+                                crate::conversation::BoundedOperationFuture::new(io, || async {
                                     self.task_host()
                                         .settle_task(
                                             task,
@@ -256,7 +270,7 @@ where
                                             }),
                                         )
                                         .await
-                                })
+                                })?
                                 .await?;
                                 return Ok(WorkerTurn::Reconciling);
                             }
@@ -286,7 +300,7 @@ where
                     };
                     if let Some(outcome) = outcome {
                         let mut history = observed::history(io)?;
-                        acyclic_fs::in_heap(|| async {
+                        crate::conversation::BoundedOperationFuture::new(io, || async {
                             self.task_host()
                                 .settle_task(
                                     task,
@@ -297,7 +311,7 @@ where
                                         .map(|work| work as &mut dyn crate::store::HistoryIo),
                                 )
                                 .await
-                        })
+                        })?
                         .await?;
                         return Ok(WorkerTurn::Completed { task });
                     }
@@ -317,7 +331,7 @@ where
                         std::mem::take(value)
                     } else {
                         let mut history = observed::history(io)?;
-                        acyclic_fs::in_heap(|| async {
+                        crate::conversation::BoundedOperationFuture::new(io, || async {
                             self.task_host()
                                 .suspend_workflow(
                                     task,
@@ -330,13 +344,13 @@ where
                                         .map(|work| work as &mut dyn crate::store::HistoryIo),
                                 )
                                 .await
-                        })
+                        })?
                         .await?;
                         return Ok(WorkerTurn::Suspended { task, revision });
                     }
                 } else {
                     let mut history = observed::history(io)?;
-                    acyclic_fs::in_heap(|| async {
+                    crate::conversation::BoundedOperationFuture::new(io, || async {
                         self.task_host()
                             .suspend_workflow(
                                 task,
@@ -349,7 +363,7 @@ where
                                     .map(|work| work as &mut dyn crate::store::HistoryIo),
                             )
                             .await
-                    })
+                    })?
                     .await?;
                     return Ok(WorkerTurn::Suspended { task, revision });
                 };
@@ -398,7 +412,7 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "native input has no original command custody",
                     })?;
-                    acyclic_fs::in_heap(|| async {
+                    crate::conversation::BoundedOperationFuture::new(io, || async {
                         session
                             .step(
                                 OperationId::from_bytes(bytes),
@@ -409,7 +423,7 @@ where
                                 )),
                             )
                             .await
-                    })
+                    })?
                     .await?
                 } else if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
@@ -438,7 +452,7 @@ where
                             return Err(error);
                         }
                     };
-                    acyclic_fs::in_heap(|| async {
+                    crate::conversation::BoundedOperationFuture::new(Some(io), || async {
                         session
                             .step(
                                 OperationId::from_bytes(bytes),
@@ -449,13 +463,13 @@ where
                                 )),
                             )
                             .await
-                    })
+                    })?
                     .await?
                 } else {
                     let key = IdempotencyKey::new(format!("task-step:{revision}"))?;
-                    acyclic_fs::in_heap(|| {
+                    crate::conversation::BoundedOperationFuture::new(io, || {
                         session.step(OperationId::from_bytes(bytes), key, input, None)
-                    })
+                    })?
                     .await?
                 };
                 #[cfg(target_arch = "wasm32")]

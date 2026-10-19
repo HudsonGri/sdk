@@ -86,9 +86,10 @@ where
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| Error::from(cause))?;
+    let frame_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     // Boxed, and the journal with it: neither stays in this frame, which is
     // live under the whole publication below.
-    let journal = acyclic_fs::in_heap(|| async {
+    let journal = crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || async {
         acyclic_fs::load_native_materialization_journal(
             store,
             operation_id,
@@ -97,7 +98,7 @@ where
         )
         .await
         .map(|loaded| loaded.value.map(Box::new))
-    })
+    })?
     .await
     .map_err(|(cause, _)| Error::from(cause))?;
     if work.root_identity(root).map_err(Error::from)? != source_root_identity {
@@ -118,9 +119,9 @@ where
             && target == to
         {
             let workspace = from.workspace();
-            from = acyclic_fs::in_heap(|| {
+            from = crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
                 workspace.generation(original, WorkBudget::UNBOUNDED, &cancellation)
-            })
+            })?
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
@@ -155,7 +156,7 @@ where
         maximum_extent_spans: 65_536,
         transfer_bytes: 8 * 1024 * 1024,
     };
-    acyclic_fs::in_heap(|| {
+    crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
         acyclic_fs::publish_native_generation_transition(
             &from,
             &to_generation,
@@ -183,7 +184,7 @@ where
                 })
             },
         )
-    })
+    })?
     .await
     .map_err(|(cause, _)| Error::from(cause))?;
     cleanup(root, &operation_directory)

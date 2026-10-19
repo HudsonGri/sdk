@@ -8,15 +8,24 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<TurnOutput>> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
-        acyclic_fs::in_heap(|| self.verify_execution_owner()).await?;
-        acyclic_fs::in_heap(|| self.validate_turn_input(journal, input)).await?;
+        crate::conversation::BoundedOperationFuture::new(self.io, || {
+            self.verify_execution_owner()
+        })?
+        .await?;
+        crate::conversation::BoundedOperationFuture::new(self.io, || {
+            self.validate_turn_input(journal, input)
+        })?
+        .await?;
         if let Some(source) = self.stock.summary_source.as_deref() {
-            return crate::conversation::BoundedContentFuture::new(self.io, || {
+            return crate::conversation::BoundedOperationFuture::new(self.io, || {
                 self.summarize_file(journal, input, source)
             })?
             .await;
         }
-        acyclic_fs::in_heap(|| self.ensure_started(journal, input)).await?;
+        crate::conversation::BoundedOperationFuture::new(self.io, || {
+            self.ensure_started(journal, input)
+        })?
+        .await?;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
         let mut text = String::new();
@@ -64,7 +73,7 @@ impl StockExecution<'_> {
                 }));
             }
             for (invocation, invocation_index) in calls {
-                match acyclic_fs::in_heap(|| {
+                match crate::conversation::BoundedOperationFuture::new(self.io, || {
                     self.resolve_tool_call(
                         journal,
                         input.operation_id,
@@ -74,7 +83,7 @@ impl StockExecution<'_> {
                         &mut prior_messages,
                         &mut hook_context,
                     )
-                })
+                })?
                 .await?
                 {
                     ExecutionProgress::Ready(()) => {}

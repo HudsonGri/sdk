@@ -35,6 +35,8 @@ checks = [
     ('cli', ['main_thread::']),
     ('acyclic', ['control_plane_requests_fit_the_main_thread_budget']),
     ('acyclic_harness', ['tool::erasure_tests']),
+    ('acyclic_harness', ['native_future::tests::']),
+    ('acyclic_harness', ['created_access::provider::frame_tests::']),
     ('acyclic_harness', ['obs::typed::tests']),
     ('acyclic_native_runtime', ['obs::']),
     ('acyclic_fs', ['materializer::preflight::tests']),

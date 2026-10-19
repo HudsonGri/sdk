@@ -160,7 +160,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let request = task_request(request, io)?;
         // Boxed: the preparation's frame is not reserved in this one, and its
         // request is moved into the box, not through this frame.
-        acyclic_fs::in_heap(|| attempt.prepare(*request)).await
+        crate::conversation::BoundedOperationFuture::new(io, || attempt.prepare(*request))?.await
     }
 
     /// Reconciles captures under their original settlement owner.

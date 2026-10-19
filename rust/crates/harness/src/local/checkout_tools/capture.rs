@@ -86,7 +86,8 @@ impl CheckoutTools {
         let (physical, view) = selected;
         if let Some(mount) = &physical.mounted {
             let work = mount.native_work()?;
-            acyclic_fs::in_heap(|| {
+            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            crate::conversation::BoundedOperationFuture::new(Some(&io), || {
                 mount.sync_with_permit(permit, &work, move |_| {
                     let owner = owner.clone();
                     async move {
@@ -96,7 +97,7 @@ impl CheckoutTools {
                         Ok::<(), Error>(())
                     }
                 })
-            })
+            })?
             .await
             .map_err(|failure| failure.cause)?;
             return Ok(());

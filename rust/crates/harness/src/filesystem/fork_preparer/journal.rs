@@ -115,19 +115,24 @@ pub(super) async fn write_once<A, O, T>(
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
-    T: Serialize + bounded_io::PreparationRecord,
+    T: Serialize + bounded_io::PreparationRecord + acyclic_stream::ProviderPlatform,
 {
-    if let Some(prior) =
-        acyclic_fs::in_heap(|| read_record_boxed::<A, O, T>(host, journal, path, maximum, io))
-            .await?
+    if let Some(prior) = crate::conversation::BoundedOperationFuture::new(io, || {
+        read_record_boxed::<A, O, T>(host, journal, path, maximum, io)
+    })?
+    .await?
     {
         return Ok(prior);
     }
-    acyclic_fs::in_heap(|| write_record(host, journal, path, value, maximum, key, io, preparation))
-        .await?;
-    acyclic_fs::in_heap(|| read_record_boxed::<A, O, T>(host, journal, path, maximum, io))
-        .await?
-        .ok_or(Error::Indeterminate(operation))
+    crate::conversation::BoundedOperationFuture::new(io, || {
+        write_record(host, journal, path, value, maximum, key, io, preparation)
+    })?
+    .await?;
+    crate::conversation::BoundedOperationFuture::new(io, || {
+        read_record_boxed::<A, O, T>(host, journal, path, maximum, io)
+    })?
+    .await?
+    .ok_or(Error::Indeterminate(operation))
 }
 
 pub(super) async fn read_claim<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -157,9 +162,11 @@ pub(super) async fn read_report<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<Option<ForkReport>> {
-    acyclic_fs::in_heap(|| read_report_boxed(host, journal, request, maximum_bytes, io))
-        .await
-        .map(|report| report.map(|report| *report))
+    crate::conversation::BoundedOperationFuture::new(io, || {
+        read_report_boxed(host, journal, request, maximum_bytes, io)
+    })?
+    .await
+    .map(|report| report.map(|report| *report))
 }
 
 /// Reads the report as a box: its decoded value never passes through the
@@ -171,9 +178,9 @@ pub(super) async fn read_report_boxed<A: AsyncAuthorityStore, O: AsyncObjectStor
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<Option<Box<ForkReport>>> {
-    let report = acyclic_fs::in_heap(|| {
+    let report = crate::conversation::BoundedOperationFuture::new(io, || {
         read_record_boxed::<A, O, ForkReport>(host, journal, "/report.json", maximum_bytes, io)
-    })
+    })?
     .await?;
     if let Some(report) = &report {
         validate_report(report, request, io)?;
@@ -267,9 +274,11 @@ pub(super) async fn read_record<
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<Option<T>> {
-    acyclic_fs::in_heap(|| read_record_boxed::<A, O, T>(host, journal, path, maximum_bytes, io))
-        .await
-        .map(|record| record.map(|record| *record))
+    crate::conversation::BoundedOperationFuture::new(io, || {
+        read_record_boxed::<A, O, T>(host, journal, path, maximum_bytes, io)
+    })?
+    .await
+    .map(|record| record.map(|record| *record))
 }
 
 /// Reads a record as a box, decoded in a frame of its own, so no poll frame
@@ -341,7 +350,11 @@ pub(super) async fn read_record_decoded_bounded<A: AsyncAuthorityStore, O: Async
     decode: impl FnOnce(&acyclic_stream::OwnedBytes, Option<&PreparationIo>) -> Result<T>,
 ) -> Result<Option<T>> {
     let raw;
-    match acyclic_fs::in_heap(|| host.read(journal, None, path, maximum_bytes, io)).await {
+    match crate::conversation::BoundedOperationFuture::new(io, || {
+        host.read(journal, None, path, maximum_bytes, io)
+    })?
+    .await
+    {
         Ok(bytes) => {
             raw = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             let value = decode(&bytes, io);

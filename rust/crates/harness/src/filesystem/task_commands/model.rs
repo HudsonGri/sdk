@@ -260,7 +260,7 @@ where
             .await;
         }
         BoundedContentFuture::new(io, || async {
-            let execution = acyclic_fs::in_heap(|| {
+            let execution = crate::conversation::BoundedOperationFuture::new(io, || {
                 self.runtime.stock_execution_with_context(
                     Arc::clone(&context),
                     fence.clone(),
@@ -271,7 +271,7 @@ where
                     tools,
                     command.selected_output_volume.as_ref(),
                 )
-            })
+            })?
             .await?;
             let execution = execution.configure(
                 compaction.clone(),
@@ -281,12 +281,18 @@ where
             #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
             let execution = execution.with_hooks(hooks);
             if reconciliation_only {
-                let result = acyclic_fs::in_heap(|| execution.reconcile_progress(input)).await;
+                let result = crate::conversation::BoundedOperationFuture::new(io, || {
+                    execution.reconcile_progress(input)
+                })?
+                .await;
                 return Self::reconcile_model(result.map(drop), require_journal()?, operation, io)
                     .await;
             }
             Self::model_progress(
-                acyclic_fs::in_heap(|| execution.execute_progress(input)).await?,
+                crate::conversation::BoundedOperationFuture::new(io, || {
+                    execution.execute_progress(input)
+                })?
+                .await?,
                 io,
             )
         })?

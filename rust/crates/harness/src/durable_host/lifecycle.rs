@@ -300,11 +300,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(not(target_arch = "wasm32"))]
         let (admission, mut custody) = match io {
             Some(io) if io.original_native_work().is_some() => {
-                let admission = acyclic_fs::in_heap(|| async {
-                    self.admission(operation, &mut Some(&mut io.history_io()))
-                        .await
-                })
-                .await?;
+                let admission =
+                    crate::conversation::BoundedOperationFuture::new(Some(io), || async {
+                        self.admission(operation, &mut Some(&mut io.history_io()))
+                            .await
+                    })?
+                    .await?;
                 let custody = io.take_native_custody(
                     std::mem::size_of::<TaskAdmissionRecord>() as u64
                         + admission.logical_owned_bytes()?,

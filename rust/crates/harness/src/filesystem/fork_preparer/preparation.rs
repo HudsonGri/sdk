@@ -16,14 +16,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 "authorized workspace capture requires its original preparation lease",
             ));
         }
-        acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
-        let journal = acyclic_fs::in_heap(|| self.claim(&request)).await?;
+        crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
+            .await?;
+        let journal =
+            crate::conversation::BoundedOperationFuture::new(io, || self.claim(&request))?.await?;
         let report_limit = self.journal_limit(MAX_REPORT_BYTES);
-        if let Some(report) =
-            acyclic_fs::in_heap(|| read_report_boxed(host, &journal, &request, report_limit, io))
-                .await?
+        if let Some(report) = crate::conversation::BoundedOperationFuture::new(io, || {
+            read_report_boxed(host, &journal, &request, report_limit, io)
+        })?
+        .await?
         {
-            acyclic_fs::in_heap(|| self.verify_task_allocations(&request)).await?;
+            crate::conversation::BoundedOperationFuture::new(io, || {
+                self.verify_task_allocations(&request)
+            })?
+            .await?;
             return Ok(report);
         }
         let policy = &request.preparation;
@@ -69,7 +75,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             .as_mut()
             .map(|io| io as &mut dyn crate::store::history::HistoryIo);
         for volume in creation_volumes(&request) {
-            acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
+            crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
+                .await?;
             let claim = AllocationClaim {
                 operation_id: operation,
                 preparation_digest: *digest.as_bytes(),
@@ -81,7 +88,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 volume: volume.copy(&mut work)?,
             };
             let limit = self.journal_limit(MAX_REQUEST_BYTES);
-            acyclic_fs::in_heap(|| host.claim_fork_allocation(claim, limit, io, task)).await?;
+            crate::conversation::BoundedOperationFuture::new(io, || {
+                host.claim_fork_allocation(claim, limit, io, task)
+            })?
+            .await?;
         }
         let private = policy.child_private_volume.copy(&mut work)?;
         let private_key = key("scratch")?;
@@ -97,9 +107,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         } else {
             std::borrow::Cow::Owned(self.read_grant(source_project)?)
         };
-        acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
+        crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
+            .await?;
         let private_paths = Some(self.clone_paths(paths)?);
-        let private_observation = acyclic_fs::in_heap(|| {
+        let private_observation = crate::conversation::BoundedOperationFuture::new(io, || {
             host.fork_volume_pinned(
                 source_private,
                 &private_grant,
@@ -110,14 +121,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 io,
                 task,
             )
-        })
+        })?
         .await?;
         let controller = (request.parent.kind == crate::core::AggregateKind::Conversation)
             .then(|| preparer.controller(io))
             .transpose()?;
         let project_key = key("project")?;
-        acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
-        let child_project = acyclic_fs::in_heap(|| {
+        crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
+            .await?;
+        let child_project = crate::conversation::BoundedOperationFuture::new(io, || {
             host.fork_volume_pinned(
                 source_project,
                 &project_grant,
@@ -128,29 +140,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 io,
                 task,
             )
-        })
+        })?
         .await?;
-        let (child_result_volume, child_result_generation) =
-            if let Some(volume) = &policy.child_result_volume {
-                acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
-                let result_key = key("result")?;
-                let result = acyclic_fs::in_heap(|| {
-                    host.fork_volume_pinned(
-                        source_private,
-                        &private_grant,
-                        private_generation,
-                        volume,
-                        Some(Vec::new()),
-                        &result_key,
-                        io,
-                        task,
-                    )
-                })
+        let (child_result_volume, child_result_generation) = if let Some(volume) =
+            &policy.child_result_volume
+        {
+            crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
                 .await?;
-                (Some(volume.copy(&mut work)?), Some(result.generation))
-            } else {
-                (None, None)
-            };
+            let result_key = key("result")?;
+            let result = crate::conversation::BoundedOperationFuture::new(io, || {
+                host.fork_volume_pinned(
+                    source_private,
+                    &private_grant,
+                    private_generation,
+                    volume,
+                    Some(Vec::new()),
+                    &result_key,
+                    io,
+                    task,
+                )
+            })?
+            .await?;
+            (Some(volume.copy(&mut work)?), Some(result.generation))
+        } else {
+            (None, None)
+        };
         let context_key = if policy.inherited_through_sequence == 0 {
             None
         } else {
@@ -173,7 +187,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             }
             let maximum_messages = usize::try_from(policy.maximum_inherited_messages)
                 .map_err(|_| invalid("fork message bound is too large"))?;
-            let inherited = acyclic_fs::in_heap(|| {
+            let inherited = crate::conversation::BoundedOperationFuture::new(io, || {
                 controller.materialize_inherited_conversation(
                     &preparer.parent,
                     &private,
@@ -194,7 +208,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     io,
                     task,
                 )
-            })
+            })?
             .await?;
             let mut files = crate::model::vec_with_capacity(1, io)?;
             files.push(inherited.file);
@@ -229,23 +243,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let summary_key = context_key
                 .as_ref()
                 .ok_or_else(|| invalid("summary fork has no inherited prefix key"))?;
-            let (capture, generation) = acyclic_fs::in_heap(|| {
-                controller.materialize_summary_context(
-                    &preparer.parent,
-                    &bound.prepared,
-                    bound.journal.as_ref(),
-                    &private,
-                    &child_private_generation,
-                    prefix,
-                    policy.maximum_inherited_bytes,
-                    policy.maximum_inherited_references as usize,
-                    summary_key,
-                    preparer.resolver.as_ref(),
-                    io,
-                    task,
-                )
-            })
-            .await?;
+            let (capture, generation) =
+                crate::conversation::BoundedOperationFuture::new(io, || {
+                    controller.materialize_summary_context(
+                        &preparer.parent,
+                        &bound.prepared,
+                        bound.journal.as_ref(),
+                        &private,
+                        &child_private_generation,
+                        prefix,
+                        policy.maximum_inherited_bytes,
+                        policy.maximum_inherited_references as usize,
+                        summary_key,
+                        preparer.resolver.as_ref(),
+                        io,
+                        task,
+                    )
+                })?
+                .await?;
             let capacity = inherited_context
                 .len()
                 .checked_add(capture.inherited_files().count())
@@ -266,7 +281,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             .ok_or_else(|| invalid("shared reader count overflows"))?;
         let mut shared_grants = crate::model::vec_with_capacity(shared_count, io)?;
         for (index, selection) in request.selections.iter().enumerate() {
-            acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
+            crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
+                .await?;
             let revision = match &selection.revision {
                 ResourceRevision::History(_) => selection.revision.copy(&mut work)?.0,
                 ResourceRevision::Project { .. } => ResourceRevision::Project {
@@ -281,7 +297,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 ResourceRevision::SharedVolume(volume) if volume.provider() == &host.provider => {
                     self.read_grant(volume)?;
                     let reference = bounded_io::content_workspace(&host.provider, volume, io)?;
-                    acyclic_fs::in_heap(|| host.resolve(&reference, io)).await?;
+                    crate::conversation::BoundedOperationFuture::new(io, || {
+                        host.resolve(&reference, io)
+                    })?
+                    .await?;
                     for reader in std::iter::once(request.child_agent)
                         .chain(request.attached_agents.iter().copied())
                     {
@@ -304,7 +323,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .find(|provider| provider.provider() == selection.revision.provider())
                     {
                         Some(provider) => {
-                            acyclic_fs::in_heap(|| {
+                            crate::conversation::BoundedOperationFuture::new(io, || {
                                 self.capture(
                                     &journal,
                                     &request,
@@ -312,7 +331,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                                     selection,
                                     provider.as_ref(),
                                 )
-                            })
+                            })?
                             .await?
                         }
                         None => Capture::Unsupported(stock_string_copy(
@@ -355,13 +374,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 !selection.required || matches!(capture, Capture::Captured(_))
             })
         {
-            acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
+            crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
+                .await?;
             let seed = self.report_seed(&mut report)?;
             let limit = self.journal_limit(MAX_REQUEST_BYTES);
-            acyclic_fs::in_heap(|| host.bind_fork_seed(&seed, limit, io, task)).await?;
+            crate::conversation::BoundedOperationFuture::new(io, || {
+                host.bind_fork_seed(&seed, limit, io, task)
+            })?
+            .await?;
         }
-        acyclic_fs::in_heap(|| self.verify_task_lease(false)).await?;
-        acyclic_fs::in_heap(|| self.commit_report(&journal, &report)).await
+        crate::conversation::BoundedOperationFuture::new(io, || self.verify_task_lease(false))?
+            .await?;
+        crate::conversation::BoundedOperationFuture::new(io, || {
+            self.commit_report(&journal, &report)
+        })?
+        .await
     }
 
     // The report's checks and its seed run in frames of their own: the async

@@ -13,8 +13,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     ) -> BoxFuture<'a, Result<CreatedResourceReceipt>> {
         Box::pin(async move {
             let io = boxed_io(request)?;
-            // Boxed: the receipt's frame is not reserved in this one.
-            acyclic_fs::in_heap(|| self.receipt(request, proof, &io)).await
+            self.receipt(request, proof, &io)?.await
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -27,7 +26,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
     {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let receipt = acyclic_fs::in_heap(|| self.receipt(request, proof, &io)).await?;
+            let receipt = self.receipt(request, proof, &io)?.await?;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((receipt, custody))
@@ -43,7 +42,18 @@ fn boxed_io(request: &ResourcePreparationRequest) -> Result<Box<PreparationIo>> 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemResourceCreationProvider<A, O>
 {
-    async fn receipt(
+    fn receipt<'a>(
+        &'a self,
+        request: &'a ResourcePreparationRequest,
+        proof: &'a ResourceCreationProofRef,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, CreatedResourceReceipt>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || {
+            self.receipt_body(request, proof, io)
+        })
+    }
+
+    async fn receipt_body(
         &self,
         request: &ResourcePreparationRequest,
         proof: &ResourceCreationProofRef,
@@ -196,3 +206,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+#[path = "frame_tests.rs"]
+mod frame_tests;

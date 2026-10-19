@@ -255,12 +255,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "created resource admission has no parent",
             )
         })?;
-        let parent_admission = acyclic_fs::in_heap(|| async {
-            self.admission(OperationId::from_bytes(parent.into_bytes()), custody.work())
-                .await
-                .map(Box::new)
-        })
-        .await?;
+        let frame =
+            crate::store::history::HistoryContentFuture::with_quota(&mut custody, |work| async {
+                self.admission(OperationId::from_bytes(parent.into_bytes()), work)
+                    .await
+                    .map(Box::new)
+            })?;
+        let frame_bytes = frame.frame_bytes();
+        let parent_admission = frame.await?;
+        custody.relinquish(frame_bytes)?;
         let held = if custody.work().is_some() {
             std::mem::size_of::<TaskAdmissionRecord>() as u64
                 + parent_admission.logical_owned_bytes()?
@@ -289,15 +292,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )
             })?;
             let mut proof_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
-            let preparation = acyclic_fs::in_heap(|| async {
-                self.admission(
-                    OperationId::from_bytes(proof.preparation.into_bytes()),
-                    proof_custody.work(),
-                )
-                .await
-                .map(Box::new)
-            })
-            .await?;
+            let frame = crate::store::history::HistoryContentFuture::with_quota(
+                &mut proof_custody,
+                |work| async {
+                    self.admission(
+                        OperationId::from_bytes(proof.preparation.into_bytes()),
+                        work,
+                    )
+                    .await
+                    .map(Box::new)
+                },
+            )?;
+            let frame_bytes = frame.frame_bytes();
+            let preparation = frame.await?;
+            proof_custody.relinquish(frame_bytes)?;
             let held = if proof_custody.work().is_some() {
                 std::mem::size_of::<TaskAdmissionRecord>() as u64
                     + preparation.logical_owned_bytes()?
@@ -338,15 +346,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "resource preparation has no original parent",
                 )
             })?;
-            let original_parent = acyclic_fs::in_heap(|| async {
-                self.admission(
-                    OperationId::from_bytes(preparation_parent.into_bytes()),
-                    proof_custody.work(),
-                )
-                .await
-                .map(Box::new)
-            })
-            .await?;
+            let frame = crate::store::history::HistoryContentFuture::with_quota(
+                &mut proof_custody,
+                |work| async {
+                    self.admission(
+                        OperationId::from_bytes(preparation_parent.into_bytes()),
+                        work,
+                    )
+                    .await
+                    .map(Box::new)
+                },
+            )?;
+            let frame_bytes = frame.frame_bytes();
+            let original_parent = frame.await?;
+            proof_custody.relinquish(frame_bytes)?;
             let held = if proof_custody.work().is_some() {
                 std::mem::size_of::<TaskAdmissionRecord>() as u64
                     + original_parent.logical_owned_bytes()?
@@ -373,12 +386,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         "created resource proof is not inherited from the parent",
                     ));
                 }
-                let original_child = acyclic_fs::in_heap(|| async {
-                    self.admission(request.child.operation_id, proof_custody.work())
-                        .await
-                        .map(Box::new)
-                })
-                .await?;
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |work| async {
+                        self.admission(request.child.operation_id, work)
+                            .await
+                            .map(Box::new)
+                    },
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                let original_child = frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
                 let held = if proof_custody.work().is_some() {
                     std::mem::size_of::<TaskAdmissionRecord>() as u64
                         + original_child.logical_owned_bytes()?
@@ -399,7 +417,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             {
                 let mut coordinator = self.coordinator.lock().await;
-                acyclic_fs::in_heap(|| coordinator.refresh(proof_custody.work())).await?;
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |work| coordinator.refresh(work),
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
                 origin_distance = self.coordinated_origin(
                     &coordinator,
                     &preparation,
@@ -432,11 +456,23 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 observer.absorb_native_custody(guard)?;
                 receipt = verified;
             } else {
-                receipt = acyclic_fs::in_heap(|| provider.verify(&request, proof)).await?;
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |_| provider.verify(&request, proof),
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                receipt = frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
             }
             #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
             {
-                receipt = acyclic_fs::in_heap(|| provider.verify(&request, proof)).await?;
+                let frame = crate::store::history::HistoryContentFuture::with_quota(
+                    &mut proof_custody,
+                    |_| provider.verify(&request, proof),
+                )?;
+                let frame_bytes = frame.frame_bytes();
+                receipt = frame.await?;
+                proof_custody.relinquish(frame_bytes)?;
             }
             self.check_receipt_provenance(
                 &receipt,

@@ -30,28 +30,33 @@ impl Commands<'_> {
             .durable_task_id()
             .ok_or_else(|| Error::Unauthorized("child preparation has no task".into()))?;
         let host = self.harness.runtime.task_host();
-        let record = acyclic_fs::in_heap(|| host.observe_admission(task)).await?;
+        let record = crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
+            host.observe_admission(task)
+        })?
+        .await?;
         let fork = self.admitted_fork(&record.input, &command, payload)?;
         drop(record);
         let owner = Arc::new(
-            acyclic_fs::in_heap(|| host.journal_owner(task, &fence, None))
-                .await?
-                .with_invocation_cancellation(self.io.cancellation()),
+            crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
+                host.journal_owner(task, &fence, None)
+            })?
+            .await?
+            .with_invocation_cancellation(self.io.cancellation()),
         );
         let preparation = Arc::new(
-            acyclic_fs::in_heap(|| async {
+            crate::conversation::BoundedOperationFuture::new(Some(self.io), || async {
                 owner
                     .resource_preparation(self.request.clone(), &mut None)
                     .await
-            })
+            })?
             .await?,
         );
         if reconcile {
             return Ok(
-                if acyclic_fs::in_heap(|| {
+                if crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
                     self.preparer
                         .reconcile_for_task(&fork, &preparation, Some(self.io))
-                })
+                })?
                 .await?
                 .is_some()
                 {
@@ -61,7 +66,7 @@ impl Commands<'_> {
                 },
             );
         }
-        let (report, _) = acyclic_fs::in_heap(|| {
+        let (report, _) = crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
             self.workspace.prepare_child(
                 self.source,
                 self.cut,
@@ -70,7 +75,7 @@ impl Commands<'_> {
                 &preparation,
                 self.io,
             )
-        })
+        })?
         .await?;
         ready(report)
     }
