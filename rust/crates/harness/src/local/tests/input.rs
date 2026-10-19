@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
     client::CommandResolution,
-    conversation::ContentResidencyVerifier,
     model::{ModelContent, ModelContentPart},
 };
 

@@ -28,6 +28,8 @@ mod hook_configuration;
 mod hook_lifecycle;
 #[cfg(feature = "native-execution")]
 mod input;
+#[cfg(feature = "native-execution")]
+mod input_user;
 #[cfg(all(feature = "native-execution", unix))]
 mod tool_hooks;
 use std::{

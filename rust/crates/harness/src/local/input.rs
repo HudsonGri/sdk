@@ -7,6 +7,16 @@ use crate::{
     task_volume::{FileKey, Query},
 };
 
+#[cfg(feature = "native-execution")]
+mod native_sources;
+
+// Storage must be destroyed before its accounting owner on every exit path.
+#[cfg(feature = "native-execution")]
+struct Held<T, A> {
+    value: T,
+    _allocation: A,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PromptInput {
@@ -324,6 +334,21 @@ impl LocalHarness {
             let mut directories = 0_u32;
             let mut entries = 0_u32;
             let mut remaining = self.limits.file_bytes;
+            let user_prefix = format!("{prefix}/user");
+            native_sources::capture(
+                self.settings.as_ref(),
+                &user_prefix,
+                publisher.as_ref(),
+                &work,
+                &cancellation,
+                &mut native_sources::Bounds {
+                    directories: &mut directories,
+                    entries: &mut entries,
+                    remaining: &mut remaining,
+                    limits,
+                },
+            )
+            .await?;
             while let Some(path) = pending.pop() {
                 directories += 1;
                 if directories > limits.directories {
@@ -345,16 +370,24 @@ impl LocalHarness {
                         Err(acyclic_fs::LazyWorkspaceError::NotFound) => break,
                         Err(error) => return Err(error.into()),
                     };
-                    for entry in &page.entries {
+                    let page = Held {
+                        value: page,
+                        _allocation: allocation,
+                    };
+                    for entry in &page.value.entries {
                         entries += 1;
                         if entries > limits.entries {
                             return Err(Error::Invalid("command entry bound exceeded".into()));
                         }
-                        let name = entry
+                        let (name, allocation) = entry
                             .name
-                            .unicode_text(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-                            .map_err(storage)?
-                            .value;
+                            .unicode_text(&work, &cancellation)
+                            .map_err(storage)?;
+                        let name = Held {
+                            value: name,
+                            _allocation: allocation,
+                        };
+                        let name = &name.value;
                         let child = format!("{path}/{name}");
                         match entry.kind {
                             acyclic_fs::demand::SourceNodeKind::Directory => pending.push(child),
@@ -383,10 +416,7 @@ impl LocalHarness {
                             _ => {}
                         }
                     }
-                    cursor = page.next;
-                    // The page storage is dead before returning its ownership.
-                    drop(page.entries);
-                    drop(allocation);
+                    cursor = page.value.next;
                     if cursor.is_none() {
                         break;
                     }
@@ -395,10 +425,19 @@ impl LocalHarness {
             catalog
                 .with_sources(
                     reader,
-                    &[CommandRoot {
-                        scope: CommandScope::Project,
-                        root: root.clone(),
-                    }],
+                    &[
+                        CommandRoot {
+                            scope: CommandScope::User,
+                            root: ContextRoot {
+                                volume: self.journal.clone(),
+                                directory: user_prefix,
+                            },
+                        },
+                        CommandRoot {
+                            scope: CommandScope::Project,
+                            root: root.clone(),
+                        },
+                    ],
                     &[],
                     limits,
                 )

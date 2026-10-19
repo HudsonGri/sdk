@@ -190,22 +190,6 @@ impl LocalFileClient {
                 mentions,
             }) if mentions.is_empty() => {
                 let resolution = self.local.resolve_input(self.operation, &text).await?;
-                match &resolution {
-                    CommandResolution::Select { .. }
-                    | CommandResolution::Confirm { .. }
-                    | CommandResolution::Sdk { .. }
-                    | CommandResolution::Submit {
-                        request:
-                            super::CommandRequest::Quit
-                            | super::CommandRequest::Theme { .. }
-                            | super::CommandRequest::CycleMode,
-                    } => {
-                        return Err(Error::Unsupported(
-                            "command requires an interactive client".into(),
-                        ));
-                    }
-                    _ => {}
-                }
                 let mut captured = file.clone();
                 captured.bytes = serde_json::to_vec(&resolution)
                     .map_err(|error| Error::Invalid(error.to_string()))?
@@ -216,6 +200,26 @@ impl LocalFileClient {
             }
             _ => file,
         };
+        let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
+            .or_else(|_| {
+                serde_json::from_slice::<CommandRequest>(&file.bytes)
+                    .map(|request| CommandResolution::Submit { request })
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        match resolution {
+            CommandResolution::Select { .. }
+            | CommandResolution::Confirm { .. }
+            | CommandResolution::Sdk { .. }
+            | CommandResolution::Submit {
+                request:
+                    CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
+            } => {
+                return Err(Error::Unsupported(
+                    "command requires an interactive client".into(),
+                ));
+            }
+            _ => {}
+        }
         let cursor = self.query.cursor();
         let mut expected = Generation {
             volume: cursor.volume,
