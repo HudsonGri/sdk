@@ -117,7 +117,7 @@ impl LocalHarness {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
             let config = config.prepare_state()?;
-            let state_directory = config.resolved_state_directory()?;
+            let state_location = config.state_location()?;
             let (model, provider) = config.model;
             model.validate()?;
             let mut tools = ToolRegistry::default();
@@ -183,11 +183,26 @@ impl LocalHarness {
                     return Err(Error::Invalid("local workspace is not a directory".into()));
                 }
             }
+            // Refuse a caller's overlapping control directory before capture
+            // can publish the checkout's incarnation token.
+            let selected_directory = match (&state_location, &config.project) {
+                (config::StateLocation::Directory(directory), LocalProject::Workspace(path)) => {
+                    Some(owner::separated_directory(directory, Some(path))?)
+                }
+                _ => None,
+            };
             let checkout = match &config.project {
                 LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
                 LocalProject::Volume { .. } => None,
             };
-            let directory = owner::separated_directory(&state_directory, checkout.as_ref().map(|checkout| checkout.path.as_path()))?;
+            let state_directory = state_location.resolve(&config.project, checkout.as_ref())?;
+            let directory = match selected_directory {
+                Some(directory) => directory,
+                None => owner::separated_directory(
+                    &state_directory,
+                    checkout.as_ref().map(|checkout| checkout.path.as_path()),
+                )?,
+            };
             #[cfg(test)]
             let checkout = match (&config.project, owner::RECAPTURE.get()) {
                 (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
