@@ -6,6 +6,7 @@ release commit.
 
 ## 0.2.0 - Unreleased
 
+- Preserve crashed Windows projections only through durably recorded physical root, volume, held-parent and original destination-fence custody; reject unknown or replaced roots without moving authored bytes.
 - Generate ignored Actors guest and timer authoring contracts with the locked Rust producer before Rust workspace qualification, preserving read-only drift checks without requiring JavaScript tooling.
 - Replace offline qualification command snapshots with actual lane execution against controlled native boundaries, downstream-effect exclusion, required model-result coverage, and WebAssembly capability admission checks.
 - Preserve portable Harness execution alongside native adapters: use canonical physical-copy and observation engines, retain original typed error causes, and release failed codec output custody after dropping its payload.

@@ -116,6 +116,59 @@ impl Drop for NativeMountRecoveryOwner {
 }
 
 impl NativeMountRecoveryOwner {
+    /// Acquires the destination fence relative to an already held parent.
+    /// The displayed destination supplies only its leaf name; it is never used
+    /// to reopen the parent. All resources belong to the caller's original work.
+    #[cfg(windows)]
+    pub fn acquire_in_directory(
+        destination: &Path,
+        parent: &cap_std::fs::Dir,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
+        super::registry::initialize()?;
+        crate::native_host::require_leaf(Path::new(
+            destination
+                .file_name()
+                .ok_or(NativeMountError::InvalidDestination)?,
+        ))?;
+        use crate::native_host::NativeHostWork as _;
+        let parent = (&mut &*original).attempt_io(
+            crate::WorkCounters {
+                backend_read_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            },
+            || parent.try_clone(),
+        )?;
+        Self::acquire_bound(destination, original, Some(parent))
+    }
+
+    /// Preserves a crashed ProjFS root by an identity-checked, no-replace rename
+    /// between held directories. A live provider's fence prevents acquisition.
+    /// Ordinary directories and foreign reparse points are never moved.
+    #[cfg(windows)]
+    pub fn preserve_crashed_in_directory(
+        &mut self,
+        residue_parent: &cap_std::fs::Dir,
+        residue_name: &Path,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        crate::native_host::require_leaf(residue_name)?;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = state.as_mut().ok_or(NativeMountError::ControlPending)?;
+        let result = state.preserve_crashed_in_directory(
+            &self.shared.destination,
+            residue_parent,
+            residue_name,
+            work,
+        );
+        state.measured_cleanup_failed = result.is_err();
+        result
+    }
+
     /// Administratively acquires the existing destination fence once.
     pub fn acquire(destination: &Path) -> Result<Self, NativeMountError> {
         super::registry::initialize()?;
@@ -391,7 +444,22 @@ impl NativeRecoveryState {
         self.identity = Some(identity);
         #[cfg(windows)]
         {
-            self.destination_identity =
+            self.destination_identity = if let Some(parent) = self
+                .guard
+                .as_ref()
+                .and_then(|guard| guard.parent_directory.as_ref())
+            {
+                projfs::open_recovery_leaf(
+                    parent,
+                    Path::new(
+                        destination
+                            .file_name()
+                            .ok_or(NativeMountError::InvalidDestination)?,
+                    ),
+                    work,
+                )?
+                .map(|(_, identity)| identity)
+            } else {
                 match crate::native_host::root_path_identity(destination, &mut &*work) {
                     Ok(identity) => Some(identity),
                     Err(crate::NativeTreeMaterializationError::Io(error))
@@ -400,7 +468,8 @@ impl NativeRecoveryState {
                         None
                     }
                     Err(error) => return Err(error.into()),
-                };
+                }
+            };
             if let Some(identity) = self.destination_identity {
                 self.control.bind_root_identity(identity);
             }
@@ -434,6 +503,84 @@ impl NativeRecoveryState {
             guard.close_administrative_fence(&mut self.final_close);
         }
         self.guard.take();
+    }
+
+    #[cfg(windows)]
+    fn preserve_crashed_in_directory(
+        &mut self,
+        destination: &Path,
+        residue_parent: &cap_std::fs::Dir,
+        residue_name: &Path,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        let guard = self
+            .guard
+            .as_mut()
+            .ok_or(NativeMountError::ControlPending)?;
+        // A preceding refused disposable recovery may retain its probe handle.
+        // Retire that control while this same destination fence is still held.
+        self.control.retire_controls()?;
+        let parent = guard
+            .parent_directory
+            .as_ref()
+            .ok_or(NativeMountError::InvalidDestination)?;
+        let leaf = Path::new(
+            destination
+                .file_name()
+                .ok_or(NativeMountError::InvalidDestination)?,
+        );
+        let opened = projfs::open_recovery_leaf(parent, leaf, work)?;
+        let Some((file, identity)) = opened else {
+            if self.destination_identity.is_some() {
+                return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
+            }
+            guard.release(&mut &*work)?;
+            self.guard.take();
+            return Ok(false);
+        };
+        if Some(identity) != self.destination_identity {
+            return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
+        }
+        if guard.owned_root(work)? != Some(identity) {
+            return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
+        }
+        match projfs::reparse_tag_held(&file, &mut &*work)? {
+            Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {}
+            Some(tag) => {
+                return Err(NativeMountError::UnsafeRecoveryDestination {
+                    reparse_tag: Some(tag),
+                });
+            }
+            None => {
+                guard.release(&mut &*work)?;
+                self.guard.take();
+                return Ok(false);
+            }
+        }
+        // The expected identity is checked on the same handle used for rename;
+        // no path lookup can substitute a replacement after the tag check.
+        crate::native_host::with_wide_path(leaf, &mut &*work, |leaf, work| {
+            crate::native_host::with_wide_path(residue_name, work, |name, work| {
+                crate::native_host::rename_held(
+                    parent,
+                    leaf,
+                    residue_parent,
+                    name,
+                    acyclic_native_runtime::RenameMode::NoReplace,
+                    Some(identity),
+                    work,
+                )
+            })
+        })?;
+        // Authored residue remains owned by the caller's held recovery directory.
+        // Never release the destination fence before both namespace writes settle.
+        crate::native_host::sync_directory_held(residue_parent, &mut &*work)?;
+        crate::native_host::sync_directory_held(parent, &mut &*work)?;
+        self.driver_step_complete = true;
+        self.destination_removed = true;
+        guard.release(&mut &*work)?;
+        self.guard.take();
+        Ok(true)
     }
 
     pub(super) fn finish_with_work(

@@ -155,6 +155,11 @@ impl ProjFsSession {
             .observe_view_with_meter(Arc::downgrade(&observer), work)?;
         if let Some(packet) = retirement.as_mut() {
             prepare(packet)?;
+            packet
+                .destination_guard
+                .as_ref()
+                .ok_or(NativeMountError::ControlPending)?
+                .publish_root_ownership(runtime.metadata_root.identity(), work)?;
         }
         session.retirement = retirement.take();
         session.activate(request, &runtime, work, warm)

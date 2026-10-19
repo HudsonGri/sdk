@@ -5,6 +5,7 @@ use bytes::Bytes;
 use std::sync::Barrier;
 mod common;
 use common::*;
+mod crash_recovery;
 mod command_retirement;
 mod empty_callbacks;
 mod metadata;

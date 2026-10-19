@@ -113,7 +113,7 @@ mod session;
 pub(super) use session::*;
 mod lifecycle;
 mod recovery;
-pub(super) use recovery::*;
+use recovery::*;
 mod cleanup;
 #[cfg(test)]
 pub(super) use cleanup::detach_projection;
