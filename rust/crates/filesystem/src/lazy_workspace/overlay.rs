@@ -151,11 +151,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         metadata: crate::WorkspaceMetadata,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyShadowId, LazyWorkspaceError> {
+        let records = [record];
         let hold = accounted!(ctx, |work, cancel| self
             .workspace
             .volume
             .fs
-            .make_records_durable(self.workspace.volume.config, &[record], work, cancel))?;
+            .make_records_durable(self.workspace.volume.config, &records, work, cancel))?;
         ctx.charge(WorkCounters {
             bytes_hashed: 16,
             ..WorkCounters::UNCHARGED

@@ -84,7 +84,19 @@ fn scripted(
                     let turn = if body.contains(CHILD_TASK_IN_REQUEST) {
                         text("child done")
                     } else if body.contains("stack fixture") {
-                        if body.contains("function_call_output") { text("prepared") } else { child_call("spawn") }
+                        let outputs = tool_outputs(&body);
+                        match outputs.len() {
+                            0 => child_call("spawn"),
+                            1 => {
+                                let mut wait = child_call("wait");
+                                wait["call_id"] = json!("fixture-wait");
+                                wait
+                            }
+                            _ => {
+                                assert_eq!(outputs[1]["agents"][0]["result"]["outcome"]["Succeeded"]["text"], "child done");
+                                text("prepared")
+                            }
+                        }
                     } else {
                         let mut turn = turns
                             .get(requests.len())
@@ -219,7 +231,7 @@ fn measured_turn<const UNBOXED: bool>(
             Some(directory.path().join("state")),
         )
         .unwrap();
-        assert!(matches!(code, 0 | 4), "child fixture failed: {code}");
+        assert_eq!(code, 0, "child fixture must complete successfully");
         admitted(
             &workspace,
             &catalog,
@@ -343,7 +355,11 @@ pub(crate) fn qualify() {
                 used < BUDGET_KIB * 1024,
                 "{case}: {used} bytes exceeds the strict {BUDGET_KIB} KiB budget"
             );
-            if matches!(case.as_str(), "send" | "wait" | "archive") {
+            if case == "spawn" {
+                assert_eq!(code, 0, "spawn: real child operation did not complete");
+                let outputs = tool_outputs(requests.last().expect("spawn result request"));
+                assert_eq!(outputs.last(), Some(&json!({"agent":"kid"})));
+            } else if matches!(case.as_str(), "send" | "wait" | "archive") {
                 assert_eq!(code, 0, "{case}: real child operation did not complete");
                 let expected = match case.as_str() {
                     "send" => json!({"agent":"kid", "queued":true}),
@@ -354,6 +370,11 @@ pub(crate) fn qualify() {
                 let output = outputs.last().expect("child result reached model");
                 if case == "wait" {
                     assert_eq!(output["agents"][0]["reference"], "kid", "{output}");
+                    assert_eq!(output["agents"][0]["result"]["turn"], 1, "{output}");
+                    assert_eq!(
+                        output["agents"][0]["result"]["outcome"]["Succeeded"]["text"], "child done",
+                        "{output}"
+                    );
                 } else {
                     assert_eq!(output, &expected);
                 }

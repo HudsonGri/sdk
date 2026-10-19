@@ -169,13 +169,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
             .map_err(WorkspaceError::from);
         }
-        let remaining = accounting.remaining()?;
         // The frame stays reserved while its receipt joins the ledger.
-        let (opened, reservation) = crate::heap_future::in_heap_metered(&mut *accounting, |_| {
-            self.volume
-                .checkout(selector, mode, remaining, cancellation)
-        })?
-        .await;
+        let (opened, reservation) =
+            crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
+                self.volume
+                    .checkout(selector, mode, remaining, cancellation)
+            })?
+            .await;
         let checkout = (|| {
             let (allocations, work, budget, _) = accounting
                 .standalone_parts()
