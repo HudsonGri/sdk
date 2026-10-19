@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["grpc"]
+grpc = ["acyclic-objects/grpc"]
+
 [dependencies]
 acyclic-objects = { path = "../../rust/crates/objects", default-features = false, features = ["http"] }
 acyclic-stream = { path = "../../rust/crates/stream", default-features = false, features = ["http"] }

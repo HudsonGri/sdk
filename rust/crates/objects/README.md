@@ -39,7 +39,7 @@ use acyclic_objects::GrpcObjects;
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let ca_pem = std::fs::read("trusted-ca.pem")?;
 let client = GrpcObjects::connect(
-    "https://objects.example", "account-token", Some(&ca_pem),
+    "https://objects.example", "account-token", Some(&ca_pem), None,
 ).await?;
 # let _ = client;
 # Ok(())
