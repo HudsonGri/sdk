@@ -540,7 +540,7 @@ fn tool_group(case: &str) -> Vec<serde_json::Value> {
         ),
         call(
             "bash",
-            json!({"command": "printf 'diff --git a/calc.py b/calc.py\n' > change.patch"}),
+            json!({"command": "printf 'diff --git a/calc.py b/calc.py\n--- a/calc.py\n+++ b/calc.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n' > change.patch"}),
         ),
     ];
     // Every group starts with the same file tools and its own complete history.
