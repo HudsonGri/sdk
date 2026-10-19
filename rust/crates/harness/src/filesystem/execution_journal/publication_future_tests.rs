@@ -87,7 +87,8 @@ async fn prepare(
 }
 
 // Both executor runs use the same entrypoints, backed by disjoint stores.
-struct Choice<'a>(&'a Journal, bool);
+// (journal, retain the boxed factory, omit the disposable projection).
+struct Choice<'a>(&'a Journal, bool, bool);
 macro_rules! factories {
     ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $out:ty;)*) => {
         impl ExecutionJournal for Choice<'_> {
@@ -96,6 +97,13 @@ macro_rules! factories {
                 if self.1 { legacy::$name(self.0, $($arg,)* io) }
                 else { self.0.$name($($arg,)* io) }
             })*
+            fn append<'a>(&'a self, operation: OperationId, key: &'a str,
+                event: &'a ExecutionEvent, io: Option<&'a PreparationIo>)
+                -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+                if self.2 { legacy::append_without_projection(self.0, operation, key, event, io) }
+                else if self.1 { legacy::append(self.0, operation, key, event, io) }
+                else { self.0.append(operation, key, event, io) }
+            }
             fn append_if_tail<'a>(&'a self, operation: OperationId, tail: u64, key: &'a str,
                 event: &'a ExecutionEvent, io: Option<&'a PreparationIo>)
                 -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
@@ -117,7 +125,6 @@ macro_rules! factories {
     };
 }
 factories! {
-    fn append(operation: OperationId, key: &'a str, event: &'a ExecutionEvent) -> ();
     fn replay(operation: OperationId, tail: u64, maximum: u32) -> Vec<ExecutionRecord>;
     fn load(file: &'a FileRef) -> acyclic_stream::OwnedBytes;
     fn stage(operation: OperationId, key: &'a str, bytes: &'a [u8], media: &'static str) -> FileRef;
@@ -164,7 +171,7 @@ fn construct(
     file: &FileRef,
     io: &PreparationIo,
 ) -> Result<()> {
-    let journal = Choice(journal, old);
+    let journal = Choice(journal, old, false);
     match mode {
         0 => drop(journal.append(operation, "key", event, Some(io))?),
         1 => drop(journal.append_if_tail(operation, 0, "key", event, Some(io))?),
@@ -266,6 +273,7 @@ async fn turn(
     deltas: usize,
     broken: bool,
     host: Option<Arc<dyn crate::runtime::DurableTaskHost>>,
+    omit_projection: bool,
 ) -> Result<[Vec<Vec<u8>>; 3]> {
     use crate::{
         context::ContextPipeline,
@@ -311,7 +319,7 @@ async fn turn(
         selected_context: None,
         max_steps: 1,
     };
-    let selected = Choice(journal, old);
+    let selected = Choice(journal, old, omit_projection);
     let output = executor.execute(input.clone(), &selected).await?;
     assert_eq!(executor.execute(input, &selected).await?, output);
     assert_eq!(provider.remaining(), 0);
@@ -377,7 +385,7 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
         let [omitted, published] =
             differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
                 runtime.block_on(async {
-                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
+                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host), old)
                         .await
                         .unwrap();
                     let snapshot = journal
@@ -415,7 +423,7 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
     }
     let (journal, host) = initialize();
     runtime.block_on(async {
-        turn(&journal, true, "conditional", 1, false, Some(host))
+        turn(&journal, true, "conditional", 1, false, Some(host), true)
             .await
             .unwrap();
         let records = journal.records(operation, 0, 64, None).await.unwrap();
@@ -524,7 +532,7 @@ fn journal_wrapper_observations(
                                     runtime
                                         .block_on(
                                             run(
-                                                &Choice(&journal, old),
+                                                &Choice(&journal, old, false),
                                                 mode,
                                                 0,
                                                 (operation, "key", &event),
@@ -601,7 +609,7 @@ proptest! {
         let key = if failure == 2 { "" } else { &key };
         for mode in 0..5 {
             let observations = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(), |journal, old| {
-                let selected = Choice(&journal, old);
+                let selected = Choice(&journal, old, false);
                 let file = runtime.block_on(selected.stage(operation, "seed-only", b"seed", "application/octet-stream", None).unwrap()).unwrap();
                 if mode == 2 { runtime.block_on(selected.append(operation, "start", &ExecutionEvent::Started { request_digest: digest }, None).unwrap()).unwrap(); }
                 let result = runtime.block_on(run(&selected, mode, tail,
@@ -624,7 +632,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let [expected, actual] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
-            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, false, None)).unwrap());
+            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, false, None, false)).unwrap());
         prop_assert_eq!(&actual, &expected);
         for group in 0..3 {
             let mut broken = actual.clone();
@@ -635,7 +643,7 @@ proptest! {
         missing.0[2].pop();
         prop_assert_ne!(&missing, &expected);
         let broken = differential::observe::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
-            |journal| runtime.block_on(turn(&journal, false, &prompt, deltas, true, None)).unwrap());
+            |journal| runtime.block_on(turn(&journal, false, &prompt, deltas, true, None, false)).unwrap());
         prop_assert_eq!(&expected.0, &broken.0);
         prop_assert_ne!(&expected.1, &broken.1, "extra verification was not detected");
     }
@@ -802,7 +810,7 @@ fn journal_accounting_admits_the_original_frames() {
                         accounted(native, 1 << 24, cancelled, |io| {
                             runtime
                                 .block_on(async {
-                                    Choice(&journal, old).load(&file, Some(io))?.await
+                                    Choice(&journal, old, false).load(&file, Some(io))?.await
                                 })
                                 .map(|bytes| bytes.as_ref().to_vec())
                                 .map_err(|e| e.to_string())
