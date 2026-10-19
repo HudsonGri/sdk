@@ -21,6 +21,9 @@ pub(super) fn user_state_root() -> Result<PathBuf> {
 /// Unit tests have no per-user store; see the production definition.
 #[cfg(test)]
 pub(super) fn user_state_root() -> Result<PathBuf> {
+    if let Some(root) = STATE_ROOT.with_borrow(Clone::clone) {
+        return Ok(root.join("acyclic/harness"));
+    }
     Err(Error::Unsupported(UNIT_TESTS_INJECT_STATE.into()))
 }
 
@@ -117,6 +120,11 @@ pub(super) fn state_directory_in(
 
 mod directory;
 pub(super) use directory::separated_directory;
+
+#[cfg(test)]
+pub(super) fn directory(path: &Path) -> Result<PathBuf> {
+    separated_directory(path, None)
+}
 
 /// One capture of a checkout root: its canonical path, object identity and
 /// incarnation, with the root itself held open. State selection and owner
@@ -261,7 +269,6 @@ fn durable_object(object: [u8; 16]) -> [u8; 16] {
     };
     object
 }
-
 
 impl Owner {
     pub(super) fn open(
