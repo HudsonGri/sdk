@@ -204,7 +204,7 @@ impl LocalHarness {
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
         let manifest = self
-            .turn_manifest(operation, question, publisher.as_ref())
+            .turn_manifest(operation, question, self.limits, publisher.as_ref())
             .await?;
         let prompt = self.prompt_context(Some(task), question).await?;
         self.stage_bound_turn(operation, &prompt, manifest, publisher.as_ref())
@@ -316,7 +316,9 @@ impl LocalHarness {
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
-        let manifest = self.turn_manifest(operation, prompt, publisher).await?;
+        let manifest = self
+            .turn_manifest(operation, prompt, limits, publisher)
+            .await?;
         let (receive, model) = self
             .stage_bound_turn_using(
                 operation,
@@ -334,12 +336,13 @@ impl LocalHarness {
         &self,
         operation: OperationId,
         prompt: &str,
+        limits: Limits,
         publisher: &dyn ContentPublisher,
     ) -> Result<crate::conversation::FileRef> {
         Ok(match &self.context_manifest {
             Some(reference) => reference.clone(),
             None => {
-                self.stage_context_manifest_with(operation, Some(prompt), publisher)
+                self.stage_context_manifest_with(operation, Some(prompt), limits, publisher)
                     .await?
             }
         })

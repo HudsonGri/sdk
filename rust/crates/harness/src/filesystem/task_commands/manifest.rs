@@ -95,6 +95,7 @@ where
         &self,
         reference: FileRef,
         context: &TaskContext,
+        model: &crate::context::CatalogModel<'_>,
         io: Option<&PreparationIo>,
     ) -> Result<(ContextPipeline, crate::tool::ToolRegistry)> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -120,6 +121,7 @@ where
             &reader,
             tools,
             context.scope().limits(),
+            Some(model),
             io,
         )
         .await?;

@@ -91,6 +91,9 @@ pub struct LocalHarness {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(feature = "native-execution")]
     checkout_context: bool,
+    /// Dates the environment block in each turn's context manifest.
+    #[cfg(feature = "native-execution")]
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
 impl LocalHarness {
@@ -279,6 +282,8 @@ impl LocalHarness {
                 },
             );
             let verifier = issuer.verifier(&mut None)?;
+            #[cfg(feature = "native-execution")]
+            let clock = Arc::clone(&config.clock);
             let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
                 files: files.clone(),
                 #[cfg(feature = "native-execution")]
@@ -328,6 +333,8 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
+                #[cfg(feature = "native-execution")]
+                clock,
             };
             Ok(local)
         })
