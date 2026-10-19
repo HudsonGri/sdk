@@ -127,10 +127,7 @@ fn crash_reopen(point: Cut) -> Result<()> {
             marker.get().is_some(),
             "workspace did not reopen before the new prompt"
         );
-        match point {
-            Cut::FirstTurnWrite => result,
-            Cut::DispatchIntent => manifest::check("F3", result),
-        }
+        result
     })
 }
 

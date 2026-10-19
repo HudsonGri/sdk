@@ -34,9 +34,9 @@ if not re.search(rb"test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;",
 
 def run_pair():
     commands = [
-        ["--skip", second_test, "--skip", "sources::", "--skip", "manifest::",
+        ["--skip", second_test, "--skip", "sources::",
          "--test-threads=1", "--nocapture"],
-        [second_test, "sources::", "manifest::", "--test-threads=1", "--nocapture"],
+        [second_test, "sources::", "--test-threads=1", "--nocapture"],
     ]
     processes = []
     try:

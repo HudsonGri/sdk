@@ -17,7 +17,6 @@ mod clocks;
 mod digest;
 mod driver;
 mod features;
-mod manifest;
 mod recovery;
 mod sources;
 
