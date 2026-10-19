@@ -2,11 +2,18 @@ use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedMo
 use acyclic_harness::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
+mod catalog_update;
+mod selection;
+mod snapshot;
+use catalog_update::Changes;
+use selection::Credential;
 
 /// Registry of protocol endpoints addressed by `provider/model`.
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
+    default_model: Option<String>,
     credentials: Credentials,
+    selection: snapshot::Snapshot<selection::Observations>,
     transport: Arc<dyn HttpTransport>,
     files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
@@ -25,19 +32,15 @@ impl Registry {
             .into_iter()
             .map(|(id, spec)| (id, Arc::new(spec)))
             .collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        let codex_login = credentials
-            .allows_native_sources()
-            .then(crate::CodexLogin::discover)
-            .flatten()
-            .map(Arc::new);
         Self {
             providers,
+            default_model: None,
             credentials,
+            selection: snapshot::Snapshot::default(),
             transport,
             files: crate::files::Files::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            codex_login,
+            codex_login: None,
         }
     }
 
@@ -61,6 +64,13 @@ impl Registry {
         self
     }
 
+    /// Catalog-declared fallback when neither argv nor settings select a model.
+    pub fn default_model(&self) -> &str {
+        self.default_model
+            .as_deref()
+            .unwrap_or(crate::catalog::DEFAULT_MODEL)
+    }
+
     /// Borrows declarative endpoint, authentication and capacity specifications.
     pub fn catalog(&self) -> &BTreeMap<String, Arc<ProviderSpec>> {
         &self.providers
@@ -68,23 +78,15 @@ impl Registry {
 
     /// Adds or replaces one endpoint. Local models require their configured capacities.
     pub fn register(&mut self, provider: String, config: ProviderSpec) -> Result<()> {
-        validate_spec(&provider, &config)?;
-        self.providers.insert(provider, Arc::new(config));
-        Ok(())
+        self.update_catalog(Changes::One(provider, config), None)
     }
 
     /// Loads endpoint, credential policy and exact capacities from a JSON catalog.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_catalog(&mut self, path: &std::path::Path) -> Result<()> {
         let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
-        let catalog: BTreeMap<String, ProviderSpec> =
-            serde_json::from_slice(&bytes).map_err(|_| invalid("invalid provider catalog"))?;
-        for (provider, spec) in &catalog {
-            validate_spec(provider, spec)?;
-        }
-        self.providers
-            .extend(catalog.into_iter().map(|(id, spec)| (id, Arc::new(spec))));
-        Ok(())
+        let catalog = crate::catalog_document::parse(&bytes)?;
+        self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
     }
 
     /// Resolves a model without doing network I/O. Remaining slashes belong to the model.
@@ -113,25 +115,21 @@ impl Registry {
             .models
             .get(name)
             .map(|entry| entry.capacity)
-            .ok_or_else(|| {
-                invalid("register the exact selected model context and output capacities")
-            })?;
+            .ok_or_else(|| invalid("register the selected model context capacity"))?;
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
-        let key = self.credentials.api_key(provider)?;
+        let credential = self.selected_credential(provider, &config)?;
+        let key = match &credential {
+            Credential::Key(key) => Some(key.clone()),
+            _ => None,
+        };
         #[cfg(not(target_arch = "wasm32"))]
-        let codex_login =
-            if config.authentication == Authentication::ApiKeyOrCodexLogin && key.is_none() {
-                self.codex_login
-                    .as_ref()
-                    .map(|login| Arc::new(login.fresh()))
-            } else {
-                None
-            };
+        let codex_login = match credential {
+            Credential::Codex(login) => Some(Arc::new(login.fresh())),
+            _ => None,
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let config = if codex_login.is_some() {
-            if config.adapter != crate::Adapter::Responses
-                || config.base_url != "https://api.openai.com/v1"
-            {
+            if !codex_route(&config) {
                 return Err(invalid(
                     "Codex CLI credentials require the built-in Responses route",
                 ));
@@ -174,6 +172,15 @@ impl Registry {
             codex_login,
         })
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod credential_tests;
+
+/// The built-in Responses route that a native Codex CLI login may replace.
+#[cfg(not(target_arch = "wasm32"))]
+fn codex_route(config: &ProviderSpec) -> bool {
+    config.adapter == crate::Adapter::Responses && config.base_url == "https://api.openai.com/v1"
 }
 
 pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
@@ -228,8 +235,24 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         }
         crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
     }
-    for model in config.models.values() {
+    for (name, model) in &config.models {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let validate_identity =
+            !catalog_update::tests::SKIP_MODEL_IDENTITY.with(std::cell::Cell::get);
+        #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+        let validate_identity = true;
+        if validate_identity {
+            Model::validate_identity(provider, name, "provider-v1")?;
+        }
         model.capacity.validate()?;
+        if model
+            .max_context_tokens
+            .is_some_and(|max| max < model.capacity.context_tokens)
+        {
+            return Err(invalid(
+                "model maximum context is below its selected context",
+            ));
+        }
     }
     Ok(())
 }

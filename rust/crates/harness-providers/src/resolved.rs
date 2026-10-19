@@ -1,4 +1,6 @@
-use crate::{HttpTransport, ProviderSpec, invalid};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::HttpTransport;
+use crate::{ProviderSpec, invalid};
 use acyclic_harness::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
@@ -16,7 +18,7 @@ pub struct ResolvedModel {
     pub(crate) model: Model,
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
-    pub(crate) key: Option<String>,
+    pub(crate) key: Option<Arc<str>>,
     /// The platform transport under the endpoint's deadlines: the only way to the network.
     pub(crate) transport: Arc<crate::deadline::Bounded>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -69,8 +71,8 @@ impl ResolvedModel {
         Ok(())
     }
 
-    pub(crate) fn context_output(&self) -> u32 {
-        self.capacity.output_tokens
+    pub(crate) fn default_output_budget(&self) -> u32 {
+        self.capacity.default_output_budget()
     }
     pub(crate) fn validate(&self, model: &Model) -> Result<()> {
         if model != &self.model {

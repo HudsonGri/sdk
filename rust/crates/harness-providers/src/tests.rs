@@ -27,6 +27,9 @@ mod argument_projection_tests;
 #[path = "call_id_tests.rs"]
 mod call_id_tests;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "catalog_identity_tests.rs"]
+pub(crate) mod catalog_identity_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
 #[cfg(not(target_arch = "wasm32"))]
@@ -317,7 +320,7 @@ pub(super) fn provider_with(
         }),
         capacity: ModelContextCapacity {
             context_tokens: 8192,
-            output_tokens: 1024,
+            output_tokens: Some(1024),
         },
         key: Some("scripted-key".into()),
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
@@ -488,9 +491,10 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         models: BTreeMap::from([(
             "org/model".into(),
             ModelSpec {
+                max_context_tokens: None,
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,
-                    output_tokens: 1024,
+                    output_tokens: Some(1024),
                 },
                 features: ModelFeatures::default(),
             },
@@ -706,3 +710,6 @@ mod reasoning;
 
 #[path = "files_tests.rs"]
 mod files;
+
+#[path = "catalog_capacity_tests.rs"]
+mod catalog_capacity_tests;
