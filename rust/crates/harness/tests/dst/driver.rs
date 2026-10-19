@@ -97,8 +97,10 @@ impl Driver {
                         };
                     },
                     () = &mut deadline => panic!(
-                        "turn exceeded the simulated deadline; last boundary: {:?}",
-                        self.boundaries.last()
+                        "turn exceeded the simulated deadline; last boundary: {:?}; pending: {}; polls: {:?}; trace: {:?}",
+                        self.boundaries.last(), schedule.pending_native_work(),
+                        schedule.polls().iter().rev().take(20).collect::<Vec<_>>(),
+                        schedule.trace().iter().rev().take(10).collect::<Vec<_>>()
                     ),
                 }
             };

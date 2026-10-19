@@ -152,14 +152,17 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         external_owner: Option<OwnershipAnchor>,
     ) -> Result<Self, FsError> {
         (async move {
-            static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
+            // Registry operations never suspend. A synchronous lock prevents unrelated
+            // runtime executors from owning asynchronous wake handoffs for this map.
+            static REGISTRY: OnceLock<std::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
             let root = canonical_local_root(options.root.clone(), external_owner.clone()).await?;
             let mut options = options;
             options.root = root.clone();
-            let registry =
-                REGISTRY.get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()));
+            let registry = REGISTRY.get_or_init(|| std::sync::Mutex::new(LocalRootRegistry::new()));
             let opening = {
-                let mut registrations = registry.lock().await;
+                let mut registrations = registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(existing) = registrations.get(&root)
                     && let Some(inner) = existing.live.upgrade()
                 {
@@ -172,7 +175,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             };
             let _opening = opening.lock().await;
             let lifecycle = {
-                let registrations = registry.lock().await;
+                let registrations = registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let existing = registrations
                     .get(&root)
                     .ok_or(FsError::LocalInitializationWorker)?;
@@ -205,7 +210,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 }
             })
             .await??;
-            let mut registrations = registry.lock().await;
+            let mut registrations = registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let existing = registrations
                 .get_mut(&root)
                 .ok_or(FsError::LocalInitializationWorker)?;
