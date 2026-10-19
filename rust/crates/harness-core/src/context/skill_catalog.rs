@@ -92,6 +92,10 @@ impl SkillCatalog {
                 Ok::<(), std::convert::Infallible>(())
             },
             || Ok(()),
+            |text, bytes| {
+                text.reserve_exact(usize::try_from(bytes).expect("catalog capacity fits usize"));
+                Ok(())
+            },
         );
         matches!(rendered, Ok(true)).then_some(text)
     }
@@ -240,6 +244,7 @@ pub(crate) fn render_into<E>(
     text: &mut String,
     mut push: impl FnMut(&mut String, &str) -> Result<(), E>,
     mut visit: impl FnMut() -> Result<(), E>,
+    mut reserve: impl FnMut(&mut String, u64) -> Result<(), E>,
 ) -> Result<bool, E> {
     let Some(total) = catalog.total() else {
         return Ok(false);
@@ -270,6 +275,9 @@ pub(crate) fn render_into<E>(
             break;
         };
         used = used.saturating_add(size);
+        // The measured JSON bytes bound the raw entry. Admit its capacity once
+        // before emission so escaped scalars cannot trigger repeated growth.
+        reserve(text, size)?;
         push_entry(skill, text, &mut push, &mut visit)?;
         let listed = index as u64 + 1;
         if listed == total {
@@ -359,7 +367,11 @@ mod tests {
                 || {
                     visits += 1;
                     Ok(())
-                }
+                },
+                |text, bytes| {
+                    text.reserve_exact(bytes as usize);
+                    Ok(())
+                },
             ),
             Ok(true)
         );
@@ -379,7 +391,11 @@ mod tests {
                     text.push_str(part);
                     Ok::<_, ()>(())
                 },
-                || Err(())
+                || Err(()),
+                |text, bytes| {
+                    text.reserve_exact(bytes as usize);
+                    Ok(())
+                },
             ),
             Err(())
         );
@@ -415,7 +431,11 @@ mod tests {
                 || {
                     visits += 1;
                     if visits > measured { Err(()) } else { Ok(()) }
-                }
+                },
+                |text, bytes| {
+                    text.reserve_exact(bytes as usize);
+                    Ok(())
+                },
             ),
             Err(())
         );
@@ -445,9 +465,84 @@ mod tests {
                 Ok(())
             },
             || Ok(()),
+            |text, bytes| {
+                text.reserve_exact(bytes as usize);
+                Ok(())
+            },
         );
         assert_eq!(result, Err(()));
         assert!(!text.contains("&lt;"));
+    }
+
+    #[test]
+    fn refused_entry_capacity_builds_no_entry() {
+        let catalog = SkillCatalog {
+            skills: vec![CatalogSkill {
+                name: "fixture".into(),
+                description: "&".into(),
+                path: "SKILL.md".into(),
+            }],
+            unlisted: 0,
+        };
+        let mut text = String::new();
+        assert_eq!(
+            render_into(
+                &catalog,
+                u64::MAX,
+                &mut text,
+                |text, part| {
+                    text.push_str(part);
+                    Ok::<_, ()>(())
+                },
+                || Ok(()),
+                |_, _| Err(())
+            ),
+            Err(())
+        );
+        assert!(!text.contains("- fixture"));
+    }
+
+    #[test]
+    fn escape_heavy_entries_reserve_capacity_before_scalar_emission() {
+        use std::cell::Cell;
+        let catalog = SkillCatalog {
+            skills: vec![CatalogSkill {
+                name: "fixture".into(),
+                description: "&<".repeat(4096),
+                path: "SKILL.md".into(),
+            }],
+            unlisted: 0,
+        };
+        let allocations = Cell::new(0);
+        let mut text = String::new();
+        let grow = |text: &mut String, bytes: u64| {
+            if text.len() + bytes as usize > text.capacity() {
+                allocations.set(allocations.get() + 1);
+                text.reserve_exact(bytes as usize);
+            }
+            Ok::<_, ()>(())
+        };
+        assert_eq!(
+            render_into(
+                &catalog,
+                u64::MAX,
+                &mut text,
+                |text, part| {
+                    grow(text, part.len() as u64)?;
+                    text.push_str(part);
+                    Ok(())
+                },
+                || Ok(()),
+                grow
+            ),
+            Ok(true)
+        );
+        assert!(text.contains(&"&amp;&lt;".repeat(4096)));
+        assert!(
+            allocations.get() <= 5,
+            "scalar-by-scalar allocation: {}",
+            allocations.get()
+        );
     }
 
     #[test]

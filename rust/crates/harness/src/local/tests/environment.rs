@@ -376,3 +376,50 @@ async fn oversized_skill_catalog_fits_the_model_allowance() -> Result<()> {
     reopened.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn logical_git_switch_never_retains_the_physical_branch_summary() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let root = directory.path();
+    write(root, "marker", "base")?;
+    git(root, &["init", "--quiet", "--initial-branch=main"])?;
+    git(root, &["add", "--all"])?;
+    git(root, &["commit", "--quiet", "--message", "fixture"])?;
+    let provider = scripted([
+        super::checked_commands::call(0, "fs", "git switch -c feature"),
+        ScriptedTurn::Text("switched".into()),
+        ScriptedTurn::Text("next".into()),
+    ]);
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(root, (model()?, provider.clone()))?
+            .state_directory(state.path()),
+    )
+    .await?;
+    assert_eq!(harness.run("switch").await?.text, "switched");
+    let branch = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["branch", "--show-current"])
+        .output()
+        .map_err(super::super::storage)?;
+    assert!(branch.status.success());
+    assert_eq!(
+        branch.stdout, b"main\n",
+        "fixture needs distinct physical Git state"
+    );
+    let workspace = harness.workspace.as_ref().unwrap();
+    let (selected, _) = workspace.selected_view().await?;
+    assert!(selected.is_some(), "logical branch did not switch");
+    assert_eq!(harness.run("next").await?.text, "next");
+    let requests = provider.requests();
+    let (texts, _) = system_text(requests.last().unwrap());
+    let environment = texts
+        .iter()
+        .find(|text| text.starts_with("<environment_context>"))
+        .unwrap();
+    assert!(
+        !environment.contains("<git_status>"),
+        "physical Git leaked into the selected view: {environment}"
+    );
+    harness.close().await
+}

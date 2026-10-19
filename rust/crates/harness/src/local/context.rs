@@ -138,7 +138,7 @@ impl LocalHarness {
             if self.checkout_context {
                 manifest
                     .conventions
-                    .push(environment::render(&workspace.path, self.clock.now_unix_millis()).await);
+                    .push(environment::render(workspace, self.clock.now_unix_millis()).await);
                 let skills = self.checkout_skills(workspace, maximum).await?;
                 // The manifest pins the accepted catalog as data; each model
                 // request renders it against that model's own allowance.
