@@ -46,7 +46,13 @@ async fn run(
     if let Some(path) = &args.catalog {
         registry.load_catalog(path)?;
     }
-    let provider = Arc::new(registry.resolve(&args.model)?);
+    let provider = Arc::new(
+        registry.resolve(
+            args.model
+                .as_deref()
+                .unwrap_or_else(|| registry.default_model()),
+        )?,
+    );
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
     if let Some(state) = state {
         config = config.state_directory(state);
