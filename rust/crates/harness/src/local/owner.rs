@@ -4,6 +4,8 @@ use std::{
     fs,
     io::{Read, Write},
 };
+#[cfg(feature = "native-execution")]
+mod exclusion;
 
 /// Root of every project's default harness state: the per-user local data directory. This is the only place the
 /// harness consults that directory. Unit tests cannot reach it: a test that does not inject
@@ -171,6 +173,12 @@ impl Checkout {
 /// recycled object id, has no token and publishes a new one.
 #[cfg(feature = "native-execution")]
 fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
+    // Capture Git metadata before publishing the SDK-owned token. Publication
+    // retains those directory handles even if the checkout's name is replaced.
+    let exclusion = exclusion::Exclusion::capture(root)?;
+    if let Some(exclusion) = exclusion {
+        exclusion.publish()?;
+    }
     super::workspace::volumes::held_directories(
         root,
         Path::new(super::workspace::volumes::INCARNATION_PATH),
