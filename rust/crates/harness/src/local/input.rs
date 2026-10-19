@@ -14,6 +14,8 @@ use crate::{
 };
 #[cfg(feature = "native-execution")]
 mod native_sources;
+#[cfg(feature = "native-execution")]
+mod native_storage;
 
 // Storage must be destroyed before its accounting owner on every exit path.
 #[cfg(feature = "native-execution")]
@@ -404,7 +406,10 @@ impl ComposerInput {
         };
         let limits = ContextDiscoveryLimits::default();
         let catalog = if commands && text.trim_start().starts_with('/') {
-            let mut pending = vec![".claude/commands".to_owned(), ".codex/prompts".to_owned()];
+            let mut pending = native_storage::PathFrontier::new(&work)?;
+            for path in [".claude/commands", ".codex/prompts"] {
+                pending.push(native_storage::path(&work, &[path])?)?;
+            }
             let mut directories = 0_u32;
             let mut entries = 0_u32;
             let mut remaining = self.maximum_bytes;
@@ -424,6 +429,8 @@ impl ComposerInput {
             )
             .await?;
             while let Some(path) = pending.pop() {
+                let path = &path.value;
+                let absolute = native_storage::path(&work, &["/", path])?;
                 directories += 1;
                 if directories > limits.directories {
                     return Err(Error::Invalid("command directory bound exceeded".into()));
@@ -433,7 +440,7 @@ impl ComposerInput {
                     let listed = view
                         .list_directory_at_snapshot(
                             cut,
-                            &format!("/{path}"),
+                            &absolute.value,
                             cursor,
                             128,
                             &mut accounting,
@@ -469,9 +476,9 @@ impl ComposerInput {
                             _allocation: allocation,
                         };
                         let name = &name.value;
-                        let child = format!("{path}/{name}");
+                        let child = native_storage::path(&work, &[path, "/", name])?;
                         match entry.kind {
-                            acyclic_fs::demand::SourceNodeKind::Directory => pending.push(child),
+                            acyclic_fs::demand::SourceNodeKind::Directory => pending.push(child)?,
                             acyclic_fs::demand::SourceNodeKind::RegularFile
                                 if name.ends_with(".md") =>
                             {
@@ -479,7 +486,7 @@ impl ComposerInput {
                                     view,
                                     cut,
                                     &prefix,
-                                    &child,
+                                    &child.value,
                                     remaining,
                                     publisher.as_ref(),
                                     &mut accounting,
@@ -599,17 +606,26 @@ async fn copy_checkout_file(
             "composer path targets internal content".into(),
         ));
     }
+    let work = match accounting {
+        acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, .. } => *work,
+        _ => {
+            return Err(Error::Invalid(
+                "composer capture requires its original work".into(),
+            ));
+        }
+    };
+    let absolute = native_storage::path(work, &["/", path])?;
     let (chunk, _) = view
-        .read_at_snapshot(cut, &format!("/{path}"), None, maximum, accounting)
+        .read_at_snapshot(cut, &absolute.value, None, maximum, accounting)
         .await?;
-    let destination = format!("{prefix}/{path}");
+    let destination = native_storage::path(work, &[prefix, "/", path])?;
     publisher
         .stage_once(
             context::publication_operation(
                 b"acyclic.local.composer-file/v1\0",
-                destination.as_bytes(),
+                destination.value.as_bytes(),
             ),
-            &destination,
+            &destination.value,
             chunk.bytes.as_ref(),
             "text/plain",
             source_display_name(path)?,

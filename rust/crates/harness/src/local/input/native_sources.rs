@@ -24,7 +24,7 @@ pub(super) async fn capture(
     let mut accounting =
         acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, cancellation };
     // Establish an empty discoverable root even when no command directory exists.
-    publish(prefix, ".root", b"", publisher).await?;
+    publish(prefix, ".root", b"", publisher, work).await?;
     for (directory, destination) in settings.command_roots() {
         let source = match NativeDemandSource::open(
             std::borrow::Cow::Borrowed(&directory),
@@ -42,14 +42,17 @@ pub(super) async fn capture(
             Err(error) => return Err(storage(error)),
         };
         let reference = source.reference();
-        let mut pending = vec![String::new()];
+        let mut pending = native_storage::PathFrontier::new(work)?;
+        pending.push(native_storage::path(work, &[""])?)?;
         while let Some(relative) = pending.pop() {
+            let relative = &relative.value;
+            let absolute = native_storage::path(work, &["/", relative])?;
             *bounds.directories += 1;
             if *bounds.directories > bounds.limits.directories {
                 return Err(Error::Invalid("command directory bound exceeded".into()));
             }
             let (path, allocation) = NamespacePath::parse_in_profile(
-                &format!("/{relative}"),
+                &absolute.value,
                 config.profile,
                 config.limits,
                 &mut accounting,
@@ -79,13 +82,13 @@ pub(super) async fn capture(
                         _allocation: allocation,
                     };
                     let child = if relative.is_empty() {
-                        name.value.clone()
+                        native_storage::path(work, &[&name.value])?
                     } else {
-                        format!("{relative}/{}", name.value)
+                        native_storage::path(work, &[relative, "/", &name.value])?
                     };
-                    crate::conversation::validate_content_path(&child, &mut None)?;
+                    crate::conversation::validate_content_path(&child.value, &mut None)?;
                     match entry.node.kind {
-                        SourceNodeKind::Directory => pending.push(child),
+                        SourceNodeKind::Directory => pending.push(child)?,
                         SourceNodeKind::RegularFile if name.value.ends_with(".md") => {
                             let length = entry.node.logical_bytes.ok_or_else(|| {
                                 Error::Invalid("command file has no length".into())
@@ -93,8 +96,9 @@ pub(super) async fn capture(
                             if length > *bounds.remaining {
                                 return Err(Error::Invalid("command byte bound exceeded".into()));
                             }
+                            let absolute = native_storage::path(work, &["/", &child.value])?;
                             let (file, allocation) = NamespacePath::parse_in_profile(
-                                &format!("/{child}"),
+                                &absolute.value,
                                 config.profile,
                                 config.limits,
                                 &mut accounting,
@@ -121,11 +125,14 @@ pub(super) async fn capture(
                                     "command file changed during capture".into(),
                                 ));
                             }
+                            let destination =
+                                native_storage::path(work, &[destination, "/", &child.value])?;
                             publish(
                                 prefix,
-                                &format!("{destination}/{child}"),
+                                &destination.value,
                                 chunk.bytes.as_ref(),
                                 publisher,
+                                work,
                             )
                             .await?;
                             *bounds.remaining -= length;
@@ -156,15 +163,16 @@ async fn publish(
     path: &str,
     bytes: &[u8],
     publisher: &dyn ContentPublisher,
+    work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let destination = format!("{prefix}/{path}");
+    let destination = native_storage::path(work, &[prefix, "/", path])?;
     publisher
         .stage_once(
             context::publication_operation(
                 b"acyclic.local.composer-file/v1\0",
-                destination.as_bytes(),
+                destination.value.as_bytes(),
             ),
-            &destination,
+            &destination.value,
             bytes,
             "text/plain",
             source_display_name(path)?,
