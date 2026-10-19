@@ -1,15 +1,15 @@
 {
   "staging.false": {
     "allocations": [
-      699,
-      100,
-      153,
-      249643,
-      12323,
-      44786
+      700,
+      101,
+      154,
+      249979,
+      12355,
+      44866
     ],
     "work": {
-      "allocationOperations": 474,
+      "allocationOperations": 477,
       "authorityBytesRead": 0,
       "authorityBytesWritten": 0,
       "authorityRecordsAppended": 0,
@@ -29,7 +29,7 @@
       "outputBytes": 0,
       "pageReads": 53,
       "pageWrites": 8,
-      "peakAllocationBytes": 67124719,
+      "peakAllocationBytes": 67127352,
       "sourceBytesRead": 547,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 22
@@ -37,15 +37,15 @@
   },
   "staging.true": {
     "allocations": [
-      142,
-      14,
-      69,
-      63956,
-      2580,
-      40546
+      143,
+      15,
+      70,
+      64292,
+      2612,
+      40722
     ],
     "work": {
-      "allocationOperations": 125,
+      "allocationOperations": 128,
       "authorityBytesRead": 0,
       "authorityBytesWritten": 0,
       "authorityRecordsAppended": 0,
@@ -65,7 +65,7 @@
       "outputBytes": 0,
       "pageReads": 5,
       "pageWrites": 0,
-      "peakAllocationBytes": 67125500,
+      "peakAllocationBytes": 67128232,
       "sourceBytesRead": 0,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 17
