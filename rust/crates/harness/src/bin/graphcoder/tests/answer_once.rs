@@ -134,12 +134,22 @@ struct Loopback {
 }
 
 impl Loopback {
-    async fn start(answer: &str) -> Self {
+    async fn start(answer: &str, completed_only: bool) -> Self {
         use axum::{Json, Router, routing::post};
         let mut events = String::new();
-        for delta in answer.split_inclusive("\n\n") {
-            let event = serde_json::json!({"type": "response.output_text.delta", "delta": delta});
+        if completed_only {
+            // No Content delta exists to rescue a renderer or retained replay
+            // that ignores the authoritative completed assistant message.
+            let event = serde_json::json!({"type":"response.output_item.done", "output_index":1,
+                "item":{"type":"message","role":"assistant","content":[
+                    {"type":"output_text","text":answer}]}});
             events.push_str(&format!("data: {event}\n\n"));
+        } else {
+            for delta in answer.split_inclusive("\n\n") {
+                let event =
+                    serde_json::json!({"type": "response.output_text.delta", "delta": delta});
+                events.push_str(&format!("data: {event}\n\n"));
+            }
         }
         let completed = serde_json::json!({"type": "response.completed", "response": {
             "status": "completed", "usage": {"input_tokens": 64, "output_tokens": 64}
@@ -240,6 +250,7 @@ fn answered(client: &TaskFileClient) -> bool {
 enum Provider {
     Scripted,
     Http,
+    HttpCompleted,
 }
 
 async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
@@ -249,8 +260,9 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
     std::fs::create_dir(&workspace).unwrap();
     let (local, loopback) = match provider {
         Provider::Scripted => (scripted(&workspace, answer).await, None),
-        Provider::Http => {
-            let loopback = Loopback::start(&answer).await;
+        Provider::Http | Provider::HttpCompleted => {
+            let loopback =
+                Loopback::start(&answer, matches!(provider, Provider::HttpCompleted)).await;
             let local = shipping(directory.path(), loopback.address).await;
             (local, Some(loopback))
         }
@@ -420,3 +432,18 @@ fn a_duplicated_answer_is_detected_negative_control() {
 
 #[path = "answer_ownership.rs"]
 mod ownership;
+
+/// The shipping HTTP owner, renderer and reopened transcript must consume a
+/// completed message even when the provider sent no incremental content.
+#[tokio::test]
+async fn an_authoritative_message_without_deltas_is_painted_and_reopened() {
+    let answer = "Authoritative λ";
+    let transcript = settled_transcript(Provider::HttpCompleted, answer.into()).await;
+    assert_eq!(transcript.rows, expected_transcript(PROMPT, answer));
+}
+
+#[tokio::test]
+async fn an_empty_authoritative_message_settles_and_reopens_without_invented_text() {
+    let transcript = settled_transcript(Provider::HttpCompleted, String::new()).await;
+    assert_eq!(transcript.rows, expected_transcript(PROMPT, ""));
+}
