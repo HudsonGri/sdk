@@ -111,6 +111,14 @@ fn scripted(
                         if turn["type"] == "function_call" {
                             turn["call_id"] = json!(format!("call{}", requests.len()));
                             turn["arguments"] = json!(with_file(&turn["arguments"], &body));
+                            // Actual SDK rejection: popping before any push
+                            // must not count as successful deep tool coverage.
+                            if std::env::var_os(EARLY_ERROR).is_some()
+                                && turn["name"] == "fs"
+                                && turn["arguments"] == json!(json!({"command": "stash push"}).to_string())
+                            {
+                                turn["arguments"] = json!(json!({"command": "stash pop"}).to_string());
+                            }
                         }
                         requests.push(body);
                         turn
@@ -168,6 +176,8 @@ enum Entry {
 const SETTLED: &str = "GRAPHCODER_STACK_SETTLED";
 /// Selects the case in a process whose argv a terminal host fixes.
 const CASE: &str = "GRAPHCODER_STACK_CASE";
+/// Fixture-only counterexample to accepting an early tool error as coverage.
+const EARLY_ERROR: &str = "GRAPHCODER_STACK_EARLY_ERROR";
 
 /// Runs one invocation through `serve` and returns its exit code and depth in bytes.
 fn measured_turn<const UNBOXED: bool>(
@@ -291,6 +301,7 @@ pub(crate) fn qualify() {
         "tools-history",
         "tools-branches",
         "tools-recovery",
+        "tools-rejected",
         "merge-continue",
         "merge-abort",
         "spawn",
@@ -318,6 +329,7 @@ pub(crate) fn qualify() {
             }
             "commit" | "unboxed" => vec![fs("commit -m stack"), text("done")],
             "spawn" => vec![child_call("spawn"), text("done")],
+            "tools-rejected" => tool_group("tools-recovery"),
             case if case.starts_with("tools-") => tool_group(case),
             "merge-continue" | "merge-abort" => merge_recovery(&case),
             "send" | "wait" | "archive" => vec![child_call(&case), text("done")],
@@ -334,7 +346,16 @@ pub(crate) fn qualify() {
             measured_turn::<false>(turns, entry)
         };
         if case.starts_with("tools-") {
-            covers_every_entry_point(&case, code, used, &requests);
+            covers_every_entry_point(
+                if case == "tools-rejected" {
+                    "tools-recovery"
+                } else {
+                    &case
+                },
+                code,
+                used,
+                &requests,
+            );
             return;
         }
         if case.starts_with("merge-") {
@@ -432,6 +453,20 @@ pub(crate) fn qualify() {
         #[cfg(windows)]
         let mut command = std::process::Command::new(executable);
         command.arg(format!("--stack-case={case}"));
+        if case == "tools-rejected" {
+            let output = command.env(EARLY_ERROR, "1").output().unwrap();
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.code(),
+                Some(101),
+                "early-error control: {error}"
+            );
+            assert!(
+                error.contains("expected the successful operation") && error.contains("stash push"),
+                "early-error control failed for another reason: {error}"
+            );
+            continue;
+        }
         let status = if case == "jsonl" {
             use std::io::Write as _;
             let operation = acyclic_harness::OperationId::new();
@@ -493,6 +528,7 @@ const FS_COMMANDS: &[&str] = &[
     "clean -n",
     "archive HEAD",
     "apply change.patch",
+    "commit -m patched",
     "bisect start",
     "rev-parse HEAD",
     "symbolic-ref HEAD",
@@ -549,7 +585,20 @@ fn tool_group(case: &str) -> Vec<serde_json::Value> {
         turns.push(fs("commit -m seed"));
         turns.push(fs("branch topic"));
     }
-    turns.extend(tool_commands(case).iter().map(|command| fs(command)));
+    for command in tool_commands(case) {
+        // A commit must capture a real change. An early NothingToCommit reply
+        // never reaches the filesystem work whose stack this suite measures.
+        if matches!(*command, "commit -m first" | "commit -m topic") {
+            turns.push(call(
+                "bash",
+                json!({"command": format!("printf 'alpha {command}\\n' > notes.txt")}),
+            ));
+        }
+        turns.push(fs(command));
+    }
+    if case == "tools-recovery" {
+        turns.push(call("bash", json!({"command": "cat calc.py"})));
+    }
     turns.push(text("done"));
     turns
 }
@@ -590,11 +639,10 @@ fn tool_commands(case: &str) -> &'static [&'static str] {
             "revert HEAD",
         ],
         "tools-recovery" => &[
-            "merge --continue",
-            "merge --abort",
             "stash push",
             "stash pop",
             "apply change.patch",
+            "commit -m patched",
             "bisect start",
         ],
         _ => panic!("unknown tool group {case}"),
@@ -631,6 +679,7 @@ fn covers_every_entry_point(case: &str, code: u8, used: usize, requests: &[Strin
     .into_iter()
     .flat_map(tool_commands)
     .copied()
+    .chain(["merge --continue", "merge --abort"])
     .collect();
     assert_eq!(
         grouped,
@@ -656,14 +705,71 @@ fn covers_every_entry_point(case: &str, code: u8, used: usize, requests: &[Strin
         variants, all,
         "every fs command variant has a measured call"
     );
-    // Every call returned its result to the model.
-    let last = requests.last().unwrap();
-    let returned = last.matches("function_call_output").count();
-    assert_eq!(
-        returned,
-        tool_group(case).len() - 1,
-        "tools: not every tool result reached the model"
+    // Each result must prove the successful operation, not just a reply. The
+    // conflict-only merge recovery variants have their own successful suites.
+    let outputs = tool_outputs(requests.last().unwrap());
+    let turns = tool_group(case);
+    assert_eq!(outputs.len(), turns.len() - 1);
+    for (turn, output) in turns.iter().zip(&outputs) {
+        successful_tool_result(turn, output);
+    }
+    if case == "tools-recovery" {
+        assert_eq!(outputs.last().unwrap()["stdout"], "x = 2\n");
+    }
+}
+
+fn successful_tool_result(turn: &serde_json::Value, output: &serde_json::Value) {
+    assert!(
+        tool_result_succeeded(turn, output),
+        "{turn}: expected the successful operation, received {output}"
     );
+    // The former reply-count oracle accepted this same early error for every
+    // entry point. Keep that counterexample beside each successful result.
+    assert!(
+        !tool_result_succeeded(turn, &json!({"error": "rejected before filesystem work"})),
+        "{turn}: an early error passed the semantic oracle"
+    );
+}
+
+fn tool_result_succeeded(turn: &serde_json::Value, output: &serde_json::Value) -> bool {
+    let arguments: serde_json::Value =
+        serde_json::from_str(turn["arguments"].as_str().unwrap()).unwrap();
+    match turn["name"].as_str().unwrap() {
+        "read" => output == "alpha beta\n",
+        "write" | "edit" => output["file"].is_object(),
+        "bash" => output["exit_code"] == 0 && output["success"] == true,
+        "fs" => {
+            let command = arguments["command"].as_str().unwrap();
+            let Ok(result) =
+                serde_json::from_value::<acyclic_fs::GitCommandOutput>(output["result"].clone())
+            else {
+                return false;
+            };
+            use acyclic_fs::{GitCommandOutput as O, GitFilesystemResult as F};
+            match command.split_whitespace().next().unwrap() {
+                "commit" | "merge" | "rebase" | "cherry-pick" | "revert" => {
+                    matches!(result, O::Committed(_))
+                }
+                "status" => matches!(result, O::Status(_)),
+                "log" | "show" => matches!(&result, O::Commits(commits) if !commits.is_empty()),
+                "tag" => matches!(&result, O::Tags(tags) if tags.contains_key("v1")),
+                "branch" | "switch" | "stash" | "reset" | "add" => result == O::NoOp,
+                "rev-parse" | "symbolic-ref" | "merge-base" => {
+                    matches!(&result, O::Text(text) if !text.is_empty())
+                }
+                "ls-files" => {
+                    matches!(&result, O::Paths(paths) if paths.iter().any(|path| path == "notes.txt"))
+                }
+                "bisect" => matches!(result, O::Bisect(_)),
+                "apply" | "restore" => matches!(result, O::Filesystem(F::Applied { .. })),
+                inspection @ ("blame" | "grep" | "clean" | "archive" | "check-ignore" | "diff") => {
+                    matches!(&result, O::Filesystem(F::Data { kind, .. }) if kind == inspection)
+                }
+                _ => panic!("missing semantic oracle for {command}"),
+            }
+        }
+        name => panic!("missing semantic oracle for {name}"),
+    }
 }
 
 fn fs(command: &str) -> serde_json::Value {
