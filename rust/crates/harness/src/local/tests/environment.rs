@@ -61,6 +61,52 @@ fn system_text(request: &crate::model::ModelRequest) -> (Vec<String>, Option<usi
 }
 
 #[tokio::test]
+async fn discovery_retains_only_the_manifest_prefix_and_counts_later_names() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    for (directory_name, name, description) in [
+        (".agents/skills/a", "first", "retained".to_owned()),
+        (".agents/skills/b", "large", "x".repeat(32_000)),
+        (".agents/skills/c", "later", "small".to_owned()),
+        (".claude/skills/duplicate", "large", "duplicate".to_owned()),
+    ] {
+        write(
+            directory.path(),
+            &format!("{directory_name}/SKILL.md"),
+            &format!("---\nname: {name}\ndescription: {description}\n---\n"),
+        )?;
+    }
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, scripted([])))?
+            .state_directory(state.path()),
+    )
+    .await?;
+    let workspace = harness.workspace.as_ref().unwrap();
+    let first = crate::context::CatalogSkill {
+        name: "first".into(),
+        description: "retained".into(),
+        path: ".agents/skills/a/SKILL.md".into(),
+    };
+    let available = serde_json::to_vec(&vec![first.clone()]).unwrap().len() as u64;
+    let catalog = harness
+        .checkout_skills(workspace, 65_536, available)
+        .await?;
+    assert_eq!(
+        catalog.skills,
+        vec![first],
+        "discovery retained a description outside the manifest prefix"
+    );
+    assert_eq!(
+        catalog.unlisted, 2,
+        "later names must be counted, with root precedence preserved"
+    );
+    let empty = harness.checkout_skills(workspace, 65_536, 2).await?;
+    assert!(empty.skills.is_empty());
+    assert_eq!(empty.unlisted, 3);
+    harness.close().await
+}
+
+#[tokio::test]
 async fn skill_body_size_never_changes_discovery() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
@@ -91,9 +137,11 @@ async fn skill_body_size_never_changes_discovery() -> Result<()> {
                 path,
                 &format!("{header}{}", "x".repeat(body)),
             )?;
-            let skills = harness.checkout_skills(workspace, maximum).await?;
+            let skills = harness
+                .checkout_skills(workspace, maximum, u64::MAX)
+                .await?;
             assert_eq!(
-                skills,
+                skills.skills,
                 vec![crate::context::CatalogSkill {
                     name: "large".into(),
                     description: "metadata only".into(),

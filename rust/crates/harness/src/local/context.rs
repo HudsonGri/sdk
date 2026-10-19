@@ -139,7 +139,6 @@ impl LocalHarness {
                 manifest
                     .conventions
                     .push(environment::render(workspace, self.clock.now_unix_millis()).await);
-                let skills = self.checkout_skills(workspace, maximum).await?;
                 // The manifest pins the accepted catalog as data; each model
                 // request renders it against that model's own allowance.
                 // Carry what the manifest file has room for and count the rest.
@@ -147,8 +146,9 @@ impl LocalHarness {
                 let field = r#","skill_catalog":{"skills":,"unlisted":18446744073709551615}"#;
                 let used = crate::executor::json::json_byte_length(&manifest, file, &mut None)?
                     .saturating_add(field.len() as u64);
-                manifest.skill_catalog =
-                    crate::context::SkillCatalog::bounded(skills, file.saturating_sub(used));
+                manifest.skill_catalog = self
+                    .checkout_skills(workspace, maximum, file.saturating_sub(used))
+                    .await?;
             }
         }
         let bytes = manifest.encode(limits)?;
