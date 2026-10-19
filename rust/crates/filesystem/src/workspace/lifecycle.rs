@@ -19,14 +19,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let mut frame = None;
-            let (mut future, bytes) = crate::heap_future::in_heap_admitted(
-                (&mut accounting, &mut frame),
-                |(accounting, frame), bytes| {
-                    **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
-                    Ok::<_, E>(())
-                },
-                |(accounting, _)| async move {
+            let (result, reservation) =
+                crate::heap_future::in_heap_metered(&mut accounting, |accounting| async move {
                     let bytes = options
                         .paths
                         .as_ref()
@@ -62,10 +56,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                         &mut KernelOwnedAllocation::Standalone,
                         name.retained_bytes(),
                     )?;
-                    let remaining = accounting.remaining()?;
                     // The frame stays reserved while its receipt joins the ledger.
                     let (forked, reservation) =
-                        crate::heap_future::in_heap_metered(&mut *accounting, |_| {
+                        crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
                             self.volume.fs.fork_workspace(
                                 name,
                                 &options.generation,
@@ -106,13 +99,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     forked
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                },
-            )?;
-            let result = future.as_mut().await;
-            drop(future);
-            if let Some(mut frame) = frame {
-                accounting.release_owned(&mut frame, bytes)?;
-            }
+                })?
+                .await;
+            crate::heap_future::FrameLedger::release_frame(&mut accounting, reservation)?;
             result
         }
         .await;

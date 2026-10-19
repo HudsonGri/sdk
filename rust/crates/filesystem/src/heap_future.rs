@@ -22,7 +22,7 @@ use std::task::{Context, Poll};
 ///
 /// This crate never calls it (`tests::every_frame_is_paid_for` scans the
 /// source): a frame here is paid for on its work ledger first, through
-/// [`in_heap_metered`], [`in_heap_claimed`], [`in_heap_admitted`] or
+/// [`in_heap_metered`], [`in_heap_budgeted`], [`in_heap_claimed`], [`in_heap_admitted`] or
 /// [`in_heap_measured`], or is [`in_heap_unmetered`] with a stated reason.
 #[inline(never)]
 pub fn in_heap<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<HeapFuture<F>>> {
@@ -147,6 +147,25 @@ pub(crate) fn in_heap_metered<'r, L: FrameLedger + ?Sized, F: Future>(
     Ok(MeteredFrame {
         frame: Some(Box::pin(HeapFuture {
             future: create(ledger),
+        })),
+        reservation: Some(reservation),
+    })
+}
+
+/// Admits a backend frame before projecting the backend's remaining budget.
+///
+/// The frame remains live when its receipt joins the caller. Projecting first
+/// would let the backend spend the bytes that are needed for its own frame.
+#[inline(never)]
+pub(crate) fn in_heap_budgeted<F: Future>(
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+    create: impl FnOnce(crate::WorkBudget) -> F,
+) -> Result<MeteredFrame<F, KernelFrameReservation>, crate::FsError> {
+    let reservation = accounting.reserve_frame(frame_bytes::<F>())?;
+    let remaining = accounting.remaining()?;
+    Ok(MeteredFrame {
+        frame: Some(Box::pin(HeapFuture {
+            future: create(remaining),
         })),
         reservation: Some(reservation),
     })
@@ -437,6 +456,34 @@ mod tests {
         fn release_frame(&mut self, (): ()) -> Result<(), ()> {
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn backend_budget_excludes_its_live_frame_before_construction() {
+        let cancellation = crate::CancellationToken::new();
+        let mut budget = crate::WorkBudget::UNBOUNDED;
+        budget.peak_allocation_bytes = 64_000;
+        let mut accounting = crate::kernel::KernelAccounting::standalone(budget, &cancellation);
+        let (delegated, reservation) = super::in_heap_budgeted(&mut accounting, std::future::ready)
+            .expect("backend frame admitted")
+            .await;
+        let (allocations, spent, _, _) = accounting.standalone_parts().unwrap();
+        let live = allocations.live_bytes();
+        assert!(live > 0);
+        assert_eq!(
+            delegated.peak_allocation_bytes + live,
+            budget.peak_allocation_bytes
+        );
+        let backend = crate::WorkCounters {
+            peak_allocation_bytes: delegated.peak_allocation_bytes,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        spent
+            .with_backend(backend, live)
+            .unwrap()
+            .verify(budget)
+            .unwrap();
+        super::FrameLedger::release_frame(&mut accounting, reservation).unwrap();
     }
 
     /// A refused frame builds nothing: its future is never created.
