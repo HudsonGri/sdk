@@ -40,6 +40,42 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Contract-level model, not a provider tokenizer: the fixture counter
+    // charges one token per encoded byte, as a byte-level BPE bound would.
+    // Under that model a rendered block costs no more than its JSON-string
+    // bytes, quotes excluded. Admission itself rests on the counting contract
+    // (`contract_tests`), never on this model.
+    #[test]
+    fn byte_model_counter_charges_a_catalog_at_most_its_bytes(
+        skills in prop::collection::vec(("[a-z]{1,8}", "\\PC{1,60}", "[ -~é]{1,30}"), 1..24),
+        budget in 512u64..8192,
+    ) {
+        let catalog = acyclic_harness::context::SkillCatalog {
+            skills: skills
+                .into_iter()
+                .map(|(name, description, path)| acyclic_harness::context::CatalogSkill { name, description, path })
+                .collect(),
+            unlisted: 0,
+        };
+        let block = catalog.render(budget).expect("a block fits");
+        let bytes = serde_json::to_string(&block).unwrap().len() as u64;
+        prop_assert!(bytes <= budget);
+        for (adapter, _) in fixtures() {
+            let (provider, _) = provider(adapter, 200);
+            let (original, _) = request(&provider).unwrap();
+            let count = |text: &str| {
+                let mut request = original.request().clone();
+                request.messages[0].content = ModelContent::Text(text.into());
+                let prepared = PreparedModelRequest::prepare(request, Limits::default(), None).unwrap();
+                futures::executor::block_on(provider.count_tokens(&prepared)).unwrap().input_tokens
+            };
+            prop_assert!(count(&block) - count("x") <= bytes - 2, "{adapter:?}");
+        }
+    }
+}
+
 #[test]
 fn calibrated_weight_negative_control_cannot_establish_admission() -> Result<()> {
     let (provider, _) = provider(Adapter::Responses, 200);

@@ -276,6 +276,8 @@ impl Fixture {
             workspace: None,
             #[cfg(feature = "native-execution")]
             checkout_context: false,
+            #[cfg(feature = "native-execution")]
+            clock: Arc::new(Clock),
         })
     }
 

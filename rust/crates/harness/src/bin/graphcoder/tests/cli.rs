@@ -20,6 +20,8 @@ use std::{
     time::Duration,
 };
 
+const SKILLS: &str = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n1 skills available (list .agents/skills/ and .claude/skills/ to see all)\n- fixture: Read fixture files. (file: .agents/skills/fixture/SKILL.md)\n</skills_instructions>";
+
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
 #[derive(Clone, Copy)]
@@ -33,6 +35,9 @@ enum Mode {
     CatalogDefault,
     EnvironmentModel,
     ExplicitModel,
+    Skills,
+    /// An 8k-token model: one entry exceeds its catalog allowance.
+    SmallModel,
     Jsonl,
     OpenJsonl,
     Dumb,
@@ -149,18 +154,89 @@ fn catalog(directory: &Path, address: std::net::SocketAddr) -> std::path::PathBu
     catalog
 }
 
+/// The checkout path as the environment block shows it, without a verbatim prefix.
+fn shown(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(share) if share.starts_with(r"UNC\") => format!(r"\\{}", &share[4..]),
+        Some(local) => local.to_owned(),
+        None => text.into_owned(),
+    }
+}
+
+/// UTC date by counting whole years and months, independent of the harness arithmetic.
+fn utc_date(unix_millis: u64) -> String {
+    let mut days = unix_millis / 86_400_000;
+    let leap = |year: u64| year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let mut year = 1970;
+    while days >= if leap(year) { 366 } else { 365 } {
+        days -= if leap(year) { 366 } else { 365 };
+        year += 1;
+    }
+    let mut month = 1;
+    for length in [
+        31,
+        if leap(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ] {
+        if days < length {
+            break;
+        }
+        days -= length;
+        month += 1;
+    }
+    format!("{year:04}-{month:02}-{:02}", days + 1)
+}
+
+/// The exact environment message a turn admitted `earlier` milliseconds ago carries.
+fn environment(cwd: &str, earlier: u64) -> Value {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let text = format!(
+        "<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>bash</shell>\n  <os>{}</os>\n  <current_date>{}</current_date>\n  <timezone>UTC</timezone>\n</environment_context>",
+        std::env::consts::OS,
+        utc_date(now - earlier)
+    );
+    json!({"type":"message","role":"system","content":[{"type":"input_text","text":text}]})
+}
+
+#[test]
+fn utc_dates_count_whole_years_and_months() {
+    assert_eq!(utc_date(0), "1970-01-01");
+    assert_eq!(utc_date(951_782_400_000), "2000-02-29");
+    assert_eq!(utc_date(1_792_324_800_000), "2026-10-18");
+}
+
 async fn scenario(mode: Mode) {
-    let instructions = matches!(mode, Mode::Instructions);
+    let instructions = matches!(mode, Mode::Instructions | Mode::Skills);
     let fs_refusals = matches!(mode, Mode::FsRefusals);
     let model = if matches!(mode, Mode::ConfiguredOpaqueModel) {
         "vendor/tiny"
     } else {
         "tiny"
     };
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&settings).unwrap();
+    let cwd = shown(&std::fs::canonicalize(&workspace).unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let counter = requests.clone();
+    let generations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = Router::new()
         .route(
             "/count",
@@ -177,12 +253,48 @@ async fn scenario(mode: Mode) {
             "/responses",
             post(move |Json(body): Json<Value>| {
                 let requests = requests.clone();
+                let cwd = cwd.clone();
+                let generations = generations.clone();
                 async move {
                     assert_eq!(body["model"], model, "generation uses the selected opaque model");
                     assert!(body.to_string().contains("hello"));
+                    let generation = generations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if matches!(mode, Mode::Skills) && generation == 1 {
+                        let output = body["input"].as_array().unwrap().iter().find(|item| item["type"] == "function_call_output").unwrap();
+                        assert!(output["output"].as_str().unwrap().contains("BODY MUST STAY ON DISK"));
+                        requests.send("model").unwrap();
+                        return ([("content-type", "text/event-stream")], ANSWER.to_owned());
+                    }
+                    if matches!(mode, Mode::SmallModel) {
+                        // 5% of (8192 - 1024 reserved) tokens, bounded as bytes:
+                        // too small for one entry, so only the pointer remains.
+                        let pointer = acyclic_harness::context::SkillCatalog {
+                            skills: vec![acyclic_harness::context::CatalogSkill {
+                                name: "fixture".into(),
+                                description: "Read fixture files.".into(),
+                                path: ".agents/skills/fixture/SKILL.md".into(),
+                            }],
+                            unlisted: 0,
+                        }
+                        .render((8192 - 1024) / 20)
+                        .unwrap();
+                        assert!(pointer.contains("1 skills") && !pointer.contains("(file: "));
+                        let pointer = json!({"type":"message","role":"system","content":[{"type":"input_text","text":pointer}]});
+                        assert!(body["input"].as_array().unwrap().contains(&pointer), "{}", body["input"]);
+                    }
                     if instructions {
-                        // A one-shot prompt without GOAL.md carries no goal guidance.
-                        assert_eq!(body["input"], json!([
+                        // The block is dated when the turn is admitted, at most a minute earlier.
+                        let environment = [0, 60_000].map(|earlier| environment(&cwd, earlier));
+                        assert!(
+                            environment.contains(&body["input"][1]),
+                            "{} not in {environment:?}",
+                            body["input"][1]
+                        );
+                        let skills = if generation == 0 { SKILLS.to_owned() } else { SKILLS.replace("Read fixture files.", "Read updated files.") };
+                        let mut input = body["input"].clone();
+                        input.as_array_mut().unwrap().remove(1);
+                        assert_eq!(input.as_array_mut().unwrap().remove(1), json!({"type":"message","role":"system","content":[{"type":"input_text","text":skills}]}));
+                        assert_eq!(input, json!([
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
@@ -193,8 +305,16 @@ async fn scenario(mode: Mode) {
                         assert!(body.get("instructions").is_none());
                     }
                     requests.send("model").unwrap();
-                    let answer = if fs_refusals { fs_answer(&body) } else { ANSWER.to_owned() };
-                    ([("content-type", "text/event-stream")], answer)
+                    let response = if matches!(mode, Mode::Skills) {
+                        let bash = body["tools"].as_array().unwrap().iter().find(|tool| tool["description"].as_str().is_some_and(|description| description.starts_with("Run a bash command"))).unwrap();
+                        let call = json!({"type":"response.output_item.done", "output_index":0,
+                            "item":{"type":"function_call","call_id":"read-skill","name":bash["name"],
+                            "arguments":json!({"command":"cat .agents/skills/fixture/SKILL.md"}).to_string()}});
+                        format!("data: {call}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\",\"usage\":{{\"input_tokens\":64,\"output_tokens\":2}}}}}}\n\n")
+                    } else if fs_refusals {
+                        fs_answer(&body)
+                    } else { ANSWER.to_owned() };
+                    ([("content-type", "text/event-stream")], response)
                 }
             }),
         );
@@ -207,12 +327,13 @@ async fn scenario(mode: Mode) {
             .await
             .unwrap();
     });
-    let directory = tempfile::tempdir().unwrap();
-    let workspace = directory.path().join("workspace");
-    let settings = directory.path().join("settings");
-    std::fs::create_dir(&workspace).unwrap();
-    std::fs::create_dir(&settings).unwrap();
-    if instructions {
+    if instructions || matches!(mode, Mode::SmallModel) {
+        std::fs::create_dir_all(workspace.join(".agents/skills/fixture")).unwrap();
+        std::fs::write(
+            workspace.join(".agents/skills/fixture/SKILL.md"),
+            "---\nname: fixture\ndescription: Read fixture files.\n---\nBODY MUST STAY ON DISK",
+        )
+        .unwrap();
         std::fs::write(
             workspace.join("AGENTS.md"),
             "Reply using the workspace instructions. λ\n",
@@ -246,7 +367,7 @@ async fn scenario(mode: Mode) {
     let catalog = directory.path().join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{model:{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "models":{model:{"capacity":{"context_tokens":if matches!(mode, Mode::SmallModel) { 8192 } else { 65536 },"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
     if matches!(
@@ -305,8 +426,27 @@ async fn scenario(mode: Mode) {
             _ => unreachable!(),
         }
     }
-    assert_eq!(generated, if fs_refusals { 2 } else { 1 });
+    assert_eq!(
+        generated,
+        if fs_refusals || matches!(mode, Mode::Skills) {
+            2
+        } else {
+            1
+        }
+    );
     assert!(counted > 0);
+    if matches!(mode, Mode::Instructions) {
+        std::fs::write(workspace.join(".agents/skills/fixture/SKILL.md"), "---\nname: fixture\ndescription: Read updated files.\n---\nCHANGED BODY MUST STAY ON DISK").unwrap();
+        execute(&workspace, &catalog, &settings, OperationId::new(), mode).await;
+        let mut generated = 0;
+        while let Ok(kind) = observed.try_recv() {
+            generated += usize::from(kind == "model");
+        }
+        assert_eq!(
+            generated, 1,
+            "new operation must capture updated skill metadata"
+        );
+    }
     stop.send(()).unwrap();
     server.await.unwrap();
 }
@@ -799,4 +939,16 @@ async fn killed_unobserved_model_call_resumes_the_retained_http_request() {
         "replay generated again"
     );
     server.abort();
+}
+
+// The turn completing is the fit: the request was admitted within capacity.
+#[tokio::test]
+async fn small_models_still_learn_that_skills_exist() {
+    scenario(Mode::SmallModel).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn skill_paths_are_followed_through_the_real_shell_and_http_provider() {
+    scenario(Mode::Skills).await;
 }

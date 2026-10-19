@@ -23,6 +23,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         maximum: u64,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        self.read_latest_bounded(path, maximum, false, ctx).await
+    }
+
+    /// Reads at most `maximum` bytes of the latest regular file. File bodies
+    /// beyond the prefix are never read, for authored and native source files.
+    pub async fn read_latest_prefix(
+        &self,
+        path: &str,
+        maximum: u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        self.read_latest_bounded(path, maximum, true, ctx).await
+    }
+
+    async fn read_latest_bounded(
+        &self,
+        path: &str,
+        maximum: u64,
+        prefix: bool,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
         let mut checkout = self
             .checkout(crate::model::GenerationSelector::Head, ctx)
             .await?;
@@ -44,11 +65,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Err(LazyWorkspaceError::NotFound);
         };
-        let result = if lookup.stat().kind == SourceNodeKind::RegularFile {
-            self.read_resolved(&lookup, path, None, maximum, ctx).await
-        } else {
-            Err(LazyWorkspaceError::NotRegularFile)
-        };
+        let result = async {
+            let stat = lookup.stat();
+            if stat.kind != SourceNodeKind::RegularFile {
+                return Err(LazyWorkspaceError::NotRegularFile);
+            }
+            let range = if prefix {
+                Some(crate::ByteRange {
+                    offset: 0,
+                    length: maximum.min(
+                        stat.logical_bytes
+                            .ok_or(LazyWorkspaceError::NotRegularFile)?,
+                    ),
+                })
+            } else {
+                None
+            };
+            self.read_resolved(&lookup, path, range, maximum, ctx).await
+        }
+        .await;
         self.retire_lookup((lookup, guard), ctx)?;
         result
     }

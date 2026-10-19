@@ -10,9 +10,12 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
+arrayvec = { version = "0.7.8", default-features = false }
 libfuzzer-sys = "0.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.6"
+serde_json = "1"
+serde-saphyr = { version = "=1.3.0", default-features = false, features = ["deserialize", "serialize"] }
 
 [[bin]]
 name = "workspace_key"
@@ -31,6 +34,13 @@ bench = false
 [[bin]]
 name = "mount_exclusion"
 path = "fuzz_targets/mount_exclusion.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "checkout_context"
+path = "fuzz_targets/checkout_context.rs"
 test = false
 doc = false
 bench = false

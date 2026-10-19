@@ -27,13 +27,13 @@ proptest! {
         let next = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
         let (_, before) = footprint(&first, 1).unwrap();
         let (_, after) = footprint(&next, 1).unwrap();
-        prop_assert_eq!(counter.count(&next).unwrap(), tokens + (after-before).div_ceil(3));
+        prop_assert_eq!(counter.count(&next).unwrap(), tokens + (after - before));
         request.messages[0].content = ModelContent::Text("unrelated resume".into());
         let resumed = PreparedModelRequest::prepare(request, Default::default(), None).unwrap();
         let (prefix, total) = footprint(&resumed, 1).unwrap();
         let anchor = counter.0.get().unwrap();
         if anchor.unwrap().digest != prefix {
-            prop_assert_eq!(counter.count(&resumed).unwrap(), total.div_ceil(3));
+            prop_assert_eq!(counter.count(&resumed).unwrap(), total);
         }
     }
     #[test]
@@ -43,6 +43,6 @@ proptest! {
         let snapshot = Usage { digest:[1;32], messages:1, bytes, tokens };
         let counted = estimate(Some(snapshot), [1;32], bytes+delta);
         prop_assert!(counted >= tokens);
-        prop_assert!(counted.saturating_sub(tokens).saturating_mul(3) >= delta);
+        prop_assert!(counted.saturating_sub(tokens) >= delta);
     }
 }
