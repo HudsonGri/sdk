@@ -429,7 +429,7 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
                 .append_if_tail(
                     operation,
                     model.sequence + 100,
-                    &model.idempotency_key,
+                    "model:0:0",
                     &model.event,
                     None
                 )
@@ -454,7 +454,7 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
                     .append_if_tail(
                         operation,
                         model.sequence - 1,
-                        &model.idempotency_key,
+                        "model:0:0",
                         &model.event,
                         None
                     )
