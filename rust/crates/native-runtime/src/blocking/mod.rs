@@ -130,6 +130,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
         .transpose()?;
     Ok(NativeCompletion::pending(
         NativeJob::Task {
+            #[cfg(feature = "test-support")]
+            controlled: false,
             operation: Box::new(operation),
             meter,
             terminal: Arc::clone(&state) as Arc<dyn TaskTerminal>,

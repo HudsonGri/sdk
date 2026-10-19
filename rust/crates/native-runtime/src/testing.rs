@@ -18,6 +18,7 @@ pub use durability::{
     DurableFault, DurableWrite, InjectedStorageFault, durable_operation, durable_write,
 };
 mod host;
+pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
 pub use process::{ProcessCapture, capture_process};
@@ -328,12 +329,14 @@ where
             CURRENT.scope(Some(owned.clone()), async move {
                 let _active = active;
                 owned.pause("blocking:submitted").await;
-                let host = owned
-                    .schedule
-                    .0
-                    .executor
-                    .as_ref()
-                    .map(|_| host::Host::new());
+                let host = if owned.schedule.0.executor.is_some() {
+                    Some(host::Host::for_workers(crate::workers(
+                        &crate::BLOCKING_WORKERS,
+                        false,
+                    )?))
+                } else {
+                    None
+                };
                 let worker = host.clone();
                 let completion = crate::run_blocking_io(
                     move || {
@@ -377,9 +380,12 @@ async fn host_work<T>(
     host: Option<Arc<host::Host>>,
 ) -> std::io::Result<T> {
     let mut completion = completion?;
-    if let Some(job) = completion.pending.take() {
+    if let Some(mut job) = completion.pending.take() {
         let workers = crate::workers(&crate::BLOCKING_WORKERS, false)?;
         if let Some(host) = host {
+            if let crate::NativeJob::Task { controlled, .. } = &mut job {
+                *controlled = true;
+            }
             host.drive(queued(job, workers)).await?;
         } else {
             queued(job, workers).await?;

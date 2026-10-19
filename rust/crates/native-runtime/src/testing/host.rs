@@ -5,6 +5,8 @@ use loom::sync::Condvar;
 #[cfg(not(acyclic_native_runtime_loom))]
 use std::sync::Condvar;
 use std::task::{Context as PollContext, Wake};
+mod pool;
+pub(crate) use pool::Pool;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
@@ -18,6 +20,7 @@ struct State {
     phase: Phase,
     ready: bool,
     io_ready: bool,
+    waiting_start: bool,
     driver: Option<Waker>,
     #[cfg(test)]
     forget_ready: bool,
@@ -30,15 +33,26 @@ struct State {
 pub(super) struct Host {
     state: Mutex<State>,
     changed: Condvar,
+    pool: Arc<pool::Pool>,
 }
 
 impl Host {
-    pub(super) fn new() -> Arc<Self> {
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(super) fn new(threads: usize) -> Arc<Self> {
+        Self::with_pool(Pool::new(threads))
+    }
+
+    pub(super) fn for_workers(workers: &crate::NativeWorkers) -> Arc<Self> {
+        Self::with_pool(workers.host_pool.clone())
+    }
+
+    fn with_pool(pool: Arc<Pool>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
                 phase: Phase::Starting,
                 ready: false,
                 io_ready: false,
+                waiting_start: false,
                 driver: None,
                 #[cfg(test)]
                 forget_ready: false,
@@ -46,11 +60,13 @@ impl Host {
                 forget_io: false,
             }),
             changed: Condvar::new(),
+            pool,
         })
     }
 
     pub(super) fn run<T>(self: &Arc<Self>, work: impl FnOnce() -> T) -> T {
         lock(&self.state).phase = Phase::Running;
+        self.pool.changed();
         let _finished = Finished(self.clone());
         let context = Context::simulation().map(|mut context| {
             context.host = Some(self.clone());
@@ -75,7 +91,18 @@ impl Host {
             }
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.phase = Phase::Parked;
+            let saturated = self.pool.park();
+            let driver = state.waiting_start.then(|| state.driver.clone()).flatten();
+            state.waiting_start = false;
             self.changed.notify_one();
+            drop(state);
+            if saturated {
+                self.pool.changed();
+            }
+            if let Some(driver) = driver {
+                driver.wake();
+            }
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             while state.phase == Phase::Parked {
                 state = self
                     .changed
@@ -98,7 +125,7 @@ impl Host {
                 {
                     return Poll::Ready(output);
                 }
-                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut state = self.pool.start_or_saturation(&self.state);
                 state.driver = Some(cx.waker().clone());
                 loop {
                     if state.io_ready {
@@ -113,10 +140,15 @@ impl Host {
                         }
                         Phase::Parked if state.ready => {
                             state.ready = false;
+                            self.pool.resume();
                             state.phase = Phase::Running;
                             self.changed.notify_one();
                         }
                         Phase::Parked => return Poll::Pending,
+                        Phase::Starting => {
+                            state.waiting_start = true;
+                            return Poll::Pending;
+                        }
                         _ => (),
                     }
                     state = self
@@ -138,23 +170,43 @@ impl Wake for IoWake {
         self.wake_by_ref();
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        {
+        let driver = {
             let mut state = lock(&self.0.state);
             #[cfg(test)]
             if state.forget_io {
                 return;
             }
             state.io_ready = true;
-        }
+            (
+                state.phase == Phase::Starting,
+                state.waiting_start.then(|| state.driver.clone()).flatten(),
+            )
+        };
         self.0.changed.notify_one();
+        if driver.0 {
+            self.0.pool.changed();
+        }
+        let driver = driver.1;
+        if let Some(driver) = driver {
+            driver.wake();
+        }
     }
 }
 
 struct Finished(Arc<Host>);
 impl Drop for Finished {
     fn drop(&mut self) {
-        lock(&self.0.state).phase = Phase::Finished;
+        let driver = {
+            let mut state = lock(&self.0.state);
+            state.phase = Phase::Finished;
+            let driver = state.waiting_start.then(|| state.driver.clone()).flatten();
+            state.waiting_start = false;
+            driver
+        };
         self.0.changed.notify_one();
+        if let Some(driver) = driver {
+            driver.wake();
+        }
     }
 }
 

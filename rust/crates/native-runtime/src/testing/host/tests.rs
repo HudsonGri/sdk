@@ -1,5 +1,108 @@
 use super::*;
 
+#[test]
+fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
+    let workers = crate::workers(&crate::BLOCKING_WORKERS, false).unwrap();
+    let (started, receive) = std::sync::mpsc::channel();
+    let mut occupants = Vec::new();
+    let mut replies = Vec::new();
+    let mut cx = std::task::Context::from_waker(Waker::noop());
+    for index in 0..workers.threads {
+        let (reply, waiting) = std::sync::mpsc::channel();
+        replies.push(reply);
+        let started = started.clone();
+        let mut completion = Box::pin(
+            crate::run_blocking_io(
+                move || {
+                    started.send(()).unwrap();
+                    assert_eq!(waiting.recv().unwrap(), index);
+                    index
+                },
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(completion.as_mut().poll(&mut cx).is_pending());
+        occupants.push(completion);
+    }
+    for _ in 0..workers.threads {
+        receive.recv().unwrap();
+    }
+    let host = Host::for_workers(workers);
+    let worker = host.clone();
+    let mut completion = crate::run_blocking_io(move || worker.run(|| 42), None).unwrap();
+    let mut job = completion.pending.take().unwrap();
+    if let crate::NativeJob::Task { controlled, .. } = &mut job {
+        *controlled = true;
+    }
+    let mut drive = Box::pin(host.drive(queued(job, workers)));
+    // Every physical worker is waiting for this driver. Its first poll must
+    // yield before any reply is sent, even though none belongs to this Host.
+    assert!(drive.as_mut().poll(&mut cx).is_pending());
+    for (index, reply) in replies.into_iter().enumerate() {
+        reply.send(index).unwrap();
+    }
+    executor::complete_io(drive).unwrap();
+    assert_eq!(executor::complete_io(completion).unwrap(), 42);
+    for (index, completion) in occupants.into_iter().enumerate() {
+        assert_eq!(executor::complete_io(completion).unwrap(), index);
+    }
+}
+
+#[test]
+fn queued_workers_leave_the_executor_available_to_reply() {
+    let count = crate::workers(&crate::BLOCKING_WORKERS, false)
+        .unwrap()
+        .threads;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let (schedule, mut events) = Schedule::seeded(17);
+    let mut completed = runtime.block_on(async {
+        let mut root = Box::pin(schedule.scope(async {
+            let (send, mut receive) = mpsc::unbounded_channel();
+            let mut workers = Vec::new();
+            for index in 0..=count {
+                let send = send.clone();
+                workers.push(spawn_blocking(move || {
+                    let (reply, waiting) = oneshot::channel();
+                    send.send((index, reply)).unwrap();
+                    assert_eq!(blocking_on(waiting).unwrap(), index);
+                    index
+                }));
+            }
+            drop(send);
+            // Occupy every physical worker before allowing any reply. Another
+            // accepted job must queue while the root remains able to answer.
+            let mut replies = Vec::new();
+            for _ in 0..count {
+                replies.push(receive.recv().await.unwrap());
+            }
+            for (index, reply) in replies {
+                reply.send(index).unwrap();
+            }
+            let (index, reply) = receive.recv().await.unwrap();
+            reply.send(index).unwrap();
+            let mut completed = Vec::new();
+            for worker in workers {
+                completed.push(worker.await.unwrap());
+            }
+            completed
+        }));
+        let result = loop {
+            tokio::select! {
+                result = &mut root => break result,
+                event = events.recv() => event.unwrap().release(),
+            }
+        };
+        drop(root);
+        schedule.drained().await;
+        result
+    });
+    completed.sort_unstable();
+    assert_eq!(completed, (0..=count).collect::<Vec<_>>());
+}
+
 fn exchanges(seed: u64) -> (Vec<u32>, Vec<(u64, &'static str)>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()

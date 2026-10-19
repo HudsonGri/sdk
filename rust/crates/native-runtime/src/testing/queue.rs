@@ -27,6 +27,8 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         sender,
         admission: Arc::new(Mutex::new(AdmissionState::new())),
         threads: 1,
+        #[cfg(feature = "test-support")]
+        host_pool: crate::testing::HostPool::new(1),
     };
     let filler = run_blocking_io(|| (), None)?
         .pending

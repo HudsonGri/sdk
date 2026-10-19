@@ -22,6 +22,8 @@ pub(crate) enum NativeJob {
         health: Option<Arc<FileHealth>>,
     },
     Task {
+        #[cfg(feature = "test-support")]
+        controlled: bool,
         operation: Box<dyn FnOnce() + Send>,
         meter: Option<Arc<dyn NativeReadMeter>>,
         terminal: Arc<dyn TaskTerminal>,
@@ -32,6 +34,16 @@ pub(crate) enum NativeJob {
 }
 
 impl NativeJob {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn controlled(&self) -> bool {
+        matches!(
+            self,
+            Self::Task {
+                controlled: true,
+                ..
+            }
+        )
+    }
     #[cfg(feature = "test-support")]
     pub(crate) fn test_terminal(&self) -> Arc<dyn TaskTerminal> {
         match self {
@@ -147,6 +159,8 @@ impl NativeJob {
                 })
             }),
             Self::Task {
+                #[cfg(feature = "test-support")]
+                    controlled: _,
                 operation,
                 meter,
                 terminal,

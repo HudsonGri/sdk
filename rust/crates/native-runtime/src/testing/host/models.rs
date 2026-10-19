@@ -3,7 +3,7 @@ use loom::sync::atomic::{AtomicBool, Ordering};
 
 fn handoff(forget_ready: bool) {
     loom::model(move || {
-        let host = Host::new();
+        let host = Host::new(1);
         lock(&host.state).forget_ready = forget_ready;
         let source = Arc::new(AtomicBool::new(false));
         let published = source.clone();
@@ -51,41 +51,50 @@ fn negative_control_forgetting_worker_readiness_deadlocks() {
 
 fn queue_wakes(forget_io: bool) {
     loom::model(move || {
-        let host = Host::new();
+        let host = Host::new(1);
         lock(&host.state).forget_io = forget_io;
-        let capacity = Arc::new(AtomicBool::new(false));
-        let terminal = Arc::new(AtomicBool::new(false));
-        let waiting = Arc::new(Mutex::new(None::<Waker>));
+        // The original queue has three monotone states. Register the actual
+        // polling waker before both capacity and terminal publications;
+        // no permutation, branch or preemption bound trims this state space.
+        let queue = Arc::new(Mutex::new((0u8, None::<Waker>)));
         let (started, start) = loom::sync::mpsc::channel();
         let (admitted, admission) = loom::sync::mpsc::channel();
         let worker = host.clone();
-        let space = capacity.clone();
-        let complete = terminal.clone();
-        let wake = waiting.clone();
+        let published = queue.clone();
         let thread = loom::thread::spawn(move || {
             start.recv().unwrap();
-            space.store(true, Ordering::SeqCst);
-            let signal = lock(&wake).as_ref().unwrap().clone();
+            let signal = {
+                let mut queue = lock(&published);
+                queue.0 = 1;
+                queue.1.clone().unwrap()
+            };
             signal.wake();
             admission.recv().unwrap();
             worker.run(|| ());
-            complete.store(true, Ordering::SeqCst);
-            let signal = lock(&wake).as_ref().unwrap().clone();
+            let signal = {
+                let mut queue = lock(&published);
+                queue.0 = 2;
+                queue.1.clone().unwrap()
+            };
             signal.wake();
         });
         let mut started = Some(started);
         let mut admitted = Some(admitted);
         executor::complete_io(host.drive(std::future::poll_fn(|cx| {
-            *lock(&waiting) = Some(cx.waker().clone());
+            let phase = {
+                let mut queue = lock(&queue);
+                queue.1 = Some(cx.waker().clone());
+                queue.0
+            };
             if let Some(started) = started.take() {
                 started.send(()).unwrap();
             }
-            if capacity.load(Ordering::SeqCst)
+            if phase >= 1
                 && let Some(admitted) = admitted.take()
             {
                 admitted.send(()).unwrap();
             }
-            if terminal.load(Ordering::SeqCst) {
+            if phase == 2 {
                 Poll::Ready(())
             } else {
                 Poll::Pending
@@ -104,4 +113,44 @@ fn queue_capacity_and_physical_terminal_wakes_are_latched() {
 #[should_panic(expected = "deadlock")]
 fn negative_control_forgetting_io_readiness_deadlocks() {
     queue_wakes(true);
+}
+
+fn unscoped_occupant(forget_occupant: bool) {
+    loom::model(move || {
+        let host = Host::new(1);
+        let worker = host.clone();
+        let (started, start) = loom::sync::mpsc::channel();
+        let (release, released) = loom::sync::mpsc::channel();
+        let thread = loom::thread::spawn(move || {
+            let occupant = (!forget_occupant).then(|| worker.pool.unscoped());
+            started.send(()).unwrap();
+            released.recv().unwrap();
+            drop(occupant);
+            worker.run(|| ());
+        });
+        start.recv().unwrap();
+        let mut drive = std::pin::pin!(host.drive(std::future::poll_fn(|_| {
+            if lock(&host.state).phase == Phase::Finished {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })));
+        let mut cx = PollContext::from_waker(Waker::noop());
+        assert!(drive.as_mut().poll(&mut cx).is_pending());
+        release.send(()).unwrap();
+        executor::complete_io(drive);
+        thread.join().unwrap();
+    });
+}
+
+#[test]
+fn physical_occupants_outside_the_schedule_cannot_block_the_driver() {
+    unscoped_occupant(false);
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_forgetting_physical_occupancy_deadlocks() {
+    unscoped_occupant(true);
 }
