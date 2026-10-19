@@ -22,11 +22,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.admission
     }
 
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    ))]
     pub(crate) fn deadline_epoch_ms(&self) -> Option<u64> {
         self.admission.run_limits.deadline_epoch_ms
     }
