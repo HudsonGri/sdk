@@ -93,13 +93,7 @@ impl Owner {
                     )?,
                 };
                 let mut key = [0; 32];
-                #[cfg(feature = "test-support")]
-                let seeded = acyclic_native_runtime::testing::fill_seeded(&mut key);
-                #[cfg(not(feature = "test-support"))]
-                let seeded = false;
-                if !seeded {
-                    getrandom::fill(&mut key).map_err(storage)?;
-                }
+                crate::identity::fill_random(&mut key).map_err(storage)?;
                 let owner = Self {
                     key,
                     agent: AgentId::new(),

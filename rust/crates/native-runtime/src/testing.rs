@@ -350,21 +350,18 @@ where
                 result
             }),
         ))
-    } else if crate::inline_blocking_allowed() {
+    } else {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
         BlockingOwner::Shared(tokio::spawn(async move {
             host_work(crate::run_blocking_io(work, None), None).await
         }))
-    } else {
-        BlockingOwner::Worker(TaskHandle::native(tokio::task::spawn_blocking(work)))
     };
     async move {
         match owner {
             BlockingOwner::Controlled(worker) => worker.await?,
             BlockingOwner::Shared(shared) => shared.await.map_err(std::io::Error::other)?,
-            BlockingOwner::Worker(worker) => worker.await,
         }
     }
 }
@@ -372,7 +369,6 @@ where
 /// The one task that owns a blocking closure's result.
 enum BlockingOwner<T> {
     Controlled(TaskHandle<std::io::Result<T>>),
-    Worker(TaskHandle<T>),
     Shared(tokio::task::JoinHandle<std::io::Result<T>>),
 }
 
