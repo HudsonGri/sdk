@@ -80,7 +80,9 @@ impl LocalHarness {
         runtime.bind_task_files(Some(task_files.clone()));
         #[cfg(feature = "native-execution")]
         let workspace = if let Some((checkout, directory)) = checkout.zip(checkout_state) {
-            let root = acyclic_fs::hold_root(&std::fs::canonicalize(checkout).map_err(storage_error)?).map_err(storage_error)?;
+            let root =
+                acyclic_fs::hold_root(&std::fs::canonicalize(checkout).map_err(storage_error)?)
+                    .map_err(storage_error)?;
             let digest = blake3::derive_key(
                 "acyclic.local.bound-checkout/v1",
                 &serde_json::to_vec(volume).map_err(storage_error)?,
