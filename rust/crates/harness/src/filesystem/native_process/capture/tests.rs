@@ -95,7 +95,15 @@ mod simulation {
                         worker_source.set((seeded, bytes, unix_millis())).unwrap();
                         // Exercise a real Pending ownership check. A worker
                         // retaining its permit here deadlocks the seeded driver.
-                        wait_control(&handle, tokio::time::sleep(Duration::from_millis(3)));
+                        assert!(tokio::runtime::Handle::try_current().is_err());
+                        wait_control(&handle, || {
+                            assert!(
+                                tokio::runtime::Handle::try_current().is_ok(),
+                                "control future constructed outside its runtime"
+                            );
+                            tokio::time::sleep(Duration::from_millis(3))
+                        });
+                        assert!(tokio::runtime::Handle::try_current().is_err());
                     }
                     Ok(())
                 },
