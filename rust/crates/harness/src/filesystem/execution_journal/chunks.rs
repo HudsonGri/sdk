@@ -78,8 +78,8 @@ where
             let mut history = observer
                 .as_mut()
                 .map(|observer| observer as &mut dyn crate::store::HistoryIo);
-            let condition = owner
-                .condition(crate::distributed::JournalWrite::Fresh, &mut history)
+            let (condition, deadline) = owner
+                .file_condition(crate::distributed::JournalWrite::Settlement, &mut history)
                 .await?;
             let _conditions_hold;
             let mut conditions = Vec::new();
@@ -96,7 +96,7 @@ where
             conditions.push(condition);
             match files
                 .inner
-                .append_if(head, &value, conditions, owner.deadline_epoch_ms(), work)
+                .append_if(head, &value, conditions, deadline, work)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -118,57 +118,6 @@ where
         let (Some(files), Some((owner, _))) = (&self.task_files, &self.owner) else {
             return Err(Error::Invalid("model projection has no task owner".into()));
         };
-        // Allocate an immutable full-operation binding before exposing any chunk.
-        // Its accepted task-file position supplies chronological identity even
-        // for caller-chosen UUIDs and repeated child executions at model step 0.
-        let binding = FileValue::new(
-            FileKey::Task {
-                task: task.clone(),
-                file: TaskFile::ModelTurn {
-                    operation: operation.into_bytes(),
-                    step,
-                },
-            },
-            acyclic_stream::OwnedBytes::default(),
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        let work = io.and_then(PreparationIo::original_native_work);
-        #[cfg(target_arch = "wasm32")]
-        let work = None;
-        loop {
-            let (position, head) = files.inner.file_position(&binding.key).await?;
-            if let Some(position) = position {
-                return Ok(position);
-            }
-            let mut observer = io.map(PreparationIo::history_io);
-            let mut history = observer
-                .as_mut()
-                .map(|observer| observer as &mut dyn crate::store::HistoryIo);
-            let condition = owner
-                .condition(crate::distributed::JournalWrite::Fresh, &mut history)
-                .await?;
-            let _conditions_hold;
-            let mut conditions = Vec::new();
-            PreparationIo::reserve(&mut conditions, 1, io)?;
-            _conditions_hold = io
-                .map(|io| {
-                    io.guard_owned(
-                        (conditions.capacity()
-                            * std::mem::size_of::<acyclic_stream::CommitCondition>())
-                            as u64,
-                    )
-                })
-                .transpose()?;
-            conditions.push(condition);
-            match files
-                .inner
-                .append_if(head, &binding, conditions, owner.deadline_epoch_ms(), work)
-                .await
-            {
-                Ok(accepted) => return Ok(accepted.position),
-                Err(crate::task_volume::Error::Conflict(_)) => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
+        files.model_turn(owner, operation, step, task, io).await
     }
 }

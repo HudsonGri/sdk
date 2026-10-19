@@ -119,3 +119,119 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
     harness.disconnect_unfinished().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn text_and_native_tool_files_share_the_full_canonical_model_turn() -> Result<()> {
+    use crate::{
+        model::ModelEvent,
+        test_support::{ScriptedEvent, ScriptedTurn},
+    };
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let model = Model::new(
+        "scripted".into(),
+        "grouped-output".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let provider = Arc::new(ScriptedModelProvider::new([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: "before-tool".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "canonical-tool".into(),
+                "bash".into(),
+                serde_json::json!({"command":"printf tool-bytes"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("after-tool".into()),
+    ]));
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model, provider))?
+            .state_directory(state.path()),
+    )
+    .await?;
+    harness.run("group model output").await?;
+    let snapshot = harness
+        .task_files()
+        .observe(Query::Root, None, 128)
+        .await?
+        .snapshot
+        .unwrap();
+    let (task, turn) = snapshot
+        .files
+        .iter()
+        .find_map(|file| match &file.key {
+            FileKey::Task {
+                task,
+                file: TaskFile::Chunk { turn, .. },
+            } if file.bytes.as_ref() == b"before-tool" => Some((task.clone(), *turn)),
+            _ => None,
+        })
+        .expect("canonical text projection");
+    let tools: Vec<_> = snapshot
+        .files
+        .iter()
+        .filter_map(|file| match &file.key {
+            FileKey::Task {
+                task: owner,
+                file: TaskFile::Tool { turn, file, .. },
+            } if owner == &task => Some((*turn, file)),
+            _ => None,
+        })
+        .collect();
+    assert!(!tools.is_empty());
+    assert!(tools.iter().all(|(tool_turn, _)| *tool_turn == turn));
+    assert!(
+        tools
+            .iter()
+            .any(|(_, file)| matches!(file, ToolFile::Request))
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|(_, file)| matches!(file, ToolFile::Stdout(_)))
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|(_, file)| matches!(file, ToolFile::Result))
+    );
+    let selected = harness
+        .task_files()
+        .observe(
+            Query::Turn {
+                task: task.clone(),
+                turn,
+            },
+            None,
+            128,
+        )
+        .await?
+        .snapshot
+        .unwrap();
+    assert!(
+        selected
+            .files
+            .iter()
+            .any(|file| file.bytes.as_ref() == b"before-tool")
+    );
+    assert!(selected.files.iter().any(|file| matches!(
+        file.key,
+        FileKey::Task {
+            file: TaskFile::Tool { .. },
+            ..
+        }
+    )));
+    assert!(
+        !selected
+            .files
+            .iter()
+            .any(|file| file.bytes.as_ref() == b"after-tool")
+    );
+    harness.disconnect().await
+}

@@ -53,18 +53,12 @@ impl CheckoutTools {
             (owner.task_id(), operation, event.name()),
             scope.limits().file_bytes,
             !reconcile_only,
-            || async {
-                let condition = owner
-                    .condition(
-                        if reconcile_only {
-                            crate::distributed::JournalWrite::Settlement
-                        } else {
-                            crate::distributed::JournalWrite::Fresh
-                        },
-                        &mut None,
-                    )
-                    .await?;
-                Ok((vec![condition], owner.deadline_epoch_ms()))
+            |write| {
+                let owner = owner.clone();
+                async move {
+                    let (condition, deadline) = owner.file_condition(write, &mut None).await?;
+                    Ok((vec![condition], deadline))
+                }
             },
             || async {
                 let selected = if self.selected {

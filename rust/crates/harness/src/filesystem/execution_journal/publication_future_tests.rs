@@ -353,10 +353,22 @@ async fn projected_fixture(
     Journal,
     Arc<crate::durable_host::CoordinatorTaskHost<acyclic_stream::MemoryStream>>,
 )> {
-    let fixture = crate::durable_host::tests::fixture::Fixture::new(
+    projected_fixture_at(operation, Arc::new(Clock), None, None).await
+}
+
+async fn projected_fixture_at(
+    operation: OperationId,
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    deadline: Option<u64>,
+    cancellation: Option<&acyclic_fs::CancellationToken>,
+) -> Result<(
+    Journal,
+    Arc<crate::durable_host::CoordinatorTaskHost<acyclic_stream::MemoryStream>>,
+)> {
+    let mut fixture = crate::durable_host::tests::fixture::Fixture::new(
         Arc::new(acyclic_stream::MemoryStream::new_with_clock(
             Default::default(),
-            Arc::new(Clock),
+            clock.clone(),
         )),
         acyclic_fs::Fs::memory(),
         serde_json::json!({"type":"integer"}),
@@ -369,7 +381,20 @@ async fn projected_fixture(
         &[],
     )
     .await?;
-    let journal = fixture.execution(fixture.running(80).await?, operation)?;
+    use crate::runtime::TaskSpawner as _;
+    Arc::get_mut(&mut fixture.host)
+        .expect("unshared fixture host")
+        .clock = clock;
+    let mut admission = fixture.admission(80, serde_json::json!(0));
+    admission.run_limits.deadline_epoch_ms = deadline;
+    fixture.host.admit(admission).await?;
+    fixture.claim(80, "original").await?;
+    let owner = fixture.owner(80).await?;
+    let owner = match cancellation {
+        Some(cancellation) => owner.with_invocation_cancellation(cancellation),
+        None => owner,
+    };
+    let journal = fixture.execution(owner, operation)?;
     let files = crate::task_volume::TaskFiles::open(
         fixture.stream.clone(),
         &fixture.storage,
@@ -1024,3 +1049,5 @@ fn journal_tracing_captures_the_poll_context() -> Result<()> {
     }
     Ok(())
 }
+
+mod settlement_tests;

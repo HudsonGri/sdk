@@ -19,7 +19,7 @@ pub(super) struct Output {
     task: Component,
     call: Component,
     sequence: (u64, u64),
-    step: u64,
+    turn: u64,
     runtime: tokio::runtime::Handle,
 }
 
@@ -34,6 +34,16 @@ impl Output {
         // Runtime operation IDs are canonical and unique across model turns.
         // The request retains the provider's call_id unchanged.
         let call = Component::new(context.operation_id().to_string())?;
+        let io = context.task().preparation_io()?;
+        let turn = volume
+            .model_turn(
+                &owner,
+                context.model_operation,
+                context.model_step,
+                &task,
+                io.as_ref(),
+            )
+            .await?;
         let generation = volume.inner.head().await?;
         let mut output = Self {
             owner,
@@ -42,7 +52,7 @@ impl Output {
             task,
             call,
             sequence: (0, 0),
-            step: u64::from(context.model_step),
+            turn,
             runtime: tokio::runtime::Handle::current(),
         };
         output.publish(ToolFile::Request, request.into()).await?;
@@ -55,7 +65,7 @@ impl Output {
             FileKey::Task {
                 task: self.task.clone(),
                 file: TaskFile::Tool {
-                    turn: self.step,
+                    turn: self.turn,
                     call: self.call.clone(),
                     file,
                 },
@@ -68,8 +78,8 @@ impl Output {
             self.generation,
             &write,
             || async move {
-                let condition = owner
-                    .condition(
+                let (condition, deadline) = owner
+                    .file_condition(
                         if settlement {
                             crate::distributed::JournalWrite::Settlement
                         } else {
@@ -78,14 +88,7 @@ impl Output {
                         &mut None,
                     )
                     .await?;
-                Ok::<_, crate::Error>((
-                    vec![condition],
-                    if settlement {
-                        None
-                    } else {
-                        owner.deadline_epoch_ms()
-                    },
-                ))
+                Ok::<_, crate::Error>((vec![condition], deadline))
             },
         )
         .await?;

@@ -22,8 +22,20 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.admission
     }
 
-    pub(crate) fn deadline_epoch_ms(&self) -> Option<u64> {
-        self.admission.run_limits.deadline_epoch_ms
+    /// Keeps file authorization and its temporal bound in one policy decision.
+    /// Accepted effects settle under the original fence after fresh work stops.
+    pub(crate) async fn file_condition(
+        &self,
+        write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<(acyclic_stream::CommitCondition, Option<u64>)> {
+        let condition = self.condition(write, work).await?;
+        let deadline = if matches!(write, crate::distributed::JournalWrite::Settlement) {
+            None
+        } else {
+            self.admission.run_limits.deadline_epoch_ms
+        };
+        Ok((condition, deadline))
     }
 
     pub(crate) fn input_limits(&self) -> crate::conversation::Limits {

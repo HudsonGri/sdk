@@ -2,6 +2,7 @@
 use super::*;
 use crate::{
     OperationId, TaskId,
+    distributed::JournalWrite,
     executor::json::{JsonBounds, json_bytes_bounded, json_from_slice_bounded},
     task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskVolume},
 };
@@ -17,7 +18,7 @@ pub(crate) async fn run_once<P, A, AF, F, FF, const CLAIM: bool>(
 ) -> Result<HookOutput>
 where
     P: StreamProvider + ?Sized,
-    A: FnMut() -> AF,
+    A: FnMut(JournalWrite) -> AF,
     AF: Future<Output = Result<(Vec<CommitCondition>, Option<u64>)>>,
     F: FnOnce() -> FF,
     FF: Future<Output = Result<HookOutput>>,
@@ -62,7 +63,7 @@ where
             if !cut.files.iter().any(|file| file.key == claim) {
                 return Err(Error::Invalid("hook outcome has no execution claim".into()));
             }
-            authorize().await?;
+            authorize(JournalWrite::Settlement).await?;
             return json_from_slice_bounded(
                 std::marker::PhantomData::<HookOutput>,
                 &file.bytes,
@@ -82,7 +83,7 @@ where
         if !allow_start {
             return Ok(HookOutput::default());
         }
-        let (conditions, deadline) = authorize().await?;
+        let (conditions, deadline) = authorize(JournalWrite::Fresh).await?;
         // Creation is exclusive even for identical bytes. An idempotent append
         // acknowledgement is never permission for another caller to launch.
         match volume
@@ -112,12 +113,9 @@ where
             (failure, bytes)
         }
     };
-    crate::task_volume::publish(
-        volume,
-        generation,
-        &FileValue::new(result, bytes),
-        authorize,
-    )
+    crate::task_volume::publish(volume, generation, &FileValue::new(result, bytes), || {
+        authorize(JournalWrite::Settlement)
+    })
     .await?;
     Ok(output)
 }

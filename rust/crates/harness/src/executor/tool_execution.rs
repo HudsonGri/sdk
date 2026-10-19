@@ -93,6 +93,7 @@ impl StockExecution<'_> {
         };
         if let Some(context) = &mut context {
             context.model_step = step;
+            context.model_operation = operation_id;
         }
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)

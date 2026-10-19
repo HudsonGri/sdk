@@ -52,7 +52,7 @@ fn schedule<const CLAIM: bool>() {
                     ),
                     4096,
                     true,
-                    || std::future::ready(Ok((Vec::new(), None))),
+                    |_| std::future::ready(Ok((Vec::new(), None))),
                     || async {
                         if !CLAIM {
                             // The broken variant skips the claim; park at the

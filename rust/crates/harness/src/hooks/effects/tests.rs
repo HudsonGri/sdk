@@ -2,7 +2,9 @@ use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
 
-fn authorization() -> std::future::Ready<Result<(Vec<CommitCondition>, Option<u64>)>> {
+fn authorization(
+    _: JournalWrite,
+) -> std::future::Ready<Result<(Vec<CommitCondition>, Option<u64>)>> {
     std::future::ready(Ok((Vec::new(), None)))
 }
 
