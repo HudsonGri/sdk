@@ -174,12 +174,12 @@ where
         if io.is_none() {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
                 let span = obs_span!("acyclic.harness.journal.append");
-                crate::obs::traced_future(
-                    span,
-                    self.append_validated(operation, None, key, event, None),
-                )
+                crate::obs::traced_future(span, async move {
+                    self.append_validated(operation, None, key, event, None)
+                        .await?;
+                    self.publish_chunk(key, event, None).await
+                })
                 .await
-                .map(|_| ())
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -222,7 +222,7 @@ where
                 );
                 crate::obs::traced_future(
                     span,
-                    self.append_validated(operation, Some(expected_tail), key, event, None),
+                    self.append_projected(operation, expected_tail, key, event, None),
                 )
                 .await
             });
@@ -232,7 +232,7 @@ where
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
                 let result = self
-                    .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                    .append_projected(operation, expected_tail, key, event, Some(&local))
                     .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
@@ -244,7 +244,7 @@ where
             );
             traced(
                 span,
-                self.append_validated(operation, Some(expected_tail), key, event, io),
+                self.append_projected(operation, expected_tail, key, event, io),
             )
             .await
         })

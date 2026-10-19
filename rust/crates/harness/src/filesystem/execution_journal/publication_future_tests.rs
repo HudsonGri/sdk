@@ -335,7 +335,7 @@ async fn turn(
 }
 
 #[test]
-fn journal_unmetered_task_files_match_main() {
+fn unmetered_chunks_follow_canonical_publication_and_replay() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -373,26 +373,13 @@ fn journal_unmetered_task_files_match_main() {
             })
             .unwrap()
     };
-    for broken in [false, true] {
-        let [expected, actual] =
+    {
+        let [omitted, published] =
             differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
                 runtime.block_on(async {
                     let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
                         .await
                         .unwrap();
-                    if broken && !old {
-                        // Restore the erroneous unconditional publication on a fresh
-                        // candidate fixture; canonical journal bytes stay unchanged.
-                        let records = journal.records(operation, 0, 64, None).await.unwrap();
-                        let record = records
-                            .iter()
-                            .find(|r| matches!(r.event, ExecutionEvent::Model { .. }))
-                            .unwrap();
-                        journal
-                            .publish_chunk("model:0:event:0", &record.event, None)
-                            .await
-                            .unwrap();
-                    }
                     let snapshot = journal
                         .task_files
                         .as_ref()
@@ -403,19 +390,86 @@ fn journal_unmetered_task_files_match_main() {
                     (artifacts, snapshot.files)
                 })
             });
-        assert_eq!(expected.0.0, actual.0.0);
-        assert!(expected.0.1.is_empty());
-        if broken {
-            assert_eq!(actual.0.1.len(), 1);
-            assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
-            assert_ne!(
-                expected, actual,
-                "unconditional publication was not detected"
+        // The retained implementation is a negative control: identical model
+        // requests, canonical event bodies and referenced publications never
+        // reached the visible files. The added projection advances the shared
+        // stream's commit identity before the final completion append.
+        let (before, after) = (&omitted.0.0, &published.0.0);
+        assert_eq!(before[0], after[0]);
+        assert_eq!(before[2], after[2]);
+        assert_eq!(before[1].len(), after[1].len());
+        assert_eq!(&before[1][..4], &after[1][..4]);
+        assert_eq!(before[1].len(), 5);
+        for (left, right) in before[1].iter().zip(&after[1]) {
+            assert_eq!(&left[..8], &right[..8], "canonical sequence changed");
+            assert_eq!(
+                &left[40..],
+                &right[40..],
+                "timestamp or event bytes changed"
             );
-        } else {
-            assert_eq!(expected, actual);
         }
+        assert_ne!(&before[1][4][8..40], &after[1][4][8..40]);
+        assert!(omitted.0.1.is_empty());
+        assert_eq!(published.0.1.len(), 1);
+        assert_eq!(published.0.1[0].bytes.as_ref(), b"0:chunk");
     }
+    let (journal, host) = initialize();
+    runtime.block_on(async {
+        turn(&journal, true, "conditional", 1, false, Some(host))
+            .await
+            .unwrap();
+        let records = journal.records(operation, 0, 64, None).await.unwrap();
+        let model = records
+            .iter()
+            .find(|record| matches!(record.event, ExecutionEvent::Model { .. }))
+            .unwrap();
+        // A refused compare-and-append must not publish a model event.
+        assert!(
+            !journal
+                .append_if_tail(
+                    operation,
+                    model.sequence + 100,
+                    &model.idempotency_key,
+                    &model.event,
+                    None
+                )
+                .unwrap()
+                .await
+                .unwrap()
+        );
+        let files = journal.task_files.as_ref().unwrap();
+        assert!(
+            files
+                .snapshot(&crate::task_volume::Query::Root, 16)
+                .await
+                .unwrap()
+                .files
+                .is_empty()
+        );
+        // Retrying an already durable event repairs its disposable projection,
+        // including the acknowledgement-loss path, without a second chunk.
+        for _ in 0..2 {
+            assert!(
+                journal
+                    .append_if_tail(
+                        operation,
+                        model.sequence - 1,
+                        &model.idempotency_key,
+                        &model.event,
+                        None
+                    )
+                    .unwrap()
+                    .await
+                    .unwrap()
+            );
+            let snapshot = files
+                .snapshot(&crate::task_volume::Query::Root, 16)
+                .await
+                .unwrap();
+            assert_eq!(snapshot.files.len(), 1);
+            assert_eq!(snapshot.files[0].bytes.as_ref(), b"0:conditional");
+        }
+    });
 }
 
 fn journal_wrapper_observations(
