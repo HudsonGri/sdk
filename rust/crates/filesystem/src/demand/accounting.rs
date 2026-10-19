@@ -258,6 +258,7 @@ impl DemandWork {
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
         }
+        self.reconcile_cancellation_registry()?;
         self.admission(WorkCounters::UNCHARGED, bytes, |state| {
             state
                 .allocations
@@ -323,7 +324,7 @@ impl DemandWork {
         result
     }
     pub(crate) fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
-        self.reconcile_native_controls()?;
+        self.reconcile_cancellation_registry()?;
         let mut remaining = self.work.remaining(self.budget)?;
         remaining.peak_allocation_bytes = remaining
             .peak_allocation_bytes

@@ -42,6 +42,103 @@ fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
         .map_err(crate::native_host::ordinary_error)
 }
 
+#[cfg(feature = "native-mount")]
+#[test]
+fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir_all(root.path().join("a/b/c"))?;
+    let host =
+        crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
+    let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
+    let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(watch.shared.polling.load(Ordering::Acquire));
+    let paused = watch.paused();
+    let owner_before = original.lock().receipt();
+    let retained_before = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+
+    let stop = CancellationToken::new();
+    let mut cancelled = crate::NativeMaterializationWork::new(ORIGINAL_BUDGET, &stop)
+        .map_err(|(error, _)| error)?;
+    stop.cancel();
+    assert!(matches!(
+        watch.admit_with_work(Path::new("a/b/c"), &mut cancelled),
+        Err(DemandError::Cancelled)
+    ));
+    assert_eq!(original.lock().receipt(), owner_before);
+    let mut denied = DemandWork::new(
+        WorkBudget {
+            backend_read_operations: 0,
+            ..ORIGINAL_BUDGET
+        },
+        &CancellationToken::new(),
+    );
+    assert!(
+        watch
+            .admit_with_work(Path::new("a/b/c"), &mut denied)
+            .is_err()
+    );
+    assert_eq!(original.lock().receipt(), owner_before);
+
+    // Neither incoming ledger contains the watch owner's custody gauge.
+    let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
+    {
+        let mut state = original.lock();
+        state.budget.allocation_operations = state.receipt().allocation_operations;
+    }
+    assert!(matches!(
+        watch.admit_with_work(Path::new("a/b/c"), &mut caller),
+        Err(DemandError::Work(WorkError::BudgetExceeded {
+            counter: "allocation_operations",
+            ..
+        }))
+    ));
+    assert_eq!(
+        watch.shared.retained_variable_bytes.load(Ordering::Acquire),
+        retained_before
+    );
+    original.lock().budget = ORIGINAL_BUDGET;
+    assert!(watch.admit_with_work(Path::new("a/b/c"), &mut caller)?);
+    let owner_after = original.lock().receipt();
+    let caller_after = incoming.lock().receipt();
+    assert!(owner_after.allocation_operations > owner_before.allocation_operations);
+    assert_eq!(
+        owner_after.backend_read_operations,
+        owner_before.backend_read_operations
+    );
+    assert_eq!(owner_after.bytes_copied, owner_before.bytes_copied);
+    assert!(caller_after.backend_read_operations > 0);
+    assert!(caller_after.bytes_copied > 0);
+    assert_eq!(incoming.lock().live_allocation_bytes(), 0);
+    assert!(watch.shared.retained_variable_bytes.load(Ordering::Acquire) > retained_before);
+    watch.unadmit_with_work(Path::new("a"), &mut caller)?;
+
+    let mut ordinary = DemandWork::new(ORIGINAL_BUDGET, &CancellationToken::new());
+    assert!(watch.admit_with_work(Path::new("a/b/c"), &mut ordinary)?);
+    assert!(ordinary.receipt().backend_read_operations > 0);
+    assert!(ordinary.receipt().bytes_copied > 0);
+    assert_eq!(ordinary.live_allocation_bytes(), 0);
+    watch.unadmit_with_work(Path::new("a"), &mut ordinary)?;
+    drop(paused);
+    watch.stop_accepted_cleanup()?;
+    assert!(watch.shared.physically_cleared());
+    Ok(())
+}
+
 #[test]
 fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -86,6 +183,57 @@ fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dy
     Ok(())
 }
 
+#[cfg(feature = "native-mount")]
+#[test]
+fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("before"))?;
+    let host =
+        crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
+    let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
+    let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
+    assert!(watch.admit_with_work(Path::new("before"), &mut birth)?);
+    // Block the background consumer before producing events. The public fence
+    // must perform this drain with the unrelated invocation's work context.
+    watch
+        .shared
+        .reading
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .blocked = true;
+    let owner_before = original.lock().receipt();
+    std::fs::rename(root.path().join("before"), root.path().join("after"))?;
+    let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
+    assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut caller)?);
+    assert!(original.lock().receipt().allocation_operations > owner_before.allocation_operations);
+    assert!(incoming.lock().receipt().source_bytes_read > 0);
+    assert!(incoming.lock().receipt().bytes_copied > 0);
+    assert_eq!(incoming.lock().live_allocation_bytes(), 0);
+    assert!(
+        watch
+            .shared
+            .reading
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cleanup
+            .is_empty()
+    );
+    watch.stop_accepted_cleanup()?;
+    assert!(watch.shared.physically_cleared());
+    Ok(())
+}
+
 #[test]
 fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -104,6 +252,7 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
         watch.admit_with_work(Path::new("a/b"), &mut work),
         Err(DemandError::Work(WorkError::BudgetExceeded { .. }))
     ));
+    assert_eq!(work.live_allocation_bytes(), 0);
 
     assert!(
         watch
@@ -133,6 +282,7 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
         &cancellation,
     );
     assert!(watch.admit_with_work(Path::new("a/b"), &mut work)?);
+    assert_eq!(work.live_allocation_bytes(), 0);
 
     Ok(())
 }
@@ -454,8 +604,13 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
-    let retained_control = original.lock().live_allocation_bytes()
-        - watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+    let retained_control = {
+        let mut state = original.lock();
+        // Startup's temporary failure custody has retired. Reconcile its gauge
+        // through the same budget projection used by the next native call.
+        state.remaining()?;
+        state.live_allocation_bytes() - watch.shared.retained_variable_bytes.load(Ordering::Acquire)
+    };
     std::fs::write(root.path().join("reported"), b"changed")?;
     receive.recv_timeout(std::time::Duration::from_secs(5))?;
     cancellation.cancel();
@@ -554,9 +709,15 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
-    let paused = watch.paused();
+    // The foreground fence owns this callback. Keep the background reader
+    // parked until the test explicitly admits terminal cleanup below.
+    watch
+        .shared
+        .reading
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .blocked = true;
     std::fs::write(root.path().join("reported"), b"changed")?;
-    drop(paused);
     let _ = watch.fence_events_with_work(std::time::Duration::MAX, &mut work);
     {
         let reading = watch
