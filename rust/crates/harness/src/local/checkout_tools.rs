@@ -275,6 +275,7 @@ impl ToolExecutor for CheckoutTools {
                             active, watcher, ..
                         } = &mut *state;
                         let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+                        let journal = context.task().ordinary_journal_owner::<LocalStream>()?;
                         in_heap(|| {
                             self.capture(
                                 (&workspace, view),
@@ -282,10 +283,7 @@ impl ToolExecutor for CheckoutTools {
                                 invocation.operation_id,
                                 0,
                                 PublicationPermit::Unrestricted,
-                                Some((
-                                    context.task().ordinary_journal_owner::<LocalStream>()?,
-                                    false,
-                                )),
+                                Some((journal, false)),
                             )
                         })
                         .await?;
