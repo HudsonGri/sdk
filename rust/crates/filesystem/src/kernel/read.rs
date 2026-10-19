@@ -20,6 +20,13 @@ pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Vec<Option<TreeEntry>>>, TreeReadFailure> {
+    cancellation.check().map_err(|_| {
+        OperationFailure::new(TreeReadError::Cancelled, crate::WorkCounters::UNCHARGED)
+    })?;
+    persistent_batch::validate_request::<TreeFormat>(root, names, maximum_queries, limits)
+        .map_err(|error| {
+            OperationFailure::new(map_batch_error(error), crate::WorkCounters::UNCHARGED)
+        })?;
     // The lookup's frame is admitted on its own receipt before it is boxed.
     crate::heap_future::in_heap_measured(
         move |budget| async move {
