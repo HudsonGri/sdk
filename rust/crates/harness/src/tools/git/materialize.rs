@@ -81,113 +81,160 @@ where
     Fut: Future<Output = Result<(), Error>> + Send,
 {
     before_effect().await?;
-    let to = to_generation.id();
-    let operation_directory = NativeDirectory(root).publication_directory(operation_id)?;
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| Error::from(cause))?;
     let frame_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-    // Boxed, and the journal with it: neither stays in this frame, which is
-    // live under the whole publication below.
-    let journal = crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || async {
-        acyclic_fs::load_native_materialization_journal(
+    crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+        CheckoutTransition {
+            root,
+            source_root_identity,
             store,
             operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map(|loaded| loaded.value.map(Box::new))
+            from,
+            to_generation,
+        }
+        .publish(before_effect, &cancellation, work)
     })?
     .await
-    .map_err(|(cause, _)| Error::from(cause))?;
-    if work.root_identity(root).map_err(Error::from)? != source_root_identity {
-        return Err(Error::Unauthorized(
-            "checkout root changed before publication".into(),
-        ));
-    }
-    let mut from = from;
-    if let Some(journal) = &journal {
-        // A git action can commit its logical generation before its native
-        // publication is acknowledged. Its retry then observes the target as
-        // the current head; resume the original journal's source generation.
-        if from.id() == to
-            && let acyclic_fs::MaterializationIntent::GenerationTransition {
-                from: original,
-                to: target,
-            } = journal.plan.intent
-            && target == to
-        {
-            let workspace = from.workspace();
-            from = crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
-                workspace.generation(original, WorkBudget::UNBOUNDED, &cancellation)
+}
+
+// The complete publication state is constructed only after its original ledger
+// admits the frame; Git callers keep just this bounded future on their stack.
+struct CheckoutTransition<'a> {
+    root: &'a Path,
+    source_root_identity: acyclic_fs::NativeRootIdentity,
+    store: &'a LocalCoreStateStore,
+    operation_id: OperationId,
+    from: LocalGeneration,
+    to_generation: LocalGeneration,
+}
+
+impl CheckoutTransition<'_> {
+    async fn publish<F, Fut>(
+        self,
+        before_effect: &F,
+        cancellation: &CancellationToken,
+        work: acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(), Error>
+    where
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<(), Error>> + Send,
+    {
+        let Self {
+            root,
+            source_root_identity,
+            store,
+            operation_id,
+            from,
+            to_generation,
+        } = self;
+        let to = to_generation.id();
+        let operation_directory = NativeDirectory(root).publication_directory(operation_id)?;
+        let frame_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        // Boxed, and the journal with it: neither stays in this frame, which is
+        // live under the whole publication below.
+        let journal =
+            crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || async {
+                acyclic_fs::load_native_materialization_journal(
+                    store,
+                    operation_id,
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
+                .await
+                .map(|loaded| loaded.value.map(Box::new))
             })?
             .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
+            .map_err(|(cause, _)| Error::from(cause))?;
+        if work.root_identity(root).map_err(Error::from)? != source_root_identity {
+            return Err(Error::Unauthorized(
+                "checkout root changed before publication".into(),
+            ));
         }
-        if completed(journal, source_root_identity, from.id(), to)? {
-            // The durable journal is also the completion marker. A retry must
-            // not overwrite edits made after an acknowledged publication.
-            cleanup(root, &operation_directory)?;
+        let mut from = from;
+        if let Some(journal) = &journal {
+            // A git action can commit its logical generation before its native
+            // publication is acknowledged. Its retry then observes the target as
+            // the current head; resume the original journal's source generation.
+            if from.id() == to
+                && let acyclic_fs::MaterializationIntent::GenerationTransition {
+                    from: original,
+                    to: target,
+                } = journal.plan.intent
+                && target == to
+            {
+                let workspace = from.workspace();
+                from = crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+                    workspace.generation(original, WorkBudget::UNBOUNDED, cancellation)
+                })?
+                .await
+                .map_err(|failure| Error::from(failure.error))?
+                .value;
+            }
+            if completed(journal, source_root_identity, from.id(), to)? {
+                // The durable journal is also the completion marker. A retry must
+                // not overwrite edits made after an acknowledged publication.
+                cleanup(root, &operation_directory)?;
+                return Ok(());
+            }
+        } else if from.id() == to {
             return Ok(());
         }
-    } else if from.id() == to {
-        return Ok(());
+        drop(journal);
+        let parent = operation_directory
+            .parent()
+            .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
+        let actual =
+            acyclic_fs::validate_native_preparation_location(root, &operation_directory, &work)
+                .map_err(Error::from)?;
+        if actual != source_root_identity {
+            return Err(Error::Storage(
+                "checkout root changed before publication".into(),
+            ));
+        }
+        let options = MaterializeOptions {
+            destination: operation_directory.join("target"),
+            expected_root_identity: None,
+            maximum_directory_entries: 4_096,
+            maximum_extent_spans: 65_536,
+            transfer_bytes: 8 * 1024 * 1024,
+        };
+        crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+            acyclic_fs::publish_native_generation_transition(
+                &from,
+                &to_generation,
+                store,
+                acyclic_fs::NativeWorkspacePublication {
+                    root,
+                    source_root_identity,
+                    operation_directory: &operation_directory,
+                    operation_id,
+                    from: from.id(),
+                    to,
+                    excluded_names: &[".git", ".system", ".volumes"],
+                    options: &options,
+                    budget: WorkBudget::UNBOUNDED,
+                    cancellation: cancellation,
+                },
+                work,
+                || async {
+                    before_effect().await.map_err(|error| {
+                        acyclic_fs::NativeWorkspacePublicationError::Native(
+                            acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::other(
+                                error,
+                            )),
+                        )
+                    })
+                },
+            )
+        })?
+        .await
+        .map_err(|(cause, _)| Error::from(cause))?;
+        cleanup(root, &operation_directory)
     }
-    drop(journal);
-    let parent = operation_directory
-        .parent()
-        .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
-    let actual =
-        acyclic_fs::validate_native_preparation_location(root, &operation_directory, &work)
-            .map_err(Error::from)?;
-    if actual != source_root_identity {
-        return Err(Error::Storage(
-            "checkout root changed before publication".into(),
-        ));
-    }
-    let options = MaterializeOptions {
-        destination: operation_directory.join("target"),
-        expected_root_identity: None,
-        maximum_directory_entries: 4_096,
-        maximum_extent_spans: 65_536,
-        transfer_bytes: 8 * 1024 * 1024,
-    };
-    crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
-        acyclic_fs::publish_native_generation_transition(
-            &from,
-            &to_generation,
-            store,
-            acyclic_fs::NativeWorkspacePublication {
-                root,
-                source_root_identity,
-                operation_directory: &operation_directory,
-                operation_id,
-                from: from.id(),
-                to,
-                excluded_names: &[".git", ".system", ".volumes"],
-                options: &options,
-                budget: WorkBudget::UNBOUNDED,
-                cancellation: &cancellation,
-            },
-            work,
-            || async {
-                before_effect().await.map_err(|error| {
-                    acyclic_fs::NativeWorkspacePublicationError::Native(
-                        acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::other(
-                            error,
-                        )),
-                    )
-                })
-            },
-        )
-    })?
-    .await
-    .map_err(|(cause, _)| Error::from(cause))?;
-    cleanup(root, &operation_directory)
 }
 
 fn completed(

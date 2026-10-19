@@ -18,6 +18,9 @@ fn native_verification_has_no_unfunded_inner_frame() {
         include_str!("../../task_commands/model.rs"),
         include_str!("../../task_commands/dispatch.rs"),
         include_str!("../../../local/children/lazy.rs"),
+        include_str!("../../../local/workspace.rs"),
+        include_str!("../../../local/checkout_tools/capture.rs"),
+        include_str!("../../../tools/git/materialize.rs"),
     ] {
         assert!(
             !source.contains("acyclic_fs::in_heap("),

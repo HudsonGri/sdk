@@ -753,7 +753,11 @@ fn tool_result_succeeded(turn: &serde_json::Value, output: &serde_json::Value) -
                 "status" => matches!(result, O::Status(_)),
                 "log" | "show" => matches!(&result, O::Commits(commits) if !commits.is_empty()),
                 "tag" => matches!(&result, O::Tags(tags) if tags.contains_key("v1")),
-                "branch" | "switch" | "stash" | "reset" | "add" => result == O::NoOp,
+                "branch" => {
+                    matches!(result, O::Filesystem(F::Forked { workspace_id })
+                        if workspace_id.into_bytes() != [0; 16])
+                }
+                "switch" | "stash" | "reset" | "add" => result == O::NoOp,
                 "rev-parse" | "symbolic-ref" | "merge-base" => {
                     matches!(&result, O::Text(text) if !text.is_empty())
                 }
