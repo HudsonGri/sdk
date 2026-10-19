@@ -47,7 +47,7 @@ checks = [
 ]
 # Each shipping entry is a separate bounded runtime suite.
 checks.extend(('stack_main', [f'stack_budget::{case}', '--exact']) for case in [
-    'diff', 'commit', 'tools-files', 'tools-history', 'tools-branches', 'tools-recovery', 'merge-continue', 'merge-abort',
+    'diff', 'commit', 'tools-files', 'tools-history', 'tools-branches', 'tools-recovery', 'tools-rejected', 'merge-continue', 'merge-abort',
     'spawn', 'send', 'wait', 'archive', 'jsonl', 'tui', 'unboxed',
 ])
 # A renamed or missing suite cannot silently qualify by running zero tests.
