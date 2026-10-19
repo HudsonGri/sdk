@@ -14,6 +14,7 @@ impl ContextManifest {
         reader: &dyn ContentResidencyVerifier,
         mut tools: ToolRegistry,
         limits: Limits,
+        model: Option<&super::CatalogModel<'_>>,
         io: Option<&PreparationIo>,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
         crate::executor::with_history_io(io, |work| limits.validate_file(&reference, work))?;
@@ -61,6 +62,16 @@ impl ContextManifest {
                 work,
             )
         })?;
+        let catalog = match model {
+            Some(model) if !manifest.skill_catalog.is_empty() => Some(super::catalog::StageCatalog::new(
+                manifest.skill_catalog,
+                manifest.conventions.len(),
+                model,
+                &manifest.tools,
+                io,
+            )?),
+            _ => None,
+        };
         for text in manifest.conventions {
             messages.push(ModelMessage {
                 role: ModelRole::System,
@@ -138,6 +149,7 @@ impl ContextManifest {
             Arc::new(ManifestStage {
                 context,
                 sources: manifest.sources,
+                catalog,
             }),
         ))
     }

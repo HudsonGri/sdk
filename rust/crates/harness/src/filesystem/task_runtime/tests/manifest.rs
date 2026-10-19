@@ -62,6 +62,7 @@ pub(super) async fn manifest(
         conventions: vec![text.into()],
         discovery: DiscoveredContext::default(),
         selected_skills: Vec::new(),
+        skill_catalog: Default::default(),
         sources: Vec::new(),
         tools: tools.clone(),
     };
