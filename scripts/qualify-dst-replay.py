@@ -34,15 +34,15 @@ if not re.search(rb"test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;",
 
 def run_pair():
     commands = [
-        ["--skip", second_test, "--skip", "sources::",
-         "--test-threads=1", "--nocapture"],
-        [second_test, "sources::", "--test-threads=1", "--nocapture"],
+        ["--skip", second_test, "--skip", "sources::", "--nocapture"],
+        [second_test, "sources::", "--nocapture"],
     ]
     processes = []
     try:
-        # Independent processes overlap their physical I/O; each replay still
-        # polls its own original tasks on one seeded thread. Neither waits for
-        # the other's tests before starting, and both share the same deadline.
+        # Independent cases retain the same test concurrency as the main gate.
+        # Each replay polls its own original tasks on one seeded runtime thread;
+        # serializing unrelated crash cases would consume the shared deadline
+        # without increasing schedule coverage. Both peers keep the same bound.
         for arguments in commands:
             processes.append(subprocess.Popen([executable, *arguments], env=environment,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE))
