@@ -17,6 +17,20 @@ started = time.monotonic()
 trace_directory = tempfile.mkdtemp(prefix="dst-trace-")
 environment = {**os.environ, "DST_TRACE_DIR": trace_directory}
 
+# Exercise the same in-process concurrency as the main gate before splitting
+# independent trace peers. Shared registries must not make another runtime's
+# wake delivery look like elapsed simulated time.
+parallel = subprocess.run([executable, "--nocapture"], env=environment,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=max(0, 9 - (time.monotonic() - started)))
+sys.stdout.buffer.write(parallel.stdout)
+sys.stderr.buffer.write(parallel.stderr)
+sys.stdout.flush()
+sys.stderr.flush()
+parallel.check_returncode()
+if not re.search(rb"test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;", parallel.stdout):
+    sys.exit("Default parallel execution must run every DST case without ignored tests")
+
 
 def run_pair():
     commands = [
