@@ -6,6 +6,7 @@ pub struct Mount<A, O> {
     pub(crate) session: Mutex<Option<NativeMountSession>>,
     pub(crate) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
+    pub(super) retiring: std::sync::atomic::AtomicBool,
 }
 
 impl<A, O> Mount<A, O> {
@@ -13,6 +14,12 @@ impl<A, O> Mount<A, O> {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.destination
+    }
+
+    /// Retirement has started; the existing cleanup owner must finish before reuse.
+    #[must_use]
+    pub fn is_retiring(&self) -> bool {
+        self.retiring.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -23,6 +30,8 @@ where
 {
     /// Publishes all pending authored effects with one fenced generation.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
+        #[cfg(all(test, not(acyclic_fs_native_loom)))]
+        super::command_tests::record("sync");
         with_session_work(
             &self.session,
             self.source.as_ref(),
@@ -37,6 +46,8 @@ where
 
     /// Advances an already-clean live checkout to the workspace head.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
+        #[cfg(all(test, not(acyclic_fs_native_loom)))]
+        super::command_tests::record("advance");
         let advanced = self.source.advance_to_head_async().await;
         // Even a failed advance may have moved part of the view.
         with_session_work(
@@ -57,8 +68,38 @@ where
         self.source.sync().map_err(MountLifecycleError::Source)
     }
 
+    /// Publishes one verified native command and optionally retires its projection.
+    /// The filesystem owns both destination cleanup and namespace-fence release.
+    pub async fn complete_command(&self, retire: bool) -> Result<(), MountLifecycleError> {
+        if self.is_retiring() {
+            return self.detach();
+        }
+        self.sync().await?;
+        self.advance_to_head().await?;
+        if retire {
+            let work = self
+                .source
+                .native_original_work()?
+                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+            {
+                let mut owner = self
+                    .session
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(session) = owner.as_mut() {
+                    session.prepare_destination_cleanup(&work)?;
+                }
+            }
+            self.detach()?;
+        }
+        Ok(())
+    }
+
     /// Publishes pending effects and detaches the native namespace exactly once.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
+        if self.is_retiring() {
+            return self.detach();
+        }
         self.sync().await?;
         self.detach()
     }
@@ -68,13 +109,41 @@ where
         self.detach()
     }
 
+    /// Retires a command projection without publishing unverified authored effects.
+    pub fn abandon_command(&self) -> Result<(), MountLifecycleError> {
+        if !self.is_retiring() {
+            self.prepare_command_cleanup()?;
+        }
+        self.detach()
+    }
+
+    fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
+        let work = self
+            .source
+            .native_original_work()?
+            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+        let mut owner = self
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(session) = owner.as_mut() {
+            session.prepare_destination_cleanup(&work)?;
+        }
+        Ok(())
+    }
+
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
     pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
+        if self.is_retiring() {
+            return self.detach();
+        }
         self.sync_blocking()?;
         self.detach()
     }
 
     pub(crate) fn detach(&self) -> Result<(), MountLifecycleError> {
+        #[cfg(all(test, not(acyclic_fs_native_loom)))]
+        super::command_tests::record("detach");
         let mut owner = match self.session.lock() {
             Ok(owner) => owner,
             Err(poisoned) => poisoned.into_inner(),
@@ -82,34 +151,21 @@ where
         let Some(session) = owner.as_mut() else {
             return Ok(());
         };
+        let wait = crate::CancellationToken::new();
+        let cleanup = super::super::session::NativeSessionStopWork::AcceptedWait(&wait);
         #[cfg(windows)]
+        session.prepare_projection_cleanup()?;
+        self.retiring
+            .store(true, std::sync::atomic::Ordering::Release);
+        session.stop_with_context(&cleanup)?;
+        #[cfg(windows)]
+        if let Some((cause, _)) = session
+            .namespace_outcome
+            .as_mut()
+            .and_then(super::super::projfs::ProjFsNamespaceOutcome::take_capture_failures)
         {
-            let work = self
-                .source
-                .native_original_work()?
-                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-            session.flush_callbacks(&work)?;
-            let identity = session
-                .native_root_identity()
-                .ok_or(NativeMountError::ControlPending)?;
-            super::super::projfs::detach_projection(
-                &self.destination,
-                identity,
-                self.source.as_ref(),
-                &work,
-                || {
-                    session.stop()?;
-                    if let Some((cause, _)) = session.namespace_outcome.as_mut().and_then(
-                        super::super::projfs::ProjFsNamespaceOutcome::take_capture_failures,
-                    ) {
-                        return Err(cause);
-                    }
-                    Ok(())
-                },
-            )?;
+            return Err(cause.into());
         }
-        #[cfg(not(windows))]
-        session.stop().map_err(MountLifecycleError::Native)?;
         owner.take();
         self.source.cancel();
         Ok(())
@@ -184,6 +240,7 @@ where
             session: Mutex::new(Some(session)),
             destination,
             _destination_custody: destination_custody,
+            retiring: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }

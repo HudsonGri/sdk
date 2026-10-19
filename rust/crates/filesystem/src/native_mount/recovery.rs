@@ -118,6 +118,7 @@ impl Drop for NativeMountRecoveryOwner {
 impl NativeMountRecoveryOwner {
     /// Administratively acquires the existing destination fence once.
     pub fn acquire(destination: &Path) -> Result<Self, NativeMountError> {
+        super::registry::initialize()?;
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -138,6 +139,7 @@ impl NativeMountRecoveryOwner {
         destination: &Path,
         parent: &std::os::fd::OwnedFd,
     ) -> Result<Self, NativeMountError> {
+        super::registry::initialize()?;
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -296,8 +298,8 @@ impl NativeMountRecoveryOwner {
     #[cfg(target_os = "linux")]
     pub(super) fn detach_pinned(
         &mut self,
-        file: File,
-        parent: File,
+        file: std::fs::File,
+        parent: std::fs::File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
         {
