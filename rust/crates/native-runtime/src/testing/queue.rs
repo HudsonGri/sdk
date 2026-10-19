@@ -218,3 +218,40 @@ async fn unscheduled_blocking_work_leaves_the_runtime_context() -> io::Result<()
     assert!(worker.unwrap().starts_with("acyclic-host-io-"));
     Ok(())
 }
+
+#[tokio::test]
+async fn scoped_blocking_work_keeps_clock_without_runtime_entry() -> io::Result<()> {
+    for seeded in [false, true] {
+        let (schedule, mut boundaries) = if seeded {
+            Schedule::seeded(17)
+        } else {
+            Schedule::new()
+        };
+        let driver = async {
+            while let Some(boundary) = boundaries.recv().await {
+                boundary.release();
+            }
+        };
+        let work = schedule.scope(async {
+            spawn_blocking(move || {
+                assert!(
+                    tokio::runtime::Handle::try_current().is_err(),
+                    "scoped native work inherited a Tokio runtime"
+                );
+                assert_eq!(*tokio::sync::RwLock::new(42).blocking_read(), 42);
+                assert_eq!(unix_millis().is_some(), seeded);
+                assert_eq!(CapturedClock::capture().is_some(), seeded);
+                assert!(
+                    tokio::runtime::Handle::try_current().is_err(),
+                    "clock read leaked its runtime entry"
+                );
+            })
+            .await
+        });
+        tokio::select! {
+            result = work => result?,
+            () = driver => panic!("boundary driver ended before work"),
+        }
+    }
+    Ok(())
+}

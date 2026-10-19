@@ -456,13 +456,9 @@ where
     } else {
         context
     };
-    let runtime = context
-        .as_ref()
-        .and_then(|_| tokio::runtime::Handle::try_current().ok());
-    move || {
-        let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
-        BLOCKING_CONTEXT.sync_scope(context, work)
-    }
+    // Carry simulation sources without entering Tokio around user blocking
+    // work. Clock reads enter their captured runtime only for the read itself.
+    move || BLOCKING_CONTEXT.sync_scope(context, work)
 }
 
 // Keep the original queue admission, capacity wake, worker handoff and physical
