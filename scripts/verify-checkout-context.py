@@ -28,7 +28,7 @@ def mutants():
     skills = replace_once(skills, "mod catalog;", '#[path = "skills/catalog.rs"]\nmod catalog;')
     skills = replace_once(skills, "async fn checkout_skills(", "async fn checkout_skills_capped(")
     skills = replace_once(skills, "if cursor.is_none() {", "if cursor.is_none() || directories.len() >= 128 {")
-    skills = replace_once(skills, "            for directory in directories {", "            for directory in directories {\n                if skills.len() == 128 { return Ok(skills); }")
+    skills = replace_once(skills, "            for directory in directories {", "            for directory in directories {\n                if skills.skills.len() == 128 { return Ok(skills); }")
     original_catalog = (SHARED / "skill_catalog.rs").read_text().split("\n#[cfg(test)]\nmod tests", 1)[0].replace("super::text::", "crate::context::text::")
     uncounted = original_catalog
     uncounted = replace_once(uncounted, "(self.skills.len() as u64).checked_add(self.unlisted)", "Some(self.skills.len() as u64 + self.unlisted)")
@@ -166,9 +166,9 @@ mod review_controls {
             .state_directory(state.path()).compaction(crate::context::CompactionPolicy::Disabled);
         let mut harness = LocalHarness::open(config).await?;
         let workspace = harness.workspace.as_ref().unwrap();
-        let actual = harness.checkout_skills(workspace, 65_536).await?;
-        let broken = harness.checkout_skills_capped(workspace, 65_536).await?;
-        let render = |skills| crate::context::SkillCatalog { skills, unlisted: 0 }.render(u64::MAX).unwrap_or_default();
+        let actual = harness.checkout_skills(workspace, 65_536, u64::MAX).await?;
+        let broken = harness.checkout_skills_capped(workspace, 65_536, u64::MAX).await?;
+        let render = |skills: crate::context::SkillCatalog| skills.render(u64::MAX).unwrap_or_default();
         assert!(render(actual).contains("- last: original"));
         assert!(!render(broken).contains("- last: original"));
         let reference = harness.stage_context_manifest(OperationId::new()).await?;

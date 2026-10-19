@@ -57,23 +57,32 @@ impl SkillCatalog {
 
     /// Carries the longest prefix of `skills` whose JSON array (brackets and
     /// separators included) fits `available` bytes, and counts the rest.
-    #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
-    pub(crate) fn bounded(mut skills: Vec<CatalogSkill>, available: u64) -> Self {
-        let mut used = 2u64;
-        let mut kept = 0;
-        for skill in &skills {
-            let size = serde_json::to_vec(skill).map_or(u64::MAX, |bytes| bytes.len() as u64);
-            used = used
-                .saturating_add(size)
-                .saturating_add(u64::from(kept > 0));
-            if used > available {
-                break;
-            }
-            kept += 1;
+    #[cfg(test)]
+    pub(crate) fn bounded(skills: Vec<CatalogSkill>, available: u64) -> Self {
+        let mut catalog = Self::default();
+        let mut used = 2;
+        for skill in skills {
+            catalog.retain_prefix(skill, available, &mut used);
         }
-        let unlisted = (skills.len() - kept) as u64;
-        skills.truncate(kept);
-        Self { skills, unlisted }
+        catalog
+    }
+
+    /// Retains one entry only while the discovery prefix fits the manifest.
+    /// Later entries are counted and dropped immediately, including descriptions.
+    #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
+    pub(crate) fn retain_prefix(&mut self, skill: CatalogSkill, available: u64, used: &mut u64) {
+        if self.unlisted == 0 {
+            let size = serde_json::to_vec(&skill).map_or(u64::MAX, |bytes| bytes.len() as u64);
+            let next = used
+                .saturating_add(size)
+                .saturating_add(u64::from(!self.skills.is_empty()));
+            if next <= available {
+                *used = next;
+                self.skills.push(skill);
+                return;
+            }
+        }
+        self.unlisted = self.unlisted.saturating_add(1);
     }
 
     /// The catalog block whose JSON string encoding, quotes included, fits
@@ -341,6 +350,29 @@ mod tests {
             let line = omission(omitted);
             assert_eq!(omission_bytes(omitted), json_bytes(&line), "{line}");
             assert_eq!(decimal(omitted, &mut [0; 20]), omitted.to_string());
+        }
+    }
+
+    #[test]
+    fn discovery_drops_each_description_before_accepting_the_next() {
+        let mut catalog = SkillCatalog::default();
+        let mut used = 2;
+        for index in 0..128 {
+            catalog.retain_prefix(
+                CatalogSkill {
+                    name: format!("skill-{index}"),
+                    description: "x".repeat(65_536),
+                    path: "SKILL.md".into(),
+                },
+                256,
+                &mut used,
+            );
+            assert!(
+                catalog.skills.is_empty(),
+                "discarded description retained during discovery"
+            );
+            assert_eq!(catalog.unlisted, index + 1);
+            assert_eq!(used, 2);
         }
     }
 
