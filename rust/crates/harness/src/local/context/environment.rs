@@ -14,10 +14,21 @@ const GIT_STATUS_BYTES: u64 = 64 * 1024;
 const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Renders the environment block for a checkout rooted at `cwd`.
-pub(super) async fn render(cwd: &Path, now_unix_millis: u64) -> String {
-    let git = git_status(cwd).await;
+pub(super) async fn render(
+    workspace: &crate::local::LocalWorkspace,
+    now_unix_millis: u64,
+) -> String {
+    // Once SDK Git state exists, physical .git can have another branch/index.
+    // Never present that independent repository as the selected tool view.
+    let git =
+        match acyclic_fs::GitCompatStore::load(&workspace.store, workspace.view().workspace().id())
+            .await
+        {
+            Ok(None) => git_status(&workspace.path).await,
+            _ => None,
+        };
     frame(
-        &display(cwd),
+        &display(&workspace.path),
         std::env::consts::OS,
         now_unix_millis,
         git.as_deref(),

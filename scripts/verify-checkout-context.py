@@ -82,18 +82,18 @@ mod review_controls {
         }], unlisted: 0 };
         let mut text = String::new();
         assert!(crate::context::skill_catalog::render_into(&fixed, u64::MAX, &mut text,
-            |text, part| {text.push_str(part); Ok::<_, ()>(())}, || Err(())).is_err());
+            |text, part| {text.push_str(part); Ok::<_, ()>(())}, || Err(()), |text, bytes| { text.reserve_exact(bytes as usize); Ok(()) }).is_err());
         text.clear();
         assert_eq!(review_unpaid::render_into(&unpaid, u64::MAX, &mut text,
-            |text, part| {text.push_str(part); Ok::<_, ()>(())}, || Err(())), Ok(true));
+            |text, part| {text.push_str(part); Ok::<_, ()>(())}, || Err(()), |text, bytes| { text.reserve_exact(bytes as usize); Ok(()) }), Ok(true));
         text.clear();
         let charged = |text: &mut String, part: &str| {
             if part == "&lt;" { return Err(()); }
             text.push_str(part); Ok(())
         };
-        assert!(crate::context::skill_catalog::render_into(&fixed, u64::MAX, &mut text, charged, || Ok(())).is_err());
+        assert!(crate::context::skill_catalog::render_into(&fixed, u64::MAX, &mut text, charged, || Ok(()), |text, bytes| { text.reserve_exact(bytes as usize); Ok(()) }).is_err());
         text.clear();
-        assert_eq!(review_unadmitted::render_into(&unadmitted, u64::MAX, &mut text, charged, || Ok(())), Ok(true));
+        assert_eq!(review_unadmitted::render_into(&unadmitted, u64::MAX, &mut text, charged, || Ok(()), |text, bytes| { text.reserve_exact(bytes as usize); Ok(()) }), Ok(true));
     }
 
     #[test]
