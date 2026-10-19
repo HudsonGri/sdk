@@ -197,3 +197,24 @@ fn blocking_replay_io_preserves_native_workers_and_gates_without_a_private_pool(
     assert!(std::panic::catch_unwind(check).is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn unscheduled_blocking_work_leaves_the_runtime_context() -> io::Result<()> {
+    // Tokio's blocking pool retains a runtime handle even though it permits
+    // blocking locks; it cannot satisfy the native worker boundary.
+    assert!(
+        tokio::task::spawn_blocking(|| tokio::runtime::Handle::try_current().is_ok())
+            .await
+            .unwrap()
+    );
+    let (outside, worker) = spawn_blocking(|| {
+        (
+            tokio::runtime::Handle::try_current().is_err(),
+            std::thread::current().name().map(String::from),
+        )
+    })
+    .await?;
+    assert!(outside, "native blocking work inherited a Tokio runtime");
+    assert!(worker.unwrap().starts_with("acyclic-host-io-"));
+    Ok(())
+}
