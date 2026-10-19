@@ -251,7 +251,11 @@ impl LocalHarness {
         prompt: &'a str,
     ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
         acyclic_fs::in_heap(|| async move {
-            Ok(acyclic_fs::in_heap(|| self.submit_claimed(operation, prompt)).await?.0)
+            Ok(
+                acyclic_fs::in_heap(|| self.submit_claimed(operation, prompt))
+                    .await?
+                    .0,
+            )
         })
     }
 
@@ -536,10 +540,11 @@ impl LocalHarness {
     pub(super) async fn run_as(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
         // The admission's claim is carried into driving, so cancelling this
         // future at any await leaves the head to the next prompt.
-        let (admission, claim) = Box::pin(self.submit_claimed(operation, prompt)).await?;
+        let (admission, claim) =
+            acyclic_fs::in_heap(|| self.submit_claimed(operation, prompt)).await?;
         match admission {
             Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => {
-                Box::pin(self.resume_claimed(task_id, claim)).await
+                acyclic_fs::in_heap(|| self.resume_claimed(task_id, claim)).await
             }
             Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Invalid(
                 "local stock turn was not durably admitted".into(),
@@ -705,12 +710,19 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let handle = match acyclic_fs::in_heap(|| self.runtime.harness().attach(task, &definition)).await {
-            Ok(handle) => handle,
-            Err(Error::NotFound(_)) => acyclic_fs::in_heap(|| self.recover_unadmitted_turn(task)).await?,
-            Err(error) => return Err(error),
-        };
-        if !super::orphans::settled(acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task)).await?.as_ref()) {
+        let handle =
+            match acyclic_fs::in_heap(|| self.runtime.harness().attach(task, &definition)).await {
+                Ok(handle) => handle,
+                Err(Error::NotFound(_)) => {
+                    acyclic_fs::in_heap(|| self.recover_unadmitted_turn(task)).await?
+                }
+                Err(error) => return Err(error),
+            };
+        if !super::orphans::settled(
+            acyclic_fs::in_heap(|| self.runtime.task_host().outcome(task))
+                .await?
+                .as_ref(),
+        ) {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
             acyclic_fs::in_heap(|| {
