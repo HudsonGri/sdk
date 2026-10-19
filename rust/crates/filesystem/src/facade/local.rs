@@ -102,8 +102,13 @@ where
     F: std::future::Future<Output = T> + Send + 'static,
     I: FnOnce(tokio::sync::OwnedMutexGuard<()>) -> F + Send + 'static,
 {
+    #[cfg(feature = "test-support")]
+    use acyclic_native_runtime::testing::spawn;
+    #[cfg(not(feature = "test-support"))]
+    use tokio::spawn;
+
     // cancelling the caller must not release root ownership while provider spawn_blocking workers
-    tokio::spawn(async move { initialize(ownership).await })
+    spawn(async move { initialize(ownership).await })
         .await
         .map_err(|_| FsError::LocalInitializationWorker)
 }
