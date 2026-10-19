@@ -414,7 +414,9 @@ pub(crate) fn submit(
             owned.pause("native:submitted").await;
             let result = match crate::workers(pool, job.meter().is_some()) {
                 Ok(workers) if owned.schedule.0.executor.is_some() => {
-                    executor::complete_io(queued(job, workers))
+                    host::Host::for_workers(workers)
+                        .drive(queued(job, workers))
+                        .await
                 }
                 Ok(workers) => queued(job, workers).await,
                 Err(error) => Err(error),

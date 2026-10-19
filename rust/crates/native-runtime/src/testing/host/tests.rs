@@ -1,7 +1,11 @@
 use super::*;
 
+// Saturation fixtures share the process-wide physical pool.
+static SATURATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
+    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
     let workers = crate::workers(&crate::BLOCKING_WORKERS, false).unwrap();
     let (started, receive) = std::sync::mpsc::channel();
     let mut occupants = Vec::new();
@@ -51,6 +55,7 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
 
 #[test]
 fn queued_workers_leave_the_executor_available_to_reply() {
+    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
     let count = crate::workers(&crate::BLOCKING_WORKERS, false)
         .unwrap()
         .threads;
@@ -217,4 +222,61 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&erased.0, b"seed");
         proptest::prop_assert!(!owned(&erased.1), "scope-erased callback escaped the ownership oracle");
     }
+}
+
+#[test]
+fn saturated_native_submission_leaves_the_simulated_deadline_available() {
+    let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
+    let count = crate::workers(&crate::BLOCKING_WORKERS, false)
+        .unwrap()
+        .threads;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let (schedule, mut events) = Schedule::seeded(23);
+    runtime.block_on(async {
+        let mut root = Box::pin(schedule.scope(async {
+            let (send, mut receive) = mpsc::unbounded_channel();
+            let mut workers = Vec::new();
+            for index in 0..count {
+                let send = send.clone();
+                workers.push(spawn_blocking(move || {
+                    let (reply, waiting) = oneshot::channel();
+                    send.send((index, reply)).unwrap();
+                    assert_eq!(blocking_on(waiting).unwrap(), index);
+                    index
+                }));
+            }
+            drop(send);
+            let mut replies = Vec::new();
+            for _ in 0..count {
+                replies.push(receive.recv().await.unwrap());
+            }
+            // Unlike spawn_blocking, this uses submit's direct native-job path.
+            // All physical workers await this root; its timer must still run.
+            let mut native = Box::pin(crate::run_blocking_io(|| 42, None).unwrap());
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(1), &mut native)
+                    .await
+                    .is_err()
+            );
+            for (index, reply) in replies {
+                reply.send(index).unwrap();
+            }
+            assert_eq!(native.await.unwrap(), 42);
+            for (index, worker) in workers.into_iter().enumerate() {
+                assert_eq!(worker.await.unwrap(), index);
+            }
+        }));
+        loop {
+            tokio::select! {
+                () = &mut root => break,
+                event = events.recv() => event.unwrap().release(),
+            }
+        }
+        drop(root);
+        schedule.drained().await;
+    });
 }
