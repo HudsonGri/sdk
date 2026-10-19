@@ -81,6 +81,7 @@ async fn accepted_text_repairs_after_cancellation_and_deadline_at_both_projectio
     Ok(())
 }
 
+#[cfg(feature = "hooks")]
 #[tokio::test]
 async fn accepted_hook_outcomes_settle_after_the_cutoff_without_restarting_effects() -> Result<()> {
     for deadline in [false, true] {
