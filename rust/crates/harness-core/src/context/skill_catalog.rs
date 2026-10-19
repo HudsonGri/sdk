@@ -12,6 +12,7 @@ use super::text::push_value;
 use serde::{Deserialize, Serialize};
 
 /// Repository skill roots, in precedence order for duplicate names.
+#[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
 pub(crate) const SKILL_ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
 
 /// One listed skill: validated name, single-line description and file path.
@@ -56,6 +57,7 @@ impl SkillCatalog {
 
     /// Carries the longest prefix of `skills` whose JSON array (brackets and
     /// separators included) fits `available` bytes, and counts the rest.
+    #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
     pub(crate) fn bounded(mut skills: Vec<CatalogSkill>, available: u64) -> Self {
         let mut used = 2u64;
         let mut kept = 0;
@@ -121,7 +123,7 @@ pub(crate) fn token_allowance(context_tokens: u32, reserve_tokens: u32) -> u64 {
 pub(crate) const HEADER: &str = "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a path relative to the working directory. Read a skill's file before following it.\n### Available skills\n";
 pub(crate) const FOOTER: &str = "</skills_instructions>";
 /// Follows the total count on the framed block's first line. Names every root
-/// from [`SKILL_ROOTS`].
+/// used for repository discovery.
 pub(crate) const POINTER: &str =
     " skills available (list .agents/skills/ and .claude/skills/ to see all)\n";
 /// Surrounds the total count when the framed block does not fit.
