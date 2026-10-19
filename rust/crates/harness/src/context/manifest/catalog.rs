@@ -160,6 +160,15 @@ impl StageCatalog {
                     Ok(())
                 })
             },
+            |text, bytes| {
+                crate::executor::stock_string_reserve(
+                    text,
+                    bytes,
+                    budget,
+                    "skill catalog capacity exceeds its allowance",
+                    io,
+                )
+            },
         )? {
             return Ok(());
         }

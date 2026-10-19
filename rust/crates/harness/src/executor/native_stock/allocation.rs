@@ -86,3 +86,31 @@ pub(crate) fn stock_string_push(
         }
     })
 }
+
+/// Admit one measured text capacity before emitting its constituent pieces.
+pub(crate) fn stock_string_reserve(
+    text: &mut String,
+    additional: u64,
+    maximum: u64,
+    reason: &'static str,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    let target = (text.len() as u64)
+        .checked_add(additional)
+        .filter(|target| *target <= maximum)
+        .and_then(|target| usize::try_from(target).ok())
+        .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason))?;
+    with_history_io(io, |work| {
+        if let Some(work) = work.as_deref_mut() {
+            work.reserve_text(text, target)
+        } else {
+            text.try_reserve_exact(target - text.len()).map_err(|_| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "skill catalog allocation failed",
+                )
+            })
+        }
+    })
+}

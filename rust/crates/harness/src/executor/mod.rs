@@ -30,7 +30,8 @@ mod native_stock;
 pub(crate) use native_stock::NativeStockExecutor;
 use native_stock::*;
 pub(crate) use native_stock::{
-    stage_json, stock_boundary, stock_string_copy, stock_string_push, stock_vec_push,
+    stage_json, stock_boundary, stock_string_copy, stock_string_push, stock_string_reserve,
+    stock_vec_push,
 };
 
 mod journal;
@@ -39,8 +40,8 @@ use journal::validate_journal;
 mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
-use accounting::*;
 pub(crate) use accounting::stock_context_capacity;
+use accounting::*;
 mod binding;
 mod compaction;
 mod composition;
