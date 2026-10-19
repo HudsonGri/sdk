@@ -24,7 +24,7 @@ assert result.returncode != 0 and 'usage of an `unsafe` block' in result.stderr,
 print('expired-stack dereference negative control: rejected', flush=True)
 PY
 python3 - <<'PY'
-import json, os, subprocess, tempfile, time
+import json, os, signal, subprocess, tempfile, time
 artifacts = {}
 for line in open('.tools/stack-budget-artifacts.jsonl'):
     item = json.loads(line)
@@ -41,19 +41,40 @@ checks = [
     ('acyclic_fs', ['native_mount::stack_budget']),
     ('acyclic_fs', ['heap_future::']),
     ('acyclic_fs', ['facade::read_accounting::']),
+    ('acyclic_fs', ['kernel::allocation::accounting::tests::']),
 ]
 # Each shipping entry is a separate bounded runtime suite.
 checks.extend(('stack_main', [f'stack_budget::{case}', '--exact']) for case in [
-    'diff', 'commit', 'tools', 'merge-continue', 'merge-abort',
+    'diff', 'commit', 'tools-files', 'tools-history', 'tools-branches', 'tools-recovery', 'merge-continue', 'merge-abort',
     'spawn', 'send', 'wait', 'archive', 'jsonl', 'tui', 'unboxed',
 ])
+# A renamed or missing suite cannot silently qualify by running zero tests.
+listed = {}
+for name, args in checks:
+    if name not in listed:
+        listed[name] = subprocess.check_output([artifacts[name], '--list'], text=True)
+    assert args[0] in listed[name], (name, args)
 failures = []
 for name, args in checks:
     started = time.monotonic()
     try:
         with tempfile.TemporaryDirectory(prefix='acyclic-stack-codex-') as codex_home:
-            subprocess.run([artifacts[name], *args, '--nocapture'], check=True, timeout=10,
+            command = [artifacts[name], *args, '--nocapture']
+            process = subprocess.Popen(command, start_new_session=(os.name == 'posix'),
                 env=dict(os.environ, CODEX_HOME=codex_home))
+            try:
+                status = process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                # The stack runner starts a measured shipping child. Retire
+                # the entire suite when its deadline expires, including it.
+                if os.name == 'posix':
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+                process.wait()
+                raise
+            if status:
+                raise subprocess.CalledProcessError(status, command)
         elapsed = time.monotonic()-started
         if elapsed >= 10:
             raise RuntimeError(f'suite exceeded 10 seconds: {elapsed:.3f}')

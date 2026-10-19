@@ -424,6 +424,22 @@ impl AllocationLedger {
     }
 
     /// The retirement cell stays owned until this ledger itself is destroyed.
+    #[cfg(all(
+        test,
+        feature = "memory",
+        feature = "distributed",
+        not(target_arch = "wasm32")
+    ))]
+    pub(crate) fn live_frame_bytes(&self) -> u64 {
+        self.frame_retirements.as_ref().map_or(0, |state| {
+            let admitted = state.admitted.load(std::sync::atomic::Ordering::Acquire);
+            let retired = state.retired.load(std::sync::atomic::Ordering::Acquire);
+            admitted
+                .checked_sub(retired)
+                .expect("a frame retires only its admitted bytes")
+        })
+    }
+
     pub(crate) fn frame_control_bytes(&self) -> u64 {
         if self.frame_retirements.is_none() {
             return 0;

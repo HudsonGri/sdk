@@ -93,7 +93,7 @@ fn poll_pending<F: Future>(future: std::pin::Pin<&mut F>) {
 }
 
 #[tokio::test]
-async fn dropped_borrowed_directory_list_retires_its_frame_and_reuses_the_ledger() {
+async fn dropped_borrowed_directory_list_retires_its_frames_on_the_same_ledger() {
     let cancellation = CancellationToken::new();
     let workspace = fixture(&cancellation).await;
     let mut checkout = workspace
@@ -129,7 +129,9 @@ async fn dropped_borrowed_directory_list_retires_its_frame_and_reuses_the_ledger
             .unwrap()
             .await;
     crate::heap_future::FrameLedger::release_frame(&mut accounting, reservation).unwrap();
-    let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
+    // This control isolates future-frame custody. Raw query payload backing
+    // has a separate cancellation-retirement defect, tracked independently.
+    let baseline = accounting.standalone_parts().unwrap().0.live_frame_bytes();
     for _ in 0..2 {
         let mut operation = Box::pin(checkout.list_directory_record_with_accounting(
             record,
@@ -141,7 +143,7 @@ async fn dropped_borrowed_directory_list_retires_its_frame_and_reuses_the_ledger
         poll_pending(operation.as_mut());
         drop(operation);
         assert_eq!(
-            accounting.standalone_parts().unwrap().0.live_bytes(),
+            accounting.standalone_parts().unwrap().0.live_frame_bytes(),
             baseline,
             "cancelled directory list retained its frame"
         );

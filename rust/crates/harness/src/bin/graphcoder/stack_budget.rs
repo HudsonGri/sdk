@@ -287,7 +287,10 @@ pub(crate) fn qualify() {
     let cases = [
         "diff",
         "commit",
-        "tools",
+        "tools-files",
+        "tools-history",
+        "tools-branches",
+        "tools-recovery",
         "merge-continue",
         "merge-abort",
         "spawn",
@@ -315,7 +318,7 @@ pub(crate) fn qualify() {
             }
             "commit" | "unboxed" => vec![fs("commit -m stack"), text("done")],
             "spawn" => vec![child_call("spawn"), text("done")],
-            "tools" => every_entry_point(),
+            case if case.starts_with("tools-") => tool_group(case),
             "merge-continue" | "merge-abort" => merge_recovery(&case),
             "send" | "wait" | "archive" => vec![child_call(&case), text("done")],
             _ => panic!("unknown stack case {case}"),
@@ -330,8 +333,8 @@ pub(crate) fn qualify() {
         } else {
             measured_turn::<false>(turns, entry)
         };
-        if case == "tools" {
-            covers_every_entry_point(code, used, &requests);
+        if case.starts_with("tools-") {
+            covers_every_entry_point(&case, code, used, &requests);
             return;
         }
         if case.starts_with("merge-") {
@@ -516,7 +519,7 @@ fn child_call(name: &str) -> serde_json::Value {
 }
 
 /// A session that calls every other tool and every `fs` command on the main thread.
-fn every_entry_point() -> Vec<serde_json::Value> {
+fn tool_group(case: &str) -> Vec<serde_json::Value> {
     let mut turns = vec![
         call(
             "write",
@@ -540,12 +543,64 @@ fn every_entry_point() -> Vec<serde_json::Value> {
             json!({"command": "printf 'diff --git a/calc.py b/calc.py\n' > change.patch"}),
         ),
     ];
-    turns.extend(FS_COMMANDS.iter().map(|command| fs(command)));
+    // Every group starts with the same file tools and its own complete history.
+    // Group by public operation family so each semantic suite stays bounded.
+    if case != "tools-branches" {
+        turns.push(fs("commit -m seed"));
+        turns.push(fs("branch topic"));
+    }
+    turns.extend(tool_commands(case).iter().map(|command| fs(command)));
     turns.push(text("done"));
     turns
 }
 
-fn covers_every_entry_point(code: u8, used: usize, requests: &[String]) {
+fn tool_commands(case: &str) -> &'static [&'static str] {
+    match case {
+        "tools-files" => &[
+            "status",
+            "add -A",
+            "clean -n",
+            "ls-files",
+            "check-ignore notes.txt",
+            "restore --source HEAD notes.txt",
+            "reset --soft HEAD",
+            "diff",
+        ],
+        "tools-history" => &[
+            "commit -m first",
+            "log -n 5",
+            "show HEAD",
+            "tag v1",
+            "blame notes.txt",
+            "grep alpha",
+            "archive HEAD",
+            "rev-parse HEAD",
+            "symbolic-ref HEAD",
+            "merge-base HEAD topic",
+        ],
+        "tools-branches" => &[
+            "commit -m first",
+            "branch topic",
+            "switch topic",
+            "commit -m topic",
+            "switch main",
+            "merge topic",
+            "rebase topic",
+            "cherry-pick topic",
+            "revert HEAD",
+        ],
+        "tools-recovery" => &[
+            "merge --continue",
+            "merge --abort",
+            "stash push",
+            "stash pop",
+            "apply change.patch",
+            "bisect start",
+        ],
+        _ => panic!("unknown tool group {case}"),
+    }
+}
+fn covers_every_entry_point(case: &str, code: u8, used: usize, requests: &[String]) {
     assert!(
         used < BUDGET_KIB * 1024,
         "tools: {used} bytes exceeds the strict {BUDGET_KIB} KiB budget"
@@ -560,14 +615,29 @@ fn covers_every_entry_point(code: u8, used: usize, requests: &[String]) {
         .collect();
     offered.sort();
     assert_eq!(offered, TOOLS, "every offered tool has a measured call");
-    let called: std::collections::BTreeSet<_> = every_entry_point()
+    let called: std::collections::BTreeSet<_> = tool_group(case)
         .iter()
         .filter_map(|turn| turn["name"].as_str().map(str::to_owned))
         .chain(CHILD_TOOLS.iter().map(|tool| (*tool).to_owned()))
         .collect();
     assert_eq!(called.into_iter().collect::<Vec<_>>(), TOOLS);
     let mut variants = std::collections::BTreeSet::new();
-    for command in FS_COMMANDS {
+    let grouped: std::collections::BTreeSet<_> = [
+        "tools-files",
+        "tools-history",
+        "tools-branches",
+        "tools-recovery",
+    ]
+    .into_iter()
+    .flat_map(tool_commands)
+    .copied()
+    .collect();
+    assert_eq!(
+        grouped,
+        FS_COMMANDS.iter().copied().collect(),
+        "all command paths remain measured"
+    );
+    for command in grouped {
         let argv: Vec<String> = command.split(' ').map(str::to_owned).collect();
         let variant = if argv[0] == "apply" {
             "Apply"
@@ -591,7 +661,7 @@ fn covers_every_entry_point(code: u8, used: usize, requests: &[String]) {
     let returned = last.matches("function_call_output").count();
     assert_eq!(
         returned,
-        every_entry_point().len() - 1,
+        tool_group(case).len() - 1,
         "tools: not every tool result reached the model"
     );
 }
