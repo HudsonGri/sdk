@@ -50,7 +50,7 @@ impl CheckoutTools {
                         "checkout root was replaced",
                     ));
                 }
-                native_process::capture::wait_control(&runtime, async {
+                native_process::capture::wait_control(&runtime, || async {
                     tokio::time::timeout(
                         std::time::Duration::from_millis(u64::from(output::CONTROL_TIMEOUT_MS)),
                         check_owner.verify(false, &mut None),
