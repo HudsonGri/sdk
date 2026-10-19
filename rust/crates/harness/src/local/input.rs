@@ -1,12 +1,17 @@
 //! Native composer input becomes immutable content before admission.
 use super::*;
 use crate::{
-    client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope},
-    context::{ContextDiscoveryLimits, ContextRoot},
+    client::{CommandCatalog, CommandResolution},
+    context::ContextRoot,
     conversation::ContentResidencyVerifier,
     task_volume::{FileKey, Query},
 };
 
+#[cfg(feature = "native-execution")]
+use crate::{
+    client::{CommandRoot, CommandScope},
+    context::ContextDiscoveryLimits,
+};
 #[cfg(feature = "native-execution")]
 mod native_sources;
 
@@ -173,6 +178,7 @@ impl LocalHarness {
             files: Arc::clone(&self.files),
             task_files: Arc::clone(&self.task_files),
             project: self.project.clone(),
+            #[cfg(feature = "native-execution")]
             journal: self.journal.clone(),
             maximum_bytes: self.limits.file_bytes,
             publisher: self.input_publisher()?,
@@ -190,6 +196,7 @@ struct ComposerInput {
     files: Arc<LocalFilesystem>,
     task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
+    #[cfg(feature = "native-execution")]
     journal: VolumeRef,
     maximum_bytes: u64,
     publisher: Arc<dyn ContentPublisher>,
@@ -439,7 +446,9 @@ impl ComposerInput {
                             | acyclic_fs::LazyWorkspaceError::Filesystem(
                                 acyclic_fs::FsError::NotFound,
                             ),
-                        ) => break,
+                        ) if matches!(path.as_str(), ".claude/commands" | ".codex/prompts") => {
+                            break;
+                        }
                         Err(error) => return Err(error.into()),
                     };
                     let page = Held {
