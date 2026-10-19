@@ -26,6 +26,8 @@ mod hermetic;
 mod hook_configuration;
 #[cfg(all(feature = "native-execution", unix))]
 mod hook_lifecycle;
+#[cfg(all(feature = "native-execution", unix))]
+mod tool_hooks;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
