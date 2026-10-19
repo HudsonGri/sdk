@@ -144,13 +144,80 @@ impl LocalHarness {
         }
         Ok(input.content)
     }
-    /// The same normalization is used by prompt and JSONL headless clients.
     pub(crate) async fn resolve_input(
         &self,
         operation: OperationId,
         text: &str,
     ) -> Result<CommandResolution> {
-        if text.is_empty() || text.len() as u64 > self.limits.file_bytes {
+        let composer = self.composer_input()?;
+        composer.resolve_input(operation, text).await
+    }
+
+    async fn resolve_prompt_mentions(
+        &self,
+        operation: OperationId,
+        text: &str,
+    ) -> Result<CommandResolution> {
+        self.composer_input()?
+            .resolve_prompt_mentions(operation, text)
+            .await
+    }
+
+    #[cfg(feature = "tui")]
+    pub(crate) fn composer_resolver(&self) -> Result<Arc<dyn crate::client::ComposerResolver>> {
+        Ok(Arc::new(self.composer_input()?))
+    }
+
+    fn composer_input(&self) -> Result<ComposerInput> {
+        Ok(ComposerInput {
+            files: Arc::clone(&self.files),
+            task_files: Arc::clone(&self.task_files),
+            project: self.project.clone(),
+            journal: self.journal.clone(),
+            maximum_bytes: self.limits.file_bytes,
+            publisher: self.input_publisher()?,
+            reader: self.client_reader()?,
+            #[cfg(feature = "native-execution")]
+            workspace: self.workspace.clone(),
+            #[cfg(feature = "native-execution")]
+            settings: Arc::clone(&self.settings),
+        })
+    }
+}
+
+// The input binding retains authority and source handles, not an execution runtime.
+struct ComposerInput {
+    files: Arc<LocalFilesystem>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
+    project: VolumeRef,
+    journal: VolumeRef,
+    maximum_bytes: u64,
+    publisher: Arc<dyn ContentPublisher>,
+    reader: Arc<dyn ContentResidencyVerifier>,
+    #[cfg(feature = "native-execution")]
+    workspace: Option<Arc<LocalWorkspace>>,
+    #[cfg(feature = "native-execution")]
+    settings: Arc<crate::native_settings::SettingsConfig>,
+}
+
+#[cfg(feature = "tui")]
+impl crate::client::ComposerResolver for ComposerInput {
+    fn resolve<'a>(
+        &'a self,
+        operation: OperationId,
+        text: &'a str,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<CommandResolution>> {
+        Box::pin(self.resolve_input(operation, text))
+    }
+}
+
+impl ComposerInput {
+    pub(crate) async fn resolve_input(
+        &self,
+        operation: OperationId,
+        text: &str,
+    ) -> Result<CommandResolution> {
+        if text.is_empty() || text.len() as u64 > self.maximum_bytes {
             return Err(Error::Invalid(
                 "local input is empty or exceeds byte bound".into(),
             ));
@@ -164,15 +231,15 @@ impl LocalHarness {
                 mentions: Vec::new(),
             });
         }
-        let publisher = self.input_publisher()?;
+        let publisher = Arc::clone(&self.publisher);
         let identity = context::publication_operation(
             b"acyclic.local.resolved-input/v1\0",
             &operation.into_bytes(),
         );
         let path = format!("inputs/{operation}.resolution.json");
-        let reader = self.client_reader()?;
+        let reader = Arc::clone(&self.reader);
         let (saved, _) = publisher
-            .observe_staged_once(identity, self.limits.file_bytes, None)?
+            .observe_staged_once(identity, self.maximum_bytes, None)?
             .await?;
         if let Some(saved) = saved {
             if saved.path() != path {
@@ -180,7 +247,7 @@ impl LocalHarness {
                     "resolved input has another identity".into(),
                 ));
             }
-            let bytes = reader.read(&saved, self.limits.file_bytes, None)?.await?;
+            let bytes = reader.read(&saved, self.maximum_bytes, None)?.await?;
             let saved: ResolvedInput = serde_json::from_slice(&bytes).map_err(storage)?;
             if saved.text != text {
                 return Err(Error::Conflict("operation input changed".into()));
@@ -215,16 +282,16 @@ impl LocalHarness {
             .task_files
             .inner
             .snapshot(
-                &Query::File(FileKey::parse(".ui/config/commands.json").map_err(storage)?),
+                &Query::File(FileKey::parse("commands/catalog.json").map_err(storage)?),
                 1,
             )
             .await
             .map_err(storage)?;
         let catalog = match saved.files.first() {
-            Some(file) => CommandCatalog::from_bytes(&file.bytes, self.limits.file_bytes)?,
+            Some(file) => CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?,
             None => CommandCatalog::builtins()?,
         };
-        let reader = self.client_reader()?;
+        let reader = Arc::clone(&self.reader);
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             return self
@@ -233,7 +300,7 @@ impl LocalHarness {
         }
         let _ = operation;
         catalog
-            .resolve(text, reader.as_ref(), self.limits.file_bytes)
+            .resolve(text, reader.as_ref(), self.maximum_bytes)
             .await
     }
 
@@ -242,7 +309,7 @@ impl LocalHarness {
         operation: OperationId,
         text: &str,
     ) -> Result<CommandResolution> {
-        let reader = self.client_reader()?;
+        let reader = Arc::clone(&self.reader);
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             return self
@@ -274,7 +341,7 @@ impl LocalHarness {
                 &root,
                 &generation,
                 reader.as_ref(),
-                self.limits.file_bytes,
+                self.maximum_bytes,
             )
             .await?,
         })
@@ -308,7 +375,7 @@ impl LocalHarness {
             cancellation: &cancellation,
         };
         let cut = view.snapshot(&mut accounting).await?;
-        let publisher = self.input_publisher()?;
+        let publisher = Arc::clone(&self.publisher);
         let prefix = format!("inputs/composer/{operation}");
         let anchor = format!("{prefix}/.root");
         publisher
@@ -333,7 +400,7 @@ impl LocalHarness {
             let mut pending = vec![".claude/commands".to_owned(), ".codex/prompts".to_owned()];
             let mut directories = 0_u32;
             let mut entries = 0_u32;
-            let mut remaining = self.limits.file_bytes;
+            let mut remaining = self.maximum_bytes;
             let user_prefix = format!("{prefix}/user");
             native_sources::capture(
                 self.settings.as_ref(),
@@ -367,7 +434,12 @@ impl LocalHarness {
                         .await;
                     let (page, _, allocation) = match listed {
                         Ok(page) => page,
-                        Err(acyclic_fs::LazyWorkspaceError::NotFound) => break,
+                        Err(
+                            acyclic_fs::LazyWorkspaceError::NotFound
+                            | acyclic_fs::LazyWorkspaceError::Filesystem(
+                                acyclic_fs::FsError::NotFound,
+                            ),
+                        ) => break,
                         Err(error) => return Err(error.into()),
                     };
                     let page = Held {
@@ -446,9 +518,7 @@ impl LocalHarness {
             catalog
         };
         let mut resolution = if commands {
-            catalog
-                .resolve(text, reader, self.limits.file_bytes)
-                .await?
+            catalog.resolve(text, reader, self.maximum_bytes).await?
         } else {
             CommandResolution::Prompt {
                 text: text.into(),
@@ -457,7 +527,7 @@ impl LocalHarness {
             }
         };
         if let CommandResolution::Prompt { text, mentions, .. } = &mut resolution {
-            let mut remaining = self.limits.file_bytes;
+            let mut remaining = self.maximum_bytes;
             let mut copied = std::collections::BTreeSet::new();
             for (_, _, path) in crate::client::file_mention_paths(text)? {
                 if copied.insert(path) {
@@ -487,7 +557,7 @@ impl LocalHarness {
                     &root,
                     &generation,
                     reader,
-                    self.limits.file_bytes,
+                    self.maximum_bytes,
                 )
                 .await?;
             }
