@@ -1,9 +1,6 @@
 pub(super) use super::owner_record::Owner;
 use super::*;
-use std::{
-    fs,
-    io::{Read, Write},
-};
+use std::{fs, io::Read};
 
 pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     let (path, volume) = match project {
@@ -87,14 +84,20 @@ impl Owner {
                             "2".into(),
                             &mut None,
                         )?,
-                        uuid::Uuid::new_v4().to_string(),
+                        crate::identity::fresh_uuid().to_string(),
                         VolumeClass::Project,
-                        VolumeOwner::Project(uuid::Uuid::new_v4().to_string()),
+                        VolumeOwner::Project(crate::identity::fresh_uuid().to_string()),
                         &mut None,
                     )?,
                 };
                 let mut key = [0; 32];
-                getrandom::fill(&mut key).map_err(storage)?;
+                #[cfg(feature = "test-support")]
+                let seeded = acyclic_native_runtime::testing::fill_seeded(&mut key);
+                #[cfg(not(feature = "test-support"))]
+                let seeded = false;
+                if !seeded {
+                    getrandom::fill(&mut key).map_err(storage)?;
+                }
                 let owner = Self {
                     key,
                     agent: AgentId::new(),
@@ -162,7 +165,7 @@ impl Owner {
     }
 
     fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
-        let temporary = directory.join(format!(".owner-{}.next", uuid::Uuid::new_v4()));
+        let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
         let mut options = fs::OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]
@@ -173,10 +176,10 @@ impl Owner {
         let result = (|| {
             let mut file = options.open(&temporary)?;
             let mut bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
-            let written = file.write_all(&bytes);
+            let written = acyclic_native_runtime::write_file_all(&mut file, &bytes);
             bytes.fill(0);
             written?;
-            file.sync_all()?;
+            acyclic_native_runtime::flush_file_all(&file)?;
             drop(file);
             acyclic_native_runtime::durable_rename(
                 &temporary,
