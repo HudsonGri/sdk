@@ -576,6 +576,14 @@ impl ComposerInput {
 }
 
 #[cfg(feature = "native-execution")]
+fn source_display_name(path: &str) -> Result<&str> {
+    crate::conversation::validate_content_path(path, &mut None)?;
+    path.rsplit('/')
+        .next()
+        .ok_or_else(|| Error::Invalid("composer source has no filename".into()))
+}
+
+#[cfg(feature = "native-execution")]
 async fn copy_checkout_file(
     view: &workspace::View,
     cut: acyclic_fs::LazySnapshotRef,
@@ -604,7 +612,7 @@ async fn copy_checkout_file(
             &destination,
             chunk.bytes.as_ref(),
             "text/plain",
-            path,
+            source_display_name(path)?,
             None,
         )?
         .await?;

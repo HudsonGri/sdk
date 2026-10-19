@@ -167,7 +167,7 @@ async fn publish(
             &destination,
             bytes,
             "text/plain",
-            path,
+            source_display_name(path)?,
             None,
         )?
         .await?;
