@@ -51,7 +51,7 @@ const SOURCES: [&str; 24] = [
 const ALLOWED: [(&str, &str, usize); 12] = [
     // Seam fallbacks, reached only when no seeded scope is active.
     ("harness/src/identity.rs", "::new_v4", 1),
-    ("harness/src/local/owner.rs", "getrandom::fill", 1),
+    ("harness/src/identity.rs", "getrandom::fill", 1),
     ("filesystem/src/identity.rs", "::new_v4", 1),
     ("filesystem/src/identity.rs", "::now_v7", 1),
     ("stream/src/lib/domain.rs", "SystemTime::now", 1),
