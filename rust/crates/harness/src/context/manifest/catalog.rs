@@ -129,12 +129,25 @@ impl StageCatalog {
     }
 
     /// Inserts the block that fits this projection, if any does.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(super) fn project(
         &self,
         context: &mut Context,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        if let Some(insertion) = self.projection(context, limits, io)? {
+            insertion.insert(context, 0, io)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn projection(
+        &self,
+        context: &Context,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<ContextInsertion>> {
         let budget = self.allowance(context, limits, io)?;
         let mut text = String::new();
         if !skill_catalog::render_into(
@@ -170,25 +183,15 @@ impl StageCatalog {
                 )
             },
         )? {
-            return Ok(());
+            return Ok(None);
         }
-        crate::executor::with_history_io(io, |work| {
-            let wanted = context.messages.len() + 1;
-            compaction::reserve_vector(&mut context.messages, wanted, work)
-        })?;
-        context.messages.insert(
-            self.index,
-            ModelMessage {
+        Ok(Some(ContextInsertion {
+            local_index: self.index,
+            message: ModelMessage {
                 role: ModelRole::System,
                 content: ModelContent::Text(text),
             },
-        );
-        if let Some(current) = &mut context.current_input_index
-            && *current as usize >= self.index
-        {
-            *current += 1;
-        }
-        Ok(())
+        }))
     }
 }
 

@@ -277,18 +277,27 @@ impl ContextStage for ManifestStage {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            let mut context = selection::place_snapshot(
+            selection::place_snapshot(
                 context,
                 &self.context,
                 ContextPlacement::Prepend,
                 limits,
                 io,
-            )?;
-            if let Some(catalog) = &self.catalog {
-                catalog.project(&mut context, limits, io)?;
-            }
-            Ok(context)
+            )
         })
+    }
+
+    fn project_optional(
+        &self,
+        context: &Context,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<ContextInsertion>> {
+        self.catalog
+            .as_ref()
+            .map(|catalog| catalog.projection(context, limits, io))
+            .transpose()
+            .map(Option::flatten)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

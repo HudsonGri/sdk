@@ -152,12 +152,12 @@ impl StockExecution<'_> {
     ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
         let mut context = self
             .context_pipeline()
-            .transform(input, base, self.stock.limits, self.io)
+            .transform_required(input, base, self.stock.limits, self.io)
             .await?;
         let message_count = context.messages.len();
-        let request = self.request_taking_context(&mut context)?;
-        let prepared = if let Some((prefix, verifier)) = self.inherited_prefix() {
-            crate::model::PreparedModelRequest::inherit(
+        let request = self.request_from_messages(std::mem::take(&mut context.messages))?;
+        let mut request = if let Some((prefix, verifier)) = self.inherited_prefix() {
+            crate::model::PreparedModelRequest::inherit_request(
                 request,
                 prefix,
                 verifier.as_ref(),
@@ -166,9 +166,9 @@ impl StockExecution<'_> {
             )
             .await?
         } else {
-            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?
+            request
         };
-        let prefix_count = prepared.request().messages.len() - message_count;
+        let prefix_count = request.messages.len() - message_count;
         if let Some(index) = context.current_input_index {
             context.current_input_index = Some(
                 u32::try_from(prefix_count)
@@ -183,22 +183,22 @@ impl StockExecution<'_> {
                     })?,
             );
         }
-        if prefix_count == 0 {
-            return Ok((context, prepared));
-        }
-        if self.io.is_none() {
-            let (prepared, context, ()) = prepared.with_context(context, |context| {
-                crate::context::validate_projected_context(context, self.stock.limits, self.io)
-            })?;
-            Ok((context, prepared))
+        context.messages = std::mem::take(&mut request.messages);
+        self.context_pipeline().project_optional(
+            &mut context,
+            prefix_count,
+            self.stock.limits,
+            self.io,
+        )?;
+        crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
+        request.messages = if self.io.is_some() {
+            crate::model::clone_messages(&context.messages, self.io)?
         } else {
-            if prefix_count != 0 {
-                context.messages =
-                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
-            }
-            crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
-            Ok((context, prepared))
-        }
+            std::mem::take(&mut context.messages)
+        };
+        let prepared =
+            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
+        Ok((context, prepared))
     }
 
     pub(super) fn request_from_context(

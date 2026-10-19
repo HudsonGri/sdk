@@ -43,6 +43,17 @@ impl ContextRenderer for Probe {
 struct Transform(u32);
 
 impl ContextStage for Transform {
+    fn project_optional(
+        &self,
+        _: &Context,
+        _: Limits,
+        _: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<ContextInsertion>> {
+        Ok((self.0 == 0).then(|| ContextInsertion {
+            local_index: usize::MAX,
+            message: text(ModelRole::System, "optional"),
+        }))
+    }
     fn name(&self) -> &str {
         "transform"
     }
@@ -361,4 +372,18 @@ proptest::proptest! {
             extent: ContextExtent::Span { start, end }, representation: ContextRepresentation::Full };
         proptest::prop_assert_eq!(selection.validate(crate::conversation::Limits::default(), &mut None).is_ok(), start < end && end <= 10);
     }
+}
+
+#[tokio::test]
+async fn optional_stages_cannot_insert_outside_the_local_context() {
+    let pipeline = ContextPipeline::new([Arc::new(Transform(0)) as Arc<dyn ContextStage>]);
+    let error = pipeline
+        .run(&input(), payload_limits(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("optional context insertion is outside local context")
+    );
 }
