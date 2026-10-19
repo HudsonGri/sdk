@@ -35,10 +35,7 @@ pub(super) fn check(
             .get("value")
             .ok_or("missing expected bash value")?;
         if expected
-            .insert(
-                (*step, identity),
-                (serde_json::to_value(invocation)?, value),
-            )
+            .insert(identity, (*step, serde_json::to_value(invocation)?, value))
             .is_some()
         {
             return Err("duplicate expected bash identity".into());
@@ -47,6 +44,8 @@ pub(super) fn check(
     let mut requests = 0;
     let mut completed = 0;
     let mut output: BTreeMap<_, (u64, Vec<u8>)> = BTreeMap::new();
+    let mut step_turns = BTreeMap::new();
+    let mut turn_steps = BTreeMap::new();
     for (key, value) in files {
         if key != &value.key {
             return Err("task tool map and file identities differ".into());
@@ -58,9 +57,19 @@ pub(super) fn check(
         else {
             continue;
         };
-        let (request, result) = expected
-            .get(&(*turn, call.clone()))
-            .ok_or("unexpected task tool identity")?;
+        let (step, request, result) = expected.get(call).ok_or("unexpected task tool identity")?;
+        // Turns are accepted publication ordinals, not raw model steps. The
+        // full derived call identity binds the original operation and step;
+        // all of its files and every peer call in that step share one turn.
+        if step_turns
+            .insert(*step, *turn)
+            .is_some_and(|old| old != *turn)
+            || turn_steps
+                .insert(*turn, *step)
+                .is_some_and(|old| old != *step)
+        {
+            return Err("task tool model-turn grouping differs".into());
+        }
         if owner != &task || value.channel.is_some() {
             return Err("task tool file lost its owning task or channel".into());
         }
@@ -105,13 +114,21 @@ pub(super) fn check(
     if requests != expected.len() || completed != expected.len() {
         return Err("missing published tool request or result".into());
     }
-    for ((step, call), (_, result)) in expected {
+    let mut previous = None;
+    for turn in step_turns.values() {
+        if previous.is_some_and(|old| old >= *turn) {
+            return Err("task tool model turns are not in accepted order".into());
+        }
+        previous = Some(*turn);
+    }
+    for (call, (step, _, result)) in expected {
+        let turn = step_turns[&step];
         for channel in ["stdout", "stderr"] {
             let expected = result[channel]
                 .as_str()
                 .ok_or("missing expected bash output")?;
             let actual = output
-                .remove(&(step, call.clone(), channel))
+                .remove(&(turn, call.clone(), channel))
                 .unwrap_or_default()
                 .1;
             if actual != expected.as_bytes() {
