@@ -105,7 +105,11 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     let project = volume(directory.path()).await?;
     let provider = text();
     let mut config = volume_config(directory.path(), project, provider.clone())?;
-    let owner_path = super::owner::state_directory(&config.project)?.join("owner.json");
+    let owner_path = config
+        .state_directory
+        .as_ref()
+        .expect("fixture-owned state directory")
+        .join("owner.json");
     config = config.compaction(acyclic_harness::context::CompactionPolicy::default());
     assert!(matches!(
         LocalHarness::open(config).await,
@@ -124,7 +128,11 @@ async fn oversized_tool_catalog_fails_before_owner_creation_or_model_dispatch() 
     let mut oversized = tool("test.oversized");
     oversized.definition.description = "x".repeat(capacity().context_tokens as usize);
     let config = volume_config(directory.path(), project, provider.clone())?.tool(oversized);
-    let owner = super::owner::state_directory(&config.project)?.join("owner.json");
+    let owner = config
+        .state_directory
+        .as_ref()
+        .expect("fixture-owned state directory")
+        .join("owner.json");
     assert!(matches!(
         LocalHarness::open(config).await,
         Err(Error::Invalid(_))
@@ -505,8 +513,15 @@ async fn corrupt_owner_is_rejected_without_reissuing_credentials() -> Result<()>
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
     let config = || Ok::<_, Error>(volume_config(directory.path(), project.clone(), text())?);
-    let path = super::owner::state_directory(&config()?.project)?.join("owner.json");
+    let path = config()?
+        .state_directory
+        .expect("fixture-owned state directory")
+        .join("owner.json");
     drop(LocalHarness::open(config()?).await?);
+    assert!(
+        path.is_file(),
+        "the corruption probe must address the persisted owner"
+    );
     std::fs::write(&path, b"invalid owner").map_err(|error| Error::Storage(error.to_string()))?;
     assert!(matches!(
         LocalHarness::open(config()?).await,
@@ -753,6 +768,8 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
     Ok(())
 }
 
+#[path = "tests/interrupted_turns.rs"]
+mod interrupted_turns;
 #[path = "tests/retained_failure.rs"]
 mod retained_failure;
 
