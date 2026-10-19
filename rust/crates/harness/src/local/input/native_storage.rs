@@ -116,7 +116,7 @@ mod tests {
     fn refused_storage_and_copy_never_invoke_the_allocator() {
         for budget in [
             acyclic_fs::WorkBudget {
-                peak_allocation_bytes: 0,
+                peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
                 ..acyclic_fs::performance::BOUNDARY_BUDGET
             },
             acyclic_fs::WorkBudget {
@@ -125,6 +125,7 @@ mod tests {
             },
         ] {
             let work = ledger(budget);
+            let baseline = work.live_allocation_bytes();
             let built = std::cell::Cell::new(false);
             let result = allocate(
                 &work,
@@ -138,7 +139,7 @@ mod tests {
             );
             assert!(result.is_err());
             assert!(!built.get(), "refused storage was built before admission");
-            assert_eq!(work.live_allocation_bytes(), 0);
+            assert_eq!(work.live_allocation_bytes(), baseline);
         }
     }
 
@@ -148,6 +149,7 @@ mod tests {
         let work =
             NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .unwrap();
+        let baseline = work.live_allocation_bytes();
         cancellation.cancel();
         let built = std::cell::Cell::new(false);
         let result = allocate(
@@ -162,7 +164,7 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!built.get());
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 
     #[test]
@@ -185,12 +187,13 @@ mod tests {
 
     #[test]
     fn refused_frontier_growth_preserves_existing_path_custody() -> Result<()> {
-        let ceiling =
+        let frontier_bytes =
             (3 * std::mem::size_of::<NativePath>() + "first".len() + "second".len() - 1) as u64;
         let work = ledger(acyclic_fs::WorkBudget {
-            peak_allocation_bytes: ceiling,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + frontier_bytes,
             ..acyclic_fs::performance::BOUNDARY_BUDGET
         });
+        let baseline = work.live_allocation_bytes();
         let mut frontier = PathFrontier::new(&work)?;
         frontier.push(path(&work, &["first"])?)?;
         let original = work.live_allocation_bytes();
@@ -198,7 +201,7 @@ mod tests {
         assert_eq!(work.live_allocation_bytes(), original);
         assert_eq!(frontier.pop().expect("original").value, "first");
         drop(frontier);
-        assert_eq!(work.live_allocation_bytes(), 0);
+        assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }
 }
