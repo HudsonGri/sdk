@@ -65,10 +65,12 @@ pub(super) async fn verify(
         .observe(selected.clone(), None, 64)
         .await?
         .snapshot
-        .ok_or("missing final tool snapshot")?
-        .into_heads()?;
+        .ok_or("missing final tool snapshot")?;
+    // This public consumer follows raw files. Compare it with a raw snapshot;
+    // materialized text heads have intentionally different keys and segments.
+    let target = FileQueryView::from_snapshot(selected.clone(), target, 64, 65_536)?;
     let mut view = FileQueryView::from_snapshot(selected, initial, 64, 65_536)?;
-    while view.cursor().position != target.cursor.position {
+    while view.cursor().position != target.cursor().position {
         let change = super::stall::waiting(
             "tool file follow before the settled cut",
             observation.changes.next(),
@@ -76,13 +78,14 @@ pub(super) async fn verify(
         .await
         .ok_or("tool follow ended")??;
         if change.cursor.position <= view.cursor().position
-            || change.cursor.position > target.cursor.position
+            || change.cursor.position > target.cursor().position
         {
             return Err("tool follow did not advance to the known cut".into());
         }
         view.apply(change)?;
     }
-    if view.cursor().commit != target.cursor.commit || view.files().values().ne(target.files.iter())
+    if view.cursor().commit != target.cursor().commit
+        || view.files().values().ne(target.files().values())
     {
         return Err("tool snapshot and follow disagree".into());
     }

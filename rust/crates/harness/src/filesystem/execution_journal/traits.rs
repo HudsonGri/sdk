@@ -177,7 +177,7 @@ where
                 crate::obs::traced_future(span, async move {
                     self.append_validated(operation, None, key, event, None)
                         .await?;
-                    self.publish_chunk(key, event, None).await
+                    self.publish_chunk(operation, key, event, None).await
                 })
                 .await
             });
@@ -189,7 +189,8 @@ where
                 let result = async {
                     self.append_validated(operation, None, key, event, Some(&local))
                         .await?;
-                    self.publish_chunk(key, event, Some(&local)).await
+                    self.publish_chunk(operation, key, event, Some(&local))
+                        .await
                 }
                 .await;
                 let retained = local.owned_bytes()?;
@@ -200,7 +201,7 @@ where
             traced(span, async move {
                 self.append_validated(operation, None, key, event, io)
                     .await?;
-                self.publish_chunk(key, event, io).await
+                self.publish_chunk(operation, key, event, io).await
             })
             .await
         })

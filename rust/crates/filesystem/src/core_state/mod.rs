@@ -74,6 +74,8 @@ struct Owner {
     /// Core-state log, opened by the first logged transaction. Its mutex
     log: Mutex<Option<CoreLog>>,
     cache_limit: Option<usize>,
+    // Last: notify joiners only after every OS lock and cached/log resource drops.
+    retiring: Option<owners::Retiring>,
 }
 
 /// One held `owner.lock`, released when dropped.
@@ -178,6 +180,7 @@ impl LocalCoreStateStore {
                 residents: Arc::default(),
                 log: Mutex::default(),
                 cache_limit: None,
+                retiring: None,
             })),
             deferral: None,
             journal_work: None,

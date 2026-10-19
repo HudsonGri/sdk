@@ -2,7 +2,45 @@ use super::*;
 use crate::lock_order::{Mutex as OrderedMutex, OPERATION};
 use std::sync::{OnceLock, Weak};
 
-type Owners<T> = OrderedMutex<BTreeMap<PathBuf, ([u8; 16], Weak<T>)>, OPERATION>;
+type Owners<T> = OrderedMutex<BTreeMap<PathBuf, ([u8; 16], Weak<T>, Arc<Retirement>)>, OPERATION>;
+
+/// The weak count reaches zero before the last owner's fields finish dropping.
+/// A registry entry keeps this completion cell, never the owner or its OS lock.
+#[derive(Debug, Default)]
+struct Retirement {
+    done: crate::sync::Mutex<bool>,
+    changed: crate::sync::Condvar,
+    #[cfg(test)]
+    waiter: crate::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+}
+impl Retirement {
+    fn wait(&self) {
+        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*done {
+            #[cfg(test)]
+            if let Some(waiter) = self
+                .waiter
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                let _ = waiter.send(());
+            }
+            done = self
+                .changed
+                .wait(done)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+#[derive(Debug)]
+pub(super) struct Retiring(Arc<Retirement>);
+impl Drop for Retiring {
+    fn drop(&mut self) {
+        *self.0.done.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.0.changed.notify_all();
+    }
+}
 
 // Registry -> OS namespace lock. Neither the record log nor provider/view locks
 // are acquired while holding this registry. The constructor uses try-lock only.
@@ -10,27 +48,50 @@ fn join<T, const FENCE: bool>(
     owners: &Owners<T>,
     root: PathBuf,
     identity: [u8; 16],
-    create: impl FnOnce() -> Result<Arc<T>, LocalCoreStateStoreError>,
+    create: impl FnOnce(Retiring) -> Result<Arc<T>, LocalCoreStateStoreError>,
+) -> Result<Arc<T>, LocalCoreStateStoreError> {
+    join_with_retirement::<T, FENCE, true>(owners, root, identity, create)
+}
+
+fn join_with_retirement<T, const FENCE: bool, const WAIT: bool>(
+    owners: &Owners<T>,
+    root: PathBuf,
+    identity: [u8; 16],
+    create: impl FnOnce(Retiring) -> Result<Arc<T>, LocalCoreStateStoreError>,
 ) -> Result<Arc<T>, LocalCoreStateStoreError> {
     let mut guard = Some(owners.lock().unwrap_or_else(PoisonError::into_inner));
-    if let Some((original, owner)) = guard.as_ref().unwrap().get(&root)
-        && let Some(owner) = owner.upgrade()
-    {
-        return if *original == identity {
-            Ok(owner)
-        } else {
-            Err(LocalCoreStateStoreError::OwnershipConflict(root))
-        };
+    if let Some((original, owner, retirement)) = guard.as_ref().unwrap().get(&root) {
+        if let Some(owner) = owner.upgrade() {
+            return if *original == identity {
+                Ok(owner)
+            } else {
+                Err(LocalCoreStateStoreError::OwnershipConflict(root))
+            };
+        }
+        // No live owner remains, but its destructor may still hold owner.lock.
+        // Retirement never takes the registry, so waiting cannot invert locks.
+        if WAIT {
+            retirement.wait();
+        }
     }
     // FENCE=false is the deliberately broken initialization race.
     if !FENCE {
         guard.take();
     }
-    let owner = create()?;
+    let retirement = Arc::new(Retirement::default());
+    let owner = create(Retiring(retirement.clone()))?;
     let mut guard = guard.unwrap_or_else(|| owners.lock().unwrap_or_else(PoisonError::into_inner));
-    guard.insert(root, (identity, Arc::downgrade(&owner)));
+    guard.insert(root, (identity, Arc::downgrade(&owner), retirement));
     // Weak entries never keep an owner, its file lock, or its WAL alive.
-    guard.retain(|_, (_, owner)| owner.strong_count() != 0);
+    // A dead weak owner can still be retiring; removing that entry would lose
+    // its completion fence. Reclaim only after physical retirement is complete.
+    guard.retain(|_, (_, owner, retirement)| {
+        owner.strong_count() != 0
+            || !*retirement
+                .done
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+    });
     Ok(owner)
 }
 
@@ -49,13 +110,14 @@ impl LocalCoreStateStore {
             OWNERS.get_or_init(|| OrderedMutex::new(BTreeMap::new())),
             root.clone(),
             held.identity().to_bytes(),
-            || {
+            |retiring| {
                 let store = Self::open_owned(&root)?;
                 let Ownership::Owned(mut owner) = store.ownership else {
                     unreachable!()
                 };
-                Arc::get_mut(&mut owner).expect("new owner").cache_limit =
-                    Some(super::contexts::OWNED_CHECKPOINT as usize);
+                let original = Arc::get_mut(&mut owner).expect("new owner");
+                original.cache_limit = Some(super::contexts::OWNED_CHECKPOINT as usize);
+                original.retiring = Some(retiring);
                 Ok(owner)
             },
         )?;
@@ -132,6 +194,89 @@ mod tests {
             bounded_cache(bounded)?;
             prop_assert!(bounded_cache(old).is_err(), "unbounded-cache control escaped the same assertion");
         }
+    }
+
+    fn reopen_while_last_owner_is_dropping<const WAIT: bool>() -> bool {
+        type DropGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+        struct DelayedOwner {
+            _lock: OwnerLock,
+            gate: std::sync::Mutex<Option<DropGate>>,
+            _retiring: Retiring,
+        }
+        impl Drop for DelayedOwner {
+            fn drop(&mut self) {
+                if let Some((entered, release)) = self.gate.get_mut().unwrap().take() {
+                    entered.send(()).unwrap();
+                    release.recv().unwrap();
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_owned();
+        let registry = Arc::new(Owners::new(BTreeMap::new()));
+        let (entered, dropping) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let (waiting, observed_wait) = std::sync::mpsc::channel();
+        let first = join::<_, true>(&registry, root.clone(), [1; 16], |retiring| {
+            *retiring.0.waiter.lock().unwrap() = Some(waiting);
+            Ok(Arc::new(DelayedOwner {
+                _lock: OwnerLock::acquire(&root, LockMode::Exclusive)?,
+                gate: std::sync::Mutex::new(Some((entered, held))),
+                _retiring: retiring,
+            }))
+        })
+        .unwrap();
+        let weak = Arc::downgrade(&first);
+        let dropping_owner = std::thread::spawn(move || drop(first));
+        dropping.recv().unwrap();
+        assert!(
+            weak.upgrade().is_none(),
+            "last strong owner has not begun dropping"
+        );
+        let (finished, completion) = std::sync::mpsc::channel();
+        let opener = std::thread::spawn(move || {
+            let result = join_with_retirement::<_, true, WAIT>(
+                &registry,
+                root.clone(),
+                [1; 16],
+                |retiring| {
+                    Ok(Arc::new(DelayedOwner {
+                        _lock: OwnerLock::acquire(&root, LockMode::Exclusive)?,
+                        gate: std::sync::Mutex::new(None),
+                        _retiring: retiring,
+                    }))
+                },
+            );
+            finished.send(result.is_ok()).unwrap();
+        });
+        let result = if WAIT {
+            observed_wait.recv().unwrap();
+            assert!(matches!(
+                completion.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            release.send(()).unwrap();
+            completion.recv().unwrap()
+        } else {
+            let result = completion.recv().unwrap();
+            release.send(()).unwrap();
+            result
+        };
+        dropping_owner.join().unwrap();
+        opener.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn reopen_waits_for_physical_retirement_after_the_last_strong_owner() {
+        assert!(
+            reopen_while_last_owner_is_dropping::<true>(),
+            "same-process reopen raced owner retirement"
+        );
+        assert!(
+            !reopen_while_last_owner_is_dropping::<false>(),
+            "old weak-only join escaped the physical-lock detector"
+        );
     }
 
     #[test]

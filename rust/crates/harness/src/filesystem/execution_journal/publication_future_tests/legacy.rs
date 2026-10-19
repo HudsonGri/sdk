@@ -74,7 +74,7 @@ pub(super) fn append<'a>(
             journal
                 .append_validated(operation, None, key, event, None)
                 .await?;
-            journal.publish_chunk(key, event, None).await
+            journal.publish_chunk(operation, key, event, None).await
         })
         .await
         .map(|_| ())
@@ -87,7 +87,9 @@ pub(super) fn append<'a>(
                 journal
                     .append_validated(operation, None, key, event, Some(&local))
                     .await?;
-                journal.publish_chunk(key, event, Some(&local)).await
+                journal
+                    .publish_chunk(operation, key, event, Some(&local))
+                    .await
             }
             .await;
             let retained = local.owned_bytes()?;
@@ -99,7 +101,7 @@ pub(super) fn append<'a>(
             journal
                 .append_validated(operation, None, key, event, io)
                 .await?;
-            journal.publish_chunk(key, event, io).await
+            journal.publish_chunk(operation, key, event, io).await
         })
         .await
     })
@@ -129,7 +131,9 @@ pub(super) fn append_without_projection<'a>(
                 journal
                     .append_validated(operation, None, key, event, Some(&local))
                     .await?;
-                journal.publish_chunk(key, event, Some(&local)).await
+                journal
+                    .publish_chunk(operation, key, event, Some(&local))
+                    .await
             }
             .await;
             let retained = local.owned_bytes()?;
@@ -142,7 +146,7 @@ pub(super) fn append_without_projection<'a>(
                 .append_validated(operation, None, key, event, io)
                 .await?;
             if io.is_some() {
-                journal.publish_chunk(key, event, io).await?;
+                journal.publish_chunk(operation, key, event, io).await?;
             }
             Ok(())
         })

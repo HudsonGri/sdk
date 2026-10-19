@@ -2,7 +2,7 @@ use super::{ChildFile, Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 5;
 
 #[path = "component.rs"]
 mod component;
@@ -59,6 +59,13 @@ pub enum TaskFile {
     ExecutionResult(Component),
     /// Immutable selection made by one child wait operation.
     ChildWait(Component),
+    /// Collision-free canonical execution/step binding to its accepted publication ordinal.
+    ModelTurn {
+        /// Complete canonical execution operation, never a truncated hash.
+        operation: [u8; 16],
+        /// Model step within that execution.
+        step: u32,
+    },
     /// Immutable model turn input; turn numbers include retries/attempts.
     TurnRequest(u64),
     /// One immutable stream chunk.
@@ -122,6 +129,10 @@ impl TaskFile {
             Self::ExecutionClaim(id) => format!("executions/{}/claim.json", id.as_str()),
             Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
             Self::ChildWait(id) => format!("child-waits/{}.json", id.as_str()),
+            Self::ModelTurn { operation, step } => format!(
+                "model-turns/{}/{step}",
+                crate::OperationId::from_bytes(*operation)
+            ),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
             Self::TextHead { turn, channel } => format!(
@@ -317,6 +328,12 @@ impl FileKey {
             ["child-waits", name] => {
                 TaskFile::ChildWait(id(name.strip_suffix(".json").ok_or(Error::InvalidPath)?)?)
             }
+            ["model-turns", operation, step] => TaskFile::ModelTurn {
+                operation: crate::OperationId::parse(operation)
+                    .map_err(|_| Error::InvalidPath)?
+                    .into_bytes(),
+                step: number(step)?.try_into().map_err(|_| Error::InvalidPath)?,
+            },
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
@@ -454,4 +471,32 @@ pub enum Channel {
     Text,
     /// Provider reasoning content.
     Reasoning,
+}
+
+#[cfg(test)]
+mod model_turn_tests {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn complete_model_identities_round_trip_and_are_harness_immutable(
+            operation in any::<[u8; 16]>(), step in any::<u32>(),
+        ) {
+            let key = FileKey::Task {
+                task: Component::new("task").unwrap(),
+                file: TaskFile::ModelTurn { operation, step },
+            };
+            prop_assert_eq!(FileKey::parse(&key.path()).unwrap(), key.clone());
+            prop_assert_eq!(key.owner(), Owner::Harness);
+            prop_assert!(!key.mutable());
+            let mut different = operation;
+            different[15] ^= 1;
+            let other = FileKey::Task {
+                task: Component::new("task").unwrap(),
+                file: TaskFile::ModelTurn { operation: different, step },
+            };
+            prop_assert_ne!(key, other);
+        }
+    }
 }

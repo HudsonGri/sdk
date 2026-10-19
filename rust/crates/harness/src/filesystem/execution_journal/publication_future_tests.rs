@@ -282,7 +282,12 @@ async fn turn(
         test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
         tool::ToolRegistry,
     };
-    let operation = OperationId::from_bytes([4; 16]);
+    let operation = journal
+        .owner
+        .as_ref()
+        .map_or(OperationId::from_bytes([4; 16]), |(_, operation)| {
+            *operation
+        });
     let events = (0..deltas)
         .map(|i| {
             ScriptedEvent::Event(ModelEvent::Content {
@@ -342,6 +347,83 @@ async fn turn(
     Ok([requests, raw, publications])
 }
 
+async fn projected_fixture(
+    operation: OperationId,
+) -> Result<(
+    Journal,
+    Arc<crate::durable_host::CoordinatorTaskHost<acyclic_stream::MemoryStream>>,
+)> {
+    let fixture = crate::durable_host::tests::fixture::Fixture::new(
+        Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+            Default::default(),
+            Arc::new(Clock),
+        )),
+        acyclic_fs::Fs::memory(),
+        serde_json::json!({"type":"integer"}),
+        Some(crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 0,
+            model_steps: 2,
+        }),
+        &[],
+    )
+    .await?;
+    let journal = fixture.execution(fixture.running(80).await?, operation)?;
+    let files = crate::task_volume::TaskFiles::open(
+        fixture.stream.clone(),
+        &fixture.storage,
+        &fixture.issuer.verifier(&mut None)?,
+        &journal.scope,
+        65_536,
+    )
+    .await?;
+    Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
+}
+
+#[tokio::test]
+async fn repeated_executions_keep_full_identities_in_accepted_order() -> Result<()> {
+    use crate::task_volume::{Query, TaskFile};
+    // Equal first fifteen bytes reject truncated-prefix identities; reverse
+    // UUID order rejects sorting by caller-supplied operation bytes.
+    let first = OperationId::from_bytes([8; 16]);
+    let mut lower = [8; 16];
+    lower[15] = 7;
+    let second = OperationId::from_bytes(lower);
+    let (mut journal, host) = projected_fixture(first).await?;
+    for (operation, text) in [(first, "first"), (second, "second")] {
+        journal.owner.as_mut().unwrap().1 = operation;
+        journal.execution = Some((operation, operation));
+        turn(&journal, false, text, 1, false, Some(host.clone()), false).await?;
+    }
+    let files = journal.task_files.as_ref().unwrap();
+    let task = crate::task_volume::Component::new(
+        journal.owner.as_ref().unwrap().0.task_id().to_string(),
+    )?;
+    let chunks = files.snapshot(&Query::Turns(task.clone()), 16).await?.files;
+    assert_eq!(chunks.len(), 2, "repeated model step zero lost a response");
+    assert_eq!(chunks[0].bytes.as_ref(), b"0:first");
+    assert_eq!(chunks[1].bytes.as_ref(), b"0:second");
+    let turns: Vec<_> = chunks
+        .iter()
+        .map(|chunk| match chunk.key {
+            crate::task_volume::FileKey::Task {
+                file: TaskFile::Chunk { turn, .. },
+                ..
+            } => turn,
+            _ => panic!("model metadata leaked into visible turns"),
+        })
+        .collect();
+    assert!(
+        turns[0] < turns[1],
+        "operation bytes replaced publication chronology"
+    );
+    assert_eq!(journal.model_turn(first, 0, &task, None).await?, turns[0]);
+    assert_eq!(journal.model_turn(second, 0, &task, None).await?, turns[1]);
+    assert_ne!(journal.model_turn(second, 1, &task, None).await?, turns[1]);
+    Ok(())
+}
+
 #[test]
 fn unmetered_chunks_follow_canonical_publication_and_replay() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -349,38 +431,7 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
         .build()
         .unwrap();
     let operation = OperationId::from_bytes([4; 16]);
-    let initialize = || {
-        runtime
-            .block_on(async {
-                let fixture = crate::durable_host::tests::fixture::Fixture::new(
-                    Arc::new(acyclic_stream::MemoryStream::new_with_clock(
-                        Default::default(),
-                        Arc::new(Clock),
-                    )),
-                    acyclic_fs::Fs::memory(),
-                    serde_json::json!({"type":"integer"}),
-                    Some(crate::scheduler::SessionLimits {
-                        active_tasks: 1,
-                        total_tasks: 1,
-                        depth: 0,
-                        model_steps: 2,
-                    }),
-                    &[],
-                )
-                .await?;
-                let journal = fixture.execution(fixture.running(80).await?, operation)?;
-                let files = crate::task_volume::TaskFiles::open(
-                    fixture.stream.clone(),
-                    &fixture.storage,
-                    &fixture.issuer.verifier(&mut None)?,
-                    &journal.scope,
-                    65_536,
-                )
-                .await?;
-                Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
-            })
-            .unwrap()
-    };
+    let initialize = || runtime.block_on(projected_fixture(operation)).unwrap();
     {
         let [omitted, published] =
             differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
@@ -418,8 +469,8 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
         }
         assert_ne!(&before[1][4][8..40], &after[1][4][8..40]);
         assert!(omitted.0.1.is_empty());
-        assert_eq!(published.0.1.len(), 1);
-        assert_eq!(published.0.1[0].bytes.as_ref(), b"0:chunk");
+        assert_eq!(published.0.1.len(), 2);
+        assert_eq!(published.0.1[1].bytes.as_ref(), b"0:chunk");
     }
     let (journal, host) = initialize();
     runtime.block_on(async {
@@ -454,6 +505,69 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
                 .files
                 .is_empty()
         );
+        // Drop a live publication future after its durable binding, before its
+        // chunk. Reopening the index must retain the ordinal across this cut.
+        let task = crate::task_volume::Component::new(
+            journal.owner.as_ref().unwrap().0.task_id().to_string(),
+        )
+        .unwrap();
+        let (accepted, mut cut) = tokio::sync::oneshot::channel();
+        let reserved = {
+            let publication = async {
+                assert!(
+                    journal
+                        .append_validated(
+                            operation,
+                            Some(model.sequence - 1),
+                            "model:0:0",
+                            &model.event,
+                            None,
+                        )
+                        .await
+                        .unwrap()
+                );
+                let reserved = journal.model_turn(operation, 0, &task, None).await.unwrap();
+                accepted.send(reserved).unwrap();
+                std::future::pending::<()>().await;
+                journal
+                    .publish_chunk(operation, "model:0:0", &model.event, None)
+                    .await
+                    .unwrap();
+            };
+            tokio::pin!(publication);
+            tokio::select! {
+                reserved = &mut cut => reserved.unwrap(),
+                () = &mut publication => panic!("publication escaped the cancellation cut"),
+            }
+            // The pinned future is dropped here; its chunk was never polled.
+        };
+        let interrupted = files
+            .snapshot(&crate::task_volume::Query::Root, 16)
+            .await
+            .unwrap();
+        assert_eq!(interrupted.files.len(), 1);
+        assert!(matches!(
+            interrupted.files[0].key,
+            crate::task_volume::FileKey::Task {
+                file: crate::task_volume::TaskFile::ModelTurn { .. },
+                ..
+            }
+        ));
+        let reopened = files.inner.reopen().await.unwrap();
+        let binding = crate::task_volume::FileKey::Task {
+            task: crate::task_volume::Component::new(
+                journal.owner.as_ref().unwrap().0.task_id().to_string(),
+            )
+            .unwrap(),
+            file: crate::task_volume::TaskFile::ModelTurn {
+                operation: operation.into_bytes(),
+                step: 0,
+            },
+        };
+        assert_eq!(
+            reopened.file_position(&binding).await.unwrap().0,
+            Some(reserved)
+        );
         // Retrying an already durable event repairs its disposable projection,
         // including the acknowledgement-loss path, without a second chunk.
         for _ in 0..2 {
@@ -474,8 +588,8 @@ fn unmetered_chunks_follow_canonical_publication_and_replay() {
                 .snapshot(&crate::task_volume::Query::Root, 16)
                 .await
                 .unwrap();
-            assert_eq!(snapshot.files.len(), 1);
-            assert_eq!(snapshot.files[0].bytes.as_ref(), b"0:conditional");
+            assert_eq!(snapshot.files.len(), 2);
+            assert_eq!(snapshot.files[1].bytes.as_ref(), b"0:conditional");
         }
     });
 }
