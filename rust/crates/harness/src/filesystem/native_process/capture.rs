@@ -23,10 +23,9 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
     let runtime = tokio::runtime::Handle::current();
     let control_timeout = Duration::from_millis(u64::from(invocation.control_timeout_ms));
     let check = move || {
-        wait_control(
-            &runtime,
-            tokio::time::timeout(control_timeout, check_owner.verify(false, &mut None)),
-        )
+        wait_control(&runtime, || {
+            tokio::time::timeout(control_timeout, check_owner.verify(false, &mut None))
+        })
         .map_err(control_error)?
         .map_err(control_error)
     };
@@ -37,11 +36,14 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
 // simulation worker yields its permit at Pending so the owner can make progress.
 pub(crate) fn wait_control<F: std::future::Future>(
     runtime: &tokio::runtime::Handle,
-    future: F,
+    construct: impl FnOnce() -> F,
 ) -> F::Output {
+    // Timers and IO resources require the runtime during construction too.
+    // Keep this entry confined to the explicit asynchronous control check.
+    let _entered = runtime.enter();
+    let future = construct();
     #[cfg(feature = "test-support")]
     {
-        let _entered = runtime.enter();
         acyclic_native_runtime::testing::blocking_on(future)
     }
     #[cfg(not(feature = "test-support"))]
