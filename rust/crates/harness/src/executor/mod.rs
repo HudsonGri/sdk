@@ -541,6 +541,7 @@ pub(crate) struct ModelEventAdmission {
     pub(crate) count: usize,
     pub(crate) calls: Vec<String>,
     pub(crate) completed: bool,
+    pub(crate) text_bytes: u64,
 }
 
 #[cfg(test)]

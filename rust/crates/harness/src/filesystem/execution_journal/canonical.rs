@@ -323,6 +323,17 @@ where
             let mut request = None;
             let mut output = String::new();
             let mut admission = ModelEventAdmission::default();
+            let mut completed_message = false;
+            for record in records.iter().rev() {
+                crate::model::charge_items(io, 1)?;
+                if let ExecutionEvent::Model { event, .. } = &record.event {
+                    let event = crate::executor::load_json::<ModelEvent>(self, event, io).await?;
+                    if matches!(event.0, ModelEvent::MessageCompleted { .. }) {
+                        completed_message = true;
+                        break;
+                    }
+                }
+            }
             for record in &records {
                 crate::model::charge_items(io, 1)?;
                 match &record.event {
@@ -347,8 +358,13 @@ where
                             crate::executor::load_json::<ModelEvent>(self, event, io).await?;
                         admission.observe(&event.0, limits, io)?;
                         match &event.0 {
-                            ModelEvent::Content { delta } => {
+                            ModelEvent::Content { delta } if !completed_message => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
+                            }
+                            ModelEvent::Content { .. } => {}
+                            ModelEvent::MessageCompleted { text } => {
+                                output.clear();
+                                canonical_push_text(&mut output, text, limits.render_bytes, io)?;
                             }
                             ModelEvent::Completed { .. }
                             | ModelEvent::Reasoning { .. }

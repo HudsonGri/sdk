@@ -137,13 +137,25 @@ impl StockExecution<'_> {
     }
 
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
+        let completed_message = self.has_completed_message(&events)?;
         let mut text = String::new();
         for event in events {
             match event {
-                ModelEvent::Content { delta } => {
+                ModelEvent::Content { delta } if !completed_message => {
                     stock_string_push(
                         &mut text,
                         &delta,
+                        self.stock.limits.render_bytes,
+                        "summary output exceeds caller render budget",
+                        self.io,
+                    )?;
+                }
+                ModelEvent::Content { .. } => {}
+                ModelEvent::MessageCompleted { text: completed } => {
+                    text.clear();
+                    stock_string_push(
+                        &mut text,
+                        &completed,
                         self.stock.limits.render_bytes,
                         "summary output exceeds caller render budget",
                         self.io,

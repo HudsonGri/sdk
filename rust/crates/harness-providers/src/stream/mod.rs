@@ -5,6 +5,8 @@ mod error;
 mod gemini;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod limits_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod message_tests;
 mod reasoning;
 mod responses;
 pub(crate) use reasoning::family;
@@ -33,6 +35,7 @@ pub(crate) struct State<'work> {
     calls: BTreeMap<u64, Call>,
     metadata: serde_json::Map<String, Value>,
     pub(crate) terminal: bool,
+    completed_message: Option<(u64, String)>,
     thinking: BTreeMap<u64, reasoning::Thinking>,
     origin: Option<acyclic_harness::model::ReasoningOrigin>,
     budget: budget::Budget<'work>,
@@ -110,7 +113,12 @@ pub(crate) fn finish(
             "model stream ended without a terminal marker",
         ));
     }
-    let mut calls = Vec::with_capacity(state.calls.len() + state.thinking.len() + 1);
+    let mut calls = Vec::with_capacity(
+        state.calls.len()
+            + state.thinking.len()
+            + 1
+            + usize::from(state.completed_message.is_some()),
+    );
     if state
         .metadata
         .get("finish_reason")
@@ -191,6 +199,9 @@ pub(crate) fn finish(
         ));
         ordinal += 1;
     }
+    if let Some((_, text)) = state.completed_message {
+        calls.push(ModelEvent::MessageCompleted { text });
+    }
     calls.push(ModelEvent::Completed {
         metadata: Value::Object(state.metadata),
     });
@@ -236,6 +247,7 @@ impl<'work> State<'work> {
             calls: BTreeMap::new(),
             metadata: serde_json::Map::new(),
             terminal: false,
+            completed_message: None,
             thinking: BTreeMap::new(),
             origin: None,
             budget: budget::Budget::new(maximum),
