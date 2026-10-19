@@ -23,8 +23,8 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
     let runtime = tokio::runtime::Handle::current();
     let control_timeout = Duration::from_millis(u64::from(invocation.control_timeout_ms));
     let check = move || {
-        wait_control(&runtime, || {
-            tokio::time::timeout(control_timeout, check_owner.verify(false, &mut None))
+        wait_control(&runtime, || async {
+            tokio::time::timeout(control_timeout, check_owner.verify(false, &mut None)).await
         })
         .map_err(control_error)?
         .map_err(control_error)
