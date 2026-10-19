@@ -61,7 +61,7 @@ async fn recover_tree(head_only: bool, cancel_before_reopen: bool) -> Result<()>
         ])
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 32_768,
-            output_tokens: 4096,
+            output_tokens: Some(4096),
         })
         .with_dispatch_observer(move |_| {
             if let Some(started) = started.lock().unwrap().take() {
