@@ -321,10 +321,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             } else {
                 None
             };
-            let remaining = accounting.remaining()?;
             // The frame stays reserved while its receipt joins the ledger.
             let (published, reservation) =
-                crate::heap_future::in_heap_metered(&mut *accounting, |_| {
+                crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
                     publication(
                         PublishGenerationRequest {
                             authority_id: volume_authority_id(target.id),

@@ -14,14 +14,8 @@ pub(super) async fn read_selected<
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
     let result = async {
-        let mut frame = None;
-        let (mut future, bytes) = crate::heap_future::in_heap_admitted(
-            (&mut accounting, &mut frame),
-            |(accounting, frame), bytes| {
-                **frame = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
-                Ok::<_, WorkspaceError>(())
-            },
-            |(accounting, _)| async move {
+        let (result, reservation) =
+            crate::heap_future::in_heap_metered(&mut accounting, |accounting| async move {
                 let (mut checkout, path) = workspace
                     .open_read_path(selector, path, accounting, cancellation)
                     .await?;
@@ -64,13 +58,9 @@ pub(super) async fn read_selected<
                     .await
                     .map(|read| read.bytes)
                     .map_err(WorkspaceError::from)
-            },
-        )?;
-        let result = future.as_mut().await;
-        drop(future);
-        if let Some(mut frame) = frame {
-            accounting.release_owned(&mut frame, bytes)?;
-        }
+            })?
+            .await;
+        crate::heap_future::FrameLedger::release_frame(&mut accounting, reservation)?;
         result
     }
     .await;

@@ -423,6 +423,17 @@ impl AllocationLedger {
         Ok(())
     }
 
+    /// The retirement cell stays owned until this ledger itself is destroyed.
+    pub(crate) fn frame_control_bytes(&self) -> u64 {
+        if self.frame_retirements.is_none() {
+            return 0;
+        }
+        usize_to_u64(
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<FrameRetirements>())
+                .expect("fixed-size retirement control layout"),
+        )
+    }
+
     /// Returns currently retained logical bytes.
     pub fn live_bytes(&self) -> u64 {
         let retired = self.frame_retirements.as_ref().map_or(0, |retired| {

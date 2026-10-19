@@ -24,7 +24,7 @@ assert result.returncode != 0 and 'usage of an `unsafe` block' in result.stderr,
 print('expired-stack dereference negative control: rejected', flush=True)
 PY
 python3 - <<'PY'
-import json, subprocess, time
+import json, os, subprocess, tempfile, time
 artifacts = {}
 for line in open('.tools/stack-budget-artifacts.jsonl'):
     item = json.loads(line)
@@ -49,7 +49,9 @@ failures = []
 for name, args in checks:
     started = time.monotonic()
     try:
-        subprocess.run([artifacts[name], *args, '--nocapture'], check=True, timeout=10)
+        with tempfile.TemporaryDirectory(prefix='acyclic-stack-codex-') as codex_home:
+            subprocess.run([artifacts[name], *args, '--nocapture'], check=True, timeout=10,
+                env=dict(os.environ, CODEX_HOME=codex_home))
         elapsed = time.monotonic()-started
         if elapsed >= 10:
             raise RuntimeError(f'suite exceeded 10 seconds: {elapsed:.3f}')

@@ -118,10 +118,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 )
             }
             _ => {
-                let remaining = accounting.remaining()?;
                 // The frame stays reserved while its receipt joins the ledger.
                 let (result, reservation) =
-                    crate::heap_future::in_heap_metered(&mut *accounting, |_| {
+                    crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
                         prove_generation_closure(
                             &self.inner.objects,
                             generation_root,
