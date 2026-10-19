@@ -16,11 +16,15 @@ impl CapturedClock {
     /// Captures the active seed and runtime, or returns None outside simulation.
     pub fn capture() -> Option<Self> {
         let context = Context::simulation()?;
-        context.schedule.0.state().wall.as_ref()?;
+        let runtime = context.schedule.0.state().wall.as_ref()?.runtime.clone()?;
+        let origin = {
+            let _runtime = runtime.enter();
+            tokio::time::Instant::now().into_std()
+        };
         Some(Self {
             schedule: context.schedule,
-            runtime: tokio::runtime::Handle::current(),
-            origin: tokio::time::Instant::now().into_std(),
+            runtime,
+            origin,
         })
     }
 
@@ -51,6 +55,7 @@ impl CapturedClock {
 pub(super) struct Wall {
     millis: u64,
     anchor: Option<tokio::time::Instant>,
+    runtime: Option<tokio::runtime::Handle>,
     #[cfg(test)]
     lose_elapsed: bool,
 }
@@ -60,6 +65,7 @@ impl Wall {
         Self {
             millis: 1_700_000_000_000,
             anchor: None,
+            runtime: None,
             #[cfg(test)]
             lose_elapsed: false,
         }
@@ -68,10 +74,13 @@ impl Wall {
     // Anchor on entry into the runtime, before the first user poll or timer.
     // Later scopes and captured callbacks retain the same clock origin.
     pub(super) fn start(&mut self) {
+        self.runtime
+            .get_or_insert_with(tokio::runtime::Handle::current);
         self.anchor.get_or_insert_with(tokio::time::Instant::now);
     }
 
     fn now(&mut self) -> u64 {
+        let _runtime = self.runtime.as_ref().map(tokio::runtime::Handle::enter);
         let now = tokio::time::Instant::now();
         #[cfg(test)]
         if self.lose_elapsed {
