@@ -48,6 +48,7 @@ pub mod bundle;
 pub mod client;
 pub mod context;
 mod contract;
+mod identity;
 pub mod conversation;
 pub mod core;
 pub mod distributed;

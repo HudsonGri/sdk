@@ -135,7 +135,8 @@ async fn scoped_completion_uses_the_real_host_worker() -> io::Result<()> {
 }
 
 #[test]
-fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Result<()> {
+fn blocking_replay_io_preserves_native_workers_and_gates_without_a_private_pool() -> io::Result<()>
+{
     let threads = Arc::new(AtomicUsize::new(0));
     let observed = threads.clone();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -153,9 +154,11 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
         let (schedule, mut events) = Schedule::new();
         let mut controlled = Box::pin(schedule.scope(async {
             spawn_blocking(|| {
+                let recovered = tokio::sync::RwLock::new(7);
                 (
                     std::thread::current().id(),
                     std::thread::current().name().map(String::from),
+                    *recovered.blocking_read(),
                 )
             })
             .await
@@ -165,8 +168,9 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
         loop {
             tokio::select! {
                 actual = &mut controlled => {
-                    assert_ne!(actual.0, driver, "blocking work ran on the runtime driver");
+                    assert_ne!(actual.0, driver, "blocking recovery ran on the async driver");
                     assert!(actual.1.unwrap().starts_with("acyclic-host-io-"));
+                    assert_eq!(actual.2, 7);
                     break;
                 },
                 boundary = events.recv() => {
