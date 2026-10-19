@@ -52,6 +52,7 @@ async fn add_child(
 // boundary. The replacement must retire the whole tree without redispatch.
 async fn recover_tree(head_only: bool, cancel_before_reopen: bool) -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
     let (started, boundary) = tokio::sync::oneshot::channel();
     let started = std::sync::Mutex::new(Some(started));
     let provider = Arc::new(
@@ -80,6 +81,7 @@ async fn recover_tree(head_only: bool, cancel_before_reopen: bool) -> Result<()>
             directory.path(),
             (model.clone(), provider.clone()),
         )
+        .map(|config| config.state_directory(state.path()))
     };
     let harness = LocalHarness::open(config()?).await?;
     let operation = OperationId::new();
