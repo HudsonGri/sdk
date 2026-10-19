@@ -1,6 +1,6 @@
 use super::*;
 use crate::conversation::BoundedContentFuture;
-use acyclic_fs::{Fs, NativeMaterializationWork, WorkBudget};
+use acyclic_fs::{Fs, NativeMaterializationWork};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
@@ -77,8 +77,11 @@ fn receipt_and_authentication_frames_keep_original_custody_until_drop() -> Resul
         read_authorization: None,
     };
     let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
     let baseline = work.remaining()?.peak_allocation_bytes;
     let receipt = creator.receipt(&request, &proof, &io)?;
