@@ -39,6 +39,8 @@ checks = [
     ('acyclic_native_runtime', ['obs::']),
     ('acyclic_fs', ['materializer::preflight::tests']),
     ('acyclic_fs', ['native_mount::stack_budget']),
+    ('acyclic_fs', ['heap_future::']),
+    ('acyclic_fs', ['facade::read_accounting::']),
 ]
 # Each shipping entry is a separate bounded runtime suite.
 checks.extend(('stack_main', [f'stack_budget::{case}', '--exact']) for case in [
