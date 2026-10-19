@@ -174,7 +174,13 @@ where
                     crate::tool::ToolRegistry::default(),
                 ))
             } else {
-                self.model_context(command.context_manifest, &context, io)
+                let provider = binding.provider_for(&context);
+                let model = crate::context::CatalogModel {
+                    model: &binding.model,
+                    provider: provider.as_ref(),
+                    compaction: Some(compaction),
+                };
+                self.model_context(command.context_manifest, &context, &model, io)
                     .await
             }
         })?

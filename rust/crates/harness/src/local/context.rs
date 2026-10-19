@@ -8,7 +8,11 @@ use crate::{
 pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
+#[cfg(feature = "native-execution")]
+pub(super) mod environment;
 mod guidance;
+#[cfg(feature = "native-execution")]
+pub(super) mod skills;
 
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -77,8 +81,13 @@ impl LocalHarness {
 
     #[cfg(test)]
     pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref())
-            .await
+        self.stage_context_manifest_with(
+            operation,
+            None,
+            self.limits,
+            self.input_publisher()?.as_ref(),
+        )
+        .await
     }
 
     /// Pins the live file conventions once per admission, alongside instructions.
@@ -86,11 +95,13 @@ impl LocalHarness {
         &self,
         operation: OperationId,
         prompt: Option<&str>,
+        limits: Limits,
         publisher: &dyn ContentPublisher,
     ) -> Result<FileRef> {
         if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
             return Ok(reference);
         }
+        let limits = crate::context::restrict_context_limits(self.limits, limits, None)?;
         let path = manifest_path(operation);
         if path.len() > self.limits.path_bytes {
             return Err(Error::Invalid(
@@ -104,11 +115,11 @@ impl LocalHarness {
         let hook_configuration = if hooks.is_empty() {
             None
         } else {
-            Some(hooks.publish(publisher, self.limits).await?)
+            Some(hooks.publish(publisher, limits).await?)
         };
         let policy = ContextDiscoveryPolicy::default();
-        let limits = ContextDiscoveryLimits::default();
-        let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+        let discovery_limits = ContextDiscoveryLimits::default();
+        let maximum = discovery_limits.instruction_bytes.min(limits.file_bytes);
         let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
@@ -117,15 +128,30 @@ impl LocalHarness {
             ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
         #[cfg(any(feature = "native-execution", feature = "hooks"))]
         let mut manifest = manifest;
+        #[cfg(feature = "hooks")]
+        manifest.sources.extend(hook_configuration);
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             manifest
                 .conventions
                 .push(workspace.context_line().to_owned());
+            if self.checkout_context {
+                manifest
+                    .conventions
+                    .push(environment::render(&workspace.path, self.clock.now_unix_millis()).await);
+                let skills = self.checkout_skills(workspace, maximum).await?;
+                // The manifest pins the accepted catalog as data; each model
+                // request renders it against that model's own allowance.
+                // Carry what the manifest file has room for and count the rest.
+                let file = limits.file_bytes.min(limits.render_bytes);
+                let field = r#","skill_catalog":{"skills":,"unlisted":18446744073709551615}"#;
+                let used = crate::executor::json::json_byte_length(&manifest, file, &mut None)?
+                    .saturating_add(field.len() as u64);
+                manifest.skill_catalog =
+                    crate::context::SkillCatalog::bounded(skills, file.saturating_sub(used));
+            }
         }
-        #[cfg(feature = "hooks")]
-        manifest.sources.extend(hook_configuration);
-        let bytes = manifest.encode(self.limits)?;
+        let bytes = manifest.encode(limits)?;
         Ok(publisher
             .stage_once(
                 manifest_operation(operation),

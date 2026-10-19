@@ -6,6 +6,7 @@ cargo test -p acyclic-harness --features "$features" --test client-query --test 
 cargo test -p acyclic-harness --features "$features" --test client-commands --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py client_command_session::
 cargo test -p acyclic-harness --features "$features" --test context-discovery manifest::
+cargo test -p acyclic-fs --lib lazy_workspace::tests::latest::
 cargo test -p acyclic-harness --features "$features" --test default_tools
 cargo test -p acyclic-harness-core --features "$features" --test git_executor facade_commits_branches_merges_and_inspects_managed_files
 cargo test -p acyclic-harness --features "$features" --test main saved_tool_metadata::
@@ -14,6 +15,8 @@ for target in command ui_prompt client_swarm_views; do
 done
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness-core --features "$features" --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models::
+# Checkout skill catalog, frontmatter depth guard and Git porcelain parsers.
+cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness/fuzz-settings checkout_context --target x86_64-unknown-linux-gnu --dev -- -runs=1000 -max_len=65536 -timeout=5
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness --features "$features" --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py local::checkout_tools::tests:: client::commands::session::init_models::
 

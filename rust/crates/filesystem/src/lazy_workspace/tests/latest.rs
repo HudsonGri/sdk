@@ -17,98 +17,120 @@ fn latest_reads_obey_view_precedence_bounds_and_snapshot_isolation() {
         0u64..128,
         0u8..5,
         any::<bool>(),
+        any::<bool>(),
     );
     proptest::test_runner::TestRunner::default()
-        .run(&strategy, |(before, after, maximum, mode, unlink)| {
-            runtime.block_on(async {
-                let fs = Fs::memory();
-                let changed = before != after;
-                let mut source = CountingSource::new(Bytes::from(before));
-                if mode >= 3 {
-                    source.node.link_count = Some(2);
-                }
-                let source = Arc::new(source);
-                let root = attach(
-                    &fs,
-                    Arc::clone(&source),
-                    MemoryLazyWorkspaceStore::default(),
-                )
-                .await
-                .unwrap();
-                root.read("/file.txt", 64, accounting!()).await.unwrap();
-                if mode == 1 || mode >= 3 {
-                    root.write(
-                        if mode >= 3 {
-                            "/authored-alias"
-                        } else {
-                            "/file.txt"
-                        },
-                        acyclic_stream::OwnedBytes::from_static(b"authored"),
-                        IdempotencyKey::new(),
-                        crate::PublicationPermit::Unrestricted,
-                        accounting!(),
+        .run(
+            &strategy,
+            |(before, after, maximum, mode, unlink, prefix)| {
+                runtime.block_on(async {
+                    let fs = Fs::memory();
+                    let changed = before != after;
+                    let mut source = CountingSource::new(Bytes::from(before));
+                    if mode >= 3 {
+                        source.node.link_count = Some(2);
+                    }
+                    let source = Arc::new(source);
+                    let root = attach(
+                        &fs,
+                        Arc::clone(&source),
+                        MemoryLazyWorkspaceStore::default(),
                     )
                     .await
                     .unwrap();
-                } else if mode == 2 {
-                    root.hide_source_path("/file.txt", accounting!())
+                    root.read("/file.txt", 64, accounting!()).await.unwrap();
+                    if mode == 1 || mode >= 3 {
+                        root.write(
+                            if mode >= 3 {
+                                "/authored-alias"
+                            } else {
+                                "/file.txt"
+                            },
+                            acyclic_stream::OwnedBytes::from_static(b"authored"),
+                            IdempotencyKey::new(),
+                            crate::PublicationPermit::Unrestricted,
+                            accounting!(),
+                        )
                         .await
                         .unwrap();
-                }
-                if mode == 4 {
-                    // The last authored alias can be removed while the shared
-                    // identity shadow still supplies every unresolved alias.
-                    root.remove("/authored-alias", None, accounting!())
-                        .await
-                        .unwrap();
-                }
-                if mode >= 3 && unlink {
-                    source.counts.link_count.store(1, Ordering::Relaxed);
-                }
-                let cut = root.snapshot(accounting!()).await.unwrap();
-                // A native source can change between requests without an active
-                // watch advancing its epoch. Change exactly that existing version.
-                source
-                    .versions
-                    .lock()
-                    .unwrap()
-                    .insert(3, Bytes::copy_from_slice(&after));
-                let lookups = source.counts.lookups.load(Ordering::Relaxed);
-                let reads = source.counts.ranges.load(Ordering::Relaxed);
-                let result = root.read_latest("/file.txt", maximum, accounting!()).await;
-                if mode == 2 {
-                    prop_assert!(matches!(result, Err(LazyWorkspaceError::NotFound)));
-                } else {
-                    let expected = if mode == 1 || mode >= 3 {
-                        b"authored".as_slice()
-                    } else {
-                        after.as_slice()
-                    };
-                    if expected.len() as u64 > maximum {
-                        prop_assert!(matches!(result, Err(LazyWorkspaceError::TooLarge)));
-                    } else {
-                        let result = result.unwrap();
-                        prop_assert_eq!(result.bytes.as_slice(), expected);
+                    } else if mode == 2 {
+                        root.hide_source_path("/file.txt", accounting!())
+                            .await
+                            .unwrap();
                     }
-                }
-                prop_assert_eq!(root.snapshot(accounting!()).await.unwrap(), cut);
-                prop_assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
-                prop_assert_eq!(
-                    source.counts.lookups.load(Ordering::Relaxed) - lookups,
-                    usize::from(mode == 0 || mode >= 3)
-                );
-                prop_assert_eq!(
-                    source.counts.ranges.load(Ordering::Relaxed) - reads,
-                    usize::from(mode == 0 && after.len() as u64 <= maximum)
-                );
-                if mode == 0 && changed {
-                    // Negative control: the retained lookup still rejects this
-                    // edit. A fresh read must not rewrite that older observation.
-                    prop_assert!(root.read("/file.txt", 64, accounting!()).await.is_err());
-                }
-                Ok(())
-            })
-        })
+                    if mode == 4 {
+                        // The last authored alias can be removed while the shared
+                        // identity shadow still supplies every unresolved alias.
+                        root.remove("/authored-alias", None, accounting!())
+                            .await
+                            .unwrap();
+                    }
+                    if mode >= 3 && unlink {
+                        source.counts.link_count.store(1, Ordering::Relaxed);
+                    }
+                    let cut = root.snapshot(accounting!()).await.unwrap();
+                    // A native source can change between requests without an active
+                    // watch advancing its epoch. Change exactly that existing version.
+                    source
+                        .versions
+                        .lock()
+                        .unwrap()
+                        .insert(3, Bytes::copy_from_slice(&after));
+                    let lookups = source.counts.lookups.load(Ordering::Relaxed);
+                    let reads = source.counts.ranges.load(Ordering::Relaxed);
+                    let result = if prefix {
+                        root.read_latest_prefix("/file.txt", maximum, accounting!())
+                            .await
+                    } else {
+                        root.read_latest("/file.txt", maximum, accounting!()).await
+                    };
+                    if mode == 2 {
+                        prop_assert!(matches!(result, Err(LazyWorkspaceError::NotFound)));
+                    } else {
+                        let expected = if mode == 1 || mode >= 3 {
+                            b"authored".as_slice()
+                        } else {
+                            after.as_slice()
+                        };
+                        if expected.len() as u64 > maximum && !prefix {
+                            prop_assert!(matches!(result, Err(LazyWorkspaceError::TooLarge)));
+                        } else {
+                            let result = result.unwrap();
+                            let length = if prefix {
+                                expected.len().min(maximum as usize)
+                            } else {
+                                expected.len()
+                            };
+                            prop_assert_eq!(result.bytes.as_slice(), &expected[..length]);
+                        }
+                    }
+                    prop_assert_eq!(root.snapshot(accounting!()).await.unwrap(), cut);
+                    prop_assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
+                    prop_assert_eq!(
+                        source.counts.lookups.load(Ordering::Relaxed) - lookups,
+                        usize::from(mode == 0 || mode >= 3)
+                    );
+                    prop_assert_eq!(
+                        source.counts.ranges.load(Ordering::Relaxed) - reads,
+                        usize::from(mode == 0 && (prefix || after.len() as u64 <= maximum))
+                    );
+                    if prefix && mode == 0 && after.len() as u64 > maximum {
+                        // Old whole-file path fails the same bound that admits a
+                        // prefix, independent of contents and native body length.
+                        prop_assert!(matches!(
+                            root.read_latest("/file.txt", maximum, accounting!()).await,
+                            Err(LazyWorkspaceError::TooLarge)
+                        ));
+                    }
+                    if mode == 0 && changed {
+                        // Negative control: the retained lookup still rejects this
+                        // edit. A fresh read must not rewrite that older observation.
+                        prop_assert!(root.read("/file.txt", 64, accounting!()).await.is_err());
+                    }
+                    Ok(())
+                })
+            },
+        )
         .unwrap();
 }
 
