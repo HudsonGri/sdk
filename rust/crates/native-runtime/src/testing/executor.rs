@@ -1,0 +1,438 @@
+//! Single-threaded polling of the original owned futures, in seeded ready order.
+use super::*;
+#[cfg(acyclic_native_runtime_loom)]
+use loom::sync::Condvar;
+#[cfg(not(acyclic_native_runtime_loom))]
+use std::sync::Condvar;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    pin::Pin,
+    task::{Context as PollContext, Wake},
+};
+
+type Work = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+#[cfg(all(test, acyclic_native_runtime_loom))]
+mod models;
+#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+mod tests;
+
+struct State {
+    next: u64,
+    live: BTreeSet<u64>,
+    ready: BTreeSet<u64>,
+    served: BTreeSet<u64>,
+    cancelled: BTreeSet<u64>,
+    tasks: BTreeMap<u64, Work>,
+    driver: Option<Waker>,
+    random: blake3::OutputReader,
+    trace: Vec<(u64, &'static str)>,
+    #[cfg(test)]
+    forget_wake: bool,
+    #[cfg(test)]
+    forget_round: bool,
+}
+
+/// No future is polled or dropped, and no waker is called, under this lock.
+/// This lock is never nested with Schedule, entropy, or task-detail locks.
+pub(super) struct Executor(Mutex<State>);
+
+impl Executor {
+    pub(super) fn new(seed: u64) -> Arc<Self> {
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.dst.poll-order.v1");
+        hash.update(&seed.to_le_bytes());
+        Arc::new(Self(Mutex::new(State {
+            next: 0,
+            live: BTreeSet::new(),
+            ready: BTreeSet::new(),
+            served: BTreeSet::new(),
+            cancelled: BTreeSet::new(),
+            tasks: BTreeMap::new(),
+            driver: None,
+            random: hash.finalize_xof(),
+            trace: Vec::new(),
+            #[cfg(test)]
+            forget_wake: false,
+            #[cfg(test)]
+            forget_round: false,
+        })))
+    }
+
+    fn register(self: &Arc<Self>, task: Option<Work>) -> Arc<TaskWake> {
+        let (id, driver) = {
+            let mut state = lock(&self.0);
+            let id = state.next;
+            state.next = state
+                .next
+                .checked_add(1)
+                .expect("simulation task ID exhausted");
+            state.live.insert(id);
+            state.ready.insert(id);
+            if let Some(task) = task {
+                state.tasks.insert(id, task);
+            }
+            (id, state.driver.clone())
+        };
+        if let Some(driver) = driver {
+            driver.wake();
+        }
+        Arc::new(TaskWake {
+            executor: self.clone(),
+            id,
+        })
+    }
+
+    fn ready(&self, id: u64) {
+        let driver = {
+            let mut state = lock(&self.0);
+            if !state.live.contains(&id) {
+                return;
+            }
+            #[cfg(test)]
+            if state.forget_wake {
+                return;
+            }
+            state.ready.insert(id);
+            state.driver.clone()
+        };
+        if let Some(driver) = driver {
+            driver.wake();
+        }
+    }
+
+    fn retire(&self, id: u64) {
+        let task = {
+            let mut state = lock(&self.0);
+            state.live.remove(&id);
+            state.ready.remove(&id);
+            state.served.remove(&id);
+            state.cancelled.remove(&id);
+            state.tasks.remove(&id)
+        };
+        drop(task);
+    }
+
+    fn abort(&self, id: u64) {
+        let driver = {
+            let mut state = lock(&self.0);
+            if !state.live.contains(&id) {
+                return;
+            }
+            state.cancelled.insert(id);
+            state.ready.insert(id);
+            state.driver.clone()
+        };
+        if let Some(driver) = driver {
+            driver.wake();
+        }
+    }
+
+    fn next(&self, cx: &PollContext<'_>) -> Option<(u64, Option<Work>, bool)> {
+        let mut state = lock(&self.0);
+        state.driver = Some(cx.waker().clone());
+        if state.ready.is_empty() {
+            return None;
+        }
+        // A self-waking task cannot consume another ready task's entire turn.
+        // The seed chooses the order within a round, never whether a task runs.
+        #[cfg(test)]
+        if state.forget_round {
+            state.served.clear();
+        }
+        if state.ready.difference(&state.served).next().is_none() {
+            state.served.clear();
+        }
+        let count = state.ready.difference(&state.served).count();
+        let mut draw = [0; 8];
+        state.random.fill(&mut draw);
+        let index = u64::from_le_bytes(draw) % count as u64;
+        let id = *state
+            .ready
+            .difference(&state.served)
+            .nth(index as usize)
+            .expect("nonempty ready set");
+        state.ready.remove(&id);
+        state.served.insert(id);
+        let cancelled = state.cancelled.contains(&id);
+        let task = state.tasks.remove(&id);
+        Some((id, task, cancelled))
+    }
+
+    fn polled(&self, id: u64, pending: Option<Work>, phase: &'static str) {
+        let (discard, driver) = {
+            let mut state = lock(&self.0);
+            state.trace.push((id, phase));
+            let discard = if state.cancelled.contains(&id) {
+                state.live.remove(&id);
+                state.ready.remove(&id);
+                state.served.remove(&id);
+                state.cancelled.remove(&id);
+                pending
+            } else {
+                if let Some(task) = pending {
+                    state.tasks.insert(id, task);
+                }
+                None
+            };
+            let driver = (!state.ready.is_empty())
+                .then(|| state.driver.clone())
+                .flatten();
+            (discard, driver)
+        };
+        drop(discard);
+        if let Some(driver) = driver {
+            driver.wake();
+        }
+    }
+
+    fn poll_task(self: &Arc<Self>, id: u64, mut task: Work, cancelled: bool) {
+        if cancelled {
+            self.retire(id);
+            self.polled(id, None, "cancelled");
+            drop(task);
+            return;
+        }
+        let waker = Waker::from(Arc::new(TaskWake {
+            executor: self.clone(),
+            id,
+        }));
+        let mut cx = PollContext::from_waker(&waker);
+        match task.as_mut().poll(&mut cx) {
+            Poll::Pending => self.polled(id, Some(task), "pending"),
+            Poll::Ready(()) => {
+                self.retire(id);
+                self.polled(id, None, "ready");
+            }
+        }
+    }
+
+    pub(super) async fn run<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
+        let root = Root(self.register(None));
+        let waker = Waker::from(root.0.clone());
+        let mut future = std::pin::pin!(tokio::task::unconstrained(future));
+        std::future::poll_fn(|cx| {
+            let Some((id, task, cancelled)) = self.next(cx) else {
+                return Poll::Pending;
+            };
+            if id == root.0.id {
+                assert!(!cancelled, "root cancellation must drop its future");
+                let result = future.as_mut().poll(&mut PollContext::from_waker(&waker));
+                self.polled(
+                    id,
+                    None,
+                    if result.is_pending() {
+                        "pending"
+                    } else {
+                        "ready"
+                    },
+                );
+                result
+            } else {
+                self.poll_task(id, task.expect("registered owned task"), cancelled);
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    pub(super) fn poll_owned(self: &Arc<Self>, cx: &PollContext<'_>) {
+        if let Some((id, task, cancelled)) = self.next(cx) {
+            self.poll_task(
+                id,
+                task.expect("root must be dropped before draining"),
+                cancelled,
+            );
+        }
+    }
+
+    pub(super) fn trace(&self) -> Vec<(u64, &'static str)> {
+        lock(&self.0).trace.clone()
+    }
+
+    pub(super) fn spawn<F>(self: &Arc<Self>, future: F) -> TaskHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+        let task = async move {
+            let mut future = std::pin::pin!(tokio::task::unconstrained(future));
+            let result = std::future::poll_fn(|cx| {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    future.as_mut().poll(cx)
+                })) {
+                    Ok(poll) => poll.map(Ok),
+                    Err(cause) => {
+                        let message = cause
+                            .downcast_ref::<&str>()
+                            .copied()
+                            .or_else(|| cause.downcast_ref::<String>().map(String::as_str))
+                            .unwrap_or("non-string panic");
+                        Poll::Ready(Err(io::Error::other(format!(
+                            "owned task panicked: {message}"
+                        ))))
+                    }
+                }
+            })
+            .await;
+            let _ = sender.send(result);
+        };
+        let wake = self.register(Some(Box::pin(task)));
+        TaskHandle(Handle::Simulated { receiver, wake })
+    }
+}
+
+struct Root(Arc<TaskWake>);
+impl Drop for Root {
+    fn drop(&mut self) {
+        self.0.executor.retire(self.0.id);
+    }
+}
+
+/// A wake only marks readiness. The seeded driver alone chooses the next poll.
+struct TaskWake {
+    executor: Arc<Executor>,
+    id: u64,
+}
+impl Wake for TaskWake {
+    fn wake(self: Arc<Self>) {
+        self.executor.ready(self.id);
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.executor.ready(self.id);
+    }
+}
+
+/// Owned task handle. Dropping detaches; aborting cancels the original future.
+pub struct TaskHandle<T>(Handle<T>);
+
+/// Cancellation authority retained independently of the owned task's result.
+#[derive(Clone)]
+pub struct AbortHandle(Abort);
+
+#[derive(Clone)]
+enum Abort {
+    Tokio(tokio::task::AbortHandle),
+    Simulated(Arc<TaskWake>),
+}
+
+impl AbortHandle {
+    /// Requests cancellation of the original owned future.
+    pub fn abort(&self) {
+        match &self.0 {
+            Abort::Tokio(task) => task.abort(),
+            Abort::Simulated(wake) => wake.executor.abort(wake.id),
+        }
+    }
+}
+
+enum Handle<T> {
+    Tokio(tokio::task::JoinHandle<T>),
+    Simulated {
+        receiver: oneshot::Receiver<io::Result<T>>,
+        wake: Arc<TaskWake>,
+    },
+}
+
+impl<T> TaskHandle<T> {
+    pub(super) fn native(task: tokio::task::JoinHandle<T>) -> Self {
+        Self(Handle::Tokio(task))
+    }
+
+    /// Cancels the task even if its caller no longer awaits it.
+    pub fn abort(&self) {
+        match &self.0 {
+            Handle::Tokio(task) => task.abort(),
+            Handle::Simulated { wake, .. } => wake.executor.abort(wake.id),
+        }
+    }
+
+    /// Retains cancellation authority without retaining the result receiver.
+    pub fn abort_handle(&self) -> AbortHandle {
+        AbortHandle(match &self.0 {
+            Handle::Tokio(task) => Abort::Tokio(task.abort_handle()),
+            Handle::Simulated { wake, .. } => Abort::Simulated(wake.clone()),
+        })
+    }
+}
+
+impl<T> Future for TaskHandle<T> {
+    type Output = io::Result<T>;
+    fn poll(self: Pin<&mut Self>, cx: &mut PollContext<'_>) -> Poll<Self::Output> {
+        match &mut self.get_mut().0 {
+            Handle::Tokio(task) => Pin::new(task).poll(cx).map(|result| {
+                result.map_err(|cause| {
+                    if cause.is_cancelled() {
+                        io::Error::new(io::ErrorKind::Interrupted, cause)
+                    } else {
+                        io::Error::other(cause)
+                    }
+                })
+            }),
+            Handle::Simulated { receiver, .. } => Pin::new(receiver).poll(cx).map(|result| {
+                result.unwrap_or_else(|_| {
+                    Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "owned task cancelled",
+                    ))
+                })
+            }),
+        }
+    }
+}
+
+// This is the external I/O completion seam, not another implementation of I/O.
+// Poll the real queue-admission/worker/terminal future to physical completion
+// between two simulated steps, so kernel latency cannot change ready-task order.
+pub(super) fn complete_io<F: Future>(future: F) -> F::Output {
+    let wake = Arc::new(CompletionWake {
+        ready: Mutex::new(false),
+        signal: Condvar::new(),
+        #[cfg(test)]
+        omit_latch: false,
+    });
+    wait_io(future, wake)
+}
+
+fn wait_io<F: Future>(future: F, wake: Arc<CompletionWake>) -> F::Output {
+    let waker = Waker::from(wake.clone());
+    let mut cx = PollContext::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        let mut ready = wake.ready.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*ready {
+            ready = wake
+                .signal
+                .wait(ready)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *ready = false;
+    }
+}
+
+struct CompletionWake {
+    // Sole lock; no nesting with executor/queue locks. Condvar wait releases it.
+    ready: Mutex<bool>,
+    signal: Condvar,
+    #[cfg(test)]
+    omit_latch: bool,
+}
+
+impl Wake for CompletionWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        #[cfg(test)]
+        if self.omit_latch {
+            self.signal.notify_one();
+            return;
+        }
+        *lock(&self.ready) = true;
+        self.signal.notify_one();
+    }
+}

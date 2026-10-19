@@ -12,11 +12,12 @@ keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
 [features]
-test-support = ["dep:tokio"]
+test-support = ["dep:tokio", "dep:blake3"]
 
 [dependencies]
 bytes.workspace = true
-tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
+blake3 = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros", "time", "test-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
