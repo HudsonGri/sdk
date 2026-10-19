@@ -17,6 +17,8 @@ use std::{
 };
 #[path = "counting/admission_tests.rs"]
 mod admission_tests;
+#[path = "counting/contract_tests.rs"]
+mod contract_tests;
 #[path = "alloy_tests.rs"]
 mod alloy_tests;
 #[cfg(not(target_arch = "wasm32"))]

@@ -2,6 +2,22 @@ use crate::Adapter;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value;
 
+/// Input tokens a completed response's usage says the provider charged,
+/// including Anthropic's cache writes and reads.
+pub(crate) fn charged_input(adapter: Adapter, metadata: &Value) -> Option<u64> {
+    let usage = &metadata["usage"];
+    match adapter {
+        Adapter::Chat => usage["prompt_tokens"].as_u64(),
+        Adapter::Gemini => usage["promptTokenCount"].as_u64(),
+        Adapter::Responses => usage["input_tokens"].as_u64(),
+        Adapter::Anthropic => usage["input_tokens"].as_u64().and_then(|input| {
+            input
+                .checked_add(usage["cache_creation_input_tokens"].as_u64().unwrap_or(0))?
+                .checked_add(usage["cache_read_input_tokens"].as_u64().unwrap_or(0))
+        }),
+    }
+}
+
 /// Usage-calibrated estimate owned by one immutable resolved model.
 pub(crate) struct TokenEstimator {
     adapter: Adapter,
@@ -29,18 +45,7 @@ impl TokenEstimator {
     }
 
     pub(crate) fn observe(&self, bytes: usize, metadata: &Value) {
-        let usage = &metadata["usage"];
-        let input = match self.adapter {
-            Adapter::Chat => usage["prompt_tokens"].as_u64(),
-            Adapter::Gemini => usage["promptTokenCount"].as_u64(),
-            Adapter::Responses => usage["input_tokens"].as_u64(),
-            Adapter::Anthropic => usage["input_tokens"].as_u64().and_then(|input| {
-                input
-                    .checked_add(usage["cache_creation_input_tokens"].as_u64().unwrap_or(0))?
-                    .checked_add(usage["cache_read_input_tokens"].as_u64().unwrap_or(0))
-            }),
-        };
-        if let Some(input) = input.filter(|input| *input != 0) {
+        if let Some(input) = charged_input(self.adapter, metadata).filter(|input| *input != 0) {
             // Leave ten percent headroom around observed tokenizer/framing behavior.
             let ratio = bytes as f64 / input as f64 * 0.9;
             if ratio.is_finite() && ratio > 0.0 {

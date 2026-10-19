@@ -8,6 +8,44 @@ mod tests {
     // Property: sampling removes all fresh tool grants, preserves every other
     // grant and leaves the exact manifest catalog/admitted revisions intact.
     proptest! {
+        // For arbitrary reserves and all three policy states, the frozen
+        // configuration admits exactly the builder state that was bound.
+        // Clearing the binding is the old-path negative control.
+        #[test]
+        fn catalog_binding_rejects_every_policy_change(
+            bound_reserve in 1u32..200_000,
+            selected_reserve in 1u32..200_000,
+        ) {
+            use crate::context::{CompactionPolicy, ThresholdCompaction};
+            let policy = |reserve| CompactionPolicy::Threshold(ThresholdCompaction {
+                response_reserve_tokens: reserve,
+                ..Default::default()
+            });
+            for bound in [None, Some(CompactionPolicy::Disabled), Some(policy(bound_reserve))] {
+                for selected in [None, Some(CompactionPolicy::Disabled), Some(policy(selected_reserve))] {
+                    let mut executor = StockExecutor::new(
+                        Model::new("test".into(), "catalog".into(), "1".into(), Value::Null)?,
+                        Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                        ContextPipeline::default(), ToolRegistry::default(),
+                    );
+                    executor.compaction = bound.clone();
+                    executor.catalog_policy = Some(executor.catalog_policy_reserve());
+                    executor.compaction = selected.clone();
+                    let operation = OperationId::new();
+                    let error = StockExecution::ordinary(&executor)
+                        .verify_task_context_binding(operation).err();
+                    let rejected = error.as_ref().is_some_and(|error|
+                        error.to_string().contains("set compaction policy before binding"));
+                    prop_assert_eq!(rejected, bound != selected);
+                    executor.catalog_policy = None;
+                    let error = StockExecution::ordinary(&executor)
+                        .verify_task_context_binding(operation).err();
+                    prop_assert!(!error.as_ref().is_some_and(|error|
+                        error.to_string().contains("set compaction policy before binding")));
+                }
+            }
+        }
+
         #[test]
         fn sampling_attenuation_keeps_the_pinned_catalog(grants in prop::collection::vec(
             prop_oneof!["tool:call:[a-z]{0,16}", "other:[a-z]{0,16}", Just("model:generate".into()), Just("tool:callback".into())], 0..16,
@@ -53,6 +91,7 @@ impl StockExecutor {
             inherited_prefix: None,
             task_context: None,
             compaction: None,
+            catalog_policy: None,
             reconciliation_only: false,
         }
     }
@@ -76,6 +115,8 @@ impl StockExecutor {
     }
 
     /// Replaces or disables the ordinary threshold policy without starting effects.
+    /// Set this before binding a context manifest; execution rejects a policy
+    /// reserve change after binding because the catalog is sized for that reserve.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
         self.compaction = Some(policy);
@@ -107,15 +148,30 @@ impl StockExecutor {
                 "executor already has a context manifest".into(),
             ));
         }
-        let (tools, stage) = crate::context::ContextManifest::bind(
+        let model = crate::context::CatalogModel {
+            model: &self.model,
+            provider: self.provider.as_ref(),
+            compaction: self.compaction.as_ref(),
+        };
+        let (tools, stage) = crate::context::ContextManifest::bind_observed(
             reference,
             reader.as_ref(),
             self.tools,
             self.limits,
+            Some(&model),
+            None,
         )
         .await?;
         self.tools = tools;
+        self.catalog_policy = Some(self.catalog_policy_reserve());
         self.with_context_stage(stage)
+    }
+
+    pub(super) fn catalog_policy_reserve(&self) -> Option<u32> {
+        self.compaction.as_ref().map(|policy| match policy {
+            crate::context::CompactionPolicy::Disabled => 0,
+            crate::context::CompactionPolicy::Threshold(policy) => policy.response_reserve_tokens,
+        })
     }
 
     /// Removes fresh tool-call grants while preserving the pinned catalog and admitted versions.

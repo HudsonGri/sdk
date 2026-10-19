@@ -244,6 +244,24 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         selected_context: None,
         max_steps: 1,
     };
+    // Binding freezes the catalog's policy. A larger reserve set afterwards
+    // must be rejected before any model/journal effect; setting the same policy
+    // again remains valid. Without the binding guard this dispatches "Done".
+    let changed = executor
+        .clone()
+        .with_compaction_policy(CompactionPolicy::default());
+    let error = changed
+        .model_step(journal.as_ref(), &turn, 0, &[])
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("set compaction policy before binding"),
+        "{error}"
+    );
+    assert!(provider.requests().is_empty());
+    let executor = executor.with_compaction_policy(CompactionPolicy::Disabled);
     let first = executor.model_step(journal.as_ref(), &turn, 0, &[]).await?;
     assert_request(provider.as_ref(), &manifest, reader.as_ref()).await?;
     let restarted = stock(provider.clone(), tools()?, limits)?
