@@ -6,6 +6,7 @@ release commit.
 
 ## 0.2.0 - Unreleased
 
+- Keep copyable Rust SDK README examples compiling against the current Objects, HTTP Stream and Hosted Filesystem APIs.
 - Release core-state owner, transaction and record locks at their logical lifetime end, including action unwind before a forked child execs. Store clones and admitted owner transactions retain exclusion; native cleanup spends its original reservation exactly once, and explicitly released guards do not unlock again on drop.
 - Generate ignored Actors guest and timer authoring contracts with the locked Rust producer before Rust workspace qualification, preserving read-only drift checks without requiring JavaScript tooling.
 - Replace offline qualification command snapshots with actual lane execution against controlled native boundaries, downstream-effect exclusion, required model-result coverage, and WebAssembly capability admission checks.
