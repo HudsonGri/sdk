@@ -8,6 +8,10 @@ mod discovery;
 mod drivers;
 mod execution;
 mod expectations;
+#[path = "../support/expected_outcome.rs"]
+mod expected_outcome;
+#[path = "../support/frame_oracle.rs"]
+mod frame_oracle;
 mod limits_tests;
 mod local_admission;
 mod local_case;
@@ -28,10 +32,6 @@ mod progress_guard;
 mod progress_guard_tests;
 #[path = "../support/progress_registry.rs"]
 mod progress_registry;
-mod provider_case;
-mod provider_http;
-mod provider_tests;
-mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
 mod remote_swarm;
@@ -40,6 +40,8 @@ mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
+#[path = "../support/scenario_matchers.rs"]
+mod scenario_matchers;
 mod stall;
 mod subagents;
 mod swarm;
