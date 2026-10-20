@@ -514,7 +514,7 @@ pub(crate) fn file_publication(
         .map_err(|_| Error::Storage("file metadata has no publication operation".into()))
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(feature = "test-support")]
 pub(crate) fn fuzz_classify_media(bytes: &[u8]) -> &'static str {
     media_type::classify(bytes)
 }

@@ -30,11 +30,7 @@ pub mod swarm_membership;
 /// Shared swarm views exercise.
 pub mod swarm_views;
 /// Shared workspace media exercise.
-#[cfg(all(
-    feature = "test-support",
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "filesystem")]
 pub mod workspace_media;
 
 /// Synthetic numeric client adapter and evidence fixtures.
