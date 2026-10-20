@@ -191,6 +191,9 @@ fn task_request(request: &ForkRequest, io: Option<&PreparationIo>) -> Result<Box
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
     }
+    if let Some(io) = io {
+        io.box_attempt::<ForkRequest>()?;
+    }
     with_history_io(io, |work| request.copy(work).map(|copy| Box::new(copy.0)))
 }
 
