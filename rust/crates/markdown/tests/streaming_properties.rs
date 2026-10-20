@@ -1,5 +1,5 @@
-#[path = "support/streaming_input.rs"]
-mod input;
+//! Streaming parser properties using the shared production-API exercise.
+use acyclic_markdown::fuzzing::streaming_input as input;
 use proptest::prelude::*;
 
 #[test]

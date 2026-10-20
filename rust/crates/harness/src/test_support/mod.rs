@@ -61,3 +61,18 @@ pub use model_view_work::measure as measure_model_view_work;
 pub fn environment(name: &str) -> Option<std::ffi::OsString> {
     crate::native_environment::variable_with_user_locations(name, false)
 }
+
+/// Shared property and mutation-fuzz cases using the harness API.
+pub mod fuzz_cases;
+
+/// Exercises the production directory selector against the independent reference.
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub fn fuzz_memory_directory(data: &[u8]) {
+    crate::memory_store::fuzz_memory_directory(data);
+}
+
+/// Exercises production ordered path conflict detection with synthetic names.
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+pub fn fuzz_memory_path_conflicts(data: &[u8]) {
+    crate::memory_store::fuzz_path_conflicts(data);
+}

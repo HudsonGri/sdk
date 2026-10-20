@@ -1,16 +1,11 @@
 //! ALL/LATEST wire admission has an independent shrinking and fuzz oracle.
+use acyclic_stream::test_support::follow_data as checks;
 use acyclic_stream::{StreamError, wire, wire_codec::session::follow_sequence};
 use bytes::Bytes;
+use checks::{Fault, check};
 use proptest::prelude::*;
 use prost::Message;
 use wire::session_data::Item;
-mod checks {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/follow_data.rs"
-    ));
-}
-use checks::{Fault, check};
 
 fn inputs() -> impl Strategy<Value = (i32, u64, wire::SessionData)> {
     (

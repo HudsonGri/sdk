@@ -586,3 +586,9 @@ pub(crate) use validation::{
 
 /// Bounded JSON shared by the existing IO adapters.
 pub mod json;
+
+/// Applies the production summary payload namespace parser to synthetic paths.
+#[cfg(feature = "test-support")]
+pub fn fuzz_summary_operation(path: &str) -> Option<crate::OperationId> {
+    summary_identity::summary_operation(path)
+}

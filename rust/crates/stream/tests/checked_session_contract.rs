@@ -1,17 +1,12 @@
 //! Atomic follow preconditions and legacy-peer confirmation compatibility.
+use acyclic_stream::test_support::follow_contract as checks;
 use acyclic_stream::{
     CommitId, StreamError, wire,
     wire_codec::session::{confirm_follow, preceding_follow, record_anchor, record_cursor},
 };
+use checks::{Fault, check};
 use proptest::prelude::*;
 use prost::Message;
-mod checks {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/support/follow_contract.rs"
-    ));
-}
-use checks::{Fault, check};
 
 fn tagged(kind: u8, value: &impl Message) -> Vec<u8> {
     [vec![kind], value.encode_to_vec()].concat()

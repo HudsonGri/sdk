@@ -1,16 +1,8 @@
 #![no_main]
 
-use acyclic_harness::{
-    AgentId, OperationId, TaskId, conversation::VolumeRef, tool::files::*, workflow,
-};
+use acyclic_harness::tool::files::*;
 use libfuzzer_sys::fuzz_target;
 use serde::{Serialize, de::DeserializeOwned};
-
-// Compile the private production record without adding a public parser API.
-#[path = "../../harness/src/local/owner_record.rs"]
-mod owner_record;
-#[path = "../../harness/src/goal/request_head.rs"]
-mod turn_record;
 
 fn round_trip<T: Serialize + DeserializeOwned>(input: &[u8]) {
     if let Ok(value) = serde_json::from_slice::<T>(input) {
@@ -21,11 +13,8 @@ fn round_trip<T: Serialize + DeserializeOwned>(input: &[u8]) {
 }
 
 fuzz_target!(|input: &[u8]| {
-    if let Ok(turn) = turn_record::decode(input) {
-        let bytes = serde_json::to_vec(&turn).unwrap();
-        assert_eq!(turn_record::decode(&bytes).unwrap(), turn);
-    }
-    round_trip::<owner_record::Owner>(input);
+    acyclic_harness::goal::fuzz_request_head(input);
+    acyclic_harness::local::fuzz_owner_record(input);
     round_trip::<acyclic_fs::GitCompatState>(input);
     round_trip::<ReadFileInput>(input);
     round_trip::<WriteFileInput>(input);

@@ -225,3 +225,9 @@ pub(crate) use native::HookCheck;
 pub(crate) mod mcp_identity_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "test-support")]
+mod fuzzing;
+/// Exercises hook encoding, folding and bounded output using synthetic input.
+#[cfg(feature = "test-support")]
+pub use fuzzing::check as fuzz_output;

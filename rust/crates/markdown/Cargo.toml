@@ -28,7 +28,11 @@ unicode-segmentation = "1.13"
 unicase = "2.10"
 
 [dev-dependencies]
+acyclic-markdown = { path = ".", features = ["fuzzing"] }
 proptest.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+fuzzing = []

@@ -1,7 +1,5 @@
 //! Executable composition uses the real shared ClientViews and Markdown renderer.
-#[path = "../../../tests/support/file_views.rs"]
-mod file_views;
-use acyclic_harness as harness;
+use acyclic_harness::test_support::fuzz_cases::file_views;
 use acyclic_harness::{
     OperationId,
     tui::{
