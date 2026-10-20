@@ -20,6 +20,8 @@ pub use declaration::{
 };
 mod skills;
 pub(crate) use skills::discover_skills;
+#[cfg(feature = "filesystem-local")]
+pub(crate) use skills::discover_skills_at;
 pub use skills::{SkillMetadata, parse_skill_metadata};
 mod frontmatter;
 pub(crate) use frontmatter::{frontmatter_end, parse_frontmatter};

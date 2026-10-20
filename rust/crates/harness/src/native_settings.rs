@@ -29,6 +29,14 @@ pub struct SettingsConfig {
 
 impl SettingsConfig {
     #[cfg(feature = "native-execution")]
+    pub(crate) fn skill_roots(&self) -> [PathBuf; 3] {
+        [
+            self.home.join(".agents/skills"),
+            self.home.join(".claude/skills"),
+            self.codex_home.join("skills"),
+        ]
+    }
+    #[cfg(feature = "native-execution")]
     pub(crate) fn command_roots(&self) -> [(PathBuf, &'static str); 2] {
         [
             (self.home.join(".claude/commands"), ".claude/commands"),

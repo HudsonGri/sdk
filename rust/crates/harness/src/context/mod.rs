@@ -23,6 +23,8 @@ pub use selection::*;
 mod discovery;
 pub(crate) use discovery::frontmatter_end;
 pub use discovery::*;
+#[cfg(feature = "filesystem-local")]
+pub(crate) use discovery::{DiscoveryWork, discover_skills_at};
 mod compaction;
 pub(crate) use compaction::clone_context;
 pub(crate) use compaction::mandatory_messages;
