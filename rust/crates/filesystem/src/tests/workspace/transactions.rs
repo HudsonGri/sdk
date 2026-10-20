@@ -313,16 +313,39 @@ async fn transaction_rename_follows_posix_kind_rules() -> Result<(), Box<dyn Err
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    // mkdir observes prefix bindings, not sibling contents. Explicit directory
-    // observations and replaced bindings must still prevent a safe rebase.
+    // mkdir observes prefix bindings, not directory contents, whether it is
+    // staged alone or in a batch. Explicit directory observations and replaced
+    // bindings must still prevent a safe rebase.
     #[test]
     fn create_dirs_rebase_preserves_exact_bindings(
         name in "entry[a-z]{1,4}",
         payload in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..17),
     ) {
+        #[derive(Clone, Copy, Debug)]
+        enum WriteMode {
+            Serial,
+            #[cfg(not(target_arch = "wasm32"))]
+            Batched,
+        }
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
+            for mode in [
+                WriteMode::Serial,
+                #[cfg(not(target_arch = "wasm32"))]
+                WriteMode::Batched,
+            ] {
+            for inside in [false, true] {
             for observe_directory in [false, true] {
                 for replace_prefix in [false, true] {
+                    if inside && replace_prefix {
+                        continue;
+                    }
+                    // The other writer adds a sibling under this directory.
+                    let (directory, components): (&str, &[&[u8]]) = if inside {
+                        ("/shared/nested", &[b"shared", b"nested"])
+                    } else {
+                        ("/shared", &[b"shared"])
+                    };
+                    let sibling = format!("{directory}/{name}");
                     let fs = Fs::memory();
                     let workspace = unbounded!(fs, create_workspace("mkdir-dependencies"))?;
                     let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
@@ -331,19 +354,27 @@ proptest::proptest! {
                     let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
                     if observe_directory {
                         let limits = pending.checkout.volume_config().limits;
-                        let path = crate::kernel::NamespacePath::new(vec![crate::kernel::LogicalName::new(
-                            crate::kernel::NameEncoding::Utf8, b"shared".to_vec(), limits.maximum_component_bytes,
-                        )?], limits)?;
+                        let path = crate::kernel::NamespacePath::new(components.iter().map(|component| crate::kernel::LogicalName::new(
+                            crate::kernel::NameEncoding::Utf8, component.to_vec(), limits.maximum_component_bytes,
+                        )).collect::<Result<_, _>>()?, limits)?;
                         unbounded!(pending.checkout, lookup_no_follow(&path))?;
                     }
-                    unbounded!(pending, create_dir_all("/shared/nested"))?;
-                    pending.write_text("/shared/nested/local", "local").await?;
+                    match mode {
+                        WriteMode::Serial => {
+                            unbounded!(pending, create_dir_all("/shared/nested"))?;
+                            pending.write_text("/shared/nested/local", "local").await?;
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        WriteMode::Batched => {
+                            unbounded!(pending, write_batch(&["/shared/nested"], &[("/shared/nested/local", OwnedBytes::copy_from_slice(b"local"))]))?;
+                        }
+                    }
                     let mut other = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
                     if replace_prefix {
                         unbounded!(other, remove("/shared/nested"))?;
                         other.write_text("/shared/nested", "replacement").await?;
                     }
-                    unbounded!(other, write(&format!("/shared/{name}"), OwnedBytes::copy_from_slice(&payload)))?;
+                    unbounded!(other, write(&sibling, OwnedBytes::copy_from_slice(&payload)))?;
                     assert!(matches!(commit(&mut other).await?, TransactionCommit::Committed(_)));
                     // Negative control: publishing the stale original candidate
                     // without a dependency-checked rebase must fail.
@@ -352,15 +383,174 @@ proptest::proptest! {
                     if observe_directory || replace_prefix {
                         assert!(matches!(rebased, TransactionRebase::Conflicted { .. }));
                     } else {
-                        assert!(matches!(rebased, TransactionRebase::Rebased(_)));
+                        assert!(
+                            matches!(rebased, TransactionRebase::Rebased(_)),
+                            "mode={mode:?} inside={inside}"
+                        );
                         assert!(matches!(commit(&mut pending).await?, TransactionCommit::Committed(_)));
                         assert_eq!(unbounded!(workspace, read("/shared/nested/local", 16))?.as_ref(), b"local");
                     }
-                    assert_eq!(unbounded!(workspace, read(&format!("/shared/{name}"), 32))?.as_ref(), payload.as_slice());
+                    assert_eq!(unbounded!(workspace, read(&sibling, 32))?.as_ref(), payload.as_slice());
                 }
+            }
+            }
             }
             Ok(())
         });
         proptest::prop_assert!(result.is_ok(), "{result:?}");
     }
+}
+
+// Both writers stage against exactly the same generation, then publish in a
+// fixed order. No scheduler timing is needed to reproduce the host upload race.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
+-> Result<(), Box<dyn Error>> {
+    #[derive(Clone, Copy, Debug)]
+    enum WriteMode {
+        Serial,
+        Batched,
+        PendingBatch,
+    }
+    for mode in [
+        WriteMode::Serial,
+        WriteMode::Batched,
+        WriteMode::PendingBatch,
+    ] {
+        let batched = !matches!(mode, WriteMode::Serial);
+        for observe_directory in [false, true] {
+            for replace_prefix in [false, true] {
+                let fs = Fs::memory();
+                let workspace = unbounded!(fs, create_workspace("shared-directory-writers"))?;
+                let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                unbounded!(seed, create_dir_all("/.system/harness-uploads"))?;
+                commit(&mut seed).await?;
+                let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                let mut winner = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                if matches!(mode, WriteMode::PendingBatch) {
+                    // A prior mutation forces write_batch's serial fallback.
+                    pending.write_text("/staged", "pending").await?;
+                }
+                if observe_directory {
+                    let limits = pending.checkout.volume_config().limits;
+                    let path = crate::kernel::NamespacePath::new(
+                        [".system", "harness-uploads"]
+                            .into_iter()
+                            .map(|name| {
+                                crate::kernel::LogicalName::new(
+                                    crate::kernel::NameEncoding::Utf8,
+                                    name.as_bytes().to_vec(),
+                                    limits.maximum_component_bytes,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                        limits,
+                    )?;
+                    unbounded!(pending.checkout, lookup_no_follow(&path))?;
+                }
+                if batched {
+                    unbounded!(
+                        pending,
+                        write_batch(
+                            &["/.system/harness-uploads"],
+                            &[(
+                                "/.system/harness-uploads/local",
+                                OwnedBytes::from_static(b"local")
+                            )]
+                        )
+                    )?;
+                } else {
+                    unbounded!(pending, create_dir_all("/.system/harness-uploads"))?;
+                    pending
+                        .write_text("/.system/harness-uploads/local", "local")
+                        .await?;
+                }
+                if replace_prefix {
+                    unbounded!(winner, remove("/.system/harness-uploads"))?;
+                    winner
+                        .write_text("/.system/harness-uploads", "replacement")
+                        .await?;
+                } else {
+                    unbounded!(
+                        winner,
+                        write_batch(
+                            &["/.system/harness-uploads"],
+                            &[(
+                                "/.system/harness-uploads/remote",
+                                OwnedBytes::from_static(b"remote")
+                            )]
+                        )
+                    )?;
+                }
+                assert!(matches!(
+                    commit(&mut winner).await?,
+                    TransactionCommit::Committed(_)
+                ));
+                assert!(matches!(
+                    commit(&mut pending).await?,
+                    TransactionCommit::Conflict { .. }
+                ));
+                let outcome = unbounded!(pending, rebase(16))?;
+                if observe_directory || replace_prefix {
+                    assert!(
+                        matches!(outcome, TransactionRebase::Conflicted { .. }),
+                        "batched={batched}, observed={observe_directory}, replaced={replace_prefix}"
+                    );
+                } else {
+                    assert!(
+                        matches!(outcome, TransactionRebase::Rebased(_)),
+                        "mode={mode:?} failed to rebase disjoint sibling writes"
+                    );
+                    assert!(matches!(
+                        commit(&mut pending).await?,
+                        TransactionCommit::Committed(_)
+                    ));
+                    assert_eq!(
+                        unbounded!(workspace, read("/.system/harness-uploads/local", 16))?.as_ref(),
+                        b"local"
+                    );
+                    assert_eq!(
+                        unbounded!(workspace, read("/.system/harness-uploads/remote", 16))?
+                            .as_ref(),
+                        b"remote"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn directory_batches_still_observe_replaced_file_contents() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("batch-file-observation"))?;
+    let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(seed, create_dir_all("/shared"))?;
+    seed.write_text("/shared/file", "base").await?;
+    commit(&mut seed).await?;
+    let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        pending,
+        write_batch(
+            &["/shared"],
+            &[("/shared/file", OwnedBytes::from_static(b"replacement"))]
+        )
+    )?;
+    workspace.write_text("/shared/file", "concurrent").await?;
+    assert!(matches!(
+        commit(&mut pending).await?,
+        TransactionCommit::Conflict { .. }
+    ));
+    assert!(matches!(
+        unbounded!(pending, rebase(16))?,
+        TransactionRebase::Conflicted { .. }
+    ));
+    assert_eq!(
+        unbounded!(workspace, read("/shared/file", 16))?.as_ref(),
+        b"concurrent"
+    );
+    Ok(())
 }
