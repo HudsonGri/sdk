@@ -3,6 +3,7 @@ mod catalog_compaction;
 mod goal_review;
 mod instruction_review;
 mod input_review;
+mod main_thread;
 use acyclic_harness::{
     OperationId,
     client::{jsonl, prepare_local_prompt},

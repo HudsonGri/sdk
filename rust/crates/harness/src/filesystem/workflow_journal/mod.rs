@@ -401,7 +401,7 @@ where
         let _ = io;
         let span = obs_span!("acyclic.harness.workflow.replay", rev = after);
         Ok(HistoryContentFuture::Ordinary {
-            future: traced(span, async move {
+            future: traced(span, || async move {
                 Ok((
                     self.replay_records(after, maximum, true, true, None)
                         .await?,
@@ -439,7 +439,7 @@ where
         admission: WorkflowAdmission,
     ) -> BoxFuture<'a, Result<WorkflowAdmission>> {
         let span = obs_span!("acyclic.harness.workflow.admit");
-        traced(span, self.admit_with_io(admission, None))
+        traced(span, || self.admit_with_io(admission, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -465,9 +465,8 @@ where
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowRecord>> {
         let span = obs_span!("acyclic.harness.workflow.commit", rev = expected_revision);
-        traced(
-            span,
-            self.commit_with_io(expected_revision, idempotency_key, record, None),
-        )
+        traced(span, || {
+            self.commit_with_io(expected_revision, idempotency_key, record, None)
+        })
     }
 }

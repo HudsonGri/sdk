@@ -1,5 +1,7 @@
 //! Thread-local allocation measurements and independent differential runs.
 pub mod differential;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod stack;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

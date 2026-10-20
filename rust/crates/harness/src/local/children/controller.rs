@@ -31,7 +31,7 @@ impl LocalHarness {
         request: FileValue,
         inherited: Option<acyclic_fs::CancellationToken>,
     ) -> BoxProviderFuture<'a, Result<(Component, u64)>> {
-        Box::pin(async move {
+        acyclic_fs::in_heap(|| async move {
             let FileKey::Child {
                 reference: requested,
                 file: ChildFile::Request,
@@ -51,9 +51,7 @@ impl LocalHarness {
             })
             .await;
             let _executing = driving.execute()?;
-            let snapshot = files
-                .inner
-                .child_lifecycle(Some(&reference))
+            let snapshot = acyclic_fs::in_heap(|| files.inner.child_lifecycle(Some(&reference)))
                 .await
                 .map_err(storage)?;
             let mut cursor = follow::Follow::new(snapshot.cursor);
@@ -66,28 +64,29 @@ impl LocalHarness {
             let mut inherited_stopped =
                 inherited.as_ref().is_some_and(|token| token.is_cancelled());
             if inherited_stopped {
-                stopping::cancel(
-                    files.as_ref(),
-                    &reference,
-                    &mut cursor,
-                    &mut values,
-                    &mut generation,
-                )
+                acyclic_fs::in_heap(|| {
+                    stopping::cancel(
+                        files.as_ref(),
+                        &reference,
+                        &mut cursor,
+                        &mut values,
+                        &mut generation,
+                    )
+                })
                 .await?;
             }
             if !needs_work_count(
                 &reference,
                 &values,
                 inherited_stopped,
-                files
-                    .inner
-                    .child_input_count(&reference)
+                acyclic_fs::in_heap(|| files.inner.child_input_count(&reference))
                     .await
                     .map_err(storage)?,
             )? {
                 return Ok((reference, generation.position));
             }
-            let child = self.admit_child_task(files.as_ref(), &request).await?;
+            let child =
+                acyclic_fs::in_heap(|| self.admit_child_task(files.as_ref(), &request)).await?;
             let parsed = ChildRequest::parse(&request.bytes, self.limits.file_bytes)?;
             let mut model = self.model.clone();
             if let Some(name) = parsed.model {
@@ -101,21 +100,21 @@ impl LocalHarness {
                 None,
             )?;
             loop {
-                follow::refresh(
-                    files.as_ref(),
-                    &reference,
-                    &mut cursor,
-                    &mut values,
-                    &mut generation,
-                )
+                acyclic_fs::in_heap(|| {
+                    follow::refresh(
+                        files.as_ref(),
+                        &reference,
+                        &mut cursor,
+                        &mut values,
+                        &mut generation,
+                    )
+                })
                 .await?;
                 #[cfg(all(test, not(acyclic_harness_loom)))]
                 super::cuts::follow_probe(files.as_ref(), &reference, &mut cursor).await?;
                 let state = desired(&reference, &values)?;
                 let previous = execution(&reference, &values)?;
-                let inputs = files
-                    .inner
-                    .child_input_count(&reference)
+                let inputs = acyclic_fs::in_heap(|| files.inner.child_input_count(&reference))
                     .await
                     .map_err(storage)?;
                 // A force-settled orphan has no completed receive checkpoint.
@@ -123,14 +122,17 @@ impl LocalHarness {
                 // cancellation in files without reclaiming a released lease or
                 // inventing a successful result for the interrupted receive.
                 let cancelled_outcome = matches!(
-                    self.runtime.task_host().terminal_status(child).await?,
+                    acyclic_fs::in_heap(|| self.runtime.task_host().terminal_status(child)).await?,
                     Some(crate::Outcome::Cancelled)
                 );
                 let cancelled_suspension = if cancelled_outcome {
-                    self.runtime
-                        .task_host()
-                        .cancelled_workflow_suspension(child, &mut None)
-                        .await?
+                    acyclic_fs::in_heap(|| async {
+                        self.runtime
+                            .task_host()
+                            .cancelled_workflow_suspension(child, &mut None)
+                            .await
+                    })
+                    .await?
                 } else {
                     None
                 };
@@ -181,7 +183,10 @@ impl LocalHarness {
                     if cancelled {
                         cancelled_suspension
                     } else {
-                        host.workflow_suspension(child, &mut None).await?
+                        acyclic_fs::in_heap(|| async {
+                            host.workflow_suspension(child, &mut None).await
+                        })
+                        .await?
                     }
                 } else {
                     None
@@ -225,10 +230,13 @@ impl LocalHarness {
                     && (previous.is_none() || !stopping::requested(state))
                     && previous.is_none_or(|status| status.settled)
                     && matches!(
-                        self.runtime
-                            .task_host()
-                            .recover_work(child, &mut None)
-                            .await?,
+                        acyclic_fs::in_heap(|| async {
+                            self.runtime
+                                .task_host()
+                                .recover_work(child, &mut None)
+                                .await
+                        })
+                        .await?,
                         crate::distributed::WorkPull::Idle
                     );
                 if cancelled_checkpoint
@@ -243,9 +251,13 @@ impl LocalHarness {
                         if !cancelled
                             && matches!(state, ChildState::Cancelled | ChildState::Archived)
                         {
-                            self.runtime.task_host().cancel(child).await?;
+                            acyclic_fs::in_heap(|| self.runtime.task_host().cancel(child)).await?;
                             if !matches!(
-                                self.runtime.task_host().terminal_status(child).await?,
+                                acyclic_fs::in_heap(|| self
+                                    .runtime
+                                    .task_host()
+                                    .terminal_status(child))
+                                .await?,
                                 Some(crate::Outcome::Cancelled)
                             ) {
                                 return Err(Error::Indeterminate(OperationId::from_bytes(
@@ -260,13 +272,15 @@ impl LocalHarness {
                         settled: true,
                         inputs: previous.map_or(1, |status| status.inputs),
                     };
-                    if publish(
-                        files.as_ref(),
-                        &reference,
-                        status,
-                        &mut values,
-                        &mut generation,
-                    )
+                    if acyclic_fs::in_heap(|| {
+                        publish(
+                            files.as_ref(),
+                            &reference,
+                            status,
+                            &mut values,
+                            &mut generation,
+                        )
+                    })
                     .await?
                     {
                         return Ok((reference, generation.position));
@@ -274,8 +288,16 @@ impl LocalHarness {
                     continue;
                 }
                 if state == ChildState::Running {
-                    self.deliver_child_inputs(files.as_ref(), &reference, child, &request, inputs)
-                        .await?;
+                    acyclic_fs::in_heap(|| {
+                        self.deliver_child_inputs(
+                            files.as_ref(),
+                            &reference,
+                            child,
+                            &request,
+                            inputs,
+                        )
+                    })
+                    .await?;
                 }
                 let status = ChildStatus {
                     task: child,
@@ -284,20 +306,23 @@ impl LocalHarness {
                     inputs,
                 };
                 if state == ChildState::Running
-                    && !publish(
-                        files.as_ref(),
-                        &reference,
-                        status,
-                        &mut values,
-                        &mut generation,
-                    )
+                    && !acyclic_fs::in_heap(|| {
+                        publish(
+                            files.as_ref(),
+                            &reference,
+                            status,
+                            &mut values,
+                            &mut generation,
+                        )
+                    })
                     .await?
                 {
                     continue;
                 }
                 #[cfg(all(test, not(acyclic_harness_loom)))]
                 super::cuts::stop("status", OperationId::from_bytes(child.into_bytes()))?;
-                let (child_files, context) = self.child_files(child, files.as_ref()).await?;
+                let (child_files, context) =
+                    acyclic_fs::in_heap(|| self.child_files(child, files.as_ref())).await?;
                 let journal = self.runtime.workflow_journal_with_context(&context)?;
                 drop(context);
                 let cancellation = acyclic_fs::CancellationToken::new();
@@ -312,13 +337,15 @@ impl LocalHarness {
                     cancellation: cancellation.clone(),
                 };
                 {
-                    let advance = self.advance_with_children(
-                        child,
-                        &child_commands,
-                        child_files,
-                        Some((files.clone(), reference.clone())),
-                    );
-                    let controls = async {
+                    let advance = acyclic_fs::in_heap(|| {
+                        self.advance_with_children(
+                            child,
+                            &child_commands,
+                            child_files,
+                            Some((files.clone(), reference.clone())),
+                        )
+                    });
+                    let controls = acyclic_fs::in_heap(|| async {
                         loop {
                             tokio::select! {
                                 biased;
@@ -352,12 +379,14 @@ impl LocalHarness {
                                 }
                             }
                         }
-                    };
-                    stopping::drain(advance, controls, &cancellation).await?;
+                    });
+                    acyclic_fs::in_heap(|| stopping::drain(advance, controls, &cancellation))
+                        .await?;
                 }
-                let (processed, results) = self
-                    .child_processed(child, journal.as_ref(), &reference, &values)
-                    .await?;
+                let (processed, results) = acyclic_fs::in_heap(|| {
+                    self.child_processed(child, journal.as_ref(), &reference, &values)
+                })
+                .await?;
                 for file in results {
                     loop {
                         if values.get(&file.key) == Some(&file) {
@@ -386,18 +415,17 @@ impl LocalHarness {
                 let state = desired(&reference, &values)?;
                 if state == ChildState::Running
                     && processed
-                        < files
-                            .inner
-                            .child_input_count(&reference)
+                        < acyclic_fs::in_heap(|| files.inner.child_input_count(&reference))
                             .await
                             .map_err(storage)?
                 {
                     continue;
                 }
                 if matches!(state, ChildState::Cancelled | ChildState::Archived) {
-                    self.runtime.task_host().cancel(child).await?;
+                    acyclic_fs::in_heap(|| self.runtime.task_host().cancel(child)).await?;
                     if !matches!(
-                        self.runtime.task_host().terminal_status(child).await?,
+                        acyclic_fs::in_heap(|| self.runtime.task_host().terminal_status(child))
+                            .await?,
                         Some(crate::Outcome::Cancelled)
                     ) {
                         return Err(Error::Indeterminate(OperationId::from_bytes(

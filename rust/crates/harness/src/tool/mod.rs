@@ -37,5 +37,7 @@ pub(crate) use codec::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES;
 pub(crate) use codec::clone_value;
 pub(crate) use codec::{decode, value};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod erasure_tests;
 #[cfg(test)]
 mod tests;
