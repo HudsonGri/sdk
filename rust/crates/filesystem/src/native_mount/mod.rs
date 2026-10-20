@@ -261,6 +261,8 @@ mod source;
 pub use source::*;
 mod path;
 pub use path::MountPath;
+#[cfg(any(windows, test))]
+mod creating_name;
 mod callbacks;
 pub use callbacks::*;
 mod filesystem;
