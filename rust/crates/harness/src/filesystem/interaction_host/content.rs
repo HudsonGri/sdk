@@ -217,9 +217,6 @@ where
             .host
             .read_pinned_io(reference, self.maximum_bytes, io)
             .await?;
-        if io.is_none() {
-            self.host.retain_file_generation(reference).await?;
-        }
         Ok(bytes)
     }
 

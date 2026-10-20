@@ -49,7 +49,6 @@ pub(super) async fn read_pinned(
                         source: Box::new(source),
                         custody: None,
                     })?;
-                fork_preparer_io::retain(&pinned, Some(io)).await?;
                 crate::executor::with_history_io(Some(io), |work| {
                     reference.descriptor().verify(&bytes, work)
                 })?;
@@ -98,7 +97,6 @@ pub(super) async fn read_pinned(
                         )
                     })?;
                     io.retain_owned(capacity as u64)?;
-                    fork_preparer_io::retain(&pinned, Some(io)).await?;
                     bytes
                 }
                 None => {

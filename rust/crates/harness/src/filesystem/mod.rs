@@ -322,10 +322,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         if let Some(prior) = prior {
             let generation = (self).generation_ref_id(prior.id(), io)?;
-            match io {
-                Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
-                None => self.retain_generation(&workspace, &generation).await?,
-            }
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
             let receipt_path = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
@@ -442,22 +438,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         let generation_reference = (self).generation_ref_id(generation.id(), io)?;
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
-        {
-            match io {
-                Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
-                None => {
-                    generation
-                        .pin(
-                            format!("harness-generation-{version}"),
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| map_error(failure.error))?;
-                }
-            }
-        }
+        // Publication already places this immutable generation in its owning
+        // workspace's retained history. A second pin authority neither extends
+        // that lifetime nor authenticates the FileRef; the exact-generation
+        // read and descriptor verification below establish its content.
         let reference = {
             let descriptor = &descriptor;
             crate::executor::with_history_io(io, |work| {
@@ -485,6 +469,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        crate::executor::with_history_io(io, |work| reference.validate(work))?;
         // Keep the Result temporary across await for the original admitted caller frame.
         (if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -511,7 +496,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(original) = io.and_then(PreparationIo::original_native_work) {
                     let scratch = PreparationIo::from_native_work(original)?;
                     let io = &scratch;
-                    reference.validate(&mut Some(&mut io.history_io()))?;
                     if reference.volume().provider() != &self.provider
                         || reference.descriptor().byte_length() > maximum_bytes
                     {
@@ -545,7 +529,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             source: Box::new(source),
                             custody: None,
                         })?;
-                    fork_preparer_io::retain(&pinned, Some(io)).await?;
                     crate::executor::with_history_io(Some(io), |work| {
                         reference.descriptor().verify(&bytes, work)
                     })?;
@@ -595,7 +578,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                         })?;
                         io.retain_owned(capacity as u64)?;
-                        fork_preparer_io::retain(&pinned, Some(io)).await?;
                         bytes
                     }
                     None => {
@@ -613,21 +595,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?
         .await
     }
-
-    async fn retain_file_generation(&self, file: &FileRef) -> Result<()> {
-        file.validate(&mut None)?;
-        if file.volume().provider() != &self.provider {
-            return Err(Error::Unauthorized(
-                "file belongs to another Filesystem provider".into(),
-            ));
-        }
-        let workspace = workspace_ref(
-            self.provider.clone(),
-            &file.volume().storage_name(&mut None)?,
-        )?;
-        self.retain_generation(&workspace, &self.file_generation(file, None)?)
-            .await
-    }
 }
 
 #[cfg(test)]
@@ -635,6 +602,9 @@ mod tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pinned_read_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod content_history_tests;
 
 mod stock_turn;
 pub use stock_turn::StockTurnMachine;

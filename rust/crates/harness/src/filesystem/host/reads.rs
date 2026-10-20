@@ -13,14 +13,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference.validate(&mut None)?;
         grant.require_file_read(reference, io)?;
         let bytes = self.read_pinned_io(reference, maximum_bytes, io).await?;
-        if io.is_none() {
-            let generation = self.file_generation(reference, None)?;
-            let workspace = workspace_ref(
-                self.provider.clone(),
-                &reference.volume().storage_name(&mut None)?,
-            )?;
-            self.retain_generation(&workspace, &generation).await?;
-        }
         Ok(bytes)
     }
 

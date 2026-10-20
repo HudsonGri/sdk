@@ -145,7 +145,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         let generation = fork_preparer_io::generation_ref(&self.provider, original.id(), io)?;
-        fork_preparer_io::retain(&original, io).await?;
         let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
         let reference = crate::executor::with_history_io(io, |work| {
             FileRef::new(
