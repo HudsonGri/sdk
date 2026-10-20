@@ -189,6 +189,10 @@ impl LocalHarness {
                 (config::StateLocation::Directory(directory), LocalProject::Workspace(path)) => {
                     Some(owner::separated_directory(directory, Some(path))?)
                 }
+                (config::StateLocation::ProjectRoot(root), LocalProject::Workspace(path)) => {
+                    owner::separated_directory(root, Some(path))?;
+                    None
+                }
                 _ => None,
             };
             let checkout = match &config.project {
