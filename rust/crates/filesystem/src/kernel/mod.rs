@@ -193,8 +193,9 @@ pub use path_access::{
     observe_path_async, observe_paths_async,
 };
 pub(crate) use path_access::{
-    PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
-    observe_path_async_with_accounting, observe_paths_async_with_accounting,
+    PathBatchConfig, PathBatchMode, PathQueries, lookup_path_async_with_accounting,
+    lookup_paths_with_accounting, observe_path_async_with_accounting,
+    observe_paths_async_with_accounting,
 };
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
@@ -260,12 +261,12 @@ pub use types::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use volume::encode_config;
-pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 #[cfg(not(acyclic_loom))]
 pub(crate) use volume::encode_volume_created;
 #[cfg(acyclic_loom)]
 #[doc(hidden)]
 pub use volume::encode_volume_created;
+pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
 
 #[cfg(any(test, feature = "fuzzing"))]

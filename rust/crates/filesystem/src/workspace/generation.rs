@@ -259,9 +259,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         let result = async {
             accounting.claim_owned(checkout.logical_owned_bytes(), 0)?;
             let (lookup, allocation) = checkout
-                .lookup_batch_no_follow_with_accounting::<true>(
+                .lookup_batch_no_follow_with_accounting(
                     paths,
-                    false,
+                    crate::kernel::PathBatchMode::NoFollow,
                     &mut accounting,
                     cancellation,
                 )
