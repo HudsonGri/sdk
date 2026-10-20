@@ -53,7 +53,7 @@ mod request;
 mod response;
 mod summary;
 mod summary_file;
-#[cfg(any(test, feature = "filesystem"))]
+#[cfg(any(test, feature = "filesystem", feature = "test-support"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_failure;

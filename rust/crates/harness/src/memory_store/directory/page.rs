@@ -29,9 +29,12 @@ pub(crate) use index::DirectoryIndex;
 #[path = "page/tests.rs"]
 mod tests;
 
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
 #[path = "page/fuzzing.rs"]
 pub(crate) mod fuzzing;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(
+    all(test, not(target_arch = "wasm32")),
+    all(feature = "test-support", feature = "filesystem")
+))]
 #[path = "page/reference.rs"]
 mod reference;
