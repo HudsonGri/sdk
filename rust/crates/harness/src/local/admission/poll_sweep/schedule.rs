@@ -106,6 +106,12 @@ pub(super) enum Exit<T> {
 
 /// Drives `future`, cancelling at the `cut`-th boundary that `counted`
 /// selects. Returns the exit, every boundary hit, and the counted ones.
+///
+/// Physical blocking and native work is atomic in the schedule: once its
+/// submission is released, every other boundary waits until that work's
+/// completion boundary has been taken. Its owner reports completion from a
+/// real worker thread, so without this the completion would interleave with
+/// independent owners' boundaries by wall-clock timing.
 pub(super) async fn drive<F: Future>(
     future: F,
     cut: Option<usize>,
@@ -116,52 +122,79 @@ pub(super) async fn drive<F: Future>(
     let mut future = Box::pin(schedule.io.scope(tokio::task::unconstrained(future)));
     let mut hit = 0;
     let mut ordinal = 0;
+    let mut physical = false;
+    let mut deferred = std::collections::VecDeque::new();
     loop {
-        tokio::select! {
-            // Poll the caller's ready continuation before acknowledging another
-            // queued barrier. Random branch priority changes the replay order
-            // when a blocked read and an owned completion are both ready.
-            biased;
-            output = &mut future => {
-                drop(future);
-                drain(schedule, events).await;
-                return (Exit::Completed(output), hit, ordinal);
-            },
-            event = events.recv() => {
-                let event = event.expect("provider lost its push driver");
-                hit += 1;
-                let counts = counted(event.name);
-                ordinal += usize::from(counts);
-                {
-                    let mut state = schedule.state.lock().unwrap();
-                    if event.name == "task:submitted"
-                        && (event.detail.contains("append harness/v3/coordinator/events ")
-                            || (event.detail.starts_with("commit ")
-                                && event.detail.contains("\"harness/v3/coordinator/events\"")))
-                    {
-                        state.admission_submission.get_or_insert(hit);
-                    }
-                    state.points.push(event.name);
-                    state.publication = event.detail.clone();
-                }
-                if counts && cut == Some(ordinal) {
-                    {
-                        let mut state = schedule.state.lock().unwrap();
-                        state.cancelled = true;
-                        state.cancelled_at = Some(format!("{}: {}", event.name, event.detail));
-                    }
-                    schedule.io.cancel();
-                    // A JoinHandle's drop detaches its already submitted work.
-                    // Cancel the caller first, then release and drain those owners.
+        let next = if physical { None } else { deferred.pop_front() };
+        let event = match next {
+            Some(event) => event,
+            None => tokio::select! {
+                // Poll the caller's ready continuation before acknowledging another
+                // queued barrier. Random branch priority changes the replay order
+                // when a blocked read and an owned completion are both ready.
+                biased;
+                output = &mut future => {
                     drop(future);
-                    event.release();
+                    release(deferred);
                     drain(schedule, events).await;
-                    return (Exit::Cancelled, hit, ordinal);
+                    return (Exit::Completed(output), hit, ordinal);
+                },
+                event = events.recv() => {
+                    let event = event.expect("provider lost its push driver");
+                    if physical && !completes_physical(event.name) {
+                        deferred.push_back(event);
+                        continue;
+                    }
+                    physical = false;
+                    event
                 }
-                event.release();
+            },
+        };
+        hit += 1;
+        let counts = counted(event.name);
+        ordinal += usize::from(counts);
+        {
+            let mut state = schedule.state.lock().unwrap();
+            if event.name == "task:submitted"
+                && (event.detail.contains("append harness/v3/coordinator/events ")
+                    || (event.detail.starts_with("commit ")
+                        && event.detail.contains("\"harness/v3/coordinator/events\"")))
+            {
+                state.admission_submission.get_or_insert(hit);
             }
+            state.points.push(event.name);
+            state.publication = event.detail.clone();
         }
+        if counts && cut == Some(ordinal) {
+            {
+                let mut state = schedule.state.lock().unwrap();
+                state.cancelled = true;
+                state.cancelled_at = Some(format!("{}: {}", event.name, event.detail));
+            }
+            schedule.io.cancel();
+            // A JoinHandle's drop detaches its already submitted work.
+            // Cancel the caller first, then release and drain those owners.
+            drop(future);
+            event.release();
+            release(deferred);
+            drain(schedule, events).await;
+            return (Exit::Cancelled, hit, ordinal);
+        }
+        physical = submits_physical(event.name);
+        event.release();
     }
+}
+
+fn submits_physical(name: &str) -> bool {
+    matches!(name, "blocking:submitted" | "native:submitted")
+}
+
+fn completes_physical(name: &str) -> bool {
+    matches!(name, "blocking:completed" | "native:completed")
+}
+
+fn release(deferred: std::collections::VecDeque<Boundary>) {
+    deferred.into_iter().for_each(Boundary::release);
 }
 
 async fn drain(schedule: &Schedule, events: &mut UnboundedReceiver<Boundary>) {
@@ -179,4 +212,51 @@ pub(super) fn check_cut<T>(exit: &Exit<T>, cut: usize, hit: usize) -> Result<(),
     } else {
         Err("cancellation point was skipped")
     }
+}
+
+/// Records the schedule of one blocking job racing an independent owner. The
+/// job runs `work` long; the independent boundary follows the job's start
+/// after `wait`. Only these physical durations differ between calls.
+fn physical_race(work: std::time::Duration, wait: std::time::Duration) -> Vec<&'static str> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (schedule, mut events) = Schedule::new();
+        schedule.start();
+        let (started, running) = tokio::sync::oneshot::channel();
+        let raced = async {
+            // Submitted inside the driven scope, so the job owns its barriers.
+            let job = acyclic_native_runtime::testing::spawn_blocking(move || {
+                started.send(()).unwrap();
+                std::thread::sleep(work);
+            });
+            let independent = async {
+                running.await.unwrap();
+                tokio::time::sleep(wait).await;
+                schedule.point("independent").await;
+            };
+            futures::join!(job, independent).0.unwrap();
+        };
+        let (exit, _, _) = drive(raced, None, |_| true, &schedule, &mut events).await;
+        assert!(matches!(exit, Exit::Completed(())));
+        schedule.points()
+    })
+}
+
+#[test]
+fn physical_completion_precedes_boundaries_raised_while_it_runs() {
+    let slow_work = std::time::Duration::from_millis(200);
+    let expected = ["blocking:submitted", "blocking:completed", "independent"];
+    // The independent boundary arrives first, then the completion.
+    assert_eq!(
+        physical_race(slow_work, std::time::Duration::ZERO),
+        expected
+    );
+    // The completion arrives first, then the independent boundary.
+    assert_eq!(
+        physical_race(std::time::Duration::ZERO, slow_work),
+        expected
+    );
 }
