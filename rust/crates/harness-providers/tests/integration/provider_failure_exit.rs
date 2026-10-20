@@ -7,7 +7,6 @@
 use acyclic_harness::{
     Error, LocalHarness, OperationId, Result, client,
     context::{CompactionPolicy, ModelContextCapacity},
-    model::ModelProvider as _,
     test_support::local_harness_config,
 };
 use acyclic_harness_providers::{

@@ -456,6 +456,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "tracing",
  "tracing-subscriber",
  "tsify",
  "url",
