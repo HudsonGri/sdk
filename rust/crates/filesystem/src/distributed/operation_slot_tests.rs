@@ -95,6 +95,10 @@ fn operation_identity(key: &IdempotencyKey) -> bool {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl StreamProvider for Racer {
+    fn operation_claims(&self) -> &stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,
