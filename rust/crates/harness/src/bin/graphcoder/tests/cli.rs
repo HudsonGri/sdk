@@ -2,6 +2,7 @@
 mod catalog_compaction;
 mod goal_review;
 mod instruction_review;
+mod web_outcomes;
 use acyclic_harness::{
     OperationId,
     client::{jsonl, prepare_local_prompt},

@@ -6,6 +6,12 @@ mod agent_selection;
 mod bash;
 pub use bash::BashInput;
 mod defaults;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "search-http",
+    not(target_arch = "wasm32")
+))]
+pub(crate) mod web;
 pub use defaults::defaults;
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};

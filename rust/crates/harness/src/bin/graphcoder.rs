@@ -63,7 +63,7 @@ async fn open(
     };
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
-    config = config.settings(settings);
+    config = config.settings(settings).web_tools();
     Ok(Arc::new(LocalHarness::open(config).await?))
 }
 
