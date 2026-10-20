@@ -82,21 +82,23 @@ impl<S: MaterializationJournalStore>
         let failure = NativeStageUncertainty::new(work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
         let state = super::stage_state::StageState::<_, S::ActionCompletion<'_>>::new(journal);
-        let reader = generation
-            .workspace()
-            .checkout(
+        let workspace = generation.workspace();
+        let reader = crate::heap_future::in_heap_claimed(work, || {
+            workspace.checkout(
                 crate::model::GenerationSelector::Exact(generation.id()),
                 crate::model::CheckoutMode::read_only_pinned(),
                 work,
                 work.cancellation(),
             )
-            .await
-            .and_then(|checkout| {
-                checkout
-                    .into_pinned_reader_with_native_work(work, work.cancellation())
-                    .map_err(crate::WorkspaceError::from)
-            })
-            .map_err(E::from)?;
+        })
+        .map_err(|error| E::from(MaterializationError::Backend(error)))?
+        .await
+        .and_then(|checkout| {
+            checkout
+                .into_pinned_reader_with_native_work(work, work.cancellation())
+                .map_err(crate::WorkspaceError::from)
+        })
+        .map_err(E::from)?;
         let mut control = |phase| {
             use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
             let authorized = if phase == Before {
@@ -117,10 +119,18 @@ impl<S: MaterializationJournalStore>
                                     self.check_custody(&journal).map_err(E::from)?;
                                     // Acceptance checks both live tails; the backend
                                     // separately checks the physical allocation.
-                                    self.verify_allocation(&journal).await.map_err(E::from)?;
-                                    self.store.prepare_action(journal).await.map_err(|error| {
-                                        E::from(MaterializationError::Store(error))
+                                    crate::heap_future::in_heap_claimed(work, || {
+                                        self.verify_allocation(&journal)
                                     })
+                                    .map_err(|error| E::from(MaterializationError::Backend(error)))?
+                                    .await
+                                    .map_err(E::from)?;
+                                    crate::heap_future::in_heap_claimed(work, || {
+                                        self.store.prepare_action(journal)
+                                    })
+                                    .map_err(|error| E::from(MaterializationError::Backend(error)))?
+                                    .await
+                                    .map_err(|error| E::from(MaterializationError::Store(error)))
                                 },
                                 invalid,
                             )
@@ -142,14 +152,19 @@ impl<S: MaterializationJournalStore>
                 Ok(())
             }
         };
-        let result = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
-            &reader,
-            selections,
-            options,
-            work,
-            &mut control,
-        )
-        .await;
+        // Erased: the staging's Send proof starts here, not in every caller's.
+        let staged = crate::heap_future::in_heap_claimed(work, || {
+            crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
+                &reader,
+                selections,
+                options,
+                work,
+                &mut control,
+            )
+        })
+        .map_err(|error| E::from(MaterializationError::Backend(error)))?
+        .map_frame(|frame| -> acyclic_stream::BoxProviderFuture<'_, _> { frame });
+        let result = staged.await;
         let (journal, completion, last) = state.into_inner();
         drop(completion);
         match (result, journal, last) {

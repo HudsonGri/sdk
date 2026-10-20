@@ -10,7 +10,7 @@ fn projected_mount_writer_child() {
 
 #[test]
 fn recursive_publication_is_direct_parent_only() {
-    run_large_stack("recursive-publication", || async {
+    run_async_test("recursive-publication", || async {
         let fixture = Fixture::new();
         fs::write(fixture.root.join("base.txt"), b"base").unwrap();
         let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
@@ -181,7 +181,7 @@ fn recursive_publication_is_direct_parent_only() {
 
 #[test]
 fn multi_root_publication_reopens_the_same_routes() {
-    run_large_stack("multi-root", || async {
+    run_async_test("multi-root", || async {
         let fixture = Fixture::new();
         let second = fixture.directory("second");
         for (root, contents) in [
@@ -311,7 +311,7 @@ fn multi_root_publication_reopens_the_same_routes() {
 
 #[test]
 fn root_registration_recovers_intent_and_fences_identity_changes() {
-    run_large_stack("root-recovery", || async {
+    run_async_test("root-recovery", || async {
         let fixture = Fixture::new();
         let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
         control.fail_after_root_intent = true;

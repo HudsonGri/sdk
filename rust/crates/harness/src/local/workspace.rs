@@ -264,22 +264,25 @@ pub(super) async fn open(
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let frame_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let mut accounting = KernelAccounting::NativeOriginal {
         work: &work,
         cancellation: &cancellation,
     };
     let name = volume.storage_name(&mut None)?;
     let id = filesystem.workspace_id(&name).map_err(storage)?;
-    let original = store
-        .load_lazy_workspace(id, &mut accounting)
-        .await
-        .map_err(storage)?;
+    let original = crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+        store.load_lazy_workspace(id, &mut accounting)
+    })?
+    .await
+    .map_err(storage)?;
     let selected = if original.is_some() || existing {
         Some(
-            filesystem
-                .open_workspace(&name, &work, &cancellation)
-                .await
-                .map_err(storage)?,
+            crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+                filesystem.open_workspace(&name, &work, &cancellation)
+            })?
+            .await
+            .map_err(storage)?,
         )
     } else {
         None
@@ -288,15 +291,17 @@ pub(super) async fn open(
         || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
         |workspace| workspace.volume_config(),
     );
-    let source = NativeDemandSource::open(
-        std::borrow::Cow::Borrowed(&path),
-        config.profile,
-        config.limits,
-        original.as_ref().map(|state| state.source),
-        None,
-        &work,
-        &cancellation,
-    )
+    let source = crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+        NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(&path),
+            config.profile,
+            config.limits,
+            original.as_ref().map(|state| state.source),
+            None,
+            &work,
+            &cancellation,
+        )
+    })?
     .await
     .map_err(storage)?;
     if identity != Some(source.root_identity().to_bytes()) {
@@ -316,32 +321,42 @@ pub(super) async fn open(
     let fresh = original.is_none();
     let view = match selected {
         Some(workspace) if original.is_some() => {
-            LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
-                .await
-                .map_err(storage)?
-        }
-        Some(workspace) => LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
+            crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+                LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
+            })?
             .await
-            .map_err(storage)?,
+            .map_err(storage)?
+        }
+        Some(workspace) => {
+            crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+                LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
+            })?
+            .await
+            .map_err(storage)?
+        }
         None => {
-            LazyWorkspace::attach(
-                filesystem,
-                &name,
-                source,
-                store.clone(),
-                acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-                operation,
-                &mut accounting,
-            )
+            crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+                LazyWorkspace::attach(
+                    filesystem,
+                    &name,
+                    source,
+                    store.clone(),
+                    acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+                    operation,
+                    &mut accounting,
+                )
+            })?
             .await
             .map_err(storage)?
             .0
         }
     };
-    acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(view.workspace())
-        .await
-        .map_err(storage)?;
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+        graph.register_root(view.workspace())
+    })?
+    .await
+    .map_err(storage)?;
     let mut mounts = mounts::owner(
         &path,
         volume,
@@ -349,16 +364,16 @@ pub(super) async fn open(
         native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
     if native_mounts {
-        volumes::attach(filesystem, &store, &path, &mut mounts).await?;
-        Box::pin(volumes::parents::bind(
-            &view,
-            &path,
-            &mounts,
-            acyclic_fs::NativeRootIdentity::from_bytes(
-                identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
-            ),
-            &cancellation,
-        ))
+        crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+            volumes::attach(filesystem, &store, &path, &mut mounts)
+        })?
+        .await?;
+        let identity = acyclic_fs::NativeRootIdentity::from_bytes(
+            identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
+        );
+        crate::conversation::BoundedOperationFuture::new(Some(&frame_io), || {
+            volumes::parents::bind(&view, &path, &mounts, identity, &cancellation)
+        })?
         .await?;
     }
     let context_line = mounts.context_line();

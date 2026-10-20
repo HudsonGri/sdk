@@ -297,6 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                     .value,
             ));
         }
+        // The join boxes its own frame on its own ledger.
         let outcome = self
             .target_head
             .workspace

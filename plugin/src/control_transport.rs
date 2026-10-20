@@ -943,10 +943,18 @@ pub(crate) async fn dispatch_control_envelope(
     }
 }
 
+/// Serves one control request.
+///
+/// Dispatch returns one erased future, so no transport or caller future
+/// contains the concrete state of every command the service can run.
 pub(crate) trait ConcurrentControlRequestDispatcher: Send + Sync {
-    fn dispatch_request(
-        &self,
+    fn dispatch_request<'a>(
+        &'a self,
         request: ControlRequest,
-        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> impl Future<Output = acyclic_harness::Result<ControlDispatchResponse>> + Send;
+        original_native_work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ControlDispatchResponse>>;
 }
+
+// A trait whose dispatch returned `impl Future` (or was an `async fn`) would
+// not be dyn-compatible, so this compiles only while dispatch stays erased.
+const _: Option<&dyn ConcurrentControlRequestDispatcher> = None;

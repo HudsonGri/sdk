@@ -3,6 +3,7 @@ mod catalog_compaction;
 mod goal_review;
 mod input_review;
 mod instruction_review;
+mod main_thread;
 mod web_outcomes;
 use acyclic_harness::{
     OperationId,

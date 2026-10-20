@@ -94,8 +94,10 @@ impl CheckoutTools {
     ) -> Result<()> {
         let (physical, view) = selected;
         if let Some(mount) = &physical.mounted {
-            mount
-                .sync_with_permit(permit, &mount.native_work()?, move |_| {
+            let work = mount.native_work()?;
+            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            crate::conversation::BoundedOperationFuture::new(Some(&io), || {
+                mount.sync_with_permit(permit, &work, move |_| {
                     let owner = owner.clone();
                     async move {
                         if let Some((owner, settlement)) = owner {
@@ -104,8 +106,9 @@ impl CheckoutTools {
                         Ok::<(), Error>(())
                     }
                 })
-                .await
-                .map_err(|failure| failure.cause)?;
+            })?
+            .await
+            .map_err(|failure| failure.cause)?;
             return Ok(());
         }
         let cancellation = CancellationToken::new();
@@ -122,29 +125,32 @@ impl CheckoutTools {
         if cursor.watcher.root_identity() != physical.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
         }
-        let mut checkout = workspace
-            .checkout(
+        let mut checkout = acyclic_fs::in_heap(|| {
+            workspace.checkout(
                 GenerationSelector::Head,
                 CheckoutMode::tracking_transaction(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
-            .await
-            .map_err(storage)?
-            .value;
-        converge::capture(
-            &mut cursor,
-            &mut checkout,
-            physical,
-            (options, policy),
-            baseline,
-            &cancellation,
-        )
+        })
+        .await
+        .map_err(storage)?
+        .value;
+        acyclic_fs::in_heap(|| {
+            converge::capture(
+                &mut cursor,
+                &mut checkout,
+                physical,
+                (options, policy),
+                baseline,
+                &cancellation,
+            )
+        })
         .await?;
         if checkout.has_pending_mutations() {
             let operation = capture_operation(operation, phase);
-            let committed = checkout
-                .commit(
+            let committed = acyclic_fs::in_heap(|| {
+                checkout.commit(
                     operation,
                     None,
                     None,
@@ -163,9 +169,10 @@ impl CheckoutTools {
                         )
                     },
                 )
-                .await
-                .map_err(storage)?
-                .value;
+            })
+            .await
+            .map_err(storage)?
+            .value;
             if !matches!(
                 committed,
                 LivePublicationObservation::Committed { .. }
