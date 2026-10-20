@@ -2,12 +2,11 @@
 //! refused connections, refusal statuses, a body cut after output escaped and a body that falls
 //! silent after output. A recovered refusal is the negative control, and exits 0 with the
 //! provider's text. Harness state lives in fixture directories only.
-#![cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_harness::{
     Error, LocalHarness, OperationId, Result, client,
     context::{CompactionPolicy, ModelContextCapacity},
-    model::ModelProvider as _,
     test_support::local_harness_config,
 };
 use acyclic_harness_providers::{
