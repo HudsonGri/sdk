@@ -701,3 +701,43 @@ async fn volume_merge_revalidates_the_execution_owner_without_a_checkout() -> Te
     );
     Ok(())
 }
+
+// Bisect compares the bad commit's exact captured tree with the working copy.
+// A lazy reference never equals it, so a clean checkout used to be refused.
+#[tokio::test]
+async fn bisect_starts_from_a_clean_committed_workspace() -> TestResult {
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let repository = main.id();
+    main.write_text("/note", "first\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "first"],
+    )
+    .await?;
+    main.write_text("/note", "second\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "second"],
+    )
+    .await?;
+    let started = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["bisect", "start"],
+    )
+    .await?;
+    assert!(
+        matches!(started.command, Some(GitCommandOutput::Bisect(_))),
+        "a clean committed workspace starts bisect: {:?}",
+        started.command
+    );
+    Ok(())
+}
