@@ -182,7 +182,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
-        traced(span, async {
+        traced(span, || async {
             let mut shared = if io.is_none() {
                 Some(self.verified.lock().await)
             } else {

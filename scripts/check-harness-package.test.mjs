@@ -97,10 +97,11 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
 
 test("packaged Harness tests retain their inventory, logs and failure status at the lane's worker budget", () => {
   const source = readFileSync("scripts/check-harness-package.sh", "utf8");
-  const start = source.indexOf('export RUST_MIN_STACK=');
+  const start = source.indexOf('"$cargo_bin" test --manifest-path');
   const end = source.indexOf('"$cargo_bin" run --manifest-path', start);
   assert.ok(start >= 0 && end > start);
   const command = source.slice(start, end);
+  assert.doesNotMatch(source, /export RUST_MIN_STACK/);
   assert.ok(command.includes('--all-features --offline'));
   assert.doesNotMatch(command, /--skip|--exclude|--ignored|--no-run|--lib|--tests/);
   mkdirSync(".tools", { recursive: true });
@@ -120,7 +121,6 @@ cargo_bin=cargo
 cargo_package_target="$work/package-target"
 cargo() {
   [[ "$*" == "test --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline --target-dir $cargo_package_target -- --test-threads=${workers ?? "1"}" ]]
-  [[ "$RUST_MIN_STACK" -ge 8388608 ]]
   printf 'test fixture ... ok\\n'
   return ${status}
 }
@@ -136,4 +136,14 @@ printf 'completed\\n'
     assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("SDK runtime and test stacks have no enlargement overrides", () => {
+  const result = spawnSync("git", ["grep", "-n", "-E", "\\.(thread_)?stack_size[[:space:]]*\\(", "--", "*.rs"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const overrides = result.stdout.trim().split("\n").map(line => line.replace(/:\d+:\s*/, ": ").trim()).sort();
+  assert.deepEqual(overrides, [
+    "rust/crates/filesystem/src/native_mount/provider_stack.rs: .stack_size(256 * 1024)",
+    "rust/crates/native-runtime/src/tests/admission.rs: .stack_size(64 * 1024)",
+  ]);
 });

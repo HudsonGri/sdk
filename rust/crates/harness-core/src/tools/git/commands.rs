@@ -6,6 +6,10 @@ pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
         argv.first().map(String::as_str),
         Some(
             "commit" | "status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore"
+                // Joins and stashes retain this reference for a later whole-
+                // workspace restore. Capture this workspace's own generation;
+                // resolving a lazy reference would create a foreign fork.
+                | "merge" | "rebase" | "stash"
         )
     )
 }

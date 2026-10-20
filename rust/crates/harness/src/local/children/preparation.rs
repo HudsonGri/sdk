@@ -30,33 +30,35 @@ impl Commands<'_> {
             .durable_task_id()
             .ok_or_else(|| Error::Unauthorized("child preparation has no task".into()))?;
         let host = self.harness.runtime.task_host();
-        let record = host.observe_admission(task).await?;
-        if record.input != serde_json::to_value(self.request).map_err(storage)?
-            || self.request.command.as_ref() != Some(&command)
-            || payload != self.request.payload
-        {
-            return Err(Error::Unauthorized(
-                "child preparation differs from its admitted command".into(),
-            ));
-        }
+        let record = crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
+            host.observe_admission(task)
+        })?
+        .await?;
+        let fork = self.admitted_fork(&record.input, &command, payload)?;
+        drop(record);
         let owner = Arc::new(
-            host.journal_owner(task, &fence, None)
-                .await?
-                .with_invocation_cancellation(self.io.cancellation()),
+            crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
+                host.journal_owner(task, &fence, None)
+            })?
+            .await?
+            .with_invocation_cancellation(self.io.cancellation()),
         );
         let preparation = Arc::new(
-            owner
-                .resource_preparation(self.request.clone(), &mut None)
-                .await?,
+            crate::conversation::BoundedOperationFuture::new(Some(self.io), || async {
+                owner
+                    .resource_preparation(self.request.clone(), &mut None)
+                    .await
+            })?
+            .await?,
         );
-        let fork = serde_json::from_value(payload).map_err(storage)?;
         if reconcile {
             return Ok(
-                if self
-                    .preparer
-                    .reconcile_for_task(&fork, &preparation, Some(self.io))
-                    .await?
-                    .is_some()
+                if crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
+                    self.preparer
+                        .reconcile_for_task(&fork, &preparation, Some(self.io))
+                })?
+                .await?
+                .is_some()
                 {
                     TaskCommandProgress::Ready(Value::Null)
                 } else {
@@ -64,9 +66,8 @@ impl Commands<'_> {
                 },
             );
         }
-        let (report, _) = self
-            .workspace
-            .prepare_child(
+        let (report, _) = crate::conversation::BoundedOperationFuture::new(Some(self.io), || {
+            self.workspace.prepare_child(
                 self.source,
                 self.cut,
                 self.preparer,
@@ -74,11 +75,37 @@ impl Commands<'_> {
                 &preparation,
                 self.io,
             )
-            .await?;
-        Ok(TaskCommandProgress::Ready(
-            serde_json::to_value(crate::Outcome::Succeeded(report)).map_err(storage)?,
-        ))
+        })?
+        .await?;
+        ready(report)
     }
+
+    // The admitted command's checks and decode run in a frame of their own,
+    // not in the poll frame live under the child's preparation.
+    #[inline(never)]
+    fn admitted_fork(
+        &self,
+        input: &Value,
+        command: &WorkflowCommand,
+        payload: Value,
+    ) -> Result<Box<crate::fork::ForkRequest>> {
+        if *input != serde_json::to_value(self.request).map_err(storage)?
+            || self.request.command.as_ref() != Some(command)
+            || payload != self.request.payload
+        {
+            return Err(Error::Unauthorized(
+                "child preparation differs from its admitted command".into(),
+            ));
+        }
+        serde_json::from_value(payload).map_err(storage)
+    }
+}
+
+#[inline(never)]
+fn ready(report: Box<crate::fork::ForkReport>) -> Result<TaskCommandProgress> {
+    Ok(TaskCommandProgress::Ready(
+        serde_json::to_value(crate::Outcome::Succeeded(*report)).map_err(storage)?,
+    ))
 }
 
 impl TaskCommandHost for Commands<'_> {
@@ -89,7 +116,7 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.run(context, fence, command, payload, false))
+        acyclic_fs::in_heap(|| self.run(context, fence, command, payload, false))
     }
     fn reconcile<'a>(
         &'a self,
@@ -98,7 +125,7 @@ impl TaskCommandHost for Commands<'_> {
         command: WorkflowCommand,
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.run(context, fence, command, payload, true))
+        acyclic_fs::in_heap(|| self.run(context, fence, command, payload, true))
     }
 }
 

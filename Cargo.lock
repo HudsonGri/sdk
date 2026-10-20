@@ -200,6 +200,7 @@ dependencies = [
  "nix 0.31.3",
  "notify",
  "parking_lot",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-reflect",
@@ -346,6 +347,7 @@ dependencies = [
  "keyring",
  "loom",
  "once_cell",
+ "pin-project-lite",
  "proc-macro2",
  "proptest",
  "prost",
@@ -785,6 +787,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-native-runtime",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-trait",
  "axum",
  "base64 0.23.1",
@@ -2931,6 +2934,7 @@ dependencies = [
 name = "graphcoder"
 version = "0.2.0"
 dependencies = [
+ "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-providers",
  "acyclic-stream",
