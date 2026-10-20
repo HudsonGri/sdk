@@ -5,8 +5,11 @@ impl MaterializationJournalStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
 
     #[cfg(not(target_arch = "wasm32"))]
+    // Boxed: the completion holds the record lock, host record and credits
+    // (2.4 KiB), and every layer between the blocking task and the
+    // materializer would otherwise move it through its poll frame.
     type ActionCompletion<'a>
-        = LocalMaterializationActionCompletion
+        = Box<LocalMaterializationActionCompletion>
     where
         Self: 'a;
 
@@ -63,9 +66,10 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                         return Err(NativeTreeMaterializationError::InvalidLayout.into());
                     }
                     drop(current);
+                    // Pays for the completion's box before it is allocated.
                     let body_custody = work.claim(
                         std::mem::size_of::<LocalMaterializationActionCompletion>() as u64,
-                        0,
+                        1,
                         crate::WorkCounters::UNCHARGED,
                     )?;
                     journal.revision = journal
@@ -97,7 +101,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                     )?;
                     drop(paths);
                     let Namespace { admission, .. } = namespace;
-                    Ok(LocalMaterializationActionCompletion {
+                    Ok(Box::new(LocalMaterializationActionCompletion {
                         journal: Some(journal),
                         encoding,
                         encoding_credit,
@@ -106,7 +110,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                         _admission: admission,
                         _body_custody: body_custody,
                         _encoding_allocation: encoding_allocation,
-                    })
+                    }))
                 })
                 .await
         })?

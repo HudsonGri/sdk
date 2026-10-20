@@ -132,7 +132,7 @@ pub(super) fn start_native_mount_prepared_with_meter(
         None => (None, None, None),
     };
     let mut owner = NativeMountSession::new(request, retained_source, destination_custody);
-    owner.driver = driver;
+    owner.driver = driver.map(Box::new);
     owner.destination_guard = destination_guard;
     owner.startup_source_watch = startup_source_watch;
     match result {
