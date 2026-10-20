@@ -141,6 +141,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     remaining(admitted, budget)
                         .map_err(|failure| OperationFailure::new(E::from(failure.error), **work))?;
                     **work = admitted;
+                    // The frame spends one allocation operation and its bytes
+                    // from what the nested publication may use.
+                    publication_budget.allocation_operations -= u64::from(bytes != 0);
                     publication_budget.peak_allocation_bytes -= bytes;
                     Ok(())
                 },
