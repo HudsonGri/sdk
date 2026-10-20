@@ -282,8 +282,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     work,
                 )
             })?;
-            self.read_pinned_io(&reference, maximum_bytes, Some(io))
-                .await?;
+            let path = crate::executor::with_history_io(Some(io), |work| {
+                crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+            })?;
+            let bytes = read_generation(generation, &path, maximum_bytes, Some(io)).await?;
+            crate::executor::with_history_io(Some(io), |work| {
+                reference.descriptor().verify(&bytes, work)
+            })?;
             output.push(reference);
         }
         Ok(output)
