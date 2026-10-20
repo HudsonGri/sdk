@@ -138,7 +138,7 @@ mod batch;
 pub(crate) use batch::PathQueries;
 use batch::*;
 mod api;
-pub(crate) use api::PathBatchMode;
+pub(crate) use api::{PathBatchConfig, PathBatchMode};
 pub use api::{
     lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async,
 };

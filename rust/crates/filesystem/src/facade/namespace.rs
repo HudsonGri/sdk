@@ -297,7 +297,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> W::OwnedOutput<PathBatchLookup> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
-            .lookup_batch_no_follow_with_accounting(paths, false, &mut accounting, cancellation)
+            .lookup_batch_no_follow_with_accounting(
+                paths,
+                crate::kernel::PathBatchMode::NoFollow,
+                &mut accounting,
+                cancellation,
+            )
             .await;
         let work = accounting.spent();
         let result = result.map(|(mut lookup, allocation)| {
@@ -310,7 +315,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(crate) async fn lookup_batch_no_follow_with_accounting(
         &mut self,
         paths: &[NamespacePath],
-        selected_restore: bool,
+        mode: crate::kernel::PathBatchMode,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -320,7 +325,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ),
         FsError,
     > {
-        if selected_restore
+        if matches!(mode, crate::kernel::PathBatchMode::SelectedRestore)
             && (self.mode.access != AccessMode::ReadOnly
                 || self.mode.consistency != ConsistencyMode::Pinned
                 || self.tracks_observations()
@@ -343,11 +348,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     accounting,
                     cancellation,
                     Some(&self.dependencies.data_custody),
-                    if selected_restore {
-                        crate::kernel::PathBatchMode::SelectedRestore
-                    } else {
-                        crate::kernel::PathBatchMode::NoFollow
-                    },
+                    mode,
                 )
                 .await?;
                 return Ok(lookup);
@@ -358,7 +359,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     &self.volume.fs.inner.objects,
                     &self.root,
                     paths,
-                    config,
+                    crate::kernel::PathBatchConfig {
+                        volume: config,
+                        mode,
+                    },
                     accounting,
                     cancellation,
                     Some(&self.dependencies.data_custody),
@@ -417,7 +421,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.objects,
                 &self.base_root,
                 paths,
-                config,
+                crate::kernel::PathBatchConfig {
+                    volume: config,
+                    mode,
+                },
                 accounting,
                 cancellation,
                 Some(&self.dependencies.data_custody),

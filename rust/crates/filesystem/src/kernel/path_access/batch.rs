@@ -187,7 +187,7 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                     if is_root {
                         entries.value[index].record = Some(root);
                         done.value[index] = 1;
-                        if observe {
+                        if observe && !matches!(mode, PathBatchMode::MutationKinds) {
                             let expected =
                                 crate::kernel::probe::capture_file_record_state_with_accounting(
                                     root,
@@ -383,7 +383,10 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                         }
                         let next_depth = depth + 1;
                         if next_depth == paths.get(binding.path_index).depth() {
-                            if observe {
+                            if observe
+                                && !(matches!(mode, PathBatchMode::MutationKinds)
+                                    && record.kind == FileKind::Directory)
+                            {
                                 let expected =
                                 crate::kernel::probe::capture_file_record_state_with_accounting(
                                     record,

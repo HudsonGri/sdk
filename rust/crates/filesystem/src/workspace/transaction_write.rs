@@ -280,7 +280,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         for chunk in paths.chunks(maximum) {
             let (lookup, allocation) = self
                 .checkout
-                .lookup_batch_no_follow_with_accounting(chunk, false, accounting, cancellation)
+                .lookup_batch_no_follow_with_accounting(
+                    chunk,
+                    crate::kernel::PathBatchMode::MutationKinds,
+                    accounting,
+                    cancellation,
+                )
                 .await
                 .map_err(|error| match error {
                     FsError::Path(crate::kernel::PathLookupError::NotDirectory) => {
@@ -629,3 +634,7 @@ mod batch_original;
 #[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_index_properties.rs"]
 mod batch_index_properties;
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_rebase.rs"]
+mod batch_rebase;
