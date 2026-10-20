@@ -427,6 +427,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     #[inline(never)]
     fn report_seed(&self, report: &mut ForkReport) -> Result<Box<ForkSeed>> {
         let preparer = self.preparer;
+        if let Some(io) = self.io {
+            io.box_attempt::<ForkSeed>()?;
+        }
         let mut observer = self.io;
         let mut work = observer
             .as_mut()

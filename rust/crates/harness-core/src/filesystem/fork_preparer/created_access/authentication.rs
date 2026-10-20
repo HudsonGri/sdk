@@ -328,6 +328,7 @@ fn admitted_fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         ));
     }
     let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
+    io.box_attempt::<AdmittedFork>()?;
     Ok(Box::new(AdmittedFork {
         fork,
         maximum,
@@ -352,6 +353,7 @@ fn report_binding(
     drop(canonical);
     drop(hold);
     let binding = seed_digest(&seed, maximum, Some(io))?;
+    io.box_attempt::<ForkSeed>()?;
     Ok((Box::new(seed), canonical_digest, binding))
 }
 
