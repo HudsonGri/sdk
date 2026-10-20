@@ -287,6 +287,7 @@ which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
+acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 proc-macro2 = "=1.0.107"
 syn = { version = "=3.0.6", features = ["full", "visit"] }
@@ -295,7 +296,6 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc"] }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
 rcgen = "0.14.10"
