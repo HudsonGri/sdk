@@ -160,6 +160,8 @@ impl LocalHarness {
             let native_mounts = tools.get("bash", None, None)?.is_some();
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
             #[cfg(feature = "native-execution")]
+            acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+            #[cfg(feature = "native-execution")]
             if native_mounts {
                 workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
                 acyclic_fs::initialize_native_mount_services().map_err(storage)?;
