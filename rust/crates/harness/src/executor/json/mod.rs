@@ -10,7 +10,8 @@ mod identity;
 mod item_budget_tests;
 mod records;
 pub(crate) use identity::{
-    canonical_json_digest, json_byte_length, json_byte_length_at_depth, serialized_json_digest,
+    borrowed_json_digest, canonical_json_digest, json_byte_length, json_byte_length_at_depth,
+    serialized_json_digest,
 };
 
 /// Nesting accepted by saved preparation-record readers.
