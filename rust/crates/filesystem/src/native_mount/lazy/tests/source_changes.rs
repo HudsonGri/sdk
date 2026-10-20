@@ -155,11 +155,22 @@ fn an_open_handle_keeps_its_facts_when_an_ancestor_is_removed_or_replaced()
             assert_eq!(facts.node.logical_bytes, opened.logical_bytes);
         }
         let cancellation = CancellationToken::new();
-        let refused = crate::NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
-            .map_err(|(error, _)| error)?;
+        let refused = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                items_examined: 0,
+                ..crate::performance::BOUNDARY_BUDGET
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
         assert!(handle.lookup_with_meter(&refused).is_err());
+        let funded = crate::NativeMaterializationWork::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
         cancellation.cancel();
-        assert!(handle.lookup_with_meter(&refused).is_err());
+        assert!(handle.lookup_with_meter(&funded).is_err());
     }
     Ok(())
 }
