@@ -65,9 +65,17 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
             .map_err(|error| Error::Storage(error.to_string()))?;
         let host = FilesystemHost::new(fs.clone(), &provider, None)?;
         host.create_volume(&volume).await?;
-        assert_eq!(content_authorities(&fs, &volume).await?.len(), 1);
+        assert_eq!(
+            content_authorities(&fs, &volume)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .len(),
+            1
+        );
         let publication_appends = raw_publication_appends(&fs).await?;
-        retained_authorities = content_authorities(&fs, &volume).await?;
+        retained_authorities = content_authorities(&fs, &volume)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
         // Ordinary, bounded, and original-native publications share the same
         // retained-history contract, including idempotent observation.
         for mode in 0..3 {
