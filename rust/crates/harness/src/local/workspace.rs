@@ -5,6 +5,14 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 mod bootstrap;
+
+/// The lazy native mount that backs a mounted local checkout.
+pub(super) type LocalMount = acyclic_fs::native_mount::LazyMount<
+    LocalAuthorityBackend,
+    LocalObjectBackend,
+    NativeDemandSource,
+    LocalCoreStateStore,
+>;
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
 mod performance_tests;
@@ -41,16 +49,7 @@ pub struct LocalWorkspace {
     pub(super) fresh: bool,
     pub(super) view: View,
     pub(super) mount_directory: PathBuf,
-    pub(super) mounted: Option<
-        Arc<
-            acyclic_fs::native_mount::LazyMount<
-                LocalAuthorityBackend,
-                LocalObjectBackend,
-                NativeDemandSource,
-                LocalCoreStateStore,
-            >,
-        >,
-    >,
+    pub(super) mounted: Option<Arc<LocalMount>>,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
