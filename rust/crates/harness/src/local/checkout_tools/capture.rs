@@ -11,6 +11,7 @@ use std::time::Duration;
 
 mod arrivals;
 mod converge;
+mod mounted;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
@@ -94,22 +95,7 @@ impl CheckoutTools {
     ) -> Result<()> {
         let (physical, view) = selected;
         if let Some(mount) = &physical.mounted {
-            let work = mount.native_work()?;
-            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-            crate::conversation::BoundedOperationFuture::new(Some(&io), || {
-                mount.sync_with_permit(permit, &work, move |_| {
-                    let owner = owner.clone();
-                    async move {
-                        if let Some((owner, settlement)) = owner {
-                            owner.verify(settlement, &mut None).await?;
-                        }
-                        Ok::<(), Error>(())
-                    }
-                })
-            })?
-            .await
-            .map_err(|failure| failure.cause)?;
-            return Ok(());
+            return mounted::sync(mount, permit, owner).await;
         }
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
