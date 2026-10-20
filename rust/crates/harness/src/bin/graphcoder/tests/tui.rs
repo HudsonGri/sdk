@@ -96,7 +96,7 @@ impl Screen {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn three_prompts_in_the_tui_continue_one_conversation() {
+async fn repeated_text_in_the_tui_starts_distinct_turns_in_one_conversation() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -164,6 +164,7 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
             .current_dir(&workspace)
             .env("TERM", "xterm-256color")
             .env("HOME", &home)
+            .env("CODEX_HOME", settings.join(".codex"))
             .env("XDG_DATA_HOME", home.join("data"))
             .stdin(Stdio::from(user.try_clone().unwrap()))
             .stdout(Stdio::from(user.try_clone().unwrap()))
@@ -192,7 +193,7 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
         screen.until("composer", |bytes| {
             find(bytes, "GraphCoder").is_some() && find(bytes, "└").is_some()
         });
-        for (index, prompt) in ["first prompt", "second prompt", "third prompt"]
+        for (index, prompt) in ["first prompt", "first prompt", "third prompt"]
             .into_iter()
             .enumerate()
         {

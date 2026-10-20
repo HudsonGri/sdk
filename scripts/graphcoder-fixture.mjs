@@ -8,9 +8,10 @@ export async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-"));
   const root = join(directory, "workspace"), settings = join(directory, "settings");
   mkdirSync(root); mkdirSync(settings);
-  let fail = false, calls = 0, release, releaseCount, observeCount, countTarget;
+  let fail = false, calls = 0, release, releaseCount, observeCount, observeResponse, countTarget;
   let countBarrier = Promise.resolve();
   const counting = new Promise(resolve => { observeCount = resolve; });
+  const responding = new Promise(resolve => { observeResponse = resolve; });
   let barrier = Promise.resolve();
   const server = createServer(async (request, response) => {
     let body = "";
@@ -31,6 +32,7 @@ export async function fixture() {
     for (const delta of ["graphcoder ", "**test answer**"]) {
       response.write(`data: ${JSON.stringify({ type: "response.output_text.delta", delta })}\n\n`);
     }
+    observeResponse();
     await barrier;
     if (response.destroyed) return;
     const completed = `data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 64, output_tokens: 2 } } })}\n\n`;
@@ -45,7 +47,7 @@ export async function fixture() {
   } }));
   return {
     root, settings, args: ["--workspace", root, "--settings-root", settings, "--model", "scripted/test", "--catalog", catalog],
-    counting,
+    counting, responding,
     holdCount: text => { countTarget = text; countBarrier = new Promise(resolve => { releaseCount = resolve; }); },
     completeCount: () => releaseCount?.(),
     hold: () => { barrier = new Promise(resolve => { release = resolve; }); },

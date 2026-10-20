@@ -25,6 +25,7 @@ pub struct Args {
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
     pub input_format: InputFormat,
+    /// Resume/replay this submission instead of allocating a new launch identity.
     #[arg(long)]
     pub operation: Option<String>,
     #[arg(long)]

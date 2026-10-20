@@ -80,7 +80,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or_default();
     let local = open(&args, credentials).await?;
-    let operation = client::local_identity(&local, args.prompt.as_deref(), operation).await?;
+    let operation = client::local_identity(operation);
     let command = args
         .prompt
         .as_deref()

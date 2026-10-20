@@ -16,6 +16,9 @@ bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
 
 node scripts/test-graphcoder.mjs "$artifact_dir/debug/graphcoder"
+for scenario in kill-mid-turn same-text-twice retry-jsonl; do
+  node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$artifact_dir/debug/graphcoder" "$scenario"
+done
 node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder"
 node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder" interactive
 node scripts/test-graphcoder-pty.mjs "$artifact_dir/debug/graphcoder"

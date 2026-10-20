@@ -255,7 +255,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
             (local, Some(loopback))
         }
     };
-    let operation = client::local_identity(&local, None, None).await.unwrap();
+    let operation = client::local_identity(None);
     let presentation = {
         let local = local.clone();
         async move {
