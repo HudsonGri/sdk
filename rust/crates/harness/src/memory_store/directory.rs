@@ -201,10 +201,10 @@ impl MemoryStore {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
 pub(crate) use page::fuzzing::check as fuzz_memory_directory;
 
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
 mod fuzz_conflicts;
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
 pub(crate) use fuzz_conflicts::check as fuzz_path_conflicts;

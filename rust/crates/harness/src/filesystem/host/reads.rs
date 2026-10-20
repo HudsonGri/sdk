@@ -1,5 +1,4 @@
 use super::*;
-mod media_type;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -316,7 +315,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             (
                 crate::executor::with_history_io(Some(io), |work| {
-                    FileDescriptor::from_bytes(&bytes, media_type::classify(&bytes), work)
+                    FileDescriptor::from_bytes(
+                        &bytes,
+                        crate::conversation::classify_file_media(&bytes),
+                        work,
+                    )
                 })?,
                 stock_string_copy(name, Some(io))?,
             )
@@ -512,9 +515,4 @@ pub(crate) fn file_publication(
     uuid::Uuid::parse_str(reference.version())
         .map(|id| crate::OperationId::from_bytes(*id.as_bytes()))
         .map_err(|_| Error::Storage("file metadata has no publication operation".into()))
-}
-
-#[cfg(feature = "test-support")]
-pub(crate) fn fuzz_classify_media(bytes: &[u8]) -> &'static str {
-    media_type::classify(bytes)
 }
