@@ -39,6 +39,12 @@ pub use sources::CommandSources;
 mod syntax;
 pub use files::*;
 pub use session::CommandSession;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "tui",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use session::ComposerResolver;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -616,6 +622,23 @@ impl CommandCatalog {
                     .filter(|spec| !matches!(spec.action, CommandAction::Tool { .. }))
                     .filter(matches),
             )
+    }
+
+    /// Whether `input` selects a command no declared source file defines. Declared
+    /// project and user sources can never change such a resolution, so capturing
+    /// them would only let unrelated command files block it.
+    #[cfg(feature = "native-execution")]
+    pub(crate) fn selects_sourceless(&self, input: &str, maximum_bytes: u64) -> Result<bool> {
+        Ok(
+            syntax::split(input, maximum_bytes)?.is_some_and(|(name, _)| {
+                self.lookup(name).is_some_and(|spec| {
+                    !matches!(
+                        spec.action,
+                        CommandAction::Prompt { .. } | CommandAction::Skill { .. }
+                    )
+                })
+            }),
+        )
     }
 
     fn lookup(&self, name: &str) -> Option<&CommandSpec> {
