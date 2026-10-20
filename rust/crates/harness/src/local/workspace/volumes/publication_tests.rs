@@ -214,9 +214,11 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        [("scratch", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))].map(
-            |(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source)),
-        ),
+        [
+            ("scratch", Arc::clone(scratch)),
+            ("zzz", Arc::clone(&blocked)),
+        ]
+        .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
     assert_eq!(
         ordered_mounts(&table)?

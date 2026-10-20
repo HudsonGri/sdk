@@ -293,11 +293,10 @@ pub(super) fn create_file(
         unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, meter) };
     #[cfg(unix)]
     let native = acyclic_native_runtime::NativeFile::from_file(file, meter);
-    native
-        .map_err(|(error, file)| {
-            drop(file);
-            receipt.runtime_error(error)
-        })
+    native.map_err(|(error, file)| {
+        drop(file);
+        receipt.runtime_error(error)
+    })
 }
 
 pub(super) fn account_written(

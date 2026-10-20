@@ -10,8 +10,7 @@ use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
 use proptest::test_runner::{Config as PropertyConfig, TestRunner};
 
-#[path = "support/negotiation.rs"]
-mod negotiation;
+use acyclic_harness_tui::fuzzing::negotiation;
 
 struct Size;
 impl Dimensions for Size {

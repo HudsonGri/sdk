@@ -4,7 +4,11 @@ pub(super) mod conflicts;
 use crate::conversation::MAX_PRIVATE_DIRECTORY_PAGE;
 pub(super) use conflicts::paths_conflict;
 
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(
+    test,
+    feature = "test-support",
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 mod page;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) use page::{DirectoryIndex, MemoryStorePage};
@@ -196,3 +200,11 @@ impl MemoryStore {
         Ok(())
     }
 }
+
+#[cfg(feature = "test-support")]
+pub(crate) use page::fuzzing::check as fuzz_memory_directory;
+
+#[cfg(feature = "test-support")]
+mod fuzz_conflicts;
+#[cfg(feature = "test-support")]
+pub(crate) use fuzz_conflicts::check as fuzz_path_conflicts;

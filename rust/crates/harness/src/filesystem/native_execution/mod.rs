@@ -26,7 +26,7 @@ mod journal_allocation;
 mod journal_encoding;
 #[cfg(test)]
 mod journal_properties;
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
 mod journal_verification;
 mod mounted;
 mod preparation;
@@ -332,4 +332,10 @@ where
             }),
         }
     }
+}
+
+/// Checks journal encoding against the independent verification oracle.
+#[cfg(fuzzing)]
+pub fn fuzz_verify_journal(input: &[u8], measure: impl FnOnce(&mut dyn FnMut()) -> u64) -> bool {
+    journal_verification::verify_decode_with(input, measure)
 }

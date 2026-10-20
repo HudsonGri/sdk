@@ -691,3 +691,13 @@ mod checkout_publication;
     not(target_arch = "wasm32")
 ))]
 pub use checkout_publication::CheckoutPublication;
+
+/// Classifies candidate file bytes for the shared media property oracle.
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+pub fn fuzz_classify_media(bytes: &[u8]) -> &'static str {
+    host::fuzz_classify_media(bytes)
+}
+
+/// Checks journal encoding with the independent verification oracle.
+#[cfg(all(fuzzing, feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_execution::fuzz_verify_journal;

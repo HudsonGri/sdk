@@ -1,5 +1,5 @@
 //! Shrinking properties exercise the actual contract append and decision algebra.
-mod common;
+use acyclic_auth::fuzzing::claims as common;
 use acyclic_auth::{authority::*, contract::*, *};
 use common::*;
 use proptest::prelude::*;

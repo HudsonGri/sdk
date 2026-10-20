@@ -153,6 +153,7 @@ base64 = { version = "0.23.1", optional = true }
 crc-fast = { version = "1.10.0", optional = true }
 
 [dev-dependencies]
+acyclic-fs = { path = ".", features = ["fuzzing"] }
 divan.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
@@ -225,7 +226,7 @@ windows = { version = "0.62.2", features = [
 
 [features]
 session = ["distributed", "acyclic-stream/grpc"]
-fuzzing = []
+fuzzing = ["dep:tempfile"]
 model-checking = ["dep:loom"]
 default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs2", "dep:tempfile"]

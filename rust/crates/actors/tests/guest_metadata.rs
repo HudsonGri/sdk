@@ -1,9 +1,8 @@
 //! Downstream metadata construction, immutable fields and validating deserialization.
+use acyclic_actors::fuzzing::metadata as oracle;
 use acyclic_actors::guest::*;
 use proptest::prelude::*;
 use serde_json::json;
-#[path = "support/metadata.rs"]
-mod oracle;
 
 fn caller(value: &str, field: usize, expiry: u64) -> Result<AdmittedCaller, GuestMetadataError> {
     let mut fields = ["a", "o", "p", "c", "i"];

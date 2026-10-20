@@ -546,9 +546,9 @@ pub(super) fn advanced_origin_parent(parent: &LazyWorkspaceState) -> LazyWorkspa
 mod contexts;
 mod freeze;
 mod journal;
+mod log;
 #[cfg(target_os = "linux")]
 mod logical_release;
-mod log;
 mod native;
 mod nodes;
 mod ownership;
