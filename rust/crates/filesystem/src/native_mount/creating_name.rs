@@ -1,4 +1,6 @@
-use super::*;
+use super::MountPath;
+use crate::sync::RwLock;
+use std::sync::TryLockError;
 
 struct RestoreName<'a, B: Copy> {
     slot: &'a RwLock<(MountPath, Option<B>)>,
@@ -67,3 +69,6 @@ pub(super) fn callback_name_matches(path: &MountPath, name: &[u16]) -> bool {
     }
     name.next().is_none()
 }
+
+#[cfg(test)]
+mod tests;

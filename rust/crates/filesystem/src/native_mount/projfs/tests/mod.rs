@@ -7,7 +7,6 @@ mod common;
 use common::*;
 mod command_retirement;
 mod empty_callbacks;
-mod metadata;
 mod metadata_errors;
 mod mutations;
 mod names;

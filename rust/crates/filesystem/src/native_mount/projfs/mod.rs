@@ -24,7 +24,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::sync::{Arc, TryLockError};
+use std::sync::Arc;
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -94,8 +94,7 @@ mod namespace;
 pub(super) use namespace::*;
 mod callbacks;
 use callbacks::*;
-mod creating_name;
-use creating_name::*;
+use super::creating_name::{callback_name_matches, with_creating_name};
 mod ownership;
 use ownership::*;
 mod projector_state;

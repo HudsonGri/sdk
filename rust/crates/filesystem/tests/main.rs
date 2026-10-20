@@ -42,10 +42,6 @@ mod cloud_contract;
 mod native_owner_registry;
 
 #[cfg(feature = "native-mount")]
-#[path = "cases/projfs_names.rs"]
-mod projfs_names;
-
-#[cfg(feature = "native-mount")]
 #[path = "cases/projfs_paths.rs"]
 mod projfs_paths;
 
