@@ -87,7 +87,13 @@ impl Pool {
         }
         match result {
             Ok(ready) => {
-                let installed = self.install(ready)?;
+                // Discovery can race recovery of the previous home. Reuse its
+                // installed link if both handshakes found the same live node.
+                let installed = if self.links.contains_key(&ready.0) {
+                    ready.0
+                } else {
+                    self.install(ready)?
+                };
                 if node.is_empty() && self.home.is_empty() {
                     self.admissions.bind_home(&installed)?;
                     self.home = installed.clone();
@@ -102,7 +108,7 @@ impl Pool {
                 self.pending.extend(
                     self.routes
                         .iter()
-                        .filter(|(_, route)| route.node == installed)
+                        .filter(|(_, route)| route.node == installed && !route.opened)
                         .map(|(id, route)| (*id, route.generation)),
                 );
             }
@@ -124,6 +130,9 @@ impl Pool {
                 // Dropping the owned future cancels connector/credential/Welcome
                 // work immediately; it cannot later publish a Link or failure.
                 self.dials.remove(&node);
+                if node == self.home {
+                    self.reset_home();
+                }
             }
         }
     }
@@ -134,11 +143,19 @@ impl Pool {
             || self.admissions.interested(node)
     }
     fn close_links(&mut self) {
+        self.reset_home();
         self.links.clear();
         self.reads.clear();
         self.dials.clear();
         self.pending.clear();
         self.routes.clear();
+    }
+    pub(super) fn reset_home(&mut self) {
+        self.home.clear();
+        // Pending Opens must discover the same home as newly queued Opens.
+        if let Err(error) = self.admissions.bind_home("") {
+            self.fail(&error);
+        }
     }
     pub(super) fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
         match self.receive(node, value) {
@@ -544,6 +561,14 @@ impl Pool {
         }
     }
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
+        if node == self.home
+            && matches!(
+                error,
+                StreamError::Unavailable | StreamError::InvalidArgument
+            )
+        {
+            self.reset_home();
+        }
         let ids = self
             .routes
             .iter()
