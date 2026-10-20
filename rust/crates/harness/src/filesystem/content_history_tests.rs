@@ -59,7 +59,7 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
     {
         let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path()))
             .await
-            .map_err(map_error)?;
+            .map_err(|error| Error::Storage(error.to_string()))?;
         let host = FilesystemHost::new(fs.clone(), &provider, None)?;
         host.create_volume(&volume).await?;
         // Ordinary, bounded, and original-native publications share the same
@@ -121,17 +121,17 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
             fs.authority()
                 .authorities(64)
                 .await
-                .map_err(map_error)?
+                .map_err(|error| Error::Storage(error.to_string()))?
                 .len(),
             1
         );
         fs.collect_local_garbage(None, &acyclic_fs::CancellationToken::new())
             .await
-            .map_err(map_error)?;
+            .map_err(|error| Error::Storage(error.to_string()))?;
     }
     let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path()))
         .await
-        .map_err(map_error)?;
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let host = FilesystemHost::new(fs.clone(), &provider, None)?;
     for (file, bytes) in files {
         assert_eq!(
@@ -158,7 +158,7 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
         fs.authority()
             .authorities(64)
             .await
-            .map_err(map_error)?
+            .map_err(|error| Error::Storage(error.to_string()))?
             .len(),
         1
     );
