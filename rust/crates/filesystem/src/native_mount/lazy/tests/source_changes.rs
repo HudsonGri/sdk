@@ -131,6 +131,40 @@ fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::err
     Ok(())
 }
 #[test]
+fn an_open_handle_keeps_its_facts_when_an_ancestor_is_removed_or_replaced()
+-> Result<(), Box<dyn std::error::Error>> {
+    for replace in [false, true] {
+        let source = tempfile::tempdir()?;
+        std::fs::create_dir(source.path().join("d"))?;
+        std::fs::write(source.path().join("d/a"), b"short")?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let view = runtime.block_on(mounted_view(source.path(), "unreachable-handle-facts"))?;
+        let handle = view.open_file(&mounted(&["d", "a"]))?;
+        let opened = handle.lookup()?.node;
+        std::fs::rename(source.path().join("d"), source.path().join("saved"))?;
+        if replace {
+            std::fs::write(source.path().join("d"), b"not a directory")?;
+        }
+        let work = crate::NativeMaterializationWork::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &CancellationToken::new(),
+        )
+        .map_err(|(error, _)| error)?;
+        for facts in [handle.lookup()?, handle.lookup_with_meter(&work)?] {
+            assert_eq!(facts.node.file_id, opened.file_id);
+            assert_eq!(facts.node.logical_bytes, opened.logical_bytes);
+        }
+        let cancellation = CancellationToken::new();
+        let refused = crate::NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
+            .map_err(|(error, _)| error)?;
+        assert!(handle.lookup_with_meter(&refused).is_err());
+        cancellation.cancel();
+        assert!(handle.lookup_with_meter(&refused).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn std::error::Error>> {
     use crate::LocalCoreStateStore;
 

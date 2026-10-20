@@ -61,12 +61,27 @@ where
                 if refresh_source && file.is_none() {
                     let mut accounting =
                         crate::kernel::KernelAccounting::native(work, work.cancellation());
-                    if let Some(current) = self
+                    let current = match self
                         .lazy
                         .source_lookup(self.lazy.source_reference(), &self.path, &mut accounting)
                         .await
-                        .map_err(lazy_error)?
-                        .filter(|current| current.file_identity == node.file_identity)
+                    {
+                        Ok(current) => current,
+                        Err(LazyWorkspaceError::NotFound | LazyWorkspaceError::NotDirectory) => {
+                            None
+                        }
+                        Err(LazyWorkspaceError::Demand(DemandError::Io(error)))
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            ) =>
+                        {
+                            None
+                        }
+                        Err(error) => return Err(lazy_error(error)),
+                    };
+                    if let Some(current) =
+                        current.filter(|current| current.file_identity == node.file_identity)
                     {
                         // A path may now name another file. Only refresh facts
                         // when it still names this opened source identity.
