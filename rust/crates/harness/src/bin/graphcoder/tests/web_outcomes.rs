@@ -110,6 +110,9 @@ async fn scenario(case: Case) {
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir_all(settings.join(".codex")).unwrap();
     std::fs::create_dir(settings.join("codex-home")).unwrap();
+    // Windows known-folder discovery verifies these within the fixture profile.
+    std::fs::create_dir_all(settings.join("AppData/Local")).unwrap();
+    std::fs::create_dir_all(settings.join("AppData/Roaming")).unwrap();
     std::fs::write(settings.join(".codex/config.toml"), "").unwrap();
     let catalog = catalog(directory.path(), address);
     let operation = OperationId::new();
