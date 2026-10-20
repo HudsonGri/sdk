@@ -13,6 +13,7 @@ name = "graphcoder"
 path = "../graphcoder.rs"
 
 [dependencies]
+acyclic-fs = { path = "../../../../filesystem", default-features = false }
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 clap.workspace = true
@@ -48,3 +49,8 @@ workspace = true
 
 [dev-dependencies.tempfile]
 version = "3.27.0"
+
+[[test]]
+name = "stack_main"
+path = "tests/stack_main.rs"
+harness = false

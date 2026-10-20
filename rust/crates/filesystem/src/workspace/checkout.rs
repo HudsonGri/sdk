@@ -163,22 +163,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return self
-                .volume
-                .checkout(selector, mode, original, cancellation)
-                .await
-                .map_err(WorkspaceError::from);
+            return crate::heap_future::in_heap_claimed(original, || {
+                self.volume.checkout(selector, mode, original, cancellation)
+            })?
+            .await
+            .map_err(WorkspaceError::from);
         }
-        let opened = self
-            .volume
-            .checkout(selector, mode, accounting.remaining()?, cancellation)
+        // The frame stays reserved while its receipt joins the ledger.
+        let (opened, reservation) =
+            crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
+                self.volume
+                    .checkout(selector, mode, remaining, cancellation)
+            })?
             .await;
-        let (allocations, work, budget, _) = accounting
-            .standalone_parts()
-            .ok_or(crate::WorkError::Overflow)?;
-        let checkout = merge_workspace_backend(opened, work, allocations.live_bytes())?.value;
-        work.verify(budget)?;
-        Ok(checkout)
+        let checkout = (|| {
+            let (allocations, work, budget, _) = accounting
+                .standalone_parts()
+                .ok_or(crate::WorkError::Overflow)?;
+            let checkout = merge_workspace_backend(opened, work, allocations.live_bytes())?.value;
+            work.verify(budget)?;
+            Ok::<_, WorkspaceError>(checkout)
+        })();
+        crate::heap_future::FrameLedger::release_frame(&mut *accounting, reservation)?;
+        checkout
     }
 
     pub(crate) async fn open_checkout(

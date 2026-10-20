@@ -5,7 +5,7 @@ use crate::{
     runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
-use acyclic_fs::{NativeWatch, PublicationPermit};
+use acyclic_fs::{NativeWatch, PublicationPermit, in_heap};
 use acyclic_stream::BoxProviderFuture;
 
 mod capture;
@@ -80,7 +80,10 @@ async fn serialized<T, R>(
     state: &StateArc<AsyncMutex<T>>,
     command: impl AsyncFnOnce(OwnedMutexGuard<T>) -> R,
 ) -> R {
-    command(lock_owned(StateArc::clone(state)).await).await
+    let guard = lock_owned(StateArc::clone(state)).await;
+    // Every serialized checkout command runs in a box: its poll frame is never
+    // reserved in the caller's, whichever tool path reached it.
+    acyclic_fs::in_heap(|| command(guard)).await
 }
 
 impl CheckoutTools {
@@ -105,12 +108,13 @@ impl CheckoutTools {
         {
             let mut state = lock_owned(StateArc::clone(&shared)).await;
             if !state.initialized {
-                let (active, pending) = workspace.selected_view().await?;
+                let (active, pending) = in_heap(|| workspace.selected_view()).await?;
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
-                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
+                let alive = || async { Ok(()) };
+                in_heap(|| reconciliation::recover_pending(&workspace, view, pending, &alive))
                     .await?;
                 state.watcher = if workspace.fresh {
                     Some(capture::Cursor::initial(&workspace, &capture_policy)?)
@@ -192,7 +196,9 @@ impl ToolExecutor for CheckoutTools {
         mut invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
+        // Each command future is built on the heap, so the tool executor's
+        // poll frames hold pointers rather than every branch's state.
+        in_heap(move || async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             let original = context
                 .as_ref()
@@ -202,13 +208,12 @@ impl ToolExecutor for CheckoutTools {
                 return selected.execute(invocation, context).await;
             }
             if !self.selected
-                && let Some(selected) = self
-                    .select(
-                        context
-                            .as_ref()
-                            .ok_or_else(|| Error::Invalid("tool context missing".into()))?,
-                    )
-                    .await?
+                && let Some(selected) = {
+                    let task = context
+                        .as_ref()
+                        .ok_or_else(|| Error::Invalid("tool context missing".into()))?;
+                    in_heap(|| self.select(task)).await?
+                }
             {
                 return selected.execute(invocation, context).await;
             }
@@ -251,85 +256,88 @@ impl ToolExecutor for CheckoutTools {
             };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            let result = serialized(&self.state, async |mut state| {
-                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
-                    Error::Unauthorized("checkout command has no execution owner".into())
-                })?;
-                owner.verify_owner(None)?.await?;
-                let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
-                let view = state
-                    .active
-                    .as_ref()
-                    .unwrap_or_else(|| self.workspace.view());
-                if reconciliation::recover(&workspace, view, &|| async {
-                    owner.verify_owner(None)?.await
-                })
-                .await?
-                {
-                    state.watcher = None;
-                }
-                workspace::volumes::sync(&state.mounts).await?;
-                if let Some(parsed) = fs {
-                    self.fs(parsed, context, &mut state, &workspace).await
-                } else {
-                    let State {
-                        active, watcher, ..
-                    } = &mut *state;
-                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    self.capture(
-                        (&workspace, view),
-                        watcher,
-                        invocation.operation_id,
-                        0,
-                        PublicationPermit::Unrestricted,
-                        Some((
-                            context.task().ordinary_journal_owner::<LocalStream>()?,
-                            false,
-                        )),
-                    )
-                    .await?;
-                    let input =
-                        shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
-                    let files =
-                        output::Output::open(context, Arc::clone(&self.task_files), request)
-                            .await?;
-                    let mounts = Arc::clone(&state.mounts);
-                    let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
-                    let (result, mut state, mut files) =
-                        workspace::volumes::native_scope(&mounts, async |claims| {
-                            let (result, state, files, claims) =
-                                self.shell(input, maximum, state, files, claims).await?;
-                            if !result.as_ref().is_ok_and(|result| {
-                                result.value.get("stop").is_none_or(|stop| {
-                                    stop.is_null() || stop["cleanup_completed"] == true
-                                })
-                            }) {
-                                return Err(Error::Indeterminate(invocation.operation_id));
-                            }
-                            // Verify the journal owner before the scope publishes.
-                            publication.verify(true, &mut None).await?;
-                            Ok(((result, state, files), claims))
+            let result = in_heap(|| {
+                serialized(&self.state, async |mut state| {
+                    let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
+                        Error::Unauthorized("checkout command has no execution owner".into())
+                    })?;
+                    owner.verify_owner(None)?.await?;
+                    let workspace =
+                        in_heap(|| self.selected_workspace(&mut state, owner.as_ref())).await?;
+                    let view = state
+                        .active
+                        .as_ref()
+                        .unwrap_or_else(|| self.workspace.view());
+                    let verify = || async { owner.verify_owner(None)?.await };
+                    if in_heap(|| reconciliation::recover(&workspace, view, &verify)).await? {
+                        state.watcher = None;
+                    }
+                    workspace::volumes::sync(&state.mounts).await?;
+                    if let Some(parsed) = fs {
+                        in_heap(|| self.fs(parsed, context, &mut state, &workspace)).await
+                    } else {
+                        let State {
+                            active, watcher, ..
+                        } = &mut *state;
+                        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+                        let journal = context.task().ordinary_journal_owner::<LocalStream>()?;
+                        in_heap(|| {
+                            self.capture(
+                                (&workspace, view),
+                                watcher,
+                                invocation.operation_id,
+                                0,
+                                PublicationPermit::Unrestricted,
+                                Some((journal, false)),
+                            )
                         })
                         .await?;
-                    let State {
-                        active, watcher, ..
-                    } = &mut *state;
-                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    self.capture(
-                        (&workspace, view),
-                        watcher,
-                        invocation.operation_id,
-                        1,
-                        PublicationPermit::Unrestricted,
-                        Some((Arc::clone(&publication), true)),
-                    )
-                    .await?;
-                    publication.verify(true, &mut None).await?;
-                    if let Ok(result) = &result {
-                        files.finish(result).await?;
+                        let input =
+                            shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
+                        let files =
+                            output::Output::open(context, Arc::clone(&self.task_files), request)
+                                .await?;
+                        let mounts = Arc::clone(&state.mounts);
+                        let publication = context.task().ordinary_journal_owner::<LocalStream>()?;
+                        let (result, mut state, mut files) =
+                            workspace::volumes::native_scope(&mounts, async |claims| {
+                                let (result, state, files, claims) =
+                                    in_heap(|| self.shell(input, maximum, state, files, claims))
+                                        .await?;
+                                if !result.as_ref().is_ok_and(|result| {
+                                    result.value.get("stop").is_none_or(|stop| {
+                                        stop.is_null() || stop["cleanup_completed"] == true
+                                    })
+                                }) {
+                                    return Err(Error::Indeterminate(invocation.operation_id));
+                                }
+                                // Verify the journal owner before the scope publishes.
+                                publication.verify(true, &mut None).await?;
+                                Ok(((result, state, files), claims))
+                            })
+                            .await?;
+                        let State {
+                            active, watcher, ..
+                        } = &mut *state;
+                        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+                        in_heap(|| {
+                            self.capture(
+                                (&workspace, view),
+                                watcher,
+                                invocation.operation_id,
+                                1,
+                                PublicationPermit::Unrestricted,
+                                Some((Arc::clone(&publication), true)),
+                            )
+                        })
+                        .await?;
+                        publication.verify(true, &mut None).await?;
+                        if let Ok(result) = &result {
+                            files.finish(result).await?;
+                        }
+                        result
                     }
-                    result
-                }
+                })
             })
             .await;
             #[cfg(test)]
