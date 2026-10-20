@@ -603,7 +603,7 @@ mod tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pinned_read_tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod content_history_tests;
 
 mod stock_turn;
