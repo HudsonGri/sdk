@@ -10,6 +10,7 @@ const BODY: &str = "exact 東京 \u{10437} 🦀\r\n& source bytes";
 
 #[derive(Clone, Copy)]
 enum Case {
+    AnswerOnly,
     Malformed,
     Http503,
     UnsafeRedirect,
@@ -23,6 +24,7 @@ async fn scenario(case: Case) {
     let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let unsafe_url = format!("http://{}/private", target.local_addr().unwrap());
     let source_url = match case {
+        Case::AnswerOnly => String::new(),
         Case::Malformed => "not-a-url".to_owned(),
         Case::Http503 => format!("http://{address}/unavailable"),
         Case::UnsafeRedirect => format!("http://{address}/unsafe"),
@@ -49,7 +51,12 @@ async fn scenario(case: Case) {
                 assert!(!tools.iter().any(|tool| tool["name"] == "web_search"), "unconfigured search advertised");
                 let results: Vec<_> = body["input"].as_array().unwrap().iter()
                     .filter(|item| item["type"] == "function_call_output").collect();
-                let answer = if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                let first = count.fetch_add(1, Ordering::SeqCst) == 0;
+                let answer = if matches!(case, Case::AnswerOnly) {
+                    assert!(first);
+                    assert!(results.is_empty());
+                    ANSWER.to_owned()
+                } else if first {
                     assert!(results.is_empty());
                     let event = json!({"type":"response.output_item.done","output_index":0,
                         "item":{"type":"function_call","call_id":"actual_fetch","name":"url_fetch",
@@ -60,6 +67,7 @@ async fn scenario(case: Case) {
                     assert_eq!(results[0]["call_id"], "actual_fetch");
                     let value: Value = serde_json::from_str(results[0]["output"].as_str().unwrap()).unwrap();
                     match case {
+                        Case::AnswerOnly => unreachable!("answer-only model requested a tool"),
                         Case::Malformed | Case::Http503 | Case::UnsafeRedirect => {
                             let reason = match case {
                                 Case::Malformed => "fetch URL must use HTTP or HTTPS",
@@ -121,12 +129,18 @@ async fn scenario(case: Case) {
         String::from_utf8_lossy(&output).contains("fixture answer"),
         "{expected_source}"
     );
-    assert_eq!(model_requests.load(Ordering::SeqCst), 2);
+    let expected_requests = if matches!(case, Case::AnswerOnly) {
+        1
+    } else {
+        2
+    };
+    assert_eq!(model_requests.load(Ordering::SeqCst), expected_requests);
     assert_eq!(
         fetch_requests.load(Ordering::SeqCst),
         usize::from(matches!(case, Case::Exact | Case::Redirect))
     );
     let expected_paths: &[&str] = match case {
+        Case::AnswerOnly => &[],
         Case::Malformed => &[],
         Case::Http503 => &["/unavailable"],
         Case::UnsafeRedirect => &["/unsafe"],
@@ -136,7 +150,7 @@ async fn scenario(case: Case) {
     assert_eq!(*http_paths.lock().unwrap(), expected_paths);
     // Reopening the same operation replays the completed turn, including its result.
     execute(&workspace, &catalog, &settings, operation, Mode::Prompt).await;
-    assert_eq!(model_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(model_requests.load(Ordering::SeqCst), expected_requests);
     assert_eq!(
         fetch_requests.load(Ordering::SeqCst),
         usize::from(matches!(case, Case::Exact | Case::Redirect))
@@ -152,6 +166,11 @@ async fn scenario(case: Case) {
     );
     stop.send(()).unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn plain_answer_finishes_without_requesting_a_tool() {
+    scenario(Case::AnswerOnly).await;
 }
 
 #[tokio::test]
