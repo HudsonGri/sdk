@@ -5,7 +5,7 @@ pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod admission_work;
 mod client_views;
 pub use client_views::empty_client_views;
