@@ -6,6 +6,7 @@ release commit.
 
 ## 0.2.0 - Unreleased
 
+- Scope the checkout root witness by a durable volume id (Linux `f_fsid`, Windows volume serial number, macOS device) when reopening incarnation-selected state, reject default-state overlap before publishing checkout metadata, and flush existing Git exclusion rules as well as newly appended rules.
 - Preserve portable Harness execution alongside native adapters: use canonical physical-copy and observation engines, retain original typed error causes, and release failed codec output custody after dropping its payload.
 - Preserve stock tool registry selections when duplicate registration is rejected; multiple explicit immutable revisions require selection and retain their pinned definitions.
 - Add native stock executor and model-provider companions on the existing durable execution loop, retaining original task authority, configured scope attenuation, direct funded SDK request copies and typed native failure custody. The first-party deterministic model provider supplies actual native generation, reconciliation and token-accounting bodies.
