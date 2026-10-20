@@ -172,6 +172,20 @@ async fn file_guidance_and_blocked_exit_survive_live_edits_and_reopen() {
             (prompt, if blocked { 3 } else { 0 }),
         )
         .await;
+        if blocked {
+            for mode in [Mode::Jsonl, Mode::Dumb] {
+                execute_with(
+                    &workspace,
+                    &catalog,
+                    &settings,
+                    operation,
+                    mode,
+                    (prompt, 3),
+                )
+                .await;
+            }
+            assert!(script.lock().unwrap().is_empty());
+        }
     }
     server.abort();
 }
