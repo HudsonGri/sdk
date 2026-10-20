@@ -10,6 +10,7 @@ use acyclic_fs::{
 use std::time::Duration;
 
 mod arrivals;
+mod mounted;
 
 // Exclude owned projections individually below, never their authored siblings.
 const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system"];
@@ -87,22 +88,7 @@ impl CheckoutTools {
     ) -> Result<()> {
         let (physical, view) = selected;
         if let Some(mount) = &physical.mounted {
-            let work = mount.native_work()?;
-            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-            crate::conversation::BoundedOperationFuture::new(Some(&io), || {
-                mount.sync_with_permit(permit, &work, move |_| {
-                    let owner = owner.clone();
-                    async move {
-                        if let Some((owner, settlement)) = owner {
-                            owner.verify(settlement, &mut None).await?;
-                        }
-                        Ok::<(), Error>(())
-                    }
-                })
-            })?
-            .await
-            .map_err(|failure| failure.cause)?;
-            return Ok(());
+            return mounted::sync(mount, permit, owner).await;
         }
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
