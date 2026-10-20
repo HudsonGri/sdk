@@ -1,9 +1,6 @@
 //! Immutable root-preparation inputs in the existing owner volume.
 
-use super::{
-    PiScratchAllocation, PiTaskBinding, pi_owner::PiOwnerConfig, pi_root::PiRootIntent,
-    pi_root_allocation::PiRootAllocation,
-};
+use super::{PiScratchAllocation, PiTaskBinding, pi_owner::PiOwnerConfig, pi_root::PiRootIntent};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::runtime::TaskStateProvider;
@@ -128,18 +125,9 @@ pub(crate) async fn stage_root_command(
     work: &NativeMaterializationWork,
 ) -> Result<(WorkflowCommand, NativeAllocation)> {
     let operation_id = preparation_operation(owner.policy().root_task, work)?;
-    let request_reference = stage_root_request(owner, filesystem, request, work).await?;
-    let schema = PiRootAllocation::schema(&request.binding, work)?;
-    let result_schema = super::pi_root_provider::stage_pi_root_input_with_native_work(
-        owner,
-        filesystem,
-        "allocation-schema",
-        &schema.0,
-        work,
-    )
-    .await?;
-    drop(schema.0);
-    drop(schema.1);
+    validate_request(owner, request, work)?;
+    let ((request_reference, result_schema), input_custody) =
+        super::pi_root_provider::stage_root_input_batch(owner, filesystem, request, work).await?;
     let plan_custody = work.claim(
         (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64,
         0,
@@ -149,8 +137,8 @@ pub(crate) async fn stage_root_command(
         provider: ROOT_ALLOCATION_PROVIDER.to_owned(),
         guarantee: EffectGuarantee::AtMostOnce,
         effect_kind: ROOT_ALLOCATION_EFFECT.to_owned(),
-        request: request_reference.0,
-        result_schema: result_schema.0,
+        request: request_reference,
+        result_schema,
     };
     let mut payload = super::pi_root_provider::stage_pi_root_input_with_native_work(
         owner,
@@ -162,8 +150,7 @@ pub(crate) async fn stage_root_command(
     .await?;
     drop(plan);
     drop(plan_custody);
-    drop(request_reference.1);
-    drop(result_schema.1);
+    drop(input_custody);
     let retained = payload
         .1
         .bytes()
@@ -239,10 +226,9 @@ pub(crate) async fn stage_root_request(
     work: &NativeMaterializationWork,
 ) -> Result<(FileRef, NativeAllocation)> {
     validate_request(owner, request, work)?;
-    super::pi_root_provider::stage_pi_root_input_with_native_work(
-        owner, filesystem, "root", request, work,
-    )
-    .await
+    let ((root, _schema), custody) =
+        super::pi_root_provider::stage_root_input_batch(owner, filesystem, request, work).await?;
+    Ok((root, custody))
 }
 
 fn invalid(reason: &'static str) -> Error {

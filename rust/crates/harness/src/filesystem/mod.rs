@@ -40,6 +40,7 @@ use std::{collections::BTreeMap, future::Future, sync::Arc};
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
 mod content_publisher;
+pub use host::ContentUpload;
 pub use content_publisher::FilesystemContentPublisher;
 
 mod execution_journal;

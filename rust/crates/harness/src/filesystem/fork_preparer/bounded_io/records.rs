@@ -163,6 +163,20 @@ impl UploadRecord for FileRef {
         FileRef::logical_owned_bytes(self)
     }
 }
+impl UploadRecord for Vec<FileRef> {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        let overflow = || Error::Invalid("upload batch ownership overflow".into());
+        let slots = self
+            .capacity()
+            .checked_mul(size_of::<FileRef>())
+            .ok_or_else(overflow)? as u64;
+        self.iter().try_fold(slots, |total, file| {
+            total
+                .checked_add(file.logical_owned_bytes()?)
+                .ok_or_else(overflow)
+        })
+    }
+}
 impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.0

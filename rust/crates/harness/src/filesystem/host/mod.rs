@@ -95,6 +95,8 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 mod content;
+mod content_batch;
+pub use content_batch::ContentUpload;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod family;
 mod keys;

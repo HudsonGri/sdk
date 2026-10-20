@@ -66,7 +66,7 @@ use inputs::{
 };
 pub(crate) use inputs::{
     load_original_preparation_with_native_work, observe_pi_input, stage_pi_input,
-    stage_pi_operator_input, stage_pi_root_input_with_native_work,
+    stage_pi_operator_input, stage_pi_root_input_with_native_work, stage_root_input_batch,
 };
 pub(crate) use preparation::bind_root_output_context;
 pub(crate) use sources::{

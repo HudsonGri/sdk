@@ -216,6 +216,77 @@ pub(crate) async fn stage_pi_root_input_with_native_work<T: Serialize + Sync>(
     .await
 }
 
+fn root_batch_key(
+    owner: &PiOwnerConfig,
+    work: &NativeMaterializationWork,
+) -> Result<(IdempotencyKey, NativeAllocation)> {
+    let key = work.display(&format_args!(
+        "acyclic.pi/root-inputs/{}",
+        owner.policy().root_task
+    ))?;
+    Ok((IdempotencyKey::new(key.0)?, key.1))
+}
+
+/// The independent request and schema share one durable generation and pin.
+pub(crate) async fn stage_root_input_batch(
+    owner: &PiOwnerConfig,
+    filesystem: &Host,
+    request: &PiRootRequest,
+    work: &NativeMaterializationWork,
+) -> Result<((FileRef, FileRef), NativeAllocation)> {
+    let schema = PiRootAllocation::schema(&request.binding, work)?;
+    let request_bytes = guarded_pi_bytes(request, maximum(owner), work)?;
+    let schema_bytes = guarded_pi_bytes(&schema.0, maximum(owner), work)?;
+    let root = root_coordinates(owner, "root", work)?;
+    let schema = root_coordinates(owner, "allocation-schema", work)?;
+    let key = root_batch_key(owner, work)?;
+    let grant = write_grant(owner, work)?;
+    let io = PreparationIo::from_native_work(work)?;
+    let files = [
+        acyclic_harness::filesystem::ContentUpload {
+            path: &root.path.0,
+            bytes: &request_bytes.0,
+            media_type: root_media("root")?,
+            display_name: &root.display_name.0,
+        },
+        acyclic_harness::filesystem::ContentUpload {
+            path: &schema.path.0,
+            bytes: &schema_bytes.0,
+            media_type: root_media("allocation-schema")?,
+            display_name: &schema.display_name.0,
+        },
+    ];
+    let mut references = filesystem
+        .put_content_batch(
+            &owner.policy().journal,
+            &grant.0,
+            &files,
+            maximum(owner),
+            &key.0,
+            &io,
+        )
+        .await?;
+    let schema_reference = references.pop().ok_or_else(|| Error::NativeBoundary {
+        code: ErrorCode::Storage,
+        reason: "root input batch omitted its schema",
+    })?;
+    let root_reference = references.pop().ok_or_else(|| Error::NativeBoundary {
+        code: ErrorCode::Storage,
+        reason: "root input batch omitted its request",
+    })?;
+    validate_input(owner, &root_reference, &root, root_media("root")?)?;
+    validate_input(
+        owner,
+        &schema_reference,
+        &schema,
+        root_media("allocation-schema")?,
+    )?;
+    Ok((
+        (root_reference, schema_reference),
+        acyclic_harness::store::HistoryWork::new(io).into_custody()?,
+    ))
+}
+
 pub(super) async fn observe_pi_input_at(
     owner: &PiOwnerConfig,
     filesystem: &Host,
@@ -348,25 +419,48 @@ pub(crate) async fn load_original_preparation_with_native_work(
         reason: "original root preparation upload operation is absent",
     };
     let grant = write_grant(owner, work)?;
-    let mut files = [None, None, None];
-    for (slot, name) in files
-        .iter_mut()
-        .zip(["preparation", "root", "allocation-schema"])
-    {
-        let reference = observe_pi_input_at(
-            owner,
-            filesystem,
-            root_coordinates(owner, name, work)?,
-            root_media(name)?,
+    let mut payload = observe_pi_input_at(
+        owner,
+        filesystem,
+        root_coordinates(owner, "preparation", work)?,
+        root_media("preparation")?,
+        &grant.0,
+        work,
+    )
+    .await?
+    .ok_or_else(missing)?;
+    let io = PreparationIo::from_native_work(work)?;
+    let key = root_batch_key(owner, work)?;
+    let mut files = filesystem
+        .content_batch_for_operation(
+            &owner.policy().journal,
             &grant.0,
-            work,
+            &key.0,
+            maximum(owner),
+            &io,
         )
         .await?
         .ok_or_else(missing)?;
-        *slot = Some(reference);
+    if files.len() != 2 {
+        return Err(missing());
     }
-    let [mut payload, root, schema_reference] =
-        files.map(|file| file.expect("three original inputs"));
+    let schema_reference = files.pop().ok_or_else(missing)?;
+    let root = files.pop().ok_or_else(missing)?;
+    validate_input(
+        owner,
+        &root,
+        &root_coordinates(owner, "root", work)?,
+        root_media("root")?,
+    )?;
+    validate_input(
+        owner,
+        &schema_reference,
+        &root_coordinates(owner, "allocation-schema", work)?,
+        root_media("allocation-schema")?,
+    )?;
+    payload
+        .1
+        .absorb(&mut acyclic_harness::store::HistoryWork::new(io).into_custody()?)?;
     let mut plan = read_root_artifact_with_native_work::<
         acyclic_harness::effect_host::TaskEffectPlan,
     >(owner, &context, &payload.0, work)
@@ -374,8 +468,8 @@ pub(crate) async fn load_original_preparation_with_native_work(
     if plan.0.provider != ROOT_ALLOCATION_PROVIDER
         || plan.0.effect_kind != ROOT_ALLOCATION_EFFECT
         || plan.0.guarantee != EffectGuarantee::AtMostOnce
-        || plan.0.request != root.0
-        || plan.0.result_schema != schema_reference.0
+        || plan.0.request != root
+        || plan.0.result_schema != schema_reference
     {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
@@ -383,8 +477,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
         });
     }
     let mut request =
-        read_root_artifact_with_native_work::<PiRootRequest>(owner, &context, &root.0, work)
-            .await?;
+        read_root_artifact_with_native_work::<PiRootRequest>(owner, &context, &root, work).await?;
     if &request.0.binding != expected_binding || &request.0.root != expected_root {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
@@ -394,7 +487,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     let schema = read_root_artifact_with_native_work::<serde_json::Value>(
         owner,
         &context,
-        &schema_reference.0,
+        &schema_reference,
         work,
     )
     .await?;
