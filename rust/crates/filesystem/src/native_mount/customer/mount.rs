@@ -190,34 +190,46 @@ where
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )?;
-        let cancellation = work.cancellation();
         if let Some(guard) = options.callback_guard.as_ref() {
             let check = guard.check(&work)?;
             crate::heap_future::in_heap_claimed(&work, || check)?.await?;
         }
         let destination = work.path(destination.as_ref(), None)?;
-        let destination_custody = destination.1;
-        let destination = destination.0;
+        // The checkout and its moved copies live only in the source frame,
+        // which has completed before the native session starts below it.
+        let source =
+            crate::heap_future::in_heap_claimed(&work, || self.mount_source(&options, &work))?
+                .await?;
+        self.start_mount(source, destination, &options, &work)
+    }
+
+    /// Opens the selected checkout root as the mount's callback source.
+    async fn mount_source(
+        &self,
+        options: &MountOptions,
+        work: &NativeMaterializationWork,
+    ) -> Result<Arc<CheckoutMountSource<A, O>>, MountLifecycleError> {
+        let cancellation = work.cancellation();
         let mode = if options.writable {
             CheckoutMode::tracking_transaction()
         } else {
             CheckoutMode::read_only_pinned()
         };
-        let mut checkout = crate::heap_future::in_heap_claimed(&work, || {
-            self.checkout(GenerationSelector::Head, mode, &work, cancellation)
+        let mut checkout = crate::heap_future::in_heap_claimed(work, || {
+            self.checkout(GenerationSelector::Head, mode, work, cancellation)
         })?
         .await?;
         let config = checkout.volume_config();
         let root = crate::workspace::customer_path_with_accounting(
             &options.subdirectory,
             config,
-            &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+            &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
             cancellation,
         )?;
         let root_custody = root.1;
         let root = root.0;
-        let selected = crate::heap_future::in_heap_claimed(&work, || {
-            checkout.lookup_no_follow(&root, &work, cancellation)
+        let selected = crate::heap_future::in_heap_claimed(work, || {
+            checkout.lookup_no_follow(&root, work, cancellation)
         })?
         .await
         .map_err(WorkspaceError::from)?
@@ -226,10 +238,23 @@ where
         if selected.kind != FileKind::Directory {
             return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
         }
-        let source = options::checkout_source(checkout, (root, root_custody), &options, &work)?;
+        options::checkout_source(checkout, (root, root_custody), options, work)
+    }
+
+    /// Starts the native session in a frame of its own. The ProjFS start
+    /// materializes the root through callbacks on this thread, beneath it.
+    #[inline(never)]
+    fn start_mount(
+        &self,
+        source: Arc<CheckoutMountSource<A, O>>,
+        destination: (PathBuf, NativeAllocation),
+        options: &MountOptions,
+        work: &NativeMaterializationWork,
+    ) -> Result<Mount<A, O>, MountLifecycleError> {
+        let (destination, destination_custody) = destination;
         let session_destination = work.path(&destination, None)?;
         let prepared =
-            super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;
+            super::super::prepare_native_mount_start(work).map_err(NativeMountError::from)?;
         let session = prepared.start(
             NativeMountRequest {
                 mount_id: MountId::new(),
@@ -238,7 +263,7 @@ where
                 writable: options.writable,
             },
             Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
-            &work,
+            work,
             Some(session_destination.1),
         )?;
         Ok(Mount {

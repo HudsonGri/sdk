@@ -381,7 +381,9 @@ pub(crate) fn qualify() {
             );
             if case == "spawn" {
                 assert_eq!(code, 0, "spawn: real child operation did not complete");
-                let outputs = tool_outputs(requests.last().expect("spawn result request"));
+                // The scripted call is turn 0, so its result is in request 1;
+                // later requests may follow child notifications.
+                let outputs = tool_outputs(requests.get(1).expect("spawn result request"));
                 assert_eq!(outputs.last(), Some(&json!({"agent":"kid"})));
             } else if matches!(case.as_str(), "send" | "wait" | "archive") {
                 assert_eq!(code, 0, "{case}: real child operation did not complete");
@@ -390,7 +392,7 @@ pub(crate) fn qualify() {
                     "archive" => json!({"agent":"kid"}),
                     _ => serde_json::Value::Null,
                 };
-                let outputs = tool_outputs(requests.last().expect("child result request"));
+                let outputs = tool_outputs(requests.get(1).expect("child result request"));
                 let output = outputs.last().expect("child result reached model");
                 if case == "wait" {
                     assert_eq!(output["agents"][0]["reference"], "kid", "{output}");
@@ -757,7 +759,12 @@ fn tool_result_succeeded(turn: &serde_json::Value, output: &serde_json::Value) -
                     matches!(result, O::Filesystem(F::Forked { workspace_id })
                         if workspace_id.into_bytes() != [0; 16])
                 }
-                "switch" | "stash" | "reset" | "add" => result == O::NoOp,
+                // A transition that moves the tree reports the applied tree;
+                // one that leaves it unchanged reports no filesystem effect.
+                "switch" | "stash" => {
+                    result == O::NoOp || matches!(result, O::Filesystem(F::Applied { .. }))
+                }
+                "reset" | "add" => result == O::NoOp,
                 "rev-parse" | "symbolic-ref" | "merge-base" => {
                     matches!(&result, O::Text(text) if !text.is_empty())
                 }
