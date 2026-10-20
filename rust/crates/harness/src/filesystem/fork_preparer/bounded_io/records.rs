@@ -4,6 +4,9 @@ use crate::executor::json::{JsonValueSchema as Schema, JsonValueShape};
 use std::mem::size_of;
 
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
+    fn diagnostic_source_bytes(shape: JsonValueShape) -> u64 {
+        shape.input_bytes()
+    }
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         Ok(None)
     }
@@ -15,6 +18,9 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
     }
     fn json_value_schema() -> &'static Schema {
         Schema::None
+    }
+    fn container_collection_slots() -> bool {
+        false
     }
     fn decode_owned_allowance(
         shape: JsonValueShape,
@@ -39,8 +45,20 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
         let typed = if Self::json_value_schema() == Schema::Root {
             Some(0)
         } else {
-            nodes
-                .checked_mul(Self::maximum_slot_bytes())
+            let slots = if Self::container_collection_slots() && !shape.unresolved_raw() {
+                shape.lexical_containers().map(|containers| {
+                    let content = preparation_content_slot_bytes();
+                    nodes.checked_mul(content).and_then(|buffering| {
+                        containers
+                            .checked_mul(Self::maximum_slot_bytes() - content)
+                            .and_then(|typed| buffering.checked_add(typed))
+                    })
+                })
+            } else {
+                None
+            };
+            slots
+                .unwrap_or_else(|| nodes.checked_mul(Self::maximum_slot_bytes()))
                 .and_then(|bytes| bytes.checked_mul(8))
                 .and_then(|bytes| {
                     input
@@ -115,11 +133,15 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
     .into_iter()
     .max()
     .unwrap_or(0) as u64;
+    typed + preparation_content_slot_bytes()
+}
+
+fn preparation_content_slot_bytes() -> u64 {
     let content = size_of::<serde::__private229::de::Content<'static>>().max(size_of::<(
         serde::__private229::de::Content<'static>,
         serde::__private229::de::Content<'static>,
     )>()) as u64;
-    typed + 2 * 5 * content
+    2 * 5 * content
 }
 
 macro_rules! records {
@@ -130,9 +152,67 @@ records!(
     crate::executor::ResponseProjection => ResponseProjection, crate::model::ModelEvent => ModelEvent,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
     crate::fork::InheritedConversationPrefix => None, crate::core::ExtensionConfiguration => None,
-    FileRef => None, Vec<crate::conversation::Attachment> => None, crate::workflow::WorkflowRecord => WorkflowRecord,
+    FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
+impl PreparationRecord for crate::workflow::WorkflowRecord {
+    fn diagnostic_source_bytes(shape: JsonValueShape) -> u64 {
+        // The closed workflow envelope's Value fields accept any admitted
+        // JSON tree. Only typed metadata can render unexpected string data.
+        shape.typed_diagnostic_source_bytes()
+    }
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        use crate::executor::json::json_value_retained_owned_bytes as value_bytes;
+        use crate::workflow::{MachineStatus, WorkflowCommand};
+        // Decode admission covers transient serde buffering. Once decoding has
+        // completed, retain only the resident DTO capacities, including sparse
+        // BTreeMap nodes in its arbitrary JSON values.
+        let overflow = || decode_allowance_error("workflow capacity inventory overflows", None);
+        let mut bytes = (size_of::<Self>() as u64)
+            .checked_add(self.idempotency_key.0.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(self.prior.machine.name.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(self.prior.machine.version.capacity() as u64))
+            .ok_or_else(overflow)?;
+        for value in [&self.prior.state, &self.input, &self.transition.state] {
+            bytes = bytes
+                .checked_add(value_bytes(value)?)
+                .ok_or_else(overflow)?;
+        }
+        bytes = bytes
+            .checked_add(
+                self.transition
+                    .commands
+                    .capacity()
+                    .checked_mul(size_of::<WorkflowCommand>())
+                    .ok_or_else(overflow)? as u64,
+            )
+            .ok_or_else(overflow)?;
+        for command in &self.transition.commands {
+            let payload = command.payload.logical_owned_bytes()?;
+            bytes = bytes
+                .checked_add(command.kind.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(payload))
+                .ok_or_else(overflow)?;
+        }
+        let status = match &self.transition.status {
+            MachineStatus::Suspended => 0,
+            MachineStatus::Completed { value } => value_bytes(value)?,
+            MachineStatus::Failed { message } => message.capacity() as u64,
+        };
+        Ok(Some(bytes.checked_add(status).ok_or_else(overflow)?))
+    }
+    fn json_value_schema() -> &'static Schema {
+        Schema::WorkflowRecord
+    }
+    fn container_collection_slots() -> bool {
+        // WorkflowCommand and its FileRef are object-shaped; every other
+        // collection is a Value tree. Keep Content buffering on every lexical
+        // item and the separate Value/string allowance, while charging large
+        // typed slots only at parsed object/array openings. Resident values and
+        // unresolved RawValue shapes retain the conservative item bound.
+        true
+    }
+}
 impl PreparationRecord for crate::Outcome<serde_json::Value> {
     fn maximum_slot_bytes() -> u64 {
         [

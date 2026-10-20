@@ -5,6 +5,254 @@ use crate::filesystem::workspace_ref;
 use acyclic_fs::Fs;
 
 #[test]
+fn workflow_value_payloads_do_not_reserve_typed_metadata_diagnostics() -> Result<()> {
+    use crate::workflow::{
+        MachineCheckpoint, MachineIdentity, MachineStatus, MachineTransition, WorkflowRecord,
+    };
+    let mut record = WorkflowRecord {
+        operation_id: crate::OperationId::from_bytes([5; 16]),
+        idempotency_key: IdempotencyKey::new("workflow-value-diagnostics")?,
+        prior: MachineCheckpoint {
+            machine: MachineIdentity {
+                name: "test.diagnostics".into(),
+                version: "1".into(),
+                digest: [1; 32],
+            },
+            revision: 0,
+            state: serde_json::Value::Null,
+        },
+        input: serde_json::json!({"body": "q".repeat(128 * 1024), "escaped": "\"\\".repeat(1024)}),
+        transition: MachineTransition {
+            state: serde_json::json!({"reply": "q".repeat(128 * 1024)}),
+            commands: vec![],
+            status: MachineStatus::Suspended,
+        },
+    };
+    for status in [
+        MachineStatus::Suspended,
+        MachineStatus::Completed {
+            value: serde_json::json!({"body": "q".repeat(128 * 1024)}),
+        },
+        MachineStatus::Failed {
+            message: "failed".into(),
+        },
+    ] {
+        record.transition.status = status;
+        let mut wire =
+            serde_json::to_value(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        for malformed in [false, true] {
+            if malformed {
+                wire.as_object_mut()
+                    .expect("record object")
+                    .insert("unexpected\\\"".repeat(4096), serde_json::Value::Null);
+            }
+            let bytes =
+                serde_json::to_vec(&wire).map_err(|error| Error::Invalid(error.to_string()))?;
+            let native = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+                &CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = native.live_allocation_bytes();
+            let io = PreparationIo::from_native_work(&native)?;
+            let mut decoded = None;
+            let physical = acyclic_test_support::measure(|| {
+                decoded = Some(io.decode(
+                    std::marker::PhantomData::<WorkflowRecord>,
+                    &bytes,
+                    crate::wire::ErrorCode::Storage,
+                ));
+            });
+            let decoded = decoded.expect("decoder ran");
+            if malformed {
+                assert_eq!(
+                    decoded
+                        .as_ref()
+                        .err()
+                        .expect("unknown metadata rejected")
+                        .code(),
+                    crate::wire::ErrorCode::Storage
+                );
+            } else {
+                assert_eq!(decoded.as_ref().expect("valid workflow").0, record);
+            }
+            assert!(physical.count_total > 0);
+            assert!(
+                physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+                "physical={physical:?}; receipt={:?}",
+                native.receipt()
+            );
+            drop(decoded);
+            drop(io);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<()> {
+    use crate::conversation::FileDescriptor;
+    use crate::workflow::{
+        MachineCheckpoint, MachineIdentity, MachineStatus, MachineTransition, WorkflowCommand,
+        WorkflowRecord,
+    };
+    let payload = FileRef::new(
+        VolumeRef::new(
+            crate::resources::ProviderRef::new(
+                "workflow-codec".into(),
+                "filesystem".into(),
+                "2".into(),
+                &mut None,
+            )?,
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([4; 16])),
+            &mut None,
+        )?,
+        "commands/input.json".into(),
+        "immutable-version".into(),
+        FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+        "input.json".into(),
+        &mut None,
+    )?;
+    for count in [1, 2, 4, 8, 16] {
+        let record = WorkflowRecord {
+            operation_id: crate::OperationId::from_bytes([5; 16]),
+            idempotency_key: IdempotencyKey::new("workflow-codec")?,
+            prior: MachineCheckpoint {
+                machine: MachineIdentity {
+                    name: "test.codec".into(),
+                    version: "1".into(),
+                    digest: [1; 32],
+                },
+                revision: 0,
+                state: serde_json::json!({"text": "x".repeat(1024), "scalars": [1, 2, 3, 4]}),
+            },
+            input: serde_json::json!({"nested": [{"value": true}]}),
+            transition: MachineTransition {
+                state: serde_json::json!({"ready": true}),
+                commands: (0..count)
+                    .map(|id| WorkflowCommand {
+                        operation_id: crate::OperationId::from_bytes([id; 16]),
+                        kind: "test.command".into(),
+                        payload: payload.clone(),
+                    })
+                    .collect(),
+                status: match count {
+                    2 => MachineStatus::Completed {
+                        value: serde_json::json!({"result": ["done", {"nested": true}]}),
+                    },
+                    4 => MachineStatus::Failed {
+                        message: "failed".repeat(20),
+                    },
+                    _ => MachineStatus::Suspended,
+                },
+            },
+        };
+        let bytes =
+            serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        let native = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = native.live_allocation_bytes();
+        let io = PreparationIo::from_native_work(&native)?;
+        // A resident Value has no parsed-container census. Its conservative
+        // fallback must still cover actual typed decoding and release custody.
+        if count == 1 {
+            let value =
+                serde_json::to_value(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+            let mut decoded = None;
+            let physical = acyclic_test_support::measure(|| {
+                decoded = Some(io.value_decode_preparation::<WorkflowRecord>(
+                    &value,
+                    crate::wire::ErrorCode::Storage,
+                ));
+            });
+            let (actual, custody) = decoded.expect("resident decoder ran")?;
+            assert_eq!(actual, record);
+            assert!(physical.count_total > 0);
+            assert!(physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline);
+            drop(actual);
+            drop(custody);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
+        let mut decoded = None;
+        let physical = acyclic_test_support::measure(|| {
+            decoded = Some(io.decode(
+                std::marker::PhantomData::<WorkflowRecord>,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            ));
+        });
+        let (actual, custody) = decoded.expect("decoder ran")?;
+        assert_eq!(actual, record);
+        assert!(
+            physical.bytes_current <= custody.bytes() as i64,
+            "resident physical={physical:?}; custody={}",
+            custody.bytes()
+        );
+        assert!(physical.count_total > 0, "allocation observer is active");
+        assert!(
+            physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+            "physical={physical:?}; receipt={:?}",
+            native.receipt()
+        );
+        drop(actual);
+        drop(custody);
+        if count == 1 {
+            // Replay retains several resident records simultaneously. Serde's
+            // transient buffering allowance must not accumulate with them.
+            let mut page = Vec::with_capacity(16);
+            let mut result = Ok(());
+            let physical = acyclic_test_support::measure(|| {
+                result = (|| -> Result<()> {
+                    for _ in 0..16 {
+                        page.push(io.decode(
+                            std::marker::PhantomData::<WorkflowRecord>,
+                            &bytes,
+                            crate::wire::ErrorCode::Storage,
+                        )?);
+                    }
+                    Ok(())
+                })();
+            });
+            result?;
+            assert_eq!(page.len(), 16);
+            assert!(physical.bytes_current <= native.live_allocation_bytes() as i64);
+            drop(page);
+
+            // A flat Value array has many scalar entries and only one typed
+            // container. Keep serde buffering for all entries without charging
+            // each boolean as a possible WorkflowCommand or FileRef.
+            let mut scalars = record.clone();
+            scalars.input = serde_json::json!({"scalars": vec![true; 1024]});
+            let bytes =
+                serde_json::to_vec(&scalars).map_err(|error| Error::Invalid(error.to_string()))?;
+            let mut decoded = None;
+            let physical = acyclic_test_support::measure(|| {
+                decoded = Some(io.decode(
+                    std::marker::PhantomData::<WorkflowRecord>,
+                    &bytes,
+                    crate::wire::ErrorCode::Storage,
+                ));
+            });
+            let (actual, custody) = decoded.expect("scalar array decoder ran")?;
+            assert_eq!(actual, scalars);
+            assert!(physical.bytes_current <= custody.bytes() as i64);
+            assert!(physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline);
+            drop(actual);
+            drop(custody);
+        }
+        drop(io);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
+#[test]
 fn denied_vector_growth_does_not_retain_storage() -> Result<()> {
     let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
     budget.bytes_copied = 0;
