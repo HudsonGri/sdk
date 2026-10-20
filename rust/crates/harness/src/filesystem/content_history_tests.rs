@@ -136,6 +136,10 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
         .map_err(|error| Error::Storage(error.to_string()))?;
     let host = FilesystemHost::new(fs.clone(), &provider, None)?;
     for (file, bytes) in files {
+        let range = acyclic_fs::ByteRange {
+            offset: 1,
+            length: 4,
+        };
         assert_eq!(
             host.read_content(&file, &read, 1024, None)
                 .await
@@ -144,6 +148,10 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
                 )))?
                 .as_ref(),
             bytes.as_bytes()
+        );
+        assert_eq!(
+            host.read_pinned_range(&file, range, None).await?.as_ref(),
+            &bytes.as_bytes()[1..5]
         );
         let mut allowance = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
         allowance.authority_records_appended = 0;
@@ -163,6 +171,27 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
             bytes.as_bytes()
         );
         assert_eq!(native.receipt().authority_records_appended, 0);
+        assert_eq!(
+            host.read_pinned_range(&file, range, Some(&io))
+                .await?
+                .as_ref(),
+            &bytes.as_bytes()[1..5]
+        );
+        assert_eq!(native.receipt().authority_records_appended, 0);
+        let owned = PreparationIo::from_budget(allowance, &acyclic_fs::CancellationToken::new())?;
+        assert_eq!(
+            host.read_content(&file, &read, 1024, Some(&owned))
+                .await?
+                .as_ref(),
+            bytes.as_bytes()
+        );
+        assert_eq!(
+            host.read_pinned_range(&file, range, Some(&owned))
+                .await?
+                .as_ref(),
+            &bytes.as_bytes()[1..5]
+        );
+        assert_eq!(owned.receipt().authority_records_appended, 0);
     }
     assert_eq!(
         content_authorities(&fs, &volume)
