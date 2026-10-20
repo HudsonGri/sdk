@@ -89,28 +89,38 @@ impl Pool {
             Ok(ready) => {
                 // Discovery can race recovery of the previous home. Reuse its
                 // installed link if both handshakes found the same live node.
-                let installed = if self.links.contains_key(&ready.0) {
+                let reused = self.links.contains_key(&ready.0);
+                let installed = if reused {
                     ready.0
                 } else {
                     self.install(ready)?
                 };
+                let mut bound = Vec::new();
                 if node.is_empty() && self.home.is_empty() {
                     self.admissions.bind_home(&installed)?;
                     self.home = installed.clone();
-                    for route in self
+                    for (id, route) in self
                         .routes
-                        .values_mut()
-                        .filter(|route| route.node.is_empty())
+                        .iter_mut()
+                        .filter(|(_, route)| route.node.is_empty())
                     {
                         route.node = installed.clone();
+                        bound.push((*id, route.generation));
                     }
                 }
-                self.pending.extend(
-                    self.routes
-                        .iter()
-                        .filter(|(_, route)| route.node == installed && !route.opened)
-                        .map(|(id, route)| (*id, route.generation)),
-                );
+                if reused {
+                    // Routes already on the reused link were queued when it was
+                    // installed. A second same-generation upsert is a protocol
+                    // error that would end the whole session.
+                    self.pending.extend(bound);
+                } else {
+                    self.pending.extend(
+                        self.routes
+                            .iter()
+                            .filter(|(_, route)| route.node == installed)
+                            .map(|(id, route)| (*id, route.generation)),
+                    );
+                }
             }
             Err(error) => self.fail_node(node, &error),
         }
@@ -151,6 +161,10 @@ impl Pool {
         self.routes.clear();
     }
     pub(super) fn reset_home(&mut self) {
+        // Admissions mirror `home`; an empty home has nothing to rebind.
+        if self.home.is_empty() {
+            return;
+        }
         self.home.clear();
         // Pending Opens must discover the same home as newly queued Opens.
         if let Err(error) = self.admissions.bind_home("") {

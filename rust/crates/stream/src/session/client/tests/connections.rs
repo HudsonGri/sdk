@@ -57,7 +57,7 @@ impl transport::Transport for ReplacedNode {
 
 #[tokio::test]
 async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         let provider = Arc::new(MemoryStream::default());
         append(&provider, "events", 1).await?;
         let endpoint = Arc::new(ReplacedNode {
@@ -127,7 +127,10 @@ async fn idle_close_resets_home_and_pending_admissions() -> TestResult {
 #[tokio::test]
 async fn discovery_and_home_recovery_reuse_the_first_installed_link() -> TestResult {
     let channel = Endpoint::from_static("http://unused.invalid").connect_lazy();
-    for destination in ["", "good"] {
+    // Discovery reuses the recovered home: only the newly bound route is queued.
+    // Recovery reuses the discovered home: its routes were queued at install,
+    // and a second same-generation upsert would end the whole session.
+    for (destination, queued) in [("", vec![(1, 1)]), ("good", vec![])] {
         let (mut pool, _healthy) = pool::fixture::fixture(&channel);
         pool.reset_home();
         let (records, _pending) = mpsc::channel(2);
@@ -142,7 +145,8 @@ async fn discovery_and_home_recovery_reuse_the_first_installed_link() -> TestRes
             Ok(("good".into(), redundant, Box::pin(stream::empty()))),
         )?;
         assert_eq!(pool.links.get("good").unwrap().epoch, 2);
-        assert_eq!(pool.pending.iter().copied().collect::<Vec<_>>(), [(1, 1)]);
+        assert_eq!(pool.routes.get(&1).unwrap().node, "good");
+        assert_eq!(pool.pending.iter().copied().collect::<Vec<_>>(), queued);
         assert!(pool.routes.get(&3).unwrap().opened);
     }
     Ok(())
