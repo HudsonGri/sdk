@@ -5,7 +5,6 @@
 use acyclic_fs::MountFilesystem;
 use bytes::Bytes;
 
-#[path = "../projfs_metadata_support.rs"]
-mod projfs_metadata_support;
-use projfs_metadata_support::*;
+mod support;
+use support::*;
 mod metadata;

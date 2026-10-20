@@ -20,7 +20,7 @@ mod projfs_enumeration;
 mod projfs_profile;
 
 #[cfg(all(feature = "local", feature = "memory", feature = "native-mount"))]
-#[path = "cases/projfs_metadata.rs"]
+#[path = "cases/projfs_metadata/mod.rs"]
 mod projfs_metadata;
 
 #[path = "cases/access.rs"]
