@@ -39,7 +39,8 @@ where
         .map_err(MaterializeError::from)
         .map_err(E::from)?;
     let meter = receipt.custody.work().clone();
-    let mut future = in_heap(move || create(receipt));
+    // Admitted above: the custody already holds this frame's exact size.
+    let mut future = crate::heap_future::in_heap_unmetered(move || create(receipt));
     let result = future.as_mut().await;
     drop(future);
     drop(custody);
@@ -279,7 +280,12 @@ where
             }
         }
         .ok_or(MaterializeError::MissingPath)?;
-        generation_action(&mut before_effect, NativeMaterializationActionPhase::Before).await?;
+        generation_action(
+            receipt.custody.work(),
+            &mut before_effect,
+            NativeMaterializationActionPhase::Before,
+        )
+        .await?;
         #[cfg(unix)]
         if let Some(parent) = super::work::host_path(&host_path.0)
             .parent()
@@ -308,6 +314,7 @@ where
                 .map_err(MaterializeError::from)?;
         }
         generation_action(
+            receipt.custody.work(),
             &mut before_effect,
             NativeMaterializationActionPhase::Completed,
         )

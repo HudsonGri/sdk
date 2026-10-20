@@ -294,10 +294,11 @@ impl StockExecutor {
             "acyclic.harness.executor.execute",
             operation_id = format_args!("{}", input.operation_id)
         );
-        traced(
-            span,
-            StockExecution::ordinary(self).execute_progress(&input, journal),
-        )
+        traced(span, || async move {
+            StockExecution::ordinary(self)
+                .execute_progress(&input, journal)
+                .await
+        })
         .await
     }
 }

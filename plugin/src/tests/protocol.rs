@@ -3,15 +3,17 @@ use super::*;
 struct Dispatcher(std::sync::atomic::AtomicUsize);
 
 impl ConcurrentControlRequestDispatcher for Dispatcher {
-    async fn dispatch_request(
-        &self,
+    fn dispatch_request<'a>(
+        &'a self,
         _request: ControlRequest,
-        _work: &mut Option<acyclic_fs::NativeMaterializationWork>,
-    ) -> acyclic_harness::Result<ControlDispatchResponse> {
-        Ok((
-            json!({"execution":self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1}),
+        _work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ControlDispatchResponse>>
+    {
+        let execution = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Box::pin(std::future::ready(Ok((
+            json!({ "execution": execution }),
             None,
-        ))
+        ))))
     }
 }
 

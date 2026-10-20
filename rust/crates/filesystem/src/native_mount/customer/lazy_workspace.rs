@@ -153,8 +153,11 @@ where
         if options.writable && options.publication == MountPublication::PerMutation {
             return Err(MountSourceError::NativeUnsupported.into());
         }
-        let (authored, volume_id, root_text) =
-            self.prepare_authored_mount_source(&options, work).await?;
+        // The source lookup is deep; it runs from its own allocation.
+        let (authored, volume_id, root_text) = crate::heap_future::in_heap_claimed(work, || {
+            self.prepare_authored_mount_source(&options, work)
+        })?
+        .await?;
         let root_custody = match root_text.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
