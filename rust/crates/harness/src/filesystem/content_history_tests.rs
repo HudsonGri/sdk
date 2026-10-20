@@ -118,8 +118,7 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
             files.push((file, bytes));
         }
         assert_eq!(
-            fs.authority()
-                .authorities(64)
+            content_authorities(&fs, &volume)
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?
                 .len(),
@@ -155,12 +154,24 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
         assert_eq!(native.receipt().authority_records_appended, 0);
     }
     assert_eq!(
-        fs.authority()
-            .authorities(64)
+        content_authorities(&fs, &volume)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?
             .len(),
         1
     );
     Ok(())
+}
+
+async fn content_authorities(
+    fs: &acyclic_fs::LocalFs,
+    volume: &VolumeRef,
+) -> std::result::Result<Vec<acyclic_fs::AuthorityId>, acyclic_fs::AuthorityStoreError> {
+    let id = fs
+        .workspace_id(volume.storage_name(&mut None).expect("valid volume"))
+        .expect("valid workspace identity");
+    let (provider, _) = fs.authority_records(id.volume_id())?;
+    acyclic_fs::StreamAuthorityStore::new(provider)
+        .authorities(64)
+        .await
 }
