@@ -208,19 +208,30 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let unread = directory.path().join("unread.txt");
-    std::fs::write(&unread, b"unrelated source bytes").map_err(super::super::storage)?;
+    std::fs::create_dir(directory.path().join(".volumes")).map_err(super::super::storage)?;
+    let sibling = directory.path().join(".volumes/unread.txt");
+    for path in [&unread, &sibling] {
+        std::fs::write(path, b"unrelated source bytes").map_err(super::super::storage)?;
+    }
     #[cfg(unix)]
-    std::fs::set_permissions(&unread, std::fs::Permissions::from_mode(0))
-        .map_err(super::super::storage)?;
+    for path in [&unread, &sibling] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0))
+            .map_err(super::super::storage)?;
+    }
     #[cfg(windows)]
     let _unread_guard = {
         use std::os::windows::fs::OpenOptionsExt as _;
         // Deny every subsequent open until the test ends. An eager importer
         // cannot read this file, while the held lazy checkout can run echo.
-        std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .open(&unread)
+        [&unread, &sibling]
+            .map(|path| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(path)
+            })
+            .into_iter()
+            .collect::<std::io::Result<Vec<_>>>()
             .map_err(super::super::storage)?
     };
     let provider = commands(&[
@@ -263,14 +274,56 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
         "watch fencing changed the checkout"
     );
     #[cfg(unix)]
+    for path in [&unread, &sibling] {
+        assert_eq!(
+            std::fs::metadata(path)
+                .map_err(super::super::storage)?
+                .permissions()
+                .mode()
+                & 0o777,
+            0
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn auxiliary_parent_binding_keeps_authored_sibling_changes_visible() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = commands(&[("bash", "printf authored > .volumes/user-owned")]);
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path()),
+    )
+    .await?;
+    run(&harness).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let head = harness
+        .workspace()
+        .unwrap()
+        .view()
+        .workspace()
+        .head(budget, &cancellation)
+        .await
+        .map_err(super::super::storage)?
+        .value;
     assert_eq!(
-        std::fs::metadata(&unread)
+        head.read("/.volumes/user-owned", 64, budget, &cancellation)
+            .await
             .map_err(super::super::storage)?
-            .permissions()
-            .mode()
-            & 0o777,
-        0
+            .value
+            .as_ref(),
+        b"authored"
     );
+    assert!(matches!(
+        head.stat("/.volumes/scratch", budget, &cancellation).await,
+        Err(acyclic_fs::OperationFailure {
+            error: acyclic_fs::WorkspaceError::NotFound,
+            ..
+        })
+    ));
     Ok(())
 }
 

@@ -337,6 +337,17 @@ pub(super) async fn open(
     )?;
     if native_mounts {
         volumes::attach(filesystem, &store, &path, &mut mounts).await?;
+        Box::pin(volumes::parents::bind(
+            &view,
+            &path,
+            &mounts,
+            acyclic_fs::NativeRootIdentity::from_bytes(
+                identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
+            ),
+            operation,
+            &cancellation,
+        ))
+        .await?;
     }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
