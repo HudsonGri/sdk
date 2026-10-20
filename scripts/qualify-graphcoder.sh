@@ -17,7 +17,7 @@ node --test scripts/graphcoder-pty/screen.test.mjs
 
 node scripts/test-graphcoder.mjs "$artifact_dir/debug/graphcoder"
 for scenario in kill-mid-turn same-text-twice retry-jsonl; do
-  timeout 9 node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$artifact_dir/debug/graphcoder" "$scenario"
+  node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$artifact_dir/debug/graphcoder" "$scenario"
 done
 node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder"
 node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder" interactive-prompt

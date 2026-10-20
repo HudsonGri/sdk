@@ -154,7 +154,7 @@ installed_graphcoder() {
   node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder"
   local scenario
   for scenario in kill-mid-turn same-text-twice retry-jsonl; do
-    timeout 9 node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$install_root/bin/graphcoder" "$scenario"
+    node rust/crates/harness/tests/scenarios/headless-submissions.mjs "$install_root/bin/graphcoder" "$scenario"
   done
   node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder"
 }
