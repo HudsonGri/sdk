@@ -29,3 +29,29 @@ test('other fuzz packages may split local modules but cannot import foreign impl
   assert.deepEqual(violations('#[path = "reply/linux.rs"] mod linux;', filename, packageRoot), []);
   assert.equal(violations('#[path = "../../src/reply.rs"] mod reply;', filename, packageRoot).length, 1);
 });
+
+test('conditional and raw-string path attributes cannot bypass the policy', () => {
+  for (const source of [
+    '#[cfg_attr(unix, path = "../../harness/src/local/owner.rs")] mod owner;',
+    '#[cfg_attr(any(unix, windows), cfg_attr(feature = "fuzz", path = r#"../../harness/src/local/owner.rs"#))] mod owner;',
+    '#[path /* owner */ = "\\x2e\\x2e/../../harness/src/local/owner.rs"] mod owner;',
+  ]) assert.equal(violations(source, target, owner).length, 1);
+});
+
+test('macro token spacing and comments cannot hide source inclusion', () => {
+  for (const source of [
+    'include ! ("../../harness/src/sync/arc.rs");',
+    'include /* shared code */ ! {concat!(env!("CARGO_MANIFEST_DIR"), "/../src/codec.rs")}',
+    'r#include! { r#"../../harness/src/sync/arc.rs"# }',
+  ]) assert.equal(violations(source, target, owner).length, 1);
+});
+
+test('comments and strings cannot manufacture source imports', () => {
+  const source = `// #[path = "../../harness/src/local/owner.rs"]
+    /* /* nested */ include!("../../harness/src/local/owner.rs"); */
+    const EXAMPLE: &str = r##"#[path = "../../harness/src/local/owner.rs"] include!("example");"##;
+    const QUOTED: &str = "include! (\\\"example\\\")";
+    use acyclic_harness::test_support; mod owner;
+  `;
+  assert.deepEqual(violations(source, target, owner), []);
+});
