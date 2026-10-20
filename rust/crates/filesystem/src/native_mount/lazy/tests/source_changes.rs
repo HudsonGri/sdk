@@ -113,6 +113,12 @@ fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::err
     // Rewritten in place: the same file, with new facts.
     std::fs::write(source.path().join("a"), b"much longer")?;
     assert_eq!(handle.lookup()?.node.logical_bytes, 11);
+    let work = crate::NativeMaterializationWork::new(
+        crate::performance::BOUNDARY_BUDGET,
+        &CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    assert_eq!(handle.lookup_with_meter(&work)?.node.logical_bytes, 11);
     assert_eq!(handle.lookup()?.node.file_id, opened);
 
     // Replaced: the path names another file; the handle keeps its own.
@@ -121,6 +127,7 @@ fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::err
     let facts = handle.lookup()?;
     assert_eq!(facts.node.file_id, opened);
     assert_eq!(facts.node.logical_bytes, 5);
+    assert_eq!(handle.lookup_with_meter(&work)?.node.logical_bytes, 5);
     Ok(())
 }
 #[test]

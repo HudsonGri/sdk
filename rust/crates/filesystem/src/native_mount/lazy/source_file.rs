@@ -33,6 +33,7 @@ where
     fn observe<T>(
         &self,
         work: &crate::NativeMaterializationWork,
+        refresh_source: bool,
         operation: impl FnOnce(
             Option<&dyn MountOpenFile>,
             SourceNode,
@@ -56,11 +57,23 @@ where
                     .await?;
                 let file = self.current_authored(owner, carrier).await?;
                 let bytes = file.as_ref().map_or(0, |(_, bytes)| *bytes);
-                let result = operation(
-                    file.as_ref().map(|(file, _)| file.as_ref()),
-                    self.source_node,
-                    carrier,
-                );
+                let mut node = self.source_node;
+                if refresh_source && file.is_none() {
+                    let mut accounting =
+                        crate::kernel::KernelAccounting::native(work, work.cancellation());
+                    if let Some(current) = self
+                        .lazy
+                        .source_lookup(self.lazy.source_reference(), &self.path, &mut accounting)
+                        .await
+                        .map_err(lazy_error)?
+                        .filter(|current| current.file_identity == node.file_identity)
+                    {
+                        // A path may now name another file. Only refresh facts
+                        // when it still names this opened source identity.
+                        node = current;
+                    }
+                }
+                let result = operation(file.as_ref().map(|(file, _)| file.as_ref()), node, carrier);
                 drop(file);
                 carrier
                     .with_work(|work| work.release(bytes))
@@ -144,7 +157,7 @@ where
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        self.observe(work, |file, node, _| {
+        self.observe(work, true, |file, node, _| {
             if let Some(file) = file {
                 return file.lookup_with_meter(work);
             }
@@ -164,7 +177,7 @@ where
         length: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.observe(work, |file, _, _| match file {
+        self.observe(work, false, |file, _, _| match file {
             Some(file) => file.read_range_with_meter(offset, length, work),
             None => self.read_source(offset, u64::from(length), work),
         })
@@ -176,7 +189,7 @@ where
         maximum_bytes: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.observe(work, |file, node, _| {
+        self.observe(work, false, |file, node, _| {
             if let Some(file) = file {
                 return file.read_up_to_with_meter(offset, maximum_bytes, work);
             }
@@ -202,7 +215,7 @@ where
         target: MountSeekTarget,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<u64>, MountSourceError> {
-        self.observe(work, |file, node, carrier| {
+        self.observe(work, false, |file, node, carrier| {
             if let Some(file) = file {
                 return file.seek_with_meter(offset, target, work);
             }
@@ -266,7 +279,7 @@ where
         name: &[u8],
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
-        self.observe(work, |file, _, _| match file {
+        self.observe(work, false, |file, _, _| match file {
             Some(file) => file.read_attribute(name, work),
             None => Ok(None),
         })
@@ -278,7 +291,7 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
-        self.observe(work, |file, _, _| match file {
+        self.observe(work, false, |file, _, _| match file {
             Some(file) => file.list_attributes_with_meter(cursor, maximum_entries, work),
             None => Ok((
                 MountAttributePage {
@@ -310,7 +323,7 @@ where
     }
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.observe(work, |file, _, _| match file {
+        self.observe(work, false, |file, _, _| match file {
             Some(file) => file.settle(work),
             None => Ok(()),
         })
@@ -328,7 +341,7 @@ where
         ),
         MountSourceError,
     > {
-        self.observe(work, |file, node, _| {
+        self.observe(work, false, |file, node, _| {
             if let Some(file) = file {
                 return file.read_sparse_range(offset, length, work);
             }
