@@ -47,6 +47,16 @@ where
         &self,
         io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowAdmission>> {
+        if let Some(owner) = self
+            .owner
+            .as_ref()
+            .filter(|owner| owner.workflow_admission().operation_id == owner.operation_id())
+        {
+            self.verify_observation_owner(owner, true, io).await?;
+            let admission = owner.workflow_admission().copy(io)?;
+            admission.validate(io)?;
+            return Ok(Some(admission));
+        }
         let reject = |code, reason| observation_boundary(io, code, reason);
         let (_path, path) = {
             let path = crate::executor::with_history_io(io, |work| {
@@ -160,6 +170,12 @@ where
                 ));
             }
             self.verify_observation_owner(owner, false, io).await?;
+            if admission.operation_id == owner.operation_id() {
+                // The admitted task input and pinned deterministic machine
+                // already determine this workflow. Tool workflows have their
+                // own operation identities and still need an admission record.
+                return Ok(admission);
+            }
         }
         if let Some(existing) = self.read_admission(io).await? {
             return if existing == admission {

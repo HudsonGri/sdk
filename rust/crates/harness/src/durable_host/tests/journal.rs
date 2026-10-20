@@ -73,6 +73,14 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
     wrong.initial.state = json!(1);
     assert!(workflow.admit(wrong).await.is_err());
     assert_eq!(workflow.admit(admission.clone()).await?, admission);
+    let admission_path = format!("harness/v2/workflow-admissions/{}", admission.operation_id);
+    let admission_stream = acyclic_stream::Stream::new(f.stream.clone(), admission_path)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    assert!(matches!(
+        admission_stream.bounds().await,
+        Err(acyclic_stream::StreamError::NotFound)
+    ));
+    assert_eq!(workflow.admission(None)?.await?.0, Some(admission.clone()));
     DurableWorkflowHost::open(f.host.machines.clone(), admission.initial, workflow.clone())
         .await?
         .step(
@@ -97,6 +105,48 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
             .await
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn nested_workflow_retains_its_independent_admission() -> Result<()> {
+    let f = fixture::fixture().await?;
+    let mut owner = f.running(1).await?;
+    let nested = OperationId::from_bytes([2; 16]);
+    // Tool workflows borrow the task owner while admitting their own identity.
+    owner.workflow.operation_id = nested;
+    let admission = owner.workflow_admission().clone();
+    let workflow = f.workflow(owner)?;
+    assert_eq!(workflow.admit(admission.clone()).await?, admission);
+    assert_eq!(workflow.admission(None)?.await?.0, Some(admission.clone()));
+    let stream = acyclic_stream::Stream::new(
+        f.stream.clone(),
+        format!("harness/v2/workflow-admissions/{nested}"),
+    )
+    .map_err(|error| Error::Storage(error.to_string()))?;
+    assert_eq!(
+        stream
+            .bounds()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .tail,
+        1
+    );
+    DurableWorkflowHost::open(f.host.machines.clone(), admission.initial, workflow.clone())
+        .await?
+        .step(
+            OperationId::from_bytes([3; 16]),
+            IdempotencyKey::new("nested-step")?,
+            json!(1),
+            |_| Ok(()),
+        )
+        .await?;
+    assert_eq!(workflow.replay(0, 2, None)?.await?.0.len(), 1);
+    let mut replacement = f.owner(1).await?;
+    replacement.workflow.operation_id = nested;
+    replacement.workflow.initial.state = json!(1);
+    let changed = replacement.workflow_admission().clone();
+    assert!(f.workflow(replacement)?.admit(changed).await.is_err());
     Ok(())
 }
 
