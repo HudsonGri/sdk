@@ -18,14 +18,14 @@ use std::sync::Arc;
 /// `AuthorizationManager::new` is not reachable through this type:
 ///
 /// ```
-/// use acyclic_harness::mcp::oauth::McpAuthorization;
+/// use acyclic_harness_core::mcp::oauth::McpAuthorization;
 /// async fn token(session: &McpAuthorization) -> Option<String> {
 ///     session.get_access_token().await.ok()
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use acyclic_harness::mcp::oauth::McpAuthorization;
+/// use acyclic_harness_core::mcp::oauth::McpAuthorization;
 /// type Manager = <McpAuthorization as std::ops::Deref>::Target;
 /// async fn bypass() {
 ///     drop(Manager::new("http://127.0.0.1:9/").await);
