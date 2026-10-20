@@ -43,6 +43,7 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-fs-base",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-proto-build",
@@ -54,7 +55,6 @@ dependencies = [
  "cap-primitives",
  "cap-std",
  "cc",
- "diffy",
  "dirs",
  "fs2",
  "fuser",
@@ -83,6 +83,13 @@ dependencies = [
  "uuid",
  "windows",
  "writeable",
+]
+
+[[package]]
+name = "acyclic-fs-base"
+version = "0.2.0"
+dependencies = [
+ "diffy",
 ]
 
 [[package]]
