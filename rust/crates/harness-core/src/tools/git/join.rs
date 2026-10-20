@@ -13,27 +13,31 @@ where
         rebase: bool,
         tracked: &BTreeSet<String>,
     ) -> crate::Result<GitFilesystemResult> {
-        let source = self.workspace(source).await?;
+        let source = acyclic_fs::in_heap(|| self.workspace(source)).await?;
         let mut builder = source.join_into(&self.current).git_metadata();
         if rebase {
             builder = builder.history(acyclic_fs::JoinHistory::Rebase);
         }
-        let plan = super::materialize::prepared(
-            async {
-                builder
-                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| Error::from(failure.error))
-            },
-            &|| self.validate(),
-        )
+        let plan = acyclic_fs::in_heap(|| async {
+            super::materialize::prepared(
+                async {
+                    builder
+                        .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| Error::from(failure.error))
+                },
+                &|| self.validate(),
+            )
+            .await
+        })
         .await?;
         let options = ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
         };
-        let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+        let initial =
+            acyclic_fs::in_heap(|| plan.apply(options, BTreeMap::new(), self.permit)).await?;
         let mut unresolved = false;
         let outcome =
             if let JoinOutcome::Conflicted {
@@ -41,7 +45,8 @@ where
                 truncated,
             } = initial
             {
-                let typed = plan.describe_conflicts(conflicts, truncated).await?;
+                let typed =
+                    acyclic_fs::in_heap(|| plan.describe_conflicts(conflicts, truncated)).await?;
                 if typed.truncated {
                     return Err(Self::error("Git join conflict frontier is incomplete"));
                 }
@@ -126,7 +131,8 @@ where
                     &|| self.validate(),
                 )
                 .await?;
-                let outcome = plan.apply(options, resolutions, self.permit).await?;
+                let outcome =
+                    acyclic_fs::in_heap(|| plan.apply(options, resolutions, self.permit)).await?;
                 if matches!(
                     &outcome,
                     JoinOutcome::Applied(_)
@@ -166,7 +172,8 @@ where
                 "Git join has unresolved conflicts. Edit the conflicted paths, then run `fs merge --continue`, or `fs merge --abort`",
             ));
         }
-        let tracked_paths = existing_tracked_paths(&generation, tracked).await?;
+        let tracked_paths =
+            acyclic_fs::in_heap(|| existing_tracked_paths(&generation, tracked)).await?;
         Ok(GitFilesystemResult::Applied {
             tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
             tracked_paths: Some(tracked_paths),

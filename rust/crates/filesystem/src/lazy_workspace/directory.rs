@@ -111,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         maximum: u32,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, KernelOwnedAllocation), LazyWorkspaceError> {
-        let state = self.state(ctx).await?;
+        let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
         let mut checkout = self
             .checkout(crate::model::GenerationSelector::Head, ctx)
             .await?;
@@ -172,7 +172,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, LazyWorkspaceState, KernelOwnedAllocation), LazyWorkspaceError>
     {
-        let state = self.state(ctx).await?;
+        let state = crate::heap_future::metered!(ctx, |ctx| self.state(ctx))?;
         let (page, _, guard) = self
             .list_directory_at(&state, checkout, path, cursor, maximum, mask, ctx)
             .await?;

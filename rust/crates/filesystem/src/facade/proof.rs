@@ -129,7 +129,7 @@ impl DependencyLedger {
                         .release(live - retained)
                         .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))?;
                 }
-                let mut next_ledger = *ledger;
+                let mut next_ledger = ledger.preview();
                 let mut next_work = *work;
                 next_work.charge_items(items, &budget)?;
                 next_work.charge(
@@ -174,7 +174,7 @@ impl DependencyLedger {
                     peak_allocation_bytes: peak,
                     ..WorkCounters::default()
                 })?;
-                *ledger = next_ledger;
+                next_ledger.commit();
                 *work = next_work;
                 Ok(())
             },
