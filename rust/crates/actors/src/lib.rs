@@ -314,3 +314,7 @@ mod tests {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod grpc_tests;
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;

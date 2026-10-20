@@ -474,3 +474,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(all(feature = "test-support", unix))]
+pub(crate) use exclude::fuzz_mount_exclusion;

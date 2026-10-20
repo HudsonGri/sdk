@@ -1,6 +1,5 @@
 use super::*;
-#[path = "access_input.rs"]
-mod input;
+use acyclic_fs::fuzzing::access_input as input;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]

@@ -7,8 +7,7 @@ use bytes::Bytes;
 use proptest::prelude::*;
 use prost::Message;
 
-#[path = "support/follow_data.rs"]
-mod follow_data;
+use acyclic_stream::test_support::follow_data;
 
 #[test]
 #[should_panic(expected = "LATEST accepts a conflated cursor")]

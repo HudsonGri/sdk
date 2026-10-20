@@ -11,10 +11,8 @@ use acyclic_harness_tui::{
 };
 use proptest::prelude::*;
 
-#[path = "support/completion_deltas.rs"]
-mod deltas;
-#[path = "support/completion_sequences.rs"]
-mod sequences;
+use acyclic_harness_tui::fuzzing::completion_deltas as deltas;
+use acyclic_harness_tui::fuzzing::completion_sequences as sequences;
 
 #[test]
 fn unicode_theme_completion_preserves_the_configured_name() {

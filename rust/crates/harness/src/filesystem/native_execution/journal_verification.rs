@@ -47,14 +47,17 @@ fn lexical_counts(input: &[u8]) -> (u64, u64) {
     (items, containers)
 }
 
-pub(crate) fn verify_decode(input: &[u8]) -> bool {
+pub(crate) fn verify_decode_with(
+    input: &[u8],
+    measure: impl FnOnce(&mut dyn FnMut()) -> u64,
+) -> bool {
     let slots = lexical_items(input).min(lexical_containers(input).saturating_mul(4));
     let bound = journal_allocation::decode_owned_bytes(slots, input.len() as u64, 0).unwrap();
     let mut decoded = None;
-    let measured = acyclic_test_support::measure(|| {
+    let measured = measure(&mut || {
         decoded = Some(serde_json::from_slice::<MaterializationJournal>(input));
     });
-    assert!(measured.bytes_max as u64 <= bound, "{measured:?} > {bound}");
+    assert!(measured <= bound, "{measured} > {bound}");
     let decoded = decoded.unwrap();
     let accepted = decoded.is_ok();
     if let Ok(journal) = decoded {
@@ -72,4 +75,9 @@ pub(crate) fn verify_decode(input: &[u8]) -> bool {
         assert_eq!(journal, reread);
     }
     accepted
+}
+
+#[cfg(test)]
+pub(crate) fn verify_decode(input: &[u8]) -> bool {
+    verify_decode_with(input, |run| acyclic_test_support::measure(run).bytes_max)
 }

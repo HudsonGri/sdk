@@ -1,14 +1,8 @@
 //! Checks normalized facade paths stay contained and round-trip without traversal.
 #![no_main]
 
-use acyclic_harness::Error;
 use libfuzzer_sys::fuzz_target;
 use std::path::{Component, Path};
-
-// Compile the production parser, with the production Error type, without
-// exporting a second public facade entry point just for verification.
-#[path = "../../crates/harness/src/tools/git/path.rs"]
-mod path;
 
 fuzz_target!(|bytes: &[u8]| {
     let Ok(argument) = std::str::from_utf8(bytes) else {
@@ -33,7 +27,7 @@ fuzz_target!(|bytes: &[u8]| {
             Some(paths)
         );
     }
-    if let Ok(parsed) = path::workspace_path_argument(root, argument) {
+    if let Ok(parsed) = acyclic_harness::tools::git::fuzz_workspace_path_argument(root, argument) {
         assert!(!parsed.contains('\0'));
         assert!(parsed.starts_with('/'));
         assert!(
@@ -42,9 +36,9 @@ fuzz_target!(|bytes: &[u8]| {
                 .all(|part| !matches!(part, Component::ParentDir))
         );
         let absolute = root.join(parsed.trim_start_matches('/'));
-        let restored = absolute
-            .to_str()
-            .and_then(|argument| path::workspace_path_argument(root, argument).ok());
+        let restored = absolute.to_str().and_then(|argument| {
+            acyclic_harness::tools::git::fuzz_workspace_path_argument(root, argument).ok()
+        });
         assert_eq!(restored.as_deref(), Some(parsed.as_str()));
     }
 });

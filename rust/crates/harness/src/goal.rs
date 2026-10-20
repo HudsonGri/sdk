@@ -311,3 +311,12 @@ fn parse(text: &str) -> Result<(Frontmatter, &str)> {
     }
     Err(Error::Invalid("unclosed goal frontmatter".into()))
 }
+
+/// Checks the production request-head codec with synthetic bytes.
+#[cfg(feature = "test-support")]
+pub fn fuzz_request_head(input: &[u8]) {
+    if let Ok(turn) = request_head::decode(input) {
+        let bytes = serde_json::to_vec(&turn).unwrap();
+        assert_eq!(request_head::decode(&bytes).unwrap(), turn);
+    }
+}

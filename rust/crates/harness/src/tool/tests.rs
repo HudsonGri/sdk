@@ -280,10 +280,18 @@ fn projection_schema_violation_is_the_tools_mistake_on_the_native_path() -> Resu
             .check_projection(&violating, Limits::default(), io)?
             .expect_err("a schema violation is the inner error");
         // The native violation keeps its funded diagnostic; its place, not its class, settles it.
-        assert_eq!(violation.code(), crate::wire::ErrorCode::Invalid, "{violation:?}");
+        assert_eq!(
+            violation.code(),
+            crate::wire::ErrorCode::Invalid,
+            "{violation:?}"
+        );
         assert!(
             definition
-                .check_projection(&json!({"kind":"json","value":"seven"}), Limits::default(), io)?
+                .check_projection(
+                    &json!({"kind":"json","value":"seven"}),
+                    Limits::default(),
+                    io
+                )?
                 .is_ok()
         );
     }
