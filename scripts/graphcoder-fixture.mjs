@@ -8,6 +8,9 @@ export async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-"));
   const root = join(directory, "workspace"), settings = join(directory, "settings");
   mkdirSync(root); mkdirSync(settings);
+  // Windows known-folder discovery verifies these beneath USERPROFILE.
+  mkdirSync(join(settings, "AppData", "Local"), { recursive: true });
+  mkdirSync(join(settings, "AppData", "Roaming"), { recursive: true });
   let fail = false, calls = 0, release, releaseCount, observeCount, observeResponse, countTarget;
   let countBarrier = Promise.resolve();
   const counting = new Promise(resolve => { observeCount = resolve; });

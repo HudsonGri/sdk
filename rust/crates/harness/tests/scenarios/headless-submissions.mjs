@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fixture } from "../../../../../scripts/graphcoder-fixture.mjs";
 
 const [binary, scenario] = process.argv.slice(2);
@@ -22,7 +22,8 @@ function start(extra, input = "") {
   const child = spawn(binary, [...host.args, ...extra], {
     windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, CODEX_HOME: host.settings, HOME: host.settings,
-      USERPROFILE: host.settings, LOCALAPPDATA: host.settings, XDG_DATA_HOME: host.settings,
+      USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
+      APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
       OPENAI_API_KEY: "", GRAPHCODER_MODEL: "" },
   });
   children.push(child);

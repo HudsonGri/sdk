@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "./graphcoder-fixture.mjs";
 import { Terminal, screenText, hasBoldAnswer } from "./graphcoder-pty/screen.mjs";
@@ -20,7 +20,8 @@ let operation;
 const start = (first, resume = true) => {
   const launchArgs = [...args, ...(resume ? ["--operation", submission] : [])];
   const env = { ...process.env, CODEX_HOME: host.settings, HOME: host.settings,
-    USERPROFILE: host.settings, LOCALAPPDATA: host.settings, XDG_DATA_HOME: host.settings,
+    USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
+    APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
     OPENAI_API_KEY: "", GRAPHCODER_MODEL: "", TERM: "xterm-256color" };
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const child = interactive
