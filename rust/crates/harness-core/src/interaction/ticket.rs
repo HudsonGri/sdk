@@ -29,10 +29,7 @@ impl InteractionTicket {
     }
     /// Checks the ref-only envelope before byte admission.
     #[doc(hidden)]
-    pub fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<()> {
+    pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }

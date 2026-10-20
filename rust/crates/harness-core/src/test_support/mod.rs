@@ -24,10 +24,7 @@ pub use scripted::{
 pub use task_volume_work::measure as measure_task_volume_work;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
-pub use task_volume_work::{
-    Files as TaskVolumeFiles, examined as task_volume_item_examined,
-};
-
+pub use task_volume_work::{Files as TaskVolumeFiles, examined as task_volume_item_examined};
 
 /// Reads child-fixture controls while refusing ambient user directory discovery.
 /// Available wherever this module is (unit tests on every target, or `test-support`).

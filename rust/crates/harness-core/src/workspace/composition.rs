@@ -64,11 +64,7 @@ impl<T> MountTable<T> {
     /// Resolves either a task-relative path or an exact volume's relative path.
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
-    pub fn file(
-        &self,
-        volume: Option<&VolumeRef>,
-        path: &str,
-    ) -> Result<(&Mount<T>, String)> {
+    pub fn file(&self, volume: Option<&VolumeRef>, path: &str) -> Result<(&Mount<T>, String)> {
         let selected = if let Some(volume) = volume {
             let (prefix, _) = self
                 .mounts()

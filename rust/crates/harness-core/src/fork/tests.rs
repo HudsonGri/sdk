@@ -228,9 +228,10 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
         drop(retained);
         native.admit_retained(available).map_err(Error::from)?;
     }
-    let mut request: ForkRequest =
-        serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-request.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut request: ForkRequest = serde_json::from_str(include_str!(
+        "../../../harness/fixtures/v2/fork-request.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let shared = VolumeRef::new(
         filesystem,
         "shared".into(),

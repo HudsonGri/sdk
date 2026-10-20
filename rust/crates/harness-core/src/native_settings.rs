@@ -142,9 +142,7 @@ impl NativeSettings {
 
     #[cfg(all(feature = "hooks", feature = "filesystem-local"))]
     #[doc(hidden)]
-    pub async fn load_hooks(
-        config: std::sync::Arc<SettingsConfig>,
-    ) -> Result<crate::hooks::Hooks> {
+    pub async fn load_hooks(config: std::sync::Arc<SettingsConfig>) -> Result<crate::hooks::Hooks> {
         Ok(Self::snapshot(config, false, true).await?.hooks)
     }
 

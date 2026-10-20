@@ -123,9 +123,10 @@ async fn fork_binding_cannot_capture_a_different_parent_revision() -> Result<()>
         )))
         .grant("fork:publish")
         .build()?;
-    let request: crate::fork::ForkRequest =
-        serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-request.json"))
-            .map_err(|error: serde_json::Error| Error::Invalid(error.to_string()))?;
+    let request: crate::fork::ForkRequest = serde_json::from_str(include_str!(
+        "../../../harness/fixtures/v2/fork-request.json"
+    ))
+    .map_err(|error: serde_json::Error| Error::Invalid(error.to_string()))?;
     assert!(matches!(
         bundle.runtime().prepare_fork(request).await,
         Err(Error::Conflict(_))

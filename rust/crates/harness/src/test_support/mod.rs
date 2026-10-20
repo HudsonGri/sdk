@@ -61,6 +61,9 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(config.settings.is_some(), "test configuration must select settings");
+        assert!(
+            config.settings.is_some(),
+            "test configuration must select settings"
+        );
     }
 }

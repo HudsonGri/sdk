@@ -157,8 +157,9 @@ async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
             &sandbox,
         )
         .await?;
-    let mut seed: ForkSeed = serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut seed: ForkSeed =
+        serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
     let process = ResourceRevision::Process(checkpoint);
     seed.resources.insert(
         2,
@@ -168,9 +169,10 @@ async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
         },
     );
     host.verify(&seed, &mut None)?.await?;
-    let mut request: ForkRequest =
-        serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-request.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut request: ForkRequest = serde_json::from_str(include_str!(
+        "../../../harness/fixtures/v2/fork-request.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     request.preparation.maximum_inherited_messages = 1;
     request.preparation.maximum_inherited_bytes = 1_024;
     request.preparation.maximum_inherited_references = 1;

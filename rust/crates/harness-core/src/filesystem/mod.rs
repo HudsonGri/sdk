@@ -49,10 +49,10 @@ mod fork_preparer;
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;
 pub use fork_preparer::bounded_io::PreparationIo;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use fork_preparer::bounded_io::native_decoded;
 #[doc(hidden)]
 pub use fork_preparer::bounded_io::PreparationRecord;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use fork_preparer::bounded_io::native_decoded;
 pub(crate) use fork_preparer::bounded_io::{
     DecodeReservation, UploadRecord, preparation_slot_bytes, retain_decoded,
 };

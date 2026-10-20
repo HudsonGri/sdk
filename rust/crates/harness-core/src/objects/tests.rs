@@ -142,9 +142,10 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         owner_store.verify_artifact(&traversal).await,
         Err(Error::Invalid(_))
     ));
-    let mut request: ForkRequest =
-        serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-request.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut request: ForkRequest = serde_json::from_str(include_str!(
+        "../../../harness/fixtures/v2/fork-request.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     request.preparation.maximum_inherited_messages = 1;
     request.preparation.maximum_inherited_bytes = 1_024;
     request.preparation.maximum_inherited_references = 1;
@@ -162,8 +163,9 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         owner_store.capture(&request, &artifact_selection).await?,
         Capture::Captured(captured.clone())
     );
-    let mut seed: ForkSeed = serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut seed: ForkSeed =
+        serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
     seed.resources.push(captured);
     ForkSeedVerifier::verify(owner_store.as_ref(), &seed, &mut None)?.await?;
     assert!(owner_store.bindings().writer.is_some());

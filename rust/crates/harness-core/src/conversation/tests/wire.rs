@@ -16,15 +16,20 @@ fn v2_fixtures_round_trip_canonically_and_replay() -> Result<()> {
         "../../../../harness/fixtures/v2/conversation-message.json"
     ))?
     .validate(&mut None)?;
-    round_trip::<FileRef>(include_str!("../../../../harness/fixtures/v2/file-ref.json"))?;
+    round_trip::<FileRef>(include_str!(
+        "../../../../harness/fixtures/v2/file-ref.json"
+    ))?;
     round_trip::<PrivateDirectoryPage>(include_str!(
         "../../../../harness/fixtures/v2/private-directory-page.json"
     ))?
     .validate()?;
-    round_trip::<TaskOutcomeRecord>(include_str!("../../../../harness/fixtures/v2/task-outcome.json"))?
-        .validate()?;
-    let messages: Vec<ConversationMessage> =
-        round_trip(include_str!("../../../../harness/fixtures/v2/conversation-kinds.json"))?;
+    round_trip::<TaskOutcomeRecord>(include_str!(
+        "../../../../harness/fixtures/v2/task-outcome.json"
+    ))?
+    .validate()?;
+    let messages: Vec<ConversationMessage> = round_trip(include_str!(
+        "../../../../harness/fixtures/v2/conversation-kinds.json"
+    ))?;
     let mut state = ConversationState::default();
     state.bind(AgentId::from_bytes([1; 16]))?;
     for message in &messages {
@@ -36,9 +41,10 @@ fn v2_fixtures_round_trip_canonically_and_replay() -> Result<()> {
 
 #[test]
 fn v2_file_reference_security_cases_match_the_shared_fixture() -> Result<()> {
-    let base: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../harness/fixtures/v2/file-ref.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let base: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../harness/fixtures/v2/file-ref.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let corpus: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../harness/fixtures/v2/file-ref-security-cases.json"
     ))

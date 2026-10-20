@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn v2_task_admission_and_execution_placement_fixtures_are_canonical() -> Result<()> {
-    let admission_fixture = include_str!("../../../../harness/fixtures/v2/task-admission.json").trim();
+    let admission_fixture =
+        include_str!("../../../../harness/fixtures/v2/task-admission.json").trim();
     let admission_value: Value = serde_json::from_str(admission_fixture)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let admission =
@@ -17,7 +18,8 @@ fn v2_task_admission_and_execution_placement_fixtures_are_canonical() -> Result<
         crate::contract::canonical_json_bytes(&admission.canonical_value())?,
         admission_fixture.as_bytes()
     );
-    let placement_fixture = include_str!("../../../../harness/fixtures/v2/execution-placement.json").trim();
+    let placement_fixture =
+        include_str!("../../../../harness/fixtures/v2/execution-placement.json").trim();
     let placement: ExecutionPlacement = serde_json::from_str(placement_fixture)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     placement.validate(&mut None)?;
@@ -98,9 +100,10 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
     use crate::resource_preparation::ResourceCreationProofRef;
     use crate::resources::{ProviderRef, ResourceKind, ResourceRef};
 
-    let wire: Value =
-        serde_json::from_str(include_str!("../../../../harness/fixtures/v2/task-admission.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let wire: Value = serde_json::from_str(include_str!(
+        "../../../../harness/fixtures/v2/task-admission.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone(), &mut None)?.0;
     let provider = ProviderRef::new("test".into(), "creator".into(), "1".into(), &mut None)?;
     let resource =
@@ -149,9 +152,10 @@ fn created_resource_proofs_are_exact_canonical_child_data() -> Result<()> {
 #[test]
 fn rejected_native_admission_releases_conversion_reservation() -> Result<()> {
     use crate::store::history::HistoryIo;
-    let mut value: Value =
-        serde_json::from_str(include_str!("../../../../harness/fixtures/v2/task-admission.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut value: Value = serde_json::from_str(include_str!(
+        "../../../../harness/fixtures/v2/task-admission.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     value["task"]["digest"] =
         serde_json::to_value([0_u8; 32]).map_err(|error| Error::Invalid(error.to_string()))?;
     let bytes = crate::contract::canonical_json_bytes(&value)?;

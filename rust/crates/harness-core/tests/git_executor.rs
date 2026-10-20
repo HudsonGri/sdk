@@ -317,9 +317,14 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             )
             .await?;
     }
-    let plan =
-        acyclic_harness_core::filesystem::plan_agent_merge(&fs, &store, &child, main.workspace(), repo)
-            .await?;
+    let plan = acyclic_harness_core::filesystem::plan_agent_merge(
+        &fs,
+        &store,
+        &child,
+        main.workspace(),
+        repo,
+    )
+    .await?;
     assert!(
         plan.child_wins_bindings
             .contains(&"/ignored/child.txt".to_owned())
@@ -636,7 +641,10 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         .await
         .expect_err("the checkout identity changed after authorization");
     assert_eq!(guards, 1);
-    assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Conflict);
+    assert_eq!(
+        error.code(),
+        acyclic_harness_core::wire::ErrorCode::Conflict
+    );
     assert!(matches!(
         error,
         acyclic_harness_core::Error::NativeWork {

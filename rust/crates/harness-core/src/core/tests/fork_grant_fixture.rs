@@ -28,8 +28,10 @@ impl Matrix {
         // Every selected shared volume needs a nonempty child grant.
         operations[0] = operations[0].max(1);
         operations[1] = operations[1].max(1);
-        let mut seed: ForkSeed =
-            serde_json::from_slice(include_bytes!("../../../../harness/fixtures/v2/fork-seed.json")).unwrap();
+        let mut seed: ForkSeed = serde_json::from_slice(include_bytes!(
+            "../../../../harness/fixtures/v2/fork-seed.json"
+        ))
+        .unwrap();
         let readers = [
             seed.child_agent,
             AgentId::from_bytes([29; 16]),

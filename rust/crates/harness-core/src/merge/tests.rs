@@ -5,8 +5,9 @@ fn v2_project_merge_receipt_fixture_round_trips_canonically() -> Result<()> {
     let fixture = include_str!("../../../harness/fixtures/v2/project-merge-receipt.json").trim();
     let receipt: ProjectMergeReceipt =
         serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-    let seed: ForkSeed = serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let seed: ForkSeed =
+        serde_json::from_str(include_str!("../../../harness/fixtures/v2/fork-seed.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
     receipt.validate(&seed)?;
     assert_eq!(
         serde_json::to_string(&receipt).map_err(|error| Error::Invalid(error.to_string()))?,
@@ -23,9 +24,10 @@ fn v2_project_merge_receipt_fixture_round_trips_canonically() -> Result<()> {
 
 #[cfg(feature = "filesystem")]
 fn field_copy_receipt() -> Result<ProjectMergeReceipt> {
-    let mut receipt: ProjectMergeReceipt =
-        serde_json::from_str(include_str!("../../../harness/fixtures/v2/project-merge-receipt.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut receipt: ProjectMergeReceipt = serde_json::from_str(include_str!(
+        "../../../harness/fixtures/v2/project-merge-receipt.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     receipt.provider_proof.statement = serde_json::json!({
         "state": [null, true, "original-state-ref", {"revision": 9_007_199_254_740_991_u64}],
         "notice": {"original": false, "count": -1},

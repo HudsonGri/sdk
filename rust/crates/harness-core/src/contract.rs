@@ -131,9 +131,7 @@ mod json_match_tests;
 
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.
 #[doc(hidden)]
-pub fn json_from_slice<T: serde::de::DeserializeOwned>(
-    bytes: &[u8],
-) -> serde_json::Result<T> {
+pub fn json_from_slice<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
     let value = T::deserialize(&mut decoder)?;

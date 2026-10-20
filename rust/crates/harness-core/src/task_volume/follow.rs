@@ -121,11 +121,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     // Exact files and a follow cursor share one index observation. The index is
     // a leaf lock; provider IO is always outside it.
     #[doc(hidden)]
-    pub async fn snapshot_files(
-        &self,
-        keys: &[super::FileKey],
-        query: &Query,
-    ) -> Result<Snapshot> {
+    pub async fn snapshot_files(&self, keys: &[super::FileKey], query: &Query) -> Result<Snapshot> {
         self.refresh().await?;
         let index = self.index.lock().await;
         let files = keys

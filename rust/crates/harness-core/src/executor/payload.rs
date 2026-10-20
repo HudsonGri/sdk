@@ -66,10 +66,7 @@ pub(crate) fn retain_preparation<T>(
 }
 
 #[doc(hidden)]
-pub fn preparation_digest<T: Serialize>(
-    value: &T,
-    io: Option<&PreparationIo>,
-) -> Result<[u8; 32]> {
+pub fn preparation_digest<T: Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     #[cfg(feature = "filesystem")]

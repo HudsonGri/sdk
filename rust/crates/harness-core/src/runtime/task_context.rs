@@ -289,10 +289,7 @@ impl TaskContext {
 
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     #[doc(hidden)]
-    pub fn ancestors(
-        &self,
-        task: TaskId,
-    ) -> Result<impl futures::Stream<Item = Result<TaskId>>> {
+    pub fn ancestors(&self, task: TaskId) -> Result<impl futures::Stream<Item = Result<TaskId>>> {
         let state = Arc::clone(
             self.harness
                 .state

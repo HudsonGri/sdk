@@ -3,11 +3,7 @@
 //! Clients produce these values and the filesystem execution journal reads the
 //! published cancellation requests back, so they live below both; the
 //! `acyclic-harness` facade re-exports them from `client`.
-use crate::{
-    Error, OperationId, Result,
-    context::PinnedContextPath,
-    conversation::FileRef,
-};
+use crate::{Error, OperationId, Result, context::PinnedContextPath, conversation::FileRef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};

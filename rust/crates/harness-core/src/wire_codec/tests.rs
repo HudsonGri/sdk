@@ -2,8 +2,10 @@ use super::*;
 use prost::Message as _;
 
 pub(super) fn fixture() -> Vec<u8> {
-    let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("../../../harness/conformance/native-wasm-event-v2.json")).unwrap();
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../harness/conformance/native-wasm-event-v2.json"
+    ))
+    .unwrap();
     fixture["event_wire_hex"]
         .as_str()
         .unwrap()

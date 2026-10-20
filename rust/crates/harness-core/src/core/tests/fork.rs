@@ -8,9 +8,10 @@ mod grant_properties;
 
 #[test]
 fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
-    let mut seed: ForkSeed =
-        crate::contract::json_from_slice(include_bytes!("../../../../harness/fixtures/v2/fork-seed.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut seed: ForkSeed = crate::contract::json_from_slice(include_bytes!(
+        "../../../../harness/fixtures/v2/fork-seed.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     seed.operation_id = operation(8);
     seed.parent = issuer().audience;
     seed.parent_revision = 1;

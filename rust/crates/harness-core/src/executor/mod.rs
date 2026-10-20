@@ -103,9 +103,9 @@ mod payload;
 #[cfg(any(test, feature = "filesystem", feature = "wasm"))]
 #[doc(hidden)]
 pub use payload::decode_json;
-pub(crate) use payload::{load_json, load_model_request, retain_preparation};
 #[doc(hidden)]
 pub use payload::preparation_digest;
+pub(crate) use payload::{load_json, load_model_request, retain_preparation};
 mod admission;
 
 /// Internal replay batch size; callers may request any positive page allowance.
@@ -591,9 +591,9 @@ mod tests;
 
 mod validation;
 #[doc(hidden)]
-pub use validation::{check_json_schema_value, compile_json_schema, preparation_format};
-#[doc(hidden)]
 pub use validation::validate_json_schema_value;
+#[doc(hidden)]
+pub use validation::{check_json_schema_value, compile_json_schema, preparation_format};
 
 /// Bounded JSON shared by the existing IO adapters.
 pub mod json;

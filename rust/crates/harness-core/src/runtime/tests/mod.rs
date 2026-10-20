@@ -22,8 +22,10 @@ pub(super) fn dependency_fixture(requirements: &[(&str, &[&str])]) -> Result<Bin
 
 pub(super) fn admission_fixture() -> Result<TaskAdmissionRecord> {
     Ok(TaskAdmissionRecord::from_canonical_value(
-        serde_json::from_str(include_str!("../../../../harness/fixtures/v2/task-admission.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+        serde_json::from_str(include_str!(
+            "../../../../harness/fixtures/v2/task-admission.json"
+        ))
+        .map_err(|error| Error::Invalid(error.to_string()))?,
         &mut None,
     )?
     .0)
@@ -81,8 +83,10 @@ pub(super) fn resumable_fixture(
 }
 
 pub(super) fn file_fixture(path: &str, media_type: &str) -> Result<FileRef> {
-    let mut value: Value = serde_json::from_str(include_str!("../../../../harness/fixtures/v2/file-ref.json"))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let mut value: Value = serde_json::from_str(include_str!(
+        "../../../../harness/fixtures/v2/file-ref.json"
+    ))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     value["path"] = path.into();
     value["descriptor"]["media_type"] = media_type.into();
     let file: FileRef =

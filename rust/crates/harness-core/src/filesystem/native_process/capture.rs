@@ -31,9 +31,7 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
 }
 
 #[doc(hidden)]
-pub fn control_error(
-    cause: impl Into<Box<dyn std::error::Error + Send + Sync>>,
-) -> std::io::Error {
+pub fn control_error(cause: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Interrupted, cause)
 }
 
