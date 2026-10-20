@@ -14,9 +14,9 @@ use std::{
 };
 use uuid::Uuid;
 
-#[cfg(any(feature = "filesystem", feature = "test-support"))]
+#[cfg(any(test, feature = "filesystem", feature = "test-support"))]
 mod media_type;
-#[cfg(any(feature = "filesystem", feature = "test-support"))]
+#[cfg(any(test, feature = "filesystem", feature = "test-support"))]
 pub(crate) use media_type::classify as classify_file_media;
 
 /// Maximum normalized UTF-8 path length admitted by the Harness protocol.
