@@ -306,6 +306,29 @@ impl<'a> AuthorityWork<'a> {
         })
     }
 
+    pub(super) fn operation_key(
+        &mut self,
+        authority: AuthorityId,
+        operation: OperationId,
+        attempt: u64,
+    ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+        if attempt == 0 {
+            self.key(
+                b"operation\0",
+                &[&authority.into_bytes(), &operation.into_bytes()],
+            )
+        } else {
+            self.key(
+                b"operation-retry\0",
+                &[
+                    &authority.into_bytes(),
+                    &operation.into_bytes(),
+                    &attempt.to_le_bytes(),
+                ],
+            )
+        }
+    }
+
     pub(super) fn request_write_work(
         &self,
         request: &CommitRequest,

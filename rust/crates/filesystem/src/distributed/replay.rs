@@ -173,31 +173,56 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
+        self.authority_operation(authority, operation, work)
+            .await
+            .map(|(record, _)| record)
+    }
+
+    pub(super) async fn authority_operation(
+        &self,
+        authority: AuthorityId,
+        operation: OperationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Option<DurableCommit>, u64), AuthorityStoreError> {
         work.check()?;
         self.authority_require_live(authority, work).await?;
-        let key = work.key(
-            b"operation\0",
-            &[&authority.into_bytes(), &operation.into_bytes()],
-        )?;
-        let observed = self.authority_inspect(key, work).await;
-        if !work.is_native() {
-            work.check()?;
-        }
-        let observation = observed?;
-        if work.is_native() {
-            work.check()?;
-        }
-        let Some(observation) = &observation.0 else {
-            return Ok(None);
+        let mut attempt = 0_u64;
+        // Keep provider storage and its funding together, so the value drops
+        // before the allocation guard on every return and retry.
+        let retained = loop {
+            let key = work.operation_key(authority, operation, attempt)?;
+            let observed = self.authority_inspect(key, work).await;
+            if !work.is_native() {
+                work.check()?;
+            }
+            let observed = observed?;
+            if work.is_native() {
+                work.check()?;
+            }
+            let Some(observation) = &observed.0 else {
+                return Ok((None, attempt));
+            };
+            // A retained CAS rejection did not publish this operation. Its
+            // durable decision selects the next attempt, shared by all callers.
+            if matches!(
+                observation.outcome,
+                acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Conflict(_))
+            ) {
+                attempt = attempt.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+                continue;
+            }
+            break observed;
         };
-        let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
+        let observation = retained.0.as_ref().ok_or_else(|| {
+            authority_corrupt("operation decision disappeared after inspection", work)
+        })?;
+        let acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) =
+            &observation.outcome
+        else {
             return Err(authority_corrupt(
                 "operation identity retained another Stream mutation family",
                 work,
             ));
-        };
-        let CommitOutcome::Committed(envelope) = outcome else {
-            return Ok(None);
         };
         let path = work.path(authority, "/records", None)?;
         let mut output = None;
@@ -245,6 +270,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ));
         }
         work.check()?;
-        Ok(output)
+        Ok((output, attempt))
     }
 }
