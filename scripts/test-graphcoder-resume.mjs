@@ -9,8 +9,8 @@ import { fixture } from "./graphcoder-fixture.mjs";
 import { Terminal, screenText, hasBoldAnswer } from "./graphcoder-pty/screen.mjs";
 const [binary, mode = "headless"] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary));
-assert.ok(["headless", "interactive"].includes(mode));
-const interactive = mode === "interactive";
+assert.ok(["headless", "interactive", "interactive-prompt"].includes(mode));
+const interactive = mode !== "headless";
 const host = await fixture();
 host.holdCount("resume after kill");
 const args = [...host.args, ...(interactive ? [] : ["-p", "resume after kill"])];
@@ -42,7 +42,8 @@ const start = (first, resume = true) => {
       if (stopped) return;
       const visible = screenText(screen);
       if (first && !submitted && visible.includes("GraphCoder") && stdout.includes("\x1b[?25h")) {
-        submitted = true; child.stdin.write("/delegate resume after kill\r");
+        submitted = true;
+        child.stdin.write(`${mode === "interactive" ? "/delegate " : ""}resume after kill\r`);
       }
       if (!first && !complete && hasBoldAnswer(screen) && visible.includes("○")) {
         complete = true; child.stdin.write("\x04");
