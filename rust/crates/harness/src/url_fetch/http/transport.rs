@@ -34,30 +34,7 @@ pub(super) async fn send(
     let addresses = tokio::net::lookup_host((host.trim_matches(['[', ']']), port))
         .await
         .map_err(|_| transport_error(work, "cannot resolve fetch source"))?;
-    let mut selected = None;
-    for address in addresses {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            work.charge(acyclic_fs::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-        }
-        if require_public_address && !super::public_address(address.ip()) {
-            return Err(super::rejection(
-                work,
-                "fetch redirect targets a non-public address",
-            ));
-        }
-        if selected.is_none() {
-            selected = Some(address);
-        }
-    }
-    let address = selected.ok_or_else(|| transport_error(work, "cannot resolve fetch source"))?;
-    // Connect to the validated IP, never resolve the hostname a second time.
-    let socket = tokio::net::TcpStream::connect(address)
-        .await
-        .map_err(|_| transport_error(work, "cannot connect fetch source"))?;
+    let socket = validated_connect(addresses, require_public_address, work).await?;
     let socket = crate::search::http::transport::socket::Socket::new(socket, work, failure)?;
     let host_header = match endpoint.port() {
         Some(port) => format!("{host}:{port}"),
@@ -90,6 +67,51 @@ pub(super) async fn send(
     };
     drop(scratch);
     result
+}
+
+async fn validated_connect(
+    addresses: impl Iterator<Item = std::net::SocketAddr>,
+    require_public_address: bool,
+    work: NativeWork<'_>,
+) -> Result<tokio::net::TcpStream> {
+    let (validated, _held) = validated_addresses(addresses, require_public_address, work)?;
+    // Retain ordinary address fallback without a second hostname resolution.
+    tokio::net::TcpStream::connect(validated.as_slice())
+        .await
+        .map_err(|_| transport_error(work, "cannot connect fetch source"))
+}
+
+fn validated_addresses(
+    addresses: impl Iterator<Item = std::net::SocketAddr>,
+    require_public_address: bool,
+    work: NativeWork<'_>,
+) -> Result<(Vec<std::net::SocketAddr>, NativeCustody)> {
+    let mut held =
+        crate::tool::edit::allocation(work, std::mem::size_of::<Vec<std::net::SocketAddr>>())?;
+    let mut validated = Vec::new();
+    for address in addresses {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+        }
+        if require_public_address && !super::public_address(address.ip()) {
+            return Err(super::rejection(
+                work,
+                "fetch redirect targets a non-public address",
+            ));
+        }
+        let length = validated.len() + 1;
+        crate::tool::edit::reserve_vec(&mut held, &mut validated, length)?;
+        crate::tool::edit::charge(&held, std::mem::size_of_val(&address) as u64, 0)?;
+        validated.push(address);
+    }
+    if validated.is_empty() {
+        return Err(transport_error(work, "cannot resolve fetch source"));
+    }
+    Ok((validated, held))
 }
 
 async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
@@ -184,5 +206,51 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
             result.map_err(|_| transport_error(work, "fetch connection failed"))?;
             exchange.await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_error(error: std::io::Error) -> crate::Error {
+        crate::Error::Storage(error.to_string())
+    }
+
+    #[tokio::test]
+    async fn validated_addresses_keep_connection_fallback() -> Result<()> {
+        // Reserve a port without listening so the first candidate refuses the
+        // connection and cannot be reused by the real source listener.
+        let refused = tokio::net::TcpSocket::new_v4().map_err(fixture_error)?;
+        refused
+            .bind("127.0.0.1:0".parse().unwrap())
+            .map_err(fixture_error)?;
+        let source = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(fixture_error)?;
+        let addresses = [
+            refused.local_addr().map_err(fixture_error)?,
+            source.local_addr().map_err(fixture_error)?,
+        ];
+        let stream = validated_connect(addresses.into_iter(), false, None).await?;
+        assert_eq!(stream.peer_addr().map_err(fixture_error)?, addresses[1]);
+        source.accept().await.map_err(fixture_error)?;
+        Ok(())
+    }
+
+    #[test]
+    fn every_redirect_address_is_checked_before_connecting() -> Result<()> {
+        let addresses = [
+            "8.8.8.8:80".parse().unwrap(),
+            "127.0.0.1:9".parse().unwrap(),
+        ];
+        assert!(matches!(
+            validated_addresses(addresses.into_iter(), true, None),
+            Err(crate::Error::ToolRejected {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "fetch redirect targets a non-public address"
+            })
+        ));
+        Ok(())
     }
 }
