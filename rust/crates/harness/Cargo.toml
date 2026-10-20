@@ -148,6 +148,7 @@ path = "tests/client_interests.rs"
 [[test]]
 name = "client-query"
 path = "tests/client_query.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "client-swarm-views"
