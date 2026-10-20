@@ -398,6 +398,11 @@ impl PreparationIo {
                 .map_err(Into::into),
         }
     }
+    /// Charges the allocation operation of a `Box<T>` before it is made, so
+    /// a value boxed on a bounded preparation path is never a free allocation.
+    pub(crate) fn box_attempt<T>(&self) -> Result<()> {
+        self.allocation_attempt(std::mem::size_of::<T>() as u64)
+    }
     pub(crate) fn allocation_attempt(&self, bytes: u64) -> Result<()> {
         self.charged(WorkCounters {
             allocation_operations: u64::from(bytes != 0),

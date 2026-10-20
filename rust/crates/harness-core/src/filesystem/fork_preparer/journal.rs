@@ -327,7 +327,9 @@ fn decode_record_measured<T: bounded_io::PreparationRecord>(
         bytes,
         crate::wire::ErrorCode::Storage,
     )?;
-    // Boxed before the reservation settles: one copy of the value here.
+    // Boxed before the reservation settles: one copy of the value here. The
+    // box is one more allocation operation than the decoder charged.
+    io.box_attempt::<T>()?;
     let value = Box::new(value);
     reservation.into_retained()?;
     Ok(value)
