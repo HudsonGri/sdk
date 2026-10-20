@@ -20,6 +20,10 @@ pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
                     | "clean"
                     | "archive"
                     | "check-ignore"
+                    // A stash retains this reference for a later whole-
+                    // workspace restore. Capture this workspace's own
+                    // generation; a lazy reference would create a foreign fork.
+                    | "stash"
             )
         ),
     }

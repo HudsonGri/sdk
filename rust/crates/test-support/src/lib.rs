@@ -5,6 +5,8 @@
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
 pub mod differential;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod stack;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

@@ -13,9 +13,12 @@ pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
 #[cfg(not(feature = "filesystem"))]
 pub type ContentHold<'a> = std::marker::PhantomData<&'a ()>;
 
+/// A content result whose allocation remains owned until its physical drop.
+pub type BoundedContentFuture<'a, T> = BoundedOperationFuture<'a, Result<T>>;
+
 /// An operation future whose allocation remains owned until its physical drop.
-pub struct BoundedContentFuture<'a, T> {
-    pub(super) future: BoxFuture<'a, Result<T>>,
+pub struct BoundedOperationFuture<'a, T> {
+    pub(super) future: BoxFuture<'a, T>,
     #[cfg(feature = "filesystem")]
     pub(super) _hold: Option<ContentHold<'a>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -28,7 +31,7 @@ thread_local! {
     static PAD_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-impl<'a, T> BoundedContentFuture<'a, T> {
+impl<'a, T> BoundedOperationFuture<'a, T> {
     #[cfg(test)]
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn with_padded_frame<R>(enabled: bool, operation: impl FnOnce() -> R) -> R {
@@ -45,7 +48,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
     /// Admits the concrete future before invoking its builder.
     pub fn new<F>(io: Option<&'a ContentIo>, build: impl FnOnce() -> F) -> Result<Self>
     where
-        F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+        F: std::future::Future<Output = T> + acyclic_stream::ProviderTask + 'a,
     {
         #[cfg(feature = "filesystem")]
         let mut hold = None;
@@ -65,7 +68,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
                     )?
                 };
                 return Ok(Self {
-                    future: Box::pin(build()),
+                    future: acyclic_fs::in_heap(build),
                     _hold: None,
                     _native: Some(native),
                 });
@@ -94,7 +97,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             });
         }
         Ok(Self {
-            future: Box::pin(build()),
+            future: acyclic_fs::in_heap(build),
             #[cfg(feature = "filesystem")]
             _hold: hold,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -103,8 +106,8 @@ impl<'a, T> BoundedContentFuture<'a, T> {
     }
 }
 
-impl<T> std::future::Future for BoundedContentFuture<'_, T> {
-    type Output = Result<T>;
+impl<T> std::future::Future for BoundedOperationFuture<'_, T> {
+    type Output = T;
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

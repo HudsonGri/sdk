@@ -196,8 +196,8 @@ pub use attachments::{
 use buffers::*;
 pub(crate) use content::content_error;
 pub use content::{
-    BoundedContentFuture, CompositeContentVerifier, ContentHold, ContentIo, ContentMountResolver,
-    ContentPublisher, ContentResidencyVerifier,
+    BoundedContentFuture, BoundedOperationFuture, CompositeContentVerifier, ContentHold, ContentIo,
+    ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
 };
 pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
