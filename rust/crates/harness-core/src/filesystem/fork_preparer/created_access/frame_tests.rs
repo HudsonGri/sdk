@@ -19,7 +19,7 @@ fn native_verification_has_no_unfunded_inner_frame() {
         include_str!("../../task_commands/dispatch.rs"),
         include_str!("../../../../../harness/src/local/children/lazy.rs"),
         include_str!("../../../../../harness/src/local/workspace.rs"),
-        include_str!("../../../../../harness/src/local/checkout_tools/capture.rs"),
+        include_str!("../../../../../harness/src/local/checkout_tools/capture/mounted.rs"),
         include_str!("../../../tools/git/materialize.rs"),
     ] {
         assert!(
