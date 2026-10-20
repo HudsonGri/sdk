@@ -65,6 +65,11 @@ pub fn environment(name: &str) -> Option<std::ffi::OsString> {
 /// Shared property and mutation-fuzz cases using the harness API.
 pub mod fuzz_cases;
 
+/// Classifies candidate file bytes with the production media classifier.
+pub fn fuzz_classify_media(bytes: &[u8]) -> &'static str {
+    crate::conversation::classify_file_media(bytes)
+}
+
 /// Exercises the production directory selector against the independent reference.
 #[cfg(all(feature = "test-support", feature = "filesystem"))]
 pub fn fuzz_memory_directory(data: &[u8]) {
