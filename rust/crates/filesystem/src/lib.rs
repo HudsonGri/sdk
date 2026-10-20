@@ -80,6 +80,7 @@ pub mod foundation;
 mod fsevents;
 pub mod git_compat;
 mod heap_future;
+pub use heap_future::{HeapFuture, in_heap};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted;
 #[doc(hidden)]
