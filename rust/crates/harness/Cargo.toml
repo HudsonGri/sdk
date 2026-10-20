@@ -126,7 +126,7 @@ required-features = ["mcp-oauth"]
 [[test]]
 name = "mcp-durable"
 path = "tests/mcp_durable.rs"
-required-features = ["filesystem-local", "mcp-http"]
+required-features = ["filesystem-local", "mcp-http", "test-support"]
 
 [[test]]
 name = "client-commands"
@@ -187,9 +187,13 @@ required-features = ["filesystem"]
 
 [[example]]
 name = "approved-native-process"
-required-features = ["native-execution"]
+required-features = ["native-execution", "test-support"]
 test = true
 harness = false
+
+[[example]]
+name = "custom_executor"
+required-features = ["test-support"]
 
 [[example]]
 name = "explicit-image-conversion"
