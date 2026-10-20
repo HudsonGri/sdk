@@ -15,7 +15,7 @@ async fn host_state(service: &ConcurrentServiceControl) -> AdapterState {
 
 #[test]
 fn native_hosts_route_children_and_reject_forged_identity() {
-    run_large_stack("host-routing", || async {
+    run_async_test("host-routing", || async {
         for (host, spawn_tool) in [
             ("codex", "collaborationspawn_agent"),
             ("claude-code", "Agent"),
@@ -100,7 +100,7 @@ fn native_hosts_route_children_and_reject_forged_identity() {
 
 #[test]
 fn concurrent_spawns_from_one_fork_point_start_in_any_order() {
-    run_large_stack("concurrent-spawns", || async {
+    run_async_test("concurrent-spawns", || async {
         let fixture = Fixture::new();
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let hook = |event: &str, extra: Value| {
@@ -179,7 +179,7 @@ fn only_spawns_of_one_fork_point_are_interchangeable() {
 /// mount of that root shares, and each of them still publishes and unmounts.
 #[test]
 fn a_parent_write_between_spawns_separates_their_fork_points() {
-    run_large_stack("fork-points", || async {
+    run_async_test("fork-points", || async {
         let fixture = Fixture::new();
         let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
         let hook = |event: &str, extra: Value| {

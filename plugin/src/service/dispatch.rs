@@ -2,7 +2,18 @@
 use super::*;
 
 impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
-    async fn dispatch_request(
+    fn dispatch_request<'a>(
+        &'a self,
+        request: ControlRequest,
+        original_native_work: &'a mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ControlDispatchResponse>>
+    {
+        Box::pin(self.serve_request(request, original_native_work))
+    }
+}
+
+impl ConcurrentServiceControl {
+    async fn serve_request(
         &self,
         request: ControlRequest,
         original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,

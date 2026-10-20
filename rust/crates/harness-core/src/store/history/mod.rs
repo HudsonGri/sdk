@@ -37,6 +37,14 @@ pub enum HistoryContentFuture<'a, T> {
     Native(crate::NativeFutureBundle<'a, T>),
 }
 
+/// Boxes a history record after charging the box's allocation operation on
+/// the bounded work, so a record boxed under a ledger is never free.
+pub(crate) fn charged_box<T>(value: T, work: &mut Option<&mut dyn HistoryIo>) -> Result<Box<T>> {
+    if let Some(io) = work.as_deref_mut() {
+        io.allocation_attempt(std::mem::size_of::<T>() as u64)?;
+    }
+    Ok(Box::new(value))
+}
 impl<'a, T> HistoryContentFuture<'a, T> {
     pub(crate) fn new<'w: 'a, F>(
         work: &'a mut Option<&'w mut dyn HistoryIo>,

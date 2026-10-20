@@ -98,35 +98,45 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (proof, allocation) = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
-                let (proof, mut allocation) = crate::kernel::closure::ProofContext::new(
-                    &self.inner.objects,
-                    limits,
-                    crate::kernel::closure::ProofMeter::Native {
-                        original,
-                        cancellation,
-                    },
-                )
-                .prove(generation_root)
-                .await?;
+                let (proof, mut allocation) =
+                    crate::heap_future::in_heap_claimed(original, || async {
+                        crate::kernel::closure::ProofContext::new(
+                            &self.inner.objects,
+                            limits,
+                            crate::kernel::closure::ProofMeter::Native {
+                                original,
+                                cancellation,
+                            },
+                        )
+                        .prove(generation_root)
+                        .await
+                    })?
+                    .await?;
                 (
                     proof,
                     KernelOwnedAllocation::NativeOriginal(allocation.take_native()?),
                 )
             }
             _ => {
-                let result = prove_generation_closure(
-                    &self.inner.objects,
-                    generation_root,
-                    limits,
-                    accounting.remaining()?,
-                    cancellation,
-                )
-                .await;
+                // The frame stays reserved while its receipt joins the ledger.
+                let (result, reservation) =
+                    crate::heap_future::in_heap_budgeted(&mut *accounting, |remaining| {
+                        prove_generation_closure(
+                            &self.inner.objects,
+                            generation_root,
+                            limits,
+                            remaining,
+                            cancellation,
+                        )
+                    })?
+                    .await;
                 let work = match &result {
                     Ok(proof) => proof.work,
                     Err(failure) => *failure.work,
                 };
-                merge_creation_backend_work(accounting, work)?;
+                let merged = merge_creation_backend_work(accounting, work);
+                crate::heap_future::FrameLedger::release_frame(&mut *accounting, reservation)?;
+                merged?;
                 let proof = result.map_err(|failure| FsError::from(failure.error))?;
                 let bytes = usize_to_u64(proof.objects.capacity() * size_of::<ObjectId>());
                 let allocation = accounting.claim_owned(bytes, 0)?;

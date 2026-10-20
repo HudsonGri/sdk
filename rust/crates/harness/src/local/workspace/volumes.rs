@@ -285,7 +285,10 @@ pub(in crate::local) async fn project_unscoped(mounts: &Mounts) -> Result<()> {
     for (relative, mount) in mounts.mounts() {
         if let Some(source) = &mount.view.source {
             let root = projection_root(&source.destination, relative)?;
-            drop(source.enter(root, relative, mount.mode.read_only()).await?);
+            drop(
+                acyclic_fs::in_heap(|| source.enter(root, relative, mount.mode.read_only()))
+                    .await?,
+            );
         }
     }
     Ok(())
