@@ -1,5 +1,33 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn held_canonical_directory_does_not_scan_unrelated_siblings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    for index in 0..128 {
+        std::fs::create_dir(temporary.path().join(format!("sibling-{index}")))?;
+    }
+    let wanted = temporary.path().join("wanted");
+    std::fs::create_dir(&wanted)?;
+    let directory = Dir::open_ambient_dir(&wanted, cap_std::ambient_authority())?;
+    let cancellation = crate::CancellationToken::new();
+    let mut work = DemandWork::new(
+        WorkBudget {
+            backend_read_operations: 8,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    let (actual, allocation) = canonical_directory_path_held(directory, &mut work)?;
+    assert_eq!(actual, std::fs::canonicalize(&wanted)?);
+    assert_eq!(work.work.backend_read_operations, 4);
+    drop(actual);
+    work.release(allocation)?;
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn held_canonical_directory_observes_renamed_object_not_replaced_spelling()
@@ -16,6 +44,30 @@ fn held_canonical_directory_observes_renamed_object_not_replaced_spelling()
     assert_eq!(actual, std::fs::canonicalize(&moved)?);
     assert_ne!(actual, std::fs::canonicalize(&original)?);
     assert_eq!(work.live_allocation_bytes(), actual.capacity() as u64);
+    drop(actual);
+    work.release(allocation)?;
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn held_canonical_directory_needs_search_permission_without_directory_read_permission()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temporary = tempfile::tempdir()?;
+    let wanted = temporary.path().join("execute-only");
+    std::fs::create_dir(&wanted)?;
+    let expected = wanted.canonicalize()?;
+    let mut work = ordinary_work();
+    let directory = unix_name(wanted.as_os_str(), &mut work, |name, work| {
+        open_unix(libc::AT_FDCWD, name, cwd::cwd_metadata_flags(), work).map(Dir::from_std_file)
+    })?;
+    std::fs::set_permissions(&wanted, std::fs::Permissions::from_mode(0o100))?;
+    let result = canonical_directory_path_held(directory, &mut work);
+    std::fs::set_permissions(&wanted, std::fs::Permissions::from_mode(0o700))?;
+    let (actual, allocation) = result?;
+    assert_eq!(actual, expected);
     drop(actual);
     work.release(allocation)?;
     assert_eq!(work.live_allocation_bytes(), 0);
