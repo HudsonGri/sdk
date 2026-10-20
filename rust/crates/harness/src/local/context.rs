@@ -241,3 +241,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(feature = "test-support")]
+pub(crate) use guidance::fuzz_file_guidance;

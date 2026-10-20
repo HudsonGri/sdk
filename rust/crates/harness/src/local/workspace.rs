@@ -434,3 +434,6 @@ pub(super) async fn open_volume(
     )
     .await
 }
+
+#[cfg(all(feature = "test-support", unix))]
+pub(crate) use volumes::fuzz_mount_exclusion;

@@ -63,3 +63,7 @@ pub const KEY_DOMAIN: &[u8] = b"acyclic.auth.v1/key\0";
 pub const KEYRING_DOMAIN: &[u8] = b"acyclic.auth.v1/keyring\0";
 /// Supported capability format.
 pub const VERSION: u32 = 1;
+
+/// Shared property and mutation-fuzz exercises.
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;

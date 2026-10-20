@@ -14,8 +14,7 @@ mod parsing;
 #[path = "goal_files/writes.rs"]
 mod writes;
 
-#[path = "../../harness-fuzz/fuzz_targets/goal_parser_input.rs"]
-mod goal_parser_input;
+use acyclic_harness::test_support::fuzz_cases::goal_parser_input;
 
 #[test]
 fn checked_in_fuzz_corpus() -> Result<()> {

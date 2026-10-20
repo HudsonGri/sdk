@@ -386,7 +386,10 @@ fn failed_message_is_formatted_under_the_native_ledger() -> Result<()> {
     let after = work.receipt();
     assert_eq!(message, error.to_string());
     assert!(after.allocation_operations > before.allocation_operations);
-    assert!(after.peak_allocation_bytes >= message.len() as u64, "{after:?}");
+    assert!(
+        after.peak_allocation_bytes >= message.len() as u64,
+        "{after:?}"
+    );
     // Negative control: the unaccounted formatting this replaces charges the ledger nothing.
     let unaccounted = error.to_string();
     assert_eq!(work.receipt(), after);

@@ -1,5 +1,5 @@
 //! Request canonicalization and unambiguous DNS/IP grant admission properties.
-mod common;
+use acyclic_auth::fuzzing::claims as common;
 use acyclic_auth::{authority::*, contract::*, socket::*, valid_resource};
 use common::*;
 use proptest::prelude::*;

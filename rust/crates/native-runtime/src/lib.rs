@@ -108,3 +108,9 @@ use health::{FILE_HEALTH, FileHealthRegistry, poison_file_health, shared_file_he
 
 #[cfg(test)]
 mod tests;
+
+/// Exercise write-range admission without submitting native I/O.
+#[cfg(feature = "test-support")]
+pub fn check_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
+    file::validate_write_batch(writes)
+}

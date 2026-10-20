@@ -20,9 +20,6 @@ rustix = { workspace = true, features = ["fs", "net"] }
 [dev-dependencies]
 loom = "0.7"
 
-[[test]]
-name = "model"
-path = "tests/model.rs"
 
 [[bin]]
 name = "access"

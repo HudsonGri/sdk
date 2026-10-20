@@ -115,3 +115,6 @@ use crate::executor::stock_boundary;
 pub use volumes::{
     bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
+
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+pub(crate) use reads::fuzz_classify_media;

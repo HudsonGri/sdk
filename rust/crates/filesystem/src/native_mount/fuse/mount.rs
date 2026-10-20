@@ -253,3 +253,8 @@ fn spawn_mount_helper(
     // otherwise suppresses EOF when the helper exits without sending a device.
     command.spawn()
 }
+
+#[cfg(all(feature = "fuzzing", target_os = "linux"))]
+pub(crate) fn fuzz_reply(input: &[u8]) {
+    reply::check::check(input);
+}
