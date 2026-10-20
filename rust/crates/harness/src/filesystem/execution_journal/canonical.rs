@@ -1,5 +1,7 @@
 use super::*;
 
+mod output;
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider,
@@ -321,19 +323,8 @@ where
             let records = crate::executor::retain_preparation((records, hold))?;
             let mut prepared = None;
             let mut request = None;
-            let mut output = String::new();
+            let mut output = output::CanonicalSummaryOutput::default();
             let mut admission = ModelEventAdmission::default();
-            let mut completed_message = false;
-            for record in records.iter().rev() {
-                crate::model::charge_items(io, 1)?;
-                if let ExecutionEvent::Model { event, .. } = &record.event {
-                    let event = crate::executor::load_json::<ModelEvent>(self, event, io).await?;
-                    if matches!(event.0, ModelEvent::MessageCompleted { .. }) {
-                        completed_message = true;
-                        break;
-                    }
-                }
-            }
             for record in &records {
                 crate::model::charge_items(io, 1)?;
                 match &record.event {
@@ -358,13 +349,8 @@ where
                             crate::executor::load_json::<ModelEvent>(self, event, io).await?;
                         admission.observe(&event.0, limits, io)?;
                         match &event.0 {
-                            ModelEvent::Content { delta } if !completed_message => {
-                                canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
-                            }
-                            ModelEvent::Content { .. } => {}
-                            ModelEvent::MessageCompleted { text } => {
-                                output.clear();
-                                canonical_push_text(&mut output, text, limits.render_bytes, io)?;
+                            ModelEvent::Content { .. } | ModelEvent::MessageCompleted { .. } => {
+                                output.observe(&event.0, limits.render_bytes, io)?
                             }
                             ModelEvent::Completed { .. }
                             | ModelEvent::Reasoning { .. }
@@ -387,6 +373,7 @@ where
                     }
                 }
             }
+            let output = output.finish(io)?;
             if prepared
                 .as_ref()
                 .and_then(|projection| projection.0.canonical.as_ref())
