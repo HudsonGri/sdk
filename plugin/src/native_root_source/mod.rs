@@ -143,6 +143,7 @@ mod tests {
         work: &NativeMaterializationWork,
     ) -> RootResult<NativeRootIdentity> {
         let task = fixture.root_request.binding.task_id;
+        work.charge(WorkCounters::UNCHARGED)?;
         if fixture.context.durable_task_id() != Some(task) || fixture.journal.task_id() != task {
             return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -162,14 +163,11 @@ mod tests {
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
             )),
         )?;
+        // As in the SDK volume callback, the issued owner retains and checks
+        // its original metadata; the source invocation funds its own I/O.
         fixture
-            .journal
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
-            )
+            .context
+            .verify_volume_owner(&fixture.journal, &fixture.owner_work)
             .await?;
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
@@ -255,6 +253,7 @@ mod tests {
     async fn native_root_cancellation_and_quota_preserve_the_original_prefix() {
         let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
+        std::fs::write(path.join("observed.txt"), b"original").unwrap();
         let registry = SharedRootRegistry::default();
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation).unwrap();
@@ -612,7 +611,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, physical.source.reference());
-        assert_eq!(query.live_allocation_bytes(), 0);
+        assert_eq!(
+            query.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
         assert!(close_native_watch(&physical, &birth).unwrap());
     }
     #[tokio::test]
@@ -677,7 +679,10 @@ mod tests {
         let prefix = failed.receipt();
         assert!(prefix.backend_read_operations > 0);
         assert_eq!(physical.source.reference(), prior);
-        assert_eq!(failed.live_allocation_bytes(), 0);
+        assert_eq!(
+            failed.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
         // This is a separate legitimate acquisition, never uncancelling or
         // resetting the exhausted original operation. Warm lazy restore must
         // execute the same real required-rescan transaction before exposing
