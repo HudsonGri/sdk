@@ -6,7 +6,7 @@ use crate::{
 };
 use acyclic_fs::performance::BOUNDARY_BUDGET;
 use acyclic_harness::{
-    LocalHarness, OperationId,
+    LocalHarness,
     client::{DiffLimits, DiffPath, DiffPublication, DiffView},
     context::{CompactionPolicy, ContextRoot, PinnedContextPath},
     conversation::{FileDescriptor, FileRef},
