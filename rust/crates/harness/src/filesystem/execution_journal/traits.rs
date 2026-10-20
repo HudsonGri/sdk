@@ -197,7 +197,7 @@ where
                 let span = obs_span!("acyclic.harness.journal.append");
                 crate::obs::traced_future(
                     span,
-                    self.append_validated(operation, None, key, event, None),
+                    self.append_projected(operation, None, key, event, None),
                 )
                 .await
                 .map(|_| ())
@@ -207,23 +207,20 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
-                let result = async {
-                    self.append_validated(operation, None, key, event, Some(&local))
-                        .await?;
-                    self.publish_chunk(key, event, Some(&local)).await
-                }
-                .await;
+                let result = self
+                    .append_projected(operation, None, key, event, Some(&local))
+                    .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
                 return result.map(|_| ());
             }
             let span = obs_span!("acyclic.harness.journal.append");
-            traced(span, async move {
-                self.append_validated(operation, None, key, event, io)
-                    .await?;
-                self.publish_chunk(key, event, io).await
-            })
+            traced(
+                span,
+                self.append_projected(operation, None, key, event, io),
+            )
             .await
+            .map(|_| ())
         })
     }
 
@@ -243,7 +240,7 @@ where
                 );
                 crate::obs::traced_future(
                     span,
-                    self.append_validated(operation, Some(expected_tail), key, event, None),
+                    self.append_projected(operation, Some(expected_tail), key, event, None),
                 )
                 .await
             });
@@ -253,7 +250,7 @@ where
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
                 let result = self
-                    .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                    .append_projected(operation, Some(expected_tail), key, event, Some(&local))
                     .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
@@ -265,7 +262,7 @@ where
             );
             traced(
                 span,
-                self.append_validated(operation, Some(expected_tail), key, event, io),
+                self.append_projected(operation, Some(expected_tail), key, event, io),
             )
             .await
         })

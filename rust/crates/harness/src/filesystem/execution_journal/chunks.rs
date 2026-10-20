@@ -8,8 +8,29 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// The single canonical append: every accepted append, metered or
+    /// unmetered, conditional or not, projects its visible response chunk.
+    /// A refused compare-and-append projects nothing.
+    pub(super) async fn append_projected(
+        &self,
+        operation: OperationId,
+        expected_tail: Option<u64>,
+        key: &str,
+        event: &ExecutionEvent,
+        io: Option<&PreparationIo>,
+    ) -> Result<bool> {
+        let accepted = self
+            .append_validated(operation, expected_tail, key, event, io)
+            .await?;
+        if accepted {
+            self.publish_chunk(operation, key, event, io).await?;
+        }
+        Ok(accepted)
+    }
+
     pub(super) async fn publish_chunk(
         &self,
+        operation: OperationId,
         key: &str,
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
@@ -38,15 +59,14 @@ where
             .next()
             .and_then(|part| part.parse().ok())
             .ok_or_else(|| Error::Invalid("model event has no canonical ordinal".into()))?;
+        let task = Component::new(owner.task_id().to_string())?;
+        let turn = files.model_turn(operation, *step, &task, io).await?;
         let value = FileValue {
             requester: None,
             publication: None,
             key: FileKey::Task {
-                task: Component::new(owner.task_id().to_string())?,
-                file: TaskFile::Chunk {
-                    turn: u64::from(*step),
-                    sequence,
-                },
+                task,
+                file: TaskFile::Chunk { turn, sequence },
             },
             channel: Some(channel),
             bytes: delta.into_bytes().into(),

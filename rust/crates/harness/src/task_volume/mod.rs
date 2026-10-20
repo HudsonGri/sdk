@@ -15,6 +15,8 @@ mod heads;
 mod listing;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
+#[cfg(feature = "filesystem")]
+mod model_turn;
 mod page;
 mod plan_name;
 mod publication;

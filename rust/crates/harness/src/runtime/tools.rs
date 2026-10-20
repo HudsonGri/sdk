@@ -254,7 +254,10 @@ pub struct ToolContext {
     pub(super) task: Arc<TaskContext>,
     pub(super) operation_id: OperationId,
     pub(super) call_id: String,
-    pub(crate) model_step: u32,
+    /// The model step that requested this call, within `model_operation`.
+    /// Bound together; an independently admitted call is its own step zero.
+    model_step: u32,
+    model_operation: OperationId,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_interactions: Option<Arc<dyn InteractionRouter>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -270,6 +273,7 @@ impl Clone for ToolContext {
             operation_id: self.operation_id,
             call_id: self.call_id.clone(),
             model_step: self.model_step,
+            model_operation: self.model_operation,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -284,6 +288,17 @@ impl Clone for ToolContext {
 }
 
 impl ToolContext {
+    /// Binds the complete model identity whose turn this call's files join.
+    pub(crate) fn bind_model_turn(&mut self, operation: OperationId, step: u32) {
+        self.model_operation = operation;
+        self.model_step = step;
+    }
+
+    /// Complete model identity (execution operation, model step) of this call.
+    pub(crate) fn model_turn(&self) -> (OperationId, u32) {
+        (self.model_operation, self.model_step)
+    }
+
     /// Creates a tool context with separate runtime and provider call identities.
     pub fn new(
         task: Arc<TaskContext>,
@@ -347,6 +362,7 @@ impl ToolContext {
             operation_id,
             call_id,
             model_step: 0,
+            model_operation: operation_id,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

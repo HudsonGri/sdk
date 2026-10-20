@@ -19,7 +19,7 @@ pub(super) struct Output {
     task: Component,
     call: Component,
     sequence: (u64, u64),
-    step: u64,
+    turn: u64,
     runtime: tokio::runtime::Handle,
 }
 
@@ -34,6 +34,9 @@ impl Output {
         // Runtime operation IDs are canonical and unique across model turns.
         // The request retains the provider's call_id unchanged.
         let call = Component::new(context.operation_id().to_string())?;
+        // Tool files share the turn of the model step that requested them.
+        let (operation, step) = context.model_turn();
+        let turn = volume.model_turn(operation, step, &task, None).await?;
         let generation = volume.inner.head().await?;
         let mut output = Self {
             owner,
@@ -42,7 +45,7 @@ impl Output {
             task,
             call,
             sequence: (0, 0),
-            step: u64::from(context.model_step),
+            turn,
             runtime: tokio::runtime::Handle::current(),
         };
         output.publish(ToolFile::Request, request.into()).await?;
@@ -55,7 +58,7 @@ impl Output {
             FileKey::Task {
                 task: self.task.clone(),
                 file: TaskFile::Tool {
-                    turn: self.step,
+                    turn: self.turn,
                     call: self.call.clone(),
                     file,
                 },

@@ -117,6 +117,20 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         })
     }
 
+    /// Indexed identity lookup and its CAS cut share one leaf-lock observation.
+    /// A projection binding's accepted position is its ordered, injective turn ID.
+    pub(crate) async fn file_position(
+        &self,
+        key: &super::FileKey,
+    ) -> Result<(Option<u64>, Generation)> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        Ok((
+            index.files.get(key).map(|stored| stored.position),
+            self.generation(&index),
+        ))
+    }
+
     // Exact files and a follow cursor share one index observation. The index is
     // a leaf lock; provider IO is always outside it.
     pub(crate) async fn snapshot_files(

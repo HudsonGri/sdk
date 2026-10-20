@@ -1,4 +1,5 @@
-// Original factories: retain their native branches and concrete frame layouts.
+// Boxed reference factories retain the current operations and native branches.
+// The independent omitted-projection control below preserves the earlier bug.
 use super::*;
 
 thread_local! {
@@ -71,7 +72,7 @@ pub(super) fn append<'a>(
         let span = obs_span!("acyclic.harness.journal.append");
         trace_frame(
             span,
-            journal.append_validated(operation, None, key, event, None),
+            journal.append_projected(operation, None, key, event, None),
         )
         .await
         .map(|_| ())
@@ -80,11 +81,44 @@ pub(super) fn append<'a>(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let local = PreparationIo::from_native_work(work)?;
+            let result = journal
+                .append_projected(operation, None, key, event, Some(&local))
+                .await;
+            let retained = local.owned_bytes()?;
+            drop(local.into_native_custody(retained)?);
+            return result.map(|_| ());
+        }
+        let span = obs_span!("acyclic.harness.journal.append");
+        original_trace(
+            0,
+            span,
+            journal.append_projected(operation, None, key, event, io),
+        )
+        .await
+        .map(|_| ())
+    })
+}
+
+/// The earlier omission, kept as the negative control: unmetered appends
+/// never projected their accepted chunk. It records no layout measurement.
+pub(super) fn append_without_projection<'a>(
+    journal: &'a Journal,
+    operation: OperationId,
+    key: &'a str,
+    event: &'a ExecutionEvent,
+    io: Option<&'a PreparationIo>,
+) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+    crate::conversation::BoundedContentFuture::new(io, || async move {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            let local = PreparationIo::from_native_work(work)?;
             let result = async {
                 journal
                     .append_validated(operation, None, key, event, Some(&local))
                     .await?;
-                journal.publish_chunk(key, event, Some(&local)).await
+                journal
+                    .publish_chunk(operation, key, event, Some(&local))
+                    .await
             }
             .await;
             let retained = local.owned_bytes()?;
@@ -92,12 +126,12 @@ pub(super) fn append<'a>(
             return result.map(|_| ());
         }
         let span = obs_span!("acyclic.harness.journal.append");
-        original_trace(0, span, async move {
+        trace_frame(span, async move {
             journal
                 .append_validated(operation, None, key, event, io)
                 .await?;
             if io.is_some() {
-                journal.publish_chunk(key, event, io).await?;
+                journal.publish_chunk(operation, key, event, io).await?;
             }
             Ok(())
         })
@@ -120,7 +154,7 @@ pub(super) fn append_if_tail<'a>(
         );
         trace_frame(
             span,
-            journal.append_validated(operation, Some(expected_tail), key, event, None),
+            journal.append_projected(operation, Some(expected_tail), key, event, None),
         )
         .await
     });
@@ -129,7 +163,7 @@ pub(super) fn append_if_tail<'a>(
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let local = PreparationIo::from_native_work(work)?;
             let result = journal
-                .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                .append_projected(operation, Some(expected_tail), key, event, Some(&local))
                 .await;
             let retained = local.owned_bytes()?;
             drop(local.into_native_custody(retained)?);
@@ -142,7 +176,7 @@ pub(super) fn append_if_tail<'a>(
         original_trace(
             1,
             span,
-            journal.append_validated(operation, Some(expected_tail), key, event, io),
+            journal.append_projected(operation, Some(expected_tail), key, event, io),
         )
         .await
     })

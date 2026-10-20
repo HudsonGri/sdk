@@ -126,7 +126,8 @@ async fn prepare(
 }
 
 // Both executor runs use the same entrypoints, backed by disjoint stores.
-struct Choice<'a>(&'a Journal, bool);
+// (journal, retain the boxed factory, omit the disposable projection).
+struct Choice<'a>(&'a Journal, bool, bool);
 macro_rules! factories {
     ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $out:ty;)*) => {
         impl ExecutionJournal for Choice<'_> {
@@ -137,6 +138,13 @@ macro_rules! factories {
                 if self.1 { legacy::$name(self.0, $($arg,)* io) }
                 else { self.0.$name($($arg,)* io) }
             })*
+            fn append<'a>(&'a self, operation: OperationId, key: &'a str,
+                event: &'a ExecutionEvent, io: Option<&'a PreparationIo>)
+                -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+                if self.2 { legacy::append_without_projection(self.0, operation, key, event, io) }
+                else if self.1 { legacy::append(self.0, operation, key, event, io) }
+                else { self.0.append(operation, key, event, io) }
+            }
             fn append_if_tail<'a>(&'a self, operation: OperationId, tail: u64, key: &'a str,
                 event: &'a ExecutionEvent, io: Option<&'a PreparationIo>)
                 -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
@@ -158,7 +166,6 @@ macro_rules! factories {
     };
 }
 factories! {
-    fn append(operation: OperationId, key: &'a str, event: &'a ExecutionEvent) -> ();
     fn replay(operation: OperationId, tail: u64, maximum: u32) -> Vec<ExecutionRecord>;
     fn load(file: &'a FileRef) -> acyclic_stream::OwnedBytes;
     fn stage(operation: OperationId, key: &'a str, bytes: &'a [u8], media: &'static str) -> FileRef;
@@ -205,7 +212,7 @@ fn construct(
     file: &FileRef,
     io: &PreparationIo,
 ) -> Result<()> {
-    let journal = Choice(journal, old);
+    let journal = Choice(journal, old, false);
     match mode {
         0 => drop(journal.append(operation, "key", event, Some(io))?),
         1 => drop(journal.append_if_tail(operation, 0, "key", event, Some(io))?),
@@ -307,6 +314,7 @@ async fn turn(
     deltas: usize,
     broken: bool,
     host: Option<Arc<dyn crate::runtime::DurableTaskHost>>,
+    omit_projection: bool,
 ) -> Result<[Vec<Vec<u8>>; 3]> {
     use crate::{
         context::ContextPipeline,
@@ -315,7 +323,12 @@ async fn turn(
         test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
         tool::ToolRegistry,
     };
-    let operation = OperationId::from_bytes([4; 16]);
+    let operation = journal
+        .owner
+        .as_ref()
+        .map_or(OperationId::from_bytes([4; 16]), |(_, operation)| {
+            *operation
+        });
     let events = (0..deltas)
         .map(|i| {
             ScriptedEvent::Event(ModelEvent::Content {
@@ -352,7 +365,7 @@ async fn turn(
         selected_context: None,
         max_steps: 1,
     };
-    let selected = Choice(journal, old);
+    let selected = Choice(journal, old, omit_projection);
     let output = executor.execute(input.clone(), &selected).await?;
     assert_eq!(executor.execute(input, &selected).await?, output);
     assert_eq!(provider.remaining(), 0);
@@ -375,65 +388,113 @@ async fn turn(
     Ok([requests, raw, publications])
 }
 
+async fn projected_fixture(
+    operation: OperationId,
+) -> Result<(
+    Journal,
+    Arc<crate::durable_host::CoordinatorTaskHost<acyclic_stream::MemoryStream>>,
+)> {
+    let fixture = crate::durable_host::tests::fixture::Fixture::new(
+        Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+            Default::default(),
+            Arc::new(Clock),
+        )),
+        acyclic_fs::Fs::memory(),
+        serde_json::json!({"type":"integer"}),
+        Some(crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 0,
+            model_steps: 2,
+        }),
+        &[],
+    )
+    .await?;
+    let journal = fixture.execution(fixture.running(80).await?, operation)?;
+    let files = crate::task_volume::TaskFiles::open(
+        fixture.stream.clone(),
+        &fixture.storage,
+        &fixture.issuer.verifier(&mut None)?,
+        &journal.scope,
+        65_536,
+    )
+    .await?;
+    Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
+}
+
+async fn model_turn(
+    journal: &Journal,
+    operation: OperationId,
+    step: u32,
+    task: &crate::task_volume::Component,
+    io: Option<&PreparationIo>,
+) -> Result<u64> {
+    journal
+        .task_files
+        .as_ref()
+        .unwrap()
+        .model_turn(operation, step, task, io)
+        .await
+}
+
+#[tokio::test]
+async fn repeated_executions_keep_full_identities_in_accepted_order() -> Result<()> {
+    use crate::task_volume::{Query, TaskFile};
+    // Equal first fifteen bytes reject truncated-prefix identities; reverse
+    // UUID order rejects sorting by caller-supplied operation bytes.
+    let first = OperationId::from_bytes([8; 16]);
+    let mut lower = [8; 16];
+    lower[15] = 7;
+    let second = OperationId::from_bytes(lower);
+    let (mut journal, host) = projected_fixture(first).await?;
+    for (operation, text) in [(first, "first"), (second, "second")] {
+        journal.owner.as_mut().unwrap().1 = operation;
+        journal.execution = Some((operation, operation));
+        turn(&journal, false, text, 1, false, Some(host.clone()), false).await?;
+    }
+    let files = journal.task_files.as_ref().unwrap();
+    let task = crate::task_volume::Component::new(
+        journal.owner.as_ref().unwrap().0.task_id().to_string(),
+    )?;
+    let chunks = files.snapshot(&Query::Turns(task.clone()), 16).await?.files;
+    assert_eq!(chunks.len(), 2, "repeated model step zero lost a response");
+    assert_eq!(chunks[0].bytes.as_ref(), b"0:first");
+    assert_eq!(chunks[1].bytes.as_ref(), b"0:second");
+    let turns: Vec<_> = chunks
+        .iter()
+        .map(|chunk| match chunk.key {
+            crate::task_volume::FileKey::Task {
+                file: TaskFile::Chunk { turn, .. },
+                ..
+            } => turn,
+            _ => panic!("model metadata leaked into visible turns"),
+        })
+        .collect();
+    assert!(
+        turns[0] < turns[1],
+        "operation bytes replaced publication chronology"
+    );
+    assert_eq!(model_turn(&journal, first, 0, &task, None).await?, turns[0]);
+    assert_eq!(model_turn(&journal, second, 0, &task, None).await?, turns[1]);
+    assert_ne!(model_turn(&journal, second, 1, &task, None).await?, turns[1]);
+    Ok(())
+}
+
 #[test]
-fn journal_unmetered_task_files_match_main() {
+fn unmetered_chunks_follow_canonical_publication_and_replay() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let operation = OperationId::from_bytes([4; 16]);
-    let initialize = || {
-        runtime
-            .block_on(async {
-                let fixture = crate::durable_host::tests::fixture::Fixture::new(
-                    Arc::new(acyclic_stream::MemoryStream::new_with_clock(
-                        Default::default(),
-                        Arc::new(Clock),
-                    )),
-                    acyclic_fs::Fs::memory(),
-                    serde_json::json!({"type":"integer"}),
-                    Some(crate::scheduler::SessionLimits {
-                        active_tasks: 1,
-                        total_tasks: 1,
-                        depth: 0,
-                        model_steps: 2,
-                    }),
-                    &[],
-                )
-                .await?;
-                let journal = fixture.execution(fixture.running(80).await?, operation)?;
-                let files = crate::task_volume::TaskFiles::open(
-                    fixture.stream.clone(),
-                    &fixture.storage,
-                    &fixture.issuer.verifier(&mut None)?,
-                    &journal.scope,
-                    65_536,
-                )
-                .await?;
-                Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
-            })
-            .unwrap()
-    };
-    for broken in [false, true] {
-        let [expected, actual] =
+    let initialize = || runtime.block_on(projected_fixture(operation)).unwrap();
+    {
+        let [omitted, published] =
             differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
                 runtime.block_on(async {
-                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
+                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host), old)
                         .await
                         .unwrap();
-                    if broken && !old {
-                        // Restore the erroneous unconditional publication on a fresh
-                        // candidate fixture; canonical journal bytes stay unchanged.
-                        let records = journal.records(operation, 0, 64, None).await.unwrap();
-                        let record = records
-                            .iter()
-                            .find(|r| matches!(r.event, ExecutionEvent::Model { .. }))
-                            .unwrap();
-                        journal
-                            .publish_chunk("model:0:event:0", &record.event, None)
-                            .await
-                            .unwrap();
-                    }
                     let snapshot = journal
                         .task_files
                         .as_ref()
@@ -444,19 +505,149 @@ fn journal_unmetered_task_files_match_main() {
                     (artifacts, snapshot.files)
                 })
             });
-        assert_eq!(expected.0.0, actual.0.0);
-        assert!(expected.0.1.is_empty());
-        if broken {
-            assert_eq!(actual.0.1.len(), 1);
-            assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
-            assert_ne!(
-                expected, actual,
-                "unconditional publication was not detected"
+        // The retained implementation is a negative control: identical model
+        // requests, canonical event bodies and referenced publications never
+        // reached the visible files. The added projection advances the shared
+        // stream's commit identity before the final completion append.
+        let (before, after) = (&omitted.0.0, &published.0.0);
+        assert_eq!(before[0], after[0]);
+        assert_eq!(before[2], after[2]);
+        assert_eq!(before[1].len(), after[1].len());
+        assert_eq!(&before[1][..4], &after[1][..4]);
+        assert_eq!(before[1].len(), 5);
+        for (left, right) in before[1].iter().zip(&after[1]) {
+            assert_eq!(&left[..8], &right[..8], "canonical sequence changed");
+            assert_eq!(
+                &left[40..],
+                &right[40..],
+                "timestamp or event bytes changed"
             );
-        } else {
-            assert_eq!(expected, actual);
         }
+        assert_ne!(&before[1][4][8..40], &after[1][4][8..40]);
+        assert!(omitted.0.1.is_empty());
+        assert_eq!(published.0.1.len(), 2);
+        assert_eq!(published.0.1[1].bytes.as_ref(), b"0:chunk");
     }
+    let (journal, host) = initialize();
+    runtime.block_on(async {
+        turn(&journal, true, "conditional", 1, false, Some(host), true)
+            .await
+            .unwrap();
+        let records = journal.records(operation, 0, 64, None).await.unwrap();
+        let model = records
+            .iter()
+            .find(|record| matches!(record.event, ExecutionEvent::Model { .. }))
+            .unwrap();
+        // A refused compare-and-append must not publish a model event.
+        assert!(
+            !journal
+                .append_if_tail(
+                    operation,
+                    model.sequence + 100,
+                    "model:0:0",
+                    &model.event,
+                    None
+                )
+                .unwrap()
+                .await
+                .unwrap()
+        );
+        let files = journal.task_files.as_ref().unwrap();
+        assert!(
+            files
+                .snapshot(&crate::task_volume::Query::Root, 16)
+                .await
+                .unwrap()
+                .files
+                .is_empty()
+        );
+        // Drop a live publication future after its durable binding, before its
+        // chunk. Reopening the index must retain the ordinal across this cut.
+        let task = crate::task_volume::Component::new(
+            journal.owner.as_ref().unwrap().0.task_id().to_string(),
+        )
+        .unwrap();
+        let (accepted, mut cut) = tokio::sync::oneshot::channel();
+        let reserved = {
+            let publication = async {
+                assert!(
+                    journal
+                        .append_validated(
+                            operation,
+                            Some(model.sequence - 1),
+                            "model:0:0",
+                            &model.event,
+                            None,
+                        )
+                        .await
+                        .unwrap()
+                );
+                let reserved = model_turn(&journal, operation, 0, &task, None).await.unwrap();
+                accepted.send(reserved).unwrap();
+                std::future::pending::<()>().await;
+                journal
+                    .publish_chunk(operation, "model:0:0", &model.event, None)
+                    .await
+                    .unwrap();
+            };
+            tokio::pin!(publication);
+            tokio::select! {
+                reserved = &mut cut => reserved.unwrap(),
+                () = &mut publication => panic!("publication escaped the cancellation cut"),
+            }
+            // The pinned future is dropped here; its chunk was never polled.
+        };
+        let interrupted = files
+            .snapshot(&crate::task_volume::Query::Root, 16)
+            .await
+            .unwrap();
+        assert_eq!(interrupted.files.len(), 1);
+        assert!(matches!(
+            interrupted.files[0].key,
+            crate::task_volume::FileKey::Task {
+                file: crate::task_volume::TaskFile::ModelTurn { .. },
+                ..
+            }
+        ));
+        let reopened = files.inner.reopen().await.unwrap();
+        let binding = crate::task_volume::FileKey::Task {
+            task: crate::task_volume::Component::new(
+                journal.owner.as_ref().unwrap().0.task_id().to_string(),
+            )
+            .unwrap(),
+            file: crate::task_volume::TaskFile::ModelTurn {
+                operation: operation.into_bytes(),
+                step: 0,
+            },
+        };
+        assert_eq!(
+            reopened.file_position(&binding).await.unwrap().0,
+            Some(reserved)
+        );
+        // Retrying an already durable event repairs its disposable projection,
+        // including the acknowledgement-loss path, without a second chunk.
+        for _ in 0..2 {
+            assert!(
+                journal
+                    .append_if_tail(
+                        operation,
+                        model.sequence - 1,
+                        "model:0:0",
+                        &model.event,
+                        None
+                    )
+                    .unwrap()
+                    .await
+                    .unwrap()
+            );
+            let snapshot = files
+                .snapshot(&crate::task_volume::Query::Root, 16)
+                .await
+                .unwrap();
+            assert_eq!(snapshot.files.len(), 2);
+            assert_eq!(snapshot.files[1].bytes.as_ref(), b"0:conditional");
+        }
+    });
 }
 
 fn journal_wrapper_observations(
@@ -511,7 +702,7 @@ fn journal_wrapper_observations(
                                     runtime
                                         .block_on(
                                             run(
-                                                &Choice(&journal, old),
+                                                &Choice(&journal, old, false),
                                                 mode,
                                                 0,
                                                 (operation, "key", &event),
@@ -588,7 +779,7 @@ proptest! {
         let key = if failure == 2 { "" } else { &key };
         for mode in 0..5 {
             let observations = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(), |journal, old| {
-                let selected = Choice(&journal, old);
+                let selected = Choice(&journal, old, false);
                 let file = runtime.block_on(selected.stage(operation, "seed-only", b"seed", "application/octet-stream", None).unwrap()).unwrap();
                 if mode == 2 { runtime.block_on(selected.append(operation, "start", &ExecutionEvent::Started { request_digest: digest }, None).unwrap()).unwrap(); }
                 let result = runtime.block_on(run(&selected, mode, tail,
@@ -611,7 +802,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let [expected, actual] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
-            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, false, None)).unwrap());
+            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, false, None, false)).unwrap());
         prop_assert_eq!(&actual, &expected);
         for group in 0..3 {
             let mut broken = actual.clone();
@@ -622,7 +813,7 @@ proptest! {
         missing.0[2].pop();
         prop_assert_ne!(&missing, &expected);
         let broken = differential::observe::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
-            |journal| runtime.block_on(turn(&journal, false, &prompt, deltas, true, None)).unwrap());
+            |journal| runtime.block_on(turn(&journal, false, &prompt, deltas, true, None, false)).unwrap());
         prop_assert_eq!(&expected.0, &broken.0);
         prop_assert_ne!(&expected.1, &broken.1, "extra verification was not detected");
     }
@@ -789,7 +980,7 @@ fn journal_accounting_admits_the_original_frames() {
                         accounted(native, 1 << 24, cancelled, |io| {
                             runtime
                                 .block_on(async {
-                                    Choice(&journal, old).load(&file, Some(io))?.await
+                                    Choice(&journal, old, false).load(&file, Some(io))?.await
                                 })
                                 .map(|bytes| bytes.as_ref().to_vec())
                                 .map_err(|e| e.to_string())
@@ -889,3 +1080,4 @@ fn journal_tracing_captures_the_poll_context() -> Result<()> {
     }
     Ok(())
 }
+
