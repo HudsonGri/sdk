@@ -4,12 +4,7 @@
 use libfuzzer_sys::fuzz_target;
 use std::path::{Component, Path};
 
-fuzz_target!(|bytes: &[u8]| {
-    let Ok(argument) = std::str::from_utf8(bytes) else {
-        return;
-    };
-    let root = Path::new("/workspace");
-    let destination = Path::new(argument);
+fn check_control_paths(destination: &Path, registry: &Path) {
     if let Ok(paths) = acyclic_fs::native_mount_control_paths(destination) {
         assert!(destination.is_absolute());
         assert!(
@@ -19,14 +14,11 @@ fuzz_target!(|bytes: &[u8]| {
         );
         assert_eq!(paths[0].parent(), destination.parent());
         assert_ne!(paths[0], paths[1]);
+        assert_ne!(&paths[0], destination);
         for path in &paths {
             assert!(path.is_absolute());
-            assert_ne!(path, destination);
         }
-        // The destination fence is local; the process registry is shared
-        // across mount destinations.
-        let root_paths = acyclic_fs::native_mount_control_paths(root).unwrap();
-        assert_eq!(paths[1], root_paths[1]);
+        assert_eq!(&paths[1], registry);
         let restored: std::path::PathBuf =
             serde_json::from_slice(&serde_json::to_vec(destination).unwrap()).unwrap();
         assert_eq!(
@@ -34,6 +26,18 @@ fuzz_target!(|bytes: &[u8]| {
             Some(paths)
         );
     }
+}
+
+fuzz_target!(|bytes: &[u8]| {
+    let Ok(argument) = std::str::from_utf8(bytes) else {
+        return;
+    };
+    let root = Path::new("/workspace");
+    let root_paths = acyclic_fs::native_mount_control_paths(root).unwrap();
+    check_control_paths(Path::new(argument), &root_paths[1]);
+    // A shared registry may itself be queried as a destination. Only the
+    // sibling fence must differ from its destination.
+    check_control_paths(&root_paths[1], &root_paths[1]);
     if let Ok(parsed) = acyclic_harness::tools::git::fuzz_workspace_path_argument(root, argument) {
         assert!(!parsed.contains('\0'));
         assert!(parsed.starts_with('/'));
