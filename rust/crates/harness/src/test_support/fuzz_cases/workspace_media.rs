@@ -3,7 +3,7 @@ use crate::conversation::FileDescriptor;
 
 /// Calls the production workspace media classifier.
 pub fn classify(bytes: &[u8]) -> &'static str {
-    crate::filesystem::fuzz_classify_media(bytes)
+    crate::test_support::fuzz_classify_media(bytes)
 }
 
 /// Checks media classification against an independent UTF-8 round-trip oracle.
