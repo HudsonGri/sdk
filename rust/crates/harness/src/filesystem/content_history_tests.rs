@@ -1,6 +1,6 @@
 use super::*;
 use crate::core::{AggregateKind, AuthorityIssuer};
-use crate::{AgentId, Authority, Capabilities};
+use crate::{AgentId, Capabilities};
 
 #[tokio::test]
 async fn published_content_survives_collection_and_reopen_without_extra_pin_authorities()
