@@ -27,7 +27,7 @@ required-features = ["tui"]
 [[test]]
 name = "tui-completion"
 path = "tests/tui_completion.rs"
-required-features = ["tui"]
+required-features = ["test-support", "tui"]
 
 [[test]]
 name = "main"
@@ -61,6 +61,7 @@ path = "tests/task_view.rs"
 [[test]]
 name = "task-volume"
 path = "tests/task_volume.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "file-query"
@@ -93,12 +94,12 @@ required-features = ["filesystem", "test-support"]
 [[test]]
 name = "local-recursive-fork"
 path = "tests/local_recursive_fork.rs"
-required-features = ["filesystem-local"]
+required-features = ["test-support", "filesystem-local"]
 
 [[test]]
 name = "context-continuation"
 path = "tests/context_continuation.rs"
-required-features = ["filesystem-local"]
+required-features = ["test-support", "filesystem-local"]
 
 [[test]]
 name = "context-discovery"
@@ -125,12 +126,12 @@ required-features = ["mcp-oauth"]
 [[test]]
 name = "mcp-durable"
 path = "tests/mcp_durable.rs"
-required-features = ["filesystem-local", "mcp-http"]
+required-features = ["filesystem-local", "mcp-http", "test-support"]
 
 [[test]]
 name = "client-commands"
 path = "tests/client_commands.rs"
-required-features = ["filesystem"]
+required-features = ["test-support", "filesystem"]
 
 [[test]]
 name = "client-notifications"
@@ -147,6 +148,7 @@ path = "tests/client_interests.rs"
 [[test]]
 name = "client-query"
 path = "tests/client_query.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "client-swarm-views"
@@ -155,7 +157,7 @@ path = "tests/client_swarm_views.rs"
 [[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
-required-features = ["filesystem-local"]
+required-features = ["test-support", "filesystem-local"]
 
 [[test]]
 name = "e2e-progress-model"
@@ -185,9 +187,13 @@ required-features = ["filesystem"]
 
 [[example]]
 name = "approved-native-process"
-required-features = ["native-execution"]
+required-features = ["native-execution", "test-support"]
 test = true
 harness = false
+
+[[example]]
+name = "custom_executor"
+required-features = ["test-support"]
 
 [[example]]
 name = "explicit-image-conversion"
@@ -295,18 +301,17 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc"] }
-acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
 rcgen = "0.14.10"
 tonic.workspace = true
 serde-saphyr = { version = "=1.3.0", default-features = false, features = ["serialize"] }
 shuttle = "=0.8.1"
 tracing-subscriber.workspace = true
 loom = "0.7.2"
-acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local", "test-support"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util", "process"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rust SDK execution uses the real browser event loop even without exports.

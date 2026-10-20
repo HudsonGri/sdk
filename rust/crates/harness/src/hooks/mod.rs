@@ -225,3 +225,6 @@ pub(crate) use native::HookCheck;
 pub(crate) mod mcp_identity_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod identity_test_support;
