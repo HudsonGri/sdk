@@ -280,7 +280,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         for chunk in paths.chunks(maximum) {
             let (lookup, allocation) = self
                 .checkout
-                .lookup_batch_no_follow_with_accounting(chunk, false, accounting, cancellation)
+                .lookup_batch_no_follow_with_accounting::<false>(
+                    chunk,
+                    false,
+                    accounting,
+                    cancellation,
+                )
                 .await
                 .map_err(|error| match error {
                     FsError::Path(crate::kernel::PathLookupError::NotDirectory) => {

@@ -217,6 +217,51 @@ async fn batch_observation_captures_exactly_each_paths_observation()
         assert!(prior.is_none_or(|prior| prior == dependency.expected));
     }
     assert_eq!(batched, expected);
+    // Binding-only mode drops exactly the terminal records, never a name
+    // binding, and matches the single-path walk in the same mode.
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let bindings = observe_paths_async_with_accounting::<false, _>(
+        &store,
+        &generation,
+        &paths,
+        config(),
+        &mut accounting,
+        &cancellation,
+        None,
+    )
+    .await?
+    .0;
+    assert_eq!(bindings.lookup.entries, looked_up.entries);
+    let mut single_bindings = std::collections::BTreeMap::new();
+    for path in &paths {
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let single = observe_path_async_with_accounting(
+            &store,
+            &generation,
+            path,
+            config(),
+            &mut accounting,
+            &cancellation,
+            None,
+            false,
+        )
+        .await?
+        .0;
+        for dependency in single.dependencies {
+            single_bindings.insert(dependency.region, dependency.expected);
+        }
+    }
+    let mut batched_bindings = std::collections::BTreeMap::new();
+    for dependency in bindings.dependencies {
+        let prior = batched_bindings.insert(dependency.region, dependency.expected);
+        assert!(prior.is_none_or(|prior| prior == dependency.expected));
+    }
+    assert_eq!(batched_bindings, single_bindings);
+    let names_only = expected
+        .into_iter()
+        .filter(|(region, _)| !matches!(region, DependencyRegion::FileRecord(_)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(batched_bindings, names_only);
     Ok(())
 }
 
@@ -322,5 +367,100 @@ async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
     .ok_or("non-directory descent succeeded")?;
     assert!(matches!(failure.error, PathLookupError::NotDirectory));
     assert!(failure.work.backend_read_operations > 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn binding_only_batches_keep_original_admission_and_output_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = MemoryObjectStore::default();
+    let (generation, path) = fixture(&store).await?;
+    let cancellation = CancellationToken::new();
+    for denied in [true, false] {
+        let mut budget = crate::performance::BOUNDARY_BUDGET;
+        if denied {
+            // The original journal itself consumes this allowance. A path
+            // frame must be refused before any backend I/O or physical box.
+            budget.allocation_operations = 1;
+        }
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let before = original.receipt();
+        let live_before = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        let result = observe_paths_async_with_accounting::<false, _>(
+            &store,
+            &generation,
+            std::slice::from_ref(&path),
+            config(),
+            &mut accounting,
+            &cancellation,
+            None,
+        )
+        .await;
+        if denied {
+            assert!(matches!(
+                result,
+                Err(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                    WorkError::BudgetExceeded {
+                        counter: "allocation_operations",
+                        observed,
+                        maximum,
+                    }
+                ))) if observed > maximum
+            ));
+            assert_eq!(
+                original.receipt().backend_read_operations,
+                before.backend_read_operations
+            );
+            assert_eq!(
+                original.receipt().allocation_operations,
+                before.allocation_operations
+            );
+        } else {
+            let observed = result?;
+            assert!(observed.0.lookup.entries[0].record.is_some());
+            assert!(!observed.0.dependencies.is_empty());
+            assert!(original.receipt().backend_read_operations > before.backend_read_operations);
+            assert!(original.live_allocation_bytes() > live_before);
+            drop(observed);
+        }
+        assert_eq!(original.live_allocation_bytes(), live_before);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn binding_only_batch_cancellation_keeps_paid_progress()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = CancellingStore {
+        inner: MemoryObjectStore::default(),
+        reads: AtomicUsize::new(0),
+    };
+    let (generation, path) = fixture(&store.inner).await?;
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let failure = observe_paths_async_with_accounting::<false, _>(
+        &store,
+        &generation,
+        std::slice::from_ref(&path),
+        config(),
+        &mut accounting,
+        &cancellation,
+        None,
+    )
+    .await
+    .err()
+    .ok_or("a cancelled binding-only batch cannot return an observation")?;
+    assert!(matches!(
+        path_error(failure),
+        PathLookupError::Tree(TreeReadError::Cancelled)
+    ));
+    assert!(accounting.spent().backend_read_operations >= 1);
+    assert!(accounting.spent().page_reads >= 1);
+    assert!(accounting.spent().peak_allocation_bytes > 0);
+    assert_eq!(standalone_live(&mut accounting)?, Some(0));
     Ok(())
 }

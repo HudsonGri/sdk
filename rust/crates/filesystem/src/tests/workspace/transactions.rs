@@ -364,3 +364,149 @@ proptest::proptest! {
         proptest::prop_assert!(result.is_ok(), "{result:?}");
     }
 }
+
+// Stage both writers on one exact generation and publish in a fixed order.
+// The shared upload prefix reproduces the host race without scheduler timing.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
+-> Result<(), Box<dyn Error>> {
+    #[derive(Clone, Copy, Debug)]
+    enum Concurrent {
+        Sibling,
+        RecreatedDirectory,
+        RecreatedAncestor,
+        FileReplacement,
+    }
+    for (batched, prior_mutation) in [(false, false), (true, false), (true, true)] {
+        for observe_directory in [false, true] {
+            for concurrent in [
+                Concurrent::Sibling,
+                Concurrent::RecreatedDirectory,
+                Concurrent::RecreatedAncestor,
+                Concurrent::FileReplacement,
+            ] {
+                let fs = Fs::memory();
+                let workspace = unbounded!(fs, create_workspace("shared-directory-writers"))?;
+                let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                unbounded!(seed, create_dir_all("/.system/harness-uploads"))?;
+                assert!(matches!(
+                    commit(&mut seed).await?,
+                    TransactionCommit::Committed(_)
+                ));
+                let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                let mut winner = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                if prior_mutation {
+                    // Force write_batch's existing pending-mutation fallback.
+                    pending.write_text("/staged", "pending").await?;
+                }
+                if observe_directory {
+                    let limits = pending.checkout.volume_config().limits;
+                    let path = crate::kernel::NamespacePath::new(
+                        [".system", "harness-uploads"]
+                            .into_iter()
+                            .map(|name| {
+                                crate::kernel::LogicalName::new(
+                                    crate::kernel::NameEncoding::Utf8,
+                                    name.as_bytes().to_vec(),
+                                    limits.maximum_component_bytes,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                        limits,
+                    )?;
+                    unbounded!(pending.checkout, lookup_no_follow(&path))?;
+                }
+                if batched {
+                    unbounded!(
+                        pending,
+                        write_batch(
+                            &["/.system/harness-uploads"],
+                            &[(
+                                "/.system/harness-uploads/local",
+                                OwnedBytes::from_static(b"local")
+                            )]
+                        )
+                    )?;
+                } else {
+                    unbounded!(pending, create_dir_all("/.system/harness-uploads"))?;
+                    pending
+                        .write_text("/.system/harness-uploads/local", "local")
+                        .await?;
+                }
+                match concurrent {
+                    Concurrent::Sibling => {
+                        unbounded!(
+                            winner,
+                            write_batch(
+                                &["/.system/harness-uploads"],
+                                &[(
+                                    "/.system/harness-uploads/remote",
+                                    OwnedBytes::from_static(b"remote")
+                                )]
+                            )
+                        )?;
+                    }
+                    Concurrent::RecreatedDirectory => {
+                        unbounded!(winner, remove("/.system/harness-uploads"))?;
+                        unbounded!(winner, create_dir_all("/.system/harness-uploads"))?;
+                    }
+                    Concurrent::RecreatedAncestor => {
+                        unbounded!(winner, rename("/.system", "/displaced", false))?;
+                        unbounded!(winner, create_dir_all("/.system/harness-uploads"))?;
+                    }
+                    Concurrent::FileReplacement => {
+                        unbounded!(winner, remove("/.system/harness-uploads"))?;
+                        winner
+                            .write_text("/.system/harness-uploads", "replacement")
+                            .await?;
+                    }
+                }
+                assert!(matches!(
+                    commit(&mut winner).await?,
+                    TransactionCommit::Committed(_)
+                ));
+                let winning = unbounded!(workspace, head())?;
+                // Negative control: a stale candidate cannot publish directly.
+                assert!(matches!(
+                    commit(&mut pending).await?,
+                    TransactionCommit::Conflict { .. }
+                ));
+                let outcome = unbounded!(pending, rebase(16))?;
+                if observe_directory || !matches!(concurrent, Concurrent::Sibling) {
+                    assert!(
+                        matches!(outcome, TransactionRebase::Conflicted { .. }),
+                        "batch={batched}, prior={prior_mutation}, observed={observe_directory}, concurrent={concurrent:?}"
+                    );
+                    assert_eq!(unbounded!(workspace, head())?.id(), winning.id());
+                } else {
+                    assert!(
+                        matches!(outcome, TransactionRebase::Rebased(_)),
+                        "batch={batched}, prior={prior_mutation}: disjoint siblings conflicted"
+                    );
+                    assert!(matches!(
+                        commit(&mut pending).await?,
+                        TransactionCommit::Committed(_)
+                    ));
+                    for (name, bytes) in [("local", b"local".as_slice()), ("remote", b"remote")] {
+                        assert_eq!(
+                            unbounded!(
+                                workspace,
+                                read(&format!("/.system/harness-uploads/{name}"), 16)
+                            )?
+                            .as_ref(),
+                            bytes
+                        );
+                    }
+                    if prior_mutation {
+                        assert_eq!(
+                            unbounded!(workspace, read("/staged", 16))?.as_ref(),
+                            b"pending"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
