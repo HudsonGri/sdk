@@ -344,7 +344,6 @@ pub(super) async fn open(
             acyclic_fs::NativeRootIdentity::from_bytes(
                 identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
             ),
-            operation,
             &cancellation,
         ))
         .await?;

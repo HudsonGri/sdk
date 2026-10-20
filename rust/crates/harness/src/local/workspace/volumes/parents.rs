@@ -6,7 +6,6 @@ pub(in crate::local::workspace) async fn bind(
     root: &Path,
     mounts: &Mounts,
     identity: acyclic_fs::NativeRootIdentity,
-    operation: acyclic_fs::OperationId,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     use acyclic_fs::{
@@ -69,14 +68,13 @@ pub(in crate::local::workspace) async fn bind(
     if !checkout.has_pending_mutations() {
         return Ok(());
     }
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.auxiliary-parents/v1\0");
-    hash.update(&operation.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    // Reopening can capture a new parent state under the same workspace-open
+    // identity. Each new publication needs its own key; the commit retains
+    // that key for any retries of this one captured transaction.
+    let publication = acyclic_fs::OperationId::new();
     let committed = checkout
         .commit(
-            acyclic_fs::OperationId::from_bytes(bytes),
+            publication,
             None,
             None,
             None,

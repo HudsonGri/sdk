@@ -32,6 +32,64 @@ pub(super) async fn run(harness: &LocalHarness) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn reopen_binds_changed_auxiliary_parent_permissions_as_a_new_publication() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let config = || {
+        super::checkout_config(directory.path(), (model()?, text()))
+            .map(|config| config.state_directory(state.path()))
+    };
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::WorkBudget::UNBOUNDED;
+    let head = async |harness: &LocalHarness| {
+        Ok::<_, Error>(
+            harness
+                .workspace()
+                .ok_or_else(|| Error::NotFound("checkout".into()))?
+                .view()
+                .workspace()
+                .head(work, &cancellation)
+                .await
+                .map_err(super::super::storage)?
+                .value
+                .id(),
+        )
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let before = head(&harness).await?;
+    harness.close().await?;
+    let parent = directory.path().join(".volumes");
+    let prior = std::fs::metadata(&parent)
+        .map_err(super::super::storage)?
+        .permissions()
+        .mode();
+    let changed = if prior & 0o777 == 0o700 { 0o750 } else { 0o700 };
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(changed))
+        .map_err(super::super::storage)?;
+    let harness = LocalHarness::open(config()?).await?;
+    let after = head(&harness).await?;
+    assert_ne!(after, before, "changed parent permissions were not bound");
+    assert_eq!(
+        std::fs::metadata(&parent)
+            .map_err(super::super::storage)?
+            .permissions()
+            .mode()
+            & 0o777,
+        changed
+    );
+    harness.close().await?;
+    let harness = LocalHarness::open(config()?).await?;
+    assert_eq!(
+        head(&harness).await?,
+        after,
+        "unchanged reopen published again"
+    );
+    harness.close().await?;
+    Ok(())
+}
+
 fn commands(commands: &[(&str, &str)]) -> Arc<ScriptedModelProvider> {
     scripted(
         commands
