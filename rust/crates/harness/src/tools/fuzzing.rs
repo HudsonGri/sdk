@@ -50,6 +50,10 @@ pub fn check(input: &str) {
             .join(" ");
         let restored = parse_command(&encoded).unwrap();
         assert_eq!(restored, arguments);
+        #[cfg(all(
+            not(target_arch = "wasm32"),
+            any(test, all(feature = "filesystem-local", feature = "native-execution"))
+        ))]
         assert_eq!(
             fs_command::agent_diff(&restored),
             fs_command::agent_diff(&arguments)
