@@ -64,12 +64,13 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
             .map_err(|error| Error::Storage(error.to_string()))?;
         let host = FilesystemHost::new(fs.clone(), &provider, None)?;
         host.create_volume(&volume).await?;
+        let publication_appends = raw_publication_appends(&fs).await?;
         // Ordinary, bounded, and original-native publications share the same
         // retained-history contract, including idempotent observation.
         for mode in 0..3 {
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut allowance = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
-            allowance.authority_records_appended = 3;
+            allowance.authority_records_appended = publication_appends;
             let native = acyclic_fs::NativeMaterializationWork::new(allowance, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let io = match mode {
@@ -95,7 +96,7 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
                 .await
                 .map_err(|error| Error::Storage(format!("publication mode {mode}: {error:?}")))?;
             if let Some(io) = io.as_ref() {
-                assert_eq!(io.receipt().authority_records_appended, 3);
+                assert_eq!(io.receipt().authority_records_appended, publication_appends);
             }
             assert_eq!(
                 host.content_for_operation(&volume, &write, &key, "message.txt", 1024, io.as_ref())
@@ -201,6 +202,49 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
         1
     );
     Ok(())
+}
+
+async fn raw_publication_appends(fs: &acyclic_fs::LocalFs) -> Result<u64> {
+    // Measure the backend's atomic publication independently of content
+    // retention. This includes main's operation locator, without allowing a
+    // content path to create any additional pin authority.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+    let workspace = fs
+        .create_workspace("publication-oracle", budget, &cancellation)
+        .await
+        .map_err(|failure| Error::Storage(format!("{failure:?}")))?
+        .value;
+    let mut transaction = workspace
+        .begin_transaction(acyclic_fs::IdempotencyKey::new(), budget, &cancellation)
+        .await
+        .map_err(|failure| Error::Storage(format!("{failure:?}")))?
+        .value;
+    transaction
+        .write_text("/payload", "publication")
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let receipt = transaction
+        .commit::<acyclic_fs::WorkspaceError, _, _>(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::default(),
+                })
+            },
+        )
+        .await
+        .map_err(|failure| Error::Storage(format!("{failure:?}")))?;
+    assert!(matches!(
+        receipt.value,
+        acyclic_fs::TransactionCommit::Committed(_)
+    ));
+    assert!(receipt.work.authority_records_appended > 0);
+    Ok(receipt.work.authority_records_appended)
 }
 
 async fn content_authorities(
