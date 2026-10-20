@@ -90,7 +90,8 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
                     None,
                     io.as_ref(),
                 )
-                .await?;
+                .await
+                .map_err(|error| Error::Storage(format!("publication mode {mode}: {error:?}")))?;
             if let Some(io) = io.as_ref() {
                 assert_eq!(io.receipt().authority_records_appended, 3);
             }
@@ -134,7 +135,12 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
     let host = FilesystemHost::new(fs.clone(), &provider, None)?;
     for (file, bytes) in files {
         assert_eq!(
-            host.read_content(&file, &read, 1024, None).await?.as_ref(),
+            host.read_content(&file, &read, 1024, None)
+                .await
+                .map_err(|error| Error::Storage(format!(
+                    "reopened ordinary read {bytes}: {error:?}"
+                )))?
+                .as_ref(),
             bytes.as_bytes()
         );
         let mut allowance = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
@@ -147,7 +153,10 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
         let io = PreparationIo::from_native_work(&native)?;
         assert_eq!(
             host.read_content(&file, &read, 1024, Some(&io))
-                .await?
+                .await
+                .map_err(|error| Error::Storage(format!(
+                    "reopened native read {bytes}: {error:?}"
+                )))?
                 .as_ref(),
             bytes.as_bytes()
         );
