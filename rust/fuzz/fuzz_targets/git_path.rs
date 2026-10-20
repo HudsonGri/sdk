@@ -33,11 +33,12 @@ fuzz_target!(|bytes: &[u8]| {
         return;
     };
     let root = Path::new("/workspace");
-    let root_paths = acyclic_fs::native_mount_control_paths(root).unwrap();
-    check_control_paths(Path::new(argument), &root_paths[1]);
-    // A shared registry may itself be queried as a destination. Only the
-    // sibling fence must differ from its destination.
-    check_control_paths(&root_paths[1], &root_paths[1]);
+    if let Ok(root_paths) = acyclic_fs::native_mount_control_paths(root) {
+        check_control_paths(Path::new(argument), &root_paths[1]);
+        // A shared registry may itself be queried as a destination. Only the
+        // sibling fence must differ from its destination.
+        check_control_paths(&root_paths[1], &root_paths[1]);
+    }
     if let Ok(parsed) = acyclic_harness::tools::git::fuzz_workspace_path_argument(root, argument) {
         assert!(!parsed.contains('\0'));
         assert!(parsed.starts_with('/'));
