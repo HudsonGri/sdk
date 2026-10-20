@@ -122,15 +122,7 @@ pub async fn lookup_path_refs<S: AsyncObjectStore>(
 #[derive(Clone, Copy)]
 pub(crate) enum PathBatchMode {
     NoFollow,
-    // Directory prefixes in a write batch require their binding and kind,
-    // just as create_dir_all does, rather than their mutable child payload.
-    MutationKinds,
     SelectedRestore,
-}
-
-pub(crate) struct PathBatchConfig {
-    pub volume: VolumeConfig,
-    pub mode: PathBatchMode,
 }
 
 pub(crate) async fn lookup_path_async_with_accounting<S: AsyncObjectStore>(
@@ -203,6 +195,7 @@ pub(crate) async fn lookup_paths_with_accounting<S: AsyncObjectStore>(
         generation,
         paths,
         false,
+        true,
         config,
         accounting,
         cancellation,
@@ -213,11 +206,16 @@ pub(crate) async fn lookup_paths_with_accounting<S: AsyncObjectStore>(
     Ok((value.lookup, allocation))
 }
 
-pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
+/// `TERMINAL` also observes each resolved file record; without it, the name
+/// bindings alone pin each path's existence, identity and kind.
+pub(crate) async fn observe_paths_async_with_accounting<
+    const TERMINAL: bool,
+    S: AsyncObjectStore,
+>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,
     paths: &[NamespacePath],
-    config: PathBatchConfig,
+    config: VolumeConfig,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
     custody: Option<&crate::kernel::ProofDataCustody>,
@@ -227,11 +225,12 @@ pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
         generation,
         PathQueries::Owned(paths),
         true,
-        config.volume,
+        TERMINAL,
+        config,
         accounting,
         cancellation,
         custody,
-        config.mode,
+        PathBatchMode::NoFollow,
     )
     .await
 }
@@ -257,6 +256,7 @@ pub(super) async fn lookup_path_queries_async<S: AsyncObjectStore>(
         generation,
         paths,
         observe,
+        true,
         config,
         &mut accounting,
         cancellation,

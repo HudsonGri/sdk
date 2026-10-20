@@ -278,11 +278,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .unwrap_or(usize::MAX)
             .max(1);
         for chunk in paths.chunks(maximum) {
+            // Like create_dirs, existing paths require the exact name binding
+            // and kind, not a directory's child-entry payload. Sibling
+            // additions by another writer are safe to rebase over.
             let (lookup, allocation) = self
                 .checkout
-                .lookup_batch_no_follow_with_accounting(
+                .lookup_batch_no_follow_with_accounting::<false>(
                     chunk,
-                    crate::kernel::PathBatchMode::MutationKinds,
+                    false,
                     accounting,
                     cancellation,
                 )

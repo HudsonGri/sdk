@@ -508,9 +508,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 .chunks((self.workspace.limits().maximum_paths_per_batch as usize).max(1))
             {
                 let (lookup, guard) = checkout
-                    .lookup_batch_no_follow_with_accounting(
+                    .lookup_batch_no_follow_with_accounting::<true>(
                         chunk,
-                        crate::kernel::PathBatchMode::NoFollow,
+                        false,
                         ctx,
                         cancellation(ctx),
                     )

@@ -223,9 +223,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
         let (records, allocation) = source_root
             .value
-            .lookup_batch_no_follow_with_accounting(
+            .lookup_batch_no_follow_with_accounting::<true>(
                 &parsed.value,
-                crate::kernel::PathBatchMode::SelectedRestore,
+                true,
                 accounting,
                 cancellation,
             )
