@@ -324,7 +324,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         if let Some(prior) = prior {
             let generation = (self).generation_ref_id(prior.id(), io)?;
-            fork_preparer_io::retain(&prior, io).await?;
+            // Paid on the caller's ledger, like every frame of a bounded upload.
+            crate::conversation::BoundedOperationFuture::new(io, || {
+                fork_preparer_io::retain(&prior, io)
+            })?
+            .await?;
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
             let receipt_path = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
@@ -345,8 +349,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let indexed_path = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
             })?;
-            let indexed =
-                read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, io).await?;
+            let indexed = crate::conversation::BoundedOperationFuture::new(io, || {
+                read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, io)
+            })?
+            .await?;
             if indexed.as_ref() != metadata_bytes.as_slice() {
                 return Err(stock_boundary(
                     io,

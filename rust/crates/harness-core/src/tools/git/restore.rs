@@ -11,27 +11,26 @@ where
         tree: GitTreeRef,
         paths: &[String],
     ) -> Result<GitFilesystemResult, Error> {
-        let source = self.generation(tree).await?;
-        let current = self
-            .current
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(Error::from)?;
-        let outcome = self
-            .current
-            .restore_paths_from(
+        let source = acyclic_fs::in_heap(|| self.generation(tree)).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let current = acyclic_fs::in_heap(|| {
+            self.current
+                .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        })
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .map_err(Error::from)?;
+        // Erased: the restore's Send proof starts here, not in every caller's.
+        let restore: acyclic_stream::BoxProviderFuture<'_, _> = acyclic_fs::in_heap(|| {
+            self.current.restore_paths_from(
                 &source,
                 paths,
                 current.id(),
                 IdempotencyKey::from_bytes(operation_id.into_bytes()),
                 self.permit,
                 acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
+                &cancellation,
                 |_| async {
                     Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
                         acyclic_fs::OperationReceipt {
@@ -41,6 +40,8 @@ where
                     )
                 },
             )
+        });
+        let outcome = restore
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)

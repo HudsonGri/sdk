@@ -228,15 +228,17 @@ impl ContentPublisher for CheckoutPublisher {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
-                self.publish(
-                    operation,
-                    bytes,
-                    Publication::Once {
-                        path,
-                        media,
-                        display,
-                    },
-                )
+                acyclic_fs::in_heap(|| {
+                    self.publish(
+                        operation,
+                        bytes,
+                        Publication::Once {
+                            path,
+                            media,
+                            display,
+                        },
+                    )
+                })
                 .await?,
                 None,
             ))
@@ -254,15 +256,17 @@ impl ContentPublisher for CheckoutPublisher {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
-                self.publish(
-                    operation,
-                    bytes,
-                    Publication::Path {
-                        path,
-                        media,
-                        display,
-                    },
-                )
+                acyclic_fs::in_heap(|| {
+                    self.publish(
+                        operation,
+                        bytes,
+                        Publication::Path {
+                            path,
+                            media,
+                            display,
+                        },
+                    )
+                })
                 .await?,
                 None,
             ))
@@ -278,8 +282,10 @@ impl ContentPublisher for CheckoutPublisher {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
-                self.publish(operation, bytes, Publication::Replace(source))
-                    .await?,
+                acyclic_fs::in_heap(|| {
+                    self.publish(operation, bytes, Publication::Replace(source))
+                })
+                .await?,
                 None,
             ))
         })
