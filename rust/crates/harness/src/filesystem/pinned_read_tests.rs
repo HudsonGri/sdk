@@ -84,7 +84,10 @@ fn exact_unmetered_allocation(
         original.count_total,
         "pinned read allocation count"
     );
-    prop_assert_eq!(original.bytes_total - candidate.bytes_total, saved);
+    prop_assert_eq!(
+        original.bytes_total.checked_sub(candidate.bytes_total),
+        Some(saved)
+    );
     Ok(())
 }
 
@@ -126,10 +129,10 @@ proptest! {
         prop_assert!(saved > 0);
         prop_assert_eq!(&before.0.0, &after.0.0);
         prop_assert_eq!(&before.1, &after.1);
-        eprintln!("pinned frame before={} after={} allocations before={:?} after={:?}",
-            before.0.2, after.0.2, before.0.1, after.0.1);
         exact_unmetered_allocation(before.0.1, after.0.1, saved)?;
-        prop_assert_eq!(after.0.2, before.0.2, "enclosing frame differs from the original concrete type");
+        // The caller-owned future may shrink; its original upper bound must not grow.
+        // The separately admitted heap factory has exact allocation guards below.
+        prop_assert!(after.0.2 <= before.0.2, "enclosing frame exceeds the original upper bound");
         // Restore the old factory on a third, independently initialized store.
         let broken = differential::observe::<_, _, (&'static str, u64)>(initialize,
             |fixture| observe(fixture, true, false));
@@ -144,6 +147,16 @@ proptest! {
         let error = exact_unmetered_allocation(before.0.1, boxed.0.1, saved).unwrap_err();
         prop_assert!(error.to_string().contains("pinned read allocation count"),
             "extra factory box bypassed the exact count guard");
+        let padded = differential::observe::<_, _, (&'static str, u64)>(initialize,
+            |fixture| crate::conversation::BoundedContentFuture::<acyclic_stream::OwnedBytes>::with_padded_frame(true,
+                || observe(fixture, false, false)));
+        prop_assert_eq!(&before.0.0, &padded.0.0);
+        prop_assert_eq!(&before.1, &padded.1);
+        prop_assert_eq!(after.0.1.count_total, padded.0.1.count_total,
+            "inline padding unexpectedly added an allocation");
+        prop_assert!(padded.0.1.bytes_total > after.0.1.bytes_total);
+        prop_assert!(exact_unmetered_allocation(before.0.1, padded.0.1, saved).is_err(),
+            "retained inline factory padding passed the exact byte guard");
         for allowance in [budget, 64 * 1024 * 1024] {
             for native in [false, true] {
                 let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old|
