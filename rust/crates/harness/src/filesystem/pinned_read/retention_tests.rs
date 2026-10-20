@@ -36,8 +36,7 @@ impl Fixture {
         let host = FilesystemHost::new(filesystem, &provider, None)?;
         host.create_volume(&volume).await?;
         let reference = fork_preparer_io::content_workspace(&provider, &volume, None)?;
-        // Raw publication deliberately creates no harness-generation pin. An
-        // upload fixture would hide a consumer that silently omitted retention.
+        // Raw publication owns immutable history without an auxiliary pin.
         let generation = host
             .apply(
                 &reference,
@@ -111,41 +110,10 @@ impl Fixture {
             Err(acyclic_fs::AuthorityStoreError::Missing)
         ));
     }
-
-    async fn assert_retained_exactly_once(&self) -> TestResult {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let (records, _) = self
-            .authority
-            .replay(
-                self.pin,
-                acyclic_fs::Sequence::GENESIS,
-                acyclic_fs::ReplayLimit {
-                    records: 2,
-                    payload_bytes: 4096,
-                },
-                &mut acyclic_fs::AuthorityWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                ),
-            )
-            .await?;
-        assert_eq!(records.len(), 1);
-        let retained = acyclic_fs::kernel::decode_retention_created(&records[0].payload, 4096)?;
-        assert_eq!(retained.volume_id, self.workspace.id().volume_id());
-        assert_eq!(
-            hex::encode(retained.generation_root.digest.into_bytes()),
-            self.file.version()
-        );
-        assert_eq!(
-            retained.label,
-            format!("harness-generation-{}", self.file.version())
-        );
-        Ok(())
-    }
 }
 
 #[test]
-fn content_read_pins_an_initially_unretained_generation_without_reopening() -> TestResult {
+fn content_read_authenticates_published_history_without_reopening_or_a_new_pin() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -171,34 +139,40 @@ fn content_read_pins_an_initially_unretained_generation_without_reopening() -> T
             .count();
         assert_eq!(
             opens, 1,
-            "a retaining read reauthenticated its already selected generation"
+            "a read reauthenticated its already selected generation"
         );
-        runtime.block_on(fixture.assert_retained_exactly_once())?;
+        runtime.block_on(fixture.assert_unretained());
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn authenticated_receipts_retain_the_original_generation_after_head_advancement() -> TestResult
-{
+async fn concurrent_reads_preserve_the_original_generation_after_head_advancement() -> TestResult {
     let fixture = Fixture::new(b"original").await?;
     let first = fixture
         .host
-        .read_pinned_receipt_io(&fixture.file, 4096, None)
+        .read_pinned_io(&fixture.file, 4096, None)
         .await?;
     let second = fixture
         .host
-        .read_pinned_receipt_io(&fixture.file, 4096, None)
+        .read_pinned_io(&fixture.file, 4096, None)
         .await?;
     fixture.assert_unretained().await;
     fixture
         .workspace
         .write_text("/payload", "later generation")
         .await?;
-    let (first, second) = futures::join!(first.retain(), second.retain());
+    assert_eq!(first.as_ref(), b"original");
+    assert_eq!(second.as_ref(), b"original");
+    let read = || {
+        fixture
+            .host
+            .read_content(&fixture.file, &fixture.grant, 4096, None)
+    };
+    let (first, second) = futures::join!(read(), read());
     assert_eq!(first?.as_ref(), b"original");
     assert_eq!(second?.as_ref(), b"original");
-    fixture.assert_retained_exactly_once().await?;
+    fixture.assert_unretained().await;
     Ok(())
 }
 

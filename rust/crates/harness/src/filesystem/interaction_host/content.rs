@@ -214,9 +214,7 @@ where
             )
         })?;
         self.host
-            .read_pinned_receipt_io(reference, self.maximum_bytes, io)
-            .await?
-            .retain()
+            .read_pinned_io(reference, self.maximum_bytes, io)
             .await
     }
 

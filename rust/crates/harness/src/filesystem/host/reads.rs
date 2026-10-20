@@ -12,10 +12,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<acyclic_stream::OwnedBytes> {
         reference.validate(&mut None)?;
         grant.require_file_read(reference, io)?;
-        self.read_pinned_receipt_io(reference, maximum_bytes, io)
-            .await?
-            .retain()
-            .await
+        self.read_pinned_io(reference, maximum_bytes, io).await
     }
 
     /// Discovers a granted private directory at the owner's current head, or continues at the immutable generation returned by a prior page.

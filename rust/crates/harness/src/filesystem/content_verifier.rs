@@ -424,9 +424,7 @@ where
         };
         require_file_read(&self.scope, reference, authority_io)?;
         self.host
-            .read_pinned_receipt_io(reference, maximum_bytes.min(self.maximum_bytes), io)
-            .await?
-            .retain()
+            .read_pinned_io(reference, maximum_bytes.min(self.maximum_bytes), io)
             .await
     }
 

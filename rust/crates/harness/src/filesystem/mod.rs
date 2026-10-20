@@ -322,10 +322,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         if let Some(prior) = prior {
             let generation = (self).generation_ref_id(prior.id(), io)?;
-            match io {
-                Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
-                None => self.retain_generation(&workspace, &generation).await?,
-            }
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
             let receipt_path = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
@@ -442,22 +438,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         let generation_reference = (self).generation_ref_id(generation.id(), io)?;
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
-        {
-            match io {
-                Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
-                None => {
-                    generation
-                        .pin(
-                            format!("harness-generation-{version}"),
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| map_error(failure.error))?;
-                }
-            }
-        }
+        // Publication already retains this immutable generation in its owning
+        // workspace's history. The exact-generation read below authenticates it.
         let reference = {
             let descriptor = &descriptor;
             crate::executor::with_history_io(io, |work| {
@@ -485,6 +467,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        crate::executor::with_history_io(io, |work| reference.validate(work))?;
         // Keep the Result temporary across await for the original admitted caller frame.
         (if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || {
@@ -496,26 +479,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })
         })?
         .await
-    }
-
-    async fn read_pinned_receipt_io(
-        &self,
-        reference: &FileRef,
-        maximum_bytes: u64,
-        io: Option<&fork_preparer_io::PreparationIo>,
-    ) -> Result<PinnedRead<A, O>> {
-        if io.is_none() {
-            crate::conversation::BoundedContentFuture::new(None, || {
-                self.read_pinned_unmetered(reference, maximum_bytes, PinnedRead::from_read)
-            })?
-            .await
-        } else {
-            // Metered reads already pin before descriptor verification. Project
-            // their bytes after awaiting the unchanged admitted factory.
-            Ok(PinnedRead::retained(
-                self.read_pinned_io(reference, maximum_bytes, io).await?,
-            ))
-        }
     }
 
     fn read_pinned_unmetered<'a, T, F>(
@@ -541,9 +504,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let workspace =
                 fork_preparer_io::content_workspace(&self.provider, reference.volume(), None)?;
             let path = format!("/{}", reference.path());
-            // Keep the authenticated immutable handle from the read. A
-            // retaining caller can pin it without opening the workspace
-            // and authenticating this same generation a second time.
+            // Authenticate the immutable generation once through the existing
+            // admitted factory, including ordinary content reads.
             #[cfg(all(test, not(target_arch = "wasm32")))]
             acyclic_test_support::differential::record(("read", maximum_bytes));
             let owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
@@ -573,7 +535,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if let Some(original) = io.and_then(PreparationIo::original_native_work) {
                 let scratch = PreparationIo::from_native_work(original)?;
                 let io = &scratch;
-                reference.validate(&mut Some(&mut io.history_io()))?;
                 if reference.volume().provider() != &self.provider
                     || reference.descriptor().byte_length() > maximum_bytes
                 {
@@ -607,7 +568,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         source: Box::new(source),
                         custody: None,
                     })?;
-                fork_preparer_io::retain(&pinned, Some(io)).await?;
                 crate::executor::with_history_io(Some(io), |work| {
                     reference.descriptor().verify(&bytes, work)
                 })?;
@@ -657,7 +617,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                     })?;
                     io.retain_owned(capacity as u64)?;
-                    fork_preparer_io::retain(&pinned, Some(io)).await?;
                     bytes
                 }
                 None => {
@@ -676,13 +635,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 }
 
 mod pinned_read;
-use pinned_read::PinnedRead;
 
 #[cfg(test)]
 mod tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pinned_read_tests;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod content_history_tests;
 
 mod stock_turn;
 pub use stock_turn::StockTurnMachine;
