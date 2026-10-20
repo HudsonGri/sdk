@@ -103,6 +103,7 @@ async fn stock_direct_commands_search_and_fetch_distinct_sources_without_a_check
         volume(directory.path()).await?,
         provider.clone(),
     )?
+    .without_default_tools()
     .search_provider(search.clone());
     let local = LocalHarness::open(config).await?;
     let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
@@ -202,6 +203,7 @@ async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() ->
         volume(directory.path()).await?,
         provider.clone(),
     )?
+    .without_default_tools()
     .search_provider(search.clone());
     let local = LocalHarness::open(config).await?;
     assert_eq!(
@@ -487,37 +489,12 @@ fn refusals_cannot_hide_fatal_errors_or_bypass_original_work_and_output_limits()
 #[tokio::test]
 async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reconcile_by_redispatch()
 -> Result<()> {
-    let directory = tempfile::tempdir().map_err(crate::local::storage)?;
-    let config =
-        volume_config(directory.path(), volume(directory.path()).await?, model([]))?.web_tools();
-    let local = LocalHarness::open(config).await?;
-    let operation = crate::OperationId::new();
-    let crate::Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) =
-        local
-            .submit(operation, "exercise web executor entrypoints")
-            .await?
-    else {
-        panic!("fixture task was not admitted");
-    };
-    let worker = crate::distributed::Worker {
-        id: "web-outcome-entrypoints".into(),
-        available: Default::default(),
-        labels: Default::default(),
-    };
-    let crate::distributed::WorkPull::Claimed(lease) = local
-        .runtime
-        .task_host()
-        .pull_work(&worker, Some(operation), &mut None)
-        .await?
-    else {
-        panic!("fixture task was not claimed");
-    };
-    local
-        .runtime
-        .task_host()
-        .start_task(&lease, &mut None)
-        .await?;
-    let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+    let fixture = crate::durable_host::tests::created_fixture::CreationFixture::new_with_grants(&[
+        "tool:call:url_fetch",
+    ])
+    .await?;
+    let task = fixture.root;
+    let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
     let executor = WebExecutor {
         search: None,
         fetch: Arc::new(HttpFetch::new()?),
@@ -553,7 +530,7 @@ async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reco
                     &cancellation,
                 )
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let task_context = local
+                let task_context = fixture
                     .runtime
                     .task_context_with_native_work(task, &fence, &work)
                     .await?;
@@ -591,7 +568,7 @@ async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reco
                 result.value
             } else {
                 let context = ToolContext::new(
-                    local
+                    fixture
                         .runtime
                         .task_context(task, fence.clone())
                         .await?
@@ -650,6 +627,7 @@ async fn search_provider_http_failure_is_a_schema_valid_refusal_for_the_next_mod
         volume(directory.path()).await?,
         provider.clone(),
     )?
+    .without_default_tools()
     .search_provider(search);
     let local = LocalHarness::open(config).await?;
     assert_eq!(
