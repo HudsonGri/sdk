@@ -204,6 +204,17 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
         let host_path = namespace_to_host_path_measured(&path, meter)?;
         let observation = observe_host_path(source_root, &host_path, meter)?;
         capture_drop_host_path(host_path, meter)?;
+        if observation.is_none()
+            && current.is_some_and(|record| record.kind == FileKind::Directory)
+            && capture_position(ordinary, &path, meter)?
+                .is_ok_and(|index| matches!(ordinary[index].1.1, CaptureIntent::Complete))
+        {
+            // This parent has its own complete reconciliation in the batch.
+            // Keep its descendants so the normal deepest-first removal pass
+            // retires them before the parent; there is no directory to hydrate.
+            capture_drop_path(path, meter)?;
+            continue;
+        }
         if !observation.is_some_and(|observation| observation.is_dir()) {
             return Err(CaptureError::RescanRequired {
                 epoch,

@@ -109,6 +109,36 @@ async fn coalesced_parent_child_removals_capture_deepest_first()
     );
     std::fs::remove_file(root.join("parent").join("child.txt"))?;
     std::fs::remove_dir(root.join("parent"))?;
+    // A missing ancestor without its own reconciliation still requires a
+    // rescan. Refusing this incomplete batch must leave the checkout intact.
+    let incomplete = capture_watch_batch(
+        &mut checkout,
+        WatchBatch::Changes {
+            epoch: 1,
+            first_sequence: 1,
+            next_sequence: 2,
+            changes: vec![WatchChange::Removed(child.clone())],
+            original: Default::default(),
+        },
+        &options,
+        &crate::CapturePolicy::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await
+    .expect_err("an unhinted missing parent needs a rescan");
+    assert!(matches!(
+        incomplete.error,
+        crate::CaptureError::RescanRequired { .. }
+    ));
+    assert!(
+        checkout
+            .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .is_some()
+    );
     capture_watch_batch(
         &mut checkout,
         WatchBatch::Changes {
