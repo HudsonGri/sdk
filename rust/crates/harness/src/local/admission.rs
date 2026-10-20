@@ -6,6 +6,12 @@ use crate::{
     resources::GenerationRef,
 };
 
+// The owned HEAD write is a real Tokio task. Under test support the same task
+// also carries any active poll-sweep schedule, so the sweep observes (and
+// cuts at) every storage boundary of the write instead of losing them.
+#[cfg(feature = "test-support")]
+use acyclic_native_runtime::testing::spawn;
+#[cfg(not(feature = "test-support"))]
 use tokio::spawn;
 
 use crate::goal::request_head as record;
