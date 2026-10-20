@@ -3,7 +3,9 @@ use super::*;
 /// Process-owned mounted namespace.
 pub struct NativeMountSession {
     // Native producers retire before source data and the destination fence.
-    pub(super) driver: Option<DriverSession>,
+    // Boxed: the platform session is several KiB, and every owner of this
+    // session (results, mounts, slots) moves it through async poll frames.
+    pub(super) driver: Option<Box<DriverSession>>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
     pub(super) request: NativeMountRequest,
