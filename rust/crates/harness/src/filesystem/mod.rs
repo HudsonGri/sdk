@@ -693,7 +693,7 @@ mod checkout_publication;
 pub use checkout_publication::CheckoutPublication;
 
 /// Classifies candidate file bytes for the shared media property oracle.
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(feature = "test-support")]
 pub fn fuzz_classify_media(bytes: &[u8]) -> &'static str {
     host::fuzz_classify_media(bytes)
 }
