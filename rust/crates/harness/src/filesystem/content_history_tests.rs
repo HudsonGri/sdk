@@ -58,13 +58,16 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
         &mut None,
     )?;
     let mut files = Vec::new();
+    let retained_authorities;
     {
         let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path()))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let host = FilesystemHost::new(fs.clone(), &provider, None)?;
         host.create_volume(&volume).await?;
+        assert_eq!(content_authorities(&fs, &volume).await?.len(), 1);
         let publication_appends = raw_publication_appends(&fs).await?;
+        retained_authorities = content_authorities(&fs, &volume).await?;
         // Ordinary, bounded, and original-native publications share the same
         // retained-history contract, including idempotent observation.
         for mode in 0..3 {
@@ -124,9 +127,8 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
         assert_eq!(
             content_authorities(&fs, &volume)
                 .await
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .len(),
-            1
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            retained_authorities
         );
         fs.collect_local_garbage(None, &acyclic_fs::CancellationToken::new())
             .await
@@ -197,9 +199,8 @@ async fn published_content_survives_collection_and_reopen_without_extra_pin_auth
     assert_eq!(
         content_authorities(&fs, &volume)
             .await
-            .map_err(|error| Error::Storage(error.to_string()))?
-            .len(),
-        1
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        retained_authorities
     );
     Ok(())
 }
@@ -250,7 +251,10 @@ async fn raw_publication_appends(fs: &acyclic_fs::LocalFs) -> Result<u64> {
 async fn content_authorities(
     fs: &acyclic_fs::LocalFs,
     volume: &VolumeRef,
-) -> std::result::Result<Vec<acyclic_fs::AuthorityId>, acyclic_fs::AuthorityStoreError> {
+) -> std::result::Result<
+    std::collections::BTreeSet<acyclic_fs::AuthorityId>,
+    acyclic_fs::AuthorityStoreError,
+> {
     let id = fs
         .workspace_id(volume.storage_name(&mut None).expect("valid volume"))
         .expect("valid workspace identity");
@@ -258,4 +262,5 @@ async fn content_authorities(
     acyclic_fs::StreamAuthorityStore::new(provider)
         .authorities(64)
         .await
+        .map(|authorities| authorities.into_iter().collect())
 }
