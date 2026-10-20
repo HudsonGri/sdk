@@ -35,6 +35,8 @@ pub(super) async fn run(harness: &LocalHarness) -> Result<()> {
 #[cfg(unix)]
 #[tokio::test]
 async fn reopen_binds_changed_auxiliary_parent_permissions_as_a_new_publication() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let config = || {
