@@ -17,9 +17,16 @@ fuzz_target!(|bytes: &[u8]| {
                 .components()
                 .any(|part| matches!(part, Component::ParentDir))
         );
+        assert_eq!(paths[0].parent(), destination.parent());
+        assert_ne!(paths[0], paths[1]);
         for path in &paths {
-            assert_eq!(path.parent(), destination.parent());
+            assert!(path.is_absolute());
+            assert_ne!(path, destination);
         }
+        // The destination fence is local; the process registry is shared
+        // across mount destinations.
+        let root_paths = acyclic_fs::native_mount_control_paths(root).unwrap();
+        assert_eq!(paths[1], root_paths[1]);
         let restored: std::path::PathBuf =
             serde_json::from_slice(&serde_json::to_vec(destination).unwrap()).unwrap();
         assert_eq!(

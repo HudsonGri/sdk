@@ -164,8 +164,9 @@ pub fn mount_native_over_existing(
     }
 }
 
-/// Exact provider metadata beside an absolute, canonical mount destination.
-/// Composed namespaces exclude these files from their parent volume's capture.
+/// The destination's sibling fence and the shared native mount registry.
+/// Requires an absolute, canonical mount destination. Composed namespaces
+/// exclude these files from their parent volume's capture.
 pub fn native_mount_control_paths(destination: &Path) -> Result<[PathBuf; 2], NativeMountError> {
     if !destination.is_absolute()
         || destination.components().any(|part| {
