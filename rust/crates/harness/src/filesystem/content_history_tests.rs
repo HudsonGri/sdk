@@ -5,6 +5,8 @@ use crate::{AgentId, Capabilities};
 #[tokio::test]
 async fn published_content_survives_collection_and_reopen_without_extra_pin_authorities()
 -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let provider = ProviderRef::new(
         "content-history".into(),
