@@ -107,7 +107,13 @@ pub(super) fn state_directory_in(
     hash.update(path_bytes);
     hash.update(scope);
     let directory = root.join(hash.finalize().to_hex().as_str());
-    if matches!(project, LocalProject::Workspace(_)) && directory.starts_with(&canonical) {
+    // Compare canonical forms: a lexical prefix test misses a root spelled
+    // differently from the canonical checkout (a Windows verbatim prefix, a
+    // link or `..`), and the state directory may not exist yet.
+    let planned = directory::planned_directory(&directory).ok_or_else(|| {
+        Error::Invalid("local state directory has an unresolved path suffix".into())
+    })?;
+    if matches!(project, LocalProject::Workspace(_)) && planned.starts_with(&canonical) {
         return Err(Error::Invalid(
             "per-user harness state would be inside the checkout".into(),
         ));
