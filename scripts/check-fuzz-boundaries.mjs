@@ -2,20 +2,89 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// Tokenize only the Rust surface needed by this policy. Comments and string
+// contents cannot manufacture imports; cfg_attr, raw strings, and spacing are
+// handled exactly like ordinary attributes/macros.
+function tokens(source) {
+  const result = [];
+  let i = 0;
+  while (i < source.length) {
+    if (/\s/.test(source[i])) { i++; continue; }
+    if (source.startsWith('//', i)) {
+      const end = source.indexOf('\n', i + 2);
+      i = end < 0 ? source.length : end;
+      continue;
+    }
+    if (source.startsWith('/*', i)) {
+      let depth = 1;
+      i += 2;
+      while (i < source.length && depth) {
+        if (source.startsWith('/*', i)) { depth++; i += 2; }
+        else if (source.startsWith('*/', i)) { depth--; i += 2; }
+        else i++;
+      }
+      continue;
+    }
+    const start = i;
+    const raw = /^(?:br|cr|r)(#*)"/.exec(source.slice(i));
+    if (raw) {
+      const endMarker = `"${raw[1]}`;
+      const content = i + raw[0].length;
+      const end = source.indexOf(endMarker, content);
+      result.push({value: source.slice(content, end < 0 ? source.length : end), string: true, start});
+      i = end < 0 ? source.length : end + endMarker.length;
+      continue;
+    }
+    if (source[i] === '"') {
+      i++;
+      let value = '';
+      while (i < source.length && source[i] !== '"') {
+        if (source[i] !== '\\') { value += source[i++]; continue; }
+        const escape = /^\\(?:x([\da-fA-F]{2})|u\{([\da-fA-F_]+)\}|(\r?\n)\s*|(.))/s.exec(source.slice(i));
+        if (!escape) { i++; continue; }
+        value += escape[1] ? String.fromCodePoint(parseInt(escape[1], 16))
+          : escape[2] ? String.fromCodePoint(parseInt(escape[2].replaceAll('_', ''), 16))
+          : escape[3] ? '' : ({n: '\n', r: '\r', t: '\t', '0': '\0'}[escape[4]] ?? escape[4]);
+        i += escape[0].length;
+      }
+      i++;
+      result.push({value, string: true, start});
+      continue;
+    }
+    // Character literals are opaque, while lifetimes remain ordinary tokens.
+    const character = /^'(?:\\(?:u\{[\da-fA-F_]+\}|x[\da-fA-F]{2}|.)|[^'\\\r\n])'/su.exec(source.slice(i));
+    if (character) { i += character[0].length; continue; }
+    const identifier = /^(?:r#)?[A-Za-z_][A-Za-z_0-9]*/.exec(source.slice(i));
+    const value = identifier ? identifier[0] : source[i];
+    result.push({value: value.replace(/^r#/, ''), start});
+    i += value.length;
+  }
+  return result;
+}
+
 export function violations(source, filename, packageRoot) {
   const problems = [];
   const harnessFuzz = packageRoot.split(sep).at(-1) === 'harness-fuzz';
-  for (const match of source.matchAll(/#\[\s*path\s*=\s*"([^"]+)"\s*\]/g)) {
-    const target = resolve(dirname(filename), match[1]);
-    const within = relative(packageRoot, target);
-    if ((harnessFuzz && match[1]) || within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
-      const line = source.slice(0, match.index).split('\n').length;
-      problems.push(`${filename}:${line}: import ${match[1]} through the owning crate's API`);
+  const input = tokens(source);
+  let attributeDepth = 0;
+  for (let i = 0; i < input.length; i++) {
+    const token = input[i];
+    if (token.string) continue;
+    if (token.value === '[' && (attributeDepth || input[i - 1]?.value === '#' ||
+        (input[i - 1]?.value === '!' && input[i - 2]?.value === '#'))) attributeDepth++;
+    if (token.value === ']') attributeDepth = Math.max(0, attributeDepth - 1);
+    const line = () => source.slice(0, token.start).split('\n').length;
+    if (attributeDepth && token.value === 'path' && input[i + 1]?.value === '=' && input[i + 2]?.string) {
+      const path = input[i + 2].value;
+      const target = resolve(dirname(filename), path);
+      const within = relative(packageRoot, target);
+      if (harnessFuzz || within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
+        problems.push(`${filename}:${line()}: import ${path} through the owning crate's API`);
+      }
     }
-  }
-  for (const match of source.matchAll(/\binclude!\s*\(/g)) {
-    const line = source.slice(0, match.index).split('\n').length;
-    problems.push(`${filename}:${line}: compile shared code through the owning crate instead of include!`);
+    if (token.value === 'include' && input[i + 1]?.value === '!') {
+      problems.push(`${filename}:${line()}: compile shared code through the owning crate instead of include!`);
+    }
   }
   return problems;
 }
