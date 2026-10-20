@@ -16,15 +16,12 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-#[cfg(feature = "test-support")]
-use acyclic_native_runtime::testing::spawn;
+use acyclic_native_runtime::spawn;
 use acyclic_stream::{BoxProviderFuture, StreamError, StreamPath, StreamProvider};
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
-#[cfg(not(feature = "test-support"))]
-use tokio::spawn;
 
 impl NativeProcessRequest {
     fn validate(&self) -> Result<()> {

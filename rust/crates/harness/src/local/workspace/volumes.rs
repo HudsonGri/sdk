@@ -1,9 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
-#[cfg(feature = "test-support")]
-use acyclic_native_runtime::testing::spawn;
-#[cfg(not(feature = "test-support"))]
-use tokio::spawn;
+use acyclic_native_runtime::spawn;
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 

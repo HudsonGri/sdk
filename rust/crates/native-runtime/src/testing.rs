@@ -17,7 +17,7 @@ mod durability;
 pub use durability::{
     DurableFault, DurableWrite, InjectedStorageFault, durable_operation, durable_write,
 };
-mod host;
+pub(crate) mod host;
 pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
@@ -337,14 +337,10 @@ where
                 } else {
                     None
                 };
-                let worker = host.clone();
                 let completion = crate::run_blocking_io(
                     move || {
                         let _inline = crate::InlineBlocking::enter();
-                        match worker {
-                            Some(worker) => worker.run(work),
-                            None => work(),
-                        }
+                        work()
                     },
                     None,
                 );
@@ -353,18 +349,24 @@ where
                 result
             }),
         ))
-    } else {
+    } else if crate::inline_blocking_allowed() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
         BlockingOwner::Shared(tokio::spawn(async move {
             host_work(crate::run_blocking_io(work, None), None).await
         }))
+    } else {
+        // Without a simulation this is the production path: Tokio's blocking
+        // pool, which a paused Tokio clock observes as outstanding work, so
+        // virtual time cannot advance past an unfinished closure.
+        BlockingOwner::Worker(tokio::task::spawn_blocking(work))
     };
     async move {
         match owner {
             BlockingOwner::Controlled(worker) => worker.await?,
-            BlockingOwner::Shared(shared) => shared.await.map_err(std::io::Error::other)?,
+            BlockingOwner::Shared(shared) => shared.await.map_err(crate::task::join_error)?,
+            BlockingOwner::Worker(worker) => worker.await.map_err(crate::task::join_error),
         }
     }
 }
@@ -373,6 +375,7 @@ where
 enum BlockingOwner<T> {
     Controlled(TaskHandle<std::io::Result<T>>),
     Shared(tokio::task::JoinHandle<std::io::Result<T>>),
+    Worker(tokio::task::JoinHandle<T>),
 }
 
 async fn host_work<T>(
@@ -382,10 +385,8 @@ async fn host_work<T>(
     let mut completion = completion?;
     if let Some(mut job) = completion.pending.take() {
         let workers = crate::workers(&crate::BLOCKING_WORKERS, false)?;
+        host::Work::bind(&mut job, Context::current(), host.clone());
         if let Some(host) = host {
-            if let crate::NativeJob::Task { controlled, .. } = &mut job {
-                *controlled = true;
-            }
             host.drive(queued(job, workers)).await?;
         } else {
             queued(job, workers).await?;
@@ -396,7 +397,7 @@ async fn host_work<T>(
 
 pub(crate) fn submit(
     context: &Context,
-    job: crate::NativeJob,
+    mut job: crate::NativeJob,
     pool: &'static std::sync::LazyLock<std::io::Result<crate::NativeWorkers>>,
 ) -> oneshot::Receiver<std::io::Result<()>> {
     let active = context.accept("native");
@@ -413,12 +414,19 @@ pub(crate) fn submit(
             let _active = active;
             owned.pause("native:submitted").await;
             let result = match crate::workers(pool, job.meter().is_some()) {
-                Ok(workers) if owned.schedule.0.executor.is_some() => {
-                    host::Host::for_workers(workers)
-                        .drive(queued(job, workers))
-                        .await
+                Ok(workers) => {
+                    let host = owned
+                        .schedule
+                        .0
+                        .executor
+                        .as_ref()
+                        .map(|_| host::Host::for_workers(workers));
+                    host::Work::bind(&mut job, Some(owned.clone()), host.clone());
+                    match host {
+                        Some(host) => host.drive(queued(job, workers)).await,
+                        None => queued(job, workers).await,
+                    }
                 }
-                Ok(workers) => queued(job, workers).await,
                 Err(error) => Err(error),
             };
             if result.is_err()
@@ -453,11 +461,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let context = Context::simulation().map(|mut context| {
-        // A nested native job inherits sources, not another worker's permit.
-        context.host = None;
-        context
-    });
+    let context = Context::simulation();
     #[cfg(test)]
     let context = if FORGET_HOST_CONTEXT.with(|fault| fault.replace(false)) {
         None
@@ -466,7 +470,22 @@ where
     };
     // Carry simulation sources without entering Tokio around user blocking
     // work. Clock reads enter their captured runtime only for the read itself.
-    move || BLOCKING_CONTEXT.sync_scope(context, work)
+    move || {
+        let context = context.map(|mut context| {
+            // Inline work retains its physical host; queued work borrows the
+            // receiving worker's host, never the submitting worker's permit.
+            context.host = host::Host::current();
+            let _ = BLOCKING_CONTEXT.try_with(|physical| {
+                if let Some(physical) = physical
+                    && Arc::ptr_eq(&context.schedule.0, &physical.schedule.0)
+                {
+                    context.owned |= physical.owned;
+                }
+            });
+            context
+        });
+        BLOCKING_CONTEXT.sync_scope(context, work)
+    }
 }
 
 // Keep the original queue admission, capacity wake, worker handoff and physical

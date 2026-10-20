@@ -4,6 +4,221 @@ use super::*;
 static SATURATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn parking_a_worker_does_not_invent_callback_readiness() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct Count(AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let host = Host::with_pool(Pool::new(1));
+    let wakes = Arc::new(Count(AtomicUsize::new(0)));
+    {
+        let mut state = lock(&host.state);
+        state.waiting_start = true;
+        state.driver = Some(Waker::from(wakes.clone()));
+    }
+    let ready = Arc::new(AtomicBool::new(false));
+    let work_ready = ready.clone();
+    let worker = host.clone();
+    let thread = std::thread::spawn(move || {
+        worker.run(|| {
+            worker.block(std::future::poll_fn(|_| {
+                if work_ready.load(Ordering::SeqCst) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }));
+        })
+    });
+    let mut state = host.state.lock().unwrap_or_else(PoisonError::into_inner);
+    while state.phase != Phase::Parked {
+        state = host
+            .changed
+            .wait(state)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+    // Readiness has not been published by the original future yet.
+    let invented = wakes.0.load(Ordering::SeqCst);
+    drop(state);
+    ready.store(true, Ordering::SeqCst);
+    host.wake_by_ref();
+    executor::complete_io(host.drive(std::future::poll_fn(|_| {
+        if lock(&host.state).phase == Phase::Finished {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })));
+    thread.join().unwrap();
+    assert_eq!(invented, 0, "parking enqueued an extra seeded task poll");
+}
+
+#[test]
+fn file_batches_never_claim_a_callback_dependency() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source");
+    let file = crate::NativeFile::from_file(std::fs::File::create(path).unwrap(), None)
+        .map_err(|(error, _)| error)
+        .unwrap();
+    let read = file.read_batch_async(vec![crate::OwnedRead {
+        offset: 0,
+        length: 1,
+    }]);
+    let write = file.write_all_batch_async(vec![crate::OwnedWrite {
+        offset: 0,
+        bytes: bytes::Bytes::from_static(b"x"),
+    }]);
+    assert!(!read.pending.as_ref().unwrap().may_wait_for_driver());
+    assert!(!write.pending.as_ref().unwrap().may_wait_for_driver());
+    let task = crate::run_blocking_io(|| (), None).unwrap();
+    assert!(task.pending.as_ref().unwrap().may_wait_for_driver());
+}
+
+fn direct_callback(erase_scope: bool, prepared: bool) -> bool {
+    crate::initialize_native_io_services().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let (schedule, mut events) = Schedule::seeded(29);
+    let meter = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
+    runtime.block_on(async {
+        let mut root = Box::pin(schedule.scope(async {
+            let (requests, mut requested) = mpsc::unbounded_channel();
+            if erase_scope {
+                FORGET_HOST_CONTEXT.with(|fault| fault.set(true));
+            }
+            let completion = crate::run_blocking_io(
+                move || {
+                    // Losing custody is a finite failure, rather than hanging the
+                    // physical worker on the original root-response dependency.
+                    let Some(context) = Context::simulation() else {
+                        return false;
+                    };
+                    let Some(host) = Host::current() else {
+                        return false;
+                    };
+                    if !context.owned
+                        || !context
+                            .host
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &host))
+                    {
+                        return false;
+                    }
+                    let (answer, waiting) = oneshot::channel();
+                    requests.send(answer).unwrap();
+                    blocking_on(waiting).unwrap() == 73
+                },
+                Some((meter, prepared)),
+            )
+            .unwrap();
+            let responder = async {
+                if let Some(answer) = requested.recv().await {
+                    answer.send(73).unwrap();
+                }
+            };
+            tokio::join!(completion, responder).0.unwrap()
+        }));
+        let result = loop {
+            tokio::select! {
+                result = &mut root => break result,
+                event = events.recv() => event.unwrap().release(),
+            }
+        };
+        drop(root);
+        schedule.drained().await;
+        result
+    })
+}
+
+#[test]
+fn direct_native_callbacks_borrow_the_receiving_host() {
+    for prepared in [false, true] {
+        assert!(direct_callback(false, prepared));
+        assert!(
+            !direct_callback(true, prepared),
+            "erased custody escaped the control"
+        );
+    }
+}
+
+fn inline_metered_callback(erase_scope: bool, prepared: bool) -> bool {
+    crate::initialize_native_io_services().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let (schedule, mut events) = Schedule::seeded(29);
+    let meter = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
+    runtime.block_on(async {
+        let mut root = Box::pin(schedule.scope(async {
+            let (requests, mut requested) = mpsc::unbounded_channel();
+            let worker = spawn_blocking(move || {
+                let original = Host::current().unwrap();
+                let thread = std::thread::current().id();
+                if erase_scope {
+                    FORGET_HOST_CONTEXT.with(|fault| fault.set(true));
+                }
+                crate::run_blocking_io(
+                    move || {
+                        let Some(context) = Context::simulation() else {
+                            return false;
+                        };
+                        if !context
+                            .host
+                            .as_ref()
+                            .is_some_and(|host| Arc::ptr_eq(host, &original))
+                        {
+                            return false;
+                        }
+                        let (answer, waiting) = oneshot::channel();
+                        requests.send(answer).unwrap();
+                        blocking_on(waiting).unwrap() == 73 && std::thread::current().id() == thread
+                    },
+                    Some((meter, prepared)),
+                )
+                .unwrap()
+                // Poll directly under the physical worker's context; this
+                // measured entry point must retain the same host permit.
+                .wait(None, std::future::pending(), || {
+                    panic!("unexpected deadline")
+                })
+            });
+            if let Some(answer) = requested.recv().await {
+                answer.send(73).unwrap();
+            }
+            worker.await.unwrap().unwrap()
+        }));
+        let result = loop {
+            tokio::select! {
+                result = &mut root => break result,
+                event = events.recv() => event.unwrap().release(),
+            }
+        };
+        drop(root);
+        schedule.drained().await;
+        result
+    })
+}
+
+#[test]
+fn inline_metered_waits_retain_the_original_host() {
+    for prepared in [false, true] {
+        assert!(inline_metered_callback(false, prepared));
+        assert!(!inline_metered_callback(true, prepared));
+    }
+}
+
+#[test]
 fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
     let _fixture = SATURATION.lock().unwrap_or_else(PoisonError::into_inner);
     let workers = crate::workers(&crate::BLOCKING_WORKERS, false).unwrap();
@@ -33,12 +248,9 @@ fn unscoped_physical_workers_leave_the_driver_available_to_reply() {
         receive.recv().unwrap();
     }
     let host = Host::for_workers(workers);
-    let worker = host.clone();
-    let mut completion = crate::run_blocking_io(move || worker.run(|| 42), None).unwrap();
+    let mut completion = crate::run_blocking_io(|| 42, None).unwrap();
     let mut job = completion.pending.take().unwrap();
-    if let crate::NativeJob::Task { controlled, .. } = &mut job {
-        *controlled = true;
-    }
+    Work::bind(&mut job, None, Some(host.clone()));
     let mut drive = Box::pin(host.drive(queued(job, workers)));
     // Every physical worker is waiting for this driver. Its first poll must
     // yield before any reply is sent, even though none belongs to this Host.

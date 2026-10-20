@@ -15,7 +15,7 @@ pub(crate) struct NativeWorkers {
     pub(crate) sender: mpsc::SyncSender<NativeJob>,
     pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
     /// Worker threads draining `sender`; tests use it to occupy every worker.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) threads: usize,
     #[cfg(feature = "test-support")]
     pub(crate) host_pool: Arc<crate::testing::HostPool>,
@@ -89,7 +89,7 @@ pub(crate) fn start_workers(
             .spawn(move || {
                 while let Some(job) = receive_job(&receiver, &admission) {
                     #[cfg(feature = "test-support")]
-                    let occupant = (!job.controlled()).then(|| host_pool.unscoped());
+                    let occupant = job.may_wait_for_driver().then(|| host_pool.unscoped());
                     let waker = job.run();
                     #[cfg(feature = "test-support")]
                     drop(occupant);
@@ -104,7 +104,7 @@ pub(crate) fn start_workers(
     Ok(NativeWorkers {
         sender,
         admission,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         threads: worker_count,
         #[cfg(feature = "test-support")]
         host_pool,

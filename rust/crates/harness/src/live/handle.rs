@@ -56,9 +56,6 @@ impl<T> TaskHandle<T> {
         #[cfg(not(target_arch = "wasm32"))]
         let outcome = match self.join.await {
             Ok(outcome) => outcome,
-            #[cfg(not(feature = "test-support"))]
-            Err(error) if error.is_cancelled() => Outcome::Cancelled,
-            #[cfg(feature = "test-support")]
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Outcome::Cancelled,
             Err(error) => Outcome::Failed {
                 message: error.to_string(),

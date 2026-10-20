@@ -1,12 +1,9 @@
 use super::*;
-#[cfg(feature = "test-support")]
-use acyclic_native_runtime::testing::spawn_blocking;
+use acyclic_native_runtime::spawn_blocking;
 use std::{
     process::{Command, Stdio},
     time::Duration,
 };
-#[cfg(not(feature = "test-support"))]
-use tokio::task::spawn_blocking;
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =

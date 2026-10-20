@@ -10,11 +10,8 @@ use crate::{
     task_volume::{ChildFile, ChildRequest, FileKey, FileValue, Query, TaskFiles},
 };
 use acyclic_fs::facade::FsWork as _;
-#[cfg(feature = "test-support")]
-use acyclic_native_runtime::testing::spawn_blocking;
+use acyclic_native_runtime::spawn_blocking;
 use acyclic_stream::StreamProvider;
-#[cfg(not(feature = "test-support"))]
-use tokio::task::spawn_blocking;
 
 impl LocalHarness {
     pub(in crate::local) async fn admit_child_task<P: StreamProvider + ?Sized>(

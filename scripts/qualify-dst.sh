@@ -9,7 +9,7 @@ cargo check --locked -p acyclic-fs --no-default-features --features memory,brows
 
 # Build each focused target once; the artifact runner executes the binaries.
 cargo test --locked -p acyclic-native-runtime --features test-support --lib --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py testing::entropy:: testing::executor:: testing::clock:: testing::queue:: testing::durability:: testing::host:: testing::process::
+  python3 scripts/qualify-graphcoder-artifact.py task:: testing::entropy:: testing::executor:: testing::clock:: testing::queue:: testing::durability:: testing::host:: testing::process::
 RUSTFLAGS="--cfg acyclic_native_runtime_loom" cargo test --locked -p acyclic-native-runtime --features test-support --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py testing::model:: testing::entropy::models:: testing::executor::models:: testing::queue_model:: testing::durability::models:: testing::host::models::
 cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,grpc,test-support --lib --no-run --message-format=json |

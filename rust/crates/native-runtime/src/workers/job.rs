@@ -23,7 +23,7 @@ pub(crate) enum NativeJob {
     },
     Task {
         #[cfg(feature = "test-support")]
-        controlled: bool,
+        scope: Option<testing::host::Work>,
         operation: Box<dyn FnOnce() + Send>,
         meter: Option<Arc<dyn NativeReadMeter>>,
         terminal: Arc<dyn TaskTerminal>,
@@ -35,14 +35,12 @@ pub(crate) enum NativeJob {
 
 impl NativeJob {
     #[cfg(feature = "test-support")]
-    pub(crate) fn controlled(&self) -> bool {
-        matches!(
-            self,
-            Self::Task {
-                controlled: true,
-                ..
-            }
-        )
+    pub(crate) fn may_wait_for_driver(&self) -> bool {
+        match self {
+            Self::Task { scope, .. } => !scope.as_ref().is_some_and(|scope| scope.controlled()),
+            // File batches cannot await an async response from the driver.
+            Self::Read { .. } | Self::Write { .. } => false,
+        }
     }
     #[cfg(feature = "test-support")]
     pub(crate) fn test_terminal(&self) -> Arc<dyn TaskTerminal> {
@@ -160,19 +158,28 @@ impl NativeJob {
             }),
             Self::Task {
                 #[cfg(feature = "test-support")]
-                    controlled: _,
+                scope,
                 operation,
                 meter,
                 terminal,
                 _allocation,
                 health,
                 completion,
-            } => run_task(
-                operation,
-                terminal,
-                completion,
-                (_allocation, meter, health),
-            ),
+            } => {
+                let work = || {
+                    run_task(
+                        operation,
+                        terminal,
+                        completion,
+                        (_allocation, meter, health),
+                    )
+                };
+                #[cfg(feature = "test-support")]
+                if let Some(scope) = scope {
+                    return scope.run(work);
+                }
+                work()
+            }
         }
     }
 }

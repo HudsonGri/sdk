@@ -36,7 +36,46 @@ pub(super) struct Host {
     pool: Arc<pool::Pool>,
 }
 
+// Installed by the receiving worker around the original Task callback.
+pub(crate) struct Work {
+    host: Option<Arc<Host>>,
+    context: Option<Context>,
+}
+
+impl Work {
+    pub(super) fn bind(
+        job: &mut crate::NativeJob,
+        context: Option<Context>,
+        host: Option<Arc<Host>>,
+    ) {
+        if let crate::NativeJob::Task { scope, .. } = job {
+            *scope = (context.is_some() || host.is_some()).then(|| Self { host, context });
+        }
+    }
+
+    pub(crate) fn controlled(&self) -> bool {
+        self.host.is_some()
+    }
+
+    pub(crate) fn run<T>(self, work: impl FnOnce() -> T) -> T {
+        let Self { host, mut context } = self;
+        if let Some(context) = &mut context {
+            context.host = None;
+        }
+        BLOCKING_CONTEXT.sync_scope(context, || match host {
+            Some(host) => host.run(work),
+            None => work(),
+        })
+    }
+}
+
 impl Host {
+    pub(super) fn current() -> Option<Arc<Self>> {
+        BLOCKING_CONTEXT
+            .try_with(|context| context.as_ref().and_then(|context| context.host.clone()))
+            .ok()
+            .flatten()
+    }
     #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(super) fn new(threads: usize) -> Arc<Self> {
         Self::with_pool(Pool::new(threads))
@@ -92,15 +131,13 @@ impl Host {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.phase = Phase::Parked;
             let saturated = self.pool.park();
-            let driver = state.waiting_start.then(|| state.driver.clone()).flatten();
+            // Parking is not readiness: only the original future's wake or
+            // physical terminal may enqueue the next seeded task poll.
             state.waiting_start = false;
             self.changed.notify_one();
             drop(state);
             if saturated {
                 self.pool.changed();
-            }
-            if let Some(driver) = driver {
-                driver.wake();
             }
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             while state.phase == Phase::Parked {

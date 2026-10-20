@@ -361,15 +361,9 @@ impl<T> Future for TaskHandle<T> {
     type Output = io::Result<T>;
     fn poll(self: Pin<&mut Self>, cx: &mut PollContext<'_>) -> Poll<Self::Output> {
         match &mut self.get_mut().0 {
-            Handle::Tokio(task) => Pin::new(task).poll(cx).map(|result| {
-                result.map_err(|cause| {
-                    if cause.is_cancelled() {
-                        io::Error::new(io::ErrorKind::Interrupted, cause)
-                    } else {
-                        io::Error::other(cause)
-                    }
-                })
-            }),
+            Handle::Tokio(task) => Pin::new(task)
+                .poll(cx)
+                .map(|result| result.map_err(crate::task::join_error)),
             Handle::Simulated { receiver, .. } => Pin::new(receiver).poll(cx).map(|result| {
                 result.unwrap_or_else(|_| {
                     Err(io::Error::new(
