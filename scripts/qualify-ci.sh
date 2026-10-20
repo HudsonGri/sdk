@@ -203,7 +203,7 @@ harness_tests() {
 case "$lane" in
   gate)
     node scripts/check-hermetic-clippy.mjs
-    node --test scripts/check-fuzz-boundaries.test.mjs
+    node --test scripts/check-fuzz-boundaries.test.mjs scripts/qualify-harness-fuzz.test.mjs
     node scripts/check-fuzz-boundaries.mjs
     cargo check --locked --workspace --all-features --all-targets
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \

@@ -10,7 +10,7 @@ pub fn fuse_reply(input: &[u8]) {
 }
 
 /// Platform-independent Windows callback path codecs used by property tests.
-#[cfg(feature = "native-mount")]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub mod callback_path {
     /// Decode callback UTF-16 paths into canonical byte components.
     pub fn components(wide: &[u16]) -> Option<Vec<Vec<u8>>> {
