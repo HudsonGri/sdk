@@ -176,8 +176,22 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        if let Lookup::Resident(bytes) = self.lookup(object_id) {
-            return resident_read(bytes, maximum_bytes, work);
+        match self.lookup(object_id) {
+            Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, work),
+            // Only spill offsets need protection against reuse by a drain.
+            // Durable immutable reads must remain independent of a concurrent
+            // publication, including synchronous native callbacks.
+            Lookup::Absent => {
+                let native = work.original;
+                let future = self.inner.read(object_id, maximum_bytes, work);
+                let allocation = frame_allocation(native, &future)?;
+                let mut future = Box::pin(future);
+                let result = future.as_mut().await;
+                drop(future);
+                drop(allocation);
+                return result;
+            }
+            Lookup::Spilled { .. } => {}
         }
         let native = work.original;
         let future = self.read_private(object_id, maximum_bytes, work);
