@@ -28,8 +28,8 @@ struct State {
     served: BTreeSet<u64>,
     cancelled: BTreeSet<u64>,
     tasks: BTreeMap<u64, Work>,
-    driver: Option<Waker>,
-    root_drivers: BTreeMap<u64, Waker>,
+    driver: Option<Arc<Waker>>,
+    root_drivers: BTreeMap<u64, Arc<Waker>>,
     random: blake3::OutputReader,
     trace: Vec<(u64, &'static str)>,
     #[cfg(test)]
@@ -60,13 +60,14 @@ impl State {
 // The ordinary single-root path retains one waker without allocating a vector.
 #[derive(Default)]
 struct Drivers {
-    first: Option<Waker>,
-    others: Vec<Waker>,
+    first: Option<Arc<Waker>>,
+    others: Vec<Arc<Waker>>,
 }
 
 impl IntoIterator for Drivers {
-    type Item = Waker;
-    type IntoIter = std::iter::Chain<std::option::IntoIter<Waker>, std::vec::IntoIter<Waker>>;
+    type Item = Arc<Waker>;
+    type IntoIter =
+        std::iter::Chain<std::option::IntoIter<Arc<Waker>>, std::vec::IntoIter<Arc<Waker>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.first.into_iter().chain(self.others)
@@ -119,7 +120,7 @@ impl Executor {
         };
         drop(task);
         for driver in driver {
-            driver.wake();
+            driver.wake_by_ref();
         }
         Arc::new(TaskWake {
             executor: self.clone(),
@@ -141,29 +142,30 @@ impl Executor {
             state.drivers()
         };
         for driver in driver {
-            driver.wake();
+            driver.wake_by_ref();
         }
     }
 
     fn retire(&self, id: u64) {
-        let (task, drivers) = {
+        let (task, retired, drivers) = {
             let mut state = lock(&self.0);
             state.live.remove(&id);
             state.ready.remove(&id);
             state.served.remove(&id);
             state.cancelled.remove(&id);
-            state.root_drivers.remove(&id);
+            let retired = state.root_drivers.remove(&id);
             let task = state.tasks.remove(&id);
             let drivers = if state.ready.is_empty() {
                 Drivers::default()
             } else {
                 state.drivers()
             };
-            (task, drivers)
+            (task, retired, drivers)
         };
+        drop(retired);
         drop(task);
         for driver in drivers {
-            driver.wake();
+            driver.wake_by_ref();
         }
     }
 
@@ -178,30 +180,46 @@ impl Executor {
             state.drivers()
         };
         for driver in driver {
-            driver.wake();
+            driver.wake_by_ref();
         }
     }
 
     fn next(&self, cx: &PollContext<'_>, root: Option<u64>) -> Option<(u64, Option<Work>, bool)> {
-        let mut state = lock(&self.0);
-        if state.closed {
-            return None;
-        }
-        if let Some(root) = root {
-            state.root_drivers.insert(root, cx.waker().clone());
-        } else if !POLLING_EXECUTOR
-            .try_with(|executor| std::ptr::eq(executor.as_ref(), self))
-            .unwrap_or(false)
-        {
-            // A drain inside a polled future already wakes through that future.
-            // Registering its TaskWake here would create a recursive wake route.
-            state.driver = Some(cx.waker().clone());
-        }
+        let drain = root.is_none()
+            && !POLLING_EXECUTOR
+                .try_with(|executor| std::ptr::eq(executor.as_ref(), self))
+                .unwrap_or(false);
+        // Raw waker clone and drop callbacks may reenter the executor too.
+        // Snapshots retain Arc<Waker>, so neither callback runs under its lock.
+        let mut replacement = (root.is_some() || drain).then(|| Arc::new(cx.waker().clone()));
+        let (next, retired) = {
+            let mut state = lock(&self.0);
+            let retired = if state.closed {
+                None
+            } else if let Some(root) = root {
+                state.root_drivers.insert(root, replacement.take().unwrap())
+            } else if drain {
+                state.driver.replace(replacement.take().unwrap())
+            } else {
+                None
+            };
+            let next = if state.closed {
+                None
+            } else {
+                Self::select(&mut state, root)
+            };
+            (next, retired)
+        };
+        drop(retired);
+        next
+    }
+
+    fn select(state: &mut State, root: Option<u64>) -> Option<(u64, Option<Work>, bool)> {
         // Borrowed roots can only be polled by their owning run call. An owned
         // future is eligible only while it is stored here, never while another
         // root is polling it outside the lock.
         let eligible = |state: &State, id: &u64| root == Some(*id) || state.tasks.contains_key(id);
-        if !state.ready.iter().any(|id| eligible(&state, id)) {
+        if !state.ready.iter().any(|id| eligible(state, id)) {
             return None;
         }
         // A self-waking task cannot consume another ready task's entire turn.
@@ -213,14 +231,14 @@ impl Executor {
         if !state
             .ready
             .difference(&state.served)
-            .any(|id| eligible(&state, id))
+            .any(|id| eligible(state, id))
         {
             state.served.clear();
         }
         let count = state
             .ready
             .difference(&state.served)
-            .filter(|id| eligible(&state, id))
+            .filter(|id| eligible(state, id))
             .count();
         let mut draw = [0; 8];
         state.random.fill(&mut draw);
@@ -228,7 +246,7 @@ impl Executor {
         let id = *state
             .ready
             .difference(&state.served)
-            .filter(|id| eligible(&state, id))
+            .filter(|id| eligible(state, id))
             .nth(index as usize)
             .expect("nonempty ready set");
         state.ready.remove(&id);
@@ -263,7 +281,7 @@ impl Executor {
         };
         drop(discard);
         for driver in driver {
-            driver.wake();
+            driver.wake_by_ref();
         }
     }
 

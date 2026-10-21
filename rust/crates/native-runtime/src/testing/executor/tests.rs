@@ -1,5 +1,70 @@
 use super::*;
 
+fn reentrant_waker_cleanup(entry: u8) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Reenter {
+        executor: std::sync::Weak<Executor>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl Wake for Reenter {
+        fn wake(self: Arc<Self>) {}
+    }
+    impl Drop for Reenter {
+        fn drop(&mut self) {
+            let executor = self.executor.upgrade().unwrap();
+            // Fail finitely in the counterfactual before actually reentering.
+            assert!(
+                executor.0.try_lock().is_ok(),
+                "waker cleanup held executor lock"
+            );
+            executor.trace();
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let executor = Executor::new(71);
+    let root = executor.register(None);
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let waker = Waker::from(Arc::new(Reenter {
+        executor: Arc::downgrade(&executor),
+        dropped: dropped.clone(),
+    }));
+    executor.next(
+        &PollContext::from_waker(&waker),
+        (entry != 2).then_some(root.id),
+    );
+    drop(waker);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    if entry == 0 {
+        executor.retire(root.id);
+    } else {
+        assert!(
+            executor
+                .next(
+                    &PollContext::from_waker(Waker::noop()),
+                    (entry == 1).then_some(root.id)
+                )
+                .is_none()
+        );
+    }
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    executor.shutdown();
+}
+
+#[test]
+fn root_retirement_releases_waker_outside_executor_lock() {
+    reentrant_waker_cleanup(0);
+}
+
+#[test]
+fn root_replacement_releases_waker_outside_executor_lock() {
+    reentrant_waker_cleanup(1);
+}
+
+#[test]
+fn drain_replacement_releases_waker_outside_executor_lock() {
+    reentrant_waker_cleanup(2);
+}
+
 struct PendingDrop {
     dropped: Arc<std::sync::atomic::AtomicBool>,
     polled: Arc<std::sync::atomic::AtomicBool>,
