@@ -121,6 +121,55 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
     assert!(result.value.to_string().contains("needle"), "{result:?}");
     assert_eq!(workspace.mount_advances.load(Ordering::Relaxed), advances);
     assert_eq!(workspace.checkout_selection().await?.1, Some(pending));
+    let snapshot = harness
+        .task_files
+        .inner
+        .snapshot(
+            &crate::task_volume::Query::Task(crate::task_volume::Component::new(
+                task_id.to_string(),
+            )?),
+            64,
+        )
+        .await?;
+    let progress: Vec<serde_json::Value> = snapshot
+        .files
+        .iter()
+        .filter_map(|file| {
+            if matches!(
+                file.key,
+                crate::task_volume::FileKey::Task {
+                    file: crate::task_volume::TaskFile::Tool {
+                        file: crate::task_volume::ToolFile::Stdout(_),
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                serde_json::from_slice::<serde_json::Value>(&file.bytes)
+                    .ok()
+                    .filter(|value| value.get("files_examined").is_some())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        progress
+            .iter()
+            .any(|value| value["files_examined"] == 0 && value["complete"] == false)
+    );
+    assert!(progress.iter().any(|value| value["files_examined"] == 1
+        && value["complete"] == false
+        && value["matches"][0]["text"] == "needle"));
+    assert!(progress.iter().any(|value| value["complete"] == true));
+    assert_eq!(
+        progress
+            .iter()
+            .map(|value| value["matches"].as_array().unwrap().len())
+            .sum::<usize>(),
+        1,
+        "progress duplicated a match in later metadata or terminal updates"
+    );
 
     // A command that needs an exact checkout still performs recovery. Without
     // the search preflight bypass the preceding grep also clears this marker.

@@ -214,11 +214,7 @@ impl ToolExecutor for CheckoutTools {
             {
                 return selected.execute(invocation, context).await;
             }
-            let request = if invocation.name == "bash" {
-                serde_json::to_vec(&invocation).map_err(storage)?
-            } else {
-                Vec::new()
-            };
+            let request = serde_json::to_vec(&invocation).map_err(storage)?;
             let bash = if invocation.name == "bash" {
                 let input: crate::tools::BashInput =
                     serde_json::from_value(std::mem::take(&mut invocation.arguments))
@@ -262,7 +258,9 @@ impl ToolExecutor for CheckoutTools {
                 // physical checkout, recovering its publication, or syncing
                 // auxiliary mounts can hydrate unrelated source files.
                 if let Some(parsed) = fs.take_if(|parsed| parsed.arguments[0] == "grep") {
-                    return self.fs(parsed, context, &mut state, &self.workspace).await;
+                    return self
+                        .fs(parsed, context, &mut state, &self.workspace, request)
+                        .await;
                 }
                 let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
                 let view = state
@@ -278,7 +276,8 @@ impl ToolExecutor for CheckoutTools {
                 }
                 workspace::volumes::sync(&state.mounts).await?;
                 if let Some(parsed) = fs {
-                    self.fs(parsed, context, &mut state, &workspace).await
+                    self.fs(parsed, context, &mut state, &workspace, request)
+                        .await
                 } else {
                     let State {
                         active, watcher, ..

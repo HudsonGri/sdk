@@ -3,17 +3,33 @@ use super::*;
 pub use acyclic_fs::SearchName;
 use acyclic_fs::{GitGrepMatch, SearchError};
 
-#[derive(serde::Serialize)]
-pub(super) struct GrepResult {
-    matches: Vec<GitGrepMatch>,
-    truncated: bool,
-    files_examined: u64,
-    bytes_read: u64,
-    pending_directories: usize,
-    complete: bool,
+/// Bounded partial content-search results, also used for the final response.
+#[derive(Clone, serde::Serialize)]
+pub struct GrepProgress {
+    /// Matching lines found so far, bounded by the search result budget.
+    pub matches: Vec<GitGrepMatch>,
+    /// A byte/result budget or a changed namespace prevented a complete answer.
+    pub truncated: bool,
+    /// Authorized regular candidates examined so far.
+    pub files_examined: u64,
+    /// Candidate content bytes read so far.
+    pub bytes_read: u64,
+    /// Metadata directories still awaiting enumeration.
+    pub pending_directories: usize,
+    /// True only when every eligible candidate was examined without truncation.
+    pub complete: bool,
 }
 
-impl GrepResult {
+/// Publishes progress through the caller's existing followed tool-output files.
+pub trait SearchProgress: Send + Sync {
+    /// Commits a bounded partial result before search continues.
+    fn publish<'a>(
+        &'a self,
+        progress: &'a GrepProgress,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<()>>;
+}
+
+impl GrepProgress {
     fn finish(mut self) -> Self {
         self.matches
             .sort_by(|left, right| (&left.path, left.line).cmp(&(&right.path, right.line)));
@@ -82,7 +98,7 @@ where
         tree: GitTreeRef,
         pattern: &str,
         path: Option<&str>,
-    ) -> crate::Result<GrepResult> {
+    ) -> crate::Result<GrepProgress> {
         let reader = match tree {
             GitTreeRef::Lazy(snapshot) => {
                 let View::Checkout(lazy) = self.lazy_current else {
@@ -104,7 +120,7 @@ where
         .map_err(search_error)?;
         let mut names = IndexedNames::open(self.lazy_current, self.ignore.clone()).await?;
         let root = path.unwrap_or("").trim_matches('/');
-        let mut result = GrepResult {
+        let mut result = GrepProgress {
             matches: Vec::new(),
             truncated: false,
             files_examined: 0,
@@ -112,6 +128,7 @@ where
             pending_directories: names.pending_directories().await,
             complete: false,
         };
+        self.report_search(&result).await?;
         let mut remaining = TOTAL_BYTES;
         while let Some(page) = names.next_page().await? {
             result.pending_directories = names.pending_directories().await;
@@ -121,7 +138,7 @@ where
                 // this pinned read. Preserve already found matches and report
                 // a partial result instead of mixing generations.
                 result.truncated = true;
-                return Ok(result.finish());
+                return self.finish_search(result).await;
             }
             for name in page.names.into_iter().filter(|name| name.regular) {
                 if !root.is_empty()
@@ -138,7 +155,7 @@ where
                 }
                 if remaining == 0 {
                     result.truncated = true;
-                    return Ok(result.finish());
+                    return self.finish_search(result).await;
                 }
                 let read = reader
                     .read(&name.path, FILE_BYTES.min(remaining))
@@ -178,7 +195,7 @@ where
                     {
                         if result.matches.len() == MATCHES {
                             result.truncated = true;
-                            return Ok(result.finish());
+                            return self.finish_search(result).await;
                         }
                         result.matches.push(GitGrepMatch {
                             path: name.path.clone(),
@@ -188,9 +205,23 @@ where
                     }
                 }
             }
+            self.report_search(&result).await?;
         }
         result.pending_directories = 0;
         result.complete = !result.truncated;
+        self.finish_search(result).await
+    }
+
+    async fn report_search(&self, progress: &GrepProgress) -> crate::Result<()> {
+        if let Some(output) = self.search_progress {
+            self.validate().await?;
+            output.publish(progress).await?;
+        }
+        Ok(())
+    }
+
+    async fn finish_search(&self, result: GrepProgress) -> crate::Result<GrepProgress> {
+        self.report_search(&result).await?;
         Ok(result.finish())
     }
 }

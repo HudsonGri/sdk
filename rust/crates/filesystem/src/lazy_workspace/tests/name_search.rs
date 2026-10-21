@@ -1,4 +1,5 @@
 use super::*;
+use crate::facade::FsWork as _;
 use crate::{GitIgnorePolicy, NameWalk, PublicationPermit};
 
 async fn names_hydrate(n: usize, broken: bool) -> usize {

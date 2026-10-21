@@ -22,6 +22,8 @@ pub struct Workspace<'a> {
     pub authored_at_seconds: i64,
     /// Evaluates the caller's path access decision before each search read.
     pub read_allowed: &'a (dyn Fn(&str) -> bool + Send + Sync),
+    /// Existing task-file output publisher, when the caller follows live search.
+    pub search_progress: Option<&'a dyn SearchProgress>,
 }
 
 /// A facade result and any branch view selected by checkout.
@@ -65,6 +67,7 @@ where
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,
         read_allowed: workspace.read_allowed,
+        search_progress: workspace.search_progress,
         fs: workspace.filesystem,
         store: workspace.store,
         current: workspace.view.workspace().clone(),

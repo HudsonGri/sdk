@@ -54,6 +54,7 @@ impl CheckoutTools {
         context: &ToolContext,
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
+        request: Vec<u8>,
     ) -> Result<ToolResult> {
         let source = self
             .fs_source(workspace, &parsed, context.effective_scope())?
@@ -85,6 +86,9 @@ impl CheckoutTools {
         // Capturing an ordinary checkout here would read every source file
         // before the lazy search executor has a chance to apply its budgets.
         if parsed.arguments[0] == "grep" {
+            let progress = output::SearchOutput::new(
+                output::Output::open(context, Arc::clone(&self.task_files), request).await?,
+            );
             let output = crate::tools::git::run_with_guard(
                 crate::tools::git::Workspace {
                     filesystem: &workspace.filesystem,
@@ -104,12 +108,13 @@ impl CheckoutTools {
                     authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                         .unwrap_or(i64::MAX),
                     read_allowed: &read_allowed,
+                    search_progress: Some(&progress),
                 },
                 &parsed.arguments,
                 || async { owner.verify_owner(None)?.await },
             )
             .await;
-            return match output {
+            let result = match output {
                 Ok(output) => Ok(ToolResult {
                     value: serde_json::json!({"result": output.command}),
                 }),
@@ -120,7 +125,9 @@ impl CheckoutTools {
                     | Error::Unsupported(_)),
                 ) => Ok(crate::tools::rejected_input(error)),
                 Err(error) => Err(error),
-            };
+            }?;
+            progress.finish(&result).await?;
+            return Ok(result);
         }
         let native = match &source {
             Some(source) => Some(source.native().await),
@@ -210,6 +217,7 @@ impl CheckoutTools {
                     authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                         .unwrap_or(i64::MAX),
                     read_allowed: &read_allowed,
+                    search_progress: None,
                 },
                 &parsed.arguments,
                 || async { owner.verify_owner(None)?.await },

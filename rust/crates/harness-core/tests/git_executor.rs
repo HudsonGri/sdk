@@ -108,6 +108,7 @@ async fn run(
             author: "test",
             authored_at_seconds: 1,
             read_allowed: &|_| true,
+            search_progress: None,
         },
         &argv,
     )
@@ -204,6 +205,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
                 author: "test",
                 authored_at_seconds: 1,
                 read_allowed: &|_| true,
+                search_progress: None,
             },
             &["diff".into(), "agents/absent".into()],
         )
@@ -557,6 +559,7 @@ async fn volume_search_grep_checks_each_candidate_access_decision() -> Result<()
                 author: "test",
                 authored_at_seconds: 1,
                 read_allowed: &|path| !(denied && path == "native.txt"),
+                search_progress: None,
             },
             &["grep".into(), "origin".into()],
         )
@@ -572,6 +575,80 @@ async fn volume_search_grep_checks_each_candidate_access_decision() -> Result<()
             usize::from(!denied)
         );
         assert_eq!(value["files_examined"], u64::from(!denied));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_publishes_partial_matches_and_honors_output_failure() -> Result<()> {
+    struct Progress {
+        values: std::sync::Mutex<Vec<git::GrepProgress>>,
+        fail: bool,
+    }
+    impl git::SearchProgress for Progress {
+        fn publish<'a>(
+            &'a self,
+            value: &'a git::GrepProgress,
+        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            Box::pin(async move {
+                self.values.lock().unwrap().push(value.clone());
+                if self.fail {
+                    Err(Error::Storage("output publication failed".into()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    for fail in [false, true] {
+        let progress = Progress {
+            values: Default::default(),
+            fail,
+        };
+        let output = git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: &root,
+                repository: main.workspace().id(),
+                lease: None,
+                checkout: None,
+                author: "test",
+                authored_at_seconds: 1,
+                read_allowed: &|_| true,
+                search_progress: Some(&progress),
+            },
+            &["grep".into(), "origin".into(), "native.txt".into()],
+        )
+        .await;
+        let values = progress.values.lock().unwrap();
+        assert_eq!(values[0].files_examined, 0);
+        assert!(!values[0].complete);
+        if fail {
+            assert!(output.is_err());
+            assert_eq!(
+                values.len(),
+                1,
+                "search continued after losing its output publisher"
+            );
+        } else {
+            output?;
+            let has_partial_matches = |values: &[git::GrepProgress]| {
+                values
+                    .iter()
+                    .any(|value| !value.complete && !value.matches.is_empty())
+            };
+            assert!(has_partial_matches(&values));
+            let final_value = values.last().unwrap();
+            assert!(final_value.complete);
+            assert_eq!(final_value.files_examined, 1);
+            assert_eq!(final_value.matches.len(), 1);
+            // Negative control: publishing only a final response cannot prove
+            // that partial results reached a follower during the search.
+            assert!(!has_partial_matches(std::slice::from_ref(final_value)));
+        }
     }
     Ok(())
 }
@@ -624,6 +701,7 @@ async fn volume_search_grep_does_not_recover_pending_mutations() -> Result<()> {
             author: "test",
             authored_at_seconds: 1,
             read_allowed: &|_| true,
+            search_progress: None,
         },
         &["log".into()],
     )
@@ -685,6 +763,7 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
             author: "test",
             authored_at_seconds: 1,
             read_allowed: &|_| true,
+            search_progress: None,
         },
         &["diff".into(), "agents/child".into()],
     )
@@ -762,6 +841,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 author: "test",
                 authored_at_seconds: 1,
                 read_allowed: &|_| true,
+                search_progress: None,
             },
             &["tag".into(), tag.into()],
         )
@@ -784,6 +864,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 author: "test",
                 authored_at_seconds: 1,
                 read_allowed: &|_| true,
+                search_progress: None,
             },
             &["diff".into(), "agents/absent".into()],
         )

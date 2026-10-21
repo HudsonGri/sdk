@@ -51,6 +51,7 @@ pub(crate) struct WorkspaceGitExecutor<'a, F> {
     /// Revalidates task ownership before every effect.
     pub before_effect: &'a F,
     pub read_allowed: &'a (dyn Fn(&str) -> bool + Send + Sync),
+    pub search_progress: Option<&'a dyn SearchProgress>,
     /// Shared local filesystem.
     pub fs: &'a LocalFs,
     /// Durable compatibility and lineage store.
@@ -115,7 +116,7 @@ mod executor;
 mod index;
 mod search;
 pub use index::{IndexedNames, NamePage};
-pub use search::{NameWalk, SearchName, search_ignore, walk_names};
+pub use search::{GrepProgress, NameWalk, SearchName, SearchProgress, search_ignore, walk_names};
 mod materialize;
 mod resolve;
 mod restore;
