@@ -26,6 +26,7 @@ const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\
 #[derive(Clone, Copy)]
 enum Mode {
     Prompt,
+    NestedWorkspace,
     Instructions,
     FsRefusals,
     ConfiguredModel,
@@ -213,6 +214,10 @@ async fn scenario(mode: Mode) {
     let settings = directory.path().join("settings");
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&settings).unwrap();
+    if matches!(mode, Mode::NestedWorkspace) {
+        std::fs::create_dir_all(workspace.join("nested/deep")).unwrap();
+        std::fs::write(workspace.join("nested/deep/source.txt"), "cold workspace").unwrap();
+    }
     if instructions {
         std::fs::write(
             workspace.join("AGENTS.md"),
@@ -366,6 +371,13 @@ async fn fs_inspection_refusals_reach_http_and_complete_the_shipping_binary() {
 #[tokio::test]
 async fn prompt_argv_uses_the_real_registry_and_file_client() {
     scenario(Mode::Prompt).await;
+}
+
+#[tokio::test]
+async fn cold_nested_workspace_initializes_native_notification_services() {
+    // Each scenario launches the shipping binary in a fresh process: a watch
+    // created by the test runner cannot accidentally warm its framework loader.
+    scenario(Mode::NestedWorkspace).await;
 }
 
 #[tokio::test]

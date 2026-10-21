@@ -37,6 +37,16 @@ pub type NativeEventWatcher = crate::fsevents::FsEventsWatcher;
 #[cfg(not(target_os = "macos"))]
 pub type NativeEventWatcher = notify::RecommendedWatcher;
 
+/// Initializes process-global notification services before original native work starts.
+///
+/// macOS loads CoreServices here because framework loading cannot be charged to
+/// a bounded source invocation. Other native notification backends need no loader.
+pub fn initialize_native_watch_services() -> notify::Result<()> {
+    #[cfg(target_os = "macos")]
+    crate::fsevents::EventStream::initialize_services()?;
+    Ok(())
+}
+
 /// Exact guarantees supplied by the compiled native watcher.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeWatchCapabilities {
