@@ -418,12 +418,18 @@ async fn only_index_changes(
     if diff.changes().truncated {
         return Ok(false);
     }
-    let paths = diff
+    let paths = match diff
         .changed_paths(512, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map_err(|failure| failure.error)?
-        .value
-        .0;
+    {
+        Ok(receipt) => receipt.value.0,
+        Err(failure) if matches!(failure.error, WorkspaceError::ChangedPathLimit) => {
+            // A bounded diff cannot certify a larger revision as index-only.
+            // Rebuild/stream it; a large edit must not kill the producer.
+            return Ok(false);
+        }
+        Err(failure) => return Err(failure.error.into()),
+    };
     for path in paths {
         let mut text = String::new();
         for component in path.path.components() {

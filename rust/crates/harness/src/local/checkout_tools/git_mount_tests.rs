@@ -45,11 +45,10 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
     let directory = tempfile::tempdir().map_err(storage)?;
     let project = super::super::tests::volume(directory.path()).await?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-    let harness = LocalHarness::open(super::super::tests::volume_config(
-        directory.path(),
-        project,
-        provider,
-    )?)
+    let harness = LocalHarness::open(
+        super::super::tests::volume_config(directory.path(), project, provider)?
+            .without_default_tools(),
+    )
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
@@ -84,13 +83,35 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
             )
             .await?,
     );
+    let workspace = harness.workspace.as_ref().unwrap().clone();
+    let before = head(workspace.view().into()).await?;
+    let startup_pending = (
+        acyclic_fs::OperationId::from_bytes(OperationId::new().into_bytes()),
+        acyclic_fs::GitGenerationRef {
+            workspace_id: before.workspace().id(),
+            generation: before.id(),
+        },
+    );
+    reconciliation::prepare(&workspace, startup_pending.0, startup_pending.1).await?;
     let tools = CheckoutTools::new(
-        harness.workspace.as_ref().unwrap().clone(),
+        Arc::clone(&workspace),
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         Arc::clone(&harness.task_files),
     )
     .await?;
+    // Constructor control: eager recovery consumed this marker and a fresh
+    // checkout's eager watcher recursively enumerated before the first grep.
+    assert_eq!(
+        workspace.checkout_selection().await?.1,
+        Some(startup_pending)
+    );
+    assert!(
+        lock_owned(StateArc::clone(&tools.state))
+            .await
+            .watcher
+            .is_none()
+    );
     execute(&tools, &task, "fs", "git switch -c search-view").await?;
     execute(&tools, &task, "bash", "printf needle > marker").await?;
     let workspace = mounted_workspace(&tools, &task).await?;

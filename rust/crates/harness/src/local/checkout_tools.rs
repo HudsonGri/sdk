@@ -105,18 +105,14 @@ impl CheckoutTools {
         {
             let mut state = lock_owned(StateArc::clone(&shared)).await;
             if !state.initialized {
-                let (active, pending) = workspace.selected_view().await?;
+                let (active, _) = workspace.selected_view().await?;
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 state.initial_view = view.workspace().id();
-                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
-                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
-                    .await?;
-                state.watcher = if workspace.fresh {
-                    Some(capture::Cursor::initial(&workspace, &capture_policy)?)
-                } else {
-                    None
-                };
+                // Construction is passive. Recovery and capture belong to
+                // commands that enter the physical checkout; name/content
+                // search must be usable before any such command runs.
+                state.watcher = None;
                 state.initialized = true;
             }
         }
@@ -273,6 +269,10 @@ impl ToolExecutor for CheckoutTools {
                 .await?
                 {
                     state.watcher = None;
+                }
+                if state.watcher.is_none() && workspace.fresh {
+                    state.watcher =
+                        Some(capture::Cursor::initial(&workspace, &self.capture_policy)?);
                 }
                 workspace::volumes::sync(&state.mounts).await?;
                 if let Some(parsed) = fs {

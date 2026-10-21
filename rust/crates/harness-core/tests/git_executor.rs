@@ -491,6 +491,91 @@ async fn volume_search_index_rejects_authored_changes_after_publication() -> Res
 }
 
 #[tokio::test]
+async fn volume_search_streams_large_authored_revisions_without_diff_limit_failure() -> Result<()> {
+    let (_temp, _root, _fs, _store, main) = fixture_native(false).await?;
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    while names.next_page().await?.is_some() {}
+    let old = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let paths: Vec<_> = (0..513).map(|i| format!("/bulk-{i}.txt")).collect();
+    let files: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            (
+                path.as_str(),
+                acyclic_stream::OwnedBytes::from_static(b"bulk"),
+            )
+        })
+        .collect();
+    let stop = CancellationToken::new();
+    let mut transaction = main
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    transaction
+        .write_batch(&[], &files, WorkBudget::UNBOUNDED, &stop)
+        .await?;
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
+            },
+        )
+        .await?;
+    let current = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let (diff, _) = old
+        .diff_to(&current, 512, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    // Negative control: a bounded diff cannot certify this namespace revision.
+    assert!(
+        diff.changes().truncated
+            || diff
+                .changed_paths(512, WorkBudget::UNBOUNDED, &stop)
+                .await
+                .is_err()
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let mut count = 0;
+            while let Some(page) = names.next_page().await? {
+                if page.reset {
+                    count = 0;
+                }
+                count += page
+                    .names
+                    .iter()
+                    .filter(|name| name.path.starts_with("bulk-"))
+                    .count();
+            }
+            if count == 513 {
+                return Ok::<_, Error>(());
+            }
+            names.changed().await?;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_search_follows_native_create_rename_and_delete_notifications() -> Result<()> {
     let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
     let mut names = git::IndexedNames::open((&main).into()).await?;
