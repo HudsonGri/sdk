@@ -1,5 +1,7 @@
+use super::owner_record::{LegacyOwner, StoredOwner};
 pub(super) use super::owner_record::{Owner, RootWitness};
 use super::*;
+use acyclic_native_runtime::RenameMode;
 use std::{fs, io::Read};
 #[cfg(feature = "native-execution")]
 mod exclusion;
@@ -133,6 +135,9 @@ pub(super) struct Checkout {
     /// Evidence validated separately from the token-based state selection.
     pub(super) identity: RootWitness,
     pub(super) incarnation: [u8; 16],
+    /// The device and object id that owner records written before
+    /// incarnations retained; it authenticates only their migration.
+    pub(super) legacy_identity: [u8; 16],
     #[cfg(feature = "native-execution")]
     pub(super) root: acyclic_fs::HeldRoot,
 }
@@ -155,7 +160,8 @@ impl Checkout {
             let token = incarnation_token(&root)?;
             // The witness scopes the object id by the durable volume, never by
             // a device number a remount may reassign.
-            let mut object = incarnation.identity.to_bytes();
+            let legacy_identity = incarnation.identity.to_bytes();
+            let mut object = legacy_identity;
             object[..8].copy_from_slice(&incarnation.volume.to_le_bytes());
             let generation = incarnation.generation;
             #[cfg(test)]
@@ -164,6 +170,7 @@ impl Checkout {
                 path,
                 identity: RootWitness::capture(object, generation),
                 incarnation: incarnation_of(token),
+                legacy_identity,
                 root,
             })
         }
@@ -285,7 +292,10 @@ impl Owner {
         let workspace_identity = checkout.map(|checkout| checkout.identity);
         let workspace_incarnation = checkout.map(|checkout| checkout.incarnation);
         let owner = match Self::load(&path) {
-            Ok(owner) => owner,
+            Ok(StoredOwner::Current(owner)) => owner,
+            Ok(StoredOwner::Legacy(legacy)) => {
+                Self::migrate(&legacy, directory, &path, workspace.clone(), checkout)?
+            }
             Err(Error::NotFound(_)) => {
                 let project = match selection {
                     LocalProject::Volume { volume, .. } => volume.clone(),
@@ -314,10 +324,15 @@ impl Owner {
                     workspace_incarnation,
                 };
                 key.fill(0);
-                if owner.publish(directory, &path)? {
+                if owner.publish(directory, &path, RenameMode::NoReplace)? {
                     owner
                 } else {
-                    Self::load(&path)?
+                    match Self::load(&path)? {
+                        StoredOwner::Current(owner) => owner,
+                        StoredOwner::Legacy(_) => {
+                            return Err(Error::Invalid("invalid local owner record".into()));
+                        }
+                    }
                 }
             }
             Err(error) => return Err(error),
@@ -348,7 +363,43 @@ impl Owner {
         Ok(owner)
     }
 
-    fn load(path: &Path) -> Result<Self> {
+    /// Upgrades a record written before checkout incarnations. Its witness
+    /// must be the captured root's device and object id, the check every
+    /// reopen made before; the record is then replaced atomically with the
+    /// root's current witness and incarnation, keeping its credentials.
+    fn migrate(
+        legacy: &LegacyOwner,
+        directory: &Path,
+        path: &Path,
+        workspace: Option<PathBuf>,
+        checkout: Option<&Checkout>,
+    ) -> Result<Self> {
+        let Some(checkout) = checkout else {
+            return Err(Error::Unauthorized(
+                "local state belongs to a different workspace or volume".into(),
+            ));
+        };
+        if legacy.workspace != workspace
+            || legacy.workspace_identity != Some(checkout.legacy_identity)
+        {
+            return Err(Error::Unauthorized(
+                "local state belongs to a different workspace or volume".into(),
+            ));
+        }
+        let owner = Self {
+            key: legacy.key,
+            agent: legacy.agent,
+            task: legacy.task,
+            project: legacy.project.clone(),
+            workspace,
+            workspace_identity: Some(checkout.identity),
+            workspace_incarnation: Some(checkout.incarnation),
+        };
+        owner.publish(directory, path, RenameMode::Replace)?;
+        Ok(owner)
+    }
+
+    fn load(path: &Path) -> Result<StoredOwner> {
         let metadata = fs::symlink_metadata(path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 Error::NotFound("local owner".into())
@@ -374,8 +425,13 @@ impl Owner {
             .take(65_537)
             .read_to_end(&mut bytes)
             .map_err(storage)?;
-        let owner =
-            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()));
+        let owner = serde_json::from_slice(&bytes)
+            .map(StoredOwner::Current)
+            .or_else(|error| {
+                serde_json::from_slice(&bytes)
+                    .map(StoredOwner::Legacy)
+                    .map_err(|_| Error::Invalid(error.to_string()))
+            });
         bytes.fill(0);
         let owner = owner?;
         // A concurrent publisher may have renamed the complete, synced file
@@ -399,7 +455,7 @@ impl Owner {
     // Publication is a fresh temporary file, written and synced, then renamed
     // into place without replacement: a kill at any step leaves either no
     // record or a complete one, never a partial record that refuses reopen.
-    fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
+    fn publish(&self, directory: &Path, path: &Path, mode: RenameMode) -> Result<bool> {
         let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
         #[cfg(test)]
         let temporary = if publication::torn() {
@@ -437,12 +493,7 @@ impl Owner {
             if publication::torn() {
                 return Ok(());
             }
-            acyclic_native_runtime::durable_rename(
-                &temporary,
-                path,
-                acyclic_native_runtime::RenameMode::NoReplace,
-                None,
-            )?;
+            acyclic_native_runtime::durable_rename(&temporary, path, mode, None)?;
             #[cfg(test)]
             publication::step(3)?;
             Ok(())
