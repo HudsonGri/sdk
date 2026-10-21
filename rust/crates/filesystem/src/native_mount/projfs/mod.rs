@@ -106,6 +106,7 @@ use placeholders::*;
 mod file_writer;
 use file_writer::*;
 mod staging;
+pub(super) use staging::staging_path;
 use staging::*;
 mod replacement;
 use replacement::*;
