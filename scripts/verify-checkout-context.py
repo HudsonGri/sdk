@@ -211,18 +211,19 @@ def main():
 def qualify(build_log):
     source = CONTEXT.with_suffix(".rs")
     original = source.read_bytes()
-    shared_originals = {}
-    for name, before, after in [
-        ("skill_catalog.rs", "pub(crate) fn render_into", "pub fn render_into"),
-        ("text.rs", "pub(crate) fn escaped_character", "pub fn escaped_character"),
-    ]:
-        path = SHARED / name
-        shared_originals[path] = path.read_bytes()
-        path.write_bytes(shared_originals[path].replace(before.encode(), after.encode()))
     generated = mutants()
     files = [CONTEXT / f"{name}.rs" for name in generated]
     assert not any(path.exists() for path in files)
+    shared_originals = {SHARED / name: (SHARED / name).read_bytes()
+                        for name in ["skill_catalog.rs", "text.rs"]}
     try:
+        # The facade controls borrow core's private helpers only for this build.
+        for name, before, after in [
+            ("skill_catalog.rs", "pub(crate) fn render_into", "pub fn render_into"),
+            ("text.rs", "pub(crate) fn escaped_character", "pub fn escaped_character"),
+        ]:
+            path = SHARED / name
+            path.write_bytes(shared_originals[path].replace(before.encode(), after.encode()))
         for name, content in generated.items():
             (CONTEXT / f"{name}.rs").write_text(content)
         # These items are private to their production parents; the controls are
