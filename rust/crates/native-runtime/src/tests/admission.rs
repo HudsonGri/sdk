@@ -31,18 +31,16 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
         offset: 0,
         bytes: Bytes::from_static(b"ready"),
     }]);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let waker = completion_waker();
     let completed = loop {
-        match Pin::new(&mut write).poll(&mut Context::from_waker(&completion_waker())) {
+        match Pin::new(&mut write).poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => {
                 result?;
                 break true;
             }
             Poll::Pending if write.pending.is_none() => break false,
-            Poll::Pending if Instant::now() < deadline => {
-                std::thread::park_timeout(Duration::from_millis(1));
-            }
-            Poll::Pending => return Err(io::ErrorKind::TimedOut.into()),
+            // Admission wakes this thread when the queue has room.
+            Poll::Pending => std::thread::park(),
         }
     };
     let (sender, receiver) = mpsc::channel();
@@ -73,8 +71,10 @@ fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
     let state = write.state.as_ref().unwrap().clone();
     drop(write);
     drop(native);
+    // The observer is gone, so stand in for its waker: the completion
+    // (inline, or a platform callback) wakes this thread when it publishes.
+    state.lock().map_err(|_| io::ErrorKind::Other)?.waker = Some(completion_waker());
     let _ = job.run();
-    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(result) = state
             .lock()
@@ -85,10 +85,7 @@ fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
             result?;
             break;
         }
-        if Instant::now() >= deadline {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        std::thread::park_timeout(Duration::from_millis(1));
+        std::thread::park();
     }
     assert_eq!(std::fs::read(temporary.path())?, b"persisted");
     Ok(())
@@ -96,6 +93,11 @@ fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
 
 #[test]
 fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> {
+    if passed_in_exclusive_process(
+        "tests::admission::saturated_host_transactions_do_not_starve_native_file_io",
+    )? {
+        return Ok(());
+    }
     struct GateRelease(Arc<(Mutex<bool>, Condvar)>);
     impl Drop for GateRelease {
         fn drop(&mut self) {
@@ -105,8 +107,8 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
         }
     }
 
-    let parallelism = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    let count = parallelism.saturating_mul(2).clamp(2, 16);
+    // Every blocking worker: only an exclusive process owns them all.
+    let count = exclusive_workers(&crate::BLOCKING_WORKERS)?.threads;
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let release = GateRelease(Arc::clone(&gate));
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -136,9 +138,7 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
         observers.push(task);
     }
     for _ in 0..count {
-        entered_rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(io::Error::other)?;
+        entered_rx.recv().map_err(io::Error::other)?;
     }
     let temporary = tempfile::NamedTempFile::new()?;
     let file = temporary.reopen()?;
@@ -151,9 +151,7 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
     ))?;
     drop(release);
     for _ in 0..count {
-        finished_rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(io::Error::other)?;
+        finished_rx.recv().map_err(io::Error::other)?;
     }
     drop(observers);
     Ok(())
@@ -312,9 +310,7 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
     let job = task.pending.take().unwrap();
     observer.cancelled.store(true, Ordering::Release);
     let worker = std::thread::spawn(move || wake_capacity_waiter(job.run()));
-    entered_drop
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(io::Error::other)?;
+    entered_drop.recv().map_err(io::Error::other)?;
     assert!(
         Pin::new(&mut task)
             .poll(&mut Context::from_waker(Waker::noop()))
