@@ -233,35 +233,23 @@ impl Opening {
         let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
             .map_err(storage)?
             .with_ownership_anchor(self.config.test_state.clone());
+        let attach = workspace::Attach {
+            volume: &owner.project,
+            scratch,
+            directory,
+            operation: workspace::attach_operation(owner.task),
+            native_mounts: self.native_mounts,
+        };
         let workspace = match &self.config.project {
-            LocalProject::Workspace(_) => Some(
-                workspace::open(
-                    filesystem,
-                    &owner.project,
-                    scratch,
-                    checkout
-                        .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
-                        .root,
-                    directory,
-                    workspace::attach_operation(owner.task),
-                    false,
-                    self.native_mounts,
-                    store,
-                )
-                .await?,
-            ),
-            LocalProject::Volume { .. } => Some(
-                workspace::open_volume(
-                    filesystem,
-                    &owner.project,
-                    scratch,
-                    directory,
-                    workspace::attach_operation(owner.task),
-                    self.native_mounts,
-                    store,
-                )
-                .await?,
-            ),
+            LocalProject::Workspace(_) => {
+                let root = checkout
+                    .ok_or_else(|| Error::Invalid("checkout capture is absent".into()))?
+                    .root;
+                Some(workspace::open(filesystem, &attach, root, false, store).await?)
+            }
+            LocalProject::Volume { .. } => {
+                Some(workspace::open_volume(filesystem, &attach, store).await?)
+            }
         };
         Ok(workspace.map(Arc::new))
     }
