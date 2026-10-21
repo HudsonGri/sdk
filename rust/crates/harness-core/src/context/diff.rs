@@ -13,6 +13,10 @@ pub struct DiffPath {
     pub base: Option<PinnedContextPath>,
     /// Pinned current content; absent for a removed path.
     pub current: Option<PinnedContextPath>,
+    /// Largest immutable endpoint length from the authorized query's metadata.
+    /// Older publishers may omit it; their bounded reads still enforce limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub largest_file_bytes: Option<u64>,
 }
 
 /// A pushed volume query publication. It carries only paths affected by this

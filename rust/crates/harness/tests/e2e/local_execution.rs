@@ -297,6 +297,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         let changes = paths
             .into_iter()
             .map(|path| DiffPath {
+                largest_file_bytes: None,
                 base: initial
                     .files
                     .iter()

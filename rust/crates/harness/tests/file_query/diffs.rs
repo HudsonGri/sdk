@@ -11,6 +11,63 @@ const LIMITS: DiffLimits = DiffLimits {
 };
 
 #[test]
+fn diff_query_omits_large_bodies_and_follows_resize_then_delete()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    struct NoReads;
+    impl acyclic_harness::conversation::ContentResidencyVerifier for NoReads {}
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let mut runner = TestRunner::new(proptest::test_runner::Config::with_cases(16));
+    runner.run(&(16_u64..64, 1_usize..64), |(bound, extra)| {
+        let result: std::result::Result<(), Box<dyn std::error::Error>> = runtime.block_on(async {
+            for baseline in [None, Some("baseline\n")] {
+                let fixture = Fixture::new().await?;
+                if baseline.is_some() { fixture.write(&[("note.txt", baseline)]).await?; }
+                let cancel = acyclic_fs::CancellationToken::new();
+                let workspace = fixture.filesystem.open_workspace(
+                    fixture.volume.storage_name(&mut None)?, BOUNDARY_BUDGET, &cancel).await?.value;
+                let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
+                let mut stream = fixture.source.observe_diff(base.id(), 16).await?;
+                let snapshot = stream.next().await.ok_or("snapshot")??;
+                let mut view = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+                let limits = DiffLimits { file_bytes: bound, ..LIMITS };
+                view.apply(&snapshot, &NoReads, limits).await?;
+                let large = "x".repeat(bound as usize + extra);
+                fixture.write(&[("note.txt", Some(large.as_str()))]).await?;
+                let added = stream.next().await.ok_or("addition")??;
+                assert_eq!(added.paths[0].largest_file_bytes, Some(large.len() as u64));
+                view.apply(&added, &NoReads, limits).await?;
+                assert_eq!(view.files()["note.txt"].omitted_bytes, Some(large.len() as u64));
+                assert!(view.files()["note.txt"].patch.is_empty());
+                assert_eq!(view.line_counts(), (0, 0));
+                fixture.write(&[("note.txt", Some("small\n"))]).await?;
+                let resized = stream.next().await.ok_or("resize")??;
+                view.apply(&resized, fixture.reader.as_ref(), limits).await?;
+                assert_eq!(view.files()["note.txt"].omitted_bytes, None);
+                fixture.write(&[("note.txt", None)]).await?;
+                let deleted = stream.next().await.ok_or("deletion")??;
+                assert_eq!(deleted.paths.len(), 1);
+                assert!(deleted.paths[0].current.is_none());
+                let changed = view.apply(&deleted, fixture.reader.as_ref(), limits).await?;
+                assert_eq!(changed, ["note.txt"]);
+                if baseline.is_none() {
+                    assert!(deleted.paths[0].base.is_none());
+                    assert!(view.files().is_empty());
+                    assert_eq!(view.line_counts(), (0, 0));
+                }
+                let mut reopened = fixture.source.observe_diff(base.id(), 16).await?;
+                let snapshot = reopened.next().await.ok_or("reopen")??;
+                let mut replay = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+                replay.apply(&snapshot, fixture.reader.as_ref(), limits).await?;
+                assert_eq!(replay.files(), view.files());
+            }
+            Ok(())
+        });
+        result.map_err(|error| TestCaseError::fail(error.to_string()))
+    })?;
+    Ok(())
+}
+
+#[test]
 fn diff_query_snapshots_and_follow_reconstruct_every_endpoint()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()

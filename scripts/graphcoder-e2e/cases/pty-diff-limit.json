@@ -57,7 +57,8 @@
         {
           "when": {
             "contains": [
-              "Diff unavailable:"
+              "file too large to diff",
+              "(65537 bytes)"
             ],
             "cursor": true
           },
@@ -69,7 +70,8 @@
               "LARGE_DIFF_READY"
             ],
             "absent": [
-              "Diff unavailable:"
+              "file too large to diff",
+              "(65537 bytes)"
             ],
             "cursor": true
           },

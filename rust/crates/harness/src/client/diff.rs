@@ -195,14 +195,25 @@ impl DiffView {
             return Err(Error::Invalid("diff view exceeds retained bounds".into()));
         }
         for change in &publication.paths {
-            let before = read(&change.base, reader, limits.file_bytes, &mut work).await?;
-            let after = read(&change.current, reader, limits.file_bytes, &mut work).await?;
-            let diff = FileDiff::between_work(
-                before.as_deref(),
-                after.as_deref(),
-                limits.render_bytes - rendered,
-                &mut work,
-            )?;
+            let diff = if let Some(bytes) = change
+                .largest_file_bytes
+                .filter(|bytes| *bytes > limits.file_bytes)
+            {
+                let kind = match (&change.base, &change.current) {
+                    (None, Some(_)) => DiffKind::Added,
+                    (Some(_), None) => DiffKind::Removed,
+                    (Some(_), Some(_)) => DiffKind::Modified,
+                    (None, None) => return Err(Error::Invalid("absent diff has a file length".into())),
+                };
+                Some(FileDiff::too_large(kind, bytes))
+            } else {
+                let before = read(&change.base, reader, limits.file_bytes, &mut work).await?;
+                let after = read(&change.current, reader, limits.file_bytes, &mut work).await?;
+                FileDiff::between_work(
+                    before.as_deref(), after.as_deref(),
+                    limits.render_bytes - rendered, &mut work,
+                )?
+            };
             if let Some(diff) = &diff {
                 count = count
                     .checked_add(1)

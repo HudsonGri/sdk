@@ -71,21 +71,29 @@ pub async fn run(
         if diff_open {
             let revision = client.presentation_revision();
             if diff_selection.is_none_or(|(accepted, _)| accepted != revision) {
-                let selected = local.project_selection().await?;
-                if diff_selection.is_none_or(|(_, previous)| previous != selected) {
-                    renderer.update_diff(Ok(Vec::new()));
-                    diff = Some(client::local_diff(
-                        local.clone(),
-                        client::DiffLimits {
-                            files: 4096,
-                            changes: 4096,
-                            file_bytes: 65_536,
-                            render_bytes: 4 * 1024 * 1024,
-                            work: 16 * 1024 * 1024,
-                        },
-                    ));
+                match local.project_selection().await {
+                    Ok(selected) => {
+                        if diff_selection.is_none_or(|(_, previous)| previous != Some(selected)) {
+                            renderer.update_diff(Ok(Vec::new()));
+                            diff = Some(client::local_diff(
+                                local.clone(),
+                                client::DiffLimits {
+                                    files: 4096,
+                                    changes: 4096,
+                                    file_bytes: 65_536,
+                                    render_bytes: 4 * 1024 * 1024,
+                                    work: 16 * 1024 * 1024,
+                                },
+                            ));
+                        }
+                        diff_selection = Some((revision, Some(selected)));
+                    }
+                    Err(error) => {
+                        renderer.update_diff(Err(error));
+                        diff = None;
+                        diff_selection = Some((revision, None));
+                    }
                 }
-                diff_selection = Some((revision, selected));
             }
         } else {
             diff = None;

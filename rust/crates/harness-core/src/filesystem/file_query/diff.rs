@@ -115,10 +115,13 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             }
             let before = self.endpoint(base, &path, io).await?;
             let after = self.endpoint(current, &path, io).await?;
+            let largest_file_bytes = before.as_ref().map(|(_, bytes)| *bytes)
+                .into_iter().chain(after.as_ref().map(|(_, bytes)| *bytes)).max();
             result.paths.push(DiffPath {
                 path,
-                base: before,
-                current: after,
+                base: before.map(|(source, _)| source),
+                current: after.map(|(source, _)| source),
+                largest_file_bytes,
             });
         }
         Ok(result)
@@ -129,14 +132,17 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
         generation: &acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
         path: &str,
         io: &PreparationIo,
-    ) -> crate::Result<Option<PinnedContextPath>> {
+    ) -> crate::Result<Option<(PinnedContextPath, u64)>> {
         let (stat, recorded) = generation
             .stat(&format!("/{path}"), io, io.cancellation())
             .await;
         recorded.map_err(crate::Error::from)?;
         match stat {
             Ok(stat) if stat.kind == acyclic_fs::kernel::FileKind::Regular => {
-                Ok(Some(PinnedContextPath {
+                let bytes = stat.logical_bytes.ok_or_else(|| {
+                    crate::Error::Storage("diff endpoint has no file length".into())
+                })?;
+                Ok(Some((PinnedContextPath {
                     root: ContextRoot {
                         volume: self.volume.clone(),
                         directory: String::new(),
@@ -146,7 +152,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                         .host
                         .generation_ref_id(generation.id(), Some(io))?,
                     path: path.to_owned(),
-                }))
+                }, bytes)))
             }
             Ok(_) | Err(acyclic_fs::WorkspaceError::NotFound) => Ok(None),
             Err(error) => Err(error.into()),

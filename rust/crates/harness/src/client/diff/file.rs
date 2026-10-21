@@ -35,6 +35,9 @@ pub struct FileDiff {
     pub kind: DiffKind,
     /// At least one side is non-UTF-8 or contains NUL.
     pub binary: bool,
+    /// Content was omitted before reading because an endpoint exceeds the byte bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_bytes: Option<u64>,
     /// Inserted lines across all hunks, excluding context lines.
     pub added: u64,
     /// Removed lines across all hunks, excluding context lines.
@@ -46,6 +49,10 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
+    pub(super) fn too_large(kind: DiffKind, bytes: u64) -> Self {
+        Self { kind, binary: false, omitted_bytes: Some(bytes), added: 0, removed: 0,
+            hunks: Vec::new(), patch: String::new() }
+    }
     /// Computes a file against its immutable base. `None` means the path returned
     /// to its baseline; adding/removing an empty file remains a visible change.
     /// Formatting stops before the patch exceeds `maximum_render_bytes`.
@@ -85,6 +92,7 @@ impl FileDiff {
         let mut result = Self {
             kind,
             binary: true,
+            omitted_bytes: None,
             added: 0,
             removed: 0,
             hunks: Vec::new(),
