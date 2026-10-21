@@ -189,13 +189,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .map_err(crate::kernel::NamespacePathError::Path)?;
         if !basis.authored_absent {
             let namespace = self.namespace_path(path, ctx)?;
-            let result = checkout
-                .lookup_no_follow_with_metadata_with_accounting(
-                    &namespace.value,
-                    ctx,
-                    cancellation(ctx),
-                )
-                .await;
+            // Boxed: the authored lookup frame stays out of this one.
+            let result: Result<_, crate::FsError> = async {
+                crate::heap_future::metered!(erased ctx, |ctx| {
+                    let cancellation = cancellation(ctx);
+                    checkout.lookup_no_follow_with_metadata_with_accounting(
+                        &namespace.value,
+                        ctx,
+                        cancellation,
+                    )
+                })
+            }
+            .await;
             namespace.retire(ctx)?;
             if let Some(authored) = result? {
                 let path = self.canonical_path(path, ctx)?;
