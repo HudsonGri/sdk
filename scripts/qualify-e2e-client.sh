@@ -9,4 +9,7 @@ cargo test --locked -p acyclic-harness --features "$features" --test main --no-r
   python3 scripts/qualify-graphcoder-artifact.py file_query::diffs:: client_diff::
 binary_features=acyclic-harness/filesystem-local,acyclic-harness/native-execution,acyclic-harness/terminal,acyclic-harness/tui,acyclic-harness/test-support,acyclic-harness/grpc,acyclic-harness/search-http
 cargo test --locked -p graphcoder --features "$binary_features" --bin graphcoder args::tests
+cargo test --locked -p graphcoder --features "$binary_features" --test tui --no-run --message-format=json |
+  python3 scripts/qualify-graphcoder-artifact.py settlement_ three_prompts_
+node --test scripts/graphcoder-e2e/*.test.mjs
 cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-fuzz --features runtime command_parser --target x86_64-unknown-linux-gnu --dev -- -runs=128 -max_len=4096 -timeout=2
