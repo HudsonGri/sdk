@@ -1,5 +1,5 @@
 use super::*;
-use crate::{GitIgnorePolicy, NameWalk};
+use crate::{GitIgnorePolicy, NameWalk, PublicationPermit};
 
 async fn names_hydrate(n: usize, broken: bool) -> usize {
     let fs = Fs::memory();

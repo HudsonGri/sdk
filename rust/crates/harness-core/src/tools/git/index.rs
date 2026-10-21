@@ -2,6 +2,8 @@
 //! Notifications wake readers, but index files are the authoritative snapshot.
 use super::*;
 use acyclic_fs::{NameIndex, NameIndexManifest};
+use acyclic_stream::StreamProvider as _;
+use futures::StreamExt as _;
 use std::sync::{OnceLock, Weak};
 use tokio::sync::watch;
 
@@ -13,6 +15,7 @@ struct Shared {
     latest: AsyncMutex<Option<Index>>,
     changed: watch::Sender<u64>,
     failure: Mutex<Option<String>>,
+    refresh: tokio::sync::Notify,
 }
 
 /// A bounded cursor following the shared, file-backed name index.
@@ -48,27 +51,24 @@ impl IndexedNames {
             )
         };
         let mut entry = entry.lock().await;
-        let current = workspace
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
         if let Some(shared) = entry.upgrade() {
-            let latest = shared.latest.lock().await;
-            let reusable = if let Some(index) = latest.as_ref() {
-                index.generation().id() == current.id() && reusable(view, index).await?
+            let mut latest = shared.latest.lock().await;
+            let valid = if let Some(index) = latest.as_ref() {
+                reusable(view, index).await?
             } else {
                 true
             };
-            if reusable {
-                drop(latest);
-                return Ok(Self {
-                    changed: shared.changed.subscribe(),
-                    shared,
-                    next: 0,
-                    cut: None,
-                });
+            if !valid {
+                *latest = None;
+                shared.refresh.notify_one();
             }
+            drop(latest);
+            return Ok(Self {
+                changed: shared.changed.subscribe(),
+                shared,
+                next: 0,
+                cut: None,
+            });
         }
         let owned = match view {
             View::Checkout(lazy) => OwnedView::Checkout(
@@ -97,20 +97,12 @@ impl IndexedNames {
             latest: AsyncMutex::new(existing),
             changed,
             failure: Mutex::new(None),
+            refresh: tokio::sync::Notify::new(),
         });
         *entry = Arc::downgrade(&shared);
         let producer = Arc::clone(&shared);
         tokio::spawn(async move {
-            if producer
-                .latest
-                .lock()
-                .await
-                .as_ref()
-                .is_some_and(|index| index.manifest.complete)
-            {
-                return;
-            }
-            if let Err(error) = fill(&owned, ignore, &producer).await {
+            if let Err(error) = maintain(&owned, ignore, &producer).await {
                 if let Ok(mut failure) = producer.failure.lock() {
                     *failure = Some(error.to_string());
                 }
@@ -178,10 +170,118 @@ impl IndexedNames {
             .as_ref()
             .map_or(1, |index| index.manifest.pending_directories)
     }
+
+    /// Waits for an ordinary index-file revision after a terminal page. The
+    /// cursor remains reusable; the next call to `next_page` emits a reset if
+    /// the indexed namespace changed. No source-directory polling is involved.
+    pub async fn changed(&mut self) -> crate::Result<()> {
+        self.changed.changed().await.map_err(storage_index)
+    }
+
+    /// Whether the current names describe the caller's pinned content tree.
+    /// Index-only transactions may advance authored generations, but source,
+    /// overlay, shadow, and public pathname changes cannot be substituted.
+    pub async fn matches_tree(&self, tree: GitTreeRef) -> crate::Result<bool> {
+        let latest = self.shared.latest.lock().await;
+        let Some(index) = latest.as_ref() else {
+            return Ok(false);
+        };
+        let (requested, indexed) = match (tree, &index.manifest.cut) {
+            (GitTreeRef::Lazy(requested), acyclic_fs::NameCut::Lazy(indexed))
+                if requested.workspace_id == indexed.workspace_id
+                    && requested.source == indexed.source
+                    && requested.overlay == indexed.overlay
+                    && requested.shadows == indexed.shadows =>
+            {
+                (requested.authored_generation, indexed.authored_generation)
+            }
+            (
+                GitTreeRef::Exact(requested),
+                acyclic_fs::NameCut::Exact {
+                    workspace,
+                    generation,
+                },
+            ) if requested.workspace_id == *workspace => (requested.generation, *generation),
+            _ => return Ok(false),
+        };
+        if requested == indexed {
+            return Ok(true);
+        }
+        let workspace = index.generation().workspace();
+        let requested = workspace
+            .generation(requested, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let observed = workspace
+            .generation(
+                index.manifest.observed_generation,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        only_index_changes(&observed, &requested).await
+    }
 }
 
 fn storage_index(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
+}
+
+async fn maintain(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) -> crate::Result<()> {
+    let (provider, path) = view
+        .workspace()
+        .authority_records()
+        .map_err(storage_index)?;
+    loop {
+        // Establish the follow before reading the head. Commits between this
+        // watermark and the snapshot are harmless duplicates; commits after
+        // the snapshot cannot fall into a subscribe-after-read gap.
+        let watermark = provider
+            .watermarks(path.clone())
+            .await
+            .map_err(storage_index)?;
+        let mut records = provider
+            .follow(path.clone(), watermark.accepted)
+            .await
+            .map_err(storage_index)?;
+        let published = Index::open(view.workspace())
+            .await
+            .map_err(super::search::search_error)?;
+        let published = match published {
+            Some(index) if reusable(view.view(), &index).await? => Some(index),
+            _ => None,
+        };
+        let needs_fill = published
+            .as_ref()
+            .is_none_or(|index| !index.manifest.complete);
+        {
+            let mut latest = shared.latest.lock().await;
+            let changed = latest.as_ref().map(|index| index.generation().id())
+                != published.as_ref().map(|index| index.generation().id());
+            *latest = published;
+            if changed {
+                shared.changed.send_modify(|revision| *revision += 1);
+            }
+        }
+        if needs_fill {
+            fill(view, ignore.clone(), shared).await?;
+            // Coalesce our own page publications. Reading a million-name
+            // index must not make its producer replay thousands of its own
+            // old notifications one by one.
+            continue;
+        }
+        tokio::select! {
+            _ = shared.changed.closed() => return Ok(()),
+            _ = shared.refresh.notified() => {},
+            record = records.next() => {
+                record.ok_or_else(|| Error::Storage("pathname index file follow ended".into()))?
+                    .map_err(storage_index)?;
+            }
+        }
+    }
 }
 
 async fn reusable(view: View<'_>, index: &Index) -> crate::Result<bool> {
@@ -205,7 +305,17 @@ async fn reusable(view: View<'_>, index: &Index) -> crate::Result<bool> {
     ) {
         return Ok(false);
     }
-    let old = view
+    // The manifest's observed head is protected by compare-and-publish.
+    // Compare that anchor with today's head. `Index::open` pins today's head,
+    // which can contain later authored edits, so its generation alone is not
+    // proof that the manifest is still current.
+    let current = view
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let observed = view
         .workspace()
         .generation(
             index.manifest.observed_generation,
@@ -215,9 +325,16 @@ async fn reusable(view: View<'_>, index: &Index) -> crate::Result<bool> {
         .await
         .map_err(|failure| failure.error)?
         .value;
-    let (diff, _) = old
+    only_index_changes(&observed, &current).await
+}
+
+async fn only_index_changes(
+    observed: &LocalGeneration,
+    current: &LocalGeneration,
+) -> crate::Result<bool> {
+    let (diff, _) = observed
         .diff_to(
-            &index.generation(),
+            current,
             512,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

@@ -79,7 +79,7 @@ where
         pattern: &str,
         path: Option<&str>,
     ) -> crate::Result<GrepResult> {
-        let mut walk = match tree {
+        let reader = match tree {
             GitTreeRef::Lazy(snapshot) => {
                 let View::Checkout(lazy) = self.lazy_current else {
                     return Err(Error::Unauthorized(
@@ -98,19 +98,37 @@ where
             }
         }
         .map_err(search_error)?;
+        let mut names = IndexedNames::open(self.lazy_current, self.ignore.clone()).await?;
+        let root = path.unwrap_or("").trim_matches('/');
         let mut result = GrepResult {
             matches: Vec::new(),
             truncated: false,
             files_examined: 0,
             bytes_read: 0,
-            pending_directories: walk.pending_directories(),
+            pending_directories: names.pending_directories().await,
             complete: false,
         };
         let mut remaining = TOTAL_BYTES;
-        while let Some(page) = walk.next_page().await.map_err(search_error)? {
-            result.pending_directories = walk.pending_directories();
+        while let Some(page) = names.next_page().await? {
+            result.pending_directories = names.pending_directories().await;
             self.validate().await?;
-            for name in page.into_iter().filter(|name| name.regular) {
+            if page.reset && !names.matches_tree(tree).await? {
+                // A concurrent public namespace edit cannot be folded into
+                // this pinned read. Preserve already found matches and report
+                // a partial result instead of mixing generations.
+                result.truncated = true;
+                return Ok(result.finish());
+            }
+            for name in page.names.into_iter().filter(|name| name.regular) {
+                if !root.is_empty()
+                    && name.path != root
+                    && !name
+                        .path
+                        .strip_prefix(root)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                {
+                    continue;
+                }
                 if !(self.read_allowed)(&name.path) {
                     continue;
                 }
@@ -118,7 +136,7 @@ where
                     result.truncated = true;
                     return Ok(result.finish());
                 }
-                let read = walk
+                let read = reader
                     .read(&name.path, FILE_BYTES.min(remaining))
                     .await
                     .map_err(search_error);

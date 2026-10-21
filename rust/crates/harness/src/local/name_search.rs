@@ -14,6 +14,12 @@ impl LocalHarness {
             return Ok(());
         };
         let files = Arc::clone(self.task_files());
+        // Mount policies describe the host's view. The client must also hold
+        // the signed content grant; a host-owned auxiliary mount alone must
+        // never make another agent's filenames visible in this task.
+        self.verifier.verify(&self.signed, &mut None)?;
+        let verifier = self.verifier.clone();
+        let signed = self.signed.clone();
         let key = FileKey::parse("search/query.json").map_err(storage)?;
         let observation = files
             .inner
@@ -36,7 +42,7 @@ impl LocalHarness {
                     query = request(&mut changes).await?;
                     continue;
                 };
-                let search = search(&workspace, &writer, &active);
+                let search = search(&workspace, &writer, &active, &verifier, &signed);
                 tokio::pin!(search);
                 tokio::select! {
                     biased;
@@ -116,19 +122,16 @@ async fn search(
     workspace: &LocalWorkspace,
     files: &TaskFiles<LocalStream>,
     query: &str,
+    verifier: &AuthorityVerifier,
+    signed: &Scope,
 ) -> Result<()> {
-    let mut best = crate::tui::PathMatches::new(query);
+    let best = crate::tui::PathMatches::new(query);
     results(files, query, &best, 1, false).await?;
     // Keep the selected branch alive for the complete query. Each mounted
     // volume is searched through its logical view and its own access policy.
     let (selected, _) = workspace.selected_view().await?;
+    let mut volumes = Vec::new();
     for (prefix, mount) in workspace.mounts.mounts() {
-        let now = acyclic_stream::UnixMillisClock::now_unix_millis(
-            &acyclic_stream::SystemUnixMillisClock,
-        ) / 1000;
-        if mount.check(Action::List, "", now).is_err() {
-            continue;
-        }
         let view = if prefix.is_empty() {
             View::Checkout(selected.as_ref().unwrap_or(&workspace.view))
         } else if let Some(source) = &mount.view.source {
@@ -137,40 +140,179 @@ async fn search(
             continue;
         };
         let ignore = crate::tools::git::search_ignore(view).await?;
-        let mut names = crate::tools::git::IndexedNames::open(view, ignore).await?;
-        let mut volume_best = crate::tui::PathMatches::new(query);
-        while let Some(page) = names.next_page().await.map_err(storage)? {
+        let names = crate::tools::git::IndexedNames::open(view, ignore).await?;
+        volumes.push(VolumeSearch {
+            names,
+            prefix,
+            mount,
+            best: crate::tui::PathMatches::new(query),
+            complete: false,
+        });
+    }
+    if volumes.is_empty() {
+        return results(files, query, &best, 0, true).await;
+    }
+    let mut last = None;
+    loop {
+        // Poll all mounted indexes, including completed ones. An incomplete
+        // large primary volume cannot starve an already indexed auxiliary
+        // volume; a completed popup remains subscribed to later file changes.
+        let (index, page) = {
+            let mut next = futures::stream::FuturesUnordered::new();
+            for (index, volume) in volumes.iter_mut().enumerate() {
+                next.push(async move {
+                    if volume.complete {
+                        volume.names.changed().await?;
+                    }
+                    Ok::<_, Error>((index, volume.names.next_page().await?))
+                });
+            }
+            next.next()
+                .await
+                .ok_or_else(|| Error::Storage("name searches ended".into()))??
+        };
+        verifier.verify(signed, &mut None)?;
+        let volume = &mut volumes[index];
+        volume.complete = page.is_none();
+        if let Some(page) = page {
             if page.reset {
-                volume_best = crate::tui::PathMatches::new(query);
+                volume.best = crate::tui::PathMatches::new(query);
             }
             for name in page.names.into_iter().filter(|name| name.regular) {
-                if mount.check(Action::Read, &name.path, now).is_err() {
+                let now = acyclic_stream::UnixMillisClock::now_unix_millis(
+                    &acyclic_stream::SystemUnixMillisClock,
+                ) / 1000;
+                let parent = name.path.rsplit_once('/').map_or("", |(parent, _)| parent);
+                if volume.mount.check(Action::List, parent, now).is_err()
+                    || volume.mount.check(Action::Read, &name.path, now).is_err()
+                    || !signed_name_allowed(signed, &volume.mount.view.volume, &name.path)?
+                {
                     continue;
                 }
-                let path = if prefix.is_empty() {
+                let path = if volume.prefix.is_empty() {
                     name.path
                 } else {
-                    format!("{prefix}/{}", name.path)
+                    format!("{}/{}", volume.prefix, name.path)
                 };
-                volume_best.push(path);
+                volume.best.push(path);
             }
-            let mut combined = best.clone();
-            for path in volume_best.paths() {
+        }
+        let mut combined = crate::tui::PathMatches::new(query);
+        let mut pending = 0;
+        let mut complete = true;
+        for volume in &volumes {
+            for path in volume.best.paths() {
                 combined.push(path.to_owned());
             }
-            results(
-                files,
-                query,
-                &combined,
-                names.pending_directories().await,
-                false,
-            )
-            .await?;
-            tokio::task::yield_now().await;
+            complete &= volume.complete;
+            pending += volume.names.pending_directories().await;
         }
-        for path in volume_best.paths() {
-            best.push(path.to_owned());
+        let publication = (
+            combined.paths().map(str::to_owned).collect::<Vec<_>>(),
+            pending,
+            complete,
+        );
+        if last.as_ref() != Some(&publication) {
+            results(files, query, &combined, pending, complete).await?;
+            last = Some(publication);
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+struct VolumeSearch<'a> {
+    names: crate::tools::git::IndexedNames,
+    prefix: &'a str,
+    mount: &'a crate::workspace::Mount<Option<Arc<workspace::MountedVolume>>>,
+    best: crate::tui::PathMatches,
+    complete: bool,
+}
+
+fn signed_name_allowed(scope: &Scope, volume: &VolumeRef, path: &str) -> Result<bool> {
+    if crate::conversation::is_internal_path(path) {
+        return Ok(false);
+    }
+    if scope
+        .capabilities()
+        .contains(&volume.capability(VolumeOperation::Read, &mut None)?)
+    {
+        return Ok(true);
+    }
+    // Directory grants are owner-delegated private content authority. Match
+    // component boundaries, so a grant for `src` cannot expose `src-private`.
+    if volume.class() != VolumeClass::AgentPrivate || scope.agent().is_none() {
+        return Ok(false);
+    }
+    for prefix in std::iter::once("").chain(path.match_indices('/').map(|(end, _)| &path[..end])) {
+        if scope
+            .capabilities()
+            .contains(&volume.directory_read_capability(prefix, &mut None)?)
+        {
+            return Ok(true);
         }
     }
-    results(files, query, &best, 0, true).await
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_search_requires_the_clients_signed_content_grant() -> Result<()> {
+        let agent = AgentId::from_bytes([1; 16]);
+        let provider = crate::resources::ProviderRef::new(
+            "search-test".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?;
+        let private = VolumeRef::new(
+            provider,
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let issuer = AuthorityIssuer::new(
+            "search-test",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Agent,
+                id: agent.to_string(),
+            },
+        );
+        let issue = |grants| {
+            issuer.issue(
+                "search",
+                &Capabilities::new(grants),
+                Some(agent),
+                None,
+                &mut None,
+            )
+        };
+        let directory = issue(vec![private.directory_read_capability("src", &mut None)?])?;
+        assert!(signed_name_allowed(&directory, &private, "src/file.rs")?);
+        assert!(!signed_name_allowed(
+            &directory,
+            &private,
+            "src-private/file.rs"
+        )?);
+        assert!(!signed_name_allowed(&directory, &private, "other.rs")?);
+        let absent = issue(Vec::<String>::new())?;
+        assert!(!signed_name_allowed(&absent, &private, "src/file.rs")?);
+        // Negative control: the host mount's policy alone permits this name.
+        let mounts = workspace::mounts::owner(Path::new("."), &private, (), [])?;
+        assert!(
+            mounts
+                .named(None)?
+                .1
+                .check(Action::Read, "src/file.rs", 0)
+                .is_ok()
+        );
+        let whole = issue(vec![private.capability(VolumeOperation::Read, &mut None)?])?;
+        assert!(signed_name_allowed(&whole, &private, "other.rs")?);
+        assert!(!signed_name_allowed(&whole, &private, ".system/secret")?);
+        Ok(())
+    }
 }

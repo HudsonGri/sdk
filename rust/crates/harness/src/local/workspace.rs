@@ -8,7 +8,7 @@ mod bootstrap;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod performance_tests;
 
-mod mounts;
+pub(super) mod mounts;
 pub(super) mod projection;
 pub(super) mod volumes;
 #[cfg(all(test, feature = "native-execution", unix))]
@@ -130,7 +130,9 @@ impl LocalWorkspace {
         }
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
-        let root = self.mount_directory.join(crate::identity::fresh_uuid().to_string());
+        let root = self
+            .mount_directory
+            .join(crate::identity::fresh_uuid().to_string());
         std::fs::create_dir_all(&root).map_err(storage)?;
         let mut mounts = mounts::owner(
             &root,

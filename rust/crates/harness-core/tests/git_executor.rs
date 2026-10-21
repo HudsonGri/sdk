@@ -399,6 +399,60 @@ async fn fixture_native(
 }
 
 #[tokio::test]
+async fn volume_search_index_rejects_authored_changes_after_publication() -> Result<()> {
+    let (_temp, _root, _fs, _store, main) = fixture_native(true).await?;
+    let mut first = git::IndexedNames::open((&main).into(), Default::default()).await?;
+    while first.next_page().await?.is_some() {}
+    let old = acyclic_fs::NameIndex::open(main.workspace())
+        .await?
+        .unwrap();
+    let before = old.manifest.pages;
+    main.write(
+        "/newly-authored.txt",
+        bytes::Bytes::from_static(b"new").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            while let Some(page) = first.next_page().await? {
+                if page
+                    .names
+                    .iter()
+                    .any(|name| name.path == "newly-authored.txt")
+                {
+                    return Ok::<_, acyclic_harness_core::Error>(());
+                }
+            }
+            first.changed().await?;
+        }
+    })
+    .await??;
+    // A second client shares the updated files, without starting a walk.
+    let mut second = git::IndexedNames::open((&main).into(), Default::default()).await?;
+    let mut found = false;
+    while let Some(page) = second.next_page().await? {
+        found |= page
+            .names
+            .iter()
+            .any(|name| name.path == "newly-authored.txt");
+    }
+    assert!(found);
+    // Negative control: replaying the old immutable index misses the edit.
+    for page in 0..before {
+        assert!(
+            !old.page(page)
+                .await?
+                .iter()
+                .any(|name| name.path == "newly-authored.txt")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
     std::fs::write(root.join("unrelated.txt"), b"must stay lazy\n")?;
@@ -430,7 +484,27 @@ async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await?
         .value;
-    assert_eq!(before.id(), after.id(), "grep exactified source files");
+    assert_ne!(
+        before.id(),
+        after.id(),
+        "grep did not publish the shared name index"
+    );
+    assert!(
+        acyclic_fs::NameIndex::open(main.workspace())
+            .await?
+            .is_some()
+    );
+    assert!(
+        after
+            .stat(
+                "/native.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err(),
+        "grep authored candidate content instead of retaining its source pin"
+    );
     assert!(
         after
             .stat(
