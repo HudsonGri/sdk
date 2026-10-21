@@ -1,4 +1,6 @@
 //! Native file and owned-process primitives shared by SDK host consumers.
+#[cfg(test)]
+acyclic_test_support::counting_allocator!();
 
 use bytes::Bytes;
 use std::cell::Cell;
@@ -73,8 +75,8 @@ pub use namespace::{RenameMode, durable_rename, publish_new};
 mod service;
 mod shell;
 pub use service::{
-    SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome, process_output, process_status,
-    spawn_service_process, take_service_ready_signal,
+    SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
+    process_output, process_status, spawn_service_process, take_service_ready_signal,
 };
 pub use shell::shell_command;
 mod meter;
