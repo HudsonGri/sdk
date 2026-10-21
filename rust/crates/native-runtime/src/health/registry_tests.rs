@@ -26,13 +26,19 @@ struct TraceMeter {
     calls: Mutex<Vec<Call>>,
     deny_allocations: AtomicBool,
     cancelled: AtomicBool,
+    /// Cancels the charge made once this many calls are recorded.
+    cancel_at: std::sync::atomic::AtomicUsize,
 }
 impl TraceMeter {
     fn new() -> Self {
+        Self::with_capacity(1 << 16)
+    }
+    fn with_capacity(calls: usize) -> Self {
         let meter = Self {
-            calls: Mutex::new(Vec::with_capacity(1 << 16)),
+            calls: Mutex::new(Vec::with_capacity(calls)),
             deny_allocations: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
+            cancel_at: std::sync::atomic::AtomicUsize::new(usize::MAX),
         };
         // Apple's pthread-backed mutex allocates on first lock; take it before measurement.
         drop(meter.calls.lock());
@@ -48,6 +54,9 @@ impl TraceMeter {
             "trace storage must not grow"
         );
         calls.push(call);
+        if calls.len() > self.cancel_at.load(Ordering::Acquire) {
+            self.cancelled.store(true, Ordering::Release);
+        }
         self.check()
     }
     fn take(&self) -> Vec<Call> {
@@ -172,20 +181,13 @@ fn previous_admit(
             }
             registry.entries.remove(index);
         }
-        if registry.entries.len() >= registry.capacity_limit {
+        if registry.entries.len() >= registry.sweep_at {
             registry.sweep_idle(meter)?;
-        }
-        if registry.entries.len() >= registry.capacity_limit {
-            return Err(io::Error::other("native file admission capacity exhausted"));
+            registry.sweep_at = registry.entries.len().saturating_mul(2).max(FIRST_SWEEP);
         }
         if registry.entries.len() == registry.entries.capacity() {
             let old = registry.entries.capacity() * row;
-            let next = registry
-                .entries
-                .capacity()
-                .saturating_mul(2)
-                .max(1)
-                .min(registry.capacity_limit);
+            let next = registry.entries.capacity().saturating_mul(2).max(1);
             let bytes = next * row;
             if let Some(meter) = meter {
                 meter.admit_examination(0, (registry.entries.len() * row) as u64)?;
@@ -281,7 +283,7 @@ fn run(
     let initialize = || Run {
         registry: FileHealthRegistry {
             entries: Vec::new(),
-            capacity_limit: limit,
+            sweep_at: limit,
         },
         meter: TraceMeter::new(),
         owners: Vec::with_capacity(steps.len() + 1),
@@ -515,5 +517,159 @@ proptest! {
             .iter()
             .all(|call| matches!(call, Call::Examine(1, 0) | Call::Examine(0, _)))),
             "{:?} vs {:?}", previous_trace, current_trace);
+    }
+}
+
+/// Admits `files` identities, keeping every `kept`th owner open, and returns
+/// the registry, the kept owners and the charges.
+fn admit_files(files: u64, kept: u64) -> (FileHealthRegistry, Vec<Arc<FileHealth>>, Vec<Call>) {
+    let mut registry = FileHealthRegistry::new();
+    let meter = TraceMeter::with_capacity(1 << 19);
+    let mut owners = Vec::new();
+    for n in 0..files {
+        let owner = registry
+            .admit(id(n), Some(&meter))
+            .unwrap_or_else(|error| panic!("admission {n} failed: {error}"));
+        if n % kept == 0 {
+            owners.push(owner);
+        }
+    }
+    (registry, owners, meter.take())
+}
+
+#[test]
+fn open_files_bound_the_registry_without_a_limit_of_its_own() {
+    // More open files than any fixed table size: every one is admitted.
+    let (registry, owners, _) = admit_files(10_000, 1);
+    assert_eq!(owners.len(), 10_000);
+    assert_eq!(registry.entries.len(), 10_000);
+    // Rows of closed files are swept, so the table tracks the open ones.
+    let (registry, owners, charges) = admit_files(20_000, 4);
+    assert_eq!(owners.len(), 5_000);
+    assert!(
+        registry.entries.len() <= 2 * owners.len() + FIRST_SWEEP,
+        "{} rows for {} open files",
+        registry.entries.len(),
+        owners.len()
+    );
+    // Sweeps are amortized: each examines at most twice the rows admitted since the last.
+    let swept: u64 = charges
+        .iter()
+        .map(|call| match call {
+            Call::Examine(items, _) if *items > 1 => *items,
+            _ => 0,
+        })
+        .sum();
+    assert!(swept <= 4 * 20_000, "{swept} rows examined by sweeps");
+}
+
+/// Rows by identity: whether each is the empty owner a sweep leaves, and
+/// which held owner (by position) a live row belongs to.
+fn rows(
+    registry: &FileHealthRegistry,
+    owners: &[Arc<FileHealth>],
+) -> Vec<(FileIdentity, Option<usize>)> {
+    registry
+        .entries
+        .iter()
+        .filter_map(|(identity, entry)| {
+            entry.owner().map(|owner| {
+                (
+                    *identity,
+                    owners.iter().position(|held| Arc::ptr_eq(held, &owner)),
+                )
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn an_interrupted_sweep_keeps_the_registry_consistent_and_recovers() {
+    // Eight rows at the sweep threshold: even files open, odd ones closed.
+    let setup = || {
+        let mut registry = FileHealthRegistry {
+            entries: Vec::new(),
+            sweep_at: 8,
+        };
+        let owners: Vec<_> = (0..8)
+            .filter_map(|n| {
+                let owner = registry.admit(id(n), None).unwrap();
+                (n % 2 == 0).then_some(owner)
+            })
+            .collect();
+        (registry, owners)
+    };
+    let uncut = {
+        let (mut registry, _owners) = setup();
+        let meter = TraceMeter::new();
+        registry.admit(id(100), Some(&meter)).unwrap();
+        meter.take().len()
+    };
+    // Every sweep step: 8 row examinations (owners replaced as they go), the
+    // compaction charge, then the search and admission after it.
+    assert!(uncut > 9, "{uncut} charges");
+    for cut in 0..uncut {
+        let (mut registry, owners) = setup();
+        let before = rows(&registry, &owners);
+        let meter = TraceMeter::new();
+        meter.cancel_at.store(cut, Ordering::Release);
+        let result = registry.admit(id(100), Some(&meter));
+        let trace = meter.take();
+        // Only the infallible releases at the end can follow a cut.
+        let completed = trace
+            .get(cut..)
+            .is_some_and(|rest| rest.iter().all(|call| matches!(call, Call::Release(_))));
+        assert!(
+            result.as_ref().map_or_else(
+                |error| error.kind() == io::ErrorKind::Interrupted,
+                |_| completed
+            ),
+            "cut {cut}: {:?}",
+            result.as_ref().err()
+        );
+        // The meter balances: every charge taken is released. The refused
+        // charge is the first fallible one from the cut, and was never taken.
+        let refused = result.is_err().then(|| {
+            cut + trace
+                .get(cut..)
+                .and_then(|rest| {
+                    rest.iter()
+                        .position(|call| !matches!(call, Call::Release(_)))
+                })
+                .unwrap_or_else(|| panic!("cut {cut}: no refused charge in {trace:?}"))
+        });
+        let (charged, released) = trace
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != refused)
+            .map(|(_, call)| call)
+            .fold((0, 0), |(charged, released), call| match call {
+                Call::Allocate(bytes) | Call::Adopt(bytes) => (charged + bytes, released),
+                Call::Release(bytes) => (charged, released + bytes),
+                _ => (charged, released),
+            });
+        assert_eq!(charged, released, "cut {cut}: {trace:?}");
+        if result.is_ok() {
+            continue;
+        }
+        // The table stays sorted and every open file keeps its own row.
+        assert!(
+            registry
+                .entries
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left.0 < right.0)),
+            "cut {cut}"
+        );
+        assert_eq!(rows(&registry, &owners), before, "cut {cut}");
+        // The next admission completes the interrupted sweep.
+        let admitted = registry.admit(id(100), None).unwrap();
+        assert!(
+            registry.entries.iter().all(|(_, entry)| entry.live()),
+            "cut {cut}: expired rows survived the next admission"
+        );
+        let mut expected = before.clone();
+        expected.push((id(100), None));
+        assert_eq!(rows(&registry, &owners), expected, "cut {cut}");
+        drop(admitted);
     }
 }
