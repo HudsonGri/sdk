@@ -389,6 +389,46 @@ async fn workspace_launch_identity_reuses_only_unfinished_requests() -> Result<(
 }
 
 #[tokio::test]
+async fn explicit_resume_retains_selection_and_clears_only_exit() -> Result<()> {
+    use crate::task_volume::{FileKey, FileValue, Query};
+    let (_directory, harness, provider) = local().await?;
+    assert!(
+        crate::client::resume_local_identity(&harness, None)
+            .await
+            .is_err()
+    );
+    let operation = crate::client::local_identity(&harness, None, None).await?;
+    let key = FileKey::parse(&format!(".ui/session-{operation}/layout.json"))?;
+    let retained = serde_json::json!({"selected_task":TaskId::new(),"history_page":7,"exit_requested":true,"view_request":OperationId::new()});
+    let files = harness.task_files();
+    let cut = files.snapshot(&Query::File(key.clone()), 1).await?;
+    files
+        .write(
+            cut.generation,
+            &FileValue::new(key.clone(), serde_json::to_vec(&retained).unwrap()),
+        )
+        .await?;
+    let mut expected = retained;
+    expected.as_object_mut().unwrap().remove("exit_requested");
+    for _ in 0..2 {
+        assert_eq!(
+            crate::client::resume_local_identity(&harness, None).await?,
+            operation
+        );
+        let saved = files.snapshot(&Query::File(key.clone()), 1).await?;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&saved.files[0].bytes).unwrap(),
+            expected
+        );
+    }
+    assert!(
+        provider.requests().is_empty(),
+        "resume does not admit model work"
+    );
+    close(harness).await
+}
+
+#[tokio::test]
 async fn prompt_just_under_request_bound_has_independent_observation_budget() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     // This boundary exercises request bytes, not the small-context fixture's

@@ -117,3 +117,85 @@ proptest! {
 fn payload_only_result_budget_is_detected_negative_control() {
     futures::executor::block_on(framed_result::<false>(8, false));
 }
+
+async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16]) {
+    use futures::StreamExt as _;
+    let volume = Arc::new(
+        files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("selection-order").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut commands =
+        CommandSession::open(volume.clone(), uuid::Uuid::from_bytes([1; 16]), 65536, 128)
+            .await
+            .unwrap();
+    let request = files::FileValue::new(
+        files::FileKey::Session {
+            session: component(commands.session.to_string()).unwrap(),
+            file: files::TaskFile::Request(
+                component(OperationId::from_bytes([2; 16]).to_string()).unwrap(),
+            ),
+        },
+        serde_json::to_vec(&CommandResolution::Prompt {
+            text: "first".into(),
+            source: None,
+            mentions: Vec::new(),
+        })
+        .unwrap(),
+    );
+    volume
+        .append(volume.head().await.unwrap(), &request)
+        .await
+        .unwrap();
+    let mut observation = volume.observe(files::Query::Root, None, 128).await.unwrap();
+    let selected = TaskId::from_bytes(id);
+    SELECTION_AFTER_OUTCOME.with(|flag| flag.set(!ORDERED));
+    commands
+        .consume(&request, |_, _, _| async {
+            Ok(json!({"selected_task":selected}))
+        })
+        .await
+        .unwrap();
+    SELECTION_AFTER_OUTCOME.with(|flag| flag.set(false));
+    let mut seen_selection = false;
+    while let Some(change) = observation.changes.next().await {
+        let change = change.unwrap();
+        for file in change.file.iter().chain(&change.files) {
+            match &file.key {
+                files::FileKey::Ui { name, .. } if name.as_str() == "layout.json" => {
+                    seen_selection = serde_json::from_slice::<Value>(&file.bytes).unwrap()["selected_task"]
+                        == json!(selected);
+                }
+                files::FileKey::Session {
+                    file: files::TaskFile::ExecutionResult(_),
+                    ..
+                } => {
+                    assert!(
+                        seen_selection,
+                        "completion must follow its selected conversation"
+                    );
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+    panic!("missing completion");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn every_completion_observer_has_the_selection(id in prop::array::uniform16(any::<u8>())) {
+        futures::executor::block_on(selection_before_completion::<true>(id));
+    }
+}
+
+#[test]
+#[should_panic(expected = "completion must follow its selected conversation")]
+fn completion_before_selection_negative_control() {
+    futures::executor::block_on(selection_before_completion::<false>([3; 16]));
+}
