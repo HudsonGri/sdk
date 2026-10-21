@@ -21,6 +21,7 @@ struct State {
     ready: bool,
     io_ready: bool,
     waiting_start: bool,
+    detached: bool,
     driver: Option<Waker>,
     #[cfg(test)]
     forget_ready: bool,
@@ -92,6 +93,7 @@ impl Host {
                 ready: false,
                 io_ready: false,
                 waiting_start: false,
+                detached: false,
                 driver: None,
                 #[cfg(test)]
                 forget_ready: false,
@@ -134,6 +136,11 @@ impl Host {
             // Parking is not readiness: only the original future's wake or
             // physical terminal may enqueue the next seeded task poll.
             state.waiting_start = false;
+            if state.detached && state.ready {
+                state.ready = false;
+                self.pool.resume();
+                state.phase = Phase::Running;
+            }
             self.changed.notify_one();
             drop(state);
             if saturated {
@@ -152,6 +159,7 @@ impl Host {
     // Wait for the physical worker to finish or reach an original async wait.
     // Root/owned futures can then satisfy that wait without any recursive poll.
     pub(super) async fn drive<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
+        let _driver = Driver(self.clone());
         let mut future = std::pin::pin!(future);
         let io_waker = Waker::from(Arc::new(IoWake(self.clone())));
         std::future::poll_fn(|cx| {
@@ -196,6 +204,27 @@ impl Host {
             }
         })
         .await
+    }
+}
+
+// Accepted physical work outlives its replay driver. Once that driver goes
+// away, original wakes resume the worker directly instead of queuing a poll
+// on an executor that can no longer run it.
+struct Driver(Arc<Host>);
+impl Drop for Driver {
+    fn drop(&mut self) {
+        let driver = {
+            let mut state = lock(&self.0.state);
+            state.detached = true;
+            if state.phase == Phase::Parked && state.ready {
+                state.ready = false;
+                self.0.pool.resume();
+                state.phase = Phase::Running;
+                self.0.changed.notify_one();
+            }
+            state.driver.take()
+        };
+        drop(driver);
     }
 }
 
@@ -259,6 +288,12 @@ impl Wake for Host {
                 return;
             }
             state.ready = true;
+            if state.detached && state.phase == Phase::Parked {
+                state.ready = false;
+                self.pool.resume();
+                state.phase = Phase::Running;
+                self.changed.notify_one();
+            }
             state.driver.clone()
         };
         if let Some(driver) = driver {

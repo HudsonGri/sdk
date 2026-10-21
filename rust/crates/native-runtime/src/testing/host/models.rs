@@ -1,6 +1,47 @@
 use super::*;
 use loom::sync::atomic::{AtomicBool, Ordering};
 
+#[test]
+fn abandoned_driver_and_original_wake_release_the_parked_slot() {
+    loom::model(|| {
+        let host = Host::new(1);
+        let driver = Driver(host.clone());
+        let ready = Arc::new(AtomicBool::new(false));
+        let published = ready.clone();
+        let (sent, waiting) = loom::sync::mpsc::channel();
+        let worker = host.clone();
+        let thread = loom::thread::spawn(move || {
+            worker.run(|| {
+                let mut sent = Some(sent);
+                worker.block(std::future::poll_fn(|cx| {
+                    if let Some(sent) = sent.take() {
+                        sent.send(cx.waker().clone()).unwrap();
+                    }
+                    if ready.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }));
+            });
+        });
+        let waking = waiting.recv().unwrap();
+        let release = loom::thread::spawn(move || {
+            published.store(true, Ordering::SeqCst);
+            waking.wake();
+        });
+        drop(driver);
+        release.join().unwrap();
+        thread.join().unwrap();
+        assert!(lock(&host.state).phase == Phase::Finished);
+        assert!(
+            host.pool.park(),
+            "abandonment retained or returned a slot twice"
+        );
+        host.pool.resume();
+    });
+}
+
 fn handoff(forget_ready: bool) {
     loom::model(move || {
         let host = Host::new(1);

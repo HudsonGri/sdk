@@ -4,6 +4,74 @@ use super::*;
 static SATURATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn abandoned_replay_releases_parked_native_and_blocking_workers() {
+    for native in [false, true] {
+        for wake in [0, 1, 2] {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let (schedule, mut events) = Schedule::seeded(29);
+            let (answer, waiting) = oneshot::channel::<()>();
+            let (started, running) = oneshot::channel();
+            let (finished, completion) = std::sync::mpsc::channel();
+            let work = move || {
+                let host = Host::current().expect("receiving host custody");
+                started.send(host).ok().unwrap();
+                let result = blocking_on(waiting);
+                finished.send(result.is_ok()).unwrap();
+            };
+            let host = runtime.block_on(async {
+                let mut root = Box::pin(schedule.scope(async {
+                    if native {
+                        crate::run_blocking_io(work, None).unwrap().await.unwrap();
+                    } else {
+                        spawn_blocking(work).await.unwrap();
+                    }
+                }));
+                let mut running = std::pin::pin!(running);
+                let host = loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut root => panic!("worker completed before its original wake"),
+                        event = events.recv() => event.unwrap().release(),
+                        host = &mut running => break host.unwrap(),
+                    }
+                };
+                assert!(lock(&host.state).phase == Phase::Parked);
+                drop(root);
+                host
+            });
+            if wake == 0 {
+                answer.send(()).unwrap();
+                drop(schedule);
+            } else {
+                drop(schedule);
+                if wake == 1 {
+                    answer.send(()).unwrap();
+                } else {
+                    drop(answer);
+                }
+            }
+            assert_eq!(
+                completion
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .unwrap(),
+                wake != 2,
+                "original channel result changed after abandonment"
+            );
+            // Every parked slot was returned exactly once, including a wake
+            // already latched when the last controller was dropped.
+            let threads = crate::workers(&crate::BLOCKING_WORKERS, false)
+                .unwrap()
+                .host_pool
+                .clone();
+            assert!(Arc::ptr_eq(&host.pool, &threads));
+            assert!(lock(&host.state).detached);
+        }
+    }
+}
+
+#[test]
 fn parking_a_worker_does_not_invent_callback_readiness() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     struct Count(AtomicUsize);
