@@ -103,7 +103,6 @@ enum Continuation {
 pub struct NameWalk<'a, A, O, D, S> {
     cut: Cut<'a, A, O, D, S>,
     pending: Vec<(String, Continuation)>,
-    authored_pending: Vec<(String, Continuation)>,
     single: Option<SearchName>,
     ignore: GitIgnorePolicy,
     // Existing authored metadata is cheap and available before native listing.
@@ -136,7 +135,6 @@ impl<
         let pending = self
             .pending
             .iter()
-            .chain(self.authored_pending.iter())
             .map(|(path, cursor)| {
                 let cursor = match cursor {
                     Continuation::Lazy(cursor) => SavedCursor::Lazy(
@@ -256,13 +254,9 @@ impl<
             ),
             Cut::Exact(_) => None,
         };
-        let (authored_pending, pending) = pending.into_iter().partition(|(_, cursor)| {
-            authored.is_some() && matches!(cursor, Continuation::Exact(_))
-        });
         Ok(Self {
             cut,
             pending,
-            authored_pending,
             single: checkpoint.single,
             ignore,
             authored,
@@ -356,7 +350,6 @@ impl<
         let mut walk = Self {
             cut,
             pending: Vec::new(),
-            authored_pending: Vec::new(),
             single: None,
             ignore,
             authored,
@@ -390,9 +383,9 @@ impl<
                     .stat(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                 {
-                    Ok(stat) if stat.value.kind == FileKind::Directory => walk
-                        .authored_pending
-                        .push((path, Continuation::Exact(None))),
+                    Ok(stat) if stat.value.kind == FileKind::Directory => {
+                        walk.pending.push((path, Continuation::Exact(None)));
+                    }
                     Ok(_) => {}
                     Err(failure) if matches!(failure.error, crate::WorkspaceError::NotFound) => {}
                     Err(failure) => return Err(failure.error.into()),
@@ -410,7 +403,7 @@ impl<
 
     /// Unfinished directory count; zero is meaningful only after a terminal page.
     pub fn pending_directories(&self) -> usize {
-        self.pending.len() + self.authored_pending.len()
+        self.pending.len()
     }
 
     fn start(&self) -> Continuation {
@@ -435,8 +428,7 @@ impl<
                 },
             ));
         }
-        let Some((directory, cursor)) = self.authored_pending.pop().or_else(|| self.pending.pop())
-        else {
+        let Some((directory, cursor)) = self.pending.pop() else {
             return Ok(None);
         };
         let mut names = Vec::new();
@@ -548,11 +540,7 @@ impl<
             }
         };
         if let Some(cursor) = next {
-            if exact && self.authored.is_some() {
-                self.authored_pending.push((directory.clone(), cursor));
-            } else {
-                self.pending.push((directory.clone(), cursor));
-            }
+            self.pending.push((directory.clone(), cursor));
         }
         let mut children = Vec::new();
         for (name, regular, is_directory) in rows {
@@ -587,10 +575,14 @@ impl<
         // Descend before reading the parent's next page. The frontier is at
         // most PAGE_ENTRIES siblings per depth, independent of tree breadth.
         if exact && self.authored.is_some() {
-            for (path, _) in &children {
+            // Visit a child's cheap authored metadata first, then its native
+            // remainder. Keeping both phases on one DFS stack avoids queuing
+            // every authored directory before the first native directory is
+            // consumed. The frontier depends on depth, not total tree size.
+            for (path, cursor) in children.into_iter().rev() {
                 self.pending.push((path.clone(), Continuation::Lazy(None)));
+                self.pending.push((path, cursor));
             }
-            self.authored_pending.extend(children.into_iter().rev());
         } else {
             self.pending.extend(children.into_iter().rev());
         }

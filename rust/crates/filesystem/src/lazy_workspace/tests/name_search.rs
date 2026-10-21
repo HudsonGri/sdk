@@ -422,6 +422,70 @@ async fn name_search_uses_authored_metadata_before_the_unindexed_source() {
 }
 
 #[tokio::test]
+async fn name_search_authored_directory_frontier_depends_on_depth_not_tree_breadth() {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::new());
+    source.directory_entries = 0;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let stop = CancellationToken::new();
+    let directories: Vec<_> = (0..300).map(|i| format!("/dir-{i:04}")).collect();
+    let paths: Vec<_> = directories.iter().map(String::as_str).collect();
+    let mut transaction = lazy
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .write_batch(&paths, &[], WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let mut seen = 0;
+    let mut largest = 0;
+    while let Some(page) = walk.next_page().await.unwrap() {
+        seen += page.iter().filter(|name| name.directory).count();
+        largest = largest.max(walk.pending_directories());
+        assert!(walk.pending_directories() <= 258);
+        // Restoring a mixed authored/native frontier must preserve its DFS
+        // order, rather than separating all authored work from native work.
+        let checkpoint = walk.checkpoint().unwrap();
+        walk = NameWalk::resume(&lazy, checkpoint, GitIgnorePolicy::default())
+            .await
+            .unwrap();
+    }
+    assert_eq!(seen, 300);
+    assert!(source.counts.pages.load(Ordering::Relaxed) > 0);
+    // Negative control: draining a separate authored queue first retains one
+    // native continuation per authored directory, exceeding this bound.
+    assert!(directories.len() > largest);
+}
+
+#[tokio::test]
 async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
     use crate::{NameIndex, NameIndexManifest};
     let fs = Fs::memory();
