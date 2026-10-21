@@ -284,7 +284,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
                 client
                     .follow_task(
                         local.task_files().as_ref(),
-                        commands.active_task().unwrap_or(root),
+                        commands.presentation_task()?.unwrap_or(root),
                     )
                     .await?;
                 renderer.update_files(&client, &authority);
@@ -297,7 +297,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
                 );
                 submitted |= commands.active_task().is_some();
                 // Settled: the request was claimed, its canonical result file
-                // is followed and the root is followed again. The screen is
+                // is followed and its retained selection is followed. The screen is
                 // observed only afterwards, so a suppressed answer still
                 // reaches the assertions.
                 if submitted

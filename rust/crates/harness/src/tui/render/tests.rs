@@ -155,3 +155,18 @@ fn archived_query_cannot_steal_the_active_task_selection() {
         );
     });
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn diff_errors_are_visible_and_replaceable(message in "[a-z ]{1,64}") {
+        let mut renderer = super::ClientRenderer::default();
+        renderer.update_diff(Err(crate::Error::Invalid(message.clone())));
+        let visible = renderer.diff.iter().map(ToString::to_string).collect::<String>();
+        proptest::prop_assert!(visible.contains("Diff unavailable:"));
+        proptest::prop_assert!(visible.contains(&message));
+        renderer.update_diff(Ok(vec![super::Line::raw("new accepted diff")]));
+        proptest::prop_assert_eq!(renderer.diff.len(), 1);
+        proptest::prop_assert_eq!(renderer.diff[0].to_string(), "new accepted diff");
+    }
+}

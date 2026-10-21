@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+#[path = "command_request/diff_tests.rs"]
+mod diff_tests;
+
 /// Exact composer range and immutable file selected by an `@` mention.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +74,8 @@ pub enum CommandRequest {
         /// User-supplied summary guidance.
         instructions: String,
     },
+    /// Restore the currently selected summary checkpoint and its fixed history cut.
+    Rewind,
     /// Change the model through the harness request owner.
     Model {
         /// Provider/model identifier.
@@ -294,8 +300,11 @@ impl CommandResolution {
                 request: CommandRequest::Theme { .. },
             } => &[(Config, "theme.json")],
             Self::Select {
-                query: CommandQuery::Reasoning | CommandQuery::Details | CommandQuery::Diff,
+                query: CommandQuery::Reasoning | CommandQuery::Details,
             } => &[(Config, "settings.json")],
+            Self::Select {
+                query: CommandQuery::Diff,
+            } => &[(Config, "settings.json"), (Session, "layout.json")],
             Self::Select {
                 query: CommandQuery::Attention,
             } => &[
@@ -488,11 +497,17 @@ impl CommandResolution {
                 let mut settings = document(snapshot, CommandFileRoot::Config, "settings.json")?;
                 // The choices are configuration data, shared with the renderer.
                 cycle(&mut settings, "diff_mode", "diff_modes")?;
-                return Ok(config(
-                    CommandFileRoot::Config,
-                    "settings.json",
-                    settings.into(),
+                let mut changes = config(CommandFileRoot::Config, "settings.json", settings.into());
+                let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                layout.insert("open_view".into(), json!("diff"));
+                layout.insert("view_input".into(), Value::Null);
+                layout.insert("view_request".into(), json!(operation));
+                changes.extend(config(
+                    CommandFileRoot::Session,
+                    "layout.json",
+                    layout.into(),
                 ));
+                return Ok(changes);
             }
             Self::Select {
                 query: CommandQuery::Attention,

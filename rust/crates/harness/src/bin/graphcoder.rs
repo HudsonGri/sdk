@@ -63,6 +63,15 @@ async fn open(
     };
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
+    let search = args
+        .search_config
+        .as_ref()
+        .map(|path| acyclic_harness::search::SearchConfig::from_file(path))
+        .transpose()?
+        .unwrap_or_default();
+    config = config.tool(acyclic_harness::search::tools::bind::<
+        acyclic_stream::LocalStream,
+    >(move || search.provider())?);
     config = config.settings(settings);
     Ok(Arc::new(LocalHarness::open(config).await?))
 }
@@ -80,7 +89,11 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or_default();
     let local = open(&args, credentials).await?;
-    let operation = client::local_identity(&local, args.prompt.as_deref(), operation).await?;
+    let operation = if args.resume {
+        client::resume_local_identity(&local, operation).await?
+    } else {
+        client::local_identity(&local, args.prompt.as_deref(), operation).await?
+    };
     let command = args
         .prompt
         .as_deref()

@@ -1,12 +1,15 @@
 //! A real GraphCoder TUI on a pseudo-terminal continues one conversation.
 #![cfg(target_os = "linux")]
 use axum::{Json, Router, routing::post};
+use alacritty_terminal::{
+    event::EventListener, grid::Dimensions, term::{Config, Term}, vte::ansi::Processor,
+};
 use serde_json::{Value, json};
 use std::{
     fs::File,
     io::{Read as _, Write as _},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
@@ -24,9 +27,22 @@ fn answer(text: &str) -> String {
 }
 
 struct Screen {
-    bytes: Arc<Mutex<Vec<u8>>>,
+    bytes: Vec<u8>,
+    output: mpsc::Receiver<Vec<u8>>,
+    terminal: Term<Events>,
+    parser: Processor,
     input: File,
     answered: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Events;
+impl EventListener for Events {}
+struct Grid;
+impl Dimensions for Grid {
+    fn total_lines(&self) -> usize { 40 }
+    fn screen_lines(&self) -> usize { 40 }
+    fn columns(&self) -> usize { 120 }
 }
 
 /// Kills and reaps the TUI unless it exited on its own, so a failed step never
@@ -35,17 +51,16 @@ struct Running(std::process::Child);
 
 impl Running {
     /// Waits for the requested exit; the deadline only bounds a quit regression.
-    fn exit(mut self) -> std::process::ExitStatus {
+    fn exit(mut self, screen: &mut Screen) -> std::process::ExitStatus {
+        // PTY EOF is delivered by the blocking reader, including every final
+        // output byte. Waiting for it bounds quit without polling the process.
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
-            if let Some(status) = self.0.try_wait().unwrap() {
-                return status;
+            match screen.output.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(bytes) => screen.advance(&bytes),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return self.0.wait().unwrap(),
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("GraphCoder did not exit on Ctrl+D"),
             }
-            assert!(
-                Instant::now() < deadline,
-                "GraphCoder did not exit on Ctrl+D"
-            );
-            std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
@@ -59,23 +74,25 @@ impl Drop for Running {
     }
 }
 
-fn find(bytes: &[u8], needle: &str) -> Option<usize> {
-    bytes
-        .windows(needle.len())
-        .position(|window| window == needle.as_bytes())
+fn settled(text: &str, answer: &str) -> bool {
+    text.starts_with("○ GraphCoder") && text.contains(answer)
 }
 
 impl Screen {
-    fn bytes(&self) -> Vec<u8> {
-        self.bytes.lock().unwrap().clone()
+    fn advance(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+        self.parser.advance(&mut self.terminal, bytes);
+    }
+
+    fn visible(&self) -> String {
+        self.terminal.grid().display_iter().map(|cell| cell.c).collect()
     }
 
     /// Waits for `condition`; the deadline only bounds a hang, nothing is timed.
-    fn until(&mut self, what: &str, mut condition: impl FnMut(&[u8]) -> bool) {
+    fn until(&mut self, what: &str, mut condition: impl FnMut(&str) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
-            let bytes = self.bytes();
-            let text = String::from_utf8_lossy(&bytes);
+            let text = String::from_utf8_lossy(&self.bytes);
             // Answer each primary device-attributes probe so startup never waits.
             let probes = text.matches("\x1b[c").count();
             for _ in self.answered..probes {
@@ -86,11 +103,13 @@ impl Screen {
                 !text.contains("cannot accept children"),
                 "a later prompt was refused:\n{text}"
             );
-            if condition(&bytes) {
+            if condition(&self.visible()) {
                 return;
             }
-            assert!(Instant::now() < deadline, "no {what}:\n{text}");
-            std::thread::sleep(Duration::from_millis(5));
+            match self.output.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(bytes) => self.advance(&bytes),
+                Err(error) => panic!("no {what} ({error}):\n{}", self.visible()),
+            }
         }
     }
 }
@@ -171,46 +190,47 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
             .spawn()
             .unwrap(),
     );
-    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let (sink, output_events) = mpsc::channel();
     let mut output = controller.try_clone().unwrap();
-    let sink = bytes.clone();
     let reader = std::thread::spawn(move || {
         let mut buffer = [0; 8192];
         // The read fails with EIO once the child closes the terminal.
         while let Ok(count @ 1..) = output.read(&mut buffer) {
-            sink.lock().unwrap().extend_from_slice(&buffer[..count]);
+            if sink.send(buffer[..count].to_vec()).is_err() { break; }
         }
     });
     let requested = bodies.clone();
     let mut screen = Screen {
-        bytes,
+        bytes: Vec::new(),
+        output: output_events,
+        terminal: Term::new(Config::default(), &Grid, Events),
+        parser: Processor::new(),
         input: controller,
         answered: 0,
     };
     let driven = tokio::task::spawn_blocking(move || {
         let child = child;
-        screen.until("composer", |bytes| {
-            find(bytes, "GraphCoder").is_some() && find(bytes, "└").is_some()
+        screen.until("composer", |text| {
+            text.starts_with("○ GraphCoder") && text.contains('└')
         });
         for (index, prompt) in ["first prompt", "second prompt", "third prompt"]
             .into_iter()
             .enumerate()
         {
-            let start = screen.bytes().len();
             screen
                 .input
                 .write_all(format!("{prompt}\r").as_bytes())
                 .unwrap();
-            // Rendering is incremental, so the answer text need not appear
-            // whole. The status glyph turns busy, then idle once it is in.
-            screen.until(ANSWERS[index], |bytes| {
-                let bytes = &bytes[start..];
+            // A fast turn can settle between frames without ever painting busy.
+            // Require the actual answer and idle header in the current terminal,
+            // rather than a transient glyph somewhere in the output history.
+            screen.until(ANSWERS[index], |text| {
                 requested.lock().unwrap().len() == index + 1
-                    && find(bytes, "●").is_some_and(|busy| find(&bytes[busy..], "○").is_some())
+                    && settled(text, ANSWERS[index])
             });
         }
         screen.input.write_all(b"\x04").unwrap();
-        let status = child.exit();
+        let status = child.exit(&mut screen);
         drop(screen);
         status
     })
@@ -238,4 +258,27 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
     assert!(bodies[2].to_string().contains("first prompt"));
     stop.send(()).unwrap();
     server.await.unwrap();
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    #[test]
+    fn settlement_uses_current_cells_across_any_byte_boundary(split in 0usize..256) {
+        let bytes = "\x1b[H○ GraphCoder\x1b[3;1HALPHA_REPLY".as_bytes();
+        let split = split % (bytes.len() + 1);
+        let mut terminal = Term::new(Config::default(), &Grid, Events);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut terminal, &bytes[..split]);
+        parser.advance(&mut terminal, &bytes[split..]);
+        let visible = |terminal: &Term<Events>| terminal.grid().display_iter().map(|cell| cell.c).collect::<String>();
+        proptest::prop_assert!(settled(&visible(&terminal), ANSWERS[0]));
+        // Negative control: the former wait requires a busy frame even when
+        // the final rendered answer is already idle. It can never accept this.
+        proptest::prop_assert!(!String::from_utf8_lossy(bytes).contains('●'));
+        parser.advance(&mut terminal, "\x1b[1;1H●".as_bytes());
+        proptest::prop_assert!(!settled(&visible(&terminal), ANSWERS[0]));
+        parser.advance(&mut terminal, "\x1b[1;1H○\x1b[3;1H\x1b[2K".as_bytes());
+        // An answer in the raw history does not prove it remains on screen.
+        proptest::prop_assert!(!settled(&visible(&terminal), ANSWERS[0]));
+    }
 }

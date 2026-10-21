@@ -21,12 +21,18 @@ pub struct Args {
     pub credentials: Option<PathBuf>,
     #[arg(long)]
     pub settings_root: Option<PathBuf>,
+    /// Host search configuration, including an optional private gateway endpoint.
+    #[arg(long)]
+    pub search_config: Option<PathBuf>,
     #[arg(short = 'p', long = "prompt", conflicts_with = "input_format")]
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
     pub input_format: InputFormat,
     #[arg(long)]
     pub operation: Option<String>,
+    /// Reopen the last interactive conversation, including after a normal quit.
+    #[arg(long, conflicts_with_all = ["prompt", "input_format"])]
+    pub resume: bool,
     #[arg(long)]
     pub inline: bool,
 }
@@ -37,6 +43,12 @@ mod tests {
 
     #[test]
     fn headless_modes_use_explicit_jsonl_identity_and_reject_mixed_formats() {
+        assert!(
+            Args::try_parse_from(["graphcoder", "--resume"])
+                .unwrap()
+                .resume
+        );
+        assert!(Args::try_parse_from(["graphcoder", "--resume", "-p", "hello"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
         assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_err());
         assert!(
