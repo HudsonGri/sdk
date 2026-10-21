@@ -213,6 +213,13 @@ impl Host {
 struct Driver(Arc<Host>);
 impl Drop for Driver {
     fn drop(&mut self) {
+        // Loom destroys suspended coroutine stacks after reporting a modeled
+        // deadlock. Its synchronization primitives are no longer usable in
+        // that cleanup. Ordinary panic unwinding must still detach the host.
+        #[cfg(acyclic_native_runtime_loom)]
+        if std::thread::panicking() {
+            return;
+        }
         let driver = {
             let mut state = lock(&self.0.state);
             state.detached = true;

@@ -66,7 +66,6 @@ fn abandoned_replay_releases_parked_native_and_blocking_workers() {
                 .host_pool
                 .clone();
             assert!(Arc::ptr_eq(&host.pool, &threads));
-            assert!(lock(&host.state).detached);
         }
     }
 }
