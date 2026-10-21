@@ -401,6 +401,42 @@ async fn fixture_native(
 }
 
 #[tokio::test]
+async fn volume_search_isolates_equal_volume_ids_in_different_authority_stores() -> Result<()> {
+    let (_first_temp, _first_root, _first_fs, _first_store, first) = fixture_native(false).await?;
+    let (_second_temp, _second_root, _second_fs, _second_store, second) =
+        fixture_native(false).await?;
+    // Negative control for a registry keyed by WorkspaceId alone: these are
+    // deliberately equal even though their backing authorities are separate.
+    assert_eq!(first.workspace().id(), second.workspace().id());
+    for (view, path) in [(&first, "/first-only.txt"), (&second, "/second-only.txt")] {
+        view.write(
+            path,
+            bytes::Bytes::new().into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+        )
+        .await?;
+    }
+    let mut first_names = git::IndexedNames::open((&first).into(), Default::default()).await?;
+    let mut found_first = false;
+    while let Some(page) = first_names.next_page().await? {
+        found_first |= page.names.iter().any(|name| name.path == "first-only.txt");
+    }
+    assert!(found_first);
+    // Retain the first subscription while the other store opens its index.
+    let mut second_names = git::IndexedNames::open((&second).into(), Default::default()).await?;
+    let mut found_second = false;
+    while let Some(page) = second_names.next_page().await? {
+        assert!(!page.names.iter().any(|name| name.path == "first-only.txt"));
+        found_second |= page.names.iter().any(|name| name.path == "second-only.txt");
+    }
+    assert!(found_second);
+    assert!(first_names.next_page().await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_search_index_rejects_authored_changes_after_publication() -> Result<()> {
     let (_temp, _root, _fs, _store, main) = fixture_native(true).await?;
     let mut first = git::IndexedNames::open((&main).into(), Default::default()).await?;

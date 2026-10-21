@@ -8,7 +8,9 @@ use std::sync::{OnceLock, Weak};
 use tokio::sync::watch;
 
 type Index = NameIndex<LocalAuthorityBackend, LocalObjectBackend>;
-type Registry = BTreeMap<acyclic_fs::WorkspaceId, Arc<AsyncMutex<Weak<Shared>>>>;
+// Workspace IDs are scoped to their authority store. Two independent local
+// stores can both contain a volume named `main` with the same opaque ID.
+type Registry = BTreeMap<(usize, acyclic_fs::WorkspaceId), Arc<AsyncMutex<Weak<Shared>>>>;
 static INDEXES: OnceLock<Mutex<Registry>> = OnceLock::new();
 
 struct Shared {
@@ -39,6 +41,8 @@ impl IndexedNames {
     /// unindexed remainder. Closing one query cannot cancel the shared producer.
     pub async fn open(view: View<'_>, ignore: GitIgnorePolicy) -> crate::Result<Self> {
         let workspace = view.workspace();
+        let (provider, _) = workspace.authority_records().map_err(storage_index)?;
+        let identity = (Arc::as_ptr(&provider) as usize, workspace.id());
         let entry = {
             let mut registry = INDEXES
                 .get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -46,7 +50,7 @@ impl IndexedNames {
                 .map_err(|_| Error::Storage("pathname index registry poisoned".into()))?;
             Arc::clone(
                 registry
-                    .entry(workspace.id())
+                    .entry(identity)
                     .or_insert_with(|| Arc::new(AsyncMutex::new(Weak::new()))),
             )
         };
