@@ -1,3 +1,4 @@
+use super::outcome::ExpectedOutcome;
 use acyclic_harness::test_support::ScriptedTurn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,15 +41,6 @@ pub(super) struct Expectations {
     /// Subsets no dispatched model request may contain.
     #[serde(default)]
     pub not_requests: Vec<Value>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpectedOutcome {
-    #[default]
-    Succeeded,
-    Failed,
-    Indeterminate,
 }
 
 impl LocalCase {

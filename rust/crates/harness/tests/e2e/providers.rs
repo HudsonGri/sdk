@@ -235,11 +235,11 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     let output = harness.resume(task_id).await;
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     match (case.expect.outcome, output) {
-        (super::local_case::ExpectedOutcome::Succeeded, Ok(output))
+        (super::outcome::ExpectedOutcome::Succeeded, Ok(output))
             if output.text == case.expect.text
                 && output.steps as usize == case.completed_steps() => {}
         (
-            super::local_case::ExpectedOutcome::Failed,
+            super::outcome::ExpectedOutcome::Failed,
             Err(acyclic_harness::Error::TaskFailed { task, .. }),
         ) if task == task_id => {}
         (_, output) => return Err(format!("provider task output differs: {output:?}").into()),

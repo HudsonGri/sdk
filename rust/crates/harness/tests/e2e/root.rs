@@ -25,6 +25,7 @@ mod local_workspace;
 mod matchers;
 mod notification_history;
 mod notifications;
+mod outcome;
 mod plan_query;
 mod plans;
 #[path = "../support/progress_guard.rs"]
