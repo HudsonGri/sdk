@@ -52,23 +52,29 @@ impl<P: StreamProvider + 'static> SearchTool<P> {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: &NativeMaterializationWork,
+        work: crate::NativeWork<'_>,
         execute: bool,
-    ) -> Result<Option<(ToolResult, NativeAllocation)>> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let (_, fence) = context.owned_task_binding(Some(&io))?;
-        let owner = context.journal_owner::<P>(fence, work)?;
+    ) -> Result<Option<(ToolResult, crate::NativeCustody)>> {
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        let owner = if let Some(work) = work {
+            let (_, fence) = context.owned_task_binding(io.as_ref())?;
+            context.journal_owner::<P>(fence, work)?
+        } else {
+            context.task().ordinary_journal_owner::<P>()?
+        };
         let volume = &context
             .task()
             .harness
             .task_files
             .as_ref()
-            .ok_or_else(|| super::rejection(Some(work), "search task files are not bound"))?
+            .ok_or_else(|| super::rejection(work, "search task files are not bound"))?
             .inner;
         let input = if execute {
             Some(crate::tool::decode::<SearchRequest>(
                 &invocation.arguments,
-                Some(work),
+                work,
             )?)
         } else {
             None
@@ -79,19 +85,27 @@ impl<P: StreamProvider + 'static> SearchTool<P> {
             invocation.operation_id,
             input.as_ref().map(|input| &input.0),
             || (self.resolve)(),
-            Some(work),
+            work,
         )
         .await?;
         let Some(bytes) = bytes else {
             return Ok(None);
         };
-        let value: serde_json::Value = io.decode_json(&bytes)?;
-        let size = (std::mem::size_of::<serde_json::Value>() as u64)
-            .checked_add(crate::executor::json::json_value_logical_owned_bytes(
-                &value,
-            )?)
-            .ok_or_else(|| super::rejection(Some(work), "search tool result ownership overflow"))?;
-        let custody = io.into_native_custody(size)?;
+        let (value, custody) = if let Some(io) = io {
+            let value: serde_json::Value = io.decode_json(&bytes)?;
+            let size = (std::mem::size_of::<serde_json::Value>() as u64)
+                .checked_add(crate::executor::json::json_value_logical_owned_bytes(
+                    &value,
+                )?)
+                .ok_or_else(|| super::rejection(work, "search tool result ownership overflow"))?;
+            (value, Some(io.into_native_custody(size)?))
+        } else {
+            (
+                serde_json::from_slice(&bytes)
+                    .map_err(|_| super::error(work, "invalid retained search result"))?,
+                None,
+            )
+        };
         Ok(Some((ToolResult { value }, custody)))
     }
 }
@@ -119,24 +133,34 @@ impl<P: StreamProvider + 'static> ToolExecutor for SearchTool<P> {
     }
     fn execute<'a>(
         &'a self,
-        _invocation: ToolInvocation,
-        _context: Option<ToolContext>,
+        invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "search requires its original native task owner".into(),
-            ))
+        Box::pin(async move {
+            self.authorize(None, context.as_ref(), &invocation, None)?;
+            let context = context
+                .as_ref()
+                .ok_or_else(|| super::rejection(None, "search context is absent"))?;
+            self.run(context, &invocation, None, true)
+                .await?
+                .map(|result| result.0)
+                .ok_or_else(|| super::error(None, "search result was not published"))
         })
     }
     fn reconcile<'a>(
         &'a self,
-        _invocation: ToolInvocation,
-        _context: Option<ToolContext>,
+        invocation: ToolInvocation,
+        context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "search requires its original native task owner".into(),
-            ))
+        Box::pin(async move {
+            self.authorize(None, context.as_ref(), &invocation, None)?;
+            let context = context
+                .as_ref()
+                .ok_or_else(|| super::rejection(None, "search context is absent"))?;
+            Ok(self
+                .run(context, &invocation, None, false)
+                .await?
+                .map(|result| result.0))
         })
     }
     fn resumable_machine_identity(
@@ -161,9 +185,16 @@ impl<P: StreamProvider + 'static> ToolExecutor for SearchTool<P> {
         self.authorize(None, Some(context), invocation, Some(work))?;
         context.validate_native_mcp_context(work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            self.run(context, invocation, work, true)
+            let (result, custody) = self
+                .run(context, invocation, Some(work), true)
                 .await?
-                .ok_or_else(|| super::error(Some(work), "search result was not published"))
+                .ok_or_else(|| super::error(Some(work), "search result was not published"))?;
+            Ok((
+                result,
+                custody.ok_or_else(|| {
+                    super::error(Some(work), "native search result lacks custody")
+                })?,
+            ))
         })
     }
     fn reconcile_with_native_context<'a>(
@@ -174,8 +205,13 @@ impl<P: StreamProvider + 'static> ToolExecutor for SearchTool<P> {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, NativeAllocation)>> {
         self.authorize(None, Some(context), invocation, Some(work))?;
         crate::NativeFutureBundle::new(work, || async move {
-            match self.run(context, invocation, work, false).await? {
-                Some((value, held)) => Ok((Some(value), held)),
+            match self.run(context, invocation, Some(work), false).await? {
+                Some((value, held)) => Ok((
+                    Some(value),
+                    held.ok_or_else(|| {
+                        super::error(Some(work), "native search result lacks custody")
+                    })?,
+                )),
                 None => Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?)),
             }
         })
