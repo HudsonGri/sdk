@@ -103,6 +103,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             if matches!(path.rsplit('/').next(), Some(".gitignore" | ".ignore")) {
                 return Ok(NameIndexRefresh::Ineligible);
             }
+            if matches!(cut, NameCut::Lazy(_)) && change.after.is_none() {
+                // Removing an authored binding can reveal a native entry at
+                // the same name. Only source-aware discovery can classify it.
+                return Ok(NameIndexRefresh::Ineligible);
+            }
             let before_dir = change
                 .before
                 .is_some_and(|record| record.kind == FileKind::Directory);

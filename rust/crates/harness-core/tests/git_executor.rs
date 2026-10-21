@@ -579,6 +579,36 @@ async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn volume_search_root_ignore_links_are_not_read_as_policy() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    for name in [".gitignore", ".ignore"] {
+        std::os::unix::fs::symlink("native.txt", root.join(name))?;
+    }
+    let policy = git::search_ignore((&main).into()).await?;
+    assert!(policy.eligible("native.txt", false, false));
+    // Negative control: the generic reader returns the link payload. Parsing
+    // that spelling as policy would hide the native candidate incorrectly.
+    let bytes = main
+        .read(
+            "/.gitignore",
+            1024,
+            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+        )
+        .await?
+        .bytes;
+    assert_eq!(bytes.as_ref(), b"native.txt");
+    assert!(
+        !acyclic_fs::GitIgnorePolicy::parse(std::str::from_utf8(&bytes)?).eligible(
+            "native.txt",
+            false,
+            false
+        )
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn volume_search_grep_checks_each_candidate_access_decision() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;

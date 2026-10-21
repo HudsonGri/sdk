@@ -49,10 +49,27 @@ const TOTAL_BYTES: u64 = 16 * 1024 * 1024;
 const MATCHES: usize = 1024;
 /// Loads only the search ignore policy.
 pub async fn search_ignore(view: View<'_>) -> crate::Result<GitIgnorePolicy> {
-    let mut policy = crate::filesystem::workspace_policy::ignore_for(view).await?;
-    if let Some(bytes) = view.optional("/.ignore", 1024 * 1024).await? {
-        policy.extend(GitIgnorePolicy::parse(&String::from_utf8_lossy(&bytes)));
+    // Policy files share the candidate reader's no-follow check. The generic
+    // lazy reader also supports link payloads; a link target must never become
+    // an ignore pattern or cause a policy file outside this volume to be read.
+    let reader = walk_names(view, None, GitIgnorePolicy::default()).await?;
+    let mut policy = GitIgnorePolicy::default();
+    for path in [".gitignore", ".ignore"] {
+        match reader.read(path, 1024 * 1024).await {
+            Ok(bytes) => policy.extend(GitIgnorePolicy::parse(&String::from_utf8_lossy(&bytes))),
+            Err(SearchError::Lazy(
+                acyclic_fs::LazyWorkspaceError::NotFound
+                | acyclic_fs::LazyWorkspaceError::NotRegularFile,
+            ))
+            | Err(SearchError::Workspace(
+                WorkspaceError::NotFound | WorkspaceError::NotRegularFile,
+            )) => {}
+            Err(error) => return Err(search_error(error)),
+        }
     }
+    policy.extend(GitIgnorePolicy::parse(
+        crate::filesystem::workspace_policy::RESERVED_IGNORE_RULES,
+    ));
     Ok(policy)
 }
 /// Starts metadata-only enumeration of a selected view.
