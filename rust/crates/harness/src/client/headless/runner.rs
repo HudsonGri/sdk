@@ -23,21 +23,26 @@ pub trait HeadlessClient {
 }
 
 /// Submits through the client and follows its exact operation to settlement.
-pub async fn run_headless<C: HeadlessClient>(
-    client: &mut C,
+pub fn run_headless<'a, C: HeadlessClient + 'a, W: Write + 'a>(
+    client: &'a mut C,
     command: FileValue,
     target: OperationId,
-    output: &mut impl Write,
-) -> Result<HeadlessOutcome> {
-    client.prompt(command, target, output).await
+    output: &'a mut W,
+) -> impl Future<Output = Result<HeadlessOutcome>> + 'a {
+    // Forward the child itself; an awaiting adapter retains another copy of its
+    // initial future alongside the suspended await state.
+    client.prompt(command, target, output)
 }
 
 /// Reads this client's canonical JSONL input and drains followed output before exit.
-pub async fn run_jsonl<C: HeadlessClient>(
-    client: &mut C,
+pub fn run_jsonl<'a, C: HeadlessClient + 'a, W: Write + 'a>(
+    client: &'a mut C,
     target: OperationId,
-    input: impl Stream<Item = Result<String>> + Unpin,
-    output: &mut impl Write,
-) -> Result<HeadlessOutcome> {
-    client.input(target, input, output).await
+    input: impl Stream<Item = Result<String>> + Unpin + 'a,
+    output: &'a mut W,
+) -> impl Future<Output = Result<HeadlessOutcome>> + 'a {
+    client.input(target, input, output)
 }
+
+#[cfg(test)]
+mod tests;

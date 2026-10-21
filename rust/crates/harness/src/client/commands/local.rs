@@ -3,8 +3,6 @@ use super::*;
 use crate::{OperationId, local::LocalHarness, task_volume::FileValue};
 use std::sync::Arc;
 
-mod owner;
-
 /// Consume an immutable request through the local owner. Both TUI and headless
 /// clients use the same claim/result files and request-bound task selection.
 pub async fn consume_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
@@ -142,16 +140,6 @@ pub async fn run_local_commands(local: Arc<LocalHarness>, session: OperationId) 
 }
 
 pub(crate) async fn run_local_command_files(
-    local: Arc<LocalHarness>,
-    session: OperationId,
-    only_session: bool,
-) -> Result<()> {
-    // Schedule execution independently of the renderer's nested poll frames.
-    // The awaiting owner aborts this task on drop, retaining scoped ownership.
-    owner::run(drive_local_command_files(local, session, only_session)).await
-}
-
-async fn drive_local_command_files(
     local: Arc<LocalHarness>,
     session: OperationId,
     only_session: bool,
