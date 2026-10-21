@@ -1,6 +1,15 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    /// The active admission while running, then the retained layout selection.
+    /// Completing a request must not switch its transcript back to the root.
+    pub fn presentation_task(&self) -> Result<Option<TaskId>> {
+        match self.active_task() {
+            Some(task) => Ok(Some(task)),
+            None => self.selected_task(),
+        }
+    }
+
     /// Stock admission selected by the oldest outstanding request, including a
     /// claimed request whose canonical model chunks are already being followed.
     pub fn active_task(&self) -> Option<TaskId> {

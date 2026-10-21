@@ -164,6 +164,8 @@ async fn selection_before_completion<const ORDERED: bool>(id: [u8; 16], failed: 
         .await;
     SELECTION_AFTER_OUTCOME.with(|flag| flag.set(false));
     assert_eq!(outcome.is_err(), failed);
+    assert_eq!(commands.active_task(), None);
+    assert_eq!(commands.presentation_task().unwrap(), Some(selected));
     let mut seen_selection = false;
     while let Some(change) = observation.changes.next().await {
         let change = change.unwrap();
