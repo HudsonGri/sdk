@@ -64,6 +64,9 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     }
     assert!(watch.shared.polling.load(Ordering::Acquire));
     let paused = watch.paused();
+    // Startup leaves a retired gauge in the owner's admission registry; its
+    // compaction is owner housekeeping that the next owner charge settles.
+    original.lock().reconcile_cancellation_registry()?;
     let owner_before = original.lock().receipt();
     let retained_before = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
 
@@ -149,11 +152,9 @@ fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dy
             .map_err(crate::native_host::ordinary_error)?;
     let watch = watcher(root.path())?;
     assert!(watch.admit(Path::new("a/b")));
-    let descriptors = [
-        watch.shared.inotify.load(Ordering::Acquire),
-        watch.shared.wake.load(Ordering::Acquire),
-        watch.shared.root.load(Ordering::Acquire),
-    ];
+    let shared_queue = watch.shared.inotify.load(Ordering::Acquire);
+    assert_eq!(shared_queue, hub::hub()?.raw_descriptor());
+    let descriptors = [watch.shared.root.load(Ordering::Acquire)];
     let mut work = DemandWork::new(
         WorkBudget {
             backend_read_operations: 128,
@@ -180,6 +181,9 @@ fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dy
         // SAFETY: this fixture owns the duplicate.
         assert!(unsafe { libc::fcntl(replacement.as_raw_fd(), libc::F_GETFD) } >= 0);
     }
+    // The process-wide queue outlives every watch.
+    // SAFETY: the hub owns this descriptor for the life of the process.
+    assert!(unsafe { libc::fcntl(shared_queue, libc::F_GETFD) } >= 0);
     Ok(())
 }
 
@@ -417,17 +421,13 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     assert!(!watch.is_stopped());
     assert!(
         watch
-            .thread
+            .worker
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_some()
     );
 
-    for descriptor in [
-        &watch.shared.inotify,
-        &watch.shared.wake,
-        &watch.shared.root,
-    ] {
+    for descriptor in [&watch.shared.inotify, &watch.shared.root] {
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
     drop(paused);
@@ -469,7 +469,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     assert!(watch.shared.physically_cleared());
     assert!(
         watch
-            .thread
+            .worker
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_none()
@@ -541,7 +541,7 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     assert!(watch.shared.physically_cleared());
     assert!(
         watch
-            .thread
+            .worker
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_none()
@@ -634,7 +634,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     assert!(watch.shared.physically_cleared());
     assert!(
         watch
-            .thread
+            .worker
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .is_none()
@@ -735,11 +735,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         watch.stop_with_work(&mut work),
         Err(DemandError::Cancelled)
     ));
-    for descriptor in [
-        &watch.shared.inotify,
-        &watch.shared.wake,
-        &watch.shared.root,
-    ] {
+    for descriptor in [&watch.shared.inotify, &watch.shared.root] {
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
     let prefix = original.lock().receipt();
@@ -846,5 +842,152 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
         lifetime.upgrade().is_none(),
         "the original keeper outlives physical payload, not vice versa"
     );
+    Ok(())
+}
+
+/// Many watches share the process-wide queue, a fixed set of delivery
+/// threads and one kernel registration per shared ancestor; a record about a
+/// shared ancestor reaches only the watch whose root it names. Negative
+/// control: registering ancestors with `Interest::All` (broadcast routing)
+/// delivers the unrelated sibling's record to every watch and fails below.
+#[test]
+fn watches_share_the_queue_and_route_ancestor_records_by_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    const WATCHES: usize = 32;
+    let root = tempfile::tempdir()?;
+    let mut watches = Vec::new();
+    for index in 0..WATCHES {
+        let path = root.path().join(format!("w{index}"));
+        std::fs::create_dir(&path)?;
+        watches.push(watcher(&path)?);
+    }
+    let hub = hub::hub()?;
+    let parent = {
+        let ancestors = watches
+            .first()
+            .ok_or("watches exist")?
+            .shared
+            .ancestors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ancestors
+            .iter()
+            .find(|(_, name)| name == "w0")
+            .map(|(descriptor, _)| *descriptor)
+            .ok_or("the shared parent is an ancestor")?
+    };
+    for (index, watch) in watches.iter().enumerate() {
+        assert_eq!(
+            watch.shared.inotify.load(Ordering::Acquire),
+            hub.raw_descriptor()
+        );
+        let ancestors = watch
+            .shared
+            .ancestors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let name = format!("w{index}");
+        assert!(
+            ancestors
+                .iter()
+                .any(|(descriptor, on_the_way)| *descriptor == parent && *on_the_way == *name)
+        );
+    }
+    assert_eq!(hub.interests(parent), (0, WATCHES));
+    let threads = std::fs::read_dir("/proc/self/task")?
+        .filter_map(Result::ok)
+        .filter(|task| {
+            std::fs::read_to_string(task.path().join("comm"))
+                .is_ok_and(|name| name.starts_with("acyclic-watch"))
+        })
+        .count();
+    assert_eq!(threads, 3, "delivery threads do not grow with watches");
+
+    // Paused watches keep routed records in their inboxes for inspection;
+    // records other tests' activity routed earlier stay out of the comparison.
+    let mut paused = watches
+        .iter()
+        .map(|watch| {
+            watch
+                .shared
+                .reading
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        })
+        .collect::<Vec<_>>();
+    let pending = || {
+        watches
+            .iter()
+            .map(|watch| {
+                watch
+                    .shared
+                    .inbox
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .pending()
+            })
+            .collect::<Vec<_>>()
+    };
+    hub.drain()?;
+    let before = pending();
+    std::fs::create_dir(root.path().join("unrelated"))?;
+    std::fs::rename(root.path().join("w5"), root.path().join("moved"))?;
+    hub.drain()?;
+    for (index, (after, before)) in pending().into_iter().zip(before).enumerate() {
+        assert_eq!(after != before, index == 5, "watch {index}");
+    }
+    // Watch 5 stops with its routed records still unread: stopping releases
+    // them with the rest of its retained bytes. Negative control: without
+    // the inbox reset in `clear_measured` they outlive the watch.
+    paused.get_mut(5).ok_or("watch 5 exists")?.blocked = true;
+    drop(paused);
+
+    for watch in &watches {
+        watch.stop_with_work(&mut DemandWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ))?;
+        assert!(watch.shared.physically_cleared());
+        assert_eq!(
+            watch
+                .shared
+                .inbox
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pending(),
+            (0, false)
+        );
+    }
+    assert_eq!(hub.interests(parent), (0, 0));
+    Ok(())
+}
+
+/// A watch never receives records queued before it registered. A directory
+/// other watches already share holds the record of this watch's root being
+/// created; routed to the new watch's ancestor interest, it would report the
+/// root rebound and leave the watch inexact. Negative control: registering
+/// without first routing the queued records (`Hub::add` skipping
+/// `drain_locked`) fails the exactness assertion below.
+#[test]
+fn a_registration_never_receives_records_that_predate_it() -> Result<(), Box<dyn std::error::Error>>
+{
+    let parent = tempfile::tempdir()?;
+    std::fs::create_dir(parent.path().join("a"))?;
+    // Registers `parent` for the child name `a`, so the kernel queues every
+    // later creation in `parent` on the shared descriptor.
+    let first = watcher(&parent.path().join("a"))?;
+    let second = {
+        // Keep the router from routing the creation of `b` before `b`'s watch
+        // registers `parent` for the name `b`.
+        let _paused = hub::ROUTER_PAUSED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::fs::create_dir(parent.path().join("b"))?;
+        watcher(&parent.path().join("b"))?
+    };
+    second.fence()?;
+    assert!(second.shared.delivery.is_exact());
+    first.fence()?;
+    assert!(first.shared.delivery.is_exact());
     Ok(())
 }
