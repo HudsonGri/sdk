@@ -1,6 +1,7 @@
 //! A scoped task keeps durable execution independent of presentation polling.
 use crate::{Error, Result};
 use std::future::Future;
+use tracing::{Instrument as _, instrument::WithSubscriber as _};
 
 struct Owner(tokio::task::JoinHandle<Result<()>>);
 
@@ -11,7 +12,9 @@ impl Drop for Owner {
 }
 
 pub(super) async fn run(future: impl Future<Output = Result<()>> + Send + 'static) -> Result<()> {
-    let mut owner = Owner(tokio::spawn(future));
+    let mut owner = Owner(tokio::spawn(
+        future.in_current_span().with_current_subscriber(),
+    ));
     (&mut owner.0)
         .await
         .map_err(|error| Error::Storage(format!("local command owner failed: {error}")))?
