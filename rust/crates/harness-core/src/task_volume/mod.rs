@@ -42,6 +42,8 @@ pub use follow::query_id;
 #[doc(hidden)]
 pub use follow::record_changes;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
+mod approvals;
+pub use approvals::{FileApproval, FileApprovalDecision};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
 pub use schema::{

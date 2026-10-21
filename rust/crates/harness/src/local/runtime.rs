@@ -38,6 +38,7 @@ pub(super) async fn open(
     let mut grants = vec![
         "task:spawn:acyclic.direct_tool@1".to_owned(),
         "model:generate".to_owned(),
+        crate::contract::capability::INTERACTION_ROUTE.to_owned(),
         "operation:declare".to_owned(),
         "conversation:bind".to_owned(),
         "conversation:append".to_owned(),

@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
 #[path = "session_activity.rs"]
 mod activity;
+#[path = "session_approval.rs"]
+mod approval;
 #[path = "session_archive.rs"]
 mod archive;
 #[path = "session_confirmation.rs"]

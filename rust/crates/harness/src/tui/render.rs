@@ -8,6 +8,7 @@ use super::{
 use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
 
+mod approvals;
 mod archive;
 mod selection;
 mod stream_text;
@@ -175,6 +176,8 @@ impl ClientRenderer {
         ]);
         self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
         self.notices = self.task.notices();
+        self.notices
+            .extend(approvals::rows(selected.as_ref().map(|(files, _)| *files)));
         self.compose_notices();
     }
 
