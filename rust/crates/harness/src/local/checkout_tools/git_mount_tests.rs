@@ -112,6 +112,46 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
             .watcher
             .is_none()
     );
+    workspace
+        .view()
+        .workspace()
+        .write_text("/startup.txt", "candidate")
+        .await
+        .map_err(storage)?;
+    let readonly = Arc::new(
+        task.scoped(
+            Capabilities::new(
+                task.scope()
+                    .grants()
+                    .iter()
+                    .filter(|grant| *grant != tools.write_grant)
+                    .map(str::to_owned),
+            ),
+            task.scope().limits(),
+        )?,
+    );
+    let result = execute(&tools, &readonly, "fs", "git grep absent startup.txt").await?;
+    assert_eq!(result.value["result"]["Filesystem"]["Data"]["value"]["complete"], true);
+    assert_eq!(
+        workspace.checkout_selection().await?.1,
+        Some(startup_pending)
+    );
+    let state = lock_owned(StateArc::clone(&tools.state)).await;
+    assert!(state.watcher.is_none());
+    assert!(state.children.is_empty());
+    drop(state);
+    // Negative control: physical commands still require write authority.
+    let invocation = ToolInvocation {
+        operation_id: OperationId::new(),
+        call_id: "write-control".into(),
+        name: "bash".into(),
+        arguments: json!({"command":"true"}),
+    };
+    let context = ToolContext::new(readonly, invocation.operation_id, &invocation.call_id, None)?;
+    assert!(matches!(
+        tools.execute(invocation, Some(context)).await,
+        Err(Error::Unauthorized(_))
+    ));
     execute(&tools, &task, "fs", "git switch -c search-view").await?;
     execute(&tools, &task, "bash", "printf needle > marker").await?;
     let workspace = mounted_workspace(&tools, &task).await?;

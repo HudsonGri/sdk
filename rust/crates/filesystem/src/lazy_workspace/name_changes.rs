@@ -88,6 +88,7 @@ impl SourceChangeSink for NameSignal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facade::FsWork as _;
 
     fn path(text: &str, windows: bool) -> NamespacePath {
         let (encoding, bytes) = if windows {

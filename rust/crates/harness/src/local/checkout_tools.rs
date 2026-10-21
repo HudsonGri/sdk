@@ -18,6 +18,7 @@ mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
+mod search;
 #[cfg(all(
     test,
     feature = "filesystem-local",
@@ -166,11 +167,13 @@ impl ToolExecutor for CheckoutTools {
         let context = context
             .ok_or_else(|| Error::Unauthorized("checkout command requires a task".into()))?;
         let scope = context.effective_scope();
+        let search = search::command(invocation).is_some();
         if !matches!(invocation.name.as_str(), "bash" | "fs")
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || (!(scope.grants().contains(&self.read_grant)
-                && scope.grants().contains(&self.write_grant))
+            || (!search
+                && !(scope.grants().contains(&self.read_grant)
+                    && scope.grants().contains(&self.write_grant))
                 && self.child_project(context)?.is_none())
             || !scope.grants().contains(if invocation.name == "bash" {
                 "tool:call:bash"
@@ -195,6 +198,10 @@ impl ToolExecutor for CheckoutTools {
             let original = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            if let Some(parsed) = search::command(&invocation) {
+                let request = serde_json::to_vec(&invocation).map_err(storage)?;
+                return self.search(parsed, original, request).await;
+            }
             if let Some(project) = self.child_project(original)? {
                 let selected = self.child_checkout(original, project).await?;
                 return selected.execute(invocation, context).await;
@@ -235,7 +242,7 @@ impl ToolExecutor for CheckoutTools {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
-            let mut fs = if let Some(command) = command {
+            let fs = if let Some(command) = command {
                 match self.fs_arguments(&command, context.effective_scope()) {
                     Ok(parsed) => Some(parsed),
                     Err(error) => return Ok(crate::tools::rejected_input(error)),
@@ -250,14 +257,6 @@ impl ToolExecutor for CheckoutTools {
                     Error::Unauthorized("checkout command has no execution owner".into())
                 })?;
                 owner.verify_owner(None)?.await?;
-                // Search reads the selected logical view directly. Selecting a
-                // physical checkout, recovering its publication, or syncing
-                // auxiliary mounts can hydrate unrelated source files.
-                if let Some(parsed) = fs.take_if(|parsed| parsed.arguments[0] == "grep") {
-                    return self
-                        .fs(parsed, context, &mut state, &self.workspace, request)
-                        .await;
-                }
                 let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
                 let view = state
                     .active
@@ -276,8 +275,7 @@ impl ToolExecutor for CheckoutTools {
                 }
                 workspace::volumes::sync(&state.mounts).await?;
                 if let Some(parsed) = fs {
-                    self.fs(parsed, context, &mut state, &workspace, request)
-                        .await
+                    self.fs(parsed, context, &mut state, &workspace).await
                 } else {
                     let State {
                         active, watcher, ..

@@ -248,7 +248,6 @@ async fn selected_view(
     runtime: &LocalTaskRuntime,
     task: Option<TaskId>,
 ) -> Result<Option<workspace::View>> {
-    use acyclic_fs::LazyWorkspaceStore as _;
     let mut task = task;
     let mut visited = std::collections::BTreeSet::new();
     while let Some(candidate) = task {
@@ -256,38 +255,8 @@ async fn selected_view(
             return Err(Error::Conflict("task ancestry contains a cycle".into()));
         }
         let admission = runtime.task_host().observe_admission(candidate).await?;
-        let id = workspace
-            .filesystem
-            .workspace_id(&format!("task-{candidate}"))
-            .map_err(storage)?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
-        if workspace
-            .store
-            .load_lazy_workspace(id, &mut accounting)
-            .await
-            .map_err(storage)?
-            .is_some()
-        {
-            let (selected, _) = acyclic_fs::GitCompatRepository::new(id, workspace.store.clone())
-                .checkout_selection()
-                .await
-                .map_err(storage)?;
-            let selected = acyclic_fs::WorkspaceResolver::resolve(
-                &(
-                    workspace.filesystem.clone(),
-                    acyclic_fs::WorkspaceGraph::new(workspace.store.clone()),
-                ),
-                selected,
-            )
-            .await
-            .map_err(storage)?;
-            return workspace
-                .view
-                .open_related(selected, &mut accounting)
-                .await
-                .map(Some)
-                .map_err(storage);
+        if let Some(view) = workspace.existing_task_view(candidate).await? {
+            return Ok(Some(view));
         }
         task = admission.parent;
     }

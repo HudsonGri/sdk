@@ -7,8 +7,18 @@ impl CheckoutTools {
         &self,
         context: &'a ToolContext,
     ) -> Result<Option<&'a VolumeRef>> {
+        self.child_project_access(context, true)
+    }
+
+    pub(super) fn child_project_access<'a>(
+        &self,
+        context: &'a ToolContext,
+        write: bool,
+    ) -> Result<Option<&'a VolumeRef>> {
         let scope = context.effective_scope();
-        if scope.grants().contains(&self.read_grant) && scope.grants().contains(&self.write_grant) {
+        if scope.grants().contains(&self.read_grant)
+            && (!write || scope.grants().contains(&self.write_grant))
+        {
             return Ok(None);
         }
         let task = context.task();
@@ -36,8 +46,8 @@ impl CheckoutTools {
         let mut selected = None;
         for binding in &access.content {
             if binding.volume.class() == VolumeClass::Project
-                && [VolumeOperation::Read, VolumeOperation::Write]
-                    .into_iter()
+                && std::iter::once(VolumeOperation::Read)
+                    .chain(write.then_some(VolumeOperation::Write))
                     .map(|operation| binding.volume.capability(operation, &mut None))
                     .collect::<Result<Vec<_>>>()?
                     .iter()
@@ -50,9 +60,9 @@ impl CheckoutTools {
                 }
             }
         }
-        selected
-            .map(Some)
-            .ok_or_else(|| Error::Unauthorized("child project is not writable".into()))
+        selected.map(Some).ok_or_else(|| {
+            Error::Unauthorized("child project lacks required content grants".into())
+        })
     }
 
     pub(super) async fn child_checkout(

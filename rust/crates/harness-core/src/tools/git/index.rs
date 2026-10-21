@@ -241,10 +241,10 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
             let work =
                 acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            lazy.follow_native_names(&mut acyclic_fs::kernel::KernelAccounting::native(
-                &work,
-                &cancellation,
-            ))?
+            lazy.follow_native_names(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            })?
         }
         OwnedView::Volume(_) => None,
     };

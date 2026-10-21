@@ -75,6 +75,43 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    /// Opens an existing task fork and its selected branch without mounting,
+    /// recovering, or creating a checkout.
+    pub(super) async fn existing_task_view(&self, task: TaskId) -> Result<Option<View>> {
+        let id = self
+            .filesystem
+            .workspace_id(&format!("task-{task}"))
+            .map_err(storage)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        if self
+            .store
+            .load_lazy_workspace(id, &mut accounting)
+            .await
+            .map_err(storage)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let (selected, _) = acyclic_fs::GitCompatRepository::new(id, self.store.clone())
+            .checkout_selection()
+            .await
+            .map_err(storage)?;
+        let selected = acyclic_fs::WorkspaceResolver::resolve(
+            &(
+                self.filesystem.clone(),
+                acyclic_fs::WorkspaceGraph::new(self.store.clone()),
+            ),
+            selected,
+        )
+        .await
+        .map_err(storage)?;
+        self.view
+            .open_related(selected, &mut accounting)
+            .await
+            .map(Some)
+            .map_err(storage)
+    }
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
