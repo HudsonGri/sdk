@@ -30,17 +30,16 @@ impl Drop for SearchBinding {
 }
 
 impl CompletionFiles {
-    /// Load command/workspace files, or resume a previously folded publication cut.
+    /// Load the four completion publications, or resume a previously folded cut.
     /// Pass a cursor only with the matching retained input fold. Lost history
     /// replaces the fold using the query primitive's explicit reset snapshot.
     pub async fn observe<P: StreamProvider + ?Sized>(
         volume: &TaskVolume<P>,
         input: &mut PromptInput,
         cursor: Option<Cursor>,
-        maximum_files: usize,
     ) -> crate::Result<Self> {
         let observation = volume
-            .observe(Query::Inputs, cursor.clone(), maximum_files)
+            .observe(Query::Completions, cursor.clone(), 4)
             .await
             .map_err(|e| crate::Error::Storage(e.to_string()))?;
         let cursor = if let Some(snapshot) = observation.snapshot {
@@ -72,30 +71,7 @@ impl CompletionFiles {
         input: &mut PromptInput,
         cursor: Option<Cursor>,
     ) -> crate::Result<Self> {
-        let observation = volume
-            .inner
-            .observe(Query::Completions, cursor.clone(), 4)
-            .await
-            .map_err(|error| crate::Error::Storage(error.to_string()))?;
-        let cursor = if let Some(snapshot) = observation.snapshot {
-            let mut menu = input.completion.clone();
-            menu.clear_files();
-            for file in snapshot.files {
-                menu.set_file(&file.key.path(), Some(&file.bytes))
-                    .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-            }
-            input.completion = menu;
-            snapshot.cursor
-        } else {
-            cursor.ok_or_else(|| crate::Error::Invalid("completion snapshot missing".into()))?
-        };
-        input.refresh_completions();
-        Ok(Self {
-            cursor,
-            changes: observation.changes,
-            #[cfg(all(feature = "native-execution", feature = "filesystem-local"))]
-            search: None,
-        })
+        Self::observe(&volume.inner, input, cursor).await
     }
 
     /// Binds a filesystem owner that consumes ordinary search request files.

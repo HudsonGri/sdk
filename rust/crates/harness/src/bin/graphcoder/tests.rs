@@ -143,20 +143,49 @@ fn file_completions_render_in_the_composer_and_enter_only_accepts() {
 
 #[test]
 fn file_search_progress_and_query_bound_top_k_render_in_graphcoder() {
-    use acyclic_harness::tui::{Editor, Screen, key_event::{KeyCode, KeyEvent, KeyModifiers}};
+    use acyclic_harness::tui::{
+        Editor, Screen,
+        key_event::{KeyCode, KeyEvent, KeyModifiers},
+    };
     let mut input = PromptInput::new(Editor::new("inspect @mntgt"));
-    input.completion.set_file("search/progress.json", Some(br#"{"query":"mntgt","pending_dirs":17,"complete":false}"#)).unwrap();
+    input
+        .completion
+        .set_file(
+            "search/progress.json",
+            Some(br#"{"query":"mntgt","pending_dirs":17,"complete":false}"#),
+        )
+        .unwrap();
     input.refresh_completions();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-    terminal.draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0)).unwrap();
+    terminal
+        .draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0))
+        .unwrap();
     assert!(screen_text(&terminal).contains("still indexing (17 dirs)"));
-    input.completion.set_file("workspace/layout.json", Some(b"{}")).unwrap();
+    input
+        .completion
+        .set_file("workspace/layout.json", Some(b"{}"))
+        .unwrap();
     assert_eq!(input.completion.items().len(), 0);
-    input.completion.set_file("search/results.json", Some(br#"{"query":"mntgt","paths":["neighbour/mention target.txt"]}"#)).unwrap();
-    terminal.draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0)).unwrap();
+    input
+        .completion
+        .set_file(
+            "search/results.json",
+            Some(br#"{"query":"mntgt","paths":["neighbour/mention target.txt"]}"#),
+        )
+        .unwrap();
+    terminal
+        .draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0))
+        .unwrap();
     assert!(screen_text(&terminal).contains("neighbour/mention target.txt"));
-    assert!(input.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 1, 78).is_empty());
-    assert_eq!(input.editor.text(), "inspect @\"neighbour/mention target.txt\" ");
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 1, 78)
+            .is_empty()
+    );
+    assert_eq!(
+        input.editor.text(),
+        "inspect @\"neighbour/mention target.txt\" "
+    );
 }
 
 #[test]
@@ -328,18 +357,46 @@ async fn completion_popup_follows_real_task_volume_publications() {
     )
     .await
     .unwrap();
+    // Completion observes four publication keys regardless of task UI state.
+    // The former Inputs observation fails this exact namespace at its bound.
+    for index in 0..8 {
+        let cut = volume
+            .snapshot(&Query::Inputs, 16)
+            .await
+            .unwrap()
+            .generation;
+        volume
+            .append(
+                cut,
+                &Write::new(
+                    FileKey::parse(&format!("workspace/panel-{index}.json")).unwrap(),
+                    b"{}".to_vec(),
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        volume.snapshot(&Query::Inputs, 4).await,
+        Err(acyclic_harness::task_volume::Error::LimitExceeded)
+    ));
     let mut input = PromptInput::new(Editor::new("@新"));
-    let mut files = CompletionFiles::observe(&volume, &mut input, None, 8)
+    let mut files = CompletionFiles::observe(&volume, &mut input, None)
         .await
         .unwrap();
     assert!(!input.completion.active(&input.editor));
-    let cut = volume.snapshot(&Query::Inputs, 8).await.unwrap().generation;
+    let cut = volume
+        .snapshot(&Query::Completions, 4)
+        .await
+        .unwrap()
+        .generation;
     volume
         .append(
             cut,
             &Write::new(
-                FileKey::parse("names/新しい.rs").unwrap(),
-                b"source".to_vec(),
+                FileKey::parse("search/results.json").unwrap(),
+                serde_json::to_vec(&serde_json::json!({"query":"新", "paths":["新しい.rs"]}))
+                    .unwrap(),
             ),
         )
         .await
