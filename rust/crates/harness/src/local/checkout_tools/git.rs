@@ -58,11 +58,6 @@ impl CheckoutTools {
         let source = self
             .fs_source(workspace, &parsed, context.effective_scope())?
             .clone();
-        let native = match &source {
-            Some(source) => Some(source.native().await),
-            None => None,
-        };
-        let native = native.as_ref().and_then(|guard| guard.as_ref());
         let State {
             active, watcher, ..
         } = state;
@@ -127,6 +122,11 @@ impl CheckoutTools {
                 Err(error) => Err(error),
             };
         }
+        let native = match &source {
+            Some(source) => Some(source.native().await),
+            None => None,
+        };
+        let native = native.as_ref().and_then(|guard| guard.as_ref());
         let (task, fence) = owner.task_binding();
         let lease_id = lease_identity(task, context.operation_id(), fence);
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(

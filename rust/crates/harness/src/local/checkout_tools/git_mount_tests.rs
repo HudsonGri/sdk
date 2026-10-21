@@ -41,6 +41,96 @@ async fn mounted_workspace(
 }
 
 #[tokio::test]
+async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let project = super::super::tests::volume(directory.path()).await?;
+    let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+    let harness = LocalHarness::open(super::super::tests::volume_config(
+        directory.path(),
+        project,
+        provider,
+    )?)
+    .await?;
+    let operation = OperationId::new();
+    let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(operation, "search").await?
+    else {
+        panic!("search admission")
+    };
+    let worker = crate::distributed::Worker {
+        id: "search-native-preflight".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
+    let crate::distributed::WorkPull::Claimed(lease) = harness
+        .runtime
+        .task_host()
+        .pull_work(&worker, Some(operation), &mut None)
+        .await?
+    else {
+        panic!("search claim")
+    };
+    harness
+        .runtime
+        .task_host()
+        .start_task(&lease, &mut None)
+        .await?;
+    let task = Arc::new(
+        harness
+            .runtime
+            .task_context(
+                task_id,
+                crate::scheduler::LeaseFence::from(&lease.reservation),
+            )
+            .await?,
+    );
+    let tools = CheckoutTools::new(
+        harness.workspace.as_ref().unwrap().clone(),
+        &harness.project,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::clone(&harness.task_files),
+    )
+    .await?;
+    execute(&tools, &task, "fs", "git switch -c search-view").await?;
+    execute(&tools, &task, "bash", "printf needle > marker").await?;
+    let workspace = mounted_workspace(&tools, &task).await?;
+    let pending = serialized(&tools.state, async |state| {
+        let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
+        let generation = view
+            .workspace()
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        let pending = (
+            acyclic_fs::OperationId::from_bytes(OperationId::new().into_bytes()),
+            acyclic_fs::GitGenerationRef {
+                workspace_id: view.workspace().id(),
+                generation: generation.id(),
+            },
+        );
+        reconciliation::prepare(&workspace, pending.0, pending.1).await?;
+        Ok::<_, Error>(pending)
+    })
+    .await?;
+    let advances = workspace.mount_advances.load(Ordering::Relaxed);
+    let result = execute(&tools, &task, "fs", "git grep needle marker").await?;
+    assert!(result.value.to_string().contains("needle"), "{result:?}");
+    assert_eq!(workspace.mount_advances.load(Ordering::Relaxed), advances);
+    assert_eq!(workspace.checkout_selection().await?.1, Some(pending));
+
+    // A command that needs an exact checkout still performs recovery. Without
+    // the search preflight bypass the preceding grep also clears this marker.
+    execute(&tools, &task, "fs", "git status").await?;
+    assert!(workspace.checkout_selection().await?.1.is_none());
+    assert!(workspace.mount_advances.load(Ordering::Relaxed) > advances);
+    Ok(())
+}
+
+#[tokio::test]
 async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let project = super::super::tests::volume(directory.path()).await?;

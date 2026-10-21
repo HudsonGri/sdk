@@ -18,7 +18,6 @@ mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
-mod task_views;
 #[cfg(all(
     test,
     feature = "filesystem-local",
@@ -26,6 +25,7 @@ mod task_views;
     not(acyclic_harness_loom)
 ))]
 mod task_view_volumes_tests;
+mod task_views;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
@@ -243,7 +243,7 @@ impl ToolExecutor for CheckoutTools {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
-            let fs = if let Some(command) = command {
+            let mut fs = if let Some(command) = command {
                 match self.fs_arguments(&command, context.effective_scope()) {
                     Ok(parsed) => Some(parsed),
                     Err(error) => return Ok(crate::tools::rejected_input(error)),
@@ -258,6 +258,12 @@ impl ToolExecutor for CheckoutTools {
                     Error::Unauthorized("checkout command has no execution owner".into())
                 })?;
                 owner.verify_owner(None)?.await?;
+                // Search reads the selected logical view directly. Selecting a
+                // physical checkout, recovering its publication, or syncing
+                // auxiliary mounts can hydrate unrelated source files.
+                if let Some(parsed) = fs.take_if(|parsed| parsed.arguments[0] == "grep") {
+                    return self.fs(parsed, context, &mut state, &self.workspace).await;
+                }
                 let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
                 let view = state
                     .active
