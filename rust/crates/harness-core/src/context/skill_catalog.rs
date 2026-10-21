@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 
 /// Repository skill roots, in precedence order for duplicate names.
 #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
-pub(crate) const SKILL_ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
+#[doc(hidden)]
+pub const SKILL_ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
 
 /// One listed skill: validated name, single-line description and file path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +71,8 @@ impl SkillCatalog {
     /// Retains one entry only while the discovery prefix fits the manifest.
     /// Later entries are counted and dropped immediately, including descriptions.
     #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
-    pub(crate) fn retain_prefix(&mut self, skill: CatalogSkill, available: u64, used: &mut u64) {
+    #[doc(hidden)]
+    pub fn retain_prefix(&mut self, skill: CatalogSkill, available: u64, used: &mut u64) {
         if self.unlisted == 0 {
             let size = serde_json::to_vec(&skill).map_or(u64::MAX, |bytes| bytes.len() as u64);
             let next = used
@@ -125,7 +127,8 @@ pub(crate) const CATALOG_SHARE_DIVISOR: u64 = 20;
 /// the provider charges, and compacts or rejects a request that does not fit
 /// (`acyclic-harness-providers` `counting::contract_tests`).
 #[must_use]
-pub(crate) fn token_allowance(context_tokens: u32, reserve_tokens: u32) -> u64 {
+#[doc(hidden)]
+pub fn token_allowance(context_tokens: u32, reserve_tokens: u32) -> u64 {
     u64::from(context_tokens.saturating_sub(reserve_tokens)) / CATALOG_SHARE_DIVISOR
 }
 
@@ -138,7 +141,8 @@ pub(crate) const POINTER: &str =
 /// Surrounds the total count when the framed block does not fit.
 pub(crate) const MINIMAL: [&str; 2] = [".agents/skills/ and .claude/skills/ have ", " skills"];
 /// Follows the count of skills a listed prefix leaves out.
-pub(crate) const OMITTED: &str = " more skills omitted\n";
+#[doc(hidden)]
+pub const OMITTED: &str = " more skills omitted\n";
 
 /// Bytes `text` occupies inside a JSON string. Escaping is per character, so
 /// a concatenation occupies the sum of its parts.

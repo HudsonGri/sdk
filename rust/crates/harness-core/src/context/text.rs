@@ -21,7 +21,8 @@ pub(crate) fn escaped_character(character: char, buffer: &mut arrayvec::ArrayStr
 }
 
 #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
-pub(crate) fn push_value(text: &mut String, value: &str) {
+#[doc(hidden)]
+pub fn push_value(text: &mut String, value: &str) {
     let mut buffer = arrayvec::ArrayString::new();
     for character in value.chars() {
         text.push_str(escaped_character(character, &mut buffer));

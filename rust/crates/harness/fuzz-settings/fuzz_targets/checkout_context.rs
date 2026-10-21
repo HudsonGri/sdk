@@ -9,13 +9,13 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 #[path = "../../src/local/context/skills/catalog.rs"]
 mod catalog;
-#[path = "../../src/context/discovery/frontmatter.rs"]
+#[path = "../../../harness-core/src/context/discovery/frontmatter.rs"]
 mod frontmatter;
 #[path = "../../src/local/context/environment/porcelain.rs"]
 mod porcelain;
-#[path = "../../src/context/skill_catalog.rs"]
+#[path = "../../../harness-core/src/context/skill_catalog.rs"]
 mod skill_catalog;
-#[path = "../../src/context/text.rs"]
+#[path = "../../../harness-core/src/context/text.rs"]
 mod text;
 mod context {
     pub(crate) use crate::frontmatter::parse_frontmatter;

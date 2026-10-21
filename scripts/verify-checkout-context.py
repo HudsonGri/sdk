@@ -14,7 +14,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTEXT = ROOT / "rust/crates/harness/src/local/context"
-SHARED = ROOT / "rust/crates/harness/src/context"
+SHARED = ROOT / "rust/crates/harness-core/src/context"
 FEATURES = "filesystem-local,native-execution,terminal,tui,mcp-http,test-support,grpc"
 
 
@@ -56,7 +56,7 @@ def mutants():
     environment = (CONTEXT / "environment.rs").read_text().split("#[cfg(test)]")[0]
     environment = replace_once(environment, "mod porcelain;", '#[path = "environment/porcelain.rs"]\nmod porcelain;')
     environment = replace_once(environment, "+ 719_468", "+ 719_469")
-    frontmatter = (ROOT / "rust/crates/harness/src/context/discovery/frontmatter.rs").read_text().split("#[cfg(test)]")[0]
+    frontmatter = (SHARED / "discovery/frontmatter.rs").read_text().split("#[cfg(test)]")[0]
     frontmatter = replace_once(frontmatter, "max_documents: 1,", "max_documents: 1, max_depth: usize::MAX, flow_nesting_limit: usize::MAX,")
     text = (SHARED / "text.rs").read_text().split("#[cfg(test)]")[0]
     text = replace_once(text, " || matches!(character, '\\u{2028}' | '\\u{2029}')", "")
@@ -211,6 +211,14 @@ def main():
 def qualify(build_log):
     source = CONTEXT.with_suffix(".rs")
     original = source.read_bytes()
+    shared_originals = {}
+    for name, before, after in [
+        ("skill_catalog.rs", "pub(crate) fn render_into", "pub fn render_into"),
+        ("text.rs", "pub(crate) fn escaped_character", "pub fn escaped_character"),
+    ]:
+        path = SHARED / name
+        shared_originals[path] = path.read_bytes()
+        path.write_bytes(shared_originals[path].replace(before.encode(), after.encode()))
     generated = mutants()
     files = [CONTEXT / f"{name}.rs" for name in generated]
     assert not any(path.exists() for path in files)
@@ -226,7 +234,7 @@ def qualify(build_log):
         env_original = env_source.read_bytes()
         env_source.write_bytes(env_original.replace(b"use porcelain::summarize;", b"pub(super) use porcelain::summarize;"))
         try:
-            command = ["cargo", "test", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
+            command = ["cargo", "test", "--locked", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
                        "--lib", "--test", "cli", "--test", "context-discovery", "--no-run", "--message-format=json-render-diagnostics"]
             start = time.monotonic()
             with build_log.open("w") as output:
@@ -242,6 +250,8 @@ def qualify(build_log):
             env_source.write_bytes(env_original)
     finally:
         source.write_bytes(original)
+        for path, content in shared_originals.items():
+            path.write_bytes(content)
         for path in files:
             path.unlink(missing_ok=True)
     artifacts = {}
@@ -250,21 +260,21 @@ def qualify(build_log):
         if record.get("reason") == "compiler-artifact" and record.get("executable") and record["profile"]["test"]:
             artifacts[record["target"]["name"]] = record["executable"]
     for target, test_filter in [("acyclic_fs", "lazy_workspace::tests::latest::"),
-                                ("acyclic_harness", "executor::composition::"),
+                                ("acyclic_harness_core", "executor::composition::"),
                                 ("context-discovery", ""),
                                 ("acyclic_harness", "local::context::"),
-                                ("acyclic_harness", "context::manifest::tests::skill_counts_are_admitted_without_overflow"),
-                                ("acyclic_harness", "context::text::"),
+                                ("acyclic_harness_core", "context::manifest::tests::skill_counts_are_admitted_without_overflow"),
+                                ("acyclic_harness_core", "context::text::"),
                                 ("acyclic_harness_providers", "tests::admission_tests::byte_model_counter_charges_a_catalog_at_most_its_bytes"),
                                 ("acyclic_harness_providers", "tests::contract_tests::"),
                                 ("acyclic_harness_providers", "codex_count::"),
-                                ("acyclic_harness", "context::discovery::frontmatter::tests::"),
-                                ("acyclic_harness", "context::skill_catalog::"),
-                                ("acyclic_harness", "context::manifest::catalog::"),
-                                ("acyclic_harness", "executor::tests::replay::inherited_skill_catalog_respects_final_message_and_byte_limits"),
+                                ("acyclic_harness_core", "context::discovery::frontmatter::tests::"),
+                                ("acyclic_harness_core", "context::skill_catalog::"),
+                                ("acyclic_harness_core", "context::manifest::catalog::"),
+                                ("acyclic_harness_core", "executor::tests::replay::inherited_skill_catalog_respects_final_message_and_byte_limits"),
                                 ("acyclic_harness", "local::tests::environment::"), ("cli", "")]:
         run([artifacts[target], test_filter], timeout=9.5, tests=True)
-    run(["cargo", "check", "--locked", "-p", "acyclic-harness", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
+    run(["cargo", "check", "--locked", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
          "--lib", "--tests", "--target", "x86_64-pc-windows-gnu"])
     fuzz = ROOT / "rust/crates/harness/fuzz-settings"
     fuzz_env = os.environ.copy()

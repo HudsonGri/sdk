@@ -35,11 +35,14 @@ pub(crate) use manifest::CatalogModel;
 pub use manifest::ContextManifest;
 #[doc(hidden)]
 pub use manifest::DEFAULT_CONVENTIONS_JSON;
-pub(crate) mod skill_catalog;
+#[doc(hidden)]
+pub mod skill_catalog;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub(crate) use skill_catalog::SKILL_ROOTS;
+#[doc(hidden)]
+pub use skill_catalog::SKILL_ROOTS;
 pub use skill_catalog::{CatalogSkill, SkillCatalog};
-pub(crate) mod text;
+#[doc(hidden)]
+pub mod text;
 
 mod checkpoint;
 pub use checkpoint::*;
