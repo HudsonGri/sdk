@@ -522,8 +522,10 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     else {
         panic!("original root allocation");
     };
+    // Every open of the task is its own invocation on the session ledger, as in a run.
+    let journal_window = work.invocation_window().unwrap();
     let mut journal = runtime
-        .open_task_with_native_work(task, &fence, context.clone(), &work)
+        .open_task_with_native_work(task, &fence, context.clone(), &journal_window)
         .await
         .unwrap();
     let preparation = crate::pi_root_inputs::stage_root_command(
@@ -536,7 +538,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     .unwrap();
     let settled = guard(
         &result(preparation.0.operation_id, &Outcome::Succeeded(allocation)),
-        &work,
+        &journal_window,
     );
     journal
         .step(
@@ -565,7 +567,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
             payload: timer.0,
         },
     };
-    let admitted = guard(&serde_json::to_value(&control).unwrap(), &work);
+    let admitted = guard(&serde_json::to_value(&control).unwrap(), &journal_window);
     journal
         .step(
             OperationId::from_bytes([153; 16]),
@@ -576,18 +578,21 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .await
         .unwrap();
     drop(journal);
+    let first_window = work.invocation_window().unwrap();
     let mut first = runtime
-        .open_task_with_native_work(task, &fence, context.clone(), &work)
+        .open_task_with_native_work(task, &fence, context.clone(), &first_window)
         .await
         .unwrap();
+    let second_window = work.invocation_window().unwrap();
     let mut second = runtime
-        .open_task_with_native_work(task, &fence, context.clone(), &work)
+        .open_task_with_native_work(task, &fence, context.clone(), &second_window)
         .await
         .unwrap();
     let prior = first.checkpoint().clone();
     let input = json!({"commands":[{"operation_id":operation,"value":"q".repeat(128 * 1024)}]});
-    let left = guard(&input, &work);
-    let right = guard(&input, &work);
+    // Each step's input is admitted by the invocation that steps it, as in a run.
+    let left = guard(&input, &first_window);
+    let right = guard(&input, &second_window);
     let left_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(left.1);
     let right_io = acyclic_harness::filesystem::PreparationIo::from_native_custody(right.1);
     let (left, right) = tokio::join!(
@@ -605,10 +610,24 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         )
     );
     assert_ne!(left.is_ok(), right.is_ok());
-    let (accepted, rejected, stale, operation, key) = if left.is_ok() {
-        (left, right, &mut second, 155, "native-large-left")
+    let (accepted, rejected, stale, stale_window, operation, key) = if left.is_ok() {
+        (
+            left,
+            right,
+            &mut second,
+            &second_window,
+            155,
+            "native-large-left",
+        )
     } else {
-        (right, left, &mut first, 156, "native-large-right")
+        (
+            right,
+            left,
+            &mut first,
+            &first_window,
+            156,
+            "native-large-right",
+        )
     };
     assert_eq!(
         rejected.err().unwrap().code(),
@@ -619,7 +638,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     assert_eq!(reply.0.unwrap().value, json!("q".repeat(128 * 1024)));
     drop(reply.1);
     assert_eq!(stale.checkpoint(), &prior);
-    let next = guard(&input, &work);
+    let next = guard(&input, stale_window);
     assert_eq!(
         stale
             .step(
@@ -637,12 +656,13 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     drop(accepted.1);
     drop(first);
     drop(second);
+    let recovered_window = work.invocation_window().unwrap();
     let mut recovered = runtime
-        .open_task_with_native_work(task, &fence, context.clone(), &work)
+        .open_task_with_native_work(task, &fence, context.clone(), &recovered_window)
         .await
         .unwrap();
     let checkpoint = recovered.checkpoint().clone();
-    let retry = guard(&input, &work);
+    let retry = guard(&input, &recovered_window);
     let retried = recovered
         .step(
             OperationId::from_bytes([operation; 16]),
@@ -692,9 +712,14 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
             .is_err()
     );
     assert_eq!(recovered.checkpoint(), &checkpoint);
+    // A later request has its own ledger, so it is issued its own task context.
     let query = crate::pi_fork::tests::work();
+    let current_context = runtime
+        .task_context_with_native_work(task, &fence, &query)
+        .await
+        .unwrap();
     let mut current = runtime
-        .open_task_with_native_work(task, &fence, context, &query)
+        .open_task_with_native_work(task, &fence, current_context, &query)
         .await
         .unwrap();
     runtime.task_host().cancel(task).await.unwrap();
