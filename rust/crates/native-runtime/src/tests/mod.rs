@@ -16,12 +16,13 @@ mod range;
 mod spare;
 mod write_validation;
 
+/// Waits for a state another thread publishes. No wall-clock bound: under
+/// load a bounded wait fails a correct run, and a lost update hangs the run
+/// where the gate's job limit reports it.
 fn wait_until(ready: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready() && Instant::now() < deadline {
+    while !ready() {
         std::thread::yield_now();
     }
-    assert!(ready());
 }
 
 struct ThreadWake(Thread);
@@ -40,17 +41,58 @@ fn completion_waker() -> Waker {
     Waker::from(Arc::new(ThreadWake(std::thread::current())))
 }
 
+/// Drives `future` on this thread, sleeping until its waker unparks it.
 fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
-    let deadline = Instant::now() + Duration::from_secs(10);
     let waker = completion_waker();
     let mut future = std::pin::pin!(future);
     loop {
         match future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Ready(result) => return result,
-            Poll::Pending if Instant::now() < deadline => {
-                std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
+            // A wake before park leaves the token set, so none is lost.
+            Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
+/// What a test thread waits for while it drives a host task: the task's
+/// waker, or the task body reporting that it entered.
+#[derive(Debug, PartialEq, Eq)]
+enum Progress {
+    Woken,
+    Entered,
+}
+
+struct ChannelWake(mpsc::Sender<Progress>);
+
+impl Wake for ChannelWake {
+    fn wake(self: Arc<Self>) {
+        let _ = self.0.send(Progress::Woken);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let _ = self.0.send(Progress::Woken);
+    }
+}
+
+/// Polls `task` until its body reports [`Progress::Entered`] on `events`,
+/// re-polling only when its waker fires: no timing decides the outcome.
+fn poll_until_entered<T>(
+    task: &mut NativeCompletion<T>,
+    progress: &mpsc::Sender<Progress>,
+    events: &mpsc::Receiver<Progress>,
+) -> io::Result<()> {
+    let waker = Waker::from(Arc::new(ChannelWake(progress.clone())));
+    loop {
+        assert!(
+            Pin::new(&mut *task)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        loop {
+            match events.recv().map_err(io::Error::other)? {
+                Progress::Entered => return Ok(()),
+                Progress::Woken => break,
             }
-            Poll::Pending => return Err(io::ErrorKind::TimedOut.into()),
         }
     }
 }
@@ -141,9 +183,7 @@ impl Saturation {
             if held.len() == threads {
                 // Every worker holds one gated job, so queued jobs stay queued.
                 for _ in 0..threads {
-                    started_rx
-                        .recv_timeout(Duration::from_secs(10))
-                        .map_err(io::Error::other)?;
+                    started_rx.recv().map_err(io::Error::other)?;
                 }
             }
         }

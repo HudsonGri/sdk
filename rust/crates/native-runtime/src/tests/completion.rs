@@ -81,7 +81,8 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
         let dropped = Arc::new(AtomicBool::new(false));
         let payload = Box::new(RetainedPanic(dropped.clone()));
         let address = std::ptr::from_ref(payload.as_ref()) as usize;
-        let (entered_tx, entered) = mpsc::sync_channel(1);
+        let (progress, events) = mpsc::channel();
+        let entered_tx = progress.clone();
         let (release, released) = mpsc::sync_channel(1);
         let mut task = run_blocking_io(
             move || -> io::Result<()> {
@@ -91,27 +92,15 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
                 body_meter.record_read(completed)?;
                 assert_eq!(completed, 3);
                 assert_eq!(&buffer, b"abc");
-                entered_tx.send(()).map_err(io::Error::other)?;
+                entered_tx
+                    .send(Progress::Entered)
+                    .map_err(io::Error::other)?;
                 released.recv().map_err(io::Error::other)?;
                 std::panic::resume_unwind(payload);
             },
             Some((meter.clone(), observed)),
         )?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            assert!(
-                Pin::new(&mut task)
-                    .poll(&mut Context::from_waker(&completion_waker()))
-                    .is_pending()
-            );
-            match entered.try_recv() {
-                Ok(()) => break,
-                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
-                    std::thread::park_timeout(Duration::from_millis(1));
-                }
-                Err(error) => return Err(io::Error::other(error)),
-            }
-        }
+        poll_until_entered(&mut task, &progress, &events)?;
         if observed {
             release.send(()).map_err(io::Error::other)?;
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -183,20 +172,23 @@ fn measured_sync_wait_cancellation_wake_drains_real_read_prefix() -> io::Result<
             },
             Some((meter.clone(), false)),
         )?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while task.pending.is_some() {
+        // Submission waits for queue space under load; its waker reports
+        // when to retry, so no timing decides when the job is queued.
+        let (woken, wakes) = mpsc::channel();
+        let waker = Waker::from(Arc::new(ChannelWake(woken)));
+        loop {
             assert!(
                 Pin::new(&mut task)
-                    .poll(&mut Context::from_waker(&completion_waker()))
+                    .poll(&mut Context::from_waker(&waker))
                     .is_pending()
             );
-            if Instant::now() >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
+            if task.pending.is_none() {
+                break;
             }
-            std::thread::park_timeout(Duration::from_millis(1));
+            wakes.recv().map_err(io::Error::other)?;
         }
         let release = || {
-            entered.recv_timeout(Duration::from_secs(10)).unwrap();
+            entered.recv().unwrap();
             meter.cancelled.store(true, Ordering::Release);
             release_tx.send(()).unwrap();
         };
