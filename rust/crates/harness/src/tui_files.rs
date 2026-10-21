@@ -19,7 +19,16 @@ pub struct CompletionFiles {
 struct SearchBinding {
     files: std::sync::Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     worker: tokio::task::JoinHandle<crate::Result<()>>,
-    query: Option<String>,
+    request: Option<NameSearchRequest>,
+}
+
+#[cfg(all(feature = "native-execution", feature = "filesystem-local"))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NameSearchRequest {
+    pub request: crate::OperationId,
+    pub task: Option<crate::TaskId>,
+    pub query: String,
 }
 
 #[cfg(all(feature = "native-execution", feature = "filesystem-local"))]
@@ -84,19 +93,28 @@ impl CompletionFiles {
         self.search = Some(SearchBinding {
             files,
             worker,
-            query: None,
+            request: None,
         });
     }
 
     /// Publish a changed token before entering the file/input wait. The owner
     /// cancels superseded queries; the UI never walks or hydrates the workspace.
-    pub async fn refresh_query(&mut self, input: &PromptInput) -> crate::Result<()> {
+    pub async fn refresh_query(
+        &mut self,
+        input: &mut PromptInput,
+        task: Option<crate::TaskId>,
+    ) -> crate::Result<()> {
         #[cfg(all(feature = "native-execution", feature = "filesystem-local"))]
         if let Some(search) = &mut self.search {
             let request = crate::tui::completion_request(&input.editor)
                 .filter(|request| request.kind == crate::tui::CompletionKind::Mention);
             let query = request.map(|request| request.query);
-            if search.query == query {
+            if search
+                .request
+                .as_ref()
+                .map(|request| (request.task, request.query.as_str()))
+                == query.as_ref().map(|query| (task, query.as_str()))
+            {
                 return Ok(());
             }
             if search.worker.is_finished() {
@@ -106,7 +124,22 @@ impl CompletionFiles {
             }
             let key = crate::task_volume::FileKey::parse("search/query.json")
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-            let bytes = serde_json::to_vec(&query)
+            let request = query.map(|query| NameSearchRequest {
+                request: crate::OperationId::new(),
+                task,
+                query,
+            });
+            // Clear before publishing the new binding. Old publications remain
+            // followed, but their request identity cannot refill this popup.
+            input
+                .completion
+                .set_files([
+                    ("search/results.json", None),
+                    ("search/progress.json", None),
+                ])
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            input.refresh_completions();
+            let bytes = serde_json::to_vec(&request)
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?;
             loop {
                 let snapshot = search
@@ -128,9 +161,9 @@ impl CompletionFiles {
                     Err(error) => return Err(crate::Error::Storage(error.to_string())),
                 }
             }
-            search.query = query;
+            search.request = request;
         }
-        let _ = input;
+        let _ = (input, task);
         Ok(())
     }
 
@@ -157,6 +190,7 @@ impl CompletionFiles {
                     .chain(&change.files)
                     .map(|file| (file.key.path(), Some(file.bytes.as_ref()))),
             )
+            .filter(|(path, bytes)| self.accepts_publication(path, *bytes))
             .collect();
         if !files.is_empty() {
             input
@@ -169,9 +203,36 @@ impl CompletionFiles {
         Ok(())
     }
 
+    fn accepts_publication(&self, path: &str, bytes: Option<&[u8]>) -> bool {
+        #[cfg(all(feature = "native-execution", feature = "filesystem-local"))]
+        if let Some(search) = &self.search
+            && matches!(path, "search/results.json" | "search/progress.json")
+        {
+            #[derive(serde::Deserialize)]
+            struct Binding {
+                request: crate::OperationId,
+            }
+            let expected = search.request.as_ref().map(|request| request.request);
+            return bytes.is_none_or(|bytes| {
+                serde_json::from_slice::<Binding>(bytes)
+                    .is_ok_and(|binding| Some(binding.request) == expected)
+            });
+        }
+        let _ = (path, bytes);
+        true
+    }
+
     /// Apply one committed file change outside a competing event-loop wait.
     pub async fn next(&mut self, input: &mut PromptInput) -> crate::Result<()> {
         let change = self.read_change().await?;
         self.apply_change(change, input)
     }
 }
+
+#[cfg(all(
+    test,
+    feature = "native-execution",
+    feature = "filesystem-local",
+    not(acyclic_harness_loom)
+))]
+mod name_search_tests;

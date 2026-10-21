@@ -1,7 +1,9 @@
 //! Search requests and bounded result publications are ordinary followed files.
 use super::*;
+use crate::runtime::TaskStateProvider as _;
 use crate::task_volume::{ChangeStream, FileKey, FileValue, Query, TaskFiles};
 use crate::tools::git::View;
+use crate::tui_files::NameSearchRequest;
 use acyclic_fs::access::Action;
 use futures::StreamExt as _;
 
@@ -20,6 +22,7 @@ impl LocalHarness {
         self.verifier.verify(&self.signed, &mut None)?;
         let verifier = self.verifier.clone();
         let signed = self.signed.clone();
+        let runtime = Arc::clone(&self.runtime);
         let key = FileKey::parse("search/query.json").map_err(storage)?;
         let observation = files
             .inner
@@ -33,7 +36,7 @@ impl LocalHarness {
         let worker = tokio::spawn(async move {
             let mut changes = observation.changes;
             let mut query = initial
-                .map(|file| serde_json::from_slice::<Option<String>>(&file.bytes))
+                .map(|file| serde_json::from_slice::<Option<NameSearchRequest>>(&file.bytes))
                 .transpose()
                 .map_err(storage)?
                 .flatten();
@@ -42,7 +45,7 @@ impl LocalHarness {
                     query = request(&mut changes).await?;
                     continue;
                 };
-                let search = search(&workspace, &writer, &active, &verifier, &signed);
+                let search = search(&workspace, &runtime, &writer, &active, &verifier, &signed);
                 tokio::pin!(search);
                 tokio::select! {
                     biased;
@@ -56,7 +59,7 @@ impl LocalHarness {
     }
 }
 
-async fn request(changes: &mut ChangeStream) -> Result<Option<String>> {
+async fn request(changes: &mut ChangeStream) -> Result<Option<NameSearchRequest>> {
     loop {
         let change = changes
             .next()
@@ -65,6 +68,9 @@ async fn request(changes: &mut ChangeStream) -> Result<Option<String>> {
             .map_err(storage)?;
         if let Some(file) = change.file {
             return serde_json::from_slice(&file.bytes).map_err(storage);
+        }
+        if !change.removed.is_empty() {
+            return Ok(None);
         }
     }
 }
@@ -99,7 +105,7 @@ async fn publish(
 
 async fn results(
     files: &TaskFiles<LocalStream>,
-    query: &str,
+    request: &NameSearchRequest,
     best: &crate::tui::PathMatches,
     pending: usize,
     complete: bool,
@@ -107,26 +113,33 @@ async fn results(
     publish(
         files,
         "search/results.json",
-        &serde_json::json!({"query":query,"paths":best.paths().collect::<Vec<_>>()}),
+        &serde_json::json!({"request":request.request,"query":request.query,"paths":best.paths().collect::<Vec<_>>()}),
     )
     .await?;
     publish(
         files,
         "search/progress.json",
-        &serde_json::json!({"query":query,"pending_dirs":pending,"complete":complete}),
+        &serde_json::json!({"request":request.request,"query":request.query,"pending_dirs":pending,"complete":complete}),
     )
     .await
 }
 
 async fn search(
     workspace: &LocalWorkspace,
+    runtime: &LocalTaskRuntime,
     files: &TaskFiles<LocalStream>,
-    query: &str,
+    request: &NameSearchRequest,
     verifier: &AuthorityVerifier,
     signed: &Scope,
 ) -> Result<()> {
+    let query = request.query.as_str();
+    let admitted = match request.task {
+        Some(task) => Some(runtime.task_host().observe_admission(task).await?),
+        None => None,
+    };
+    let task_grants = admitted.as_ref().map(|record| &record.grants);
     let best = crate::tui::PathMatches::new(query);
-    results(files, query, &best, 1, false).await?;
+    results(files, request, &best, 1, false).await?;
     // Keep the selected branch alive for the complete query. Each mounted
     // volume is searched through its logical view and its own access policy.
     let (selected, _) = workspace.selected_view().await?;
@@ -149,7 +162,7 @@ async fn search(
         });
     }
     if volumes.is_empty() {
-        return results(files, query, &best, 0, true).await;
+        return results(files, request, &best, 0, true).await;
     }
     let mut last = None;
     loop {
@@ -184,7 +197,7 @@ async fn search(
                 let parent = name.path.rsplit_once('/').map_or("", |(parent, _)| parent);
                 if volume.mount.check(Action::List, parent, now).is_err()
                     || volume.mount.check(Action::Read, &name.path, now).is_err()
-                    || !signed_name_allowed(signed, &volume.mount.view.volume, &name.path)?
+                    || !authorized_name(signed, task_grants, &volume.mount.view.volume, &name.path)?
                 {
                     continue;
                 }
@@ -212,7 +225,7 @@ async fn search(
             complete,
         );
         if last.as_ref() != Some(&publication) {
-            results(files, query, &combined, pending, complete).await?;
+            results(files, request, &combined, pending, complete).await?;
             last = Some(publication);
         }
         tokio::task::yield_now().await;
@@ -227,26 +240,40 @@ struct VolumeSearch<'a> {
     complete: bool,
 }
 
-fn signed_name_allowed(scope: &Scope, volume: &VolumeRef, path: &str) -> Result<bool> {
+fn authorized_name(
+    scope: &Scope,
+    task_grants: Option<&Capabilities>,
+    volume: &VolumeRef,
+    path: &str,
+) -> Result<bool> {
+    if !name_allowed(scope.capabilities(), scope.agent().is_some(), volume, path)? {
+        return Ok(false);
+    }
+    match task_grants {
+        Some(grants) => name_allowed(grants, scope.agent().is_some(), volume, path),
+        None => Ok(true),
+    }
+}
+
+fn name_allowed(
+    grants: &Capabilities,
+    has_agent: bool,
+    volume: &VolumeRef,
+    path: &str,
+) -> Result<bool> {
     if crate::conversation::is_internal_path(path) {
         return Ok(false);
     }
-    if scope
-        .capabilities()
-        .contains(&volume.capability(VolumeOperation::Read, &mut None)?)
-    {
+    if grants.contains(&volume.capability(VolumeOperation::Read, &mut None)?) {
         return Ok(true);
     }
     // Directory grants are owner-delegated private content authority. Match
     // component boundaries, so a grant for `src` cannot expose `src-private`.
-    if volume.class() != VolumeClass::AgentPrivate || scope.agent().is_none() {
+    if volume.class() != VolumeClass::AgentPrivate || !has_agent {
         return Ok(false);
     }
     for prefix in std::iter::once("").chain(path.match_indices('/').map(|(end, _)| &path[..end])) {
-        if scope
-            .capabilities()
-            .contains(&volume.directory_read_capability(prefix, &mut None)?)
-        {
+        if grants.contains(&volume.directory_read_capability(prefix, &mut None)?) {
             return Ok(true);
         }
     }
@@ -291,15 +318,16 @@ mod tests {
             )
         };
         let directory = issue(vec![private.directory_read_capability("src", &mut None)?])?;
-        assert!(signed_name_allowed(&directory, &private, "src/file.rs")?);
-        assert!(!signed_name_allowed(
+        assert!(authorized_name(&directory, None, &private, "src/file.rs")?);
+        assert!(!authorized_name(
             &directory,
+            None,
             &private,
             "src-private/file.rs"
         )?);
-        assert!(!signed_name_allowed(&directory, &private, "other.rs")?);
+        assert!(!authorized_name(&directory, None, &private, "other.rs")?);
         let absent = issue(Vec::<String>::new())?;
-        assert!(!signed_name_allowed(&absent, &private, "src/file.rs")?);
+        assert!(!authorized_name(&absent, None, &private, "src/file.rs")?);
         // Negative control: the host mount's policy alone permits this name.
         let root = std::env::current_dir().map_err(storage)?;
         let mounts = workspace::mounts::owner(&root, &private, (), [])?;
@@ -311,8 +339,32 @@ mod tests {
                 .is_ok()
         );
         let whole = issue(vec![private.capability(VolumeOperation::Read, &mut None)?])?;
-        assert!(signed_name_allowed(&whole, &private, "other.rs")?);
-        assert!(!signed_name_allowed(&whole, &private, ".system/secret")?);
+        assert!(authorized_name(&whole, None, &private, "other.rs")?);
+        assert!(!authorized_name(&whole, None, &private, ".system/secret")?);
+        let task_grants =
+            Capabilities::new(vec![private.directory_read_capability("src", &mut None)?]);
+        assert!(authorized_name(
+            &whole,
+            Some(&task_grants),
+            &private,
+            "src/file.rs"
+        )?);
+        assert!(!authorized_name(
+            &whole,
+            Some(&task_grants),
+            &private,
+            "other.rs"
+        )?);
+        // Negative control: the client's broader grant alone exposes this name.
+        assert!(authorized_name(&whole, None, &private, "other.rs")?);
+        let broad_task =
+            Capabilities::new(vec![private.capability(VolumeOperation::Read, &mut None)?]);
+        assert!(!authorized_name(
+            &absent,
+            Some(&broad_task),
+            &private,
+            "src/file.rs"
+        )?);
         Ok(())
     }
 }
