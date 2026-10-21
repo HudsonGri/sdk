@@ -95,9 +95,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 return Ok(NameIndexRefresh::Ineligible);
             }
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&stop);
-            let parent = path.rsplit_once('/').map_or("/", |(parent, _)| parent);
+            let parent = format!(
+                "/{}",
+                path.rsplit_once('/').map_or("", |(parent, _)| parent)
+            );
             if !lazy
-                .same_volume_at_snapshot(snapshot, parent, &mut accounting)
+                .same_volume_at_snapshot(snapshot, &parent, &mut accounting)
                 .await?
             {
                 leaves.insert(path, None);
