@@ -267,7 +267,7 @@ proptest::proptest! {
         let bytes = "\x1b[H○ GraphCoder\x1b[3;1HALPHA_REPLY".as_bytes();
         let split = split % (bytes.len() + 1);
         let mut terminal = Term::new(Config::default(), &Grid, Events);
-        let mut parser = Processor::new();
+        let mut parser: Processor = Processor::new();
         parser.advance(&mut terminal, &bytes[..split]);
         parser.advance(&mut terminal, &bytes[split..]);
         let visible = |terminal: &Term<Events>| terminal.grid().display_iter().map(|cell| cell.c).collect::<String>();
