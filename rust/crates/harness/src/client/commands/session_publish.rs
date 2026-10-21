@@ -3,6 +3,30 @@ use super::*;
 pub(super) const PUBLICATION_ATTEMPTS: usize = 8;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    /// Recompute a UI edit from the followed file after a competing publication.
+    /// Only the pure edit is replayed; execution requests retain their own CAS.
+    pub(crate) async fn update_state(
+        &mut self,
+        root: CommandFileRoot,
+        name: &str,
+        mut edit: impl FnMut(&mut Value) -> Result<bool>,
+    ) -> Result<()> {
+        for _ in 0..PUBLICATION_ATTEMPTS {
+            let mut value = self.state(root, name)?.unwrap_or_else(|| json!({}));
+            if !edit(&mut value)? {
+                return Ok(());
+            }
+            let before = self.generation;
+            match self.write_state(root, name, &value).await {
+                Err(Error::Conflict(_)) if self.generation != before => continue,
+                result => return result,
+            }
+        }
+        Err(Error::Conflict(
+            "UI file remained busy; retry the input".into(),
+        ))
+    }
+
     pub(super) fn publication_byte_limit(&self, key: files::FileKey) -> Result<usize> {
         let framing = files::record_bytes(&files::FileValue::new(key, Vec::new()))?;
         Ok(usize::try_from(self.maximum_bytes)

@@ -378,7 +378,13 @@ impl ClientRenderer {
             let output = files.output_page(0)?;
             self.outcome_notice = output
                 .as_ref()
-                .and_then(|value| value["error"].as_str())
+                .and_then(|value| {
+                    value["error"].as_str().or_else(|| {
+                        value["ok"]
+                            .get("compacted")
+                            .map(|_| "Compacted conversation")
+                    })
+                })
                 .map(|message| Line::raw(message.escape_debug().to_string()));
             self.outcome_cut = Some(cut);
             self.compose_notices();
