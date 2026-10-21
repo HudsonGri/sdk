@@ -18,6 +18,17 @@ fn unfinished_walk_paints_progress_even_when_there_are_no_matches() {
     assert!(text.contains("still indexing (23 dirs)"));
     menu.set_file(
         "search/progress.json",
+        Some(br#"{"query":"absent","pending_dirs":0,"complete":false,"unavailable_entries":0}"#),
+    )
+    .unwrap();
+    assert!(menu.active(&editor));
+    let mut buffer = Buffer::empty(area);
+    CompletionPopup::new(&menu, &editor).render(area, &mut buffer);
+    let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+    assert!(text.contains("searching indexed files"));
+    assert!(!text.contains("still indexing (0 dirs)"));
+    menu.set_file(
+        "search/progress.json",
         Some(br#"{"query":"absent","pending_dirs":0,"complete":true,"unavailable_entries":0}"#),
     )
     .unwrap();

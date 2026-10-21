@@ -101,6 +101,7 @@ impl Widget for CompletionPopup<'_> {
         ));
         if self.menu.indexing().is_some() || self.menu.unavailable_entries() != 0 {
             let text = match self.menu.indexing() {
+                Some(0) => "searching indexed files".to_owned(),
                 Some(pending) => format!("still indexing ({pending} dirs)"),
                 None => format!(
                     "partial index ({} unavailable)",
