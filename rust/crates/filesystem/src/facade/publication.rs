@@ -806,7 +806,11 @@ mod frame_admission_tests {
         };
         let failure = admit_publication_frame(work, budget(150), budget(50), 100)
             .expect_err("the frame and the custody do not fit together");
-        assert!(matches!(failure.error, FsError::Work(_)), "{:?}", failure.error);
+        assert!(
+            matches!(failure.error, FsError::Work(_)),
+            "{:?}",
+            failure.error
+        );
         assert_eq!(*failure.work, work, "a refused frame charges nothing");
     }
 

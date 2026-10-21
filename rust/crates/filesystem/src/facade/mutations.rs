@@ -341,16 +341,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 return Err(NativeTreeMaterializationError::InvalidLayout.into());
             }
         }
-        self.admit_mutation_names_with_accounting(
-            &mut operations,
-            &mut operations_allocation,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        let captured = self
-            .capture_mutation_dependencies_with_accounting(&operations, accounting, cancellation)
-            .await?;
+        // Boxed: each step's frame stays out of this one.
+        crate::heap_future::metered!(erased accounting, |accounting| {
+            self.admit_mutation_names_with_accounting(
+                &mut operations,
+                &mut operations_allocation,
+                accounting,
+                cancellation,
+            )
+        })?;
+        let captured = crate::heap_future::metered!(erased accounting, |accounting| {
+            self.capture_mutation_dependencies_with_accounting(&operations, accounting, cancellation)
+        })?;
         let extension = self.dependencies.proof().prepare_mutations(
             captured.value,
             self.volume.config.limits.maximum_checkout_dependencies,
@@ -370,15 +372,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .ok_or(WorkError::Overflow)?,
         )?;
         let final_input_bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
-        let produced = crate::kernel::apply_generation_mutations_retaining_with_accounting(
-            &self.volume.fs.inner.objects,
-            &self.root,
-            operations,
-            self.volume.config,
-            accounting,
-            cancellation,
-        )
-        .await;
+        // Boxed: the generation mutation frame stays out of every caller's.
+        let produced = crate::heap_future::metered!(erased accounting, |accounting| {
+            crate::kernel::apply_generation_mutations_retaining_with_accounting(
+                &self.volume.fs.inner.objects,
+                &self.root,
+                operations,
+                self.volume.config,
+                accounting,
+                cancellation,
+            )
+        });
         let (receipt, returned_operations, allocation) = produced?;
         let mut working = (receipt.root, allocation);
         drop(returned_operations);
