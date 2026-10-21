@@ -8,6 +8,19 @@ use crate::{
 };
 use std::collections::BTreeMap;
 const PAGE_ENTRIES: u32 = 128;
+pub(crate) const NAME_PAGE_BYTES: u64 = 2 * 1024 * 1024;
+
+fn page_entries(directory: &str, maximum_component_bytes: u32) -> u32 {
+    // Windows UTF-16 components can expand in UTF-8; JSON can expand each
+    // control byte to six bytes. Bound a page before asking the source for it.
+    let entry = directory
+        .len()
+        .saturating_add((maximum_component_bytes as usize).saturating_mul(3))
+        .saturating_add(1)
+        .saturating_mul(6)
+        .saturating_add(80);
+    ((NAME_PAGE_BYTES as usize - 2) / entry).clamp(1, PAGE_ENTRIES as usize) as u32
+}
 /// Failure while traversing a pinned logical namespace.
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {
@@ -104,6 +117,10 @@ impl NameCheckpoint {
     pub(crate) fn pending_directories(&self) -> usize {
         self.pending.len()
     }
+
+    pub(crate) fn record_unavailable(&mut self) {
+        self.unavailable_entries += 1;
+    }
 }
 
 pub(crate) fn within_subtree(path: &str, root: &str) -> bool {
@@ -129,6 +146,18 @@ pub struct SearchName {
     pub regular: bool,
     /// Only directories are traversed; links are leaves.
     pub directory: bool,
+}
+
+impl SearchName {
+    pub(crate) fn maximum_json_bytes(&self) -> usize {
+        self.path.bytes().fold(80usize, |size, byte| {
+            size.saturating_add(match byte {
+                0..=31 => 6,
+                b'"' | b'\\' => 2,
+                _ => 1,
+            })
+        })
+    }
 }
 
 enum Continuation {
@@ -495,6 +524,11 @@ impl<
             return Ok(None);
         };
         let mut names = Vec::new();
+        let limits = match &self.cut {
+            Cut::Lazy(lazy, _) => lazy.workspace().limits(),
+            Cut::Exact(generation) => generation.workspace().limits(),
+        };
+        let maximum = page_entries(&directory, limits.maximum_component_bytes);
         let exact = matches!(&cursor, Continuation::Exact(_));
         if matches!(
             &cursor,
@@ -522,13 +556,7 @@ impl<
                 let stop = CancellationToken::new();
                 let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
                 let (page, _, guard) = lazy
-                    .list_directory_at_snapshot(
-                        *snapshot,
-                        &directory,
-                        cursor,
-                        PAGE_ENTRIES,
-                        &mut ctx,
-                    )
+                    .list_directory_at_snapshot(*snapshot, &directory, cursor, maximum, &mut ctx)
                     .await?;
                 let rows = page
                     .entries
@@ -568,7 +596,7 @@ impl<
                     .list_directory(
                         &directory,
                         after.as_ref(),
-                        PAGE_ENTRIES,
+                        maximum,
                         WorkBudget::UNBOUNDED,
                         &CancellationToken::new(),
                     )
@@ -629,9 +657,18 @@ impl<
             {
                 continue;
             }
+            let name = SearchName {
+                path,
+                regular,
+                directory: is_directory,
+            };
+            if name.maximum_json_bytes() as u64 > NAME_PAGE_BYTES - 2 {
+                self.unavailable_entries += 1;
+                continue;
+            }
             if is_directory {
                 children.push((
-                    format!("/{path}"),
+                    format!("/{}", name.path),
                     if exact {
                         Continuation::Exact(None)
                     } else {
@@ -639,11 +676,7 @@ impl<
                     },
                 ));
             }
-            names.push(SearchName {
-                path,
-                regular,
-                directory: is_directory,
-            });
+            names.push(name);
         }
         // Descend before reading the parent's next page. The frontier is at
         // most PAGE_ENTRIES siblings per depth, independent of tree breadth.
@@ -734,5 +767,43 @@ impl<
                 .map(|receipt| receipt.value)
                 .map_err(|failure| SearchError::from(failure.error)),
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_page_tests {
+    use super::*;
+
+    #[test]
+    fn name_search_pages_bound_long_paths_and_json_expansion() {
+        for component in ["a".repeat(250), "\u{001b}".repeat(250)] {
+            let directory = std::iter::repeat_n(component.as_str(), 128)
+                .collect::<Vec<_>>()
+                .join("/");
+            let names = |count| {
+                (0..count)
+                    .map(|i| SearchName {
+                        path: format!("{directory}/file-{i}.txt"),
+                        regular: true,
+                        directory: false,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let count = page_entries(&directory, 510);
+            assert!((1..PAGE_ENTRIES).contains(&count));
+            let page = names(count);
+            assert!(serde_json::to_vec(&page).unwrap().len() as u64 <= NAME_PAGE_BYTES);
+            assert!(
+                page.iter().all(
+                    |name| serde_json::to_vec(name).unwrap().len() <= name.maximum_json_bytes()
+                )
+            );
+            // Negative control: the old entry-only bound overflows the same
+            // file budget with valid component lengths and traversal depth.
+            assert!(
+                serde_json::to_vec(&names(PAGE_ENTRIES)).unwrap().len() as u64 > NAME_PAGE_BYTES
+            );
+        }
+        assert_eq!(page_entries("/", 510), PAGE_ENTRIES);
     }
 }

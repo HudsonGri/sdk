@@ -196,7 +196,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         workspace: &Workspace<A, O>,
         expected: &Generation<A, O>,
         cut: NameCut,
-        checkpoint: NameCheckpoint,
+        mut checkpoint: NameCheckpoint,
         delta: NameDelta,
     ) -> Result<NameIndexRefresh<A, O>, SearchError> {
         let NameDelta {
@@ -257,16 +257,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         // for each new filename would turn N single-file edits into N pages.
         let mut ordinal = self.manifest.pages.saturating_sub(1);
         let (mut page, mut dirty) = tail.unwrap_or_else(|| (Vec::with_capacity(128), false));
+        let mut page_bytes = page.iter().fold(2usize, |bytes, name| {
+            bytes.saturating_add(name.maximum_json_bytes() + 1)
+        });
         let mut pages = self.manifest.pages;
         for name in leaves.into_values().flatten() {
-            if page.len() == 128 {
+            let entry_bytes = name.maximum_json_bytes() + 1;
+            if entry_bytes > MAXIMUM_INDEX_FILE_BYTES as usize - 2 {
+                checkpoint.record_unavailable();
+                continue;
+            }
+            if page.len() == 128
+                || page_bytes.saturating_add(entry_bytes) > MAXIMUM_INDEX_FILE_BYTES as usize
+            {
                 if dirty {
                     write_page(&mut transaction, ordinal, &page, &stop).await?;
                 }
                 ordinal += 1;
                 page.clear();
+                page_bytes = 2;
             }
             page.push(name);
+            page_bytes = page_bytes.saturating_add(entry_bytes);
             names_changed = true;
             dirty = true;
             pages = pages.max(ordinal + 1);
@@ -347,4 +359,97 @@ async fn write_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await
         .map_err(|failure| failure.error)?;
     Ok(())
+}
+
+#[cfg(all(test, feature = "memory", feature = "native-mount"))]
+mod byte_page_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn name_search_refresh_pages_by_bytes_before_reaching_the_entry_bound() {
+        let fs = crate::Fs::memory();
+        let stop = CancellationToken::new();
+        let workspace = fs
+            .create_workspace("byte-packed-refresh", WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        let expected = workspace
+            .head(WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        let mut walk = crate::NameWalk::<
+            _,
+            _,
+            crate::demand::native::NativeDemandSource,
+            crate::MemoryLazyWorkspaceStore,
+        >::exact(expected.clone(), None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+        while walk.next_page().await.unwrap().is_some() {}
+        let manifest = NameIndexManifest {
+            schema: 1,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages: 0,
+            pending_directories: 0,
+            complete: true,
+            checkpoint: walk.checkpoint().unwrap(),
+        };
+        let index = NameIndex::publish(&workspace, &expected, manifest, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let prefix = std::iter::repeat_n("p".repeat(250), 128)
+            .collect::<Vec<_>>()
+            .join("/");
+        let names = (0..80)
+            .map(|i| SearchName {
+                path: format!("{prefix}/file-{i}.txt"),
+                regular: true,
+                directory: false,
+            })
+            .collect::<Vec<_>>();
+        // Negative control: all entries fit the old count limit, but their
+        // serialized form does not fit one index file.
+        assert!(names.len() < 128);
+        assert!(serde_json::to_vec(&names).unwrap().len() as u64 > MAXIMUM_INDEX_FILE_BYTES);
+        let leaves = names
+            .into_iter()
+            .map(|name| (name.path.clone(), Some(name)))
+            .collect();
+        let expected = index.generation();
+        let cut = NameCut::Exact {
+            workspace: workspace.id(),
+            generation: expected.id(),
+        };
+        let checkpoint = index.manifest.checkpoint.completed_at(cut.clone()).unwrap();
+        let refreshed = match index
+            .publish_delta(
+                &workspace,
+                &expected,
+                cut,
+                checkpoint,
+                NameDelta {
+                    leaves,
+                    subtrees: BTreeSet::new(),
+                },
+            )
+            .await
+            .unwrap()
+        {
+            NameIndexRefresh::Published(index) => index,
+            _ => panic!("bounded byte pages failed to publish"),
+        };
+        assert_eq!(refreshed.manifest.pages, 2);
+        let mut total = 0;
+        for ordinal in 0..refreshed.manifest.pages {
+            let page = refreshed.page(ordinal).await.unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() as u64 <= MAXIMUM_INDEX_FILE_BYTES);
+            total += page.len();
+        }
+        assert_eq!(total, 80);
+    }
 }

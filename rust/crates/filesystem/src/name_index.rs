@@ -12,7 +12,7 @@ pub use refresh::NameIndexRefresh;
 
 const ROOT: &str = "/.acyclic-sdk/name-index";
 const MANIFEST: &str = "/.acyclic-sdk/name-index/manifest.json";
-const MAXIMUM_INDEX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAXIMUM_INDEX_FILE_BYTES: u64 = crate::name_walk::NAME_PAGE_BYTES;
 
 /// Versioned progress and restart state of one shared volume index.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
