@@ -48,8 +48,16 @@ fn diff_query_snapshots_and_follow_reconstruct_every_endpoint()
                         .map(|text| Some(text.as_str()))
                         .chain(std::iter::once(None))
                         .chain(baseline_text.map(Some));
+                    let mut current_text = baseline_text;
                     for text in values {
+                        if text == current_text {
+                            let error = fixture.write(&[("note.txt", text)]).await.unwrap_err();
+                            assert!(error.to_string().contains("no pending mutation"));
+                            assert!(stream.next().now_or_never().is_none());
+                            continue;
+                        }
                         fixture.write(&[("note.txt", text)]).await?;
+                        current_text = text;
                         let publication = stream.next().await.ok_or("missing delta")??;
                         assert_eq!(&publication.previous, view.generation());
                         let bytes = serde_json::to_vec(&publication)?;
