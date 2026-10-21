@@ -26,19 +26,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 macro_rules! read_source {
-    ($reader:expr, $receipt:expr, $remaining:ident, $value:ident,
+    ($reader:expr, $receipt:ident, $remaining:ident, $value:ident,
      $native:expr => $accept_native:expr, $legacy:expr => $accept_legacy:expr $(,)?) => {
         if $reader
             .validate_native_work($receipt.custody.work())
             .is_ok()
         {
-            let $value = $native.await.map_err(MaterializeError::from)?;
+            // Boxed on the receipt: source reads are the deepest step frames.
+            let $value = in_receipt_frame(&mut *$receipt, |$receipt| $native)
+                .await?
+                .map_err(MaterializeError::from)?;
             $accept_native
         } else {
             let $remaining = SourceDemandReadWork::remaining(&mut $receipt.custody.work().clone())
                 .map_err(MaterializeError::from)?;
-            let result = $legacy
-                .await
+            let result = in_receipt_frame(&mut *$receipt, |_| $legacy)
+                .await?
                 .map_err(|failure| $receipt.engine_failure(failure))?;
             $receipt
                 .custody

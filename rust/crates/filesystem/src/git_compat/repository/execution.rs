@@ -93,10 +93,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         action: &GitFilesystemAction,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let result = self
-            .perform(transition.operation_id(), action, executor)
-            .await?;
-        match self.complete_transition_result(transition, &result).await? {
+        // Unmetered: the executor meters its own effect.
+        let result =
+            in_heap_unmetered(|| self.perform(transition.operation_id(), action, executor)).await?;
+        // Unmetered: transition records are bounded single-object writes.
+        let output =
+            in_heap_unmetered(|| self.complete_transition_result(transition, &result)).await?;
+        match output {
             GitCommandOutput::NoOp => Ok(GitCommandOutput::Filesystem(result)),
             output => Ok(output),
         }
@@ -124,16 +127,24 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let pending = self.pending_join("continue").await?;
+        // Unmetered: transition records are bounded single-object reads.
+        let pending = in_heap_unmetered(|| self.pending_join("continue")).await?;
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
-        let result = executor
-            .validate_merge_resolution(pending.id.operation_id(), &pending.action, workspace_tree)
-            .await
-            .map_err(GitCompatRunError::Executor)?;
-        self.complete_transition_result(pending.id, &result)
+        // Unmetered: the executor meters its own effect.
+        let result = in_heap_unmetered(|| {
+            executor.validate_merge_resolution(
+                pending.id.operation_id(),
+                &pending.action,
+                workspace_tree,
+            )
+        })
+        .await
+        .map_err(GitCompatRunError::Executor)?;
+        // Unmetered: transition records are bounded single-object writes.
+        in_heap_unmetered(|| self.complete_transition_result(pending.id, &result))
             .await
             .map_err(Into::into)
     }
