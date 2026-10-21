@@ -61,6 +61,10 @@ pub struct ClientRenderer {
 }
 
 impl ClientRenderer {
+    /// Replace disposable diff rows after an authorized filesystem publication.
+    pub fn update_diff(&mut self, rows: Vec<Line<'static>>) {
+        self.diff = rows;
+    }
     #[cfg(test)]
     pub(crate) fn text_work(&self) -> usize {
         self.task.work() + self.archive.work()
@@ -458,7 +462,6 @@ impl ClientRenderer {
 
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
-        // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
         // TODO(#548): compose split/auto diffs when that renderer is exposed.
         Screen {
             header: self.header.clone(),

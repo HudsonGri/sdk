@@ -11,6 +11,7 @@ use acyclic_stream::BoxProviderFuture;
 mod bash;
 mod capture;
 mod children;
+pub(in crate::local) mod diff;
 mod git;
 #[cfg(all(test, unix, not(acyclic_harness_loom)))]
 mod git_mount_tests;

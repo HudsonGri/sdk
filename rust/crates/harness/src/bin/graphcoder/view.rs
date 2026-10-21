@@ -7,6 +7,7 @@ use acyclic_harness::{
         term::{Environment, FrameTerminal, RegionScroll, ScreenMode, Tty},
     },
 };
+use futures::StreamExt as _;
 use std::{sync::Arc, time::Instant};
 
 pub async fn run(
@@ -52,6 +53,16 @@ pub async fn run(
     let start = Instant::now();
     client.follow_commands(&commands).await?;
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
+    let mut diff = client::local_diff(
+        local.clone(),
+        client::DiffLimits {
+            files: 4096,
+            changes: 4096,
+            file_bytes: 65_536,
+            render_bytes: 4 * 1024 * 1024,
+            work: 16 * 1024 * 1024,
+        },
+    );
     loop {
         client
             .follow_task(
@@ -96,7 +107,7 @@ pub async fn run(
             areas = screen.areas(area, &input);
         }
         if batch.is_empty() {
-            let Some(read) = client::next_file_tui_event(
+            let next = client::next_file_tui_event(
                 &mut client,
                 &mut events,
                 &mut completions,
@@ -105,9 +116,14 @@ pub async fn run(
                 areas.animation,
                 &mut renderer,
                 &mut documents,
-            )
-            .await?
-            else {
+            );
+            let Some(read) = (tokio::select! {
+                read = next => read?,
+                rows = diff.next() => {
+                    renderer.update_diff(rows.ok_or("project diff follow ended")??);
+                    continue;
+                }
+            }) else {
                 continue;
             };
             batch = read;

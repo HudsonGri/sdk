@@ -106,6 +106,9 @@ impl CheckoutTools {
                 })
                 .await
                 .map_err(|failure| failure.cause)?;
+            if phase == 0 {
+                self.retain_diff_base(view.workspace()).await?;
+            }
             return Ok(());
         }
         let cancellation = CancellationToken::new();
@@ -175,6 +178,9 @@ impl CheckoutTools {
                     "checkout capture publication raced with another writer".into(),
                 ));
             }
+        }
+        if phase == 0 {
+            self.retain_diff_base(view.workspace()).await?;
         }
         *slot = Some(cursor);
         Ok(())
