@@ -163,6 +163,12 @@ fn unseeded_sources_stay_behind_their_seams() {
 fn planted_unseeded_sources_fail_the_scan() {
     let files = sources();
     let scan = |planted: Option<(&str, &str)>| {
+        if let Some((target, _)) = planted {
+            assert!(
+                files.iter().any(|(path, _)| path == target),
+                "planted source target is absent: {target}"
+            );
+        }
         violations(files.iter().map(|(path, text)| match planted {
             Some((target, plant)) if path == target => (path.clone(), plant),
             _ => (path.clone(), text.as_str()),
@@ -198,8 +204,8 @@ fn planted_unseeded_sources_fail_the_scan() {
     // Restoring a routed wall-clock read in production admission code.
     let admission = "let now = std::time::SystemTime::now();";
     assert_eq!(
-        scan(Some(("harness/src/store/admission.rs", admission))),
-        ["harness/src/store/admission.rs: unseeded SystemTime::now x1"]
+        scan(Some(("harness-core/src/store/admission.rs", admission))),
+        ["harness-core/src/store/admission.rs: unseeded SystemTime::now x1"]
     );
     // The same reads passed as functions or through renamed types. Each form
     // escaped the earlier call-parenthesis patterns.
@@ -227,10 +233,10 @@ fn planted_unseeded_sources_fail_the_scan() {
             "RandomState",
         ),
     ] {
-        let found = scan(Some(("harness/src/store/admission.rs", plant)));
+        let found = scan(Some(("harness-core/src/store/admission.rs", plant)));
         assert!(
             found.contains(&format!(
-                "harness/src/store/admission.rs: unseeded {expected} x1"
+                "harness-core/src/store/admission.rs: unseeded {expected} x1"
             )),
             "{plant}: {found:?}"
         );
