@@ -95,6 +95,14 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
             if file.descriptor().byte_length() > maximum.min(policy.maximum_bytes) {
                 return Err(invalid("model image exceeds projection byte limit"));
             }
+            // Built-in image adapters preserve the original file; their work
+            // unit is one byte of base64 image payload admitted to the wire.
+            // Check the exact padded length before reading or allocating it.
+            let work = file.descriptor().byte_length().div_ceil(3).checked_mul(4)
+                .ok_or_else(|| invalid("model image work overflow"))?;
+            if work > policy.maximum_work {
+                return Err(invalid("model image exceeds projection work limit"));
+            }
             Ok(())
         }
     }
