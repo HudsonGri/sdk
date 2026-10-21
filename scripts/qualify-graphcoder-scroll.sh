@@ -5,6 +5,8 @@ features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search
 binary_features=acyclic-harness/filesystem-local,acyclic-harness/native-execution,acyclic-harness/terminal,acyclic-harness/tui,acyclic-harness/test-support,acyclic-harness/grpc,acyclic-harness/search-http
 cargo test --locked -p acyclic-harness --features "$features" --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py client::commands::session::archive::settings_tests:: tui::render::tests::compaction_completion_ tui::render::tests::negative_control_error_only_
+bun install --cwd scripts/graphcoder-pty --frozen-lockfile
+node --test scripts/graphcoder-e2e/*.test.mjs
 cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features"
 E2E_OUTPUT=e2e-followed-cut-results python3 - <<'PY'
 import json, os, subprocess, time

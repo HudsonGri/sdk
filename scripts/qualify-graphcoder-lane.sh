@@ -16,9 +16,9 @@ cargo test --locked -p graphcoder --features "$binary_features" --bin graphcoder
 cargo test --locked -p graphcoder --features "$binary_features" --test tui --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py settlement_ three_prompts_
 cargo test --locked -p harness-mock-model --bin harness-mock-model records::tests::
+bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 node --test scripts/graphcoder-e2e/*.test.mjs
 cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features"
-bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 E2E_OUTPUT=e2e-consolidated-results python3 - <<'PY'
 import json, os, subprocess, time
 start=time.perf_counter()
