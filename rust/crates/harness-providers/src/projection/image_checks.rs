@@ -22,36 +22,40 @@ impl HttpTransport for NoHttp {
     fn now(&self) -> Duration { Duration::ZERO }
 }
 struct Reader {
-    bytes: Vec<u8>,
+    bytes: Vec<Vec<u8>>,
     reads: AtomicUsize,
 }
 impl ContentResidencyVerifier for Reader {
-    fn read<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a ContentIo>)
+    fn read<'a>(&'a self, file: &'a FileRef, _: u64, io: Option<&'a ContentIo>)
         -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            Ok(self.bytes.clone().into())
+            Ok(self.bytes.iter().find(|bytes| bytes.len() as u64 == file.descriptor().byte_length())
+                .expect("generated image length").clone().into())
         })
     }
 }
 
 pub(super) fn assert_roundtrip(input: &[u8]) {
     futures::executor::block_on(async {
-        for header in [b"\x89PNG\r\n\x1a\n".as_slice(), b"\xff\xd8\xff", b"GIF89a", b"RIFF0000WEBP"] {
-            let bytes = [header, input].concat();
-            let media = image_media_type(&bytes).unwrap();
-            let encoded_work = (bytes.len() as u64).div_ceil(3) * 4;
-            for adapter in [Adapter::Responses, Adapter::Chat, Adapter::Anthropic, Adapter::Gemini] {
-                let reader = Arc::new(Reader { bytes: bytes.clone(), reads: AtomicUsize::new(0) });
-                let mut registry = Registry::with_transport(Credentials::explicit(Default::default()), Arc::new(NoHttp))
-                    .with_content(reader.clone(), bytes.len() as u64);
-                registry.register("image-test".into(), serde_json::from_value(json!({
-                    "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",
-                    "models":{"tiny":{"capacity":{"context_tokens":32768,"output_tokens":1024},"features":{"images":true,"tools":false}}},
-                    "max_event_bytes":4096,
-                    "token_counter":{"path":"count_tokens","adapter":adapter,"response_field":"input_tokens","framing_tokens":0}
-                })).unwrap()).unwrap();
-                let provider = registry.resolve("image-test/tiny").unwrap();
+        let images: Vec<Vec<u8>> = [b"\x89PNG\r\n\x1a\n".as_slice(), b"\xff\xd8\xff", b"GIF89a", b"RIFF0000WEBP"]
+            .into_iter().map(|header| [header, input].concat()).collect();
+        let maximum_bytes = images.iter().map(Vec::len).max().unwrap() as u64;
+        for adapter in [Adapter::Responses, Adapter::Chat, Adapter::Anthropic, Adapter::Gemini] {
+            let reader = Arc::new(Reader { bytes: images.clone(), reads: AtomicUsize::new(0) });
+            let mut registry = Registry::with_transport(Credentials::explicit(Default::default()), Arc::new(NoHttp))
+                .with_content(reader.clone(), maximum_bytes);
+            registry.register("image-test".into(), serde_json::from_value(json!({
+                "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",
+                "models":{"tiny":{"capacity":{"context_tokens":32768,"output_tokens":1024},"features":{"images":true,"tools":false}}},
+                "max_event_bytes":4096,
+                "token_counter":{"path":"count_tokens","adapter":adapter,"response_field":"input_tokens","framing_tokens":0}
+            })).unwrap()).unwrap();
+            let provider = registry.resolve("image-test/tiny").unwrap();
+            for bytes in &images {
+                reader.reads.store(0, Ordering::SeqCst);
+                let media = image_media_type(bytes).unwrap();
+                let encoded_work = (bytes.len() as u64).div_ceil(3) * 4;
                 let file = FileRef::new(serde_json::from_value(json!({
                     "provider":{"namespace":"test","family":"filesystem","version":"2"},
                     "id":"project","class":"project","owner":{"kind":"project","id":"project"}
@@ -94,7 +98,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                         Adapter::Anthropic => parts[1]["source"]["data"].as_str().unwrap(),
                         Adapter::Gemini => parts[1]["inlineData"]["data"].as_str().unwrap(),
                     };
-                    assert_eq!(STANDARD.decode(data).unwrap(), bytes);
+                    assert_eq!(STANDARD.decode(data).unwrap().as_slice(), bytes.as_slice());
                     assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
                 }
             }
