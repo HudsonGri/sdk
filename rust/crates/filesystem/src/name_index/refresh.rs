@@ -134,16 +134,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 });
             leaves.insert(path, name);
         }
-        let mut transaction = workspace
-            .begin_pinned_transaction(
-                &expected,
-                IdempotencyKey::new(),
-                WorkBudget::UNBOUNDED,
-                &stop,
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+        let Some(mut transaction) = begin_at(workspace, &expected).await? else {
+            return Ok(NameIndexRefresh::Conflict);
+        };
         for ordinal in 0..self.manifest.pages {
             let mut page = self.page(ordinal).await?;
             let mut changed = false;

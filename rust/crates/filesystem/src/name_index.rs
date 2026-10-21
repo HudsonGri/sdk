@@ -117,16 +117,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 "pathname index frontier exceeds its file budget".into(),
             ));
         }
-        let mut transaction = workspace
-            .begin_pinned_transaction(
-                expected,
-                IdempotencyKey::new(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+        let Some(mut transaction) = begin_at(workspace, expected).await? else {
+            return Ok(None);
+        };
         let mut files = Vec::new();
         let path = page_path(manifest.pages.saturating_sub(1));
         if let Some(page) = page {
@@ -176,6 +169,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             ),
         }
     }
+}
+
+// An exact checkout pins its data root, but its publication head can be newer.
+// Open the actual head and compare the data generation from that same checkout.
+// Subsequent commits use its captured authority head, without a rebase retry.
+async fn begin_at<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    expected: &Generation<A, O>,
+) -> Result<Option<crate::Transaction<A, O>>, SearchError> {
+    if workspace.id() != expected.workspace_id()
+        || !workspace.volume.fs.owns_workspace(&expected.workspace())
+    {
+        return Err(WorkspaceError::ForeignGeneration.into());
+    }
+    let transaction = workspace
+        .begin_transaction(
+            IdempotencyKey::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    Ok((transaction.checkout.generation_id() == expected.id()).then_some(transaction))
 }
 
 fn page_path(page: u64) -> String {

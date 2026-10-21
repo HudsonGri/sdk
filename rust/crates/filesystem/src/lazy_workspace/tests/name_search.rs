@@ -198,14 +198,16 @@ async fn name_search_checkpoint_rejects_another_volume() {
         .unwrap()
         .checkpoint()
         .unwrap();
-    let other_fs = Fs::memory();
-    let other = attach(
-        &other_fs,
-        Arc::new(CountingSource::new(Bytes::new())),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
+    let (other, _) = lazy
+        .fork(
+            "other",
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(lazy.workspace().id(), other.workspace().id());
     assert!(
         NameWalk::resume(&other, checkpoint, GitIgnorePolicy::parse(""))
             .await
@@ -503,9 +505,9 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
     assert_eq!(source.counts.ranges.load(Ordering::Relaxed), reads);
     let pages = index.manifest.pages;
-    for _ in 0..3 {
+    for revision in 0..3 {
         lazy.workspace()
-            .write_text("/near.txt", "changed")
+            .write_text("/near.txt", &format!("changed-{revision}"))
             .await
             .unwrap();
         let cut = NameCut::Lazy(lazy.snapshot(accounting!()).await.unwrap());
