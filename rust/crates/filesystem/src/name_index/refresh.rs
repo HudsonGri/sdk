@@ -1,7 +1,13 @@
 use super::*;
 use crate::GitIgnorePolicy;
 use crate::kernel::FileKind;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Default)]
+pub(super) struct NameDelta {
+    pub(super) leaves: BTreeMap<String, Option<SearchName>>,
+    pub(super) subtrees: BTreeSet<String>,
+}
 
 /// Outcome of applying an authored leaf delta to an existing index.
 pub enum NameIndexRefresh<A, O> {
@@ -139,45 +145,65 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 });
             leaves.insert(path, name);
         }
-        self.publish_leaves(workspace, &expected, cut, checkpoint, leaves)
-            .await
+        self.publish_delta(
+            workspace,
+            &expected,
+            cut,
+            checkpoint,
+            NameDelta {
+                leaves,
+                subtrees: BTreeSet::new(),
+            },
+        )
+        .await
     }
 
-    pub(super) async fn publish_leaves(
+    pub(super) async fn publish_delta(
         &self,
         workspace: &Workspace<A, O>,
         expected: &Generation<A, O>,
         cut: NameCut,
         checkpoint: NameCheckpoint,
-        mut leaves: BTreeMap<String, Option<SearchName>>,
+        delta: NameDelta,
     ) -> Result<NameIndexRefresh<A, O>, SearchError> {
+        let NameDelta {
+            mut leaves,
+            subtrees,
+        } = delta;
         let stop = CancellationToken::new();
         let Some(mut transaction) = begin_at(workspace, expected).await? else {
             return Ok(NameIndexRefresh::Conflict);
         };
         let mut names_changed = false;
         let mut tail = None;
-        let examined_pages = if leaves.is_empty() {
+        let examined_pages = if leaves.is_empty() && subtrees.is_empty() {
             0
         } else {
             self.manifest.pages
         };
         for ordinal in 0..examined_pages {
             let mut page = self.page(ordinal).await?;
-            if page
-                .iter()
-                .any(|name| name.directory && leaves.contains_key(&name.path))
-            {
+            if page.iter().any(|name| {
+                name.directory && leaves.contains_key(&name.path) && !subtrees.contains(&name.path)
+            }) {
                 return Ok(NameIndexRefresh::Ineligible);
             }
             let mut changed = false;
             page.retain_mut(|name| {
+                if subtrees
+                    .iter()
+                    .any(|root| crate::name_walk::within_subtree(&name.path, root))
+                {
+                    changed = true;
+                    return false;
+                }
                 let Some(replacement) = leaves.remove(&name.path) else {
                     return true;
                 };
                 match replacement {
                     Some(replacement) => {
-                        changed |= name.regular != replacement.regular;
+                        changed |= name.regular != replacement.regular
+                            || name.directory != replacement.directory;
                         *name = replacement;
                         true
                     }
@@ -225,8 +251,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             cut,
             observed_generation: expected.id(),
             pages,
-            pending_directories: 0,
-            complete: true,
+            pending_directories: checkpoint.pending_directories(),
+            complete: checkpoint.pending_directories() == 0,
             checkpoint,
         };
         let bytes = serde_json::to_vec(&manifest)?;

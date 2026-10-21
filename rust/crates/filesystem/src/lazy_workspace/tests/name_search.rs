@@ -956,3 +956,130 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
     };
     assert_eq!(refreshed.page(0).await.unwrap().len(), 2);
 }
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn name_search_native_directory_refresh_never_relists_its_unchanged_sibling() {
+    use crate::{NameIndex, NameIndexManifest, NameIndexRefresh};
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::new());
+    source.directory_names = ["changed".into(), "untouched".into()].into();
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let stop = CancellationToken::new();
+    let mut transaction = lazy
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .write_batch(
+            &["/changed", "/untouched"],
+            &[],
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    let ignore = GitIgnorePolicy::default();
+    let mut walk = NameWalk::lazy(&lazy, None, ignore.clone()).await.unwrap();
+    let mut expected = lazy
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let mut pages = 0;
+    let index = loop {
+        let page = walk.next_page().await.unwrap();
+        pages += u64::from(page.is_some());
+        let manifest = NameIndexManifest {
+            schema: 1,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages,
+            pending_directories: walk.pending_directories(),
+            complete: page.is_none(),
+            checkpoint: walk.checkpoint().unwrap(),
+        };
+        let index = NameIndex::publish(lazy.workspace(), &expected, manifest, page.as_deref())
+            .await
+            .unwrap()
+            .unwrap();
+        expected = index.generation();
+        if page.is_none() {
+            break index;
+        }
+    };
+    let before = source.counts.pages.load(Ordering::Relaxed);
+    source.replace(Bytes::new());
+    let index = match index
+        .refresh_native(
+            &lazy,
+            lazy.snapshot(accounting!()).await.unwrap(),
+            crate::lazy_workspace::NativeNameDelta {
+                paths: ["changed".into()].into(),
+                all: false,
+            },
+            &ignore,
+        )
+        .await
+        .unwrap()
+    {
+        NameIndexRefresh::Published(index) => index,
+        _ => panic!("a known directory delta required whole-tree discovery"),
+    };
+    assert!(!index.manifest.complete);
+    assert!(index.manifest.pending_directories > 0);
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
+    let mut unaffected = Vec::new();
+    for page in 0..index.manifest.pages {
+        unaffected.extend(
+            index
+                .page(page)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|name| name.path),
+        );
+    }
+    assert!(unaffected.iter().any(|path| path == "untouched/file.txt"));
+    assert!(!unaffected.iter().any(|path| path == "changed/file.txt"));
+    let mut resumed = NameWalk::resume(&lazy, index.manifest.checkpoint, ignore.clone())
+        .await
+        .unwrap();
+    let mut changed = Vec::new();
+    while let Some(page) = resumed.next_page().await.unwrap() {
+        changed.extend(page.into_iter().map(|name| name.path));
+    }
+    assert!(changed.iter().any(|path| path == "changed/file.txt"));
+    assert!(!changed.iter().any(|path| path.starts_with("untouched/")));
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), before + 1);
+    // Negative control: restarting at the root re-lists unchanged siblings.
+    let mut full = NameWalk::lazy(&lazy, None, ignore).await.unwrap();
+    while full.next_page().await.unwrap().is_some() {}
+    assert!(source.counts.pages.load(Ordering::Relaxed) > before + 2);
+}

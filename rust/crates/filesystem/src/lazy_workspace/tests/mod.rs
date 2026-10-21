@@ -55,6 +55,7 @@ struct CountingSource {
     cross_directory_mounts: bool,
     unreadable_directory: Option<String>,
     non_unicode_entry: bool,
+    directory_names: std::collections::BTreeSet<String>,
 }
 impl CountingSource {
     fn new(bytes: Bytes) -> Self {
@@ -77,6 +78,7 @@ impl CountingSource {
             cross_directory_mounts: true,
             unreadable_directory: None,
             non_unicode_entry: false,
+            directory_names: Default::default(),
         }
     }
     fn replace(&self, bytes: Bytes) {
@@ -198,7 +200,16 @@ impl DemandSource for CountingSource {
             .map_err(DemandError::from)?;
             self.counts.lookups.fetch_add(1, Ordering::Relaxed);
             self.versioned_node(source)
-                .map(Some)
+                .map(|mut node| {
+                    if _path.components().last().is_some_and(|name| {
+                        self.directory_names
+                            .iter()
+                            .any(|directory| directory.as_bytes() == name.as_bytes())
+                    }) {
+                        node.kind = SourceNodeKind::Directory;
+                    }
+                    Some(node)
+                })
                 .ok_or(DemandError::StaleSource)
         })();
         work.finish(result, &ctx)

@@ -80,6 +80,35 @@ impl NameCheckpoint {
     pub(crate) fn eligible(&self, root: &GitIgnorePolicy, path: &str) -> bool {
         root.eligible_with_nested(&self.ignore_policies, path, false)
     }
+
+    pub(crate) fn eligible_directory(&self, root: &GitIgnorePolicy, path: &str) -> bool {
+        root.eligible_with_nested(&self.ignore_policies, path, true)
+    }
+
+    pub(crate) fn forget_subtree(&mut self, path: &str) {
+        self.ignore_policies
+            .retain(|directory, _| !within_subtree(directory, path));
+    }
+
+    pub(crate) fn discover_directory(&mut self, path: &str, authored: bool) {
+        let absolute = format!("/{path}");
+        self.pending
+            .push((absolute.clone(), SavedCursor::Lazy(None)));
+        if authored {
+            self.pending.push((absolute, SavedCursor::Exact(None)));
+        }
+    }
+
+    pub(crate) fn pending_directories(&self) -> usize {
+        self.pending.len()
+    }
+}
+
+pub(crate) fn within_subtree(path: &str, root: &str) -> bool {
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|tail| tail.starts_with('/'))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -3,11 +3,11 @@ use crate::demand::{DemandSource, SourceNodeKind};
 use crate::facade::FsWork as _;
 use crate::lazy_workspace::NativeNameDelta;
 use crate::{GitIgnorePolicy, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
-    /// Applies a complete native leaf delta through metadata lookups only.
-    /// Unknown changes, directories and policy changes require discovery.
+    /// Applies a bounded native delta without listing unchanged directories.
+    /// Changed directories become resumable discovery roots in the manifest.
     pub async fn refresh_native<D: DemandSource + 'static, S: LazyWorkspaceStore>(
         &self,
         lazy: &LazyWorkspace<A, O, D, S>,
@@ -28,7 +28,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             return Ok(NameIndexRefresh::Ineligible);
         }
         let cut = NameCut::Lazy(snapshot);
-        let Some(checkpoint) = self.manifest.checkpoint.completed_at(cut.clone()) else {
+        let Some(mut checkpoint) = self.manifest.checkpoint.completed_at(cut.clone()) else {
             return Ok(NameIndexRefresh::Ineligible);
         };
         let stop = CancellationToken::new();
@@ -84,7 +84,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             }
         }
         let mut leaves = BTreeMap::new();
+        let mut subtrees = BTreeSet::new();
         for path in delta.paths {
+            if subtrees
+                .iter()
+                .any(|root: &String| crate::name_walk::within_subtree(&path, root))
+            {
+                continue;
+            }
             if path
                 .split('/')
                 .any(|part| matches!(part, ".git" | ".acyclic-sdk"))
@@ -94,6 +101,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             if matches!(path.rsplit('/').next(), Some(".gitignore" | ".ignore")) {
                 return Ok(NameIndexRefresh::Ineligible);
             }
+            // A binding may have changed from a directory into a leaf, or
+            // disappeared. Invalidate its old descendants in every case.
+            checkpoint.forget_subtree(&path);
+            subtrees.insert(path.clone());
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&stop);
             let parent = format!(
                 "/{}",
@@ -116,7 +127,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 crate::kernel::retire_allocation(guard, 0, &mut accounting)?;
             }
             if kind == Some(SourceNodeKind::Directory) {
-                return Ok(NameIndexRefresh::Ineligible);
+                let eligible = checkpoint.eligible_directory(ignore, &path)
+                    && lazy
+                        .same_volume_at_snapshot(snapshot, &format!("/{path}"), &mut accounting)
+                        .await?;
+                if eligible {
+                    let authored = match expected
+                        .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, &stop)
+                        .await
+                    {
+                        Ok(receipt) => receipt.value.kind == crate::kernel::FileKind::Directory,
+                        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => false,
+                        Err(failure) => return Err(failure.error.into()),
+                    };
+                    checkpoint.discover_directory(&path, authored);
+                    leaves.insert(
+                        path.clone(),
+                        Some(SearchName {
+                            path,
+                            regular: false,
+                            directory: true,
+                        }),
+                    );
+                }
+                continue;
             }
             let name = kind
                 .filter(|_| checkpoint.eligible(ignore, &path))
@@ -127,7 +161,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 });
             leaves.insert(path, name);
         }
-        self.publish_leaves(workspace, &expected, cut, checkpoint, leaves)
-            .await
+        self.publish_delta(
+            workspace,
+            &expected,
+            cut,
+            checkpoint,
+            super::refresh::NameDelta { leaves, subtrees },
+        )
+        .await
     }
 }
