@@ -45,7 +45,7 @@ fn large_equal_length_edits_keep_other_rows_inside_the_query_budget()
             let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
             let budget = acyclic_fs::WorkBudget {
                 bytes_hashed: 131_072,
-                bytes_read: 131_072,
+                object_bytes_read: 131_072,
                 ..BOUNDARY_BUDGET
             };
             let source = fixture.reader.file_query(&fixture.volume, budget)?;
