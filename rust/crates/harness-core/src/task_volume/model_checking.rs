@@ -63,7 +63,8 @@ pub fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
-pub(crate) fn enabled(fault: Fault) -> bool {
+/// Reports the selected mutation to actors in crates using the production model.
+pub fn enabled(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
 
