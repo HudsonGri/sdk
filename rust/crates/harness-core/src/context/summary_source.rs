@@ -196,7 +196,7 @@ pub mod checkpoint_fixture {
         ) {
             let cursor = Cursor {volume:[1;32],epoch:uuid::Uuid::nil(),schema:crate::task_volume::SCHEMA,
                 query:[2;32],position,accepted:position,durable:position,commit:[3;32]};
-            let mut cp = checkpoint(cursor.clone());
+            let mut cp = checkpoint(cursor.clone()).unwrap();
             cp.boundary.captured_at = fence;
             cp.boundary.frozen = frozen;
             cp.boundary.model = text.clone();
