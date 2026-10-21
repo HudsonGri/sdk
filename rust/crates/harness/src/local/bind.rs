@@ -14,7 +14,7 @@ impl LocalHarness {
 
     /// Binds command files to an existing runtime and its authenticated volume.
     pub async fn bind(
-        mut config: LocalHarnessConfig,
+        config: LocalHarnessConfig,
         runtime: LocalTaskRuntime,
         files: Arc<LocalFilesystem>,
         storage: (acyclic_fs::LocalFs, Arc<LocalStream>),
@@ -23,17 +23,9 @@ impl LocalHarness {
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
         #[cfg(feature = "native-execution")]
-        if checkout.is_some() {
-            config = config.prepare_state()?;
-        }
-        #[cfg(feature = "native-execution")]
-        let state_owner = config.test_state.clone();
-        #[cfg(feature = "native-execution")]
-        let checkout_state = checkout
-            .map(|checkout| {
-                owner::separated_directory(&config.resolved_state_directory()?, Some(checkout))
-            })
-            .transpose()?;
+        let (mut config, checkout_state) = bound_checkout_state(config, checkout)?;
+        #[cfg(not(feature = "native-execution"))]
+        let mut config = config;
         let (verifier, signed) = authority;
         #[cfg(feature = "search-http")]
         config.validate_web_binding(runtime.tool_registry(), verifier, signed)?;
@@ -46,11 +38,9 @@ impl LocalHarness {
         #[cfg(feature = "hooks")]
         let settings =
             settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
-        config.model.0.validate()?;
-        let compaction = compaction::select(
+        let compaction = bound_compaction(
             config.compaction.take(),
-            &config.model.0,
-            config.model.1.as_ref(),
+            &config.model,
             runtime.tool_registry(),
             config.limits,
         )
@@ -64,36 +54,30 @@ impl LocalHarness {
         )
         .await?;
         #[cfg(feature = "native-execution")]
-        let workspace = match checkout.zip(checkout_state) {
-            Some(checkout) => {
-                Some(open_bound_checkout(&filesystem, volume, checkout, state_owner).await?)
-            }
+        let workspace = match checkout_state {
+            Some(checkout) => Some(
+                open_bound_checkout(&filesystem, volume, checkout, config.test_state.clone())
+                    .await?,
+            ),
             None => None,
         };
         #[cfg(not(feature = "native-execution"))]
-        {
-            let _ = filesystem;
-            if checkout.is_some() {
-                return Err(Error::Unsupported(
-                    "checkout commands require native-execution".into(),
-                ));
-            }
+        if checkout.is_some() {
+            return Err(Error::Unsupported(
+                "checkout commands require native-execution".into(),
+            ));
         }
+        #[cfg(not(feature = "native-execution"))]
+        let _ = filesystem;
         #[cfg(feature = "native-execution")]
         let runtime = match &workspace {
-            Some(workspace) => runtime.with_workspace_tools(Arc::new(
-                checkout_tools::CheckoutTools::new(
-                    Arc::clone(workspace),
-                    volume,
-                    config.clock,
-                    Arc::clone(&task_files),
-                )
-                .await?,
-            ))?,
+            Some(workspace) => {
+                with_checkout_tools(runtime, workspace, volume, config.clock, &task_files).await?
+            }
             None => runtime,
         };
         let (model, provider) = config.model;
-        let local = Self {
+        Ok(Self {
             files,
             runtime: Arc::new(runtime),
             task_files,
@@ -122,14 +106,39 @@ impl LocalHarness {
             workspace,
             #[cfg(feature = "native-execution")]
             checkout_context: checkout.is_some(),
-        };
-        Ok(local)
+        })
     }
 
     /// The same task runtime used by request-file consumers and SDK queries.
     pub fn task_runtime(&self) -> &Arc<LocalTaskRuntime> {
         &self.runtime
     }
+}
+
+/// Selects the bound checkout's state directory, refusing one that overlaps it.
+#[cfg(feature = "native-execution")]
+fn bound_checkout_state(
+    config: LocalHarnessConfig,
+    checkout: Option<&Path>,
+) -> Result<(LocalHarnessConfig, Option<(&Path, std::path::PathBuf)>)> {
+    let Some(checkout) = checkout else {
+        return Ok((config, None));
+    };
+    let config = config.prepare_state()?;
+    let directory =
+        owner::separated_directory(&config.resolved_state_directory()?, Some(checkout))?;
+    Ok((config, Some((checkout, directory))))
+}
+
+/// Validates the bound model and selects compaction for the runtime's tools.
+async fn bound_compaction(
+    configured: Option<crate::context::CompactionPolicy>,
+    (model, provider): &(Model, Arc<dyn ModelProvider>),
+    tools: &ToolRegistry,
+    limits: Limits,
+) -> Result<crate::context::CompactionPolicy> {
+    model.validate()?;
+    compaction::select(configured, model, provider.as_ref(), tools, limits).await
 }
 
 /// Refuses a bound volume the caller's scope cannot both read and write.
@@ -192,6 +201,25 @@ async fn open_bound_checkout(
     Ok(Arc::new(
         workspace::open(filesystem, &attach, root, true, store).await?,
     ))
+}
+
+/// Serves the bound checkout's workspace tools from `runtime`.
+#[cfg(feature = "native-execution")]
+async fn with_checkout_tools(
+    runtime: LocalTaskRuntime,
+    workspace: &Arc<workspace::LocalWorkspace>,
+    volume: &VolumeRef,
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    task_files: &BoundTaskFiles,
+) -> Result<LocalTaskRuntime> {
+    let tools = checkout_tools::CheckoutTools::new(
+        Arc::clone(workspace),
+        volume,
+        clock,
+        Arc::clone(task_files),
+    )
+    .await?;
+    runtime.with_workspace_tools(Arc::new(tools))
 }
 
 #[cfg(feature = "native-execution")]
