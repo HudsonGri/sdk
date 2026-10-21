@@ -55,7 +55,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
             for bytes in &images {
                 reader.reads.store(0, Ordering::SeqCst);
                 let media = image_media_type(bytes).unwrap();
-                let encoded_work = (bytes.len() as u64).div_ceil(3) * 4;
+                let encoded_work = bytes.len() as u64;
                 let file = FileRef::new(serde_json::from_value(json!({
                     "provider":{"namespace":"test","family":"filesystem","version":"2"},
                     "id":"project","class":"project","owner":{"kind":"project","id":"project"}

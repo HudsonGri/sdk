@@ -73,9 +73,6 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
                     "bounded model files must be text".into(),
                 ));
             }
-            if projected_bytes(file, policy)? > maximum {
-                return Err(invalid("model file exceeds projection byte limit"));
-            }
             Ok(())
         }
         FileProjectionPolicy::Native(policy) => {
@@ -92,20 +89,28 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
                     "unsupported native model image policy".into(),
                 ));
             }
-            if file.descriptor().byte_length() > maximum.min(policy.maximum_bytes) {
-                return Err(invalid("model image exceeds projection byte limit"));
-            }
-            // Built-in image adapters preserve the original file; their work
-            // unit is one byte of base64 image payload admitted to the wire.
-            // Check the exact padded length before reading or allocating it.
-            let work = file.descriptor().byte_length().div_ceil(3).checked_mul(4)
-                .ok_or_else(|| invalid("model image work overflow"))?;
-            if work > policy.maximum_work {
-                return Err(invalid("model image exceeds projection work limit"));
-            }
             Ok(())
         }
+    }?;
+    if !matches!(policy, FileProjectionPolicy::Reference) {
+        let bytes = projected_bytes(file, policy)?;
+        let mut byte_limit = maximum;
+        if let FileProjectionPolicy::Native(native) = policy {
+            byte_limit = byte_limit.min(native.maximum_bytes);
+            let mut work = native.maximum_work;
+            charge(&mut work, bytes, "work")?;
+        }
+        charge(&mut byte_limit, bytes, "byte")?;
     }
+    Ok(())
+}
+
+// Every projection, including native media, pays through the same pre-I/O
+// subtraction. Work is admitted source bytes (framed bytes for instructions).
+fn charge(remaining: &mut u64, bytes: u64, kind: &str) -> Result<()> {
+    *remaining = remaining.checked_sub(bytes)
+        .ok_or_else(|| invalid(&format!("model files exceed projection {kind} limit")))?;
+    Ok(())
 }
 
 fn projected_bytes(file: &FileRef, policy: &FileProjectionPolicy) -> Result<u64> {
@@ -146,9 +151,7 @@ pub(crate) async fn resolve(
         for (file, policy) in message.content.file_parts() {
             validate(file, policy, files.maximum_bytes)?;
             if !matches!(policy, FileProjectionPolicy::Reference) {
-                remaining = remaining
-                    .checked_sub(projected_bytes(file, policy)?)
-                    .ok_or_else(|| invalid("model files exceed aggregate projection byte limit"))?;
+                charge(&mut remaining, projected_bytes(file, policy)?, "aggregate byte")?;
             }
         }
     }
@@ -159,9 +162,7 @@ pub(crate) async fn resolve(
             if matches!(policy, FileProjectionPolicy::Reference) {
                 continue;
             }
-            remaining = remaining
-                .checked_sub(projected_bytes(file, policy)?)
-                .ok_or_else(|| invalid("model files exceed aggregate projection byte limit"))?;
+            charge(&mut remaining, projected_bytes(file, policy)?, "aggregate byte")?;
             let reader = files.reader.as_ref().ok_or_else(|| {
                 Error::Unsupported("model file byte resolution is unavailable".into())
             })?;
