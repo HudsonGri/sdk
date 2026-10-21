@@ -6,6 +6,8 @@ use libfuzzer_sys::fuzz_target;
 mod diff_case;
 #[path = "../../harness/tests/e2e/local_case.rs"]
 mod local_case;
+#[path = "../../harness/tests/e2e/outcome.rs"]
+mod outcome;
 #[path = "../../harness/tests/e2e/local_tool_files_check.rs"]
 mod local_tool_files_check;
 #[path = "../../harness/tests/e2e/local_tool_files_tests.rs"]

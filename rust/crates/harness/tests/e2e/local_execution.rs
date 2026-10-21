@@ -1,7 +1,8 @@
 use crate::{
     TestResult,
-    local_case::{ExpectedOutcome, LocalCase},
+    local_case::LocalCase,
     local_workspace, matchers,
+    outcome::ExpectedOutcome,
 };
 use acyclic_fs::performance::BOUNDARY_BUDGET;
 use acyclic_harness::{

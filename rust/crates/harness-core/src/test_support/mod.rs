@@ -1,6 +1,7 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]

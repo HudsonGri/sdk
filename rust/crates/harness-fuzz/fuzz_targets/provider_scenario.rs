@@ -1,4 +1,6 @@
 #![no_main]
+#[path = "../../harness/tests/e2e/outcome.rs"]
+mod outcome;
 #[path = "../../harness/tests/e2e/provider_case.rs"]
 mod provider_case;
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {

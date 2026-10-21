@@ -1,4 +1,4 @@
-use super::local_case::{ExpectedOutcome, LocalCase};
+use super::{local_case::LocalCase, outcome::ExpectedOutcome};
 
 proptest::proptest! {
     #[test]

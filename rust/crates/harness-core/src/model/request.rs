@@ -293,7 +293,8 @@ impl PreparedModelRequest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(test)]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         acyclic_test_support::differential::record(("prepare request", 1u64));
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
