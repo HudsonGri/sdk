@@ -14,7 +14,8 @@ where
     F::Output: Send + 'static,
 {
     #[cfg(feature = "test-support")]
-    return crate::testing::spawn(future);
+    use crate::testing::spawn as owned;
     #[cfg(not(feature = "test-support"))]
-    tokio::spawn(future)
+    use tokio::spawn as owned;
+    owned(future)
 }
