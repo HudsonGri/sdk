@@ -6,7 +6,8 @@ use crate::filesystem::UploadRecord as DecodeRecord;
 use serde::de::DeserializeOwned as DecodeRecord;
 
 /// Decodes a borrowed JSON value and retains its fields on the supplied ledger.
-pub(crate) fn decode<T: DecodeRecord>(
+#[doc(hidden)]
+pub fn decode<T: DecodeRecord>(
     value: &Value,
     work: crate::NativeWork<'_>,
 ) -> Result<(T, crate::NativeCustody)> {
