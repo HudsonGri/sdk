@@ -15,9 +15,9 @@ mod files;
 mod follow;
 mod heads;
 mod listing;
-mod model_turn;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
+mod model_turn;
 mod page;
 mod plan_name;
 mod publication;
@@ -286,8 +286,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
-        Arc::ptr_eq(&self.provider, provider)
+    pub(crate) fn shares_provider<Q: StreamProvider + ?Sized>(&self, provider: &Arc<Q>) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(&self.provider), Arc::as_ptr(provider))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

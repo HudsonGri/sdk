@@ -13,6 +13,8 @@ mod http;
 pub(crate) mod native;
 #[cfg(test)]
 mod tests;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub mod tool;
 #[cfg(all(
     feature = "search-http",
     feature = "test-support",
