@@ -79,6 +79,8 @@ pub use meter::{
     ReadAllocation, ReadAllocationReservation,
 };
 mod blocking;
+#[cfg(feature = "tasks")]
+pub mod task;
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub use blocking::{InlineBlocking, run_blocking_io};
