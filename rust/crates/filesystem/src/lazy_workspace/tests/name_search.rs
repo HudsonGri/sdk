@@ -577,6 +577,27 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
             "content edits appended duplicate pages"
         );
     }
+    for added in 0..8 {
+        lazy.workspace()
+            .write_text(&format!("/added-{added}.txt"), "new file")
+            .await
+            .unwrap();
+        let cut = NameCut::Lazy(lazy.snapshot(accounting!()).await.unwrap());
+        index = match index
+            .refresh_authored(lazy.workspace(), cut, &ignore)
+            .await
+            .unwrap()
+        {
+            NameIndexRefresh::Published(index) => index,
+            _ => panic!("new leaf required namespace discovery"),
+        };
+        assert_eq!(
+            index.manifest.pages, pages,
+            "one new file appended an almost empty page"
+        );
+    }
+    // Negative control: append-only publication would add eight pages here.
+    assert_ne!(index.manifest.pages, pages + 8);
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
     // Negative control: rebuilding the same namespace re-lists native pages.
     let mut rebuilt = NameWalk::lazy(&lazy, None, ignore.clone()).await.unwrap();

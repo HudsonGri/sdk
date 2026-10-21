@@ -137,6 +137,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         let Some(mut transaction) = begin_at(workspace, &expected).await? else {
             return Ok(NameIndexRefresh::Conflict);
         };
+        let mut tail = None;
         for ordinal in 0..self.manifest.pages {
             let mut page = self.page(ordinal).await?;
             let mut changed = false;
@@ -156,29 +157,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                     }
                 }
             });
-            if changed {
+            if ordinal + 1 == self.manifest.pages {
+                tail = Some((page, changed));
+            } else if changed {
                 write_page(&mut transaction, ordinal, &page, &stop).await?;
             }
         }
-        let mut ordinal = self.manifest.pages;
-        let mut page = Vec::with_capacity(128);
+        // Reuse the final page across separate writes. Appending a new page
+        // for each new filename would turn N single-file edits into N pages.
+        let mut ordinal = self.manifest.pages.saturating_sub(1);
+        let (mut page, mut dirty) = tail.unwrap_or_else(|| (Vec::with_capacity(128), false));
+        let mut pages = self.manifest.pages;
         for name in leaves.into_values().flatten() {
-            page.push(name);
             if page.len() == 128 {
-                write_page(&mut transaction, ordinal, &page, &stop).await?;
+                if dirty {
+                    write_page(&mut transaction, ordinal, &page, &stop).await?;
+                }
                 ordinal += 1;
                 page.clear();
             }
+            page.push(name);
+            dirty = true;
+            pages = pages.max(ordinal + 1);
         }
-        if !page.is_empty() {
+        if dirty {
             write_page(&mut transaction, ordinal, &page, &stop).await?;
-            ordinal += 1;
         }
         let manifest = NameIndexManifest {
             schema: 1,
             cut,
             observed_generation: expected.id(),
-            pages: ordinal,
+            pages,
             pending_directories: 0,
             complete: true,
             checkpoint,
