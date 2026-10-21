@@ -224,7 +224,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     );
                     let state = probe
                         .0
-                        .probe_async_with_accounting(
+                        .probe_inline_with_accounting(
                             GenerationId::new(this.root.base.digest),
                             &region.0,
                             accounting,

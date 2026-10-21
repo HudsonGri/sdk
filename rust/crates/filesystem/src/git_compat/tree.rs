@@ -15,17 +15,19 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
     'walk: while let Some((directory_display, directory)) = pending.pop() {
         let mut after = None;
         loop {
-            let page = reader
-                .resolve_directory_page(
+            // Unmetered: Git inspection runs on unbounded budgets and holds no work ledger.
+            let page = crate::heap_future::in_heap_unmetered(|| {
+                reader.resolve_directory_page(
                     &directory,
                     after.as_ref(),
                     1_024,
                     WorkBudget::UNBOUNDED,
                     cancellation,
                 )
-                .await
-                .map_err(|failure| WorkspaceError::from(failure.error))?
-                .value;
+            })
+            .await
+            .map_err(|failure| WorkspaceError::from(failure.error))?
+            .value;
             let has_more = page.has_more;
             after = page.entries.last().map(|entry| entry.name.clone());
             for entry in page.entries {
@@ -169,11 +171,14 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         format!("/{root}")
     };
     if !root.is_empty() {
-        let stat = generation
-            .stat(&start, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+        let cancellation = CancellationToken::new();
+        // Unmetered: Git inspection runs on unbounded budgets and holds no work ledger.
+        let stat = crate::heap_future::in_heap_unmetered(|| {
+            generation.stat(&start, WorkBudget::UNBOUNDED, &cancellation)
+        })
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
         if stat.kind != FileKind::Directory {
             return Ok(vec![GitTreeEntry {
                 path: root.to_owned(),
@@ -187,17 +192,20 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     while let Some(directory) = pending.pop() {
         let mut after = None;
         loop {
-            let page = generation
-                .list_directory(
+            let cancellation = CancellationToken::new();
+            // Unmetered: Git inspection runs on unbounded budgets and holds no work ledger.
+            let page = crate::heap_future::in_heap_unmetered(|| {
+                generation.list_directory(
                     &directory,
                     after.as_ref(),
                     1_024,
                     WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
+                    &cancellation,
                 )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| failure.error)?;
+            })
+            .await
+            .map(|receipt| receipt.value.0)
+            .map_err(|failure| failure.error)?;
             for entry in &page.entries {
                 let name = entry
                     .name
@@ -252,17 +260,18 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         });
     }
     let cancellation = CancellationToken::new();
-    let checkout = generation
-        .workspace
-        .checkout(
+    // Unmetered: Git inspection runs on unbounded budgets and holds no work ledger.
+    let checkout = crate::heap_future::in_heap_unmetered(|| {
+        generation.workspace.checkout(
             GenerationSelector::Exact(generation.id()),
             CheckoutMode::read_only_pinned(),
             WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            &cancellation,
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    })
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)?;
     let reader = checkout.pinned_reader().map_err(WorkspaceError::from)?;
     let limits = checkout.volume_config().limits;
     let root = root.unwrap_or("/");
@@ -272,14 +281,17 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     )?;
     let root_display = root.trim_matches('/').to_owned();
     let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
-    let (regular, mut truncated) = resolved_git_grep_files(
-        &reader,
-        root_display,
-        root_path,
-        limits,
-        maximum_entries,
-        &cancellation,
-    )
+    // Unmetered: Git inspection runs on unbounded budgets and holds no work ledger.
+    let (regular, mut truncated) = crate::heap_future::in_heap_unmetered(|| {
+        resolved_git_grep_files(
+            &reader,
+            root_display,
+            root_path,
+            limits,
+            maximum_entries,
+            &cancellation,
+        )
+    })
     .await?;
     let mut matches = Vec::new();
     let maximum_matches = usize::try_from(maximum_matches).unwrap_or(usize::MAX);
@@ -303,16 +315,18 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if requests.is_empty() {
             continue;
         }
-        let reads = reader
-            .read_resolved_ranges(
+        // Unmetered: Git inspection runs on unbounded budgets and holds no work ledger.
+        let reads = crate::heap_future::in_heap_unmetered(|| {
+            reader.read_resolved_ranges(
                 &requests,
                 GREP_READ_CONCURRENCY,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?
-            .value;
+        })
+        .await
+        .map_err(|failure| WorkspaceError::from(failure.error))?
+        .value;
         for (path, read) in selected.into_iter().zip(reads) {
             let bytes = read.bytes;
             let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -350,16 +364,19 @@ pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut owners = Vec::<GitCommitId>::new();
     for (commit, generation) in history_newest_first.iter().rev() {
         let next = if commit.tracked_paths.contains(relative) {
-            let bytes = generation
-                .read(
+            let cancellation = CancellationToken::new();
+            // Unmetered: Git inspection runs on unbounded budgets and holds no work ledger.
+            let bytes = crate::heap_future::in_heap_unmetered(|| {
+                generation.read(
                     &absolute,
                     maximum_file_bytes,
                     WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
+                    &cancellation,
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+            })
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
             std::str::from_utf8(&bytes)
                 .map_err(|_| WorkspaceError::Path("Git blame requires UTF-8 text".to_owned()))?
                 .lines()
