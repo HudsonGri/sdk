@@ -223,10 +223,13 @@ mod simulation {
     fn retained_sources(observed: &Observed) -> bool {
         observed.source.0
             && observed.source.2.is_some()
-            && observed
-                .trace
+            // Capture uses the native IO service rather than occupying a
+            // Tokio publication worker. Require its complete original custody
+            // path, including physical completion, in the seeded trace.
+            && ["native:dispatch", "native:submitted", "native:completed"]
                 .iter()
-                .any(|event| event == "blocking:dispatch")
+                .all(|phase| observed.trace.iter().any(|event| event == phase))
+            && !observed.trace.iter().any(|event| event == "blocking:dispatch")
     }
 
     #[test]
