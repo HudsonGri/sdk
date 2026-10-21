@@ -56,7 +56,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                     "id":"project","class":"project","owner":{"kind":"project","id":"project"}
                 })).unwrap(), "image".into(), "1".into(),
                     FileDescriptor::from_bytes(&bytes, media, &mut None).unwrap(), "image".into(), &mut None).unwrap();
-                for work in [encoded_work - 1, encoded_work] {
+                for work in [1, encoded_work - 1, encoded_work] {
                     let request = PreparedModelRequest::prepare(ModelRequest {
                         model: provider.model().clone(),
                         messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Parts(vec![

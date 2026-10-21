@@ -35,4 +35,3 @@ mod checks;
 pub(crate) fn assert_roundtrip(input: &[u8]) {
     checks::assert_roundtrip(input);
 }
-
