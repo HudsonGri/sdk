@@ -1,4 +1,5 @@
 use super::*;
+use crate::heap_future::metered;
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
@@ -31,9 +32,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
-        let cut = self
-            .prepare_fork_snapshot(destination, cut, key.operation_id(), ctx)
-            .await?;
+        let cut = metered!(erased ctx, |ctx| self.prepare_fork_snapshot(
+            destination,
+            cut,
+            key.operation_id(),
+            ctx
+        ))?;
         let generation = crate::Generation {
             workspace: self.workspace.clone(),
             id: cut.authored_generation,
@@ -61,8 +65,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 cancel
             ))?
         .ok_or(LazyWorkspaceError::Concurrent)?;
-        self.bind_prepared_fork(cut, child, original.id(), key.operation_id(), ctx)
-            .await
+        let original = original.id();
+        metered!(erased ctx, |ctx| self.bind_prepared_fork(
+            cut,
+            child,
+            original,
+            key.operation_id(),
+            ctx
+        ))
     }
     /// Authenticates the creator's original generation before opening the child.
     pub async fn bind_prepared_fork(
@@ -78,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         {
             return Err(WorkspaceError::ForeignGeneration.into());
         }
-        self.validate_snapshot(cut, ctx).await?;
+        metered!(erased ctx, |ctx| self.validate_snapshot(cut, ctx))?;
         let original = accounted!(ctx, |work, cancel| self
             .workspace
             .volume

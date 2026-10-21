@@ -1,11 +1,16 @@
 //! Project text markers and retain other conflicting entries for manual edits.
 use super::*;
 
+type LocalJoinPlan = acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>;
+type LocalJoinOutcome = JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>;
+
 impl<F, Fut> WorkspaceGitExecutor<'_, F>
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
 {
+    /// Each phase is built in a heap frame of its own, so the join's frame
+    /// holds only pointers and its depth is that of its deepest phase.
     pub(super) async fn join(
         &self,
         operation: OperationId,
@@ -14,8 +19,6 @@ where
         rebase: bool,
         tracked: &BTreeSet<String>,
     ) -> crate::Result<GitFilesystemResult> {
-        // Each phase is built on the heap, so the join's own frame holds only
-        // pointers and its depth is that of its deepest phase.
         let source = acyclic_fs::in_heap(|| self.workspace(source)).await?;
         let plan = acyclic_fs::in_heap(|| self.plan_join(&source, rebase)).await?;
         let plan = acyclic_fs::in_heap(|| self.without_reserved(plan, operation, rebase)).await?;
@@ -25,50 +28,78 @@ where
         };
         let (plan, initial) =
             acyclic_fs::in_heap(|| self.apply_on_exact_base(plan, &source, options)).await?;
-        let mut unresolved = false;
-        let outcome = if let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = initial
-        {
-            let typed =
-                acyclic_fs::in_heap(|| plan.describe_conflicts(conflicts, truncated)).await?;
-            if typed.truncated {
-                return Err(Self::error("Git join conflict frontier is incomplete"));
+        let (outcome, unresolved) = match initial {
+            JoinOutcome::Conflicted {
+                conflicts,
+                truncated,
+            } => {
+                // Erased: the conflict phases' Send proof starts here, not in
+                // every caller's.
+                let conflicted: acyclic_stream::BoxProviderFuture<'_, _> =
+                    acyclic_fs::in_heap(|| {
+                        self.join_conflicts(operation, &plan, options, conflicts, truncated)
+                    });
+                conflicted.await?
             }
-            let paths = conflict_paths(&typed)?;
-            let (candidate, unresolved_here) =
-                acyclic_fs::in_heap(|| self.merge_candidate(typed)).await?;
-            unresolved |= unresolved_here;
-            let resolutions = super::materialize::prepared(
+            initial => (initial, false),
+        };
+        acyclic_fs::in_heap(|| self.joined(operation, target_tree, outcome, unresolved, tracked))
+            .await
+    }
+
+    /// Resolves a conflicted join's entries and applies the resolved
+    /// candidate; the flag reports entries left for manual edits.
+    async fn join_conflicts(
+        &self,
+        operation: OperationId,
+        plan: &LocalJoinPlan,
+        options: ApplyOptions,
+        conflicts: Vec<acyclic_fs::MergeConflict>,
+        truncated: bool,
+    ) -> crate::Result<(LocalJoinOutcome, bool)> {
+        let typed = acyclic_fs::in_heap(|| plan.describe_conflicts(conflicts, truncated)).await?;
+        if typed.truncated {
+            return Err(Self::error("Git join conflict frontier is incomplete"));
+        }
+        let paths = conflict_paths(&typed)?;
+        let (candidate, unresolved) = acyclic_fs::in_heap(|| self.merge_candidate(typed)).await?;
+        let validate = || self.validate();
+        let resolutions = acyclic_fs::in_heap(|| {
+            super::materialize::prepared(
                 async {
                     plan.prepare_candidate(&candidate)
                         .await
                         .map_err(Error::from)
                 },
-                &|| self.validate(),
+                &validate,
             )
-            .await?;
-            let outcome =
-                acyclic_fs::in_heap(|| plan.apply(options, resolutions, self.permit)).await?;
-            if matches!(
-                &outcome,
-                JoinOutcome::Applied(_)
-                    | JoinOutcome::AlreadyApplied(_)
-                    | JoinOutcome::NoChanges(_)
-            ) {
-                // Only an applied projection can authorize continuation.
-                // An interruption before this durable write leaves the
-                // existing transition uninspected and continuation refuses.
-                GitCompatRepository::new(self.repository_id, self.store.clone())
-                    .record_merge_conflicts(operation, &paths)
-                    .await
-                    .map_err(super::errors::compat_error)?;
-            }
-            outcome
-        } else {
-            initial
-        };
+        })
+        .await?;
+        let outcome = acyclic_fs::in_heap(|| plan.apply(options, resolutions, self.permit)).await?;
+        if matches!(
+            &outcome,
+            JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) | JoinOutcome::NoChanges(_)
+        ) {
+            // Only an applied projection can authorize continuation.
+            // An interruption before this durable write leaves the
+            // existing transition uninspected and continuation refuses.
+            let repository = GitCompatRepository::new(self.repository_id, self.store.clone());
+            acyclic_fs::in_heap(|| repository.record_merge_conflicts(operation, &paths))
+                .await
+                .map_err(super::errors::compat_error)?;
+        }
+        Ok((outcome, unresolved))
+    }
+
+    /// The command result of a finished join.
+    async fn joined(
+        &self,
+        operation: OperationId,
+        target_tree: GitTreeRef,
+        outcome: LocalJoinOutcome,
+        unresolved: bool,
+        tracked: &BTreeSet<String>,
+    ) -> crate::Result<GitFilesystemResult> {
         let generation = match outcome {
             JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application) => {
                 application.generation
@@ -166,30 +197,33 @@ where
     /// either side holds.
     async fn without_reserved(
         &self,
-        plan: acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        plan: LocalJoinPlan,
         operation: OperationId,
         rebase: bool,
-    ) -> crate::Result<acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>> {
+    ) -> crate::Result<LocalJoinPlan> {
         // A mounted child projection authors its host-owned volume aliases.
         // Join from a fork that holds the target's own entries there, so a
         // merge never publishes them into the target's tree.
-        let reserved = self.reserved_in(&plan).await?;
+        let reserved = acyclic_fs::in_heap(|| self.reserved_in(&plan)).await?;
         if reserved.is_empty() {
             return Ok(plan);
         }
-        let filtered = acyclic_fs::git_generation_with_paths_from(
-            &self
-                .join_generation(plan.source(), plan.source_head())
-                .await?,
-            &self
-                .join_generation(&self.current, plan.target_head())
-                .await?,
-            &reserved,
-            reserved_source_operation(operation),
-        )
+        let source =
+            acyclic_fs::in_heap(|| self.join_generation(plan.source(), plan.source_head())).await?;
+        let target =
+            acyclic_fs::in_heap(|| self.join_generation(&self.current, plan.target_head())).await?;
+        let filtered = acyclic_fs::in_heap(|| {
+            acyclic_fs::git_generation_with_paths_from(
+                &source,
+                &target,
+                &reserved,
+                reserved_source_operation(operation),
+            )
+        })
         .await
         .map_err(Error::from)?;
-        let filtered = self.plan_join(&filtered.workspace(), rebase).await?;
+        let filtered = filtered.workspace();
+        let filtered = acyclic_fs::in_heap(|| self.plan_join(&filtered, rebase)).await?;
         if filtered.target_head() != plan.target_head() {
             return Err(Self::error("Git join raced with another workspace writer"));
         }
@@ -201,25 +235,31 @@ where
     /// the plan that applied with its outcome.
     async fn apply_on_exact_base(
         &self,
-        plan: acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        plan: LocalJoinPlan,
         source: &LocalWorkspace,
         options: ApplyOptions,
     ) -> crate::Result<(
-        acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
-        acyclic_fs::JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
+        LocalJoinPlan,
+        LocalJoinOutcome,
     )> {
-        let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+        let initial =
+            acyclic_fs::in_heap(|| plan.apply(options, BTreeMap::new(), self.permit)).await?;
         Ok(match initial {
             JoinOutcome::Conflicted {
                 conflicts,
                 truncated,
-            } => match self
-                .exact_base(&plan, source, conflicts.clone(), truncated)
-                .await?
+            } => match acyclic_fs::in_heap(|| {
+                self.exact_base(&plan, source, conflicts.clone(), truncated)
+            })
+            .await?
             {
                 Some(base) => {
-                    let plan = plan.refine_base(&base).await.map_err(Error::from)?;
-                    let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+                    let plan = acyclic_fs::in_heap(|| plan.refine_base(&base))
+                        .await
+                        .map_err(Error::from)?;
+                    let initial =
+                        acyclic_fs::in_heap(|| plan.apply(options, BTreeMap::new(), self.permit))
+                            .await?;
                     (plan, initial)
                 }
                 None => (
@@ -248,29 +288,32 @@ where
         // this operation published under its key. A resumed transition whose
         // join already published re-plans against the advanced target and
         // may see no changes, but it still tracks what the join published.
-        let before = self.generation(target_tree).await?;
-        let joined = self
-            .current
-            .operation_generation(
+        let before = acyclic_fs::in_heap(|| self.generation(target_tree)).await?;
+        let cancellation = CancellationToken::new();
+        let joined = acyclic_fs::in_heap(|| {
+            self.current.operation_generation(
                 IdempotencyKey::from_bytes(operation.into_bytes()),
                 WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
+                &cancellation,
             )
-            .await
+        })
+        .await
             .map(|receipt| receipt.value)
             .map_err(|failure| Error::from(failure.error))?;
         // The joined source's authored files enter history like any capture:
         // newly published eligible paths become tracked, not only the union of
         // the two branches' previously committed paths.
-        acyclic_fs::git_tracked_paths_after(
-            &before,
-            joined.as_ref().unwrap_or(generation),
-            generation,
-            &self.repository,
-            tracked,
-            u32::MAX,
-            &CancellationToken::new(),
-        )
+        acyclic_fs::in_heap(|| {
+            acyclic_fs::git_tracked_paths_after(
+                &before,
+                joined.as_ref().unwrap_or(generation),
+                generation,
+                &self.repository,
+                tracked,
+                u32::MAX,
+                &cancellation,
+            )
+        })
         .await
         .map_err(Error::from)
     }
@@ -279,21 +322,24 @@ where
         &self,
         source: &LocalWorkspace,
         rebase: bool,
-    ) -> crate::Result<acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>> {
+    ) -> crate::Result<LocalJoinPlan> {
         let mut builder = source.join_into(&self.current).git_metadata();
         if rebase {
             builder = builder.history(acyclic_fs::JoinHistory::Rebase);
         }
-        super::materialize::prepared(
-            async {
-                builder
-                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| Error::from(failure.error))
-            },
-            &|| self.validate(),
-        )
+        let validate = || self.validate();
+        acyclic_fs::in_heap(|| {
+            super::materialize::prepared(
+                async {
+                    builder
+                        .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| Error::from(failure.error))
+                },
+                &validate,
+            )
+        })
         .await
     }
 
@@ -315,7 +361,7 @@ where
     /// its parent agree.
     async fn exact_base(
         &self,
-        plan: &acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        plan: &LocalJoinPlan,
         source: &LocalWorkspace,
         conflicts: Vec<acyclic_fs::MergeConflict>,
         truncated: bool,
@@ -392,7 +438,7 @@ where
     /// Reserved host paths present in either side of a planned join.
     async fn reserved_in(
         &self,
-        plan: &acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        plan: &LocalJoinPlan,
     ) -> crate::Result<Vec<String>> {
         let sides = [
             self.join_generation(plan.source(), plan.source_head())

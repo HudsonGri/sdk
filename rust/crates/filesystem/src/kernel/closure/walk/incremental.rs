@@ -82,9 +82,8 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         root: &GenerationRoot,
         previous: &CachedProof,
     ) -> Result<Option<(u64, u128, u64)>, crate::FsError> {
-        let diff = self
-            .changes(previous.root.file_table, root.file_table)
-            .await?;
+        let diff = paid!(self, |walker| walker
+            .changes(previous.root.file_table, root.file_table))?;
         if diff.0.truncated {
             return Ok(None);
         }
@@ -109,11 +108,12 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         if file_count > self.limits.maximum_files {
             return Ok(None);
         }
-        self.collect_pages::<crate::kernel::file_table_mutation::FileTableFormat>(
-            root.file_table,
-            Some(previous.root.file_table),
-        )
-        .await?;
+        paid!(self, |walker| {
+            walker.collect_pages::<crate::kernel::file_table_mutation::FileTableFormat>(
+                root.file_table,
+                Some(previous.root.file_table),
+            )
+        })?;
         for change in &diff.0.files {
             let Some(record) = change.after else {
                 return Ok(None);

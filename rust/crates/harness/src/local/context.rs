@@ -89,7 +89,10 @@ impl LocalHarness {
         prompt: Option<&str>,
         publisher: &dyn ContentPublisher,
     ) -> Result<FileRef> {
-        if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
+        // Each step runs in a heap frame of its own; this frame holds none.
+        if let Some(reference) =
+            acyclic_fs::in_heap(|| self.observe_context_manifest(operation, publisher)).await?
+        {
             return Ok(reference);
         }
         let path = manifest_path(operation);
@@ -99,21 +102,25 @@ impl LocalHarness {
             ));
         }
         #[cfg(feature = "hooks")]
-        let hooks =
-            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
+        let hooks = acyclic_fs::in_heap(|| {
+            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings))
+        })
+        .await?;
         #[cfg(feature = "hooks")]
         let hook_configuration = if hooks.is_empty() {
             None
         } else {
-            Some(hooks.publish(publisher, self.limits).await?)
+            Some(acyclic_fs::in_heap(|| hooks.publish(publisher, self.limits)).await?)
         };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
-        let discovery = self
-            .instructions(&policy.instruction_names, maximum, publisher)
-            .await?;
-        let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
+        let discovery = acyclic_fs::in_heap(|| {
+            self.instructions(&policy.instruction_names, maximum, publisher)
+        })
+        .await?;
+        let (goal, plans) =
+            acyclic_fs::in_heap(|| self.file_guidance(prompt.unwrap_or_default())).await?;
         let manifest =
             ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
         #[cfg(any(feature = "native-execution", feature = "hooks"))]
