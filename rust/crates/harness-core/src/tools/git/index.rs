@@ -235,6 +235,19 @@ fn storage_index(error: impl std::fmt::Display) -> Error {
 }
 
 async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
+    let mut native = match view {
+        OwnedView::Checkout(lazy) => {
+            let cancellation = CancellationToken::new();
+            let work =
+                acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            lazy.follow_native_names(&mut acyclic_fs::kernel::KernelAccounting::native(
+                &work,
+                &cancellation,
+            ))?
+        }
+        OwnedView::Volume(_) => None,
+    };
     let (provider, path) = view
         .workspace()
         .authority_records()
@@ -308,7 +321,12 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
                 Some(ignore) => ignore,
                 None => super::search::search_ignore(view.view()).await?,
             };
-            fill(view, ignore, shared).await?;
+            tokio::select! {
+                biased;
+                _ = shared.changed.closed() => return Ok(()),
+                changed = source_changed(&mut native) => { changed?; },
+                filled = fill(view, ignore, shared) => { filled?; },
+            }
             // Coalesce our own page publications. Reading a million-name
             // index must not make its producer replay thousands of its own
             // old notifications one by one.
@@ -317,11 +335,21 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
         tokio::select! {
             _ = shared.changed.closed() => return Ok(()),
             _ = shared.refresh.notified() => {},
+            changed = source_changed(&mut native) => { changed?; },
             record = records.next() => {
                 record.ok_or_else(|| Error::Storage("pathname index file follow ended".into()))?
                     .map_err(storage_index)?;
             }
         }
+    }
+}
+
+async fn source_changed(
+    native: &mut Option<acyclic_fs::lazy_workspace::NativeNameChanges>,
+) -> crate::Result<()> {
+    match native {
+        Some(native) => native.changed().await.map_err(Error::from),
+        None => std::future::pending().await,
     }
 }
 

@@ -491,6 +491,53 @@ async fn volume_search_index_rejects_authored_changes_after_publication() -> Res
 }
 
 #[tokio::test]
+async fn volume_search_follows_native_create_rename_and_delete_notifications() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    while names.next_page().await?.is_some() {}
+    let old = acyclic_fs::NameIndex::open(main.workspace())
+        .await?
+        .unwrap();
+    async fn wait_for(names: &mut git::IndexedNames, present: &str, absent: &str) -> Result<()> {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                names.changed().await?;
+                let mut paths = Vec::new();
+                while let Some(page) = names.next_page().await? {
+                    if page.reset {
+                        paths.clear();
+                    }
+                    paths.extend(page.names.into_iter().map(|name| name.path));
+                }
+                if paths.iter().any(|path| path == present)
+                    && !paths.iter().any(|path| path == absent)
+                {
+                    return Ok::<_, Error>(());
+                }
+            }
+        })
+        .await??;
+        Ok(())
+    }
+    std::fs::write(root.join("host-created.txt"), b"host")?;
+    wait_for(&mut names, "host-created.txt", "host-renamed.txt").await?;
+    // Negative control: ordinary index-file replay alone misses native writes.
+    for page in 0..old.manifest.pages {
+        assert!(
+            !old.page(page)
+                .await?
+                .iter()
+                .any(|name| name.path == "host-created.txt")
+        );
+    }
+    std::fs::rename(root.join("host-created.txt"), root.join("host-renamed.txt"))?;
+    wait_for(&mut names, "host-renamed.txt", "host-created.txt").await?;
+    std::fs::remove_file(root.join("host-renamed.txt"))?;
+    wait_for(&mut names, "native.txt", "host-renamed.txt").await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
     std::fs::write(root.join("unrelated.txt"), b"must stay lazy\n")?;
