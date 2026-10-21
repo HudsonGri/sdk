@@ -916,6 +916,7 @@ dependencies = [
 name = "acyclic-test-support"
 version = "0.2.0"
 dependencies = [
+ "acyclic-native-runtime",
  "proptest",
 ]
 

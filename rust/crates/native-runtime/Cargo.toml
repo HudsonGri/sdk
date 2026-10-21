@@ -14,6 +14,9 @@ categories = ["filesystem"]
 [features]
 test-support = ["dep:tokio"]
 
+# Operation traces that test captures in any crate can observe; no runtime effect.
+differential = []
+
 [dependencies]
 bytes.workspace = true
 tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
