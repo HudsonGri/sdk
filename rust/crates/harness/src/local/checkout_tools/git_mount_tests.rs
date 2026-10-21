@@ -45,10 +45,11 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
     let directory = tempfile::tempdir().map_err(storage)?;
     let project = super::super::tests::volume(directory.path()).await?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-    let harness = LocalHarness::open(
-        super::super::tests::volume_config(directory.path(), project, provider)?
-            .without_default_tools(),
-    )
+    let harness = LocalHarness::open(super::super::tests::volume_config(
+        directory.path(),
+        project,
+        provider,
+    )?)
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
@@ -93,6 +94,11 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
         },
     );
     reconciliation::prepare(&workspace, startup_pending.0, startup_pending.1).await?;
+    // Exercise first binding construction again after installing the marker;
+    // retain the configured tool capabilities in the admitted task.
+    lock_owned(StateArc::clone(&workspace.state))
+        .await
+        .initialized = false;
     let tools = CheckoutTools::new(
         Arc::clone(&workspace),
         &harness.project,
@@ -131,7 +137,10 @@ async fn volume_search_does_not_recover_or_advance_a_native_checkout() -> Result
         )?,
     );
     let result = execute(&tools, &readonly, "fs", "git grep absent startup.txt").await?;
-    assert_eq!(result.value["result"]["Filesystem"]["Data"]["value"]["complete"], true);
+    assert_eq!(
+        result.value["result"]["Filesystem"]["Data"]["value"]["complete"],
+        true
+    );
     assert_eq!(
         workspace.checkout_selection().await?.1,
         Some(startup_pending)
