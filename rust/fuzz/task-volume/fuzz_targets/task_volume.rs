@@ -33,7 +33,13 @@ fuzz_target!(|bytes: &[u8]| {
         let _ = decision.binding.validate();
     }
     let _ = serde_json::from_slice::<FileKey>(bytes);
-    let _ = serde_json::from_slice::<Query>(bytes);
+    if let Ok(query) = serde_json::from_slice::<Query>(bytes) {
+        assert_eq!(
+            serde_json::from_slice::<Query>(&serde_json::to_vec(&query).unwrap()).unwrap(),
+            query
+        );
+        let _ = query.ranges();
+    }
     let _ = serde_json::from_slice::<Cursor>(bytes);
     let _ = serde_json::from_slice::<Generation>(bytes);
     for sequence in [0, 1] {

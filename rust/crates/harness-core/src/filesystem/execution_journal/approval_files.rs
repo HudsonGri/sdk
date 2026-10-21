@@ -70,8 +70,11 @@ where
         let (owner, _) = self.owner.as_ref().ok_or_else(|| {
             Error::Unauthorized("approval requires an executing task owner".into())
         })?;
-        let query = Query::Approvals(Component::new(owner.task_id().to_string())?);
-        let mut observed = files.observe(query, None, 128).await?;
+        let query = Query::Approval {
+            task: Component::new(owner.task_id().to_string())?,
+            request: Component::new(id.to_string())?,
+        };
+        let mut observed = files.observe(query, None, 2).await?;
         let snapshot = observed
             .snapshot
             .take()
