@@ -599,17 +599,30 @@ impl<
     ) -> Result<acyclic_stream::OwnedBytes, SearchError> {
         let absolute = format!("/{path}");
         match &self.cut {
-            Cut::Lazy(lazy, snapshot) => lazy
-                .read_at_snapshot(
-                    *snapshot,
-                    &absolute,
-                    None,
-                    maximum,
-                    &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                )
-                .await
-                .map(|(chunk, _)| chunk.bytes)
-                .map_err(SearchError::from),
+            Cut::Lazy(lazy, snapshot) => {
+                let stop = CancellationToken::new();
+                let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
+                let (entry, _, guard) = lazy
+                    .lookup_at_snapshot(*snapshot, &absolute, &mut ctx)
+                    .await?;
+                let Some(entry) = entry else {
+                    crate::kernel::retire_allocation(guard, 0, &mut ctx)?;
+                    return Err(crate::LazyWorkspaceError::NotFound.into());
+                };
+                // An indexed regular name can be replaced by a link between
+                // enumeration and reading. Search never reads link payloads,
+                // including policy files, through the generic snapshot reader.
+                let result = if entry.stat().kind == SourceNodeKind::RegularFile {
+                    lazy.read_resolved(&entry, &absolute, None, maximum, &mut ctx)
+                        .await
+                        .map(|chunk| chunk.bytes)
+                        .map_err(SearchError::from)
+                } else {
+                    Err(crate::LazyWorkspaceError::NotRegularFile.into())
+                };
+                lazy.retire_lookup((entry, guard), &mut ctx)?;
+                result
+            }
             Cut::Exact(generation) => generation
                 .read(
                     &absolute,

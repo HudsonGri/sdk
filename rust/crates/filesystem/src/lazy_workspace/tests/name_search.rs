@@ -77,9 +77,14 @@ async fn name_search_explicit_symlink_is_never_a_regular_candidate() {
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::from_static(b"/loop"));
     source.node.kind = SourceNodeKind::SymbolicLink;
-    let lazy = attach(&fs, Arc::new(source), MemoryLazyWorkspaceStore::default())
-        .await
-        .unwrap();
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
     let mut walk = NameWalk::lazy(&lazy, Some("loop"), GitIgnorePolicy::parse(""))
         .await
         .unwrap();
@@ -93,6 +98,25 @@ async fn name_search_explicit_symlink_is_never_a_regular_candidate() {
     assert!(!page[0].regular);
     assert!(!page[0].directory);
     assert!(walk.next_page().await.unwrap().is_none());
+    assert!(matches!(
+        walk.read("loop", 1024).await,
+        Err(crate::SearchError::Lazy(
+            crate::LazyWorkspaceError::NotRegularFile
+        ))
+    ));
+    assert_eq!(source.counts.links.load(Ordering::Relaxed), 0);
+    // Negative control: a generic link reader reaches the provider, which
+    // this fixture deliberately rejects. Search must reject before that call.
+    assert!(
+        lazy.read_link(
+            "/loop",
+            1024,
+            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(source.counts.links.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

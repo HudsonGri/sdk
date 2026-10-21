@@ -39,6 +39,7 @@ struct SourceCounts {
     lookups: AtomicUsize,
     pages: AtomicUsize,
     ranges: AtomicUsize,
+    links: AtomicUsize,
     cancel_range: AtomicBool,
     // Zero keeps the fixture's original scalar; tests can simulate native unlink.
     link_count: AtomicU64,
@@ -302,6 +303,7 @@ impl DemandSource for CountingSource {
         cancel: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
         let ctx = work.accounting(cancel);
+        self.counts.links.fetch_add(1, Ordering::Relaxed);
         work.finish(Err(DemandError::InvalidRequest), &ctx)
     }
 }
