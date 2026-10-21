@@ -98,13 +98,13 @@ fn forwarding_retains_one_payload_and_releases_it_synchronously() {
         );
         let mut output = Vec::new();
         check(
-            run_headless(&mut client, command, operation, &mut output),
+            run_headless::<Client>(&mut client, command, operation, &mut output),
             &released,
             complete,
         );
         released.store(false, Ordering::SeqCst);
         check(
-            run_jsonl(
+            run_jsonl::<Client>(
                 &mut client,
                 operation,
                 futures::stream::empty(),

@@ -23,11 +23,11 @@ pub trait HeadlessClient {
 }
 
 /// Submits through the client and follows its exact operation to settlement.
-pub fn run_headless<'a, C: HeadlessClient + 'a, W: Write + 'a>(
+pub fn run_headless<'a, C: HeadlessClient + 'a>(
     client: &'a mut C,
     command: FileValue,
     target: OperationId,
-    output: &'a mut W,
+    output: &'a mut (impl Write + 'a),
 ) -> impl Future<Output = Result<HeadlessOutcome>> + 'a {
     // Forward the child itself rather than constructing another potentially
     // large future inside an adapter's poll frame.
@@ -35,11 +35,11 @@ pub fn run_headless<'a, C: HeadlessClient + 'a, W: Write + 'a>(
 }
 
 /// Reads this client's canonical JSONL input and drains followed output before exit.
-pub fn run_jsonl<'a, C: HeadlessClient + 'a, W: Write + 'a>(
+pub fn run_jsonl<'a, C: HeadlessClient + 'a>(
     client: &'a mut C,
     target: OperationId,
     input: impl Stream<Item = Result<String>> + Unpin + 'a,
-    output: &'a mut W,
+    output: &'a mut (impl Write + 'a),
 ) -> impl Future<Output = Result<HeadlessOutcome>> + 'a {
     client.input(target, input, output)
 }
