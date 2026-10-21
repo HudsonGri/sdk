@@ -1,7 +1,6 @@
 //! Exact immutable endpoints from the existing authority-log query.
 use super::*;
 use crate::context::{ContextRoot, DiffPath, DiffPublication, PinnedContextPath};
-use crate::resources::GenerationRef;
 
 impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQuery<P, O> {
     /// Snapshot changes from an immutable base, then follow exact affected paths.

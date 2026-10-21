@@ -53,16 +53,8 @@ pub async fn run(
     let start = Instant::now();
     client.follow_commands(&commands).await?;
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
-    let mut diff = client::local_diff(
-        local.clone(),
-        client::DiffLimits {
-            files: 4096,
-            changes: 4096,
-            file_bytes: 65_536,
-            render_bytes: 4 * 1024 * 1024,
-            work: 16 * 1024 * 1024,
-        },
-    );
+    let mut diff = None;
+    let mut diff_selection = None;
     loop {
         client
             .follow_task(
@@ -73,6 +65,32 @@ pub async fn run(
             )
             .await?;
         renderer.update_files(&client, &authority);
+        let diff_open = commands
+            .state(client::CommandFileRoot::Session, "layout.json")?
+            .is_some_and(|layout| layout["open_view"] == "diff");
+        if diff_open {
+            let revision = client.presentation_revision();
+            if diff_selection.is_none_or(|(accepted, _)| accepted != revision) {
+                let selected = local.project_selection().await?;
+                if diff_selection.is_none_or(|(_, previous)| previous != selected) {
+                    renderer.update_diff(Vec::new());
+                    diff = Some(client::local_diff(
+                        local.clone(),
+                        client::DiffLimits {
+                            files: 4096,
+                            changes: 4096,
+                            file_bytes: 65_536,
+                            render_bytes: 4 * 1024 * 1024,
+                            work: 16 * 1024 * 1024,
+                        },
+                    ));
+                }
+                diff_selection = Some((revision, selected));
+            }
+        } else {
+            diff = None;
+            diff_selection = None;
+        }
         if commands.exit_requested()? {
             return Ok(());
         }
@@ -119,7 +137,7 @@ pub async fn run(
             );
             let Some(read) = (tokio::select! {
                 read = next => read?,
-                rows = diff.next() => {
+                rows = async { match diff.as_mut() { Some(diff) => diff.next().await, None => std::future::pending().await } } => {
                     renderer.update_diff(rows.ok_or("project diff follow ended")??);
                     continue;
                 }

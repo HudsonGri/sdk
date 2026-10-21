@@ -408,6 +408,9 @@ impl ClientRenderer {
             .transpose()?
             .unwrap_or(false);
         let mut screen = self.screen();
+        if view != Some("diff") {
+            screen.diff = &[];
+        }
         if reasoning {
             screen.reasoning = if self.wrapped {
                 self.wrapped_reasoning.rows()

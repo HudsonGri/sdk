@@ -17,27 +17,16 @@ impl LocalHarness {
         )?)
     }
 
-    /// Read-only project queries bound to the actual selected checkout.
+    /// Selected identity read from the existing persisted checkout state.
     #[cfg(feature = "native-execution")]
-    pub async fn project_files(
-        &self,
-        budget: acyclic_fs::WorkBudget,
-    ) -> Result<FilesystemFileQuery<LocalStream, LocalObjectBackend>> {
+    pub async fn project_selection(&self) -> Result<acyclic_fs::WorkspaceId> {
         let workspace = self
             .workspace
             .as_ref()
             .ok_or_else(|| Error::Unsupported("project diff requires a checkout".into()))?;
         let (selected, _) = workspace.selected_view().await?;
         let selected = selected.as_ref().unwrap_or_else(|| workspace.view());
-        FilesystemContentVerifier::new(
-            self.files
-                .for_workspace(&self.project, selected.workspace().clone())?,
-            &self.verifier,
-            &self.signed,
-            self.limits.file_bytes,
-            None,
-        )?
-        .file_query(&self.project, budget)
+        Ok(selected.workspace().id())
     }
 
     /// Bind the selected checkout's retained baseline and exact immutable query.

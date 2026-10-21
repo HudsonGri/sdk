@@ -5,7 +5,10 @@ use crate::task_volume::{Component, FileKey, FileValue, Query};
 pub(in crate::local) fn key(workspace: acyclic_fs::WorkspaceId) -> Result<FileKey> {
     Ok(FileKey::Ui {
         directory: Component::new("diff")?,
-        name: Component::new(format!("{workspace}.json"))?,
+        name: Component::new(format!(
+            "{}.json",
+            uuid::Uuid::from_bytes(workspace.into_bytes())
+        ))?,
     })
 }
 
