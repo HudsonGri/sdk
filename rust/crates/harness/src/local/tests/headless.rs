@@ -399,7 +399,7 @@ async fn explicit_resume_retains_selection_and_clears_only_exit() -> Result<()> 
     );
     let operation = crate::client::local_identity(&harness, None, None).await?;
     let key = FileKey::parse(&format!(".ui/session-{operation}/layout.json"))?;
-    let retained = serde_json::json!({"selected_task":TaskId::new(),"history_page":7,"exit_requested":true,"view_request":OperationId::new()});
+    let retained = serde_json::json!({"selected_task":crate::TaskId::new(),"history_page":7,"exit_requested":true,"view_request":OperationId::new()});
     let files = harness.task_files();
     let cut = files.snapshot(&Query::File(key.clone()), 1).await?;
     files
