@@ -66,14 +66,13 @@ impl FileText {
 
 fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Result<()> {
     match policy {
-        FileProjectionPolicy::Reference => Ok(()),
+        FileProjectionPolicy::Reference => (),
         FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_) => {
             if !file.descriptor().media_type().starts_with("text/") {
                 return Err(Error::Unsupported(
                     "bounded model files must be text".into(),
                 ));
             }
-            Ok(())
         }
         FileProjectionPolicy::Native(policy) => {
             if !matches!(
@@ -89,9 +88,8 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
                     "unsupported native model image policy".into(),
                 ));
             }
-            Ok(())
         }
-    }?;
+    }
     if !matches!(policy, FileProjectionPolicy::Reference) {
         let bytes = projected_bytes(file, policy)?;
         let mut byte_limit = maximum;
