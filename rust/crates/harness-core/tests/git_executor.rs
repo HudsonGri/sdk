@@ -635,10 +635,10 @@ async fn volume_search_root_ignore_links_are_not_read_as_policy() -> Result<()> 
     }
     let policy = git::search_ignore((&main).into()).await?;
     assert!(policy.eligible("native.txt", false, false));
-    // Negative control: the generic reader returns the link payload. Parsing
+    // Negative control: the explicit link reader returns the link payload. Parsing
     // that spelling as policy would hide the native candidate incorrectly.
     let bytes = main
-        .read(
+        .read_link(
             "/.gitignore",
             1024,
             &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
