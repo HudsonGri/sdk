@@ -248,6 +248,7 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
         }
         OwnedView::Volume(_) => None,
     };
+    let mut native_delta = None;
     let (provider, path) = view
         .workspace()
         .authority_records()
@@ -291,10 +292,13 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
                             .id(),
                     },
                 };
-                let outcome = index
-                    .refresh_authored(view.workspace(), cut, &ignore)
-                    .await
-                    .map_err(super::search::search_error)?;
+                let outcome = match (native_delta.take(), view.view(), cut) {
+                    (Some(delta), View::Checkout(lazy), acyclic_fs::NameCut::Lazy(snapshot)) => {
+                        index.refresh_native(lazy, snapshot, delta, &ignore).await
+                    }
+                    (_, _, cut) => index.refresh_authored(view.workspace(), cut, &ignore).await,
+                }
+                .map_err(super::search::search_error)?;
                 policy = Some(ignore);
                 match outcome {
                     NameIndexRefresh::Published(index) => Some(index),
@@ -324,7 +328,7 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
             tokio::select! {
                 biased;
                 _ = shared.changed.closed() => return Ok(()),
-                changed = source_changed(&mut native) => { changed?; },
+                changed = source_changed(&mut native) => { native_delta = Some(changed?); },
                 filled = fill(view, ignore, shared) => { filled?; },
             }
             // Coalesce our own page publications. Reading a million-name
@@ -335,7 +339,7 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
         tokio::select! {
             _ = shared.changed.closed() => return Ok(()),
             _ = shared.refresh.notified() => {},
-            changed = source_changed(&mut native) => { changed?; },
+            changed = source_changed(&mut native) => { native_delta = Some(changed?); },
             record = records.next() => {
                 record.ok_or_else(|| Error::Storage("pathname index file follow ended".into()))?
                     .map_err(storage_index)?;
@@ -346,7 +350,7 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
 
 async fn source_changed(
     native: &mut Option<acyclic_fs::lazy_workspace::NativeNameChanges>,
-) -> crate::Result<()> {
+) -> crate::Result<acyclic_fs::lazy_workspace::NativeNameDelta> {
     match native {
         Some(native) => native.changed().await.map_err(Error::from),
         None => std::future::pending().await,

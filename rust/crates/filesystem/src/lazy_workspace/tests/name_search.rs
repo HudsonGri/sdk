@@ -598,6 +598,49 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
     }
     // Negative control: append-only publication would add eight pages here.
     assert_ne!(index.manifest.pages, pages + 8);
+    #[cfg(feature = "native-mount")]
+    {
+        source.replace(Bytes::from_static(b"native metadata changed"));
+        let snapshot = lazy.snapshot(accounting!()).await.unwrap();
+        let before = source.counts.pages.load(Ordering::Relaxed);
+        // Negative control: the authored-only refresh cannot account for the
+        // new native epoch; it would require discovery.
+        assert!(matches!(
+            index
+                .refresh_authored(lazy.workspace(), NameCut::Lazy(snapshot), &ignore)
+                .await
+                .unwrap(),
+            NameIndexRefresh::Ineligible
+        ));
+        index = match index
+            .refresh_native(
+                &lazy,
+                snapshot,
+                crate::lazy_workspace::NativeNameDelta {
+                    paths: std::collections::BTreeSet::from(["host-new.txt".into()]),
+                    all: false,
+                },
+                &ignore,
+            )
+            .await
+            .unwrap()
+        {
+            NameIndexRefresh::Published(index) => index,
+            _ => panic!("native leaf required directory enumeration"),
+        };
+        assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
+        assert_eq!(source.counts.ranges.load(Ordering::Relaxed), reads);
+        let mut found = false;
+        for page in 0..index.manifest.pages {
+            found |= index
+                .page(page)
+                .await
+                .unwrap()
+                .iter()
+                .any(|name| name.path == "host-new.txt");
+        }
+        assert!(found);
+    }
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
     // Negative control: rebuilding the same namespace re-lists native pages.
     let mut rebuilt = NameWalk::lazy(&lazy, None, ignore.clone()).await.unwrap();

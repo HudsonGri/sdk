@@ -6,6 +6,8 @@ use crate::{
     TransactionCommit, WorkBudget, Workspace, WorkspaceError,
 };
 mod refresh;
+#[cfg(feature = "native-mount")]
+mod refresh_native;
 pub use refresh::NameIndexRefresh;
 
 const ROOT: &str = "/.acyclic-sdk/name-index";

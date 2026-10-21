@@ -106,7 +106,7 @@ mod binding;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 mod name_changes;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-pub use name_changes::NativeNameChanges;
+pub use name_changes::{NativeNameChanges, NativeNameDelta};
 mod exactify;
 mod materialize;
 mod overlay;

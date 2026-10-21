@@ -134,12 +134,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 });
             leaves.insert(path, name);
         }
-        let Some(mut transaction) = begin_at(workspace, &expected).await? else {
+        self.publish_leaves(workspace, &expected, cut, checkpoint, leaves)
+            .await
+    }
+
+    pub(super) async fn publish_leaves(
+        &self,
+        workspace: &Workspace<A, O>,
+        expected: &Generation<A, O>,
+        cut: NameCut,
+        checkpoint: NameCheckpoint,
+        mut leaves: BTreeMap<String, Option<SearchName>>,
+    ) -> Result<NameIndexRefresh<A, O>, SearchError> {
+        let stop = CancellationToken::new();
+        let Some(mut transaction) = begin_at(workspace, expected).await? else {
             return Ok(NameIndexRefresh::Conflict);
         };
         let mut tail = None;
-        for ordinal in 0..self.manifest.pages {
+        let examined_pages = if leaves.is_empty() {
+            0
+        } else {
+            self.manifest.pages
+        };
+        for ordinal in 0..examined_pages {
             let mut page = self.page(ordinal).await?;
+            if page
+                .iter()
+                .any(|name| name.directory && leaves.contains_key(&name.path))
+            {
+                return Ok(NameIndexRefresh::Ineligible);
+            }
             let mut changed = false;
             page.retain_mut(|name| {
                 let Some(replacement) = leaves.remove(&name.path) else {
