@@ -25,19 +25,15 @@ pub(crate) fn open(
             maximum_entries: usize::MAX,
         };
         fs::create_dir_all(root.join("segments"))?;
-        let owner = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(root.join("owner.lock"))?;
-        owner.try_lock_exclusive().map_err(|error| {
-            if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
-                LocalOpenError::AlreadyOwned
-            } else {
-                LocalOpenError::Io(error)
-            }
-        })?;
+        let owner = acyclic_native_runtime::StoreClaim::acquire(&root.join("owner.lock")).map_err(
+            |error| {
+                if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                    LocalOpenError::AlreadyOwned
+                } else {
+                    LocalOpenError::Io(error)
+                }
+            },
+        )?;
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(false)

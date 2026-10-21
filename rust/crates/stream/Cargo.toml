@@ -30,7 +30,7 @@ test-support = ["acyclic-native-runtime/test-support"]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
 http = ["grpc", "dep:reqwest"]
-local = ["dep:fs2", "tokio/rt"]
+local = ["tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
@@ -68,7 +68,6 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-fs2 = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 tonic = { workspace = true, optional = true }
