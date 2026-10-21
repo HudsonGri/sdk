@@ -84,11 +84,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .map_err(|failure| failure.map_error(E::from))?;
         remaining(prospective, budget)
             .map_err(|failure| OperationFailure::new(E::from(failure.error), work))?;
+        // The nested publication runs while the custody is live, so the
+        // custody also comes out of its peak; a budget too small for both is
+        // refused before the slot exists.
+        let mut publication_budget = remaining(prospective, budget)
+            .and_then(|nested| {
+                WorkCounters {
+                    peak_allocation_bytes: custody_bytes,
+                    ..WorkCounters::default()
+                }
+                .remaining(nested)
+                .map(|mut nested| {
+                    // Verified to fit above; the live custody leaves the ceiling.
+                    nested.peak_allocation_bytes -= custody_bytes;
+                    nested
+                })
+                .map_err(|error| OperationFailure::new(error.into(), prospective))
+            })
+            .map_err(|failure| OperationFailure::new(E::from(failure.error), work))?;
         let publication_slot = Arc::new(Mutex::new(None));
         work = prospective;
-        let mut publication_budget =
-            remaining(work, budget).map_err(|failure| failure.map_error(E::from))?;
-        publication_budget.peak_allocation_bytes -= custody_bytes;
         let proven_at = self.volume.fs.inner.objects.collection_sweeps();
         let mut prepared_roots = None;
         // The custody and the publication's own frame are live together with
@@ -129,22 +144,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let (publication, frame_bytes) = crate::heap_future::in_heap_admitted(
                 (&mut work, &mut publication_budget),
                 |(work, publication_budget), bytes| {
-                    let admitted = add(
-                        **work,
-                        WorkCounters {
-                            allocation_operations: u64::from(bytes != 0),
-                            peak_allocation_bytes: bytes,
-                            ..WorkCounters::default()
-                        },
-                    )
-                    .map_err(|failure| failure.map_error(E::from))?;
-                    remaining(admitted, budget)
-                        .map_err(|failure| OperationFailure::new(E::from(failure.error), **work))?;
-                    **work = admitted;
-                    // The frame spends one allocation operation and its bytes
-                    // from what the nested publication may use.
-                    publication_budget.allocation_operations -= u64::from(bytes != 0);
-                    publication_budget.peak_allocation_bytes -= bytes;
+                    (**work, **publication_budget) =
+                        admit_publication_frame(**work, budget, **publication_budget, bytes)
+                            .map_err(|failure| failure.map_error(E::from))?;
                     Ok(())
                 },
                 |(_, publication_budget)| {
@@ -754,5 +756,71 @@ pub(crate) fn closure_limits(config: VolumeConfig) -> ClosureLimits {
         symbolic_links: config.symbolic_links,
         hard_links: config.hard_links,
         sparse_files: config.sparse_files,
+    }
+}
+
+/// Admits the publication's own frame. The frame is live together with the
+/// publication custody, so it must fit what remains for the nested
+/// publication (the budget less the custody), not only the operation budget.
+/// It spends one allocation operation and its bytes from that remainder.
+fn admit_publication_frame(
+    work: WorkCounters,
+    budget: WorkBudget,
+    publication_budget: WorkBudget,
+    bytes: u64,
+) -> Result<(WorkCounters, WorkBudget), OperationFailure<FsError>> {
+    let frame = WorkCounters {
+        allocation_operations: u64::from(bytes != 0),
+        peak_allocation_bytes: bytes,
+        ..WorkCounters::default()
+    };
+    let admitted = add(work, frame)?;
+    remaining(admitted, budget).map_err(|failure| OperationFailure::new(failure.error, work))?;
+    // `remaining` verifies the frame fits; a peak is a ceiling rather than a
+    // consumed total, so the live frame's bytes are taken out explicitly.
+    let mut nested = frame
+        .remaining(publication_budget)
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
+    nested.peak_allocation_bytes -= bytes;
+    Ok((admitted, nested))
+}
+
+#[cfg(test)]
+mod frame_admission_tests {
+    use super::*;
+
+    fn budget(peak: u64) -> WorkBudget {
+        WorkBudget {
+            peak_allocation_bytes: peak,
+            ..WorkBudget::UNBOUNDED
+        }
+    }
+
+    #[test]
+    fn a_frame_that_fits_only_without_the_live_custody_is_refused() {
+        // The operation budget fits the 100-byte frame alone, but 100 bytes
+        // of publication custody are live with it: only 50 bytes remain.
+        let work = WorkCounters {
+            peak_allocation_bytes: 100,
+            ..WorkCounters::default()
+        };
+        let failure = admit_publication_frame(work, budget(150), budget(50), 100)
+            .expect_err("the frame and the custody do not fit together");
+        assert!(matches!(failure.error, FsError::Work(_)), "{:?}", failure.error);
+        assert_eq!(*failure.work, work, "a refused frame charges nothing");
+    }
+
+    #[test]
+    fn an_admitted_frame_spends_its_bytes_and_one_operation_from_the_nested_budget() {
+        let (work, nested) =
+            admit_publication_frame(WorkCounters::default(), budget(150), budget(150), 100)
+                .expect("the frame fits");
+        assert_eq!(work.peak_allocation_bytes, 100);
+        assert_eq!(work.allocation_operations, 1);
+        assert_eq!(nested.peak_allocation_bytes, 50);
+        assert_eq!(
+            nested.allocation_operations,
+            WorkBudget::UNBOUNDED.allocation_operations - 1
+        );
     }
 }
