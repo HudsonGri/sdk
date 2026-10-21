@@ -42,6 +42,59 @@ async fn name_search_hydration_counter_detects_content_reads() {
 }
 
 #[tokio::test]
+async fn name_search_checks_mount_boundaries_before_nested_policy_content_reads() {
+    async fn read_count(cross_mounts: bool) -> usize {
+        let fs = Fs::memory();
+        let mut source = CountingSource::new(Bytes::from_static(b"policy\n"));
+        source.cross_directory_mounts = cross_mounts;
+        let source = Arc::new(source);
+        let lazy = attach(
+            &fs,
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .unwrap();
+        let stop = CancellationToken::new();
+        let mut transaction = lazy
+            .workspace()
+            .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        transaction
+            .write_batch(&["/foreign"], &[], WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap();
+        transaction
+            .commit(
+                None,
+                PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &stop,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+            .await
+            .unwrap();
+        while walk.next_page().await.unwrap().is_some() {}
+        source.counts.ranges.load(Ordering::Relaxed)
+    }
+    assert_eq!(read_count(false).await, 0);
+    // Negative control: allowing entry reads the provider's nested policies.
+    assert!(read_count(true).await > 0);
+}
+
+#[tokio::test]
 async fn name_search_million_generated_entries_are_paged_without_retaining_the_tree() {
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::from_static(b"never hydrate"));

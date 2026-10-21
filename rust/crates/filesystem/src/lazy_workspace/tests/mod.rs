@@ -52,6 +52,7 @@ struct CountingSource {
     paged: bool,
     counts: Arc<SourceCounts>,
     cancel_on_page: AtomicBool,
+    cross_directory_mounts: bool,
 }
 impl CountingSource {
     fn new(bytes: Bytes) -> Self {
@@ -71,6 +72,7 @@ impl CountingSource {
             paged: false,
             counts: Arc::default(),
             cancel_on_page: AtomicBool::new(false),
+            cross_directory_mounts: true,
         }
     }
     fn replace(&self, bytes: Bytes) {
@@ -160,6 +162,16 @@ impl DemandFile for PinnedFile {
     }
 }
 impl DemandSource for CountingSource {
+    async fn same_volume<W: crate::facade::FsWork + Send>(
+        &self,
+        _source: SourceReference,
+        directory: &NamespacePath,
+        work: W,
+        cancel: &CancellationToken,
+    ) -> W::Output<bool, DemandError> {
+        let ctx = work.accounting(cancel);
+        work.finish(Ok(directory.is_root() || self.cross_directory_mounts), &ctx)
+    }
     fn reference(&self) -> SourceReference {
         SourceReference {
             identity: [7; 16],

@@ -362,6 +362,18 @@ impl<
             authored,
             ignore_policies: BTreeMap::new(),
         };
+        if directory
+            && let Cut::Lazy(lazy, snapshot) = &walk.cut
+            && !lazy
+                .same_volume_at_snapshot(
+                    *snapshot,
+                    &path,
+                    &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                )
+                .await?
+        {
+            return Ok(walk);
+        }
         // An explicit subtree still inherits all ancestor ignore files.
         let relative = path.trim_matches('/');
         for (end, _) in relative.match_indices('/') {
@@ -433,6 +445,20 @@ impl<
             &cursor,
             Continuation::Exact(None) | Continuation::Lazy(None)
         ) {
+            // Check before reading this directory's ignore files, including
+            // during the authored seed pass. Policy reads are content reads
+            // too and cannot enter a foreign native mount.
+            if let Cut::Lazy(lazy, snapshot) = &self.cut
+                && !lazy
+                    .same_volume_at_snapshot(
+                        *snapshot,
+                        &directory,
+                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                    )
+                    .await?
+            {
+                return Ok(Some(Vec::new()));
+            }
             self.load_directory_ignore(directory.trim_matches('/'))
                 .await?;
         }
@@ -440,13 +466,6 @@ impl<
             (Cut::Lazy(lazy, snapshot), Continuation::Lazy(cursor)) => {
                 let stop = CancellationToken::new();
                 let mut ctx = WorkBudget::UNBOUNDED.accounting(&stop);
-                if cursor.is_none()
-                    && !lazy
-                        .same_volume_at_snapshot(*snapshot, &directory, &mut ctx)
-                        .await?
-                {
-                    return Ok(Some(Vec::new()));
-                }
                 let (page, _, guard) = lazy
                     .list_directory_at_snapshot(
                         *snapshot,
