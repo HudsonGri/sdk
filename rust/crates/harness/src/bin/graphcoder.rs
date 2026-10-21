@@ -12,16 +12,7 @@ use acyclic_harness::{
 use acyclic_harness_providers::{Credentials, Registry};
 use args::{Args, InputFormat};
 use clap::Parser;
-use futures::{FutureExt as _, future::LocalBoxFuture};
-use std::{future::Future, process::ExitCode, sync::Arc};
-
-// Construct each phase on its own call frame. Boxing an already constructed
-// future in the awaiting frame still retains its construction scratch space
-// throughout nested polls, and devirtualization can inline its poll there too.
-#[inline(never)]
-fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F::Output> {
-    build().boxed_local()
-}
+use std::{process::ExitCode, sync::Arc};
 
 fn main() -> ExitCode {
     let args = Args::parse();
@@ -31,7 +22,7 @@ fn main() -> ExitCode {
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
             // Keep Tokio's entry frame independent of the size of the CLI future.
-            let result = runtime.block_on(phase(|| run(args)));
+            let result = runtime.block_on(Box::pin(run(args)));
             runtime.shutdown_background();
             result
         });
@@ -74,10 +65,9 @@ async fn open(
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
     config = config.settings(settings).web_tools();
-    Ok(Arc::new(phase(|| LocalHarness::open(config)).await?))
+    Ok(Arc::new(LocalHarness::open(config).await?))
 }
 
-// Own native phase futures separately from the CLI orchestration frame.
 async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
     let operation = args
         .operation
@@ -90,9 +80,8 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .map(Credentials::from_file)
         .transpose()?
         .unwrap_or_default();
-    let local = phase(|| open(&args, credentials)).await?;
-    let operation =
-        phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?;
+    let local = open(&args, credentials).await?;
+    let operation = client::local_identity(&local, args.prompt.as_deref(), operation).await?;
     let command = args
         .prompt
         .as_deref()
@@ -102,27 +91,35 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb()
     {
-        let result = phase(|| {
-            client::with_local_commands(
-                local.clone(),
-                operation,
-                view::run(local.clone(), operation, args.inline),
-            )
-        })
+        let result = client::with_local_commands(
+            local.clone(),
+            operation,
+            view::run(local.clone(), operation, args.inline),
+        )
         .await;
-        phase(|| client::disconnect_local(local)).await?;
+        client::disconnect_local(local).await?;
         result?;
         return Ok(0);
     }
-    let (mut connection, target) = phase(|| client::connect_local(local, operation)).await?;
-    let mut output = std::io::stdout().lock();
+    let (mut connection, target) = client::connect_local(local, operation).await?;
     let outcome = if let Some(command) = command {
-        phase(|| client::run_headless(&mut connection, command, target, &mut output)).await
+        client::run_headless(
+            &mut connection,
+            command,
+            target,
+            &mut std::io::stdout().lock(),
+        )
+        .await
     } else {
-        phase(|| client::run_jsonl(&mut connection, target, client::stdin_jsonl(), &mut output))
-            .await
+        client::run_jsonl(
+            &mut connection,
+            target,
+            client::stdin_jsonl(),
+            &mut std::io::stdout().lock(),
+        )
+        .await
     };
-    Ok(phase(|| connection.finish(outcome)).await?.exit_code())
+    Ok(connection.finish(outcome).await?.exit_code())
 }
 
 #[cfg(test)]
