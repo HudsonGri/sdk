@@ -128,6 +128,26 @@ pub(super) fn open_windows_named<W: NativeHostWork>(
     options: nt::NTCREATEFILE_CREATE_OPTIONS,
     work: &mut W,
 ) -> Result<File, W::Error> {
+    open_windows_object(
+        parent,
+        name,
+        access,
+        disposition,
+        options | nt::FILE_OPEN_REPARSE_POINT,
+        work,
+    )
+}
+
+/// Opens `name` below `parent` with exactly `options`: without
+/// `FILE_OPEN_REPARSE_POINT`, the object manager follows links.
+pub(super) fn open_windows_object<W: NativeHostWork>(
+    parent: &Dir,
+    name: &win::UNICODE_STRING,
+    access: fs::FILE_ACCESS_RIGHTS,
+    disposition: nt::NTCREATEFILE_CREATE_DISPOSITION,
+    options: nt::NTCREATEFILE_CREATE_OPTIONS,
+    work: &mut W,
+) -> Result<File, W::Error> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
         Length: u32::try_from(std::mem::size_of::<
             windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
@@ -160,7 +180,7 @@ pub(super) fn open_windows_named<W: NativeHostWork>(
                     fs::FILE_ATTRIBUTE_NORMAL,
                     fs::FILE_SHARE_READ | fs::FILE_SHARE_WRITE | fs::FILE_SHARE_DELETE,
                     disposition,
-                    options | nt::FILE_OPEN_REPARSE_POINT,
+                    options,
                     None,
                     0,
                 )
