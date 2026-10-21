@@ -92,9 +92,11 @@ impl NameCheckpoint {
 
     pub(crate) fn discover_directory(&mut self, path: &str, authored: bool) {
         let absolute = format!("/{path}");
-        self.pending
-            .push((absolute.clone(), SavedCursor::Lazy(None)));
-        if authored {
+        if matches!(self.cut, NameCut::Lazy(_)) {
+            self.pending
+                .push((absolute.clone(), SavedCursor::Lazy(None)));
+        }
+        if authored || matches!(self.cut, NameCut::Exact { .. }) {
             self.pending.push((absolute, SavedCursor::Exact(None)));
         }
     }

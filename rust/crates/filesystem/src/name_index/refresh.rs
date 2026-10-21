@@ -9,18 +9,18 @@ pub(super) struct NameDelta {
     pub(super) subtrees: BTreeSet<String>,
 }
 
-/// Outcome of applying an authored leaf delta to an existing index.
+/// Outcome of applying a bounded namespace delta to an existing index.
 pub enum NameIndexRefresh<A, O> {
-    /// A directory/source/policy change requires namespace discovery.
+    /// An unknown source/policy change requires namespace discovery.
     Ineligible,
     /// Another writer won the generation compare-and-publish.
     Conflict,
-    /// The new index was published atomically without native enumeration.
+    /// The new index and any unfinished subtree roots were published atomically.
     Published(NameIndex<A, O>),
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
-    /// Applies bounded authored leaf changes without re-listing any directory.
+    /// Applies bounded authored changes without re-listing unchanged directories.
     /// Pages stream through one bounded buffer; unchanged pages remain shared
     /// with the previous generation. Source and directory changes are explicit
     /// discovery work, never silently treated as a complete leaf delta.
@@ -48,7 +48,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             ) if old == new => *generation,
             _ => return Ok(NameIndexRefresh::Ineligible),
         };
-        let Some(checkpoint) = self.manifest.checkpoint.completed_at(cut.clone()) else {
+        let Some(mut checkpoint) = self.manifest.checkpoint.completed_at(cut.clone()) else {
             return Ok(NameIndexRefresh::Ineligible);
         };
         if !self.manifest.complete || self.generation.workspace_id() != workspace.id() {
@@ -91,6 +91,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             Err(failure) => return Err(failure.error.into()),
         };
         let mut leaves = BTreeMap::new();
+        let mut subtrees = BTreeSet::new();
         for change in paths {
             let mut path = String::new();
             for component in change.path.components() {
@@ -133,17 +134,49 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 {
                     continue;
                 }
-                return Ok(NameIndexRefresh::Ineligible);
+                subtrees.insert(path.clone());
             }
             let name = change
                 .after
-                .filter(|_| checkpoint.eligible(ignore, &path))
+                .filter(|_| {
+                    if after_dir {
+                        checkpoint.eligible_directory(ignore, &path)
+                    } else {
+                        checkpoint.eligible(ignore, &path)
+                    }
+                })
                 .map(|record| SearchName {
                     path: path.clone(),
                     regular: record.kind == FileKind::Regular,
-                    directory: false,
+                    directory: record.kind == FileKind::Directory,
                 });
             leaves.insert(path, name);
+        }
+        let mut roots = BTreeSet::new();
+        for path in subtrees {
+            if !roots
+                .iter()
+                .any(|root: &String| crate::name_walk::within_subtree(&path, root))
+            {
+                roots.insert(path);
+            }
+        }
+        // A parent discovery will stream its descendants. Publishing the
+        // same descendants from the diff would duplicate them on resume.
+        leaves.retain(|path, _| {
+            !roots
+                .iter()
+                .any(|root| path != root && crate::name_walk::within_subtree(path, root))
+        });
+        for root in &roots {
+            checkpoint.forget_subtree(root);
+            if leaves
+                .get(root)
+                .and_then(Option::as_ref)
+                .is_some_and(|name| name.directory)
+            {
+                checkpoint.discover_directory(root, true);
+            }
         }
         self.publish_delta(
             workspace,
@@ -152,7 +185,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
             checkpoint,
             NameDelta {
                 leaves,
-                subtrees: BTreeSet::new(),
+                subtrees: roots,
             },
         )
         .await

@@ -2,6 +2,188 @@ use super::*;
 use crate::facade::FsWork as _;
 use crate::{GitIgnorePolicy, NameWalk, PublicationPermit};
 
+async fn publish_name_walk<A, O, D, S>(
+    workspace: &crate::Workspace<A, O>,
+    mut walk: NameWalk<'_, A, O, D, S>,
+) -> crate::NameIndex<A, O>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
+    let stop = CancellationToken::new();
+    let mut expected = workspace
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let mut pages = 0;
+    loop {
+        let page = walk.next_page().await.unwrap();
+        pages += u64::from(page.is_some());
+        let manifest = crate::NameIndexManifest {
+            schema: 1,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages,
+            pending_directories: walk.pending_directories(),
+            complete: page.is_none(),
+            checkpoint: walk.checkpoint().unwrap(),
+        };
+        let index = crate::NameIndex::publish(workspace, &expected, manifest, page.as_deref())
+            .await
+            .unwrap()
+            .unwrap();
+        expected = index.generation();
+        if page.is_none() {
+            return index;
+        }
+    }
+}
+
+#[tokio::test]
+async fn name_search_authored_subtree_refresh_streams_only_new_directories_once() {
+    use crate::{NameCut, NameIndexRefresh};
+    let fs = Fs::memory();
+    let workspace = fs
+        .create_workspace(
+            "authored-subtree",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .value;
+    let stop = CancellationToken::new();
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .create_dir_all("/untouched", WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap();
+    transaction
+        .write_text("/untouched/old.txt", "old")
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    let generation = workspace
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let ignore = GitIgnorePolicy::default();
+    let walk = NameWalk::<_, _, CountingSource, MemoryLazyWorkspaceStore>::exact(
+        generation,
+        None,
+        ignore.clone(),
+    )
+    .await
+    .unwrap();
+    let index = publish_name_walk(&workspace, walk).await;
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .create_dir_all("/created/nested", WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap();
+    transaction
+        .write_text("/created/fresh.txt", "new")
+        .await
+        .unwrap();
+    transaction
+        .write_text("/created/nested/deep.txt", "deep")
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    let generation = workspace
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let cut = NameCut::Exact {
+        workspace: workspace.id(),
+        generation: generation.id(),
+    };
+    let index = match index
+        .refresh_authored(&workspace, cut, &ignore)
+        .await
+        .unwrap()
+    {
+        NameIndexRefresh::Published(index) => index,
+        _ => panic!("new authored directories required a whole-tree walk"),
+    };
+    assert_eq!(
+        index.manifest.pending_directories, 1,
+        "nested roots must coalesce"
+    );
+    let mut resumed = NameWalk::<_, _, CountingSource, MemoryLazyWorkspaceStore>::resume_exact(
+        &workspace,
+        index.manifest.checkpoint,
+        ignore.clone(),
+    )
+    .await
+    .unwrap();
+    let mut discovered = Vec::new();
+    while let Some(page) = resumed.next_page().await.unwrap() {
+        discovered.extend(page.into_iter().map(|name| name.path));
+    }
+    assert_eq!(discovered.len(), 3);
+    assert_eq!(
+        discovered
+            .iter()
+            .filter(|path| path.as_str() == "created/nested/deep.txt")
+            .count(),
+        1
+    );
+    assert!(!discovered.iter().any(|path| path.starts_with("untouched/")));
+    // Negative control: a full walk re-emits the unchanged directory's names.
+    let mut full =
+        NameWalk::<_, _, CountingSource, MemoryLazyWorkspaceStore>::exact(generation, None, ignore)
+            .await
+            .unwrap();
+    let mut old_seen = false;
+    while let Some(page) = full.next_page().await.unwrap() {
+        old_seen |= page.iter().any(|name| name.path == "untouched/old.txt");
+    }
+    assert!(old_seen);
+}
+
 async fn names_hydrate(n: usize, broken: bool) -> usize {
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::from_static(b"candidate content"));
