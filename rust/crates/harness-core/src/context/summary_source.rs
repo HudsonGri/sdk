@@ -125,7 +125,7 @@ pub fn retained_source<const KEEP: bool>(
 pub mod checkpoint_fixture {
     use super::*;
     #[doc(hidden)]
-    pub fn checkpoint(through: Cursor) -> SummaryCheckpoint {
+    pub fn checkpoint(through: Cursor) -> Result<SummaryCheckpoint> {
         let file = FileRef::new(
             crate::conversation::VolumeRef::new(
                 crate::resources::ProviderRef::new(
@@ -133,23 +133,19 @@ pub mod checkpoint_fixture {
                     "filesystem".into(),
                     "1".into(),
                     &mut None,
-                )
-                .unwrap(),
+                )?,
                 "private".into(),
                 crate::conversation::VolumeClass::AgentPrivate,
                 crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
                 &mut None,
-            )
-            .unwrap(),
+            )?,
             "inputs/source.json".into(),
             "1".into(),
-            crate::conversation::FileDescriptor::from_bytes(b"{}", "application/json", &mut None)
-                .unwrap(),
+            crate::conversation::FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
             "source.json".into(),
             &mut None,
-        )
-        .unwrap();
-        SummaryCheckpoint {
+        )?;
+        Ok(SummaryCheckpoint {
             operation: OperationId::from_bytes([1; 16]),
             boundary: SummaryBoundary {
                 task: TaskId::from_bytes([1; 16]),
@@ -163,7 +159,7 @@ pub mod checkpoint_fixture {
             },
             source: file.clone(),
             summary: file,
-        }
+        })
     }
 
     #[test]

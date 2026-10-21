@@ -160,7 +160,8 @@ async fn compact_sequence_source(
         durable: 1,
         commit: [0; 32],
     };
-    let checkpoint = crate::context::summary_source::checkpoint_fixture::checkpoint(cursor);
+    let checkpoint =
+        crate::context::summary_source::checkpoint_fixture::checkpoint(cursor).unwrap();
     let mut context = crate::context::Context::default();
     context.messages.push(ModelMessage {
         role: ModelRole::User,
