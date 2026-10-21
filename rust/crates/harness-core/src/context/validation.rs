@@ -146,7 +146,8 @@ pub(super) fn validate_source_messages(
 }
 
 /// A pinned provider allowance can narrow, never widen, the admitted request.
-pub(crate) fn restrict_context_limits(
+#[doc(hidden)]
+pub fn restrict_context_limits(
     pinned: Limits,
     admitted: Limits,
     io: Option<&crate::executor::PreparationIo>,

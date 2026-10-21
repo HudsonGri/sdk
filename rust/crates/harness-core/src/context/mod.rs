@@ -52,9 +52,10 @@ pub use summary_source::*;
 mod durable;
 pub use durable::*;
 mod validation;
+#[doc(hidden)]
+pub use validation::restrict_context_limits;
 pub(crate) use validation::{
-    plan_compaction_budget, restrict_context_limits, validate_compaction,
-    validate_projected_context,
+    plan_compaction_budget, validate_compaction, validate_projected_context,
 };
 mod value;
 pub use value::*;
