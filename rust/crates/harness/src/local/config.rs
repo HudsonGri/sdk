@@ -198,7 +198,7 @@ impl LocalHarnessConfig {
         for definition in crate::tools::web::definitions(self.search_provider.is_some())? {
             if !signed
                 .capabilities()
-                .contains(&crate::contract::capability::tool_call(&definition.name))
+                .contains(&format!("tool:call:{}", definition.name))
             {
                 return Err(Error::Unauthorized(
                     "requested web tools require prebound signed call grants".into(),
