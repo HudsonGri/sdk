@@ -19,14 +19,25 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
     let runtime = tokio::runtime::Handle::current();
     let control_timeout = Duration::from_millis(u64::from(invocation.control_timeout_ms));
     let check = move || {
-        runtime
-            .block_on(async {
-                tokio::time::timeout(control_timeout, check_owner.verify(false, &mut None)).await
-            })
-            .map_err(control_error)?
-            .map_err(control_error)
+        check_on_runtime(
+            &runtime,
+            control_timeout,
+            check_owner.verify(false, &mut None),
+        )
     };
     capture_checked(invocation, observer, check).await
+}
+
+// Both production owner checks and the regression enter the same timer path.
+fn check_on_runtime(
+    runtime: &tokio::runtime::Handle,
+    control_timeout: Duration,
+    check: impl std::future::Future<Output = Result<()>>,
+) -> std::io::Result<()> {
+    runtime
+        .block_on(async { tokio::time::timeout(control_timeout, check).await })
+        .map_err(control_error)?
+        .map_err(control_error)
 }
 
 pub(crate) fn control_error(

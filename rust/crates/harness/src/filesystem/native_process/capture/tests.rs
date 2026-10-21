@@ -61,6 +61,29 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
     Ok(())
 }
 
+#[test]
+fn capture_owner_check_constructs_its_timer_on_the_runtime()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let handle = runtime.handle().clone();
+    let check = acyclic_native_runtime::run_blocking_io(
+        move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            check_on_runtime(&handle, Duration::from_millis(1000), async {
+                // Construct and await a real timer on the production owner-check path.
+                tokio::time::sleep(Duration::ZERO).await;
+                Ok(())
+            })
+        },
+        None,
+    )?;
+    runtime.block_on(check)??;
+    Ok(())
+}
+
 proptest! {
     // Every backend/control cause remains recoverable beneath an Interrupted
     // classification, so ownership loss follows the control-stop path.
