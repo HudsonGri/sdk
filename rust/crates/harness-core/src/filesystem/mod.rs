@@ -7,7 +7,6 @@
     )
 )]
 #![doc = include_str!("../../docs/filesystem.md")]
-
 use crate::contract::capability;
 use crate::{
     AgentId, Error, IdempotencyKey, Result,
@@ -36,12 +35,9 @@ use acyclic_fs::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
-
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
-
 mod content_publisher;
 pub use content_publisher::FilesystemContentPublisher;
-
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
