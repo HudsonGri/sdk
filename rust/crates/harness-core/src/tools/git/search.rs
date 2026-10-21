@@ -150,7 +150,7 @@ where
         while let Some(page) = names.next_page().await? {
             result.pending_directories = names.pending_directories().await;
             self.validate().await?;
-            if page.reset && !names.matches_tree(tree).await? {
+            if !names.matches_tree(tree).await? {
                 // A concurrent public namespace edit cannot be folded into
                 // this pinned read. Preserve already found matches and report
                 // a partial result instead of mixing generations.
@@ -184,9 +184,32 @@ where
                     Err(Error::NativeSource { source, .. })
                         if matches!(
                             source.semantic_error(),
+                            acyclic_fs::LazyWorkspaceError::StaleSource
+                                | acyclic_fs::LazyWorkspaceError::StaleIdentity
+                                | acyclic_fs::LazyWorkspaceError::Demand(
+                                    acyclic_fs::demand::DemandError::StaleSource
+                                        | acyclic_fs::demand::DemandError::StaleVersion
+                                )
+                        ) =>
+                    {
+                        result.truncated = true;
+                        return self.finish_search(result).await;
+                    }
+                    Err(Error::NativeSource { source, .. })
+                        if matches!(
+                            source.semantic_error(),
                             acyclic_fs::LazyWorkspaceError::TooLarge
                                 | acyclic_fs::LazyWorkspaceError::NotRegularFile
+                                | acyclic_fs::LazyWorkspaceError::NotFound
                         ) =>
+                    {
+                        result.truncated = true;
+                        continue;
+                    }
+                    Err(Error::NativeSource { source, .. })
+                        if matches!(source.semantic_error(),
+                            acyclic_fs::LazyWorkspaceError::Demand(acyclic_fs::demand::DemandError::Io(error))
+                            if matches!(error.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound)) =>
                     {
                         result.truncated = true;
                         continue;
@@ -194,7 +217,9 @@ where
                     Err(Error::NativeWorkspace { source, .. })
                         if matches!(
                             *source,
-                            WorkspaceError::ReadLimitExceeded | WorkspaceError::NotRegularFile
+                            WorkspaceError::ReadLimitExceeded
+                                | WorkspaceError::NotRegularFile
+                                | WorkspaceError::NotFound
                         ) =>
                     {
                         result.truncated = true;
@@ -204,11 +229,16 @@ where
                 };
                 remaining = remaining.saturating_sub(bytes.len() as u64);
                 result.bytes_read += bytes.len() as u64;
-                if let Ok(text) = std::str::from_utf8(&bytes) {
-                    for (line, text) in text
-                        .lines()
-                        .enumerate()
-                        .filter(|(_, line)| line.contains(pattern))
+                // Match the original bytes, including text files with invalid
+                // UTF-8. Lossy decoding is only for the displayed matching line.
+                for (line, raw) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+                    let text = raw
+                        .strip_suffix(b"\n")
+                        .map_or(raw, |line| line.strip_suffix(b"\r").unwrap_or(line));
+                    if pattern.is_empty()
+                        || text
+                            .windows(pattern.len())
+                            .any(|part| part == pattern.as_bytes())
                     {
                         if result.matches.len() == MATCHES {
                             result.truncated = true;
@@ -217,7 +247,7 @@ where
                         result.matches.push(GitGrepMatch {
                             path: name.path.clone(),
                             line: line as u64 + 1,
-                            text: text.into(),
+                            text: String::from_utf8_lossy(text).into_owned(),
                         });
                     }
                 }

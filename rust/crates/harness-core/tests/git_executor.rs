@@ -712,6 +712,40 @@ async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -
 }
 
 #[tokio::test]
+async fn volume_search_grep_matches_original_bytes_before_display_decoding() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture_native(false).await?;
+    let bytes = b"other\r\n\xffneedle\r\nlast needle";
+    std::fs::write(root.join("encoded.txt"), bytes)?;
+    assert!(
+        std::str::from_utf8(bytes).is_err(),
+        "UTF-8-only control accepted the fixture"
+    );
+    for (pattern, expected) in [("needle", 2), ("\u{fffd}", 0)] {
+        let (output, _) = run(
+            &fs,
+            &store,
+            &main,
+            main.workspace().id(),
+            &["grep", pattern, "encoded.txt"],
+        )
+        .await?;
+        let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) =
+            output
+        else {
+            panic!("expected grep data")
+        };
+        assert_eq!(value["matches"].as_array().unwrap().len(), expected);
+        assert_eq!(value["complete"], true);
+        if expected > 0 {
+            assert_eq!(value["matches"][0]["line"], 2);
+            assert_eq!(value["matches"][0]["text"], "\u{fffd}needle");
+            assert_eq!(value["matches"][1]["line"], 3);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_search_live_index_reloads_the_volume_ignore_policy() -> Result<()> {
     let (_temp, _root, _fs, _store, main) = fixture_native(true).await?;
     let mut names = git::IndexedNames::open((&main).into()).await?;
