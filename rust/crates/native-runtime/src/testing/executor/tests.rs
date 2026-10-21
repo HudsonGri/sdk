@@ -1,5 +1,93 @@
 use super::*;
 
+struct PendingDrop {
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    polled: Arc<std::sync::atomic::AtomicBool>,
+    wake: Option<Waker>,
+}
+
+impl Future for PendingDrop {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut PollContext<'_>) -> Poll<()> {
+        self.polled.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.wake = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+impl Drop for PendingDrop {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn abandoned_scope(polled: bool, panic: bool) -> io::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let (schedule, mut events) = Schedule::seeded(17);
+    let other_controller = schedule.clone();
+    let weak = Arc::downgrade(&schedule.0);
+    let dropped = Arc::new(AtomicBool::new(false));
+    let was_polled = Arc::new(AtomicBool::new(false));
+    let mut handle = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.block_on(schedule.scope(async {
+            handle = Some(crate::testing::spawn(PendingDrop {
+                dropped: dropped.clone(),
+                polled: was_polled.clone(),
+                wake: None,
+            }));
+            assert!(!panic, "abandoned replay root");
+        }));
+    }));
+    assert_eq!(result.is_err(), panic);
+    if polled {
+        let executor = schedule.0.executor.as_ref().unwrap();
+        let cx = PollContext::from_waker(Waker::noop());
+        executor.poll_owned(&cx);
+        events.try_recv().unwrap().release();
+        executor.poll_owned(&cx);
+        assert!(was_polled.load(Ordering::SeqCst));
+    }
+    let handle = handle.unwrap();
+    let abort = handle.abort_handle();
+    drop(events);
+    drop(schedule);
+    assert!(
+        !dropped.load(Ordering::SeqCst),
+        "a live controller lost its work"
+    );
+    drop(other_controller);
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "abandoned task retained its resources"
+    );
+    assert!(
+        weak.upgrade().is_none(),
+        "task context retained its schedule"
+    );
+    abort.abort();
+    let error = runtime.block_on(handle).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    Ok(())
+}
+
+#[test]
+fn abandoned_unpolled_task_releases_its_context_and_resources() -> io::Result<()> {
+    abandoned_scope(false, false)
+}
+
+#[test]
+fn abandoned_pending_task_releases_its_stored_waker_and_resources() -> io::Result<()> {
+    abandoned_scope(true, false)
+}
+
+#[test]
+fn panicking_replay_releases_unfinished_tasks_after_controller_drop() -> io::Result<()> {
+    abandoned_scope(true, true)
+}
+
 async fn yield_once() {
     let mut yielded = false;
     std::future::poll_fn(|cx| {

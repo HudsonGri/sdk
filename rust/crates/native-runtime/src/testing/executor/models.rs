@@ -2,6 +2,40 @@
 use super::*;
 use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[test]
+fn shutdown_racing_a_pending_poll_cannot_restore_owned_work() {
+    loom::model(|| {
+        struct DropProbe(Arc<Executor>, Arc<AtomicUsize>);
+        impl Future for DropProbe {
+            type Output = ();
+            fn poll(self: Pin<&mut Self>, _: &mut PollContext<'_>) -> Poll<()> {
+                Poll::Pending
+            }
+        }
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                // A destructor can reenter the executor; never run it locked.
+                self.0.trace();
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let executor = Executor::new(17);
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let task = executor.register(Some(Box::pin(DropProbe(executor.clone(), dropped.clone()))));
+        let cx = PollContext::from_waker(Waker::noop());
+        let (id, work, _) = executor.next(&cx, None).unwrap();
+        let polling = executor.clone();
+        let thread = loom::thread::spawn(move || polling.polled(id, work, "pending"));
+        executor.shutdown();
+        thread.join().unwrap();
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert!(lock(&executor.0).tasks.is_empty());
+        assert!(executor.next(&cx, None).is_none());
+        task.wake_by_ref();
+        assert!(lock(&executor.0).ready.is_empty());
+    });
+}
+
 struct Flag(AtomicBool);
 impl Wake for Flag {
     fn wake(self: Arc<Self>) {

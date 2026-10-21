@@ -86,8 +86,25 @@ fn lock<T>(mutex: &Mutex<T>) -> impl std::ops::DerefMut<Target = T> + '_ {
 }
 
 /// One test execution; no process-global controller or background driver.
-#[derive(Clone)]
-pub struct Schedule(Arc<Inner>);
+pub struct Schedule(Arc<Inner>, Option<Arc<Controller>>);
+
+impl Clone for Schedule {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone())
+    }
+}
+
+// Accepted work retains its completion state, but does not own the controller
+// that drives it. Otherwise executor -> future -> Context -> Schedule cycles.
+struct Controller(Option<Arc<executor::Executor>>);
+
+impl Drop for Controller {
+    fn drop(&mut self) {
+        if let Some(executor) = &self.0 {
+            executor.shutdown();
+        }
+    }
+}
 
 /// An original submission's cancellation-independent completion context.
 #[derive(Clone)]
@@ -135,18 +152,23 @@ impl Schedule {
 
     fn with_seed(seed: Option<u64>, entropy: bool) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
         let (events, receiver) = mpsc::unbounded_channel();
+        let executor = seed.map(executor::Executor::new);
+        let controller = Arc::new(Controller(executor.clone()));
         (
-            Self(Arc::new(Inner {
-                events,
-                state: Mutex::new(State {
-                    wall: seed.map(|_| clock::Wall::new()),
-                    ..State::default()
+            Self(
+                Arc::new(Inner {
+                    events,
+                    state: Mutex::new(State {
+                        wall: seed.map(|_| clock::Wall::new()),
+                        ..State::default()
+                    }),
+                    entropy: seed
+                        .filter(|_| entropy)
+                        .map(|seed| Arc::new(entropy::Source::new(seed))),
+                    executor,
                 }),
-                entropy: seed
-                    .filter(|_| entropy)
-                    .map(|seed| Arc::new(entropy::Source::new(seed))),
-                executor: seed.map(executor::Executor::new),
-            })),
+                Some(controller),
+            ),
             receiver,
         )
     }
@@ -171,7 +193,7 @@ impl Schedule {
         }
         let future = CURRENT.scope(
             Some(Context {
-                schedule: self.clone(),
+                schedule: Self(self.0.clone(), None),
                 owned: false,
                 detail: Arc::new(Mutex::new(Arc::from(""))),
                 host: None,

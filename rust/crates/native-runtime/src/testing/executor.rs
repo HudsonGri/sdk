@@ -21,6 +21,7 @@ mod models;
 mod tests;
 
 struct State {
+    closed: bool,
     next: u64,
     live: BTreeSet<u64>,
     ready: BTreeSet<u64>,
@@ -81,6 +82,7 @@ impl Executor {
         let mut hash = blake3::Hasher::new_derive_key("acyclic.dst.poll-order.v1");
         hash.update(&seed.to_le_bytes());
         Arc::new(Self(Mutex::new(State {
+            closed: false,
             next: 0,
             live: BTreeSet::new(),
             ready: BTreeSet::new(),
@@ -98,7 +100,7 @@ impl Executor {
         })))
     }
 
-    fn register(self: &Arc<Self>, task: Option<Work>) -> Arc<TaskWake> {
+    fn register(self: &Arc<Self>, mut task: Option<Work>) -> Arc<TaskWake> {
         let (id, driver) = {
             let mut state = lock(&self.0);
             let id = state.next;
@@ -106,13 +108,16 @@ impl Executor {
                 .next
                 .checked_add(1)
                 .expect("simulation task ID exhausted");
-            state.live.insert(id);
-            state.ready.insert(id);
-            if let Some(task) = task {
-                state.tasks.insert(id, task);
+            if !state.closed {
+                state.live.insert(id);
+                state.ready.insert(id);
+                if let Some(task) = task.take() {
+                    state.tasks.insert(id, task);
+                }
             }
             (id, state.drivers())
         };
+        drop(task);
         for driver in driver {
             driver.wake();
         }
@@ -179,6 +184,9 @@ impl Executor {
 
     fn next(&self, cx: &PollContext<'_>, root: Option<u64>) -> Option<(u64, Option<Work>, bool)> {
         let mut state = lock(&self.0);
+        if state.closed {
+            return None;
+        }
         if let Some(root) = root {
             state.root_drivers.insert(root, cx.waker().clone());
         } else if !POLLING_EXECUTOR
@@ -234,7 +242,7 @@ impl Executor {
         let (discard, driver) = {
             let mut state = lock(&self.0);
             state.trace.push((id, phase));
-            let discard = if state.cancelled.contains(&id) {
+            let discard = if state.closed || state.cancelled.contains(&id) {
                 state.live.remove(&id);
                 state.ready.remove(&id);
                 state.served.remove(&id);
@@ -329,6 +337,24 @@ impl Executor {
 
     pub(super) fn trace(&self) -> Vec<(u64, &'static str)> {
         lock(&self.0).trace.clone()
+    }
+
+    pub(super) fn shutdown(&self) {
+        let (tasks, driver, roots) = {
+            let mut state = lock(&self.0);
+            state.closed = true;
+            state.live.clear();
+            state.ready.clear();
+            state.served.clear();
+            state.cancelled.clear();
+            (
+                std::mem::take(&mut state.tasks),
+                state.driver.take(),
+                std::mem::take(&mut state.root_drivers),
+            )
+        };
+        // Futures can drop contexts or wake receivers; both may reenter us.
+        drop((tasks, driver, roots));
     }
 
     pub(super) fn spawn<F>(self: &Arc<Self>, future: F) -> TaskHandle<F::Output>
