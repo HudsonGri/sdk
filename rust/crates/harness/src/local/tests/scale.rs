@@ -586,7 +586,7 @@ mod bounds {
     pub(super) const IDLE_RSS_BYTES: PerAgent = PerAgent::whole(12 * 1024 * 1024);
     /// Open descriptors retained per idle agent. Store ownership holds none
     /// (store claims); journals, logs and directory handles remain.
-    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(12);
+    pub(super) const IDLE_FDS: PerAgent = PerAgent::whole(10);
     /// inotify watches retained per idle agent.
     pub(super) const WATCHES: PerAgent = PerAgent::whole(7);
     /// Threads retained per idle agent beyond the process-wide pools: none,
