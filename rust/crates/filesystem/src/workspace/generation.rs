@@ -215,6 +215,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .await
     }
 
+    /// Compares retained regular-file payload identities without reading bodies.
+    /// Metadata-only changes do not affect this comparison.
+    pub async fn matches_content<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<bool, WorkspaceError> {
+        if original.workspace.id != self.workspace.id
+            || !self
+                .workspace
+                .volume
+                .fs
+                .same_deployment(&original.workspace.volume.fs)
+        {
+            let accounting = work.accounting(cancellation);
+            return work.finish(Err(WorkspaceError::ForeignGeneration), &accounting);
+        }
+        matches_content(
+            &self.workspace,
+            self.id,
+            original.id,
+            path,
+            work,
+            cancellation,
+        )
+        .await
+    }
+
     /// Reads complete no-follow metadata from this immutable generation.
     pub async fn stat<W: crate::facade::FsWork>(
         &self,

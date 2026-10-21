@@ -21,9 +21,6 @@ pub struct Args {
     pub credentials: Option<PathBuf>,
     #[arg(long)]
     pub settings_root: Option<PathBuf>,
-    /// Host search configuration, including an optional private gateway endpoint.
-    #[arg(long)]
-    pub search_config: Option<PathBuf>,
     #[arg(short = 'p', long = "prompt", conflicts_with = "input_format")]
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
@@ -50,6 +47,7 @@ mod tests {
         );
         assert!(Args::try_parse_from(["graphcoder", "--resume", "-p", "hello"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
+        assert!(Args::try_parse_from(["graphcoder", "--search-config", "search.json"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_err());
         assert!(
             Args::try_parse_from([

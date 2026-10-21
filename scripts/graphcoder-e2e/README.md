@@ -1,0 +1,5 @@
+The cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated user settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing; run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL`.
+
+Search uses the host-only `.codex/search.json` in the selected settings root (`CODEX_HOME/search.json` without an explicit root). Its JSON fields are `provider` (`exa` or `tinyfish`), `api_keys` (provider id to key), and optional `endpoint`. Credentials retain keychain → environment → file precedence. The web-search case seeds this file and directs the ordinary HTTP adapter to the shared mock namespace. No search CLI flag or alternate executor is used.
+
+`scripts/qualify-graphcoder-lane.sh` validates the combined GraphCoder lane with focused tests and one parallel full-suite run. Its E2E_WALL includes workspace seeding, assertions and cleanup; compilation and dependency installation precede the clock. A red matrix is retained as a failure even when its elapsed time is below ten seconds.

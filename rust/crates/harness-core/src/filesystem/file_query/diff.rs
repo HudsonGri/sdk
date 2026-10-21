@@ -115,13 +115,18 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             }
             let before = self.endpoint(base, &path, io).await?;
             let after = self.endpoint(current, &path, io).await?;
-            let largest_file_bytes = before.as_ref().map(|(_, bytes)| *bytes)
-                .into_iter().chain(after.as_ref().map(|(_, bytes)| *bytes)).max();
+            let largest_file_bytes = before
+                .as_ref()
+                .map(|(_, bytes)| *bytes)
+                .into_iter()
+                .chain(after.as_ref().map(|(_, bytes)| *bytes))
+                .max();
             let matches_base = match (&before, &after) {
-                (Some((_, left)), Some((_, right))) if left == right => {
-                    self.content_digest(base, &path, *left, io).await?
-                        == self.content_digest(current, &path, *right, io).await?
-                }
+                (Some((_, left)), Some((_, right))) if left == right => io.sdk(
+                    current
+                        .matches_content(base, &format!("/{path}"), io, io.cancellation())
+                        .await,
+                )?,
                 _ => false,
             };
             result.paths.push(DiffPath {
@@ -133,39 +138,6 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             });
         }
         Ok(result)
-    }
-
-    async fn content_digest(
-        &self,
-        generation: &acyclic_fs::Generation<StreamAuthorityStore<P>, O>,
-        path: &str,
-        bytes: u64,
-        io: &PreparationIo,
-    ) -> crate::Result<blake3::Hash> {
-        // One bounded range is live at a time. Both I/O and hashing spend the
-        // query's existing ledger; file size never controls allocation size.
-        let path = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("/{path}"), work)
-        })?;
-        let _path_hold = io.guard_owned(path.capacity() as u64)?;
-        let mut digest = blake3::Hasher::new();
-        let mut offset = 0;
-        while offset < bytes {
-            let length = (bytes - offset).min(16 * 1024);
-            let chunk = io.sdk(
-                generation.read_range(&path, offset, length, io, io.cancellation()).await,
-            )?;
-            if chunk.bytes.len() as u64 != length {
-                return Err(crate::Error::Storage("short immutable diff range".into()));
-            }
-            io.charge(acyclic_fs::WorkCounters {
-                bytes_hashed: length,
-                ..Default::default()
-            }).map_err(crate::Error::from)?;
-            digest.update(&chunk.bytes);
-            offset += length;
-        }
-        Ok(digest.finalize())
     }
 
     async fn endpoint(
@@ -183,17 +155,20 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                 let bytes = stat.logical_bytes.ok_or_else(|| {
                     crate::Error::Storage("diff endpoint has no file length".into())
                 })?;
-                Ok(Some((PinnedContextPath {
-                    root: ContextRoot {
-                        volume: self.volume.clone(),
-                        directory: String::new(),
+                Ok(Some((
+                    PinnedContextPath {
+                        root: ContextRoot {
+                            volume: self.volume.clone(),
+                            directory: String::new(),
+                        },
+                        generation: self
+                            .reader
+                            .host
+                            .generation_ref_id(generation.id(), Some(io))?,
+                        path: path.to_owned(),
                     },
-                    generation: self
-                        .reader
-                        .host
-                        .generation_ref_id(generation.id(), Some(io))?,
-                    path: path.to_owned(),
-                }, bytes)))
+                    bytes,
+                )))
             }
             Ok(_) | Err(acyclic_fs::WorkspaceError::NotFound) => Ok(None),
             Err(error) => Err(error.into()),
