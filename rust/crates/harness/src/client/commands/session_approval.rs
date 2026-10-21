@@ -13,7 +13,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let snapshot = self
             .volume
             .snapshot(
-                &files::Query::Approvals(files::Component::new(task.to_string())?),
+                &files::Query::PendingApprovals(files::Component::new(task.to_string())?),
                 self.maximum_files,
             )
             .await?;
@@ -38,13 +38,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Err(Error::Invalid(
                     "approval request path differs from its task".into(),
                 ));
-            }
-            let mut resolved = false;
-            for decision in &snapshot.files {
-                resolved |= request.decision(&decision.key, &decision.bytes)?.is_some();
-            }
-            if resolved {
-                continue;
             }
             let approved = match input.trim().to_ascii_lowercase().as_str() {
                 "y" | "yes" => true,
@@ -85,6 +78,47 @@ mod tests {
                     &json!({"selected_task":task}),
                 )
                 .await?;
+            let pending = files::Query::PendingApprovals(component(task.to_string())?);
+            let mut observed = volume.observe(pending.clone(), None, 1).await?;
+            assert!(observed.snapshot.take().unwrap().files.is_empty());
+            use futures::StreamExt as _;
+            for _ in 0..129 {
+                let old = files::FileApproval {
+                    task,
+                    id: crate::InteractionId::new(),
+                    request: crate::interaction::Interaction::Approval {
+                        prompt: "prior approval".into(),
+                        operation_id: OperationId::new(),
+                        action_digest: [3; 32],
+                    },
+                };
+                volume
+                    .append(
+                        volume.head().await?,
+                        &files::FileValue::new(
+                            old.key()?,
+                            serde_json::to_vec(&old).map_err(codec)?,
+                        ),
+                    )
+                    .await?;
+                let opened = observed.changes.next().await.unwrap()?;
+                assert_eq!(opened.file.unwrap().key, old.key()?);
+                assert_eq!(volume.snapshot(&pending, 1).await?.files.len(), 1);
+                volume
+                    .decide_approval(&old, component("user")?, true)
+                    .await?;
+                let closed = observed.changes.next().await.unwrap()?;
+                assert_eq!(closed.removed, vec![old.key()?]);
+                assert!(volume.snapshot(&pending, 1).await?.files.is_empty());
+                assert_eq!(volume.snapshot(&old.query()?, 2).await?.files.len(), 2);
+            }
+            // Negative control: selecting settled history with the old bound fails.
+            assert!(
+                volume
+                    .snapshot(&files::Query::Approvals(component(task.to_string())?), 128)
+                    .await
+                    .is_err()
+            );
             let operation_id = OperationId::new();
             let request = files::FileApproval {
                 task,
@@ -104,18 +138,85 @@ mod tests {
                     ),
                 )
                 .await?;
+            struct NoReads;
+            impl ContentResidencyVerifier for NoReads {}
+            client.catalog.themes.push("y".into());
+            for (form, text) in [("find", "y"), ("feedback", "n"), ("theme", "y")] {
+                client
+                    .write_state(
+                        CommandFileRoot::Session,
+                        "layout.json",
+                        &json!({"selected_task":task,"open_view":form,"view_input":form}),
+                    )
+                    .await?;
+                #[cfg(feature = "tui")]
+                if form == "feedback" {
+                    use crate::tui::{
+                        ClientRenderer, PromptInput, Viewport,
+                        ratatui::{Terminal, backend::TestBackend},
+                    };
+                    let mut renderer = ClientRenderer::default();
+                    let screen = renderer.screen_for(&client)?;
+                    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            screen.render(
+                                frame,
+                                &PromptInput::default(),
+                                &mut Viewport::default(),
+                                0,
+                                0,
+                            );
+                        })
+                        .unwrap();
+                    let visible = terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect::<String>();
+                    assert!(visible.contains("Enter saves locally"));
+                }
+                client.submit(text, &NoReads).await?;
+                if form == "theme" {
+                    assert_eq!(
+                        client
+                            .state(CommandFileRoot::Config, "theme.json")?
+                            .unwrap()["name"],
+                        text
+                    );
+                    assert_eq!(volume.snapshot(&request.query()?, 4).await?.files.len(), 1);
+                    continue;
+                }
+                let name = if form == "find" {
+                    "search.json"
+                } else {
+                    "feedback.json"
+                };
+                assert_eq!(
+                    client.state(CommandFileRoot::Session, name)?.unwrap()["text"],
+                    text
+                );
+                assert_eq!(
+                    volume.snapshot(&request.query()?, 4).await?.files.len(),
+                    1,
+                    "form input answered the approval"
+                );
+            }
             assert!(client.submit_approval("perhaps").await.is_err());
             assert_eq!(client.submit_approval("/quit").await?, None);
-            let query = files::Query::Approvals(component(task.to_string())?);
+            let query = request.query()?;
             // Negative control: unrecognized input and presentation commands
             // cannot silently approve the pending action.
             assert_eq!(volume.snapshot(&query, 4).await?.files.len(), 1);
             assert_eq!(
                 client
-                    .submit_approval(if approved { "y" } else { "n" })
+                    .submit(if approved { "y" } else { "n" }, &NoReads)
                     .await?,
-                Some(operation_id)
+                operation_id
             );
+            assert!(volume.snapshot(&pending, 1).await?.files.is_empty());
             let saved = volume.snapshot(&query, 4).await?;
             assert_eq!(saved.files.len(), 2);
             assert!(saved.files.iter().any(|file| request.decision(&file.key, &file.bytes).unwrap() == Some(approved)));

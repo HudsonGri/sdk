@@ -62,9 +62,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         input: &str,
         reader: &dyn ContentResidencyVerifier,
     ) -> Result<OperationId> {
-        if let Some(operation) = self.submit_approval(input).await? {
-            return Ok(operation);
-        }
         // Allocate once, before resolution or any publication attempt.
         let operation = OperationId::new();
         for _ in 0..super::publication::PUBLICATION_ATTEMPTS {
@@ -80,6 +77,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 }
             }
             if let Some(operation) = self.view_input(input).await? {
+                return Ok(operation);
+            }
+            if let Some(operation) = self.submit_approval(input).await? {
                 return Ok(operation);
             }
             let cut = self.generation;

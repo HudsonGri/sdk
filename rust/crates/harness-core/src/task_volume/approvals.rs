@@ -33,6 +33,13 @@ impl FileApproval {
             file: TaskFile::ApprovalRequest(Component::new(self.id.to_string())?),
         })
     }
+    /// Select this request and its decisions without earlier task history.
+    pub fn query(&self) -> crate::Result<Query> {
+        Ok(Query::Approval {
+            task: Component::new(self.task.to_string())?,
+            request: Component::new(self.id.to_string())?,
+        })
+    }
     /// Extract the exact intent, rejecting non-approval interactions.
     pub fn binding(&self) -> crate::Result<ApprovalBinding> {
         let Interaction::Approval {
@@ -99,26 +106,23 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let request_bytes = serde_json::to_vec(request)
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         loop {
-            let snapshot = self
-                .snapshot(
-                    &Query::Approvals(Component::new(request.task.to_string())?),
-                    128,
-                )
-                .await?;
+            let snapshot = self.snapshot(&request.query()?, 2).await?;
             let original = snapshot.files.iter().find(|file| file.key == request_key);
             if original.map(|file| file.bytes.as_ref()) != Some(request_bytes.as_slice()) {
                 return Err(crate::Error::Conflict(
                     "approval request changed or is missing".into(),
                 ));
             }
-            if let Some(prior) = snapshot.files.iter().find(|file| file.key == key) {
-                return if prior.bytes.as_ref() == bytes.as_slice() {
-                    Ok(())
-                } else {
-                    Err(crate::Error::Conflict(
-                        "approval decision is immutable".into(),
-                    ))
-                };
+            for prior in &snapshot.files {
+                if let Some(decided) = request.decision(&prior.key, &prior.bytes)? {
+                    return if decided == approved {
+                        Ok(())
+                    } else {
+                        Err(crate::Error::Conflict(
+                            "approval decision is immutable".into(),
+                        ))
+                    };
+                }
             }
             match self
                 .append(
