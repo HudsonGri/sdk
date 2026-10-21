@@ -48,7 +48,8 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                 registry.register("image-test".into(), serde_json::from_value(json!({
                     "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",
                     "models":{"tiny":{"capacity":{"context_tokens":32768,"output_tokens":1024},"features":{"images":true,"tools":false}}},
-                    "max_event_bytes":4096
+                    "max_event_bytes":4096,
+                    "token_counter":{"path":"count_tokens","adapter":adapter,"response_field":"input_tokens","framing_tokens":0}
                 })).unwrap()).unwrap();
                 let provider = registry.resolve("image-test/tiny").unwrap();
                 let file = FileRef::new(serde_json::from_value(json!({
