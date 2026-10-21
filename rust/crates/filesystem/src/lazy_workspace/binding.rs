@@ -87,10 +87,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         store: S,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
-        let state = store
-            .load_lazy_workspace(workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
+        // Boxed: each step's frame stays out of this one.
+        let state = crate::heap_future::metered!(ctx, |ctx| store
+            .load_lazy_workspace(workspace.id(), ctx))?
+        .ok_or(LazyWorkspaceError::NotFound)?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != workspace.id()
             || state.source.identity != source.reference().identity
@@ -99,16 +99,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
         state.require_ready_fork()?;
         retire_node(
-            store
-                .load_lazy_overlay(state.overlay, ctx)
-                .await?
+            crate::heap_future::metered!(ctx, |ctx| store.load_lazy_overlay(state.overlay, ctx))?
                 .ok_or(LazyWorkspaceError::NotFound)?,
             ctx,
         )?;
         retire_node(
-            store
-                .load_lazy_shadow(state.shadows, ctx)
-                .await?
+            crate::heap_future::metered!(ctx, |ctx| store.load_lazy_shadow(state.shadows, ctx))?
                 .ok_or(LazyWorkspaceError::NotFound)?,
             ctx,
         )?;
@@ -119,8 +115,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
         };
-        lazy.recover_pending_remove(ctx).await?;
-        lazy.state(ctx).await?;
+        crate::heap_future::metered!(ctx, |ctx| lazy.recover_pending_remove(ctx))?;
+        crate::heap_future::metered!(ctx, |ctx| lazy.state(ctx))?;
         Ok(lazy)
     }
 

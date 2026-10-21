@@ -202,14 +202,16 @@ where
             #[cfg(not(any(target_os = "macos", windows)))]
             let _ = extents;
             #[cfg(any(target_os = "macos", windows))]
-            let (cloned, payload_known) = clone_known_payload(
-                &host_root.0,
-                &host_path.0,
-                (logical_bytes, extents, _metadata_id),
-                known_payloads,
-                receipt,
-                before_effect,
-            )
+            let (cloned, payload_known) = in_receipt_heap(receipt, |receipt| {
+                clone_known_payload(
+                    &host_root.0,
+                    &host_path.0,
+                    (logical_bytes, extents, _metadata_id),
+                    known_payloads,
+                    receipt,
+                    before_effect,
+                )
+            })
             .await?;
             #[cfg(not(any(target_os = "macos", windows)))]
             let cloned = false;
@@ -270,16 +272,18 @@ where
                 )
                 .await?;
                 authenticated_metadata = Some(
-                    materialize_sparse_file(
-                        reader,
-                        path,
-                        &mut file,
-                        logical_bytes,
-                        options,
-                        cancellation,
-                        receipt,
-                        before_effect,
-                    )
+                    in_receipt_heap(receipt, |receipt| {
+                        materialize_sparse_file(
+                            reader,
+                            path,
+                            &mut file,
+                            logical_bytes,
+                            options,
+                            cancellation,
+                            receipt,
+                            before_effect,
+                        )
+                    })
                     .await?,
                 );
                 if mode == MaterializeMode::DurableOutput {
@@ -328,15 +332,17 @@ where
             receipt.push(known_files, (file_id, host_path.clone()))?;
         }
         (FileKind::SymbolicLink, FilePayload::SymbolicLink { target_bytes, .. }) => {
-            materialize_symlink(
-                (reader, cancellation),
-                path,
-                &host_root.0,
-                &host_path.0,
-                target_bytes,
-                receipt,
-                before_effect,
-            )
+            in_receipt_heap(receipt, |receipt| {
+                materialize_symlink(
+                    (reader, cancellation),
+                    path,
+                    &host_root.0,
+                    &host_path.0,
+                    target_bytes,
+                    receipt,
+                    before_effect,
+                )
+            })
             .await?;
             receipt.push(known_files, (file_id, host_path.clone()))?;
         }
@@ -360,15 +366,17 @@ where
         }
         (unsupported, _) => return Err(MaterializeError::UnsupportedKind(unsupported).into()),
     }
-    apply_metadata(
-        reader,
-        host_root,
-        path,
-        host_path,
-        authenticated_metadata,
-        receipt,
-        before_effect,
-    )
+    in_receipt_heap(receipt, |receipt| {
+        apply_metadata(
+            reader,
+            host_root,
+            path,
+            host_path,
+            authenticated_metadata,
+            receipt,
+            before_effect,
+        )
+    })
     .await?;
     receipt
         .custody

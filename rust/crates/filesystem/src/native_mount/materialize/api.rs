@@ -51,6 +51,34 @@ where
     })
 }
 
+/// Runs one materialization step in a heap frame paid for on the receipt's
+/// custody. Steps differ widely in size; boxing them keeps each caller's poll
+/// frame to its own locals rather than the sum of every step it awaits.
+pub(super) async fn in_receipt_heap<'r, F, T, E>(
+    receipt: &'r mut GenerationReceipt,
+    create: impl FnOnce(&'r mut GenerationReceipt) -> F,
+) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+    E: From<MaterializeError>,
+{
+    in_receipt_frame(receipt, create).await?
+}
+
+/// [`in_receipt_heap`] for a step whose output is not a materialization result.
+pub(super) async fn in_receipt_frame<'r, F: Future>(
+    receipt: &'r mut GenerationReceipt,
+    create: impl FnOnce(&'r mut GenerationReceipt) -> F,
+) -> Result<F::Output, MaterializeError> {
+    let bytes = std::mem::size_of::<F>() as u64;
+    receipt.custody.grow(bytes)?;
+    let custody = receipt.custody.split_off(bytes)?;
+    // Admitted above: the split custody holds this frame's exact size.
+    let output = crate::heap_future::in_heap_unmetered(move || create(receipt)).await;
+    drop(custody);
+    Ok(output)
+}
+
 /// Materializes multiple non-overlapping authenticated paths in one traversal.
 pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
@@ -332,23 +360,25 @@ where
         } else {
             None
         };
-        materialize_entry(
-            &reader,
-            &host_root,
-            path,
-            &host_path,
-            directory,
-            &record,
-            options,
-            cancellation,
-            &mut known_files,
-            #[cfg(any(target_os = "macos", windows))]
-            &mut known_payloads,
-            &mut pending,
-            &mut receipt,
-            mode,
-            &mut before_effect,
-        )
+        in_receipt_heap(&mut receipt, |receipt| {
+            materialize_entry(
+                &reader,
+                &host_root,
+                path,
+                &host_path,
+                directory,
+                &record,
+                options,
+                cancellation,
+                &mut known_files,
+                #[cfg(any(target_os = "macos", windows))]
+                &mut known_payloads,
+                &mut pending,
+                receipt,
+                mode,
+                &mut before_effect,
+            )
+        })
         .await?;
     }
     receipt
@@ -434,23 +464,25 @@ where
                     .map(|owned| &owned.0)
                     .or(owned_child.as_ref())
                     .ok_or(MaterializeError::InvalidOptions)?;
-                materialize_entry(
-                    &reader,
-                    &host_root,
-                    child,
-                    &child_host,
-                    selected_directory.clone(),
-                    &entry.record,
-                    options,
-                    cancellation,
-                    &mut known_files,
-                    #[cfg(any(target_os = "macos", windows))]
-                    &mut known_payloads,
-                    &mut pending,
-                    &mut receipt,
-                    mode,
-                    &mut before_effect,
-                )
+                in_receipt_heap(&mut receipt, |receipt| {
+                    materialize_entry(
+                        &reader,
+                        &host_root,
+                        child,
+                        &child_host,
+                        selected_directory.clone(),
+                        &entry.record,
+                        options,
+                        cancellation,
+                        &mut known_files,
+                        #[cfg(any(target_os = "macos", windows))]
+                        &mut known_payloads,
+                        &mut pending,
+                        receipt,
+                        mode,
+                        &mut before_effect,
+                    )
+                })
                 .await?;
                 if entry.record.kind != FileKind::Directory {
                     drop(owned_child);
@@ -486,15 +518,17 @@ where
         }
     }
     for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
-        apply_metadata(
-            &reader,
-            &host_root,
-            &directory.0,
-            &host_directory,
-            None,
-            &mut receipt,
-            &mut before_effect,
-        )
+        in_receipt_heap(&mut receipt, |receipt| {
+            apply_metadata(
+                &reader,
+                &host_root,
+                &directory.0,
+                &host_directory,
+                None,
+                receipt,
+                &mut before_effect,
+            )
+        })
         .await?;
     }
     let work = receipt.custody.work().receipt();
