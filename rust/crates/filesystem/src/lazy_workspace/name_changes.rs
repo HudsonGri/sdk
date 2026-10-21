@@ -187,6 +187,26 @@ impl NativeNameChanges {
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, NativeDemandSource, S>
 {
+    /// Reinstalls native observation from an indexed directory name. This
+    /// deliberately bypasses authored directory bindings, which can coexist
+    /// with unindexed native children. It performs no directory enumeration.
+    pub async fn observe_indexed_native_directory(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        let namespace = self.namespace_path(path, accounting)?;
+        let observed = accounted!(accounting, |work, stop| self.source.lookup(
+            snapshot.source,
+            &namespace.value,
+            work,
+            stop
+        ));
+        namespace.retire(accounting)?;
+        Ok(observed?.is_some_and(|node| node.kind == SourceNodeKind::Directory))
+    }
+
     /// Subscribes before pathname discovery, so a completed index can remain
     /// live without a timer or a periodic directory scan.
     pub fn follow_native_names(

@@ -84,6 +84,7 @@ impl IndexedNames {
             ),
             View::Volume(workspace) => OwnedView::Volume(workspace.clone()),
         };
+        let native = native_follow(&owned)?;
         let existing = Index::open(workspace)
             .await
             .map_err(super::search::search_error)?;
@@ -96,6 +97,7 @@ impl IndexedNames {
         } else {
             None
         };
+        restore_watches(&owned, native.is_some(), existing.as_ref()).await?;
         let (changed, receiver) = watch::channel(0);
         let shared = Arc::new(Shared {
             latest: AsyncMutex::new(existing),
@@ -106,7 +108,7 @@ impl IndexedNames {
         *entry = Arc::downgrade(&shared);
         let producer = Arc::clone(&shared);
         tokio::spawn(async move {
-            if let Err(error) = maintain(&owned, &producer).await {
+            if let Err(error) = maintain(&owned, &producer, native).await {
                 if let Ok(mut failure) = producer.failure.lock() {
                     *failure = Some(error.to_string());
                 }
@@ -234,8 +236,10 @@ fn storage_index(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
-    let mut native = match view {
+fn native_follow(
+    view: &OwnedView,
+) -> crate::Result<Option<acyclic_fs::lazy_workspace::NativeNameChanges>> {
+    Ok(match view {
         OwnedView::Checkout(lazy) => {
             let cancellation = CancellationToken::new();
             let work =
@@ -247,7 +251,55 @@ async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
             })?
         }
         OwnedView::Volume(_) => None,
-    };
+    })
+}
+
+async fn restore_watches(
+    view: &OwnedView,
+    native: bool,
+    index: Option<&Index>,
+) -> crate::Result<()> {
+    // A newly opened inotify subscription initially watches only the root.
+    // Restore subdirectory registrations from committed index pages before
+    // declaring a completed index live. Lookup registers each directory and
+    // its ancestors; it never lists it or reads candidate content.
+    if native
+        && let OwnedView::Checkout(lazy) = view
+        && let Some(index) = index
+        && let acyclic_fs::NameCut::Lazy(snapshot) = &index.manifest.cut
+    {
+        let cancellation = CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        for page in 0..index.manifest.pages {
+            for name in index
+                .page(page)
+                .await
+                .map_err(super::search::search_error)?
+            {
+                if name.directory {
+                    lazy.observe_indexed_native_directory(
+                        *snapshot,
+                        &format!("/{}", name.path),
+                        &mut accounting,
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn maintain(
+    view: &OwnedView,
+    shared: &Shared,
+    mut native: Option<acyclic_fs::lazy_workspace::NativeNameChanges>,
+) -> crate::Result<()> {
     let mut native_delta = None;
     let (provider, path) = view
         .workspace()

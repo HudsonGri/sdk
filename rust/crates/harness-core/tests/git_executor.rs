@@ -576,6 +576,75 @@ async fn volume_search_streams_large_authored_revisions_without_diff_limit_failu
 }
 
 #[tokio::test]
+async fn volume_search_restores_nested_watches_before_open_returns() -> Result<()> {
+    let (_temp, root, _fs, _store, main) = fixture_native(false).await?;
+    std::fs::create_dir(root.join("nested"))?;
+    std::fs::write(root.join("nested/existing.txt"), b"existing")?;
+    // Publish an index without a live producer. Merely opening the durable
+    // pages must not leave this pre-existing subdirectory unobserved.
+    let ignore = git::search_ignore((&main).into()).await?;
+    let mut walk = git::walk_names((&main).into(), None, ignore).await?;
+    let stop = CancellationToken::new();
+    let mut expected = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let mut pages = 0;
+    let old = loop {
+        let page = walk.next_page().await?;
+        pages += u64::from(page.is_some());
+        let manifest = acyclic_fs::NameIndexManifest {
+            schema: 1,
+            cut: walk.cut(),
+            names_cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages,
+            pending_directories: walk.pending_directories(),
+            complete: page.is_none(),
+            checkpoint: walk.checkpoint()?,
+        };
+        let index =
+            acyclic_fs::NameIndex::publish(main.workspace(), &expected, manifest, page.as_deref())
+                .await?
+                .unwrap();
+        expected = index.generation();
+        if page.is_none() {
+            break index;
+        }
+    };
+    drop(walk);
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    while names.next_page().await?.is_some() {}
+    std::fs::write(root.join("nested/arrived.txt"), b"arrived")?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            while let Some(page) = names.next_page().await? {
+                if page
+                    .names
+                    .iter()
+                    .any(|name| name.path == "nested/arrived.txt")
+                {
+                    return Ok::<_, Error>(());
+                }
+            }
+            names.changed().await?;
+        }
+    })
+    .await??;
+    // Negative control: replaying the old index alone cannot discover it.
+    for page in 0..old.manifest.pages {
+        assert!(
+            !old.page(page)
+                .await?
+                .iter()
+                .any(|name| name.path == "nested/arrived.txt")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_search_follows_native_create_rename_and_delete_notifications() -> Result<()> {
     let (_temp, root, _fs, _store, main) = fixture_native(true).await?;
     let mut names = git::IndexedNames::open((&main).into()).await?;
