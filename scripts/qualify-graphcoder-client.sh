@@ -16,7 +16,7 @@ done
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness-core --features "$features" --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models::
 # Checkout skill catalog, frontmatter depth guard and Git porcelain parsers.
-cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness/fuzz-settings checkout_context --target x86_64-unknown-linux-gnu --dev -- -runs=1000 -max_len=65536 -timeout=5
+python3 scripts/verify-checkout-context.py --fuzz-only
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness --features "$features" --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py local::checkout_tools::tests:: client::commands::session::init_models::
 

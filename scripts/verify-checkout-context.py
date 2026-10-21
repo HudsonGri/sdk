@@ -9,6 +9,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -203,6 +204,8 @@ def run(command, timeout=None, tests=False, env=None):
 
 
 def main():
+    if sys.argv[1:] == ["--fuzz-only"]:
+        return qualify_fuzz()
     # Keep Cargo's JSON outside the checkout so a run never leaves an untracked file.
     with tempfile.TemporaryDirectory() as temporary:
         qualify(pathlib.Path(temporary) / "build.jsonl")
@@ -277,13 +280,30 @@ def qualify(build_log):
         run([artifacts[target], test_filter], timeout=9.5, tests=True)
     run(["cargo", "check", "--locked", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "graphcoder", "-p", "acyclic-harness-providers", "-p", "acyclic-fs", "--features", FEATURES,
          "--lib", "--tests", "--target", "x86_64-pc-windows-gnu"])
+    qualify_fuzz()
+
+
+def qualify_fuzz():
     fuzz = ROOT / "rust/crates/harness/fuzz-settings"
     fuzz_env = os.environ.copy()
-    fuzz_env["CARGO_TARGET_DIR"] = str(pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / "checkout-context-fuzz")
+    fuzz_env["CARGO_TARGET_DIR"] = str(pathlib.Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / "checkout-context-fuzz")
     run(["cargo", "+nightly-2026-07-01", "metadata", "--locked", "--manifest-path",
          str(fuzz / "Cargo.toml"), "--format-version", "1", "--no-deps"], env=fuzz_env)
-    run(["cargo", "+nightly-2026-07-01", "fuzz", "build", "checkout_context", "--dev",
-         "--target", "x86_64-unknown-linux-gnu", "--fuzz-dir", str(fuzz)], env=fuzz_env)
+    # cargo-fuzz does not forward --locked. Build its sanitizer/coverage target
+    # directly so the actual compiler invocation cannot update the lockfile.
+    fuzz_env["RUSTFLAGS"] = " ".join([
+        "-Cpasses=sancov-module", "-Cllvm-args=-sanitizer-coverage-level=4",
+        "-Cllvm-args=-sanitizer-coverage-inline-8bit-counters",
+        "-Cllvm-args=-sanitizer-coverage-pc-table",
+        "-Cllvm-args=-sanitizer-coverage-trace-compares",
+        "-Cllvm-args=-sanitizer-coverage-stack-depth",
+        "-Cllvm-args=-simplifycfg-branch-fold-threshold=0",
+        "--cfg fuzzing", "-Zsanitizer=address", "-Cdebug-assertions",
+        os.environ.get("RUSTFLAGS", ""),
+    ])
+    run(["cargo", "+nightly-2026-07-01", "build", "--locked", "--manifest-path",
+         str(fuzz / "Cargo.toml"), "--bin", "checkout_context",
+         "--target", "x86_64-unknown-linux-gnu"], env=fuzz_env)
     target = pathlib.Path(fuzz_env["CARGO_TARGET_DIR"])
     with tempfile.TemporaryDirectory() as temporary:
         corpus = pathlib.Path(temporary) / "corpus"
