@@ -425,3 +425,197 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories() {
+    use crate::{NameCut, NameIndex, NameIndexManifest, NameIndexRefresh};
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::from_static(b"never read"));
+    source.directory_entries = 513;
+    source.paged = true;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let ignore = GitIgnorePolicy::parse("*.tmp\n");
+    let mut walk = NameWalk::lazy(&lazy, None, ignore.clone()).await.unwrap();
+    let stop = CancellationToken::new();
+    let mut expected = lazy
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let mut pages = 0;
+    let mut index = loop {
+        let page = walk.next_page().await.unwrap();
+        pages += u64::from(page.is_some());
+        let manifest = NameIndexManifest {
+            schema: 1,
+            cut: walk.cut(),
+            observed_generation: expected.id(),
+            pages,
+            pending_directories: walk.pending_directories(),
+            complete: page.is_none(),
+            checkpoint: walk.checkpoint().unwrap(),
+        };
+        let index = NameIndex::publish(lazy.workspace(), &expected, manifest, page.as_deref())
+            .await
+            .unwrap()
+            .unwrap();
+        expected = index.generation();
+        if page.is_none() {
+            break index;
+        }
+    };
+    for path in ["/near.txt", "/ignored.tmp"] {
+        lazy.workspace().write_text(path, "authored").await.unwrap();
+    }
+    let before = source.counts.pages.load(Ordering::Relaxed);
+    let reads = source.counts.ranges.load(Ordering::Relaxed);
+    let cut = NameCut::Lazy(lazy.snapshot(accounting!()).await.unwrap());
+    index = match index
+        .refresh_authored(lazy.workspace(), cut, &ignore)
+        .await
+        .unwrap()
+    {
+        NameIndexRefresh::Published(index) => index,
+        _ => panic!("authored leaf delta required namespace discovery"),
+    };
+    let mut names = Vec::new();
+    for page in 0..index.manifest.pages {
+        names.extend(
+            index
+                .page(page)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|name| name.path),
+        );
+    }
+    assert_eq!(names.len(), 514);
+    assert!(names.iter().any(|path| path == "near.txt"));
+    assert!(!names.iter().any(|path| path == "ignored.tmp"));
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), reads);
+    let pages = index.manifest.pages;
+    for _ in 0..3 {
+        lazy.workspace()
+            .write_text("/near.txt", "changed")
+            .await
+            .unwrap();
+        let cut = NameCut::Lazy(lazy.snapshot(accounting!()).await.unwrap());
+        index = match index
+            .refresh_authored(lazy.workspace(), cut, &ignore)
+            .await
+            .unwrap()
+        {
+            NameIndexRefresh::Published(index) => index,
+            _ => panic!("content-only edit required namespace discovery"),
+        };
+        assert_eq!(
+            index.manifest.pages, pages,
+            "content edits appended duplicate pages"
+        );
+    }
+    assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
+    // Negative control: rebuilding the same namespace re-lists native pages.
+    let mut rebuilt = NameWalk::lazy(&lazy, None, ignore.clone()).await.unwrap();
+    while rebuilt.next_page().await.unwrap().is_some() {}
+    assert!(source.counts.pages.load(Ordering::Relaxed) > before);
+    // A policy edit cannot reuse a leaf-only interpretation of the old tree.
+    lazy.workspace()
+        .write_text("/.ignore", "near.txt\n")
+        .await
+        .unwrap();
+    let cut = NameCut::Lazy(lazy.snapshot(accounting!()).await.unwrap());
+    assert!(matches!(
+        index
+            .refresh_authored(lazy.workspace(), cut, &ignore)
+            .await
+            .unwrap(),
+        NameIndexRefresh::Ineligible
+    ));
+}
+
+#[tokio::test]
+async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
+    use crate::{NameCut, NameIndex, NameIndexManifest, NameIndexRefresh};
+    let fs = Fs::memory();
+    let workspace = fs
+        .create_workspace(
+            "leaf-conflict",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .value;
+    let expected = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap()
+        .value;
+    let mut walk = NameWalk::<_, _, CountingSource, MemoryLazyWorkspaceStore>::exact(
+        expected.clone(),
+        None,
+        GitIgnorePolicy::default(),
+    )
+    .await
+    .unwrap();
+    while walk.next_page().await.unwrap().is_some() {}
+    let manifest = NameIndexManifest {
+        schema: 1,
+        cut: walk.cut(),
+        observed_generation: expected.id(),
+        pages: 0,
+        pending_directories: 0,
+        complete: true,
+        checkpoint: walk.checkpoint().unwrap(),
+    };
+    let index = NameIndex::publish(&workspace, &expected, manifest, None)
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.write_text("/first.txt", "first").await.unwrap();
+    let observed = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap()
+        .value;
+    let cut = NameCut::Exact {
+        workspace: workspace.id(),
+        generation: observed.id(),
+    };
+    workspace.write_text("/second.txt", "second").await.unwrap();
+    assert!(matches!(
+        index
+            .refresh_authored(&workspace, cut, &GitIgnorePolicy::default())
+            .await
+            .unwrap(),
+        NameIndexRefresh::Conflict
+    ));
+    // Negative control: the same delta publishes when based on the current head.
+    let current = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap()
+        .value;
+    let cut = NameCut::Exact {
+        workspace: workspace.id(),
+        generation: current.id(),
+    };
+    let refreshed = match index
+        .refresh_authored(&workspace, cut, &GitIgnorePolicy::default())
+        .await
+        .unwrap()
+    {
+        NameIndexRefresh::Published(index) => index,
+        _ => panic!("current leaf delta was not published"),
+    };
+    assert_eq!(refreshed.page(0).await.unwrap().len(), 2);
+}

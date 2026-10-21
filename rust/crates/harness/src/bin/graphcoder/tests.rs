@@ -161,7 +161,9 @@ fn file_search_progress_and_query_bound_top_k_render_in_graphcoder() {
     input.refresh_completions();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     terminal
-        .draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0))
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0);
+        })
         .unwrap();
     assert!(screen_text(&terminal).contains("still indexing (17 dirs)"));
     input
@@ -177,7 +179,9 @@ fn file_search_progress_and_query_bound_top_k_render_in_graphcoder() {
         )
         .unwrap();
     terminal
-        .draw(|frame| Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0))
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0);
+        })
         .unwrap();
     assert!(screen_text(&terminal).contains("neighbour/mention target.txt"));
     assert!(

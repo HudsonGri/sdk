@@ -1,7 +1,7 @@
 //! One producer per opened namespace; clients retain only a page and their top-k.
 //! Notifications wake readers, but index files are the authoritative snapshot.
 use super::*;
-use acyclic_fs::{NameIndex, NameIndexManifest};
+use acyclic_fs::{NameIndex, NameIndexManifest, NameIndexRefresh};
 use acyclic_stream::StreamProvider as _;
 use futures::StreamExt as _;
 use std::sync::{OnceLock, Weak};
@@ -256,7 +256,35 @@ async fn maintain(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) ->
             .map_err(super::search::search_error)?;
         let published = match published {
             Some(index) if reusable(view.view(), &index).await? => Some(index),
-            _ => None,
+            Some(index) => {
+                let cut = match view.view() {
+                    View::Checkout(lazy) => acyclic_fs::NameCut::Lazy(
+                        lazy.snapshot(
+                            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                        )
+                        .await?,
+                    ),
+                    View::Volume(workspace) => acyclic_fs::NameCut::Exact {
+                        workspace: workspace.id(),
+                        generation: workspace
+                            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                            .await
+                            .map_err(|failure| failure.error)?
+                            .value
+                            .id(),
+                    },
+                };
+                match index
+                    .refresh_authored(view.workspace(), cut, &ignore)
+                    .await
+                    .map_err(super::search::search_error)?
+                {
+                    NameIndexRefresh::Published(index) => Some(index),
+                    NameIndexRefresh::Conflict => continue,
+                    NameIndexRefresh::Ineligible => None,
+                }
+            }
+            None => None,
         };
         let needs_fill = published
             .as_ref()

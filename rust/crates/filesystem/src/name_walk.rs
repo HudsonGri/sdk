@@ -60,6 +60,22 @@ pub struct NameCheckpoint {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl NameCheckpoint {
+    pub(crate) fn completed_at(&self, cut: NameCut) -> Option<Self> {
+        if !self.pending.is_empty() || self.single.is_some() {
+            return None;
+        }
+        let mut checkpoint = self.clone();
+        checkpoint.cut = cut;
+        Some(checkpoint)
+    }
+
+    pub(crate) fn eligible(&self, root: &GitIgnorePolicy, path: &str) -> bool {
+        root.eligible_with_nested(&self.ignore_policies, path, false)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum SavedCursor {
     Lazy(Option<Vec<u8>>),

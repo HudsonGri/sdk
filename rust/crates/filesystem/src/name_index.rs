@@ -5,6 +5,8 @@ use crate::{
     IdempotencyKey, NameCheckpoint, NameCut, PublicationPermit, SearchError, SearchName,
     TransactionCommit, WorkBudget, Workspace, WorkspaceError,
 };
+mod refresh;
+pub use refresh::NameIndexRefresh;
 
 const ROOT: &str = "/.acyclic-sdk/name-index";
 const MANIFEST: &str = "/.acyclic-sdk/name-index/manifest.json";
