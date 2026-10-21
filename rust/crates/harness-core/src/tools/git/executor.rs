@@ -48,8 +48,8 @@ where
         else {
             return Err(Error::Invalid("merge continuation requires a join".into()));
         };
-        let pending = GitCompatRepository::new(self.repository_id, self.store.clone())
-            .pending_transition()
+        let repository = GitCompatRepository::new(self.repository_id, self.store.clone());
+        let pending = acyclic_fs::in_heap(|| repository.pending_transition())
             .await
             .map_err(super::errors::compat_error)?
             .filter(|pending| pending.id.operation_id() == operation)
@@ -64,8 +64,10 @@ where
             ));
         };
         let current = acyclic_fs::in_heap(|| self.generation(tree)).await?;
-        let Some(resolved) =
-            acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
+        let Some(resolved) = acyclic_fs::in_heap(|| {
+            acyclic_fs::git_merge_resolution(&current, paths, tracked_paths)
+        })
+        .await?
         else {
             return Err(Self::error(
                 "Git merge still contains unresolved conflict markers",
@@ -128,18 +130,17 @@ where
                 }
                 let workspace_generation =
                     acyclic_fs::in_heap(|| self.generation(*workspace_tree)).await?;
+                let cancellation = acyclic_fs::CancellationToken::new();
                 if self.current.id() != workspace_generation.workspace_id()
-                    || self
-                        .current
-                        .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(Error::from)?
-                        .id()
+                    || acyclic_fs::in_heap(|| {
+                        self.current
+                            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                    })
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(Error::from)?
+                    .id()
                         != workspace_generation.id()
                 {
                     return Err(Self::error("Git commit workspace changed before capture"));
@@ -153,23 +154,27 @@ where
                                 acyclic_fs::in_heap(|| self.generation(*previous_live)).await?;
                             let previous_capture =
                                 acyclic_fs::in_heap(|| self.generation(*previous_capture)).await?;
-                            capture_git_compatible_generation_incremental(
+                            acyclic_fs::in_heap(|| {
+                                capture_git_compatible_generation_incremental(
+                                    &self.current,
+                                    &previous_live,
+                                    &previous_capture,
+                                    &self.ignore,
+                                    tracked_paths,
+                                    operation_id,
+                                )
+                            })
+                            .await
+                            .map_err(Error::from)
+                        }
+                        _ => acyclic_fs::in_heap(|| {
+                            capture_git_compatible_generation(
                                 &self.current,
-                                &previous_live,
-                                &previous_capture,
                                 &self.ignore,
                                 tracked_paths,
                                 operation_id,
                             )
-                            .await
-                            .map_err(Error::from)
-                        }
-                        _ => capture_git_compatible_generation(
-                            &self.current,
-                            &self.ignore,
-                            tracked_paths,
-                            operation_id,
-                        )
+                        })
                         .await
                         .map_err(Error::from),
                     }
@@ -195,26 +200,24 @@ where
                 switch,
                 ..
             } => {
+                let cancellation = acyclic_fs::CancellationToken::new();
                 acyclic_fs::in_heap(|| async {
                     let source_matches = match source_tree {
                         GitTreeRef::Exact(source) => {
                             self.current.id() == source.workspace_id
-                                && self
-                                    .current
-                                    .head(
-                                        acyclic_fs::WorkBudget::UNBOUNDED,
-                                        &acyclic_fs::CancellationToken::new(),
-                                    )
-                                    .await
-                                    .map(|receipt| receipt.value)
-                                    .map_err(|failure| failure.error)
-                                    .map_err(Error::from)?
-                                    .id()
+                                && acyclic_fs::in_heap(|| {
+                                    self.current
+                                        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                                })
+                                .await
+                                .map(|receipt| receipt.value)
+                                .map_err(|failure| failure.error)
+                                .map_err(Error::from)?
+                                .id()
                                     == source.generation
                         }
                         GitTreeRef::Lazy(source) => {
-                            self.lazy_current
-                                .tree(false, self.permit)
+                            acyclic_fs::in_heap(|| self.lazy_current.tree(false, self.permit))
                                 .await
                                 .map_err(Error::from)?
                                 == GitTreeRef::Lazy(*source)
@@ -230,31 +233,32 @@ where
                         "git-branch-{}",
                         hex::encode(&hasher.finalize().as_bytes()[..12])
                     );
-                    let fork_generation = self
-                        .lazy_current
-                        .workspace()
-                        .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(Error::from)?
-                        .id();
-                    let workspace = self
-                        .lazy_current
-                        .fork(&destination, operation_id, self.permit)
-                        .await
-                        .map_err(Error::from)?;
-                    WorkspaceGraph::new(self.store.clone())
-                        .register_existing_child(
+                    let fork_generation = acyclic_fs::in_heap(|| {
+                        self.lazy_current
+                            .workspace()
+                            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                    })
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(Error::from)?
+                    .id();
+                    let workspace = acyclic_fs::in_heap(|| {
+                        self.lazy_current
+                            .fork(&destination, operation_id, self.permit)
+                    })
+                    .await
+                    .map_err(Error::from)?;
+                    let graph = WorkspaceGraph::new(self.store.clone());
+                    acyclic_fs::in_heap(|| {
+                        graph.register_existing_child(
                             self.lazy_current.workspace(),
                             workspace.workspace(),
                             fork_generation,
                         )
-                        .await
-                        .map_err(Error::from)?;
+                    })
+                    .await
+                    .map_err(Error::from)?;
                     let workspace_id = workspace.workspace().id();
                     if *switch {
                         *self.switched.lock().map_err(|_| {
@@ -295,14 +299,17 @@ where
                     let to = acyclic_fs::in_heap(|| self.generation(*to)).await?;
                     let value = if let Some(from) = from {
                         let from = acyclic_fs::in_heap(|| self.generation(*from)).await?;
-                        let diff = git_compatible_diff_counts(
-                            &from,
-                            &to,
-                            &self.repository,
-                            tracked_paths,
-                            100_000,
-                            &CancellationToken::new(),
-                        )
+                        let cancellation = CancellationToken::new();
+                        let diff = acyclic_fs::in_heap(|| {
+                            git_compatible_diff_counts(
+                                &from,
+                                &to,
+                                &self.repository,
+                                tracked_paths,
+                                100_000,
+                                &cancellation,
+                            )
+                        })
                         .await
                         .map_err(Error::from)?;
                         json!({
@@ -418,28 +425,31 @@ where
                         }
                         None => None,
                     };
-                    let current = self
-                        .current
-                        .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(Error::from)?;
-                    let outcome = self
-                        .current
-                        .apply_paths_from(
+                    // The head read and the path application each run in a
+                    // heap frame of their own, so this arm's frame holds
+                    // neither future inline.
+                    let cancellation = acyclic_fs::CancellationToken::new();
+                    let current = acyclic_fs::in_heap(|| {
+                        self.current
+                            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                    })
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(Error::from)?;
+                    let paths = paths.iter().cloned().collect::<Vec<_>>();
+                    let outcome = acyclic_fs::in_heap(|| {
+                        self.current.apply_paths_from(
                             base.as_ref(),
                             source.as_ref(),
-                            &paths.iter().cloned().collect::<Vec<_>>(),
+                            &paths,
                             current.id(),
                             IdempotencyKey::from_bytes(operation_id.into_bytes()),
                             self.permit,
                         )
-                        .await
-                        .map_err(Error::from)?;
+                    })
+                    .await
+                    .map_err(Error::from)?;
                     let generation = match outcome {
                         WorkspacePathApply::Applied(generation)
                         | WorkspacePathApply::AlreadyApplied(generation)
@@ -474,7 +484,8 @@ where
                         }
                     };
                     let resulting_tracked =
-                        existing_tracked_paths(&generation, tracked_paths).await?;
+                        acyclic_fs::in_heap(|| existing_tracked_paths(&generation, tracked_paths))
+                            .await?;
                     Ok(GitFilesystemResult::Applied {
                         tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
                         tracked_paths: Some(resulting_tracked),
@@ -485,7 +496,7 @@ where
             GitFilesystemAction::Archive { tree } => {
                 acyclic_fs::in_heap(|| async {
                     let generation = acyclic_fs::in_heap(|| self.generation(*tree)).await?;
-                    let entries = walk_git_tree(&generation, None, 100_000)
+                    let entries = acyclic_fs::in_heap(|| walk_git_tree(&generation, None, 100_000))
                         .await
                         .map_err(Error::from)?;
                     Ok(GitFilesystemResult::Data {
@@ -553,7 +564,7 @@ where
                             "Git clean generation is not the live workspace",
                         ));
                     }
-                    let entries = walk_git_tree(&generation, None, 100_000)
+                    let entries = acyclic_fs::in_heap(|| walk_git_tree(&generation, None, 100_000))
                         .await
                         .map_err(Error::from)?;
                     let candidates: Vec<_> = entries

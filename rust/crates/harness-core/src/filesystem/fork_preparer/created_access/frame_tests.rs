@@ -48,8 +48,10 @@ fn receipt_and_authentication_frames_keep_original_custody_until_drop() -> Resul
     );
     let creator = FilesystemResourceCreationProvider::new(Arc::clone(&host), &issuer, None)?;
     let child = crate::runtime::TaskAdmissionRecord::from_canonical_value(
-        serde_json::from_str(include_str!("../../../../../harness/fixtures/v2/task-admission.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+        serde_json::from_str(include_str!(
+            "../../../../../harness/fixtures/v2/task-admission.json"
+        ))
+        .map_err(|error| Error::Invalid(error.to_string()))?,
         &mut None,
     )?
     .0;

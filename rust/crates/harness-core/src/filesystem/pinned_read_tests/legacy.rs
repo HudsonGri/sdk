@@ -102,8 +102,15 @@ pub(super) async fn read_pinned(
                     bytes
                 }
                 None => {
-                    host.read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                        .await?
+                    original_host_read(
+                        host,
+                        &workspace,
+                        Some(&generation),
+                        &path,
+                        maximum_bytes,
+                        None,
+                    )
+                    .await?
                 }
             };
             crate::executor::with_history_io(io, |work| {
@@ -129,4 +136,42 @@ pub(super) fn saved_frame_bytes(host: &Host, reference: &FileRef, maximum_bytes:
     original
         .checked_sub(std::mem::size_of_val(&candidate))
         .expect("the byte-only factory is smaller than the original shared factory") as u64
+}
+
+// The original unboxed `FilesystemHost::read`, verbatim: the shared method now
+// runs in a bounded heap frame, which this reference predates.
+async fn original_host_read(
+    host: &Host,
+    reference: &WorkspaceRef,
+    generation: Option<&GenerationRef>,
+    path: &str,
+    maximum_bytes: u64,
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_stream::OwnedBytes> {
+    acyclic_test_support::differential::record(("read", maximum_bytes));
+    let owned;
+    let io = if let Some(io) = io {
+        io
+    } else {
+        owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        &owned
+    };
+    let workspace = host.open(reference, Some(io)).await?;
+    let bytes = match generation {
+        Some(reference) => io.sdk(
+            host.generation(&workspace, reference, Some(io))
+                .await?
+                .read(path, maximum_bytes, io, io.cancellation())
+                .await,
+        )?,
+        None => io.sdk(
+            workspace
+                .read(path, maximum_bytes, io, io.cancellation())
+                .await,
+        )?,
+    };
+    if io.original_native_work().is_none() {
+        io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+    }
+    Ok(bytes)
 }

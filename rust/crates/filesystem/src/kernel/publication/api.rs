@@ -106,19 +106,26 @@ where
         }
         Ok(())
     };
-    let result = publish_generation_async_inner(
-        objects,
-        request,
-        intent,
-        closure_limits,
-        cache,
-        cancellation,
-        &mut accounting,
-        &mut seal,
-        &mut dispatch,
-        resolved,
-        &mut roots,
-    )
+    // An inert request is refused before its frame is admitted.
+    // Boxed: the engine's frame stays out of every publishing caller's.
+    let result: Result<_, E> = async {
+        super::engine::refuse_inert(&request, cancellation, &accounting).map_err(E::from)?;
+        crate::heap_future::metered!(erased &mut accounting, |accounting| {
+            publish_generation_async_inner(
+                objects,
+                request,
+                intent,
+                closure_limits,
+                cache,
+                cancellation,
+                accounting,
+                &mut seal,
+                &mut dispatch,
+                resolved,
+                &mut roots,
+            )
+        })
+    }
     .await;
     result
         .map(|output| output.0)

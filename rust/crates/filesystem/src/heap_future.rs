@@ -39,6 +39,30 @@ pub(crate) fn in_heap_unmetered<F: Future>(create: impl FnOnce() -> F) -> Pin<Bo
     Box::pin(HeapFuture { future: create() })
 }
 
+/// `Send` wherever provider futures are: an erased frame is a provider future.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) trait FrameSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> FrameSend for T {}
+/// `Send` wherever provider futures are: an erased frame is a provider future.
+#[cfg(target_arch = "wasm32")]
+pub(crate) trait FrameSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T> FrameSend for T {}
+
+pub(crate) use acyclic_stream::BoxProviderFuture;
+
+/// Re-types a heap frame as a provider future; nothing is reallocated.
+///
+/// A caller's auto-trait obligations stop at the erased frame instead of
+/// descending through every nested frame, so boxing a deep chain stays within
+/// the compiler's recursion limit wherever the chain is awaited.
+pub(crate) fn erase<'a, F: Future + FrameSend + 'a>(
+    frame: Pin<Box<HeapFuture<F>>>,
+) -> BoxProviderFuture<'a, F::Output> {
+    frame
+}
+
 pin_project_lite::pin_project! {
     /// A future whose poll boundary survives boxing and trait erasure.
     // Transparent layout preserves the admitted future's exact allocation size.
@@ -142,7 +166,7 @@ fn frame_bytes<F>() -> u64 {
 pub(crate) fn in_heap_metered<'r, L: FrameLedger + ?Sized, F: Future>(
     ledger: &'r mut L,
     create: impl FnOnce(&'r mut L) -> F,
-) -> Result<MeteredFrame<F, L::Reservation>, L::Error> {
+) -> Result<MeteredFrame<Pin<Box<HeapFuture<F>>>, L::Reservation>, L::Error> {
     let reservation = ledger.reserve_frame(frame_bytes::<F>())?;
     Ok(MeteredFrame {
         frame: Some(Box::pin(HeapFuture {
@@ -160,7 +184,7 @@ pub(crate) fn in_heap_metered<'r, L: FrameLedger + ?Sized, F: Future>(
 pub(crate) fn in_heap_budgeted<F: Future>(
     accounting: &mut crate::kernel::KernelAccounting<'_>,
     create: impl FnOnce(crate::WorkBudget) -> F,
-) -> Result<MeteredFrame<F, KernelFrameReservation>, crate::FsError> {
+) -> Result<MeteredFrame<Pin<Box<HeapFuture<F>>>, KernelFrameReservation>, crate::FsError> {
     let reservation = accounting.reserve_frame(frame_bytes::<F>())?;
     let remaining = accounting.remaining()?;
     Ok(MeteredFrame {
@@ -173,20 +197,33 @@ pub(crate) fn in_heap_budgeted<F: Future>(
 
 /// A paid heap frame. It destroys its box before handing back the reservation.
 #[must_use = "a metered frame does nothing unless awaited"]
-pub(crate) struct MeteredFrame<F, R> {
-    frame: Option<Pin<Box<HeapFuture<F>>>>,
+pub(crate) struct MeteredFrame<P, R> {
+    frame: Option<P>,
     reservation: Option<R>,
 }
 
-impl<F: Future, R: Unpin> Future for MeteredFrame<F, R> {
-    type Output = (F::Output, R);
+impl<F: Future, R> MeteredFrame<Pin<Box<HeapFuture<F>>>, R> {
+    /// Re-types the same paid box as a provider future; nothing is reallocated.
+    pub(crate) fn erase<'a>(self) -> MeteredFrame<BoxProviderFuture<'a, F::Output>, R>
+    where
+        F: FrameSend + 'a,
+    {
+        MeteredFrame {
+            frame: self.frame.map(erase),
+            reservation: self.reservation,
+        }
+    }
+}
+
+impl<P: Future + Unpin, R: Unpin> Future for MeteredFrame<P, R> {
+    type Output = (P::Output, R);
 
     #[inline(never)]
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let Some(frame) = self.frame.as_mut() else {
             return Poll::Pending;
         };
-        let output = std::task::ready!(frame.as_mut().poll(context));
+        let output = std::task::ready!(Pin::new(frame).poll(context));
         self.frame = None;
         match self.reservation.take() {
             Some(reservation) => Poll::Ready((output, reservation)),
@@ -247,6 +284,15 @@ impl<P: Future + Unpin> Future for ClaimedFrame<P> {
 /// `$ledger` is a `&mut` place implementing [`FrameLedger`]; `$call` receives
 /// it reborrowed as `$name`. Errors from either step convert with `?`.
 macro_rules! metered {
+    // Erased: the caller's auto-trait obligations stop at this frame. The
+    // frame is erased in a statement of its own, so no temporary holding the
+    // unerased type lives across the await.
+    (erased $ledger:expr, |$name:ident| $call:expr) => {{
+        let frame = crate::heap_future::in_heap_metered(&mut *$ledger, |$name| $call)?.erase();
+        let (output, reservation) = frame.await;
+        crate::heap_future::FrameLedger::release_frame(&mut *$ledger, reservation)?;
+        output
+    }};
     ($ledger:expr, |$name:ident| $call:expr) => {{
         let (output, reservation) =
             crate::heap_future::in_heap_metered(&mut *$ledger, |$name| $call)?.await;
