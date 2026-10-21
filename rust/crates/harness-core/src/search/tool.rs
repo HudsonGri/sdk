@@ -24,7 +24,7 @@ pub fn bind<P: StreamProvider + 'static>(
         description: "Search the web and return ranked sources for citations".into(),
         input_schema: schema::input::<SearchRequest>()?,
         output_schema: output.clone(),
-        projection_schema: crate::tool::json_projection_schema(output),
+        projection_schema: schema::ProjectionMode::Full.schema::<files::SearchOutcome>()?,
     };
     definition.validate(&mut None)?;
     Ok(Tool {
@@ -37,6 +37,10 @@ pub fn bind<P: StreamProvider + 'static>(
         projection: Arc::new(JsonToolProjection),
     })
 }
+
+#[cfg(test)]
+#[path = "tool/tests.rs"]
+mod tests;
 
 struct SearchTool<P> {
     resolve: Arc<Resolve>,
