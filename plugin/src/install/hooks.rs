@@ -151,10 +151,8 @@ pub(crate) fn uninstall_host(host: &str) -> Result<(), String> {
         return Ok(());
     }
     if host == "claude-code" {
-        let user = home_directory()?.join(".claude/settings.json");
-        let project = env::current_dir()
-            .map_err(display)?
-            .join(".claude/settings.json");
+        let user = claude_settings_path(false)?;
+        let project = claude_settings_path(true)?;
         let same_settings = same_existing_path(&user, &project);
         remove_claude_hooks(false)?;
         if !same_settings {
@@ -218,16 +216,26 @@ pub(crate) fn remove_copilot_hooks_at(path: &Path) -> Result<(), String> {
     remove_owned_json(path, "copilot-hooks", "Copilot hooks")
 }
 
+/// The Claude Code events Acyclic routes, in the order Claude fires them.
+pub(crate) const CLAUDE_HOOK_EVENTS: [&str; 7] = [
+    "SessionStart",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "SubagentStart",
+    "SubagentStop",
+    "SessionEnd",
+];
+
 pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, String> {
-    let path = if project {
-        env::current_dir()
-            .map_err(display)?
-            .join(".claude/settings.json")
-    } else {
-        home_directory()?.join(".claude/settings.json")
-    };
+    let path = claude_settings_path(project)?;
+    install_claude_hooks_at(executable, &path)?;
+    Ok(path)
+}
+
+pub(crate) fn install_claude_hooks_at(executable: &Path, path: &Path) -> Result<(), String> {
     install_owned_json_normalized(
-        &path,
+        path,
         "claude-hooks",
         "Claude Code hooks",
         normalize_claude_hook_document,
@@ -239,15 +247,7 @@ pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<P
                 .cloned()
                 .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?;
             let hooks = object_entry(&mut document, "hooks")?;
-            for event in [
-                "SessionStart",
-                "PreToolUse",
-                "PostToolUse",
-                "PostToolUseFailure",
-                "SubagentStart",
-                "SubagentStop",
-                "SessionEnd",
-            ] {
+            for event in CLAUDE_HOOK_EVENTS {
                 let entries = hooks
                     .entry(event.to_owned())
                     .or_insert_with(|| json!([]))
@@ -273,8 +273,7 @@ pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<P
             }
             Ok(Value::Object(document))
         },
-    )?;
-    Ok(path)
+    )
 }
 
 pub(crate) fn normalize_claude_hook_document(
@@ -370,14 +369,37 @@ pub(crate) fn claude_hook_timeout(event: &str) -> u64 {
 }
 
 pub(crate) fn remove_claude_hooks(project: bool) -> Result<(), String> {
-    let path = if project {
-        env::current_dir()
+    remove_owned_json(
+        &claude_settings_path(project)?,
+        "claude-hooks",
+        "Claude Code hooks",
+    )
+}
+
+/// The settings file Claude Code reads for the selected scope. User settings
+/// live in `CLAUDE_CONFIG_DIR` when it is set, exactly where Claude Code
+/// itself looks, and in `~/.claude` otherwise.
+pub(crate) fn claude_settings_path(project: bool) -> Result<PathBuf, String> {
+    if project {
+        return Ok(env::current_dir()
             .map_err(display)?
-            .join(".claude/settings.json")
-    } else {
-        home_directory()?.join(".claude/settings.json")
-    };
-    remove_owned_json(&path, "claude-hooks", "Claude Code hooks")
+            .join(".claude/settings.json"));
+    }
+    match env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(directory) if !directory.is_empty() => Ok(claude_user_settings(
+            Some(Path::new(&directory)),
+            Path::new(""),
+        )),
+        _ => Ok(claude_user_settings(None, &home_directory()?)),
+    }
+}
+
+/// Claude Code's user settings file for an optional `CLAUDE_CONFIG_DIR`.
+pub(crate) fn claude_user_settings(config_directory: Option<&Path>, home: &Path) -> PathBuf {
+    config_directory.map_or_else(
+        || home.join(".claude").join("settings.json"),
+        |directory| directory.join("settings.json"),
+    )
 }
 
 pub(crate) fn install_copilot_hooks(executable: &Path) -> Result<PathBuf, String> {
