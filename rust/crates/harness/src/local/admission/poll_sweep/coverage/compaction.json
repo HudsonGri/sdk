@@ -7,7 +7,7 @@
   "native:submitted": 64,
   "stream:read:blocked": 6,
   "stream:read:completed": 6,
-  "stream:read:ready": 3754,
+  "stream:read:ready": 3546,
   "task:completed": 120,
   "task:submitted": 120
 }

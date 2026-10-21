@@ -9,5 +9,5 @@
   "task:submitted": 62,
   "stream:read:blocked": 6,
   "stream:read:completed": 6,
-  "stream:read:ready": 2047
+  "stream:read:ready": 1943
 }
