@@ -12,7 +12,8 @@ keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
 [features]
-test-support = ["dep:tokio"]
+tasks = ["dep:tokio"]
+test-support = ["tasks"]
 
 [dependencies]
 bytes.workspace = true
