@@ -1,4 +1,5 @@
 use super::*;
+mod wildmatch;
 
 /// Git-compatible ignore policy used by commit and parent-join capture.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -6,13 +7,25 @@ pub struct GitIgnorePolicy {
     rules: Vec<GitIgnoreRule>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct GitIgnoreRule {
     pattern: String,
     negated: bool,
     directory_only: bool,
     anchored: bool,
+    #[serde(skip)]
+    compiled: std::sync::OnceLock<Vec<wildmatch::Token>>,
 }
+
+impl PartialEq for GitIgnoreRule {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern
+            && self.negated == other.negated
+            && self.directory_only == other.directory_only
+            && self.anchored == other.anchored
+    }
+}
+impl Eq for GitIgnoreRule {}
 
 impl GitIgnorePolicy {
     /// Identifies changed, newly ignored paths whose child binding wins.
@@ -61,6 +74,19 @@ impl GitIgnorePolicy {
             .lines()
             .filter_map(|line| {
                 let mut line = line.trim_end_matches('\r');
+                // Git discards unescaped trailing spaces. A space preceded by
+                // an odd run of backslashes belongs to the pattern.
+                while line.ends_with(' ') {
+                    let escapes = line.as_bytes()[..line.len() - 1]
+                        .iter()
+                        .rev()
+                        .take_while(|byte| **byte == b'\\')
+                        .count();
+                    if escapes % 2 == 1 {
+                        break;
+                    }
+                    line = &line[..line.len() - 1];
+                }
                 if line.is_empty() || line.starts_with('#') {
                     return None;
                 }
@@ -84,6 +110,7 @@ impl GitIgnorePolicy {
                     negated,
                     directory_only,
                     anchored,
+                    compiled: std::sync::OnceLock::new(),
                 })
             })
             .collect();
@@ -102,9 +129,24 @@ impl GitIgnorePolicy {
             return true;
         }
         let path = path.trim_start_matches('/');
-        let mut ignored = false;
-        self.apply(path, is_directory, &mut ignored);
-        !ignored
+        // A child cannot be re-included while one of its parents is ignored.
+        // This matters for explicit subtree search roots as well as walking.
+        for end in path
+            .match_indices('/')
+            .map(|(end, _)| end)
+            .chain([path.len()])
+        {
+            let mut ignored = false;
+            self.apply(
+                &path[..end],
+                end != path.len() || is_directory,
+                &mut ignored,
+            );
+            if ignored {
+                return false;
+            }
+        }
+        true
     }
 
     /// Applies directory-local policies in ancestor order. Each policy's
@@ -128,34 +170,6 @@ impl GitIgnorePolicy {
     }
 }
 
-fn wildcard_matches(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let value = value.as_bytes();
-    let (mut pattern_index, mut value_index, mut star, mut checkpoint) = (0, 0, None, 0);
-    while value_index < value.len() {
-        if pattern.get(pattern_index).is_some_and(|byte| {
-            *byte == b'?' || value.get(value_index).is_some_and(|value| value == byte)
-        }) {
-            pattern_index += 1;
-            value_index += 1;
-        } else if pattern.get(pattern_index) == Some(&b'*') {
-            star = Some(pattern_index);
-            pattern_index += 1;
-            checkpoint = value_index;
-        } else if let Some(star_index) = star {
-            pattern_index = star_index + 1;
-            checkpoint += 1;
-            value_index = checkpoint;
-        } else {
-            return false;
-        }
-    }
-    while pattern.get(pattern_index) == Some(&b'*') {
-        pattern_index += 1;
-    }
-    pattern_index == pattern.len()
-}
-
 pub(super) fn git_path_eligible(
     root: &GitIgnorePolicy,
     nested: &BTreeMap<String, GitIgnorePolicy>,
@@ -167,32 +181,44 @@ pub(super) fn git_path_eligible(
         return true;
     }
     let path = path.trim_start_matches('/');
-    let mut ignored = false;
-    root.apply(path, is_directory, &mut ignored);
-    // Matching prefixes are ordered parent before child.
-    for (directory, policy) in nested {
-        if let Some(relative) = path
-            .strip_prefix(directory)
-            .and_then(|suffix| suffix.strip_prefix('/'))
-        {
-            policy.apply(relative, is_directory, &mut ignored);
+    for end in path
+        .match_indices('/')
+        .map(|(end, _)| end)
+        .chain([path.len()])
+    {
+        let candidate = &path[..end];
+        let directory = end != path.len() || is_directory;
+        let mut ignored = false;
+        root.apply(candidate, directory, &mut ignored);
+        // Look up just this path's ancestors. Scanning every previously read
+        // ignore directory for every file makes a large walk quadratic.
+        for (split, _) in candidate.match_indices('/') {
+            if let Some(policy) = nested.get(&candidate[..split]) {
+                policy.apply(&candidate[split + 1..], directory, &mut ignored);
+            }
+        }
+        if ignored {
+            return false;
         }
     }
-    !ignored
+    true
 }
 
 fn ignore_matches(rule: &GitIgnoreRule, path: &str, is_directory: bool) -> bool {
+    let compiled = rule
+        .compiled
+        .get_or_init(|| wildmatch::tokens(rule.pattern.as_bytes()));
     let matches = |candidate: &str| {
         if rule.anchored || rule.pattern.contains('/') {
-            wildcard_matches(&rule.pattern, candidate)
+            wildmatch::matches(compiled, candidate)
         } else {
             candidate
                 .split('/')
-                .any(|component| wildcard_matches(&rule.pattern, component))
+                .any(|component| wildmatch::matches(compiled, component))
         }
     };
-    if rule.directory_only {
-        let mut candidate = if is_directory {
+    {
+        let mut candidate = if !rule.directory_only || is_directory {
             Some(path)
         } else {
             path.rsplit_once('/').map(|(parent, _)| parent)
@@ -204,7 +230,5 @@ fn ignore_matches(rule: &GitIgnoreRule, path: &str, is_directory: bool) -> bool 
             candidate = parent.rsplit_once('/').map(|(parent, _)| parent);
         }
         false
-    } else {
-        matches(path)
     }
 }
