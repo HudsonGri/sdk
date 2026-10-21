@@ -23,6 +23,8 @@ struct Inode {
     bytes: Vec<u8>,
     /// The handle holding the file's lock.
     holder: Option<u64>,
+    /// Open handles, which keep the inode from reuse.
+    open: usize,
 }
 
 #[derive(Default)]
@@ -81,10 +83,11 @@ impl Drop for SimFile {
     fn drop(&mut self) {
         let mut world = enter(&self.world);
         world.handle_process.remove(&self.handle);
-        if let Ok(inode) = world.inode(self.inode)
-            && inode.holder == Some(self.handle)
-        {
-            inode.holder = None;
+        if let Ok(inode) = world.inode(self.inode) {
+            inode.open = inode.open.saturating_sub(1);
+            if inode.holder == Some(self.handle) {
+                inode.holder = None;
+            }
         }
     }
 }
@@ -131,6 +134,23 @@ impl Sim {
             .remove(Path::new(from))
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
         world.names.insert(PathBuf::from(to), inode);
+        Ok(())
+    }
+
+    /// Removes `from`, and creates `to` on its freed inode, as a filesystem
+    /// that reuses inodes does once nothing holds the old file open.
+    fn reuse(&self, from: &str, to: &str) -> io::Result<()> {
+        let mut world = self.running()?;
+        let index = world
+            .names
+            .remove(Path::new(from))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        let inode = world.inode(index)?;
+        if inode.open != 0 {
+            return Err(io::Error::other("an open inode is never reused"));
+        }
+        *inode = Inode::default();
+        world.names.insert(PathBuf::from(to), index);
         Ok(())
     }
 
@@ -197,6 +217,7 @@ impl Host for Sim {
         world.handles += 1;
         let handle = world.handles;
         world.handle_process.insert(handle, self.pid);
+        world.inode(inode)?.open += 1;
         Ok(SimFile {
             world: self.world.clone(),
             inode,
@@ -261,6 +282,10 @@ impl Host for Sim {
         self.process.as_ref()
     }
 
+    fn established(&self) -> Option<&Process> {
+        self.process.as_ref()
+    }
+
     fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness {
         *probes += 1;
         let world = enter(&self.world);
@@ -320,6 +345,9 @@ impl Host for FailOpen {
     }
     fn process(&self) -> Option<&Process> {
         self.0.process()
+    }
+    fn established(&self) -> Option<&Process> {
+        self.0.established()
     }
     fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness {
         match self.0.liveness(process, probes) {
@@ -526,7 +554,7 @@ fn a_record_is_never_read_in_part() {
             let mut world = enter(&world);
             world.inodes.push(Inode {
                 bytes,
-                holder: None,
+                ..Inode::default()
             });
             world.names.insert(PathBuf::from("store"), 0);
         }
@@ -559,6 +587,50 @@ fn a_record_is_never_read_in_part() {
                 "a record longer than the bound was written".to_owned(),
             );
         }
+        Ok(())
+    });
+}
+
+/// A claimed store is removed while its claim lives, and a new store's file
+/// reuses its inode. The stale claim must not refuse the new store, and its
+/// release must not free the new store's claim, while another process races
+/// for the new store throughout.
+#[test]
+fn a_removed_claim_file_whose_identity_is_reused_is_a_new_store() {
+    explore(|findings| {
+        let world = Arc::new(Mutex::new(World::new(2, findings)));
+        let owner = Sim::new(&world, 0);
+        let other = Sim::new(&world, 1);
+        let stale = protocol::acquire(owner.clone(), Path::new("a")).map_err(failed)?;
+        owner.reuse("a", "b").map_err(failed)?;
+        let contender = loom::thread::spawn(move || {
+            other.hold("b");
+        });
+        let releasing = loom::thread::spawn(move || drop(stale));
+        match protocol::acquire(owner.clone(), Path::new("b")) {
+            Ok(fresh) => {
+                owner.own(&fresh);
+                releasing.join().map_err(failed)?;
+                if protocol::acquire(owner.clone(), Path::new("b")).is_ok() {
+                    report(
+                        findings,
+                        "a stale claim's release freed a live claim".to_owned(),
+                    );
+                }
+                owner.disown(&fresh);
+            }
+            Err(error) => {
+                releasing.join().map_err(failed)?;
+                // Refused only by the other process, never by the stale claim.
+                if error.to_string().contains("in this process") {
+                    report(
+                        findings,
+                        "a removed file's claim refused the file that reused it".to_owned(),
+                    );
+                }
+            }
+        }
+        contender.join().map_err(failed)?;
         Ok(())
     });
 }

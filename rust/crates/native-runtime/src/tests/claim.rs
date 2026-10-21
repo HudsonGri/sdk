@@ -393,3 +393,119 @@ fn a_claim_check_counts_each_read_it_makes() -> io::Result<()> {
     );
     Ok(())
 }
+
+/// A record naming a process whose lock path is as long as a record allows,
+/// so a check makes every allocation and probe it can.
+#[cfg(target_os = "linux")]
+fn longest_lockless_record(directory: &Path) -> Vec<u8> {
+    let mut lock = directory.join("gone");
+    let mut record = Vec::new();
+    loop {
+        let longer = lock.join("l");
+        let candidate =
+            crate::claim::foreign_record(std::process::id(), b"another-boot:1", &longer);
+        if candidate.len() > crate::claim::RECORD_LIMIT {
+            return record;
+        }
+        lock = longer;
+        record = candidate;
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claim_check_allocates_within_its_bound() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let held = directory.path().join("held.lock");
+    let _claim = StoreClaim::acquire(&held)?;
+    let mut oversized = lockless_record(directory.path(), u32::MAX, b"boot:1");
+    oversized.resize(crate::claim::RECORD_LIMIT + 1, 0);
+    let records = [
+        Vec::new(),
+        longest_lockless_record(directory.path()),
+        oversized,
+        std::fs::read(&held)?,
+    ];
+    for record in records {
+        std::fs::write(&path, &record)?;
+        let mut file = std::fs::File::open(&path)?;
+        let mut checked = None;
+        let allocated = acyclic_test_support::measure(|| {
+            checked = Some(StoreClaim::check(&mut file).map(|check| check.read_operations));
+        });
+        let read_operations = checked.ok_or_else(|| io::Error::other("unchecked"))??;
+        assert!(
+            allocated.count_total <= StoreClaim::CHECK_ALLOCATIONS
+                && allocated.bytes_total <= StoreClaim::CHECK_ALLOCATION_BYTES,
+            "a {}-byte record checked in {read_operations} reads allocated {allocated:?}",
+            record.len()
+        );
+    }
+    Ok(())
+}
+
+const CHECK_CHILD: &str = "ACYCLIC_CLAIM_CHECK_CHILD";
+
+#[test]
+fn claim_check_process() -> io::Result<()> {
+    let Some(path) = std::env::var_os(CHECK_CHILD) else {
+        return Ok(());
+    };
+    StoreClaim::check(&mut std::fs::File::open(path)?).map(drop)
+}
+
+/// A check reads another store's claim; it never establishes this
+/// process's own lock, which would create, write and sweep files unmetered.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claim_check_establishes_no_process_lock() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let runtime = directory.path().join("runtime");
+    std::fs::create_dir(&runtime)?;
+    let path = directory.path().join("owner.lock");
+    std::fs::write(
+        &path,
+        lockless_record(directory.path(), u32::MAX, b"boot:1"),
+    )?;
+    let test = concat!(module_path!(), "::claim_check_process");
+    let test = test.split_once("::").map_or(test, |(_, path)| path);
+    let status = Command::new(std::env::current_exe()?)
+        .args(["--exact", test, "--test-threads=1"])
+        .env(CHECK_CHILD, &path)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    assert!(status.success());
+    assert_eq!(std::fs::read_dir(&runtime)?.count(), 0);
+    Ok(())
+}
+
+/// A store is removed while its claim lives, and a new store's claim file
+/// reuses the removed file's identity, as XFS and ext4 reuse inodes at once.
+/// The new store is claimable, and stays claimed after the stale claim drops.
+#[cfg(unix)]
+#[test]
+fn a_new_file_reusing_a_removed_claim_files_identity_is_claimable() -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+    let directory = tempfile::tempdir()?;
+    let removed = directory.path().join("removed.lock");
+    let stale = StoreClaim::acquire(&removed)?;
+    let identity = std::fs::metadata(&removed)?.ino();
+    std::fs::remove_file(&removed)?;
+    // Filesystems that never reuse inodes, such as tmpfs, cannot show this.
+    let Some(reused) = (0..256).find_map(|index| {
+        let path = directory.path().join(format!("{index}.lock"));
+        std::fs::File::create(&path).ok()?;
+        (std::fs::metadata(&path).ok()?.ino() == identity).then_some(path)
+    }) else {
+        return Ok(());
+    };
+    let fresh = StoreClaim::acquire(&reused)?;
+    drop(stale);
+    assert!(contended(StoreClaim::acquire(&reused)));
+    drop(fresh);
+    drop(StoreClaim::acquire(&reused)?);
+    Ok(())
+}

@@ -129,15 +129,30 @@ fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-/// Backend reads one measured shared admission of `root` charges.
-fn measured_admission_reads(root: &Path) -> u64 {
+/// The work one measured shared admission of `root` charges.
+fn measured_admission(root: &Path) -> crate::WorkCounters {
     let cancellation = crate::CancellationToken::new();
     let work =
         crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
     let store = LocalCoreStateStore::new(root).materialization(work.clone());
-    let before = work.receipt().backend_read_operations;
     drop(store.namespace().unwrap());
-    work.receipt().backend_read_operations - before
+    work.receipt()
+}
+
+/// Backend reads one measured shared admission of `root` charges.
+fn measured_admission_reads(root: &Path) -> u64 {
+    measured_admission(root).backend_read_operations
+}
+
+#[test]
+fn measured_shared_admission_charges_its_claim_check_allocations() {
+    let directory = tempfile::tempdir().unwrap();
+    let work = measured_admission(&directory.path().join("core-state"));
+    assert!(
+        work.peak_allocation_bytes >= acyclic_native_runtime::StoreClaim::CHECK_ALLOCATION_BYTES
+            && work.allocation_operations >= acyclic_native_runtime::StoreClaim::CHECK_ALLOCATIONS,
+        "{work:?}"
+    );
 }
 
 #[test]
@@ -169,8 +184,7 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     // One probe while the owner's process lock remains, three once another
     // process's sweep has removed it.
     assert!(
-        probed > free
-            && probed - free <= acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS - 1,
+        probed > free && probed - free < acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
         "free admission {free} reads, after a dead owner {probed}"
     );
     Ok(())

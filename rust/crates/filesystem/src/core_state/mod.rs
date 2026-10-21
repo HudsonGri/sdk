@@ -283,6 +283,12 @@ impl LocalCoreStateStore {
                 work.admit(reads(
                     1 + acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
                 ))?;
+                // Every buffer the check may allocate, held across it.
+                let check_allocation = work.claim(
+                    acyclic_native_runtime::StoreClaim::CHECK_ALLOCATION_BYTES,
+                    acyclic_native_runtime::StoreClaim::CHECK_ALLOCATIONS,
+                    crate::WorkCounters::UNCHARGED,
+                )?;
                 let mut spent = 1;
                 let acquired = FileExt::try_lock_shared(&lock).and_then(|()| {
                     // A claim names its owner inside the lock file instead of
@@ -305,6 +311,7 @@ impl LocalCoreStateStore {
                         }
                     }
                 });
+                drop(check_allocation);
                 let owner_lock = acquired
                     .as_ref()
                     .is_ok()

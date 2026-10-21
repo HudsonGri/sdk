@@ -8,6 +8,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+static OWNER: OnceLock<Option<ProcessOwner>> = OnceLock::new();
+
 /// The lock this process holds for its whole life. A claim record names it, so
 /// the record lapses when the process dies.
 #[derive(Debug)]
@@ -20,8 +22,13 @@ impl ProcessOwner {
     /// This process's owner, created once. `None` when no process lock could be
     /// established, in which case each claim holds its own file lock instead.
     pub(super) fn current() -> Option<&'static Self> {
-        static OWNER: OnceLock<Option<ProcessOwner>> = OnceLock::new();
         OWNER.get_or_init(|| Self::create().ok()).as_ref()
+    }
+
+    /// This process's owner if one was already established. Never creates
+    /// one: a check of another store's claim must not lock, write or sweep.
+    pub(super) fn existing() -> Option<&'static Self> {
+        OWNER.get().and_then(Option::as_ref)
     }
 
     fn create() -> io::Result<Self> {
@@ -285,19 +292,65 @@ fn sweep(directory: &Path) {
 }
 
 /// A Linux process's identity across pid reuse: the boot and its start tick.
-/// `NotFound` only when the boot is known and the process is not.
+/// `NotFound` only when the boot is known and the process is not. Reads into
+/// fixed buffers, so a probe allocates only the identity it returns.
 #[cfg(target_os = "linux")]
 fn start_identity(pid: u32) -> io::Result<Vec<u8>> {
+    use std::io::Write as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    let malformed = || io::Error::from(io::ErrorKind::InvalidData);
     // Read first, so a missing /proc is never mistaken for a missing process.
+    let mut boot = [0; 64];
     let boot =
-        std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map_err(io::Error::other)?;
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let malformed = || io::Error::new(io::ErrorKind::InvalidData, "unreadable process start");
+        read_bounded(Path::new("/proc/sys/kernel/random/boot_id"), &mut boot).map_err(|error| {
+            match error.kind() {
+                io::ErrorKind::NotFound => io::Error::from(io::ErrorKind::Unsupported),
+                _ => error,
+            }
+        })?;
+    let mut name = [0; 32];
+    let mut cursor = io::Cursor::new(&mut name[..]);
+    write!(cursor, "/proc/{pid}/stat")?;
+    let length = usize::try_from(cursor.position()).map_err(|_| malformed())?;
+    let name = name.get(..length).ok_or_else(malformed)?;
+    let mut stat = [0; 4096];
+    let stat = read_bounded(Path::new(std::ffi::OsStr::from_bytes(name)), &mut stat)?;
+    let stat = std::str::from_utf8(stat).map_err(|_| malformed())?;
     // Field 22, counted after the parenthesized command name, which may
     // itself contain spaces.
     let (_, fields) = stat.rsplit_once(')').ok_or_else(malformed)?;
     let start = fields.split_whitespace().nth(19).ok_or_else(malformed)?;
-    Ok(format!("{}:{start}", boot.trim()).into_bytes())
+    let boot = std::str::from_utf8(boot).map_err(|_| malformed())?.trim();
+    let mut identity = Vec::with_capacity(boot.len() + 1 + start.len());
+    identity.extend_from_slice(boot.as_bytes());
+    identity.push(b':');
+    identity.extend_from_slice(start.as_bytes());
+    Ok(identity)
+}
+
+/// The whole of the file at `path`, which must fit `buffer`.
+#[cfg(target_os = "linux")]
+fn read_bounded<'a>(path: &Path, buffer: &'a mut [u8]) -> io::Result<&'a [u8]> {
+    use std::io::Read as _;
+    let mut file = File::open(path)?;
+    let mut filled = 0;
+    loop {
+        let Some(rest) = buffer.get_mut(filled..) else {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        };
+        if rest.is_empty() {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        match file.read(rest) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    buffer
+        .get(..filled)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -74,8 +74,9 @@ impl Host for Native {
 
     fn read(&self, file: &mut File) -> io::Result<Vec<u8>> {
         file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        // One byte past the limit, so an oversized file never decodes whole.
+        // One byte past the limit, so an oversized file never decodes whole,
+        // in the one allocation the check's bound counts.
+        let mut bytes = Vec::with_capacity(record::RECORD_LIMIT + 1);
         (&*file)
             .take(record::RECORD_LIMIT as u64 + 1)
             .read_to_end(&mut bytes)?;
@@ -95,6 +96,10 @@ impl Host for Native {
         ProcessOwner::current().map(|owner| &owner.process)
     }
 
+    fn established(&self) -> Option<&record::Process> {
+        ProcessOwner::existing().map(|owner| &owner.process)
+    }
+
     fn liveness(&self, process: &record::Process, probes: &mut u64) -> Liveness {
         process::liveness(process, probes)
     }
@@ -109,6 +114,18 @@ impl Host for Native {
         TABLE.get_or_init(Table::new)
     }
 }
+
+#[cfg(target_os = "linux")]
+const CHECK_ALLOCATIONS: u64 = 8;
+/// Measured on Linux only; elsewhere path conversions may allocate more.
+#[cfg(not(target_os = "linux"))]
+const CHECK_ALLOCATIONS: u64 = 16;
+/// Every buffer the check allocates is bounded by the record, which is at most
+/// [`record::RECORD_LIMIT`] bytes.
+#[cfg(target_os = "linux")]
+const CHECK_ALLOCATION_BYTES: u64 = 5 * (record::RECORD_LIMIT as u64 + 1);
+#[cfg(not(target_os = "linux"))]
+const CHECK_ALLOCATION_BYTES: u64 = 8 * (record::RECORD_LIMIT as u64 + 1);
 
 /// Exclusive ownership of one store, held by this process for as long as the
 /// value lives.
@@ -125,6 +142,16 @@ impl StoreClaim {
     /// The most backend reads one [`StoreClaim::check`] makes: the record,
     /// then the probes of its owner.
     pub const CHECK_READ_OPERATIONS: u64 = 1 + process::PROBES;
+
+    /// The most allocations one [`StoreClaim::check`] makes: the record's
+    /// buffer and its three fields, then its owner's process-lock path, that
+    /// path's terminated copy for the open, and the lock's and the process's
+    /// identities that its probes read.
+    pub const CHECK_ALLOCATIONS: u64 = CHECK_ALLOCATIONS;
+
+    /// The most bytes one [`StoreClaim::check`] allocates in all; its peak
+    /// is no larger.
+    pub const CHECK_ALLOCATION_BYTES: u64 = CHECK_ALLOCATION_BYTES;
 
     /// Claims the store whose claim file is `path`, creating the file if needed.
     pub fn acquire(path: &Path) -> io::Result<Self> {

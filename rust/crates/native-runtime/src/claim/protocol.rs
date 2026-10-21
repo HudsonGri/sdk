@@ -2,7 +2,7 @@
 //! model run the same code.
 
 use super::record::{Contents, Process, RECORD_LIMIT, Record};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -37,8 +37,12 @@ pub(super) trait Host {
     fn read(&self, file: &mut Self::File) -> io::Result<Vec<u8>>;
     /// Replaces the whole file with `bytes`.
     fn write(&self, file: &mut Self::File, bytes: &[u8]) -> io::Result<()>;
-    /// This process, when it holds a process lock that claims can name.
+    /// This process, when it holds a process lock that claims can name,
+    /// establishing that lock on first use.
     fn process(&self) -> Option<&Process>;
+    /// [`Host::process`], only if already established. A record can name
+    /// this process only after its lock is established.
+    fn established(&self) -> Option<&Process>;
     /// What can be proven about `process`, counting each probe in `probes`.
     fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness;
     /// A token no other claim of this process has used.
@@ -57,18 +61,29 @@ const SHARDS: usize = 64;
 const SHARDS: usize = 2;
 
 /// Claimed files of one process, sharded so unrelated claims never contend.
+/// Each entry is the claim's token, and whether the claim has closed the
+/// file. A closed file can be removed and its identity reused by another
+/// file, so a closed claim's entry binds only while the file still carries
+/// that claim's record.
 pub(super) struct Table<Key> {
-    shards: [crate::sync::Mutex<HashSet<Key>>; SHARDS],
+    shards: [crate::sync::Mutex<HashMap<Key, Entry>>; SHARDS],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Entry {
+    token: u64,
+    /// The claim closed the file after recording itself in it.
+    recorded: bool,
 }
 
 impl<Key: Clone + Eq + Hash> Table<Key> {
     pub(super) fn new() -> Self {
         Self {
-            shards: std::array::from_fn(|_| crate::sync::Mutex::new(HashSet::new())),
+            shards: std::array::from_fn(|_| crate::sync::Mutex::new(HashMap::new())),
         }
     }
 
-    fn shard(&self, key: &Key) -> io::Result<&crate::sync::Mutex<HashSet<Key>>> {
+    fn shard(&self, key: &Key) -> io::Result<&crate::sync::Mutex<HashMap<Key, Entry>>> {
         use std::hash::{BuildHasher as _, BuildHasherDefault, DefaultHasher};
         let index = BuildHasherDefault::<DefaultHasher>::default().hash_one(key) % SHARDS as u64;
         usize::try_from(index)
@@ -77,30 +92,71 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
             .ok_or_else(|| io::Error::other("claim shard out of range"))
     }
 
-    fn insert(&self, key: &Key) -> io::Result<()> {
-        let mut claimed = self
+    fn entries(&self, key: &Key) -> io::Result<crate::sync::MutexGuard<'_, HashMap<Key, Entry>>> {
+        Ok(self
             .shard(key)?
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if claimed.contains(key) {
-            return Err(contention("store already claimed in this process"));
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    /// Enters claim `token` for the file `key`, whose lock the caller holds
+    /// and which holds `contents`. Refuses while another claim of this
+    /// process holds that file: one that still has it open, or one whose
+    /// record it still carries. Any other entry is of a file since removed,
+    /// whose identity this file reuses.
+    fn insert(
+        &self,
+        key: &Key,
+        token: u64,
+        contents: &Contents,
+        own: Option<&Process>,
+    ) -> io::Result<()> {
+        let mut entries = self.entries(key)?;
+        if let Some(entry) = entries.get(key) {
+            let holds = !entry.recorded
+                || matches!(contents, Contents::Record(record)
+                    if own == Some(&record.process) && record.token == entry.token);
+            if holds {
+                return Err(contention("store already claimed in this process"));
+            }
         }
-        claimed.insert(key.to_owned());
+        entries.insert(
+            key.to_owned(),
+            Entry {
+                token,
+                recorded: false,
+            },
+        );
         Ok(())
     }
 
-    fn remove(&self, key: &Key) {
-        if let Ok(shard) = self.shard(key) {
-            shard
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(key);
+    /// Notes that claim `token` recorded itself and is closing the file.
+    fn recorded(&self, key: &Key, token: u64) -> io::Result<()> {
+        if let Some(entry) = self.entries(key)?.get_mut(key)
+            && entry.token == token
+        {
+            entry.recorded = true;
+        }
+        Ok(())
+    }
+
+    /// Removes claim `token`'s entry, never one that replaced it.
+    fn remove(&self, key: &Key, token: u64) {
+        if let Ok(mut entries) = self.entries(key)
+            && entries.get(key).is_some_and(|entry| entry.token == token)
+        {
+            entries.remove(key);
         }
     }
 }
 
 /// Whether the recorded owner of a claim file excludes a new one.
-fn excludes<H: Host>(host: &H, contents: &Contents, probes: &mut u64) -> Option<io::Error> {
+fn excludes<H: Host>(
+    host: &H,
+    own: Option<&Process>,
+    contents: &Contents,
+    probes: &mut u64,
+) -> Option<io::Error> {
     let record = match contents {
         Contents::Empty | Contents::Torn => return None,
         // Not a record any claim wrote, nor provably the remains of one.
@@ -109,7 +165,7 @@ fn excludes<H: Host>(host: &H, contents: &Contents, probes: &mut u64) -> Option<
     };
     // A record of this process that its table does not hold is a release
     // that could not clear it: no owner.
-    if host.process() == Some(&record.process) {
+    if own == Some(&record.process) {
         return None;
     }
     match host.liveness(&record.process, probes) {
@@ -124,8 +180,9 @@ pub(super) struct Claim<H: Host> {
     host: H,
     path: PathBuf,
     key: H::Key,
-    /// The record this claim wrote, which release alone may clear.
-    token: Option<u64>,
+    /// This claim's table entry, and unless `held` the record it wrote,
+    /// which release alone may clear.
+    token: u64,
     /// The claim file, kept locked as the claim itself when this process has
     /// no process lock to name.
     held: Option<H::File>,
@@ -146,13 +203,13 @@ impl<H: Host> std::fmt::Debug for Claim<H> {
 /// Removes a table entry unless the claim that owns it is completed.
 struct Pending<'a, H: Host> {
     host: &'a H,
-    key: Option<H::Key>,
+    entry: Option<(H::Key, u64)>,
 }
 
 impl<H: Host> Drop for Pending<'_, H> {
     fn drop(&mut self) {
-        if let Some(key) = self.key.take() {
-            self.host.table().remove(&key);
+        if let Some((key, token)) = self.entry.take() {
+            self.host.table().remove(&key, token);
         }
     }
 }
@@ -160,30 +217,32 @@ impl<H: Host> Drop for Pending<'_, H> {
 pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
     let mut file = host.open(path, true)?;
     let key = host.identity(&file, path)?;
-    host.table().insert(&key)?;
-    let mut pending = Pending {
-        host: &host,
-        key: Some(key),
-    };
+    let token = host.token();
     if !host.try_lock(&file)? {
         return Err(contention(
             "store claim is being exchanged by another owner",
         ));
     }
+    let mut pending = Pending {
+        host: &host,
+        entry: None,
+    };
     let exchanged = (|| {
         let contents = Contents::decode(&host.read(&mut file)?);
-        if let Some(refusal) = excludes(&host, &contents, &mut 0) {
+        let own = host.process();
+        host.table().insert(&key, token, &contents, own)?;
+        pending.entry = Some((key.clone(), token));
+        if let Some(refusal) = excludes(&host, own, &contents, &mut 0) {
             return Err(refusal);
         }
-        let Some(process) = host.process() else {
+        let Some(process) = own else {
             // Without a process lock, the claim file's own lock is the claim:
             // the OS releases it when this process dies.
             if contents != Contents::Empty {
                 host.write(&mut file, &[])?;
             }
-            return Ok(None);
+            return Ok(false);
         };
-        let token = host.token();
         let record = Record {
             process: process.clone(),
             token,
@@ -197,27 +256,25 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
             ));
         }
         host.write(&mut file, &encoded)?;
-        Ok(Some(token))
+        // Before the file closes: until then its identity cannot be reused.
+        host.table().recorded(&key, token)?;
+        Ok(true)
     })();
-    let token = match exchanged {
-        Ok(token) => token,
+    let recorded = match exchanged {
+        Ok(recorded) => recorded,
         Err(error) => {
             let _ = host.unlock(&file);
             return Err(error);
         }
     };
-    let held = match token {
-        Some(_) => {
-            // Closing the file releases its lock even if unlocking fails.
-            let _ = host.unlock(&file);
-            None
-        }
-        None => Some(file),
+    let held = if recorded {
+        // Closing the file releases its lock even if unlocking fails.
+        let _ = host.unlock(&file);
+        None
+    } else {
+        Some(file)
     };
-    let key = pending
-        .key
-        .take()
-        .ok_or_else(|| io::Error::other("claim key taken"))?;
+    pending.entry = None;
     drop(pending);
     Ok(Claim {
         host,
@@ -234,9 +291,10 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
 pub(super) fn is_claimed<H: Host>(host: &H, file: &mut H::File) -> io::Result<(bool, u64)> {
     let contents = Contents::decode(&host.read(file)?);
     let mut reads = 1;
+    let own = host.established();
     let claimed = match &contents {
-        Contents::Record(record) if host.process() == Some(&record.process) => true,
-        _ => excludes(host, &contents, &mut reads).is_some(),
+        Contents::Record(record) if own == Some(&record.process) => true,
+        _ => excludes(host, own, &contents, &mut reads).is_some(),
     };
     Ok((claimed, reads))
 }
@@ -259,9 +317,7 @@ impl<H: Host> Claim<H> {
         if let Some(held) = self.held.take() {
             return self.host.unlock(&held);
         }
-        let Some(token) = self.token else {
-            return Ok(());
-        };
+        let token = self.token;
         let mut file = match self.host.open(&self.path, false) {
             Ok(file) => file,
             // The file is gone, and the record with it.
@@ -295,6 +351,6 @@ impl<H: Host> Claim<H> {
 impl<H: Host> Drop for Claim<H> {
     fn drop(&mut self) {
         let _ = self.release();
-        self.host.table().remove(&self.key);
+        self.host.table().remove(&self.key, self.token);
     }
 }
