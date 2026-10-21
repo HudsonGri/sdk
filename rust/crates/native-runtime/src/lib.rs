@@ -60,6 +60,8 @@ pub(crate) use file::{
     NativeFilePayload, is_uncertain_io_error, validate_prepared_read_range, validate_write_batch,
     with_file_admission, with_file_scope, write_bounded_in_place,
 };
+mod claim;
+pub use claim::StoreClaim;
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod recovery;

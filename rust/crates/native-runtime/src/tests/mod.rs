@@ -8,6 +8,7 @@ use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 mod admission;
+mod claim;
 mod completion;
 mod custody;
 mod namespace;

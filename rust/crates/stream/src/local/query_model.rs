@@ -22,8 +22,11 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let mut file = tempfile::tempfile()?;
     let header = encode_header(limits, 0)?;
     file.write_all(&header)?;
+    // The claim outlives its temporary directory; releasing a removed claim
+    // file is a no-op.
+    let claims = tempfile::tempdir()?;
     let journal = Journal {
-        lock: file.try_clone()?,
+        _claim: acyclic_native_runtime::StoreClaim::acquire(&claims.path().join(LOCK_FILE))?,
         file: Arc::new(file),
         epoch: 0,
         operations: 0,

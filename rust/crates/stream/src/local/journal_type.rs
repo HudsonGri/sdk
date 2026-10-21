@@ -1,6 +1,4 @@
 struct Journal {
-    /// Held locked for as long as the provider is open.
-    lock: File,
     /// Shared with flushes that run without holding the journal, so the
     /// journal costs one descriptor.
     file: Arc<File>,
@@ -23,11 +21,8 @@ struct Journal {
     /// journal known flushed. It lives beside `epoch`, and `restart` resets it.
     #[cfg(feature = "test-support")]
     flushed: u64,
+    /// Held for as long as the provider is open, without a descriptor, and
+    /// released only after the journal's files close.
+    _claim: acyclic_native_runtime::StoreClaim,
     _ownership_anchor: Option<OwnershipAnchor>,
-}
-
-impl Drop for Journal {
-    fn drop(&mut self) {
-        let _ = self.lock.unlock();
-    }
 }

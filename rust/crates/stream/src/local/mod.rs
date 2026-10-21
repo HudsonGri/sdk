@@ -13,7 +13,6 @@ use acyclic_native_runtime::OwnershipAnchor;
 #[cfg(all(not(acyclic_loom), feature = "test-support"))]
 use acyclic_native_runtime::testing::{spawn, spawn_blocking};
 use async_trait::async_trait;
-use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
 #[cfg(acyclic_loom)]
 use query_model::{spawn, spawn_blocking};

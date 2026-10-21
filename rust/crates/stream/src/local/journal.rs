@@ -5,7 +5,7 @@ impl Journal {
         recovered: &mpsc::Sender<Recovered>,
         span: &tracing::Span,
     ) -> Result<Self, LocalStreamError> {
-        let lock = lock_root(root, limits)?;
+        let claim = lock_root(root, limits)?;
         let epoch = match read_snapshot(root, limits)? {
             Some(snapshot) => {
                 blocking_send(
@@ -30,7 +30,7 @@ impl Journal {
         );
         let mut journal = Self {
             _ownership_anchor: None,
-            lock,
+            _claim: claim,
             file,
             epoch,
             operations: 0,
