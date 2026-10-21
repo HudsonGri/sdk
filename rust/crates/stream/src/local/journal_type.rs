@@ -1,7 +1,7 @@
 struct Journal {
-    /// Shared with flushes that run without holding the journal, so the
-    /// journal costs one descriptor.
-    file: Arc<File>,
+    /// Holds a descriptor only while recently used; flushes that run
+    /// without holding the journal lease it.
+    file: acyclic_native_runtime::CachedFile,
     /// Which snapshot the journal follows: the one naming this epoch.
     epoch: u64,
     operations: u64,

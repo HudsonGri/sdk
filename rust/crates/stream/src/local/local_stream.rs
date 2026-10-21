@@ -220,11 +220,12 @@ impl LocalStream {
             span.record("batch_len", journal.appended - journal.synced);
             (
                 journal.appended,
-                Arc::clone(&journal.file),
+                journal.file.lease().map_err(|_| self.inner.poison())?,
                 journal.limits.durability,
             )
         };
-        sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
+        file.flush(|file| sync_file_data(file, durability))
+            .map_err(|_| self.inner.poison())?;
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
         self.inner.publish_synced(&mut journal, target);
         // A restart in between already marked its own header flushed.
@@ -365,12 +366,16 @@ impl LocalStream {
                 if journal.synced >= sequence || journal.syncing {
                     None
                 } else {
+                    let Ok(file) = journal.file.lease() else {
+                        drop(journal);
+                        return Err(self.inner.poison());
+                    };
                     journal.syncing = true;
                     Some((
                         journal.appended,
                         journal.synced,
                         journal.bytes,
-                        Arc::clone(&journal.file),
+                        file,
                         journal.limits.durability,
                     ))
                 }

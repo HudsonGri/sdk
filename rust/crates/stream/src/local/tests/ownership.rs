@@ -56,13 +56,21 @@ fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
             .ok_or("detached native operation lost its identity")?;
         let terminal = Arc::downgrade(&provider.inner);
         drop(provider);
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while terminal.upgrade().is_some() {
+        // The detached append holds the journal, and with it the store's
+        // claim, until its blocking task returns; the journal then flushes and
+        // releases the claim as it drops, after its last reference is gone.
+        let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if terminal.upgrade().is_none() {
+                    match LocalStream::open(directory.path(), LocalStreamLimits::default()).await {
+                        Err(LocalStreamError::AlreadyOpen) => {}
+                        opened => return opened,
+                    }
+                }
                 tokio::task::yield_now().await;
             }
         })
-        .await?;
-        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        .await??;
         assert_eq!(reopened.inspect_idempotency(key).await?, Some(accepted));
         meter.assert_refunded();
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);

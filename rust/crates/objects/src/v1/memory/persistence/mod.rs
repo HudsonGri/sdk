@@ -34,7 +34,7 @@ pub enum LocalOpenError {
 }
 
 struct Tail {
-    file: File,
+    file: acyclic_native_runtime::CachedFile,
     bytes: u64,
     operations: u64,
     inline_bytes: u64,
@@ -119,6 +119,12 @@ pub(super) fn put_record_bytes(query: &wire::PutObjectHeader, body: &OwnedBytes)
     inline
         .saturating_add(query.encoded_len().saturating_mul(3))
         .saturating_add(1024)
+}
+
+/// The journal at `path`, which holds a descriptor only while recently used
+/// and reopens by `path`, the name it has or is about to be renamed to.
+fn journal_file(file: File, path: &Path) -> std::io::Result<acyclic_native_runtime::CachedFile> {
+    acyclic_native_runtime::CachedFile::new(file, path, true, true)
 }
 
 fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {

@@ -704,3 +704,35 @@ async fn store_spans_omit_customer_names() -> Result<(), Box<dyn std::error::Err
     }
     Ok(())
 }
+
+/// An idle store's journal closes its descriptor; its next append and reads
+/// reopen it and land after every earlier frame.
+#[tokio::test]
+async fn a_journal_reopened_after_closing_appends_after_its_frames()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let other = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    // Other tests in this process share the bound for its duration and only
+    // reopen more often.
+    let capacity = acyclic_native_runtime::cached_descriptor_capacity();
+    acyclic_native_runtime::limit_cached_descriptors(1);
+    let closing = seeded(other.path()).await;
+    let appended = core
+        .put(put("reopened"), OwnedBytes::from_static(b"after"))
+        .await;
+    acyclic_native_runtime::limit_cached_descriptors(capacity);
+    closing?;
+    appended?;
+    drop(core);
+    let core = reopen(root.path())?;
+    assert_eq!(
+        core.get(get(bucket(), "retained"), 6).await?.into_body(),
+        OwnedBytes::from_static(b"before")
+    );
+    assert_eq!(
+        core.get(get(bucket(), "reopened"), 5).await?.into_body(),
+        OwnedBytes::from_static(b"after")
+    );
+    Ok(())
+}

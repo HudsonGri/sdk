@@ -62,6 +62,11 @@ pub(crate) use file::{
 };
 mod claim;
 pub use claim::{ClaimCheck, StoreClaim};
+mod descriptor;
+pub use descriptor::{
+    CachedFile, FileLease, WriteAt, cached_descriptor_capacity, cached_descriptors,
+    limit_cached_descriptors,
+};
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod recovery;
@@ -73,8 +78,8 @@ pub use namespace::{RenameMode, durable_rename, publish_new};
 mod service;
 mod shell;
 pub use service::{
-    SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome, process_output, process_status,
-    spawn_service_process, take_service_ready_signal,
+    SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
+    process_output, process_status, spawn_service_process, take_service_ready_signal,
 };
 pub use shell::shell_command;
 mod meter;

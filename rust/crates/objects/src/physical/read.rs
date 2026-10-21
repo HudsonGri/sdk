@@ -310,15 +310,22 @@ async fn open_native_body(
                     if journal.is_none() {
                         let path = local_path(&root.path, JOURNAL_FILE, Some(&open_meter))?;
                         open_meter.admit_read(0)?;
-                        *journal = Some(File::open(&path.value)?);
+                        let file = File::open(&path.value)?;
+                        *journal = Some(acyclic_native_runtime::CachedFile::new(
+                            file,
+                            &path.value,
+                            false,
+                            false,
+                        )?);
 
                         drop(path);
                     }
-                    open_meter.admit_read(0)?;
-                    journal
+                    let lease = journal
                         .as_ref()
                         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?
-                        .try_clone()?
+                        .lease_metered(Some(open_meter.as_ref()))?;
+                    open_meter.admit_read(0)?;
+                    lease.file().try_clone()?
                 }
                 LocalBodyLocation::Segment { id, .. } => {
                     const HEX: &[u8; 16] = b"0123456789abcdef";

@@ -91,9 +91,11 @@ impl LocalStream {
                     "injected truncation failure",
                 )));
             }
+            let flushed = journal.flushed;
             journal
                 .file
-                .set_len(journal.flushed)
+                .lease()
+                .and_then(|file| file.write(|file| file.set_len(flushed)))
                 .map_err(CutSimulationError::Truncate)
         })
         .await
