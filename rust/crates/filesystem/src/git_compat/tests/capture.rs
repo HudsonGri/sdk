@@ -366,6 +366,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     let counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::new(),
         100,
         &CancellationToken::new(),
@@ -387,6 +388,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     let tracked_counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::from(["src/drop.tmp".to_owned()]),
         100,
         &CancellationToken::new(),
@@ -451,6 +453,7 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
     let counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::new(),
         100,
         &CancellationToken::new(),
@@ -496,6 +499,7 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
     let counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::new(),
         100,
         &CancellationToken::new(),

@@ -10,9 +10,12 @@ pub struct GitDiffCounts {
 }
 
 /// Compares exact generations using the ignore policy belonging to each side.
+///
+/// Paths in the host's namespaces are outside the repository on both sides.
 pub async fn git_compatible_diff_counts<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
+    host: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
     maximum_changes: u32,
     cancellation: &CancellationToken,
@@ -38,6 +41,9 @@ where
     for change in paths {
         cancellation.check().map_err(WorkspaceError::from)?;
         let path = portable_changed_path(&change.path)?;
+        if host.host_owned(&path) {
+            continue;
+        }
         let record = change.after.or(change.before);
         let Some(record) = record else { continue };
         if record.kind == FileKind::Directory {
@@ -93,6 +99,9 @@ where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 {
+    if root.host_owned(path) {
+        return Ok(false);
+    }
     if already_tracked.contains(path) {
         return Ok(true);
     }

@@ -4,6 +4,9 @@ use super::*;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitIgnorePolicy {
     rules: Vec<GitIgnoreRule>,
+    /// Root names the host owns; they are outside the repository entirely.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    host_namespaces: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -26,6 +29,13 @@ impl GitIgnorePolicy {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        // Joins bind host namespaces by their ignore rules alone, exactly as
+        // before they were kept out of the repository view: the reserved
+        // `.acyclic-sdk/` and `.git/` rules make the child win there.
+        let rules = Self {
+            rules: self.rules.clone(),
+            host_namespaces: BTreeSet::new(),
+        };
         let mut paths = BTreeSet::new();
         let mut nested_policies = BTreeMap::new();
         for change in changes {
@@ -41,7 +51,7 @@ impl GitIgnorePolicy {
             if !git_path_eligible_with_root_at(
                 generation,
                 &mut nested_policies,
-                self,
+                &rules,
                 &path,
                 is_directory,
                 already_tracked,
@@ -87,12 +97,53 @@ impl GitIgnorePolicy {
                 })
             })
             .collect();
-        Self { rules }
+        Self {
+            rules,
+            host_namespaces: BTreeSet::new(),
+        }
+    }
+
+    /// Places root namespaces the host owns outside the repository.
+    ///
+    /// Unlike an ignore rule, no negation, nested policy, or tracked path can
+    /// bring a host-owned path into the repository view.
+    #[must_use]
+    pub fn with_host_namespaces<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.host_namespaces
+            .extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Returns whether a path lies in a root namespace the host owns.
+    #[must_use]
+    pub fn host_owned(&self, path: &str) -> bool {
+        let path = path.trim_start_matches('/');
+        let root = path.split_once('/').map_or(path, |(root, _)| root);
+        self.host_namespaces.contains(root)
+    }
+
+    /// Returns whether a tracked set still names a host-owned path.
+    pub(super) fn tracks_host_paths(&self, tracked: &BTreeSet<String>) -> bool {
+        self.host_namespaces.iter().any(|name| {
+            let prefix = format!("{name}/");
+            tracked.contains(name)
+                || tracked
+                    .range(prefix.clone()..)
+                    .next()
+                    .is_some_and(|path| path.starts_with(&prefix))
+        })
     }
 
     /// Returns whether a path participates in compatibility commit/join state.
     #[must_use]
     pub fn eligible(&self, path: &str, is_directory: bool, already_tracked: bool) -> bool {
+        if self.host_owned(path) {
+            return false;
+        }
         if already_tracked {
             return true;
         }
@@ -146,6 +197,9 @@ pub(super) fn git_path_eligible(
     is_directory: bool,
     already_tracked: bool,
 ) -> bool {
+    if root.host_owned(path) {
+        return false;
+    }
     if already_tracked {
         return true;
     }
