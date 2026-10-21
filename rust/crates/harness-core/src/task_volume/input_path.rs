@@ -28,7 +28,6 @@ impl TryFrom<String> for InputPath {
                         | ".claude"
                         | ".codex"
                         | "skills"
-                        | "names"
                         | "search"
                 )
             )

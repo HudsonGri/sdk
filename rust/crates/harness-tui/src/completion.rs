@@ -386,17 +386,15 @@ impl CompletionMenu {
         if self.request == request {
             return;
         }
-        let narrower = !self
-            .files
-            .values()
-            .any(|(_, entries)| entries.iter().any(|entry| entry.query.is_some()))
-            && self
-                .request
-                .as_ref()
-                .zip(request.as_ref())
-                .is_some_and(|(old, new)| {
-                    old.kind == new.kind && new.query.starts_with(&old.query)
-                });
+        let narrower = self
+            .request
+            .as_ref()
+            .zip(request.as_ref())
+            .is_some_and(|(old, new)| {
+                old.kind != CompletionKind::Mention
+                    && old.kind == new.kind
+                    && new.query.starts_with(&old.query)
+            });
         self.request = request;
         self.selected = 0;
         if narrower {
@@ -409,6 +407,12 @@ impl CompletionMenu {
             let entries: Vec<_> = self
                 .files
                 .iter()
+                .filter(|(path, _)| {
+                    self.request.as_ref().is_none_or(|request| {
+                        request.kind != CompletionKind::Mention
+                            || path.as_str() == "search/results.json"
+                    })
+                })
                 .flat_map(|(_, (order, entries))| {
                     entries
                         .iter()
@@ -601,4 +605,4 @@ fn scan_until(text: &str, mut stop: impl FnMut(char) -> bool, work: &mut usize) 
 #[cfg(test)]
 mod incremental_tests;
 mod streaming;
-pub use streaming::{PathMatches, PATH_RESULT_COUNT};
+pub use streaming::{PATH_RESULT_COUNT, PathMatches};

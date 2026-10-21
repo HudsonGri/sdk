@@ -128,7 +128,10 @@ fn file_completions_render_in_the_composer_and_enter_only_accepts() {
     input.committed_text("@rea", 2);
     input
         .completion
-        .set_file("names/read me.rs", Some(b"source"))
+        .set_file(
+            "search/results.json",
+            Some(br#"{"query":"rea","paths":["read me.rs"]}"#),
+        )
         .unwrap();
     input.refresh_completions();
     assert!(

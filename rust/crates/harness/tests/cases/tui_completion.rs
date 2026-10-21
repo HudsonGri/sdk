@@ -243,7 +243,7 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases: 48, ..Default::default() })]
     #[test]
     fn source_paths_are_canonical_and_round_trip(path in ".{0,256}") {
-        for prefix in ["commands/", "names/", "config/"] {
+        for prefix in ["commands/", "search/", "config/"] {
             let path = format!("{prefix}{path}");
             path_sequences::exercise(path.as_bytes());
             if let Ok(key) = FileKey::parse(&path) {
@@ -261,10 +261,10 @@ proptest::proptest! {
 fn deserialization_cannot_bypass_source_path_validation() {
     for path in [
         "commands/../secret",
-        "names/",
-        "names/C:/secret",
-        "names/a\\b",
-        "names//x",
+        "search/",
+        "search/C:/secret",
+        "search/a\\b",
+        "search//x",
     ] {
         let encoded = serde_json::json!({"Input": path});
         assert!(serde_json::from_value::<FileKey>(encoded).is_err());

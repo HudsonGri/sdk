@@ -16,8 +16,24 @@ fn streamed_keystroke_work(broken: bool) {
     .unwrap();
     if broken {
         for index in 0..128 {
-            menu.set_file(&format!("names/old-{index}.rs"), Some(b""))
-                .unwrap();
+            // Inject the removed unbounded model directly. Production has no
+            // parser accepting an individual namespace file as a candidate.
+            menu.files
+                .get_mut("search/results.json")
+                .unwrap()
+                .1
+                .push(Entry {
+                    kind: CompletionKind::Mention,
+                    theme: false,
+                    query: None,
+                    item: Rc::new(Completion {
+                        label: String::new(),
+                        value: format!("old-{index}.rs"),
+                        description: String::new(),
+                        tool: false,
+                        append_space: true,
+                    }),
+                });
         }
     }
     menu.refresh(&input);
@@ -41,6 +57,54 @@ fn streamed_million_entry_results_bound_per_keystroke_scoring() {
 #[should_panic(expected = "keystroke scored the namespace")]
 fn negative_control_detects_namespace_candidates_in_the_editor() {
     streamed_keystroke_work(true);
+}
+
+fn mention_catalog_work(broken: bool) {
+    let mut editor = Editor::new("@file");
+    let mut menu = CompletionMenu::default();
+    let commands: Vec<_> = (0..10_000)
+        .map(|i| serde_json::json!({"name":format!("command{i}")}))
+        .collect();
+    menu.set_file(
+        "commands/catalog.json",
+        Some(&serde_json::to_vec(&commands).unwrap()),
+    )
+    .unwrap();
+    menu.set_file(
+        "search/results.json",
+        Some(br#"{"query":"file","paths":["file.rs"]}"#),
+    )
+    .unwrap();
+    let memory = acyclic_test_support::measure(|| {
+        // Reproduce the removed full catalog collection independently of the
+        // production mention branch, so the allocation guard has a control.
+        let retained = broken.then(|| {
+            menu.files
+                .values()
+                .flat_map(|(_, entries)| entries.iter().cloned())
+                .collect::<Vec<_>>()
+        });
+        for text in ["x", "y", "z"] {
+            editor.insert(text, 0);
+            menu.refresh(&editor);
+        }
+        std::hint::black_box(retained);
+    });
+    assert!(
+        memory.bytes_max < 64 * 1024,
+        "mention refresh collected the command catalog"
+    );
+}
+
+#[test]
+fn mention_keystrokes_do_not_collect_unrelated_catalog_entries() {
+    mention_catalog_work(false);
+}
+
+#[test]
+#[should_panic(expected = "mention refresh collected the command catalog")]
+fn negative_control_detects_collecting_the_whole_catalog() {
+    mention_catalog_work(true);
 }
 
 #[test]
@@ -68,10 +132,29 @@ fn server_results_are_bound_to_the_query_that_was_scored() {
     .unwrap();
     assert_eq!(menu.items().len(), 1);
     menu.set_file("workspace/layout.json", Some(b"{}")).unwrap();
+    menu.set_file("names/removed-static-source.rs", Some(b"{}"))
+        .unwrap();
     assert_eq!(
         menu.items().len(),
         1,
         "UI state cannot enter pathname candidates"
+    );
+    let oversized: Vec<_> = (0..PATH_RESULT_COUNT + 1)
+        .map(|i| format!("a{i}.rs"))
+        .collect();
+    assert!(
+        menu.set_file(
+            "search/results.json",
+            Some(
+                &serde_json::to_vec(&serde_json::json!({"query":"ab", "paths":oversized})).unwrap()
+            )
+        )
+        .is_err()
+    );
+    assert_eq!(
+        menu.items().len(),
+        1,
+        "an invalid owner publication must preserve the previous fold"
     );
 }
 
@@ -99,10 +182,21 @@ fn incomplete_empty_query_results_remain_visible_and_stale_progress_is_ignored()
 fn unchanged_work(count: usize, repeats: usize, broken: bool) {
     let editor = Editor::new("@file");
     let mut menu = CompletionMenu::default();
+    let mut best = PathMatches::new("file");
     for index in 0..count {
-        menu.set_file(&format!("names/file{index}.rs"), Some(b"content"))
-            .unwrap();
+        best.push(format!("file{index}.rs"));
     }
+    let size = best.paths().len();
+    menu.set_file(
+        "search/results.json",
+        Some(
+            &serde_json::to_vec(
+                &serde_json::json!({"query":"file","paths":best.paths().collect::<Vec<_>>()}),
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap();
     menu.refresh(&editor);
     let before = menu.work;
     let allocations = acyclic_test_support::measure(|| {
@@ -119,12 +213,19 @@ fn unchanged_work(count: usize, repeats: usize, broken: bool) {
         allocations.count_total, 0,
         "unchanged refresh must allocate nothing"
     );
-    menu.set_file("names/file-new.rs", Some(b"new")).unwrap();
-    assert_eq!(menu.work.candidates - before.candidates, 1);
+    menu.set_file(
+        "search/results.json",
+        Some(br#"{"query":"file","paths":["file-new.rs"]}"#),
+    )
+    .unwrap();
+    assert_eq!(menu.work.candidates - before.candidates, size + 1);
     assert_eq!(menu.work.prompt_bytes, before.prompt_bytes);
     let before = menu.work;
-    menu.set_file("names/file-new.rs", Some(b"replacement"))
-        .unwrap();
+    menu.set_file(
+        "search/results.json",
+        Some(br#"{"query":"file","paths":["file-new.rs"]}"#),
+    )
+    .unwrap();
     assert_eq!(menu.work.candidates - before.candidates, 2);
     assert_eq!(menu.work.prompt_bytes, before.prompt_bytes);
 }
@@ -139,7 +240,6 @@ proptest! {
     fn edits_only_scan_the_active_token(prefix in 0usize..4096, edits in 1usize..24) {
         let mut editor = Editor::new(&format!("{} @a", "z".repeat(prefix)));
         let mut menu = CompletionMenu::default();
-        menu.set_file("names/aaaaaaaaaaaaaaaaaaaaaaaa.rs", Some(b"")).unwrap();
         menu.refresh(&editor);
         for i in 0..edits {
             let before = menu.work;
@@ -168,7 +268,6 @@ proptest! {
     fn delta_requests_agree_with_full_parsing(prefix in "[a-z @/\\\"]{0,48}", edits in proptest::collection::vec("[a-z @/\\\"\n]{0,6}", 1..24)) {
         let mut editor = Editor::new(&prefix);
         let mut menu = CompletionMenu::default();
-        menu.set_file("names/a.rs", Some(b"")).unwrap();
         menu.set_file("commands/a.md", Some(b"a")).unwrap();
         menu.refresh(&editor);
         for (i, text) in edits.iter().enumerate() {
@@ -192,7 +291,6 @@ proptest! {
     ) {
         let mut editor = Editor::new(&prefix);
         let mut menu = CompletionMenu::default();
-        menu.set_file("names/src/main.rs", Some(b"")).unwrap();
         menu.set_file("commands/theme.md", Some(b"theme")).unwrap();
         menu.refresh(&editor);
         for (step, batch) in batches.iter().enumerate() {
@@ -362,7 +460,6 @@ fn keystroke_work(
     let text = text.join("\n");
     let mut editor = Editor::new(&text);
     let mut menu = CompletionMenu::default();
-    menu.set_file("names/a.rs", Some(b"")).unwrap();
     menu.refresh(&editor);
     let starts: Vec<_> = text
         .char_indices()

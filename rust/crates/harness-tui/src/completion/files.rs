@@ -12,7 +12,7 @@ pub(super) struct Entry {
 impl CompletionMenu {
     /// Fold one command or path-index file from a snapshot/follow change.
     /// Paths are logical volume paths: commands/*.json, commands/**/*.md,
-    /// names/**. UI workspace files are never mention candidates.
+    /// search/results.json. UI workspace files are never mention candidates.
     pub fn set_file(&mut self, path: &str, bytes: Option<&[u8]>) -> io::Result<()> {
         let entries = bytes
             .map(|bytes| parse_file(path, bytes))
@@ -167,15 +167,6 @@ fn make(
 }
 
 fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
-    if let Some(path) = path.strip_prefix("names/") {
-        return Ok(vec![make(
-            CompletionKind::Mention,
-            path.into(),
-            String::new(),
-            false,
-            true,
-        )]);
-    }
     if path == "search/results.json" {
         #[derive(serde::Deserialize)]
         struct Results {
@@ -183,6 +174,12 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
             paths: Vec<String>,
         }
         let results: Results = serde_json::from_slice(bytes)?;
+        if results.paths.len() > super::PATH_RESULT_COUNT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "search publication exceeds its top-k contract",
+            ));
+        }
         return Ok(results
             .paths
             .into_iter()

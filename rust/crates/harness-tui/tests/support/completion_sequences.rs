@@ -5,9 +5,17 @@ use acyclic_harness_tui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-fn candidate(menu: &mut CompletionMenu, path: &str) -> Result<(), std::io::Error> {
+fn candidate(menu: &mut CompletionMenu, editor: &Editor, path: &str) -> Result<(), std::io::Error> {
     menu.clear_files();
-    menu.set_file(&format!("names/{path}"), Some(b""))
+    let query = completion_request(editor)
+        .map(|request| request.query)
+        .unwrap_or_default();
+    menu.set_file(
+        "search/results.json",
+        Some(&serde_json::to_vec(
+            &serde_json::json!({"query":query,"paths":[path]}),
+        )?),
+    )
 }
 
 pub fn exercise(data: &[u8]) -> Result<(), std::io::Error> {
@@ -67,7 +75,7 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
             2 => editor.set_cursor(usize::from(chunk.get(1).copied().unwrap_or(0)), false),
             3 => editor.select_all(),
             4 => {
-                candidate(&mut menu, &text)?;
+                candidate(&mut menu, &editor, &text)?;
                 menu.refresh(&editor);
             }
             5 => menu.cycle(op > 128),
@@ -241,7 +249,7 @@ fn semantic_prelude(data: &[u8], broken: bool) -> Result<Editor, std::io::Error>
     } else {
         format!("@{path} ")
     };
-    candidate(&mut input.completion, &path)?;
+    candidate(&mut input.completion, &input.editor, &path)?;
     input.refresh_completions();
     let effects = input.key(
         KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
