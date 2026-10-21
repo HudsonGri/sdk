@@ -2,7 +2,7 @@
 // Live host acceptance: the real host binary, a real model login, and the
 // Acyclic plugin packaged and installed the way a user installs it, into an
 // isolated fixture home. Credentials are never read: the host's own login
-// file is hard-linked into the fixture home and the link is removed again.
+// file is linked into the fixture home and the link is removed again.
 //
 //   node live.mjs --host codex|claude-code --binary <acyclic executable> [--keep]
 //
@@ -11,9 +11,10 @@ import { spawn, spawnSync } from "node:child_process";
 import {
   cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hostLogin, linkLogin } from "./login-link.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = resolve(here, "..", "..");
@@ -87,9 +88,7 @@ timings.package = Date.now() - started;
 
 // The host's login file, linked rather than copied, and only for the run.
 // The login the caller's host uses, wherever its configuration lives.
-const login = host === "codex"
-  ? { source: join(process.env.CODEX_HOME || join(homedir(), ".codex"), "auth.json"), link: join(home, "codex", "auth.json") }
-  : { source: join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), ".credentials.json"), link: join(home, "claude", ".credentials.json") };
+const login = hostLogin(host, home);
 
 started = Date.now();
 const installOutput = run(native, ["install", host]);
@@ -139,8 +138,7 @@ function hostCommand() {
   ]];
 }
 
-mkdirSync(dirname(login.link), { recursive: true });
-linkSync(login.source, login.link);
+linkLogin(login);
 let verdict;
 try {
   started = Date.now();
