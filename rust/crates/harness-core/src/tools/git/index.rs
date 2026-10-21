@@ -137,8 +137,8 @@ impl IndexedNames {
             }
             let latest = self.shared.latest.lock().await;
             if let Some(index) = latest.as_ref() {
-                if self.cut.as_ref() != Some(&index.manifest.cut) {
-                    self.cut = Some(index.manifest.cut.clone());
+                if self.cut.as_ref() != Some(&index.manifest.names_cut) {
+                    self.cut = Some(index.manifest.names_cut.clone());
                     self.next = 0;
                     return Ok(Some(NamePage {
                         reset: true,
@@ -524,6 +524,7 @@ async fn fill_pass(
         let manifest = NameIndexManifest {
             schema: 1,
             cut: walk.cut(),
+            names_cut: walk.cut(),
             observed_generation: expected.id(),
             pages,
             pending_directories: walk.pending_directories(),

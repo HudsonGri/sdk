@@ -207,6 +207,7 @@ async fn name_search_index_pages_survive_reopen_without_relisting_or_hydrating()
     let manifest = NameIndexManifest {
         schema: 1,
         cut: walk.cut(),
+        names_cut: walk.cut(),
         observed_generation: expected.id(),
         pages: 1,
         pending_directories: walk.pending_directories(),
@@ -444,6 +445,7 @@ async fn name_search_index_publication_cannot_rebase_over_a_workspace_write() {
     let manifest = NameIndexManifest {
         schema: 1,
         cut: walk.cut(),
+        names_cut: walk.cut(),
         observed_generation: expected.id(),
         pages: 1,
         pending_directories: walk.pending_directories(),
@@ -512,6 +514,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
         let manifest = NameIndexManifest {
             schema: 1,
             cut: walk.cut(),
+            names_cut: walk.cut(),
             observed_generation: expected.id(),
             pages,
             pending_directories: walk.pending_directories(),
@@ -558,6 +561,7 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
     assert_eq!(source.counts.ranges.load(Ordering::Relaxed), reads);
     let pages = index.manifest.pages;
+    let names_cut = index.manifest.names_cut.clone();
     for revision in 0..3 {
         lazy.workspace()
             .write_text("/near.txt", &format!("changed-{revision}"))
@@ -576,6 +580,9 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
             index.manifest.pages, pages,
             "content edits appended duplicate pages"
         );
+        assert_eq!(index.manifest.names_cut, names_cut);
+        // Negative control: using the content cut would reset every follower.
+        assert_ne!(index.manifest.cut, index.manifest.names_cut);
     }
     for added in 0..8 {
         lazy.workspace()
@@ -600,6 +607,26 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
     assert_ne!(index.manifest.pages, pages + 8);
     #[cfg(feature = "native-mount")]
     {
+        let old_cut = index.manifest.cut.clone();
+        let old_names = index.manifest.names_cut.clone();
+        source.replace(Bytes::from_static(b"native content changed"));
+        index = match index
+            .refresh_native(
+                &lazy,
+                lazy.snapshot(accounting!()).await.unwrap(),
+                crate::lazy_workspace::NativeNameDelta::default(),
+                &ignore,
+            )
+            .await
+            .unwrap()
+        {
+            NameIndexRefresh::Published(index) => index,
+            _ => panic!("content-only native event required namespace discovery"),
+        };
+        assert_ne!(index.manifest.cut, old_cut);
+        assert_eq!(index.manifest.names_cut, old_names);
+        assert_eq!(source.counts.pages.load(Ordering::Relaxed), before);
+        assert_eq!(source.counts.ranges.load(Ordering::Relaxed), reads);
         source.replace(Bytes::from_static(b"native metadata changed"));
         let snapshot = lazy.snapshot(accounting!()).await.unwrap();
         let before = source.counts.pages.load(Ordering::Relaxed);
@@ -706,6 +733,7 @@ async fn name_search_leaf_refresh_rejects_a_superseded_generation() {
     let manifest = NameIndexManifest {
         schema: 1,
         cut: walk.cut(),
+        names_cut: walk.cut(),
         observed_generation: expected.id(),
         pages: 0,
         pending_directories: 0,

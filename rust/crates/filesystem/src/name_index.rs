@@ -22,6 +22,9 @@ pub struct NameIndexManifest {
     pub schema: u32,
     /// Names are interpreted at this immutable source/authored cut.
     pub cut: NameCut,
+    /// Last cut at which candidate bindings changed. Content-only source
+    /// revisions preserve this identity so followers retain their name fold.
+    pub names_cut: NameCut,
     /// Generation observed before this manifest's atomic publication.
     pub observed_generation: GenerationId,
     /// Number of committed, bounded pages.

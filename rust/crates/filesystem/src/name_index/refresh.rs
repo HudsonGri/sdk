@@ -150,6 +150,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         let Some(mut transaction) = begin_at(workspace, expected).await? else {
             return Ok(NameIndexRefresh::Conflict);
         };
+        let mut names_changed = false;
         let mut tail = None;
         let examined_pages = if leaves.is_empty() {
             0
@@ -181,6 +182,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                     }
                 }
             });
+            names_changed |= changed;
             if ordinal + 1 == self.manifest.pages {
                 tail = Some((page, changed));
             } else if changed {
@@ -201,6 +203,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
                 page.clear();
             }
             page.push(name);
+            names_changed = true;
             dirty = true;
             pages = pages.max(ordinal + 1);
         }
@@ -209,6 +212,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> NameIndex<A, O> {
         }
         let manifest = NameIndexManifest {
             schema: 1,
+            names_cut: if names_changed {
+                cut.clone()
+            } else {
+                self.manifest.names_cut.clone()
+            },
             cut,
             observed_generation: expected.id(),
             pages,
