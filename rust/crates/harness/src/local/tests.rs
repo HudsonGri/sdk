@@ -793,6 +793,7 @@ mod checkout_incarnation;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout_reconciliation;
+mod git_view;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod volume_tools;
