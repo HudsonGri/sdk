@@ -39,7 +39,7 @@ pub struct NamePage {
 impl IndexedNames {
     /// Follows existing index pages immediately while one producer fills the
     /// unindexed remainder. Closing one query cannot cancel the shared producer.
-    pub async fn open(view: View<'_>, ignore: GitIgnorePolicy) -> crate::Result<Self> {
+    pub async fn open(view: View<'_>) -> crate::Result<Self> {
         let workspace = view.workspace();
         let (provider, _) = workspace.authority_records().map_err(storage_index)?;
         let identity = (Arc::as_ptr(&provider) as usize, workspace.id());
@@ -106,7 +106,7 @@ impl IndexedNames {
         *entry = Arc::downgrade(&shared);
         let producer = Arc::clone(&shared);
         tokio::spawn(async move {
-            if let Err(error) = maintain(&owned, ignore, &producer).await {
+            if let Err(error) = maintain(&owned, &producer).await {
                 if let Ok(mut failure) = producer.failure.lock() {
                     *failure = Some(error.to_string());
                 }
@@ -234,7 +234,7 @@ fn storage_index(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
-async fn maintain(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) -> crate::Result<()> {
+async fn maintain(view: &OwnedView, shared: &Shared) -> crate::Result<()> {
     let (provider, path) = view
         .workspace()
         .authority_records()
@@ -254,9 +254,13 @@ async fn maintain(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) ->
         let published = Index::open(view.workspace())
             .await
             .map_err(super::search::search_error)?;
+        let mut policy = None;
         let published = match published {
             Some(index) if reusable(view.view(), &index).await? => Some(index),
             Some(index) => {
+                // The shared index has one volume-owned policy. Query callers
+                // cannot replace it, and policy edits invalidate the old fold.
+                let ignore = super::search::search_ignore(view.view()).await?;
                 let cut = match view.view() {
                     View::Checkout(lazy) => acyclic_fs::NameCut::Lazy(
                         lazy.snapshot(
@@ -274,11 +278,12 @@ async fn maintain(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) ->
                             .id(),
                     },
                 };
-                match index
+                let outcome = index
                     .refresh_authored(view.workspace(), cut, &ignore)
                     .await
-                    .map_err(super::search::search_error)?
-                {
+                    .map_err(super::search::search_error)?;
+                policy = Some(ignore);
+                match outcome {
                     NameIndexRefresh::Published(index) => Some(index),
                     NameIndexRefresh::Conflict => continue,
                     NameIndexRefresh::Ineligible => None,
@@ -299,7 +304,11 @@ async fn maintain(view: &OwnedView, ignore: GitIgnorePolicy, shared: &Shared) ->
             }
         }
         if needs_fill {
-            fill(view, ignore.clone(), shared).await?;
+            let ignore = match policy {
+                Some(ignore) => ignore,
+                None => super::search::search_ignore(view.view()).await?,
+            };
+            fill(view, ignore, shared).await?;
             // Coalesce our own page publications. Reading a million-name
             // index must not make its producer replay thousands of its own
             // old notifications one by one.

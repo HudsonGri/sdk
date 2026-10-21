@@ -418,14 +418,14 @@ async fn volume_search_isolates_equal_volume_ids_in_different_authority_stores()
         )
         .await?;
     }
-    let mut first_names = git::IndexedNames::open((&first).into(), Default::default()).await?;
+    let mut first_names = git::IndexedNames::open((&first).into()).await?;
     let mut found_first = false;
     while let Some(page) = first_names.next_page().await? {
         found_first |= page.names.iter().any(|name| name.path == "first-only.txt");
     }
     assert!(found_first);
     // Retain the first subscription while the other store opens its index.
-    let mut second_names = git::IndexedNames::open((&second).into(), Default::default()).await?;
+    let mut second_names = git::IndexedNames::open((&second).into()).await?;
     let mut found_second = false;
     while let Some(page) = second_names.next_page().await? {
         assert!(!page.names.iter().any(|name| name.path == "first-only.txt"));
@@ -439,7 +439,7 @@ async fn volume_search_isolates_equal_volume_ids_in_different_authority_stores()
 #[tokio::test]
 async fn volume_search_index_rejects_authored_changes_after_publication() -> Result<()> {
     let (_temp, _root, _fs, _store, main) = fixture_native(true).await?;
-    let mut first = git::IndexedNames::open((&main).into(), Default::default()).await?;
+    let mut first = git::IndexedNames::open((&main).into()).await?;
     while first.next_page().await?.is_some() {}
     let old = acyclic_fs::NameIndex::open(main.workspace())
         .await?
@@ -469,7 +469,7 @@ async fn volume_search_index_rejects_authored_changes_after_publication() -> Res
     })
     .await??;
     // A second client shares the updated files, without starting a walk.
-    let mut second = git::IndexedNames::open((&main).into(), Default::default()).await?;
+    let mut second = git::IndexedNames::open((&main).into()).await?;
     let mut found = false;
     while let Some(page) = second.next_page().await? {
         found |= page
@@ -576,6 +576,53 @@ async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -
             .await
             .is_ok()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn volume_search_live_index_reloads_the_volume_ignore_policy() -> Result<()> {
+    let (_temp, _root, _fs, _store, main) = fixture_native(true).await?;
+    let mut names = git::IndexedNames::open((&main).into()).await?;
+    let mut paths = Vec::new();
+    while let Some(page) = names.next_page().await? {
+        paths.extend(page.names.into_iter().map(|name| name.path));
+    }
+    assert!(paths.iter().any(|path| path == "native.txt"));
+    let old = acyclic_fs::NameIndex::open(main.workspace())
+        .await?
+        .unwrap();
+    main.workspace()
+        .write_text("/.gitignore", "native.txt\n")
+        .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            while let Some(page) = names.next_page().await? {
+                if page.reset {
+                    paths.clear();
+                }
+                paths.extend(page.names.into_iter().map(|name| name.path));
+            }
+            let current = acyclic_fs::NameIndex::open(main.workspace())
+                .await?
+                .unwrap();
+            if current.manifest.complete && current.manifest.cut != old.manifest.cut {
+                assert!(!paths.iter().any(|path| path == "native.txt"));
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            names.changed().await?;
+        }
+    })
+    .await??;
+    // Negative control: the pinned pre-policy index still exposes this name.
+    let mut was_indexed = false;
+    for page in 0..old.manifest.pages {
+        was_indexed |= old
+            .page(page)
+            .await?
+            .iter()
+            .any(|name| name.path == "native.txt");
+    }
+    assert!(was_indexed);
     Ok(())
 }
 

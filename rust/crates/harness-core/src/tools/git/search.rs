@@ -135,7 +135,7 @@ where
             }
         }
         .map_err(search_error)?;
-        let mut names = IndexedNames::open(self.lazy_current, self.ignore.clone()).await?;
+        let mut names = IndexedNames::open(self.lazy_current).await?;
         let root = path.unwrap_or("").trim_matches('/');
         let mut result = GrepProgress {
             matches: Vec::new(),

@@ -139,8 +139,7 @@ async fn search(
         } else {
             continue;
         };
-        let ignore = crate::tools::git::search_ignore(view).await?;
-        let names = crate::tools::git::IndexedNames::open(view, ignore).await?;
+        let names = crate::tools::git::IndexedNames::open(view).await?;
         volumes.push(VolumeSearch {
             names,
             prefix,

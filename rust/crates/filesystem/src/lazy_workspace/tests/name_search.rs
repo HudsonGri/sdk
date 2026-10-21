@@ -527,6 +527,22 @@ async fn name_search_authored_leaf_refresh_does_not_relist_unchanged_directories
     let mut rebuilt = NameWalk::lazy(&lazy, None, ignore.clone()).await.unwrap();
     while rebuilt.next_page().await.unwrap().is_some() {}
     assert!(source.counts.pages.load(Ordering::Relaxed) > before);
+    lazy.workspace().remove("/near.txt").await.unwrap();
+    let cut = NameCut::Lazy(lazy.snapshot(accounting!()).await.unwrap());
+    assert!(
+        matches!(
+            index
+                .refresh_authored(lazy.workspace(), cut, &ignore)
+                .await
+                .unwrap(),
+            NameIndexRefresh::Ineligible
+        ),
+        "a native fallback needs source-aware discovery"
+    );
+    lazy.workspace()
+        .write_text("/near.txt", "restored")
+        .await
+        .unwrap();
     // A policy edit cannot reuse a leaf-only interpretation of the old tree.
     lazy.workspace()
         .write_text("/.ignore", "near.txt\n")
