@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {checkTestSupport} from './check-test-support.mjs';
 
+/** @param {{optional?: boolean, kind?: string | null, target?: string | null, alias?: string}} options */
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
   const features = () => /** @type {Record<string, string[]>} */ ({'test-support': []});
   const dependency = {id: 'backend@1', name: 'backend', features: features()};
