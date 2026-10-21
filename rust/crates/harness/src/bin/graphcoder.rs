@@ -21,7 +21,8 @@ fn main() -> ExitCode {
         .build()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
-            let result = runtime.block_on(run(args));
+            // Keep Tokio's entry frame independent of the size of the CLI future.
+            let result = runtime.block_on(Box::pin(run(args)));
             runtime.shutdown_background();
             result
         });
@@ -63,7 +64,7 @@ async fn open(
     };
     let provider = Arc::new(registry.resolve(&selection)?);
     let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
-    config = config.settings(settings);
+    config = config.settings(settings).web_tools();
     Ok(Arc::new(LocalHarness::open(config).await?))
 }
 

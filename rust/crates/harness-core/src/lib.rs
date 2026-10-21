@@ -112,6 +112,7 @@ pub mod test_support;
 pub mod tool;
 pub mod tools;
 pub mod turn;
+pub mod url_fetch;
 pub mod wire_api;
 pub mod wire_codec;
 pub mod workspace;
