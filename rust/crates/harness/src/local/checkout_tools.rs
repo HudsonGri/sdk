@@ -12,13 +12,13 @@ mod bash;
 mod capture;
 mod children;
 mod git;
-#[cfg(all(test, unix, not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(unix, not(acyclic_harness_loom)))]
 mod git_mount_tests;
 mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
-mod task_views;
 #[cfg(all(
     test,
     feature = "filesystem-local",
@@ -26,7 +26,9 @@ mod task_views;
     not(acyclic_harness_loom)
 ))]
 mod task_view_volumes_tests;
-#[cfg(all(test, acyclic_harness_loom))]
+mod task_views;
+#[cfg(test)]
+#[cfg(acyclic_harness_loom)]
 mod tests;
 
 pub(super) struct CheckoutTools {
