@@ -402,7 +402,8 @@ fn run_scenarios(started: Instant) -> TestResult {
     let registry = guard.registry.clone();
     let io = guard.io.clone();
     let admitted = std::sync::Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
-    let results = case_workers::run(
+    let mut failures = Vec::new();
+    let _results = case_workers::run(
         &runtime,
         paths,
         capacity,
@@ -433,20 +434,22 @@ fn run_scenarios(started: Instant) -> TestResult {
                 (path, result)
             }
         },
-    )?;
-    let mut failures = Vec::new();
-    for (path, result) in results {
-        let name = path
-            .strip_prefix(Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests"))?
-            .display();
-        match result {
-            Ok(()) => println!("PASS {name}"),
-            Err(error) => {
-                eprintln!("FAIL {name}: {error}");
-                failures.push(path);
+        |(path, result)| {
+            let name = path
+                .strip_prefix(
+                    Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests"),
+                )
+                .unwrap_or(path)
+                .display();
+            match result {
+                Ok(()) => println!("PASS {name}"),
+                Err(error) => {
+                    eprintln!("FAIL {name}: {error}");
+                    failures.push(path.clone());
+                }
             }
-        }
-    }
+        },
+    )?;
     let peak = admitted.1.load(Ordering::SeqCst);
     println!(
         "{} scenarios, {} failed, peak {} admitted of capacity {}, {:.3}s",

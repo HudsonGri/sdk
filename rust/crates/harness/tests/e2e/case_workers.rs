@@ -49,6 +49,7 @@ pub(super) fn run<T, R, F, Fut>(
     drivers: usize,
     guard: &mut progress_guard::Guard,
     factory: F,
+    mut report: impl FnMut(&R),
 ) -> TestResult<Vec<R>>
 where
     T: Send,
@@ -58,7 +59,7 @@ where
 {
     assert!(drivers > 0 && drivers <= capacity);
     let jobs = Mutex::new(VecDeque::from(jobs));
-    let (send, mut receive) = mpsc::unbounded_channel();
+    let (send, receive) = mpsc::unbounded_channel();
     let (stop, cancel) = watch::channel(false);
     std::thread::scope(|scope| {
         let mut workers = Vec::new();
@@ -87,11 +88,7 @@ where
         let output = runtime.block_on(guard.run_retiring(
             async move {
                 let _stop = fallback;
-                let mut output = Vec::new();
-                while let Some(result) = receive.recv().await {
-                    output.push(result);
-                }
-                output
+                collect_results(receive, &mut report).await
             },
             move || {
                 // Quiesce caller polling before the shared Schedule marks CANCEL.
@@ -103,6 +100,20 @@ where
         ));
         output.map_err(|error| std::io::Error::other(error).into())
     })
+}
+
+// Report completed cases immediately, including when another driver never
+// finishes. The supervisor may retire this collector without losing diagnostics.
+async fn collect_results<R>(
+    mut receive: mpsc::UnboundedReceiver<R>,
+    mut report: impl FnMut(&R),
+) -> Vec<R> {
+    let mut output = Vec::new();
+    while let Some(result) = receive.recv().await {
+        report(&result);
+        output.push(result);
+    }
+    output
 }
 
 /// A panicking caller cannot leave its siblings polling when shared CANCEL is set.
@@ -156,20 +167,28 @@ mod tests {
                 .enable_all()
                 .build()?;
             let mut guard = progress_guard::Guard::new();
-            let output = run(&runtime, (0..12).collect(), 6, drivers, &mut guard, |job| {
-                let barrier = barrier.clone();
-                let entered = entered.clone();
-                async move {
-                    // Hold Rc across suspension: moving the case to tokio::spawn
-                    // would fail to compile and lose the original observer model.
-                    let local = std::rc::Rc::new(job);
-                    if entered.fetch_add(1, Ordering::SeqCst) < drivers {
-                        barrier.wait();
+            let output = run(
+                &runtime,
+                (0..12).collect(),
+                6,
+                drivers,
+                &mut guard,
+                |job| {
+                    let barrier = barrier.clone();
+                    let entered = entered.clone();
+                    async move {
+                        // Hold Rc across suspension: moving the case to tokio::spawn
+                        // would fail to compile and lose the original observer model.
+                        let local = std::rc::Rc::new(job);
+                        if entered.fetch_add(1, Ordering::SeqCst) < drivers {
+                            barrier.wait();
+                        }
+                        tokio::task::yield_now().await;
+                        (*local, std::thread::current().id())
                     }
-                    tokio::task::yield_now().await;
-                    (*local, std::thread::current().id())
-                }
-            })?;
+                },
+                |_| {},
+            )?;
             let threads: std::collections::HashSet<_> = output.iter().map(|row| row.1).collect();
             let mut jobs: Vec<_> = output.into_iter().map(|row| row.0).collect();
             jobs.sort_unstable();
@@ -308,5 +327,32 @@ mod panic_retirement_tests {
             assert!(retired.load(Ordering::SeqCst));
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod reporting_tests {
+    use super::*;
+    use futures::FutureExt as _;
+    use std::cell::RefCell;
+
+    #[test]
+    fn completed_results_are_reported_while_the_next_driver_is_pending() {
+        let (send, receive) = mpsc::unbounded_channel();
+        let reported = RefCell::new(Vec::new());
+        send.send("completed failure").unwrap();
+        let pending = collect_results(receive, |record| reported.borrow_mut().push(*record));
+        futures::pin_mut!(pending);
+        assert!(pending.as_mut().now_or_never().is_none());
+        assert_eq!(
+            *reported.borrow(),
+            vec!["completed failure"],
+            "completed case report waits for the final driver"
+        );
+        send.send("another completed result").unwrap();
+        assert!(pending.as_mut().now_or_never().is_none());
+        assert_eq!(reported.borrow().len(), 2);
+        // The sender stays alive, just like a sibling that has not completed.
+        // Dropping the receiver cannot erase reports already delivered.
     }
 }
