@@ -9,9 +9,8 @@ fn publish_peer(mut owner: CommandSession<MemoryStream>) {
         loom::future::block_on(Box::pin(async move {
             owner
                 .update_state(CommandFileRoot::Session, "layout.json", |layout| {
-                    layout["transcript_back"] = json!(
-                        layout["transcript_back"].as_u64().unwrap() + 4
-                    );
+                    layout["transcript_back"] =
+                        json!(layout["transcript_back"].as_u64().unwrap() + 4);
                     layout["peer"] = json!(true);
                     Ok(true)
                 })
@@ -38,17 +37,18 @@ fn scroll_race<const CACHED: bool>(cut: usize) {
             let mut seed = CommandSession::open(volume.clone(), id, 8192, 32)
                 .await
                 .unwrap();
-            seed
-                .write_state(
-                    CommandFileRoot::Session,
-                    "layout.json",
-                    &json!({"transcript_back":2}),
-                )
-                .await
-                .unwrap();
-            let mut owner = Some(CommandSession::open(volume.clone(), id, 8192, 32)
-                .await
-                .unwrap());
+            seed.write_state(
+                CommandFileRoot::Session,
+                "layout.json",
+                &json!({"transcript_back":2}),
+            )
+            .await
+            .unwrap();
+            let mut owner = Some(
+                CommandSession::open(volume.clone(), id, 8192, 32)
+                    .await
+                    .unwrap(),
+            );
             // Task-volume models cover provider-internal schedules. At this
             // caller boundary a peer publication has four distinct cuts:
             // before observation, before edit, during edit before CAS, or after
