@@ -61,6 +61,15 @@ pub struct ClientRenderer {
 }
 
 impl ClientRenderer {
+    /// Keep optional diff failures inside the pane without ending the session.
+    pub fn update_diff(&mut self, rows: crate::Result<Vec<Line<'static>>>) {
+        self.diff = rows.unwrap_or_else(|error| {
+            vec![Line::styled(
+                super::display_text(&format!("Diff unavailable: {error}")).into_owned(),
+                Style::default().fg(Color::Red),
+            )]
+        });
+    }
     #[cfg(test)]
     pub(crate) fn text_work(&self) -> usize {
         self.task.work() + self.archive.work()
@@ -404,6 +413,9 @@ impl ClientRenderer {
             .transpose()?
             .unwrap_or(false);
         let mut screen = self.screen();
+        if view != Some("diff") {
+            screen.diff = &[];
+        }
         if reasoning {
             screen.reasoning = if self.wrapped {
                 self.wrapped_reasoning.rows()
@@ -458,7 +470,6 @@ impl ClientRenderer {
 
     /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
-        // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
         // TODO(#548): compose split/auto diffs when that renderer is exposed.
         Screen {
             header: self.header.clone(),

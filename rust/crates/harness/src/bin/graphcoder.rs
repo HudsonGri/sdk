@@ -91,8 +91,11 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or_default();
     let local = phase(|| open(&args, credentials)).await?;
-    let operation =
-        phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?;
+    let operation = if args.resume {
+        phase(|| client::resume_local_identity(&local, operation)).await?
+    } else {
+        phase(|| client::local_identity(&local, args.prompt.as_deref(), operation)).await?
+    };
     let command = args
         .prompt
         .as_deref()

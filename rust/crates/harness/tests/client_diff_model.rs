@@ -74,6 +74,7 @@ fn run_model(wake: bool) {
             previous: base.generation,
             generation: current.generation.clone(),
             paths: vec![DiffPath {
+                largest_file_bytes: None,
                 path: "a.txt".into(),
                 base: None,
                 current: Some(current),
