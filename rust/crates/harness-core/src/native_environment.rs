@@ -3,6 +3,7 @@ use std::ffi::OsString;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Copy)]
 enum Read<'a> {
     Variable(&'a str),
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
