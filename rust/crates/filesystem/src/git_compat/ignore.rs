@@ -90,6 +90,11 @@ impl GitIgnorePolicy {
         Self { rules }
     }
 
+    /// Adds a later policy at the same directory, preserving rule precedence.
+    pub fn extend(&mut self, policy: Self) {
+        self.rules.extend(policy.rules);
+    }
+
     /// Returns whether a path participates in compatibility commit/join state.
     #[must_use]
     pub fn eligible(&self, path: &str, is_directory: bool, already_tracked: bool) -> bool {
@@ -100,6 +105,18 @@ impl GitIgnorePolicy {
         let mut ignored = false;
         self.apply(path, is_directory, &mut ignored);
         !ignored
+    }
+
+    /// Applies directory-local policies in ancestor order. Each policy's
+    /// patterns are relative to the directory containing its ignore file.
+    #[must_use]
+    pub fn eligible_with_nested(
+        &self,
+        nested: &BTreeMap<String, Self>,
+        path: &str,
+        is_directory: bool,
+    ) -> bool {
+        git_path_eligible(self, nested, path, is_directory, false)
     }
 
     fn apply(&self, path: &str, is_directory: bool, ignored: &mut bool) {

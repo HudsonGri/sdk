@@ -6,6 +6,7 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GitIgnorePolicy,
     LazyDirectoryCursor, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, WorkBudget,
 };
+use std::collections::BTreeMap;
 const PAGE_ENTRIES: u32 = 128;
 /// Failure while traversing a pinned logical namespace.
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +56,7 @@ pub struct NameCheckpoint {
     cut: NameCut,
     pending: Vec<(String, SavedCursor)>,
     single: Option<SearchName>,
+    ignore_policies: BTreeMap<String, GitIgnorePolicy>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -90,6 +92,7 @@ pub struct NameWalk<'a, A, O, D, S> {
     ignore: GitIgnorePolicy,
     // Existing authored metadata is cheap and available before native listing.
     authored: Option<Generation<A, O>>,
+    ignore_policies: BTreeMap<String, GitIgnorePolicy>,
 }
 
 impl<
@@ -138,6 +141,7 @@ impl<
             cut: self.cut(),
             pending,
             single: self.single.clone(),
+            ignore_policies: self.ignore_policies.clone(),
         })
     }
 
@@ -246,6 +250,7 @@ impl<
             single: checkpoint.single,
             ignore,
             authored,
+            ignore_policies: checkpoint.ignore_policies,
         })
     }
 
@@ -339,7 +344,16 @@ impl<
             single: None,
             ignore,
             authored,
+            ignore_policies: BTreeMap::new(),
         };
+        // An explicit subtree still inherits all ancestor ignore files.
+        let relative = path.trim_matches('/');
+        for (end, _) in relative.match_indices('/') {
+            walk.load_directory_ignore(&relative[..end]).await?;
+        }
+        if directory && !relative.is_empty() {
+            walk.load_directory_ignore(relative).await?;
+        }
         if directory {
             let cursor = walk.start();
             walk.pending.push((path.clone(), cursor));
@@ -382,7 +396,16 @@ impl<
     /// alone signals completion. No regular-file read occurs on this path.
     pub async fn next_page(&mut self) -> Result<Option<Vec<SearchName>>, SearchError> {
         if let Some(single) = self.single.take() {
-            return Ok(Some(vec![single]));
+            return Ok(Some(
+                if self
+                    .ignore
+                    .eligible_with_nested(&self.ignore_policies, &single.path, false)
+                {
+                    vec![single]
+                } else {
+                    Vec::new()
+                },
+            ));
         }
         let Some((directory, cursor)) = self.authored_pending.pop().or_else(|| self.pending.pop())
         else {
@@ -390,6 +413,13 @@ impl<
         };
         let mut names = Vec::new();
         let exact = matches!(&cursor, Continuation::Exact(_));
+        if matches!(
+            &cursor,
+            Continuation::Exact(None) | Continuation::Lazy(None)
+        ) {
+            self.load_directory_ignore(directory.trim_matches('/'))
+                .await?;
+        }
         let (rows, next) = match (&self.cut, cursor) {
             (Cut::Lazy(lazy, snapshot), Continuation::Lazy(cursor)) => {
                 let stop = CancellationToken::new();
@@ -497,7 +527,9 @@ impl<
             if path
                 .split('/')
                 .any(|part| matches!(part, ".git" | ".acyclic-sdk"))
-                || !self.ignore.eligible(&path, is_directory, false)
+                || !self
+                    .ignore
+                    .eligible_with_nested(&self.ignore_policies, &path, is_directory)
             {
                 continue;
             }
@@ -528,6 +560,35 @@ impl<
             self.pending.extend(children.into_iter().rev());
         }
         Ok(Some(names))
+    }
+
+    async fn load_directory_ignore(&mut self, directory: &str) -> Result<(), SearchError> {
+        // Root rules were supplied by the owner. Only policy files are read;
+        // listing and classifying candidate files never opens their contents.
+        if directory.is_empty() || self.ignore_policies.contains_key(directory) {
+            return Ok(());
+        }
+        let mut policy = None;
+        for name in [".gitignore", ".ignore"] {
+            let path = format!("{directory}/{name}");
+            let bytes = match self.read(&path, 1024 * 1024).await {
+                Ok(bytes) => bytes,
+                Err(SearchError::Lazy(
+                    crate::LazyWorkspaceError::NotFound | crate::LazyWorkspaceError::NotRegularFile,
+                ))
+                | Err(SearchError::Workspace(
+                    crate::WorkspaceError::NotFound | crate::WorkspaceError::NotRegularFile,
+                )) => continue,
+                Err(error) => return Err(error),
+            };
+            policy
+                .get_or_insert_with(GitIgnorePolicy::default)
+                .extend(GitIgnorePolicy::parse(&String::from_utf8_lossy(&bytes)));
+        }
+        if let Some(policy) = policy {
+            self.ignore_policies.insert(directory.to_owned(), policy);
+        }
+        Ok(())
     }
 
     /// Reads only an explicitly selected candidate at the original pinned cut.

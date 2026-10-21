@@ -33,7 +33,11 @@ const TOTAL_BYTES: u64 = 16 * 1024 * 1024;
 const MATCHES: usize = 1024;
 /// Loads only the search ignore policy.
 pub async fn search_ignore(view: View<'_>) -> crate::Result<GitIgnorePolicy> {
-    crate::filesystem::workspace_policy::ignore_for(view).await
+    let mut policy = crate::filesystem::workspace_policy::ignore_for(view).await?;
+    if let Some(bytes) = view.optional("/.ignore", 1024 * 1024).await? {
+        policy.extend(GitIgnorePolicy::parse(&String::from_utf8_lossy(&bytes)));
+    }
+    Ok(policy)
 }
 /// Starts metadata-only enumeration of a selected view.
 pub async fn walk_names<'a>(

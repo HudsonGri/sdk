@@ -29,7 +29,10 @@ impl DirectoryState {
                 source_entries_visited: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            match self.entries.next(work)? {
+            // Enumeration needs names and no-follow metadata, never a held
+            // content handle for every leaf. Linux can use statx by name;
+            // placeholder-backed hosts stay on their metadata query path.
+            match self.entries.next_metadata(work)? {
                 None => self.eof = true,
                 Some((entry, bytes)) => {
                     self.ownership.retain(bytes, work)?;

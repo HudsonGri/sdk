@@ -189,6 +189,102 @@ async fn name_search_checkpoint_rejects_another_volume() {
 }
 
 #[tokio::test]
+async fn name_search_nested_ignore_rules_survive_checkpoint_and_are_relative() {
+    let fs = Fs::memory();
+    let stop = CancellationToken::new();
+    let workspace = fs
+        .create_workspace("nested-ignores", WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let mut transaction = workspace
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    let bytes = |text: &'static [u8]| acyclic_stream::OwnedBytes::from_static(text);
+    transaction
+        .write_batch(
+            &["/src", "/src/deep", "/src/cache", "/else"],
+            &[
+                (
+                    "/src/.gitignore",
+                    bytes(b"!visible.txt\n/only-here.rs\ncache/\n"),
+                ),
+                ("/src/visible.txt", bytes(b"visible")),
+                ("/src/private.txt", bytes(b"ignored")),
+                ("/src/only-here.rs", bytes(b"ignored")),
+                ("/src/deep/only-here.rs", bytes(b"visible")),
+                ("/src/cache/entry.rs", bytes(b"ignored subtree")),
+                ("/else/only-here.rs", bytes(b"visible")),
+                ("/else/.ignore", bytes(b"!unignored.txt\n")),
+                ("/else/unignored.txt", bytes(b"visible")),
+            ],
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    for control in [false, true] {
+        if control {
+            workspace.remove("/src/.gitignore").await.unwrap();
+        }
+        let head = workspace
+            .head(WorkBudget::UNBOUNDED, &stop)
+            .await
+            .unwrap()
+            .value;
+        let mut walk = NameWalk::<_, _, CountingSource, MemoryLazyWorkspaceStore>::exact(
+            head,
+            None,
+            GitIgnorePolicy::parse("*.txt\n"),
+        )
+        .await
+        .unwrap();
+        let mut paths = Vec::new();
+        while let Some(page) = walk.next_page().await.unwrap() {
+            paths.extend(
+                page.into_iter()
+                    .filter(|name| name.regular)
+                    .map(|name| name.path),
+            );
+            // Exercise the real serialized frontier, including loaded policy
+            // metadata, at every directory continuation.
+            let checkpoint = walk.checkpoint().unwrap();
+            walk =
+                NameWalk::resume_exact(&workspace, checkpoint, GitIgnorePolicy::parse("*.txt\n"))
+                    .await
+                    .unwrap();
+        }
+        assert_eq!(paths.iter().any(|path| path == "src/visible.txt"), !control);
+        assert_eq!(paths.iter().any(|path| path == "src/only-here.rs"), control);
+        assert_eq!(
+            paths.iter().any(|path| path == "src/cache/entry.rs"),
+            control
+        );
+        assert!(!paths.iter().any(|path| path == "src/private.txt"));
+        assert!(paths.iter().any(|path| path == "src/deep/only-here.rs"));
+        assert!(paths.iter().any(|path| path == "else/only-here.rs"));
+        assert!(paths.iter().any(|path| path == "else/unignored.txt"));
+    }
+}
+
+#[tokio::test]
 async fn name_search_uses_authored_metadata_before_the_unindexed_source() {
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::from_static(b"unread"));

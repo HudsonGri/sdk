@@ -302,7 +302,8 @@ mod tests {
         let absent = issue(Vec::<String>::new())?;
         assert!(!signed_name_allowed(&absent, &private, "src/file.rs")?);
         // Negative control: the host mount's policy alone permits this name.
-        let mounts = workspace::mounts::owner(Path::new("."), &private, (), [])?;
+        let root = std::env::current_dir().map_err(storage)?;
+        let mounts = workspace::mounts::owner(&root, &private, (), [])?;
         assert!(
             mounts
                 .named(None)?
