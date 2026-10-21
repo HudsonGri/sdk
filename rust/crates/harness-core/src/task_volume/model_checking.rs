@@ -90,5 +90,4 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
     );
 }
 
-#[cfg(test)]
-pub(crate) use super::files::model_files as files;
+pub use super::files::model_files as files;
