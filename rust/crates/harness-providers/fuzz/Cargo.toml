@@ -54,3 +54,8 @@ path = "fuzz_targets/catalog.rs"
 test = false
 doc = false
 bench = false
+
+# Match the workspace debug profile while preserving assertions and ASAN.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
