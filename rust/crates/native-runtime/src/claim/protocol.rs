@@ -1,7 +1,7 @@
 //! The claim protocol, written once over [`Host`] so that native runs and the
 //! model run the same code.
 
-use super::record::{Contents, Process, Record};
+use super::record::{Contents, Process, RECORD_LIMIT, Record};
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::io;
@@ -39,7 +39,8 @@ pub(super) trait Host {
     fn write(&self, file: &mut Self::File, bytes: &[u8]) -> io::Result<()>;
     /// This process, when it holds a process lock that claims can name.
     fn process(&self) -> Option<&Process>;
-    fn liveness(&self, process: &Process) -> Liveness;
+    /// What can be proven about `process`, counting each probe in `probes`.
+    fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness;
     /// A token no other claim of this process has used.
     fn token(&self) -> u64;
     fn table(&self) -> &Table<Self::Key>;
@@ -99,16 +100,19 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
 }
 
 /// Whether the recorded owner of a claim file excludes a new one.
-fn excludes<H: Host>(host: &H, contents: &Contents) -> Option<io::Error> {
-    let Contents::Record(record) = contents else {
-        return None;
+fn excludes<H: Host>(host: &H, contents: &Contents, probes: &mut u64) -> Option<io::Error> {
+    let record = match contents {
+        Contents::Empty | Contents::Torn => return None,
+        // Not a record any claim wrote, nor provably the remains of one.
+        Contents::Oversized => return Some(contention("store claim file exceeds a record")),
+        Contents::Record(record) => record,
     };
     // A record of this process that its table does not hold is a release
     // that could not clear it: no owner.
     if host.process() == Some(&record.process) {
         return None;
     }
-    match host.liveness(&record.process) {
+    match host.liveness(&record.process, probes) {
         Liveness::Dead => None,
         Liveness::Alive => Some(contention("store claimed by a live process")),
         Liveness::Unknown => Some(contention("store claimed by a process of unknown liveness")),
@@ -168,7 +172,7 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
     }
     let exchanged = (|| {
         let contents = Contents::decode(&host.read(&mut file)?);
-        if let Some(refusal) = excludes(&host, &contents) {
+        if let Some(refusal) = excludes(&host, &contents, &mut 0) {
             return Err(refusal);
         }
         let Some(process) = host.process() else {
@@ -184,7 +188,15 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
             process: process.clone(),
             token,
         };
-        host.write(&mut file, &record.encode())?;
+        let encoded = record.encode();
+        // A record that cannot be read back whole would read as another.
+        if encoded.len() > RECORD_LIMIT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "claim record exceeds its bound",
+            ));
+        }
+        host.write(&mut file, &encoded)?;
         Ok(Some(token))
     })();
     let token = match exchanged {
@@ -218,18 +230,23 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
 
 /// Whether the claim file `file`, whose lock the caller holds, names an
 /// owner that excludes others: a live process, one of unknown liveness, or
-/// this one.
-pub(super) fn is_claimed<H: Host>(host: &H, file: &mut H::File) -> io::Result<bool> {
+/// this one. Also returns the reads it made: the record, then each probe.
+pub(super) fn is_claimed<H: Host>(host: &H, file: &mut H::File) -> io::Result<(bool, u64)> {
     let contents = Contents::decode(&host.read(file)?);
-    Ok(match &contents {
-        Contents::Record(record) => {
-            host.process() == Some(&record.process) || excludes(host, &contents).is_some()
-        }
-        Contents::Empty | Contents::Torn => false,
-    })
+    let mut reads = 1;
+    let claimed = match &contents {
+        Contents::Record(record) if host.process() == Some(&record.process) => true,
+        _ => excludes(host, &contents, &mut reads).is_some(),
+    };
+    Ok((claimed, reads))
 }
 
 impl<H: Host> Claim<H> {
+    #[cfg(all(test, unix))]
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The claimed file's identity.
     #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(super) fn key(&self) -> &H::Key {

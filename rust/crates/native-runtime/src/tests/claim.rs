@@ -287,3 +287,109 @@ fn release_never_clears_a_record_in_a_file_it_did_not_claim() -> io::Result<()> 
     assert_eq!(std::fs::metadata(&path)?.len(), 0);
     Ok(())
 }
+
+/// `path` relative to this process's working directory.
+#[cfg(unix)]
+fn relative_to_current(path: &Path) -> io::Result<PathBuf> {
+    let current = std::env::current_dir()?;
+    let mut relative = PathBuf::new();
+    for _ in current.components().skip(1) {
+        relative.push("..");
+    }
+    relative.push(path.strip_prefix("/").map_err(io::Error::other)?);
+    Ok(relative)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_claim_by_relative_path_is_held_by_its_absolute_path() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let relative = relative_to_current(&path)?;
+    assert!(relative.is_relative());
+    let claim = StoreClaim::acquire(&relative)?;
+    // Release reopens this path, which must not depend on the working
+    // directory at release.
+    assert_eq!(claim.path(), std::path::absolute(&relative)?);
+    assert!(contended(StoreClaim::acquire(&path)));
+    drop(claim);
+    assert_eq!(std::fs::metadata(&path)?.len(), 0);
+    Ok(())
+}
+
+/// A runtime directory whose process lock path makes a record longer than
+/// any record: `depth` nested directories of 200 bytes.
+#[cfg(target_os = "linux")]
+fn long_runtime_directory(base: &Path, depth: usize) -> io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut runtime = base.to_path_buf();
+    for _ in 0..depth {
+        runtime.push("r".repeat(200));
+    }
+    std::fs::create_dir_all(&runtime)?;
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
+    Ok(runtime)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_whose_record_would_not_fit_holds_its_claims_instead() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let runtime = long_runtime_directory(directory.path(), 20)?;
+    let path = directory.path().join("owner.lock");
+    let mut owner = Owner::spawn_with(&path, &[("XDG_RUNTIME_DIR", &runtime)])?;
+    // No record that a reader could take only in part.
+    assert_eq!(std::fs::metadata(&path)?.len(), 0);
+    assert!(contended(StoreClaim::acquire(&path)));
+    owner.0.kill()?;
+    owner.0.wait()?;
+    drop(StoreClaim::acquire(&path)?);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claim_file_longer_than_any_record_refuses() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    // A whole record of a dead owner, and then more: not that record.
+    let mut bytes = lockless_record(directory.path(), u32::MAX, b"boot:1");
+    std::fs::write(&path, &bytes)?;
+    drop(StoreClaim::acquire(&path)?);
+    bytes.resize(crate::claim::RECORD_LIMIT + 1, 0);
+    std::fs::write(&path, &bytes)?;
+    assert!(contended(StoreClaim::acquire(&path)));
+    let mut file = std::fs::File::open(&path)?;
+    assert!(StoreClaim::is_claimed(&mut file)?);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claim_check_counts_each_read_it_makes() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let checked = |path: &Path| StoreClaim::check(&mut std::fs::File::open(path)?);
+    std::fs::write(&path, b"")?;
+    assert_eq!(checked(&path)?.read_operations, 1, "the record alone");
+    let claim = StoreClaim::acquire(&path)?;
+    assert_eq!(
+        checked(&path)?,
+        crate::ClaimCheck {
+            claimed: true,
+            read_operations: 1
+        },
+        "this process's own record needs no probe"
+    );
+    drop(claim);
+    // A dead owner whose process lock is gone: the lock, the boot, the process.
+    std::fs::write(
+        &path,
+        lockless_record(directory.path(), u32::MAX, b"boot:1"),
+    )?;
+    assert_eq!(
+        checked(&path)?.read_operations,
+        StoreClaim::CHECK_READ_OPERATIONS
+    );
+    Ok(())
+}

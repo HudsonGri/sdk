@@ -95,8 +95,8 @@ impl Host for Native {
         ProcessOwner::current().map(|owner| &owner.process)
     }
 
-    fn liveness(&self, process: &record::Process) -> Liveness {
-        process::liveness(process)
+    fn liveness(&self, process: &record::Process, probes: &mut u64) -> Liveness {
+        process::liveness(process, probes)
     }
 
     fn token(&self) -> u64 {
@@ -122,9 +122,16 @@ pub struct StoreClaim {
 }
 
 impl StoreClaim {
+    /// The most backend reads one [`StoreClaim::check`] makes: the record,
+    /// then the probes of its owner.
+    pub const CHECK_READ_OPERATIONS: u64 = 1 + process::PROBES;
+
     /// Claims the store whose claim file is `path`, creating the file if needed.
     pub fn acquire(path: &Path) -> io::Result<Self> {
-        protocol::acquire(Native, path).map(|claim| Self { _claim: claim })
+        // Release reopens the file by this path, which must still name it
+        // after this process changes its working directory.
+        let path = std::path::absolute(path)?;
+        protocol::acquire(Native, &path).map(|claim| Self { _claim: claim })
     }
 
     /// Whether the claim file `file` names an owner that excludes others: a
@@ -133,16 +140,44 @@ impl StoreClaim {
     /// or end while it reads; holding that lock through a short operation
     /// excludes owners for its duration.
     pub fn is_claimed(file: &mut File) -> io::Result<bool> {
-        protocol::is_claimed(&Native, file)
+        Self::check(file).map(|check| check.claimed)
+    }
+
+    /// The path this claim releases by.
+    #[cfg(all(test, unix))]
+    pub(crate) fn path(&self) -> &Path {
+        self._claim.path()
+    }
+
+    /// [`StoreClaim::is_claimed`], with the reads it made, for callers that
+    /// account their I/O. At most [`StoreClaim::CHECK_READ_OPERATIONS`].
+    pub fn check(file: &mut File) -> io::Result<ClaimCheck> {
+        let (claimed, read_operations) = protocol::is_claimed(&Native, file)?;
+        Ok(ClaimCheck {
+            claimed,
+            read_operations,
+        })
     }
 }
+
+/// What [`StoreClaim::check`] found, and the reads it made to find it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClaimCheck {
+    /// Whether the claim file names an owner that excludes others.
+    pub claimed: bool,
+    /// Backend reads made: the record, then each probe of its owner.
+    pub read_operations: u64,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use record::RECORD_LIMIT;
 
 /// The process lock that a claim file's record names, if it holds one.
 #[cfg(test)]
 pub(crate) fn recorded_process_lock(claim: &[u8]) -> Option<std::path::PathBuf> {
     match record::Contents::decode(claim) {
         record::Contents::Record(record) => process::bytes_path(&record.process.lock),
-        record::Contents::Empty | record::Contents::Torn => None,
+        record::Contents::Empty | record::Contents::Torn | record::Contents::Oversized => None,
     }
 }
 

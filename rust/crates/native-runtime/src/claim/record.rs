@@ -7,7 +7,7 @@
 const MAGIC: &[u8] = b"acyclic-claim-v2\0";
 const CHECKSUM_BYTES: usize = 8;
 /// A record is a few short fields; anything longer is not one.
-pub(super) const RECORD_LIMIT: usize = 4096;
+pub(crate) const RECORD_LIMIT: usize = 4096;
 
 /// The process that owns a claim, as other processes find it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +38,8 @@ pub(super) enum Contents {
     /// claim file's lock, and a writer whose write fails never owns, so these
     /// come only from a writer that died mid-write: no owner.
     Torn,
+    /// More bytes than any record: read only in part, so never decoded.
+    Oversized,
     Record(Record),
 }
 
@@ -91,6 +93,9 @@ impl Contents {
     pub(super) fn decode(bytes: &[u8]) -> Self {
         if bytes.is_empty() {
             return Self::Empty;
+        }
+        if bytes.len() > RECORD_LIMIT {
+            return Self::Oversized;
         }
         Self::record(bytes).map_or(Self::Torn, Self::Record)
     }
@@ -149,6 +154,34 @@ mod tests {
             let record = record(lock);
             assert_eq!(Contents::decode(&record.encode()), Contents::Record(record));
         }
+    }
+
+    /// A record whose encoding is exactly `length` bytes.
+    fn record_of_length(length: usize) -> Record {
+        let mut record = record(b"");
+        let lock = length.saturating_sub(record.encode().len());
+        record.process.lock = vec![b'/'; lock];
+        record
+    }
+
+    #[test]
+    fn a_record_at_the_bound_decodes_and_one_past_it_never_does() {
+        let whole = record_of_length(RECORD_LIMIT);
+        let encoded = whole.encode();
+        assert_eq!(encoded.len(), RECORD_LIMIT);
+        assert_eq!(Contents::decode(&encoded), Contents::Record(whole));
+        let past = record_of_length(RECORD_LIMIT + 1).encode();
+        assert_eq!(Contents::decode(&past), Contents::Oversized);
+        // A whole record followed by anything is no longer that record.
+        let mut padded = encoded;
+        padded.push(0);
+        assert_eq!(Contents::decode(&padded), Contents::Oversized);
+        // Nor is any read cut at one past the bound.
+        let longer = record_of_length(2 * RECORD_LIMIT).encode();
+        assert_eq!(
+            Contents::decode(longer.get(..=RECORD_LIMIT).unwrap_or_default()),
+            Contents::Oversized
+        );
     }
 
     #[test]

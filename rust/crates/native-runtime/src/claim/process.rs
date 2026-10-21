@@ -2,7 +2,7 @@
 //! process it names.
 
 use super::protocol::Liveness;
-use super::record::Process;
+use super::record::{Process, RECORD_LIMIT, Record};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -44,24 +44,47 @@ impl ProcessOwner {
         }
         let lock = options.open(&path)?;
         lock.try_lock().map_err(io::Error::from)?;
+        // Others prove this process dead by taking this lock, so it must
+        // exclude them: a filesystem whose locks always succeed cannot hold it.
+        match File::open(&path)?.try_lock_shared() {
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            _ => return Err(io::Error::from(io::ErrorKind::Unsupported)),
+        }
+        let process = Process {
+            pid,
+            start: start_identity(pid).unwrap_or_default(),
+            lock: path_bytes(&path)?,
+            lock_identity: identity_bytes(&lock)?,
+        };
+        // Every record names this process with a fixed-width token, so one
+        // check covers them all: a record too long to read back whole is
+        // never written, and each claim holds its own file lock instead.
+        let longest = Record {
+            process: process.clone(),
+            token: u64::MAX,
+        };
+        if longest.encode().len() > RECORD_LIMIT {
+            return Err(io::Error::from(io::ErrorKind::InvalidFilename));
+        }
         Ok(Self {
-            process: Process {
-                pid,
-                start: start_identity(pid).unwrap_or_default(),
-                lock: path_bytes(&path)?,
-                lock_identity: identity_bytes(&lock)?,
-            },
+            process,
             _lock: lock,
         })
     }
 }
 
+/// The most probes one [`liveness`] makes: the process lock, then the boot
+/// and the process's start.
+pub(super) const PROBES: u64 = 3;
+
 /// What can be proven about the process a record names. Only a positive proof
-/// of death is `Dead`; every probe that fails to answer is `Unknown`.
-pub(super) fn liveness(process: &Process) -> Liveness {
+/// of death is `Dead`; every probe that fails to answer is `Unknown`. Counts
+/// each probe it makes in `probes`.
+pub(super) fn liveness(process: &Process, probes: &mut u64) -> Liveness {
     let Some(path) = bytes_path(&process.lock) else {
         return Liveness::Unknown;
     };
+    *probes += 1;
     match File::open(&path) {
         Ok(lock) => match identity_bytes(&lock) {
             Ok(identity) if identity == process.lock_identity => match lock.try_lock_shared() {
@@ -71,10 +94,10 @@ pub(super) fn liveness(process: &Process) -> Liveness {
                 Err(std::fs::TryLockError::Error(_)) => Liveness::Unknown,
             },
             // Another file now has that name: the named one is gone.
-            Ok(_) => without_lock(process),
+            Ok(_) => without_lock(process, probes),
             Err(_) => Liveness::Unknown,
         },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => without_lock(process),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => without_lock(process, probes),
         Err(_) => Liveness::Unknown,
     }
 }
@@ -82,12 +105,14 @@ pub(super) fn liveness(process: &Process) -> Liveness {
 /// For a process lock that is gone: whether the process that held it lives.
 /// Something other than its owner can remove it on Unix, such as a
 /// temporary-file cleaner, so a missing lock alone proves nothing there.
-fn without_lock(process: &Process) -> Liveness {
+fn without_lock(process: &Process, probes: &mut u64) -> Liveness {
     #[cfg(target_os = "linux")]
     {
         if process.start.is_empty() {
             return Liveness::Unknown;
         }
+        // The boot, then the process.
+        *probes += 2;
         match start_identity(process.pid) {
             Ok(start) if start == process.start => Liveness::Alive,
             // Another boot, or another process with a reused pid.
@@ -104,6 +129,7 @@ fn without_lock(process: &Process) -> Liveness {
         else {
             return Liveness::Unknown;
         };
+        *probes += 1;
         match rustix::process::test_kill_process(pid) {
             // A reused pid reads as alive: a refusal, never two owners.
             Ok(()) | Err(rustix::io::Errno::PERM) => Liveness::Alive,
@@ -115,12 +141,12 @@ fn without_lock(process: &Process) -> Liveness {
     // sweep removes it only while holding its lock.
     #[cfg(windows)]
     {
-        let _ = process;
+        let _ = (process, probes);
         Liveness::Dead
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
     {
-        let _ = process;
+        let _ = (process, probes);
         Liveness::Unknown
     }
 }

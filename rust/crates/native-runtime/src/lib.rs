@@ -61,7 +61,7 @@ pub(crate) use file::{
     with_file_admission, with_file_scope, write_bounded_in_place,
 };
 mod claim;
-pub use claim::StoreClaim;
+pub use claim::{ClaimCheck, StoreClaim};
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod recovery;

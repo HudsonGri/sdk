@@ -261,7 +261,8 @@ impl Host for Sim {
         self.process.as_ref()
     }
 
-    fn liveness(&self, process: &Process) -> Liveness {
+    fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness {
+        *probes += 1;
         let world = enter(&self.world);
         if world.unproven {
             return Liveness::Unknown;
@@ -320,8 +321,8 @@ impl Host for FailOpen {
     fn process(&self) -> Option<&Process> {
         self.0.process()
     }
-    fn liveness(&self, process: &Process) -> Liveness {
-        match self.0.liveness(process) {
+    fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness {
+        match self.0.liveness(process, probes) {
             Liveness::Unknown => Liveness::Dead,
             known => known,
         }
@@ -502,6 +503,62 @@ fn a_release_never_clears_another_claims_record() {
         owner.disown(&second);
         drop(second);
         contender.join().map_err(failed)?;
+        Ok(())
+    });
+}
+
+/// A claim file longer than any record refuses, whatever whole record it
+/// begins with; and a process whose record would be that long writes none,
+/// so no reader ever takes part of a record for another.
+#[test]
+fn a_record_is_never_read_in_part() {
+    explore(|findings| {
+        let world = Arc::new(Mutex::new(World::new(2, findings)));
+        let dead = Sim::new(&world, 0);
+        let mut bytes = super::record::Record {
+            process: dead.process.ok_or("no process")?,
+            token: 1,
+        }
+        .encode();
+        bytes.resize(super::record::RECORD_LIMIT + 1, 0);
+        kill(&world, 0);
+        {
+            let mut world = enter(&world);
+            world.inodes.push(Inode {
+                bytes,
+                holder: None,
+            });
+            world.names.insert(PathBuf::from("store"), 0);
+        }
+        let mut long = Sim::new(&world, 1);
+        let reader = long.clone();
+        let refused =
+            loom::thread::spawn(move || protocol::acquire(reader, Path::new("store")).is_err());
+        if !refused.join().map_err(failed)? {
+            report(
+                findings,
+                "a claim file longer than a record admitted".to_owned(),
+            );
+        }
+        if let Some(process) = long.process.as_mut() {
+            process.lock = vec![b'/'; super::record::RECORD_LIMIT];
+        }
+        if protocol::acquire(long, Path::new("other")).is_ok() {
+            report(
+                findings,
+                "a record longer than the bound was claimed".to_owned(),
+            );
+        }
+        if !enter(&world)
+            .inodes
+            .get(1)
+            .is_some_and(|inode| inode.bytes.is_empty())
+        {
+            report(
+                findings,
+                "a record longer than the bound was written".to_owned(),
+            );
+        }
         Ok(())
     });
 }

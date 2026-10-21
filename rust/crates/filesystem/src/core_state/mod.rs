@@ -274,17 +274,28 @@ impl LocalCoreStateStore {
                     work,
                 )?;
                 let cleanup = work.reserve_cleanup_write()?;
-                let read = crate::WorkCounters {
-                    backend_read_operations: 1,
+                let reads = |backend_read_operations| crate::WorkCounters {
+                    backend_read_operations,
                     ..crate::WorkCounters::UNCHARGED
                 };
-                work.admit(read)?;
+                // The lock, then the claim check: its record and the probes
+                // of the owner it names.
+                work.admit(reads(
+                    1 + acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
+                ))?;
+                let mut spent = 1;
                 let acquired = FileExt::try_lock_shared(&lock).and_then(|()| {
                     // A claim names its owner inside the lock file instead of
                     // holding the lock, so a free lock alone does not admit.
-                    match acyclic_native_runtime::StoreClaim::is_claimed(&mut lock) {
-                        Ok(false) => Ok(()),
-                        Ok(true) => {
+                    let checked = acyclic_native_runtime::StoreClaim::check(&mut lock);
+                    // A failed check made at most every read it may make.
+                    spent += checked.as_ref().map_or(
+                        acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
+                        |check| check.read_operations,
+                    );
+                    match checked {
+                        Ok(check) if !check.claimed => Ok(()),
+                        Ok(_) => {
                             let _ = FileExt::unlock(&lock);
                             Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
                         }
@@ -298,7 +309,7 @@ impl LocalCoreStateStore {
                     .as_ref()
                     .is_ok()
                     .then(|| OwnerLock::new(lock, Some(cleanup)));
-                work.spent(read)?;
+                work.spent(reads(spent))?;
                 match acquired {
                     Ok(()) => Admission::Shared {
                         _lock: owner_lock.ok_or(LocalCoreStateStoreError::Integrity)?,

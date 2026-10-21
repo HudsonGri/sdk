@@ -128,3 +128,50 @@ fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::err
     LocalCoreStateStore::open_owned(&root)?;
     Ok(())
 }
+
+/// Backend reads one measured shared admission of `root` charges.
+fn measured_admission_reads(root: &Path) -> u64 {
+    let cancellation = crate::CancellationToken::new();
+    let work =
+        crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
+    let store = LocalCoreStateStore::new(root).materialization(work.clone());
+    let before = work.receipt().backend_read_operations;
+    drop(store.namespace().unwrap());
+    work.receipt().backend_read_operations - before
+}
+
+#[test]
+fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("core-state");
+    measured_admission_reads(&root);
+    // The lock, and the claim check's read of an empty record.
+    let free = measured_admission_reads(&root);
+
+    // A dead owner's record stays behind, so each check also probes it.
+    let ready = directory.path().join("ready");
+    let mut child = acyclic_native_runtime::ProcessTree::spawn(
+        ownership_child(&root)?.env("ACYCLIC_CORE_STATE_CHILD_READY", &ready),
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.is_file() {
+        if let Some(status) = child.try_wait(None)? {
+            return Err(format!("owner child exited before readiness: {status}").into());
+        }
+        if Instant::now() >= deadline {
+            return Err("owner child readiness timed out".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.terminate_descendants()?;
+    child.wait(Duration::from_secs(5))?;
+    let probed = measured_admission_reads(&root);
+    // One probe while the owner's process lock remains, three once another
+    // process's sweep has removed it.
+    assert!(
+        probed > free
+            && probed - free <= acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS - 1,
+        "free admission {free} reads, after a dead owner {probed}"
+    );
+    Ok(())
+}
