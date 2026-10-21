@@ -59,7 +59,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                 let file = FileRef::new(serde_json::from_value(json!({
                     "provider":{"namespace":"test","family":"filesystem","version":"2"},
                     "id":"project","class":"project","owner":{"kind":"project","id":"project"}
-                })).unwrap(), "image".into(), "1".into(),
+                })).unwrap(), format!("image-{}", bytes.len()), "1".into(),
                     FileDescriptor::from_bytes(&bytes, media, &mut None).unwrap(), "image".into(), &mut None).unwrap();
                 for work in [1, encoded_work - 1, encoded_work] {
                     let request = PreparedModelRequest::prepare(ModelRequest {
