@@ -73,7 +73,7 @@ pub async fn run(
             if diff_selection.is_none_or(|(accepted, _)| accepted != revision) {
                 let selected = local.project_selection().await?;
                 if diff_selection.is_none_or(|(_, previous)| previous != selected) {
-                    renderer.update_diff(Vec::new());
+                    renderer.update_diff(Ok(Vec::new()));
                     diff = Some(client::local_diff(
                         local.clone(),
                         client::DiffLimits {
@@ -138,7 +138,15 @@ pub async fn run(
             let Some(read) = (tokio::select! {
                 read = next => read?,
                 rows = async { match diff.as_mut() { Some(diff) => diff.next().await, None => std::future::pending().await } } => {
-                    renderer.update_diff(rows.ok_or("project diff follow ended")??);
+                    match rows {
+                        Some(Ok(rows)) => renderer.update_diff(Ok(rows)),
+                        failed => {
+                            renderer.update_diff(failed.unwrap_or_else(|| {
+                                Err(acyclic_harness::Error::Conflict("project diff follow ended".into()))
+                            }));
+                            diff = None;
+                        }
+                    }
                     continue;
                 }
             }) else {

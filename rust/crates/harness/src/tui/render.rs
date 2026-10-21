@@ -61,9 +61,14 @@ pub struct ClientRenderer {
 }
 
 impl ClientRenderer {
-    /// Replace disposable diff rows after an authorized filesystem publication.
-    pub fn update_diff(&mut self, rows: Vec<Line<'static>>) {
-        self.diff = rows;
+    /// Keep optional diff failures inside the pane without ending the session.
+    pub fn update_diff(&mut self, rows: crate::Result<Vec<Line<'static>>>) {
+        self.diff = rows.unwrap_or_else(|error| {
+            vec![Line::styled(
+                super::display_text(&format!("Diff unavailable: {error}")).into_owned(),
+                Style::default().fg(Color::Red),
+            )]
+        });
     }
     #[cfg(test)]
     pub(crate) fn text_work(&self) -> usize {

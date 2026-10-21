@@ -115,9 +115,6 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
             }
             let before = self.endpoint(base, &path, io).await?;
             let after = self.endpoint(current, &path, io).await?;
-            if before.is_none() && after.is_none() {
-                continue;
-            }
             result.paths.push(DiffPath {
                 path,
                 base: before,

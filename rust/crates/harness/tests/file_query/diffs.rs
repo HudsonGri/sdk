@@ -22,8 +22,11 @@ fn diff_query_snapshots_and_follow_reconstruct_every_endpoint()
         |texts| {
             let result: std::result::Result<(), Box<dyn std::error::Error>> =
                 runtime.block_on(async {
+                    for baseline_text in [None, Some("baseline\n")] {
                     let fixture = Fixture::new().await?;
-                    fixture.write(&[("note.txt", Some("baseline\n"))]).await?;
+                    if baseline_text.is_some() {
+                        fixture.write(&[("note.txt", baseline_text)]).await?;
+                    }
                     let cancellation = acyclic_fs::CancellationToken::new();
                     let workspace = fixture
                         .filesystem
@@ -43,7 +46,8 @@ fn diff_query_snapshots_and_follow_reconstruct_every_endpoint()
                     let values = texts
                         .iter()
                         .map(|text| Some(text.as_str()))
-                        .chain([None, Some("baseline\n")]);
+                        .chain(std::iter::once(None))
+                        .chain(baseline_text.map(Some));
                     for text in values {
                         fixture.write(&[("note.txt", text)]).await?;
                         let publication = stream.next().await.ok_or("missing delta")??;
@@ -53,12 +57,12 @@ fn diff_query_snapshots_and_follow_reconstruct_every_endpoint()
                         assert_eq!(publication, decoded);
                         view.apply(&publication, fixture.reader.as_ref(), LIMITS)
                             .await?;
-                        if text == Some("baseline\n") {
+                        if text == baseline_text {
                             assert!(view.files().is_empty());
                         } else {
                             let patch = diffy::Patch::from_str(&view.files()["note.txt"].patch)?;
                             assert_eq!(
-                                diffy::apply("baseline\n", &patch)?,
+                                diffy::apply(baseline_text.unwrap_or_default(), &patch)?,
                                 text.unwrap_or_default()
                             );
                         }
@@ -71,6 +75,7 @@ fn diff_query_snapshots_and_follow_reconstruct_every_endpoint()
                             .apply(&snapshot, fixture.reader.as_ref(), LIMITS)
                             .await?;
                         assert_eq!(replay.files(), view.files());
+                    }
                     }
                     Ok(())
                 });
