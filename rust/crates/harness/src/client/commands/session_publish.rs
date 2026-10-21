@@ -17,14 +17,36 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Ok(());
             }
             let before = self.generation;
-            match self.write_state(root, name, &value).await {
+            // Retry only publication. Once accepted, a later settings/follow
+            // failure must never apply the movement a second time.
+            match self.publish_state(root, name, &value).await {
                 Err(Error::Conflict(_)) if self.generation != before => continue,
-                result => return result,
+                Err(error) => return Err(error),
+                Ok(()) => {
+                    if root == CommandFileRoot::Session && name == "layout.json" {
+                        self.load_task_settings().await?;
+                    }
+                    return Ok(());
+                }
             }
         }
         Err(Error::Conflict(
             "UI file remained busy; retry the input".into(),
         ))
+    }
+
+    pub(super) async fn publish_state(
+        &mut self,
+        root: CommandFileRoot,
+        name: &str,
+        value: &Value,
+    ) -> Result<()> {
+        self.publish_rebased::<true, true>(
+            self.state_key(root, name)?,
+            serde_json::to_vec(value).map_err(codec)?,
+            false,
+        )
+        .await
     }
 
     pub(super) fn publication_byte_limit(&self, key: files::FileKey) -> Result<usize> {

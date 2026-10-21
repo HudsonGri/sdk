@@ -383,12 +383,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         name: &str,
         value: &Value,
     ) -> Result<()> {
-        self.publish_rebased::<true, true>(
-            self.state_key(root, name)?,
-            serde_json::to_vec(value).map_err(codec)?,
-            false,
-        )
-        .await?;
+        self.publish_state(root, name, value).await?;
         if root == CommandFileRoot::Session && name == "layout.json" {
             self.load_task_settings().await?;
         }
