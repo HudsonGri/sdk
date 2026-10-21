@@ -29,8 +29,8 @@ pub fn run_headless<'a, C: HeadlessClient + 'a, W: Write + 'a>(
     target: OperationId,
     output: &'a mut W,
 ) -> impl Future<Output = Result<HeadlessOutcome>> + 'a {
-    // Forward the child itself; an awaiting adapter retains another copy of its
-    // initial future alongside the suspended await state.
+    // Forward the child itself rather than constructing another potentially
+    // large future inside an adapter's poll frame.
     client.prompt(command, target, output)
 }
 

@@ -84,11 +84,18 @@ fn check(
 
 #[test]
 fn forwarding_retains_one_payload_and_releases_it_synchronously() {
-    let operation = OperationId::new();
+    let operation = OperationId::from_bytes([1; 16]);
     for complete in [false, true] {
         let released = Arc::new(AtomicBool::new(false));
         let mut client = Client(released.clone());
-        let command = crate::client::prepare_local_prompt(operation, "fixture").unwrap();
+        let component = crate::task_volume::Component::new(operation.to_string()).unwrap();
+        let command = FileValue::new(
+            crate::task_volume::FileKey::Session {
+                session: component.clone(),
+                file: crate::task_volume::TaskFile::Request(component),
+            },
+            Vec::new(),
+        );
         let mut output = Vec::new();
         check(
             run_headless(&mut client, command, operation, &mut output),
