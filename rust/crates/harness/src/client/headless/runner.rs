@@ -23,25 +23,27 @@ pub trait HeadlessClient {
 }
 
 /// Submits through the client and follows its exact operation to settlement.
+#[inline(never)]
 pub fn run_headless<'a, C: HeadlessClient + 'a>(
     client: &'a mut C,
     command: FileValue,
     target: OperationId,
     output: &'a mut (impl Write + 'a),
 ) -> impl Future<Output = Result<HeadlessOutcome>> + 'a {
-    // Forward the child itself rather than constructing another potentially
-    // large future inside an adapter's poll frame.
-    client.prompt(command, target, output)
+    // Construct the child on the heap outside the caller's poll frame. Polling
+    // and synchronous drop remain owned by that caller, including in replay.
+    Box::pin(client.prompt(command, target, output))
 }
 
 /// Reads this client's canonical JSONL input and drains followed output before exit.
+#[inline(never)]
 pub fn run_jsonl<'a, C: HeadlessClient + 'a>(
     client: &'a mut C,
     target: OperationId,
     input: impl Stream<Item = Result<String>> + Unpin + 'a,
     output: &'a mut (impl Write + 'a),
 ) -> impl Future<Output = Result<HeadlessOutcome>> + 'a {
-    client.input(target, input, output)
+    Box::pin(client.input(target, input, output))
 }
 
 #[cfg(test)]

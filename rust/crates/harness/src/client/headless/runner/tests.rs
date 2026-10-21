@@ -65,10 +65,7 @@ fn check(
     released: &AtomicBool,
     complete: bool,
 ) {
-    assert_eq!(
-        std::mem::size_of_val(&future),
-        std::mem::size_of::<Payload>()
-    );
+    assert!(std::mem::size_of_val(&future) <= std::mem::size_of::<Payload>());
     let mut future = Box::pin(future);
     let mut cx = Context::from_waker(futures::task::noop_waker_ref());
     assert!(future.as_mut().poll(&mut cx).is_pending());
