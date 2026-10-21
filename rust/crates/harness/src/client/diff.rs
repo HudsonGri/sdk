@@ -195,7 +195,12 @@ impl DiffView {
             return Err(Error::Invalid("diff view exceeds retained bounds".into()));
         }
         for change in &publication.paths {
-            let diff = if let Some(bytes) = change
+            let diff = if change.matches_base {
+                if change.base.is_none() || change.current.is_none() {
+                    return Err(Error::Invalid("equal diff requires both endpoints".into()));
+                }
+                None
+            } else if let Some(bytes) = change
                 .largest_file_bytes
                 .filter(|bytes| *bytes > limits.file_bytes)
             {

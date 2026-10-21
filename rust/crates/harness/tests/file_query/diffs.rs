@@ -11,6 +11,65 @@ const LIMITS: DiffLimits = DiffLimits {
 };
 
 #[test]
+fn oversized_edits_and_restorations_match_the_baseline_without_body_reads()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    struct NoReads;
+    impl acyclic_harness::conversation::ContentResidencyVerifier for NoReads {}
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let mut runner = TestRunner::new(proptest::test_runner::Config::with_cases(16));
+    runner.run(&(0_usize..512, any::<usize>()), |(extra, position)| {
+        let result: std::result::Result<(), Box<dyn std::error::Error>> = runtime.block_on(async {
+            let baseline = "a".repeat(65_537 + extra);
+            let mut edited = baseline.clone();
+            let position = position % edited.len();
+            edited.replace_range(position..position + 1, "b");
+            let fixture = Fixture::new().await?;
+            fixture.write(&[("large.txt", Some(&baseline))]).await?;
+            let cancel = acyclic_fs::CancellationToken::new();
+            let workspace = fixture.filesystem.open_workspace(
+                fixture.volume.storage_name(&mut None)?, BOUNDARY_BUDGET, &cancel).await?.value;
+            let base = workspace.head(BOUNDARY_BUDGET, &cancel).await?.value;
+            let mut stream = fixture.source.observe_diff(base.id(), 16).await?;
+            let snapshot = stream.next().await.ok_or("snapshot")??;
+            let mut view = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+            let limits = DiffLimits { file_bytes: 65_536, ..LIMITS };
+            view.apply(&snapshot, &NoReads, limits).await?;
+
+            fixture.write(&[("large.txt", Some(&edited))]).await?;
+            let changed = stream.next().await.ok_or("edit")??;
+            assert!(!changed.paths[0].matches_base, "length alone is insufficient");
+            view.apply(&changed, &NoReads, limits).await?;
+            assert_eq!(view.files()["large.txt"].omitted_bytes, Some(baseline.len() as u64));
+
+            fixture.write(&[("large.txt", Some(&baseline))]).await?;
+            let restored = stream.next().await.ok_or("restore")??;
+            assert!(restored.paths[0].matches_base);
+            let encoded = serde_json::to_vec(&restored)?;
+            assert_eq!(serde_json::from_slice::<acyclic_harness::client::DiffPublication>(&encoded)?, restored);
+            // Negative control: discard the authorized equality fact, as the
+            // old size-only shortcut did, and the real reducer retains its row.
+            let mut broken = view.clone();
+            let mut size_only = restored.clone();
+            size_only.paths[0].matches_base = false;
+            broken.apply(&size_only, &NoReads, limits).await?;
+            assert!(!broken.files().is_empty());
+
+            assert_eq!(view.apply(&restored, &NoReads, limits).await?, ["large.txt"]);
+            assert!(view.files().is_empty());
+            assert_eq!(view.line_counts(), (0, 0));
+            let mut reopened = fixture.source.observe_diff(base.id(), 16).await?;
+            let snapshot = reopened.next().await.ok_or("reopen")??;
+            let mut replay = DiffView::new(fixture.volume.clone(), snapshot.previous.clone())?;
+            replay.apply(&snapshot, &NoReads, limits).await?;
+            assert_eq!(replay.files(), view.files());
+            Ok(())
+        });
+        result.map_err(|error| TestCaseError::fail(error.to_string()))
+    })?;
+    Ok(())
+}
+
+#[test]
 fn diff_query_omits_large_bodies_and_follows_resize_then_delete()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     struct NoReads;
