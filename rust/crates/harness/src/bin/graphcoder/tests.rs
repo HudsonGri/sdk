@@ -155,7 +155,9 @@ fn file_search_progress_and_query_bound_top_k_render_in_graphcoder() {
         .completion
         .set_file(
             "search/progress.json",
-            Some(br#"{"query":"mntgt","pending_dirs":17,"complete":false}"#),
+            Some(
+                br#"{"query":"mntgt","pending_dirs":17,"complete":false,"unavailable_entries":0}"#,
+            ),
         )
         .unwrap();
     input.refresh_completions();

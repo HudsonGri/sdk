@@ -110,6 +110,7 @@ async fn results(
     best: &crate::tui::PathMatches,
     pending: usize,
     complete: bool,
+    unavailable: usize,
 ) -> Result<()> {
     publish(
         files,
@@ -120,7 +121,7 @@ async fn results(
     publish(
         files,
         "search/progress.json",
-        &serde_json::json!({"request":request.request,"query":request.query,"pending_dirs":pending,"complete":complete}),
+        &serde_json::json!({"request":request.request,"query":request.query,"pending_dirs":pending,"complete":complete,"unavailable_entries":unavailable}),
     )
     .await
 }
@@ -140,7 +141,7 @@ async fn search(
     };
     let task_grants = admitted.as_ref().map(|record| &record.grants);
     let best = crate::tui::PathMatches::new(query);
-    results(files, request, &best, 1, false).await?;
+    results(files, request, &best, 1, false, 0).await?;
     // Keep the selected branch alive for the complete query. Each mounted
     // volume is searched through its logical view and its own access policy.
     let selected = selected_view(workspace, runtime, request.task).await?;
@@ -163,7 +164,7 @@ async fn search(
         });
     }
     if volumes.is_empty() {
-        return results(files, request, &best, 0, true).await;
+        return results(files, request, &best, 0, true, 0).await;
     }
     let mut last = None;
     loop {
@@ -213,20 +214,23 @@ async fn search(
         let mut combined = crate::tui::PathMatches::new(query);
         let mut pending = 0;
         let mut complete = true;
+        let mut unavailable = 0;
         for volume in &volumes {
             for path in volume.best.paths() {
                 combined.push(path.to_owned());
             }
             complete &= volume.complete;
             pending += volume.names.pending_directories().await;
+            unavailable += volume.names.unavailable_entries().await;
         }
         let publication = (
             combined.paths().map(str::to_owned).collect::<Vec<_>>(),
             pending,
             complete,
+            unavailable,
         );
         if last.as_ref() != Some(&publication) {
-            results(files, request, &combined, pending, complete).await?;
+            results(files, request, &combined, pending, complete, unavailable).await?;
             last = Some(publication);
         }
         tokio::task::yield_now().await;

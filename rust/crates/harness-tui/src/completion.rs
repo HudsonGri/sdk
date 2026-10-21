@@ -295,7 +295,7 @@ pub struct CompletionMenu {
     /// Selected row, wrapping during navigation.
     pub selected: usize,
     dismissed: Option<CompletionRequest>,
-    indexing_directories: Option<(String, usize)>,
+    search_progress: Option<files::Progress>,
 }
 
 impl CompletionMenu {
@@ -473,7 +473,7 @@ impl CompletionMenu {
 
     /// Whether results still belong to the current editor version.
     pub fn active(&self, editor: &Editor) -> bool {
-        (!self.items.is_empty() || self.indexing().is_some())
+        (!self.items.is_empty() || self.indexing().is_some() || self.unavailable_entries() != 0)
             && self.request.is_some()
             && self
                 .version
@@ -486,11 +486,25 @@ impl CompletionMenu {
     pub fn indexing(&self) -> Option<usize> {
         self.request
             .as_ref()
-            .zip(self.indexing_directories.as_ref())
-            .filter(|(request, (query, _))| {
-                request.kind == CompletionKind::Mention && &request.query == query
+            .zip(self.search_progress.as_ref())
+            .filter(|(request, progress)| {
+                request.kind == CompletionKind::Mention
+                    && request.query == progress.query
+                    && !progress.complete
             })
-            .map(|(_, (_, pending))| *pending)
+            .map(|(_, progress)| progress.pending_dirs)
+    }
+
+    /// Entries unavailable to the completed or ongoing pathname traversal.
+    /// A nonzero count keeps an empty partial-result popup visible.
+    pub fn unavailable_entries(&self) -> usize {
+        self.request
+            .as_ref()
+            .zip(self.search_progress.as_ref())
+            .filter(|(request, progress)| {
+                request.kind == CompletionKind::Mention && request.query == progress.query
+            })
+            .map_or(0, |(_, progress)| progress.unavailable_entries)
     }
 
     /// Cycle candidates in either direction.

@@ -57,10 +57,17 @@ pub struct NameCheckpoint {
     pending: Vec<(String, SavedCursor)>,
     single: Option<SearchName>,
     ignore_policies: BTreeMap<String, GitIgnorePolicy>,
+    unavailable_entries: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NameCheckpoint {
+    /// Entries or subtrees unavailable to this traversal. A terminal walk
+    /// with a nonzero count cannot certify the absence of further matches.
+    pub fn unavailable_entries(&self) -> usize {
+        self.unavailable_entries
+    }
+
     pub(crate) fn completed_at(&self, cut: NameCut) -> Option<Self> {
         if !self.pending.is_empty() || self.single.is_some() {
             return None;
@@ -108,6 +115,7 @@ pub struct NameWalk<'a, A, O, D, S> {
     // Existing authored metadata is cheap and available before native listing.
     authored: Option<Generation<A, O>>,
     ignore_policies: BTreeMap<String, GitIgnorePolicy>,
+    unavailable_entries: usize,
 }
 
 impl<
@@ -156,6 +164,7 @@ impl<
             pending,
             single: self.single.clone(),
             ignore_policies: self.ignore_policies.clone(),
+            unavailable_entries: self.unavailable_entries,
         })
     }
 
@@ -261,6 +270,7 @@ impl<
             ignore,
             authored,
             ignore_policies: checkpoint.ignore_policies,
+            unavailable_entries: checkpoint.unavailable_entries,
         })
     }
 
@@ -354,6 +364,7 @@ impl<
             ignore,
             authored,
             ignore_policies: BTreeMap::new(),
+            unavailable_entries: 0,
         };
         if directory
             && let Cut::Lazy(lazy, snapshot) = &walk.cut
@@ -406,6 +417,11 @@ impl<
         self.pending.len()
     }
 
+    /// Unreadable or unrepresentable entries encountered so far.
+    pub fn unavailable_entries(&self) -> usize {
+        self.unavailable_entries
+    }
+
     fn start(&self) -> Continuation {
         match self.cut {
             Cut::Lazy(..) => Continuation::Lazy(None),
@@ -416,6 +432,22 @@ impl<
     /// Lists at most one source page. Empty pages can make progress; `None`
     /// alone signals completion. No regular-file read occurs on this path.
     pub async fn next_page(&mut self) -> Result<Option<Vec<SearchName>>, SearchError> {
+        match self.next_directory_page().await {
+            Err(SearchError::Lazy(crate::LazyWorkspaceError::Demand(
+                crate::demand::DemandError::Io(error),
+            ))) if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+            ) =>
+            {
+                self.unavailable_entries += 1;
+                Ok(Some(Vec::new()))
+            }
+            result => result,
+        }
+    }
+
+    async fn next_directory_page(&mut self) -> Result<Option<Vec<SearchName>>, SearchError> {
         if let Some(single) = self.single.take() {
             return Ok(Some(
                 if self
@@ -471,6 +503,11 @@ impl<
                     .entries
                     .iter()
                     .filter(|entry| !entry.authored)
+                    .filter(|entry| {
+                        let unicode = entry.name.unicode_utf8_bytes().is_some();
+                        self.unavailable_entries += usize::from(!unicode);
+                        unicode
+                    })
                     .map(|entry| {
                         Ok((
                             entry
@@ -511,6 +548,11 @@ impl<
                 let rows = page
                     .entries
                     .iter()
+                    .filter(|entry| {
+                        let unicode = entry.name.unicode_utf8_bytes().is_some();
+                        self.unavailable_entries += usize::from(!unicode);
+                        unicode
+                    })
                     .map(|entry| {
                         Ok((
                             entry

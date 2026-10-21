@@ -45,6 +45,18 @@ impl SourceChangeSink for NameSignal {
                             pending.paths.clear();
                             continue;
                         }
+                        if path
+                            .components()
+                            .iter()
+                            .any(|name| name.unicode_utf8_bytes().is_none())
+                        {
+                            // The string-based mention surface cannot name this
+                            // entry. Keep observation live and let discovery
+                            // publish an explicit unavailable-entry count.
+                            pending.all = true;
+                            pending.paths.clear();
+                            continue;
+                        }
                         let mut text = String::new();
                         for component in path.components() {
                             if !text.is_empty() {
@@ -150,6 +162,37 @@ mod tests {
                 &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
             )
             .unwrap();
+        assert!(signal.pending.lock().unwrap().all);
+    }
+
+    #[test]
+    fn name_search_native_signal_keeps_following_after_a_non_unicode_name() {
+        let (revision, receiver) = watch::channel(0);
+        let signal = NameSignal {
+            revision,
+            pending: Arc::new(Mutex::new(NativeNameDelta::default())),
+        };
+        let name =
+            LogicalName::new(crate::kernel::NameEncoding::PosixBytes, vec![0xff], 255).unwrap();
+        // Negative control: projecting the original event into a string fails.
+        assert!(
+            name.unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .is_err()
+        );
+        let native = NamespacePath::new(vec![name], crate::model::VolumeLimits::default()).unwrap();
+        signal
+            .source_changed(
+                &[SourceChange::Name(native)],
+                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+            )
+            .unwrap();
+        signal
+            .source_changed(
+                &[SourceChange::Name(path("healthy.txt", false))],
+                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+            )
+            .unwrap();
+        assert_eq!(*receiver.borrow(), 2);
         assert!(signal.pending.lock().unwrap().all);
     }
 }

@@ -20,7 +20,7 @@ impl CompletionMenu {
             .unwrap_or_default();
         let progress = progress(path, bytes)?;
         if let Some(progress) = progress {
-            self.indexing_directories = progress;
+            self.search_progress = progress;
         }
         self.set_entries(path, bytes.is_some(), entries);
         Ok(())
@@ -44,7 +44,7 @@ impl CompletionMenu {
             .collect::<io::Result<Vec<_>>>()?;
         for (path, present, entries, progress) in decoded {
             if let Some(progress) = progress {
-                self.indexing_directories = progress;
+                self.search_progress = progress;
             }
             self.set_entries(path, present, entries);
         }
@@ -118,27 +118,27 @@ impl CompletionMenu {
         self.next_file = 0;
         self.items.clear();
         self.selected = 0;
-        self.indexing_directories = None;
+        self.search_progress = None;
     }
 }
 
-fn progress(path: &str, bytes: Option<&[u8]>) -> io::Result<Option<Option<(String, usize)>>> {
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(super) struct Progress {
+    pub query: String,
+    pub pending_dirs: usize,
+    pub complete: bool,
+    pub unavailable_entries: usize,
+}
+
+fn progress(path: &str, bytes: Option<&[u8]>) -> io::Result<Option<Option<Progress>>> {
     if path != "search/progress.json" {
         return Ok(None);
     }
     let Some(bytes) = bytes else {
         return Ok(Some(None));
     };
-    #[derive(serde::Deserialize)]
-    struct Progress {
-        query: String,
-        pending_dirs: usize,
-        complete: bool,
-    }
     let value: Progress = serde_json::from_slice(bytes)?;
-    Ok(Some(
-        (!value.complete).then_some((value.query, value.pending_dirs)),
-    ))
+    Ok(Some(Some(value)))
 }
 
 fn make(

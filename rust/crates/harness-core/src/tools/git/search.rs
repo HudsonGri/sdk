@@ -255,6 +255,7 @@ where
             self.report_search(&result).await?;
         }
         result.pending_directories = 0;
+        result.truncated |= names.unavailable_entries().await != 0;
         result.complete = !result.truncated;
         self.finish_search(result).await
     }

@@ -165,14 +165,14 @@ fn incomplete_empty_query_results_remain_visible_and_stale_progress_is_ignored()
     menu.refresh(&editor);
     menu.set_file(
         "search/progress.json",
-        Some(br#"{"query":"missing","pending_dirs":7,"complete":false}"#),
+        Some(br#"{"query":"missing","pending_dirs":7,"complete":false,"unavailable_entries":0}"#),
     )
     .unwrap();
     assert!(menu.active(&editor));
     assert_eq!(menu.indexing(), Some(7));
     menu.set_file(
         "search/progress.json",
-        Some(br#"{"query":"old","pending_dirs":9,"complete":false}"#),
+        Some(br#"{"query":"old","pending_dirs":9,"complete":false,"unavailable_entries":0}"#),
     )
     .unwrap();
     assert_eq!(menu.indexing(), None);

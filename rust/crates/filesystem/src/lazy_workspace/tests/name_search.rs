@@ -37,6 +37,116 @@ async fn name_search_does_not_hydrate_lazy_candidates() {
 }
 
 #[tokio::test]
+async fn name_search_unrepresentable_names_are_explicitly_partial_without_losing_other_names() {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::new());
+    source.directory_entries = 2;
+    source.non_unicode_entry = true;
+    let source = Arc::new(source);
+    let lazy = attach(
+        &fs,
+        Arc::clone(&source),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    while let Some(page) = walk.next_page().await.unwrap() {
+        seen.extend(page.into_iter().map(|name| name.path));
+    }
+    assert_eq!(seen, ["file-0001.txt"]);
+    assert_eq!(walk.unavailable_entries(), 1);
+    let checkpoint = walk.checkpoint().unwrap();
+    let restored = NameWalk::resume(&lazy, checkpoint, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    assert_eq!(restored.unavailable_entries(), 1);
+    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
+    // Negative control: the string projection cannot represent the raw name.
+    let (page, _, _) = lazy
+        .list_directory_at_snapshot(
+            lazy.snapshot(accounting!()).await.unwrap(),
+            "/",
+            None,
+            128,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+    assert!(page.entries.iter().any(|entry| {
+        entry
+            .name
+            .unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .is_err()
+    }));
+}
+
+#[tokio::test]
+async fn name_search_unreadable_subtree_does_not_abort_healthy_subtrees() {
+    let fs = Fs::memory();
+    let mut source = CountingSource::new(Bytes::new());
+    source.directory_entries = 0;
+    source.unreadable_directory = Some("blocked".into());
+    let lazy = attach(&fs, Arc::new(source), MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let stop = CancellationToken::new();
+    let mut transaction = lazy
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await
+        .unwrap()
+        .value;
+    transaction
+        .write_batch(
+            &["/blocked", "/healthy"],
+            &[(
+                "/healthy/visible.txt",
+                acyclic_stream::OwnedBytes::from_static(b"visible"),
+            )],
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap();
+    transaction
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    let mut walk = NameWalk::lazy(&lazy, None, GitIgnorePolicy::default())
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    while let Some(page) = walk.next_page().await.unwrap() {
+        seen.extend(page.into_iter().map(|name| name.path));
+    }
+    assert!(seen.iter().any(|name| name == "healthy/visible.txt"));
+    assert_eq!(walk.unavailable_entries(), 1);
+    assert_eq!(walk.checkpoint().unwrap().unavailable_entries(), 1);
+    // Negative control: the underlying directory API still returns the denial.
+    assert!(
+        matches!(lazy.list_directory_at_snapshot(lazy.snapshot(accounting!()).await.unwrap(),
+        "/blocked", None, 128, accounting!()).await,
+        Err(crate::LazyWorkspaceError::Demand(DemandError::Io(error)))
+            if error.kind() == std::io::ErrorKind::PermissionDenied)
+    );
+}
+
+#[tokio::test]
 async fn name_search_hydration_counter_detects_content_reads() {
     assert!(names_hydrate(64, true).await > 0);
 }

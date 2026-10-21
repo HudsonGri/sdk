@@ -49,7 +49,9 @@ impl<'a> CompletionPopup<'a> {
             self.menu
                 .items()
                 .len()
-                .saturating_add(usize::from(self.menu.indexing().is_some()))
+                .saturating_add(usize::from(
+                    self.menu.indexing().is_some() || self.menu.unavailable_entries() != 0,
+                ))
                 .saturating_add(2)
                 .min(self.editor.settings().completion_max_height),
         );
@@ -94,11 +96,17 @@ impl Widget for CompletionPopup<'_> {
             .style(self.style);
         let inner = block.inner(area);
         block.render(area, buffer);
-        let rows = inner
-            .height
-            .saturating_sub(u16::from(self.menu.indexing().is_some()));
-        if let Some(pending) = self.menu.indexing() {
-            let text = format!("still indexing ({pending} dirs)");
+        let rows = inner.height.saturating_sub(u16::from(
+            self.menu.indexing().is_some() || self.menu.unavailable_entries() != 0,
+        ));
+        if self.menu.indexing().is_some() || self.menu.unavailable_entries() != 0 {
+            let text = match self.menu.indexing() {
+                Some(pending) => format!("still indexing ({pending} dirs)"),
+                None => format!(
+                    "partial index ({} unavailable)",
+                    self.menu.unavailable_entries()
+                ),
+            };
             let mut x = inner.x;
             render_part(
                 &text,

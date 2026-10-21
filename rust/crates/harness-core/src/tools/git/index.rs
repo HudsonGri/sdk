@@ -177,6 +177,16 @@ impl IndexedNames {
             .map_or(1, |index| index.manifest.pending_directories)
     }
 
+    /// Unreadable or unrepresentable entries recorded in the durable cut.
+    pub async fn unavailable_entries(&self) -> usize {
+        self.shared
+            .latest
+            .lock()
+            .await
+            .as_ref()
+            .map_or(0, |index| index.manifest.checkpoint.unavailable_entries())
+    }
+
     /// Waits for an ordinary index-file revision after a terminal page. The
     /// cursor remains reusable; the next call to `next_page` emits a reset if
     /// the indexed namespace changed. No source-directory polling is involved.

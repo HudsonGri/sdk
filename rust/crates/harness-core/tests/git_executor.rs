@@ -784,6 +784,34 @@ async fn volume_search_grep_pins_candidates_without_exactifying_the_checkout() -
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn volume_search_grep_marks_unrepresentable_entries_partial() -> Result<()> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    let raw = std::ffi::OsString::from_vec(vec![0xff]);
+    assert!(raw.to_str().is_none());
+    std::fs::write(root.join(raw), b"native hidden match")?;
+    let (output, _) = run(
+        &fs,
+        &store,
+        &main,
+        main.workspace().id(),
+        &["grep", "native"],
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = output
+    else {
+        return Err("expected grep result".into());
+    };
+    assert_eq!(value["complete"], false);
+    assert_eq!(value["truncated"], true);
+    assert_eq!(value["matches"][0]["path"], "native.txt");
+    // Negative control: an empty/unavailable set must not certify no matches.
+    assert!(!value["matches"].as_array().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_search_grep_matches_original_bytes_before_display_decoding() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(false).await?;
     let bytes = b"other\r\n\xffneedle\r\nlast needle".to_vec();

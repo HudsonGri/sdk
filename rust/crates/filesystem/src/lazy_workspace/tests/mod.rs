@@ -53,6 +53,8 @@ struct CountingSource {
     counts: Arc<SourceCounts>,
     cancel_on_page: AtomicBool,
     cross_directory_mounts: bool,
+    unreadable_directory: Option<String>,
+    non_unicode_entry: bool,
 }
 impl CountingSource {
     fn new(bytes: Bytes) -> Self {
@@ -73,6 +75,8 @@ impl CountingSource {
             counts: Arc::default(),
             cancel_on_page: AtomicBool::new(false),
             cross_directory_mounts: true,
+            unreadable_directory: None,
+            non_unicode_entry: false,
         }
     }
     fn replace(&self, bytes: Bytes) {
@@ -211,6 +215,16 @@ impl DemandSource for CountingSource {
         let mut ctx = work.accounting(cancel);
         let result = (|| {
             self.counts.pages.fetch_add(1, Ordering::Relaxed);
+            if self.unreadable_directory.as_ref().is_some_and(|name| {
+                _directory
+                    .components()
+                    .last()
+                    .is_some_and(|component| component.as_bytes() == name.as_bytes())
+            }) {
+                return Err(DemandError::Io(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )));
+            }
             if self.cancel_on_page.swap(false, Ordering::Relaxed) {
                 cancel.cancel();
                 return Err(DemandError::Cancelled);
@@ -242,10 +256,15 @@ impl DemandSource for CountingSource {
                 } else {
                     format!("file-{index:04}.txt")
                 };
+                let (encoding, bytes) = if self.non_unicode_entry && index == 0 {
+                    (NameEncoding::PosixBytes, vec![0xff])
+                } else {
+                    (NameEncoding::Utf8, name.into_bytes())
+                };
                 let mut guard = ctx
-                    .claim_owned(name.capacity() as u64, 1)
+                    .claim_owned(bytes.capacity() as u64, 1)
                     .map_err(DemandError::from)?;
-                let name = LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 255)
+                let name = LogicalName::new(encoding, bytes, 255)
                     .map_err(|_| DemandError::InvalidRequest)?;
                 entries
                     .allocation
