@@ -55,20 +55,21 @@ fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     }
 }
 
+const EXCLUSIVE_TEST: &str = "ACYCLIC_NATIVE_RUNTIME_EXCLUSIVE_TEST";
+
 /// Runs `test` alone in a fresh test process and returns true here once it
 /// passed there; returns false inside that process, which runs the body.
 ///
 /// The worker pools are process-global, so a test that asserts exact charges
 /// or forces admission order must not share them with concurrent tests.
 pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
-    const CHILD: &str = "ACYCLIC_NATIVE_RUNTIME_EXCLUSIVE_TEST";
-    if std::env::var_os(CHILD).is_some_and(|name| name == test) {
+    if std::env::var_os(EXCLUSIVE_TEST).is_some_and(|name| name == test) {
         return Ok(false);
     }
     let output = crate::process_output(
         std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
-            .env(CHILD, test),
+            .env(EXCLUSIVE_TEST, test),
         Duration::from_secs(120),
         8 * 1024 * 1024,
     )?;
@@ -82,6 +83,20 @@ pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
     Ok(true)
 }
 
+/// A pool for a fixture that occupies every one of its workers. Saturation
+/// changes every concurrent test's admission order, and makes a seeded
+/// driver yield at physical startup, adding a poll to its replayed trace. So
+/// such a fixture runs only as the sole test of its process.
+pub(crate) fn exclusive_workers(
+    pool: &'static LazyLock<io::Result<NativeWorkers>>,
+) -> io::Result<&'static NativeWorkers> {
+    assert!(
+        std::env::var_os(EXCLUSIVE_TEST).is_some(),
+        "a fixture saturating a process-global pool must run in its exclusive process"
+    );
+    workers(pool, false)
+}
+
 /// Holds every worker of a pool and fills its queue, so the next submission
 /// waits for admission until this drops.
 pub(crate) struct Saturation {
@@ -91,7 +106,7 @@ pub(crate) struct Saturation {
 
 impl Saturation {
     pub(crate) fn new(pool: &'static LazyLock<io::Result<NativeWorkers>>) -> io::Result<Self> {
-        let threads = workers(pool, false)?.threads;
+        let threads = exclusive_workers(pool)?.threads;
         let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let mut held = Vec::new();
