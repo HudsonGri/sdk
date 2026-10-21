@@ -8,6 +8,8 @@ cargo test --locked -p acyclic-harness --features "$features" --lib --no-run --m
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 node --test scripts/graphcoder-e2e/*.test.mjs
 cargo build --locked -p graphcoder -p harness-mock-model --features "$binary_features"
+RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test --locked -p acyclic-harness --features "$features,model-checking" --lib --no-run --message-format=json |
+  python3 scripts/qualify-graphcoder-artifact.py client::commands::session::scroll_models::
 E2E_OUTPUT=e2e-followed-cut-results python3 - <<'PY'
 import json, os, subprocess, time
 start=time.perf_counter()
@@ -16,5 +18,3 @@ wall=time.perf_counter()-start
 with open(os.environ['E2E_OUTPUT']+'/wall.json','w') as f: json.dump({'seconds':wall,'exit':p.returncode},f)
 print('E2E_WALL',wall,flush=True)
 PY
-RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test --locked -p acyclic-harness --features "$features,model-checking" --lib --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py client::commands::session::scroll_models::
