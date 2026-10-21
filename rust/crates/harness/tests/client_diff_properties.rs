@@ -138,6 +138,7 @@ fn publication_failures_are_atomic_for_arbitrary_text_and_budgets() {
                     generation: current.generation.clone(),
                     paths: vec![DiffPath {
                         largest_file_bytes: None,
+                        matches_base: false,
                         path: "a.txt".into(),
                         base: Some(base),
                         current: Some(current),
