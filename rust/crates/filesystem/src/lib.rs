@@ -121,6 +121,9 @@ mod obs;
 pub use acyclic_fs_base::numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;
+#[cfg(not(target_arch = "wasm32"))]
+mod name_index;
+mod name_walk;
 #[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
@@ -139,14 +142,11 @@ pub mod notification;
 pub mod operation_window;
 pub mod path;
 mod path_index;
-mod name_walk;
-#[cfg(not(target_arch = "wasm32"))]
-mod name_index;
 #[cfg(not(target_arch = "wasm32"))]
 pub use name_index::{NameIndex, NameIndexManifest, NameIndexRefresh};
-pub use name_walk::{NameWalk, SearchName, SearchError, NameCut};
 #[cfg(not(target_arch = "wasm32"))]
 pub use name_walk::NameCheckpoint;
+pub use name_walk::{NameCut, NameWalk, SearchError, SearchName};
 pub mod performance;
 mod record_store;
 pub mod s3;
@@ -225,13 +225,13 @@ pub use git_compat::{
     GitCaptureError, GitCaptureProof, GitCapturedGeneration, GitCommand, GitCommandOutput,
     GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
     GitCompatStore, GitDiffCounts, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
-    GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult, GitIgnorePolicy,
-    GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord, GitResetMode,
-    GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, MemoryGitCompatStore, apply_git_patch,
+    GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitIgnorePolicy, GitPatchError,
+    GitPendingMutation, GitPendingTransition, GitPublicationRecord, GitResetMode, GitStatus,
+    GitTransitionId, GitTreeEntry, GitTreeRef, MemoryGitCompatStore, apply_git_patch,
     blame_git_generations, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts,
-    git_merge_resolution, grep_git_generation, parse_git_public_command, walk_git_tree,
+    git_merge_resolution, parse_git_public_command, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{

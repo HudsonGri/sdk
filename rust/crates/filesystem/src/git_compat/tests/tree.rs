@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn tree_walk_and_grep_are_generation_bound_and_portable() {
+async fn tree_walk_is_generation_bound_and_portable() {
     let workspace = memory_workspace("git-inspection").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x32; 16])).await;
     transaction
@@ -38,21 +38,6 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
             .collect::<Vec<_>>(),
         vec!["src/a.txt", "src/b.txt", "src/binary.bin", "src/large.txt"]
     );
-    let result = grep_git_generation(&generation, "needle", Some("src"), 10, 16, 10)
-        .await
-        .expect("grep");
-    assert!(result.truncated);
-    assert_eq!(result.matches.len(), 2);
-    assert_eq!(result.matches[0].line, 2);
-    assert_eq!(result.matches[1].line, 1);
-
-    let single = grep_git_generation(&generation, "needle", Some("src/a.txt"), 1, 16, 10)
-        .await
-        .expect("grep one file");
-    assert!(!single.truncated);
-    assert_eq!(single.matches.len(), 1);
-    assert_eq!(single.matches[0].path, "src/a.txt");
-    assert_eq!(single.matches[0].line, 2);
 }
 
 #[tokio::test]

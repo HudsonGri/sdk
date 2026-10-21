@@ -67,52 +67,6 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
     Ok((regular, truncated))
 }
 
-pub(super) async fn resolved_git_grep_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    reader: &crate::PinnedReader<A, O>,
-    root_display: String,
-    root: NamespacePath,
-    limits: VolumeLimits,
-    maximum_entries: usize,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<(String, ResolvedFile<A, O>)>, bool), WorkspaceError> {
-    if root_display.is_empty() {
-        return resolved_git_regular_files(
-            reader,
-            root_display,
-            root,
-            limits,
-            maximum_entries,
-            cancellation,
-        )
-        .await;
-    }
-    let mut roots = reader
-        .resolve_files(
-            std::slice::from_ref(&root),
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| WorkspaceError::from(failure.error))?
-        .value;
-    let root_file = roots.pop().flatten().ok_or(WorkspaceError::NotFound)?;
-    match root_file.description().kind {
-        FileKind::Directory => {
-            resolved_git_regular_files(
-                reader,
-                root_display,
-                root,
-                limits,
-                maximum_entries,
-                cancellation,
-            )
-            .await
-        }
-        FileKind::Regular => Ok((vec![(root_display, root_file)], false)),
-        _ => Ok((Vec::new(), false)),
-    }
-}
-
 /// Portable namespace fact used by Git-shaped inspection commands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitTreeEntry {
@@ -131,15 +85,6 @@ pub struct GitGrepMatch {
     pub line: u64,
     /// Complete UTF-8 line without its terminator.
     pub text: String,
-}
-
-/// Bounded machine-readable grep result.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GitGrepResult {
-    /// Literal matching lines in stable path/line order.
-    pub matches: Vec<GitGrepMatch>,
-    /// More paths, bytes, or matches existed beyond the supplied bounds.
-    pub truncated: bool,
 }
 
 /// One line attributed across explicit compatibility history.
@@ -234,108 +179,6 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(entries)
-}
-
-/// Searches UTF-8 regular files without consulting the host filesystem.
-pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    generation: &Generation<A, O>,
-    pattern: &str,
-    root: Option<&str>,
-    maximum_entries: u32,
-    maximum_file_bytes: u64,
-    maximum_matches: u32,
-) -> Result<GitGrepResult, WorkspaceError> {
-    if maximum_entries == 0 {
-        return Ok(GitGrepResult {
-            matches: Vec::new(),
-            truncated: true,
-        });
-    }
-    let cancellation = CancellationToken::new();
-    let checkout = generation
-        .workspace
-        .checkout(
-            GenerationSelector::Exact(generation.id()),
-            CheckoutMode::read_only_pinned(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let reader = checkout.pinned_reader().map_err(WorkspaceError::from)?;
-    let limits = checkout.volume_config().limits;
-    let root = root.unwrap_or("/");
-    let root_path = customer_path(
-        &format!("/{}", root.trim_start_matches('/')),
-        checkout.volume_config(),
-    )?;
-    let root_display = root.trim_matches('/').to_owned();
-    let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
-    let (regular, mut truncated) = resolved_git_grep_files(
-        &reader,
-        root_display,
-        root_path,
-        limits,
-        maximum_entries,
-        &cancellation,
-    )
-    .await?;
-    let mut matches = Vec::new();
-    let maximum_matches = usize::try_from(maximum_matches).unwrap_or(usize::MAX);
-    for batch in regular.chunks(GREP_READ_CONCURRENCY) {
-        let mut requests = Vec::with_capacity(batch.len());
-        let mut selected = Vec::with_capacity(batch.len());
-        for (path, file) in batch {
-            if file.description().logical_bytes > maximum_file_bytes {
-                truncated = true;
-                continue;
-            }
-            requests.push(ResolvedFileRangeReadRequest {
-                file,
-                range: ByteRange {
-                    offset: 0,
-                    length: file.description().logical_bytes,
-                },
-            });
-            selected.push(path);
-        }
-        if requests.is_empty() {
-            continue;
-        }
-        let reads = reader
-            .read_resolved_ranges(
-                &requests,
-                GREP_READ_CONCURRENCY,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?
-            .value;
-        for (path, read) in selected.into_iter().zip(reads) {
-            let bytes = read.bytes;
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            for (index, line) in text.lines().enumerate() {
-                if line.contains(pattern) {
-                    if matches.len() >= maximum_matches {
-                        return Ok(GitGrepResult {
-                            matches,
-                            truncated: true,
-                        });
-                    }
-                    matches.push(GitGrepMatch {
-                        path: path.clone(),
-                        line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                        text: line.to_owned(),
-                    });
-                }
-            }
-        }
-    }
-    Ok(GitGrepResult { matches, truncated })
 }
 
 /// Attributes UTF-8 lines across explicit compatibility history.
