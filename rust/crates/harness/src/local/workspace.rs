@@ -93,6 +93,12 @@ impl LocalWorkspace {
         {
             return Ok(None);
         }
+        self.existing_volume_view(id).await.map(Some)
+    }
+
+    /// Opens an allocated lazy project's selected logical branch without a
+    /// native projection or checkout recovery.
+    pub(super) async fn existing_volume_view(&self, id: acyclic_fs::WorkspaceId) -> Result<View> {
         let (selected, _) = acyclic_fs::GitCompatRepository::new(id, self.store.clone())
             .checkout_selection()
             .await
@@ -107,9 +113,12 @@ impl LocalWorkspace {
         .await
         .map_err(storage)?;
         self.view
-            .open_related(selected, &mut accounting)
+            .open_related(
+                selected,
+                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                    .accounting(&acyclic_fs::CancellationToken::new()),
+            )
             .await
-            .map(Some)
             .map_err(storage)
     }
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {

@@ -27,13 +27,23 @@ impl CheckoutTools {
         owner.verify_owner(None)?.await?;
         // Created allocations are authenticated by their task seal, then
         // composed without attaching a native projection.
-        let child = if context.task().scope().created_access.is_some() {
-            self.child_project_access(context, false)?
-        } else {
-            None
-        };
-        if let Some(project) = child {
-            let access = context.task().scope().created_access.as_ref().unwrap();
+        if context.task().scope().created_access.is_some() {
+            let access = Self::child_access(context)?;
+            let mut projects = access
+                .content
+                .iter()
+                .filter(|binding| binding.volume.class() == VolumeClass::Project);
+            let project = &projects
+                .next()
+                .ok_or_else(|| {
+                    Error::Unauthorized("child search project binding is absent".into())
+                })?
+                .volume;
+            if projects.next().is_some() {
+                return Err(Error::Unauthorized(
+                    "child search project binding is ambiguous".into(),
+                ));
+            }
             let mut private = None;
             for binding in &access.content {
                 if binding.volume.class() == VolumeClass::AgentPrivate
@@ -55,7 +65,8 @@ impl CheckoutTools {
                 (),
                 private.map(|volume| ("scratch".into(), volume, ())),
             )?;
-            let (_, mount) = mounts.named(parsed.volume.as_deref())?;
+            let (prefix, mount) = mounts.named(parsed.volume.as_deref())?;
+            self.authorize_search(context, mount)?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let volume = self
                 .workspace
@@ -68,6 +79,15 @@ impl CheckoutTools {
                 .await
                 .map_err(storage)?
                 .value;
+            let lazy = if prefix.is_empty() {
+                Some(self.workspace.existing_volume_view(volume.id()).await?)
+            } else {
+                None
+            };
+            let view = lazy.as_ref().map_or(
+                crate::tools::git::View::Volume(&volume),
+                crate::tools::git::View::Checkout,
+            );
             let files = Arc::new(
                 self.task_files
                     .for_created_task(context.task(), context.effective_scope())
@@ -75,14 +95,7 @@ impl CheckoutTools {
                     .ok_or_else(|| Error::Unauthorized("child search files are absent".into()))?,
             );
             return self
-                .search_view(
-                    &parsed,
-                    context,
-                    request,
-                    crate::tools::git::View::Volume(&volume),
-                    mount,
-                    files,
-                )
+                .search_view(&parsed, context, request, view, mount, files)
                 .await;
         }
         let (prefix, mount) = self.workspace.mounts.named(parsed.volume.as_deref())?;
@@ -133,17 +146,7 @@ impl CheckoutTools {
         mount: &crate::workspace::Mount<T>,
         files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     ) -> Result<ToolResult> {
-        mount.check(Action::Read, "", self.clock.now_unix_millis() / 1000)?;
-        if !context.effective_scope().grants().contains(
-            &mount
-                .view
-                .volume
-                .capability(VolumeOperation::Read, &mut None)?,
-        ) {
-            return Err(Error::Unauthorized(
-                "search target volume is not granted".into(),
-            ));
-        }
+        self.authorize_search(context, mount)?;
         let owner = context
             .task()
             .owned_mailbox
@@ -189,5 +192,24 @@ impl CheckoutTools {
         }?;
         progress.finish(&result).await?;
         Ok(result)
+    }
+
+    fn authorize_search<T>(
+        &self,
+        context: &ToolContext,
+        mount: &crate::workspace::Mount<T>,
+    ) -> Result<()> {
+        mount.check(Action::Read, "", self.clock.now_unix_millis() / 1000)?;
+        if !context.effective_scope().grants().contains(
+            &mount
+                .view
+                .volume
+                .capability(VolumeOperation::Read, &mut None)?,
+        ) {
+            return Err(Error::Unauthorized(
+                "search target volume is not granted".into(),
+            ));
+        }
+        Ok(())
     }
 }
